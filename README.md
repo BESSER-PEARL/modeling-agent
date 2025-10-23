@@ -1,6 +1,6 @@
 # 🤖 UML Modeling Agent
 
-> **AI-powered conversational agent using BESSER Agentic framowrk for creating and modifying UML diagrams using natural language for the editor.besser-pearl.org**
+> **AI-powered conversational agent using BESSER Agentic framework for creating and modifying UML diagrams using natural language for the editor.besser-pearl.org**
 
 The  Modeling Agent is an intelligent backend service that interprets natural language requests and generates UML diagram elements in real-time. It uses LLM (Large Language Models) to understand user intent and produce structured diagram specifications in the BESSER model format.
 
