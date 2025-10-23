@@ -1,2 +1,8 @@
 # Sphinx documentation
 docs/_build/
+*.ini
+.env
+venv/
+*.log
+/__pycache__/
+diagram_handlers/__pycache__/

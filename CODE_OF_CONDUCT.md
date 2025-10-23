@@ -8,9 +8,7 @@ We pledge to act and interact in ways that contribute to an open, welcoming, div
 ## Need Help?
 If ANY behavior makes you uncomfortable, or you believe it breaches the intent of this code of conduct, please contact a project maintainer:
 
-* [Maintainer 1](https://github.com/USER1/) 
-* [Maintainer 2](https://github.com/USER2/) 
-* [Maintainer 3](https://github.com/USER3/) 
+* [Armen Sulejmani](https://github.com/ArmenSl)
 
 ---
 
