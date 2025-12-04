@@ -1,1 +1,4 @@
 besser-agentic-framework[extras,llms,tensorflow]
+langchain-community
+langchain-text-splitters
+chromadb

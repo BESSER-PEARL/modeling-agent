@@ -8,12 +8,18 @@ import re
 import random
 from typing import Dict, Any, List, Optional
 
+from langchain_openai import OpenAIEmbeddings
+from langchain_chroma import Chroma
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from besser.agent import nlp
 from besser.agent.core.agent import Agent
 from besser.agent.core.session import Session
 from besser.agent.library.transition.events.base_events import ReceiveJSONEvent
 from besser.agent.exceptions.logger import logger
 from besser.agent.nlp.intent_classifier.intent_classifier_configuration import LLMIntentClassifierConfiguration
 from besser.agent.nlp.llm.llm_openai_api import LLMOpenAI
+from besser.agent.nlp.rag.rag import RAGMessage, RAG
 
 from diagram_handlers.factory import DiagramHandlerFactory, get_diagram_type_info
 from diagram_handlers.utils import (
@@ -189,6 +195,40 @@ except Exception as e:
 
 gpt_complex = gpt
 
+# Create Vector Store for UML Specification RAG
+try:
+    vector_store: Chroma = Chroma(
+        embedding_function=OpenAIEmbeddings(openai_api_key=agent.get_property(nlp.OPENAI_API_KEY)),
+        persist_directory='uml_vector_store'
+    )
+    # Create text splitter (RAG creates a vector for each chunk)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    
+    # Create the RAG for UML specification queries
+    uml_rag = RAG(
+        agent=agent,
+        vector_store=vector_store,
+        splitter=splitter,
+        llm_name='gpt-4o-mini',
+        k=4,
+        num_previous_messages=0
+    )
+    
+    uml_rag.llm_prompt = """You are a UML (Unified Modeling Language) specification expert. Based on the context retrieved from the UML specification documents, answer the user's question about UML concepts, notation, semantics, or best practices.
+
+If the context contains relevant information, use it to provide an accurate and detailed answer.
+If you don't find the answer in the context, say that you don't have that specific information in the UML specification documents, but you can provide general guidance based on your knowledge.
+
+Be precise and reference specific UML concepts when applicable. Use clear examples when helpful."""
+    
+    # Uncomment the following line to load UML specification PDFs into the vector store
+    uml_rag.load_pdfs('./uml_specs')
+    
+    logger.info("✅ UML RAG initialized successfully")
+except Exception as e:
+    logger.warning(f"⚠️ Failed to initialize UML RAG: {e}. RAG features will be disabled.")
+    uml_rag = None
+
 # Initialize diagram handler factory
 diagram_factory = DiagramHandlerFactory(gpt)
 logger.info(f"✅ Diagram handlers initialized: {', '.join(diagram_factory.get_supported_types())}")
@@ -212,6 +252,7 @@ create_complete_system_state = agent.new_state('create_complete_system_state')
 modify_model_state = agent.new_state('modify_model_state')
 modeling_help_state = agent.new_state('modeling_help_state')
 clarify_diagram_type_state = agent.new_state('clarify_diagram_type_state')
+uml_rag_state = agent.new_state('uml_rag_state')
 
 # INTENTS
 hello_intent = agent.new_intent(
@@ -237,6 +278,11 @@ modify_model_intent = agent.new_intent(
 modeling_help_intent = agent.new_intent(
     name='modeling_help_intent',
     description='The user asks for help with UML modeling, design patterns, or modeling concepts'
+)
+
+uml_spec_intent = agent.new_intent(
+    name='uml_spec_intent',
+    description='The user wants to ask about UML specification details, standards, notation rules, or precise UML semantics. Keywords: "UML specification", "UML standard", "what does UML say about", "according to UML", "UML notation for", "UML semantics", "UML 2.x", "OMG specification", "metaclass", "stereotype definition"'
 )
 
 # STATE BODY DEFINITIONS
@@ -383,6 +429,7 @@ I can help you:
 - Build systems: "Create a library management system"
 - Create agent diagrams: "Create a agent"
 - Modify diagrams: "Add transition from welcome to menu"
+- UML specification: "What does UML say about association classes?"
 
 What would you like to create?"""
 
@@ -398,6 +445,7 @@ greetings_state.when_intent_matched(create_single_element_intent).go_to(create_s
 greetings_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
 greetings_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
 greetings_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
+greetings_state.when_intent_matched(uml_spec_intent).go_to(uml_rag_state)
 greetings_state.when_event(ReceiveJSONEvent())\
     .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
     .go_to(diagram_router_state)
@@ -757,6 +805,7 @@ create_single_element_state.when_intent_matched(create_single_element_intent).go
 create_single_element_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
 create_single_element_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
 create_single_element_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
+create_single_element_state.when_intent_matched(uml_spec_intent).go_to(uml_rag_state)
 create_single_element_state.when_intent_matched(hello_intent).go_to(greetings_state)
 create_single_element_state.when_event(ReceiveJSONEvent())\
     .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
@@ -768,6 +817,7 @@ create_complete_system_state.when_intent_matched(create_single_element_intent).g
 create_complete_system_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
 create_complete_system_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
 create_complete_system_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
+create_complete_system_state.when_intent_matched(uml_spec_intent).go_to(uml_rag_state)
 create_complete_system_state.when_intent_matched(hello_intent).go_to(greetings_state)
 create_complete_system_state.when_event(ReceiveJSONEvent())\
     .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
@@ -779,6 +829,7 @@ modify_model_state.when_intent_matched(create_single_element_intent).go_to(creat
 modify_model_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
 modify_model_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
 modify_model_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
+modify_model_state.when_intent_matched(uml_spec_intent).go_to(uml_rag_state)
 modify_model_state.when_intent_matched(hello_intent).go_to(greetings_state)
 modify_model_state.when_event(ReceiveJSONEvent())\
     .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
@@ -790,6 +841,7 @@ modeling_help_state.when_intent_matched(create_single_element_intent).go_to(crea
 modeling_help_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
 modeling_help_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
 modeling_help_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
+modeling_help_state.when_intent_matched(uml_spec_intent).go_to(uml_rag_state)
 modeling_help_state.when_intent_matched(hello_intent).go_to(greetings_state)
 modeling_help_state.when_event(ReceiveJSONEvent())\
     .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
@@ -801,11 +853,63 @@ clarify_diagram_type_state.when_intent_matched(create_single_element_intent).go_
 clarify_diagram_type_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
 clarify_diagram_type_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
 clarify_diagram_type_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
+clarify_diagram_type_state.when_intent_matched(uml_spec_intent).go_to(uml_rag_state)
 clarify_diagram_type_state.when_intent_matched(hello_intent).go_to(greetings_state)
 clarify_diagram_type_state.when_event(ReceiveJSONEvent())\
     .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
     .go_to(diagram_router_state)
 clarify_diagram_type_state.when_no_intent_matched().go_to(clarify_diagram_type_state)
+
+
+# UML RAG STATE BODY
+
+def uml_rag_body(session: Session):
+    """Answer UML specification questions using RAG."""
+    user_message = session.event.message or ""
+    
+    # Clean up the message if it has diagram type prefix
+    if user_message.startswith('[DIAGRAM_TYPE:'):
+        match = re.match(r'^\[DIAGRAM_TYPE:\w+\]\s*(.+)', user_message)
+        if match:
+            user_message = match.group(1)
+    
+    if uml_rag is None:
+        # Fallback if RAG is not initialized
+        fallback_response = gpt.predict(
+            f"""You are a UML specification expert. Answer the following question about UML:
+
+{user_message}
+
+Provide accurate information based on UML 2.x specifications. Be precise and reference specific UML concepts when applicable."""
+        )
+        session.reply(fallback_response)
+    else:
+        try:
+            rag_message: RAGMessage = session.run_rag(user_message)
+            # Send only the answer text, not the full RAG JSON
+            session.reply(rag_message.answer)
+        except Exception as e:
+            logger.error(f"Error in uml_rag_body: {e}")
+            # Fallback to LLM if RAG fails
+            fallback_response = gpt.predict(
+                f"""You are a UML specification expert. Answer the following question about UML:
+
+{user_message}
+
+Provide accurate information based on UML 2.x specifications."""
+            )
+            session.reply(fallback_response)
+
+uml_rag_state.set_body(uml_rag_body)
+
+# Transitions from uml_rag_state
+uml_rag_state.when_intent_matched(create_single_element_intent).go_to(create_single_element_state)
+uml_rag_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
+uml_rag_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
+uml_rag_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
+uml_rag_state.when_intent_matched(uml_spec_intent).go_to(uml_rag_state)
+uml_rag_state.when_intent_matched(hello_intent).go_to(greetings_state)
+uml_rag_state.when_no_intent_matched().go_to(uml_rag_state)
 
 
 # No automatic return to greetings - specialized states maintain context
