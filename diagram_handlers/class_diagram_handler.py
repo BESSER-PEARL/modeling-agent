@@ -32,15 +32,16 @@ Return ONLY a JSON object with this structure:
 }
 
 IMPORTANT RULES:
-1. Create AS MANY attributes as needed (no fixed limits - can be 1, 3, 8, or more) based on what makes sense for the class
-2. Generate methods ONLY when explicitly requested or when they're essential to the class purpose
-3. If the user just says "create X class", generate relevant attributes and minimal/no methods
-4. Use proper programming conventions (camelCase for attributes/methods, PascalCase for classes)
-5. visibility options: "public", "private", "protected", or "package" (default to "public" for attributes, "public" for methods)
-6. Common types: String, int, boolean, double, Date, List, Map, or custom class names
-7. Method parameters are optional - empty array [] if no parameters needed
-8. Keep it focused but complete - don't artificially limit essential properties
-9. Return ONLY the JSON, no explanations or markdown
+1. FOLLOW THE USER'S REQUEST STRICTLY - if they specify certain attributes, methods, or details, include exactly what they ask for
+2. Create AS MANY attributes as needed (no fixed limits - can be 1, 3, 8, or more) based on what makes sense for the class
+3. Methods: Generally SKIP methods unless the user asks for them. Only include a method if it's core to the domain logic (e.g., BankAccount.withdraw(), Order.calculateTotal()). Never include getters/setters.
+4. If the user just says "create X class", generate relevant attributes and typically NO methods
+5. Use proper programming conventions (camelCase for attributes/methods, PascalCase for classes)
+6. visibility options: "public", "private", "protected", or "package" (default to "public" for attributes, "public" for methods)
+7. Common types: String, int, boolean, double, Date, or custom class names
+8. Method parameters are optional - empty array [] if no parameters needed
+9. Keep it focused but complete - don't artificially limit essential properties
+10. Return ONLY the JSON, no explanations or markdown
 
 Examples:
 - "create User class" -> attributes: id, username, email, password (4 attributes, 0-1 method)
@@ -117,10 +118,11 @@ Return ONLY a JSON object with this structure:
 }
 
 IMPORTANT RULES:
-1. Create AS MANY classes as needed for a complete system (no fixed limits - can be 2, 5, 10, or more depending on complexity)
-2. Each class should have AS MANY attributes as needed (can be 1-10+ attributes) - don't artificially limit essential properties
-3. Methods: Include essential methods (getters/setters, business logic) when they add value - can be 0-10+ per class
-4. Relationships are CRITICAL - always include meaningful connections between classes:
+1. FOLLOW THE USER'S REQUEST STRICTLY - if they specify certain classes, attributes, methods, or relationships, include exactly what they ask for
+2. Create AS MANY classes as needed for a complete system (no fixed limits - can be 2, 5, 10, or more depending on complexity)
+3. Each class should have AS MANY attributes as needed (can be 1-10+ attributes) - don't artificially limit essential properties
+4. Methods: Generally SKIP methods unless the user asks for them. Only include 1-2 methods per class MAX if they represent core domain behavior (e.g., Order.checkout(), Account.transfer()). Never include getters/setters.
+5. Relationships are CRITICAL - always include meaningful connections between classes:
    - "Association" - general relationship between classes (most common)
    - "Inheritance" (also called "Generalization") - parent-child "is-a" relationship (use sparingly, only when true inheritance)
    - "Composition" - strong "has-a" relationship (part cannot exist without whole)
@@ -132,7 +134,7 @@ IMPORTANT RULES:
    - "targetMultiplicity": "1", "0..1", "*", "1..*" etc. (how many target instances)
 6. Use proper naming: PascalCase for classes, camelCase for attributes/methods/parameters
 7. visibility: "public", "private", "protected", or "package" (default: public for attributes, public for methods)
-8. Common types: String, int, boolean, double, Date, List, Map, or custom class names
+8. Common types: String, int, boolean, double, Date, or custom class names
 9. For complex systems, create a coherent architecture with proper separation of concerns
 10. Return ONLY the JSON, no explanations or markdown
 

@@ -111,6 +111,16 @@ def route_to_modify(session: Session, params: Dict[str, Any]) -> bool:
     return last_intent == 'modify_model_intent'
 
 
+def route_to_rag_ignore(session: Session, params: Dict[str, Any]) -> bool:
+    """Return True if this JSON should be ignored (came from RAG question)."""
+    last_intent = session.get('last_matched_intent')
+    if last_intent == 'uml_spec_intent':
+        # Clear the intent so next request starts fresh
+        session.set('last_matched_intent', None)
+        return True
+    return False
+
+
 def route_to_help(session: Session, params: Dict[str, Any]) -> bool:
     """Route to modeling help based on stored intent or empty message."""
     info = prepare_payload_from_session(session, default_diagram_type=params.get('default_diagram_type'))
@@ -262,12 +272,12 @@ hello_intent = agent.new_intent(
 
 create_single_element_intent = agent.new_intent(
     name='create_single_element_intent',
-    description='The user wants to create a single UML element like one class, one object, one state, or one agent. Keywords: "create a class", "add a User class", "make a new state", "create an object"'
+    description='The user wants to create exactly ONE single UML element. Examples: "create a class called User", "add a Person class", "make one state", "create an object instance". This is for creating ONE element only, NOT multiple elements or systems.'
 )
 
 create_complete_system_intent = agent.new_intent(
     name='create_complete_system_intent',
-    description='The user wants to create a complete system from scratch with multiple NEW elements. Keywords: "create a library system", "design an e-commerce architecture", "generate a complete banking application", "build a new system with multiple classes". This is ONLY for creating new systems, NOT for modifying existing ones.'
+    description='The user wants to create a complete system, diagram, or multiple classes/elements. Keywords: "create a library system", "create a class diagram for", "design an e-commerce", "generate a banking application", "build a system", "create a diagram for", "model a", "create classes for". This is for creating MULTIPLE elements or a complete model.'
 )
 
 modify_model_intent = agent.new_intent(
@@ -282,7 +292,7 @@ modeling_help_intent = agent.new_intent(
 
 uml_spec_intent = agent.new_intent(
     name='uml_spec_intent',
-    description='The user wants to ask about UML specification details, standards, notation rules, or precise UML semantics. Keywords: "UML specification", "UML standard", "what does UML say about", "according to UML", "UML notation for", "UML semantics", "UML 2.x", "OMG specification", "metaclass", "stereotype definition"'
+    description='The user asks theoretical questions about the official UML specification document, UML standards, or formal UML definitions. Keywords: "according to UML specification", "what does UML standard say", "UML 2.5 specification", "OMG specification", "formal UML definition". This is NOT for creating diagrams, only for asking about the UML specification document itself.'
 )
 
 # STATE BODY DEFINITIONS
@@ -457,6 +467,9 @@ def diagram_router_body(session: Session):
 diagram_router_state.set_body(diagram_router_body)
 
 # JSON event routing (fallback only - prefer text messages for NLP intent detection)
+# First check if this JSON should be ignored (from RAG question)
+diagram_router_state.when_condition(route_to_rag_ignore, {'default_diagram_type': 'ClassDiagram'})\
+    .go_to(greetings_state)
 diagram_router_state.when_condition(route_to_modify, {'default_diagram_type': 'ClassDiagram'})\
     .go_to(modify_model_state)
 diagram_router_state.when_condition(route_to_help, {'default_diagram_type': 'ClassDiagram'})\
@@ -805,7 +818,6 @@ create_single_element_state.when_intent_matched(create_single_element_intent).go
 create_single_element_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
 create_single_element_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
 create_single_element_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
-create_single_element_state.when_intent_matched(uml_spec_intent).go_to(uml_rag_state)
 create_single_element_state.when_intent_matched(hello_intent).go_to(greetings_state)
 create_single_element_state.when_event(ReceiveJSONEvent())\
     .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
@@ -817,7 +829,6 @@ create_complete_system_state.when_intent_matched(create_single_element_intent).g
 create_complete_system_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
 create_complete_system_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
 create_complete_system_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
-create_complete_system_state.when_intent_matched(uml_spec_intent).go_to(uml_rag_state)
 create_complete_system_state.when_intent_matched(hello_intent).go_to(greetings_state)
 create_complete_system_state.when_event(ReceiveJSONEvent())\
     .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
@@ -829,7 +840,6 @@ modify_model_state.when_intent_matched(create_single_element_intent).go_to(creat
 modify_model_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
 modify_model_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
 modify_model_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
-modify_model_state.when_intent_matched(uml_spec_intent).go_to(uml_rag_state)
 modify_model_state.when_intent_matched(hello_intent).go_to(greetings_state)
 modify_model_state.when_event(ReceiveJSONEvent())\
     .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
@@ -841,7 +851,6 @@ modeling_help_state.when_intent_matched(create_single_element_intent).go_to(crea
 modeling_help_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
 modeling_help_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
 modeling_help_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
-modeling_help_state.when_intent_matched(uml_spec_intent).go_to(uml_rag_state)
 modeling_help_state.when_intent_matched(hello_intent).go_to(greetings_state)
 modeling_help_state.when_event(ReceiveJSONEvent())\
     .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
@@ -853,7 +862,6 @@ clarify_diagram_type_state.when_intent_matched(create_single_element_intent).go_
 clarify_diagram_type_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
 clarify_diagram_type_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
 clarify_diagram_type_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
-clarify_diagram_type_state.when_intent_matched(uml_spec_intent).go_to(uml_rag_state)
 clarify_diagram_type_state.when_intent_matched(hello_intent).go_to(greetings_state)
 clarify_diagram_type_state.when_event(ReceiveJSONEvent())\
     .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
@@ -865,6 +873,13 @@ clarify_diagram_type_state.when_no_intent_matched().go_to(clarify_diagram_type_s
 
 def uml_rag_body(session: Session):
     """Answer UML specification questions using RAG."""
+    # Ignore JSON events - RAG only processes text messages
+    if isinstance(session.event, ReceiveJSONEvent):
+        return
+    
+    # Mark that we're handling a RAG question
+    session.set('last_matched_intent', 'uml_spec_intent')
+        
     user_message = session.event.message or ""
     
     # Clean up the message if it has diagram type prefix
@@ -902,6 +917,11 @@ Provide accurate information based on UML 2.x specifications."""
 
 uml_rag_state.set_body(uml_rag_body)
 
+# Route JSON events through diagram router - it will check last_matched_intent
+uml_rag_state.when_event(ReceiveJSONEvent())\
+    .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
+    .go_to(diagram_router_state)
+
 # Transitions from uml_rag_state
 uml_rag_state.when_intent_matched(create_single_element_intent).go_to(create_single_element_state)
 uml_rag_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
@@ -909,7 +929,8 @@ uml_rag_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
 uml_rag_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
 uml_rag_state.when_intent_matched(uml_spec_intent).go_to(uml_rag_state)
 uml_rag_state.when_intent_matched(hello_intent).go_to(greetings_state)
-uml_rag_state.when_no_intent_matched().go_to(uml_rag_state)
+# After answering a RAG question, go back to greetings for fresh context on next message
+uml_rag_state.when_no_intent_matched().go_to(greetings_state)
 
 
 # No automatic return to greetings - specialized states maintain context
