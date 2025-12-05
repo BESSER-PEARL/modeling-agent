@@ -3,10 +3,11 @@
 
 import logging
 import json
-import uuid
 import re
 import random
-from typing import Dict, Any, List, Optional
+import sys
+import os
+from typing import Dict, Any, Optional
 
 from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
@@ -27,7 +28,7 @@ from diagram_handlers.utils import (
     detect_diagram_type_from_keywords
 )
 
-# Layout defaults for newly generated Apollon elements
+# Layout defaults for newly generated elements
 LAYOUT_BASE_X = -940
 LAYOUT_BASE_Y = -600
 LAYOUT_X_SPREAD = 360
@@ -44,123 +45,134 @@ logger.setLevel(logging.INFO)
 agent = Agent('uml_modeling_agent')
 
 agent.load_properties('config.ini')
-print(f"✅ Agent properties loaded from config.ini")
+print("✅ Agent properties loaded from config.ini")
 print(f" - Agent Name: {agent.name}")
 
 websocket_platform = agent.use_websocket_platform(use_ui=False)
 
-def prepare_payload_from_session(session: Session, default_diagram_type: Optional[str] = None) -> Dict[str, Any]:
-    """Extract and cache payload information from the current session event."""
-    payload: Dict[str, Any] = {}
-    raw_payload = session.get('pending_payload') or {}
-    raw_message = session.get('pending_message')
-    diagram_hint = session.get('pending_diagram_type')
 
-    if session.event and hasattr(session.event, 'message'):
-        event_message = session.event.message
-        if isinstance(event_message, str) and event_message.strip().startswith('{'):
+def extract_json_payload(session: Session) -> Dict[str, Any]:
+    """Extract the JSON payload from the current session event.
+    
+    With unified JSON messages, the event contains:
+    - message: The user's text message (used for intent classification)
+    - diagramType: The diagram type context
+    - currentModel: The full model context (optional)
+    """
+    if not session.event:
+        return {}
+    
+    # For ReceiveJSONEvent, the payload is in event.json
+    if isinstance(session.event, ReceiveJSONEvent):
+        return session.event.json or {}
+    
+    # For text messages, try to parse as JSON
+    if hasattr(session.event, 'message'):
+        message = session.event.message
+        if isinstance(message, str) and message.strip().startswith('{'):
             try:
-                payload = json.loads(event_message)
+                return json.loads(message)
             except Exception:
                 pass
-        else:
-            raw_message = event_message or raw_message
-
-    if isinstance(raw_payload, dict) and raw_payload:
-        payload = {**payload, **raw_payload} if payload else raw_payload
-
-    message = payload.get('message', raw_message or '')
-    diagram_type = payload.get('diagramType') or diagram_hint
-
-    if isinstance(message, str):
-        prefix_match = re.match(r'^\[DIAGRAM_TYPE:(\w+)\]\s*(.+)', message)
-        if prefix_match:
-            diagram_type = diagram_type or prefix_match.group(1)
-            message = prefix_match.group(2)
-
-    if not diagram_type and isinstance(message, str):
-        diagram_type = extract_diagram_type_from_message(message)
-    if not diagram_type and isinstance(message, str):
-        diagram_type = detect_diagram_type_from_keywords(message)
-
-    if not diagram_type:
-        diagram_type = default_diagram_type or 'ClassDiagram'
-
-    session.set('pending_payload', payload)
-    session.set('pending_message', message)
-    session.set('pending_diagram_type', diagram_type)
-
-    return {
-        'payload': payload,
-        'message': message,
-        'diagram_type': diagram_type
-    }
+    
+    return {}
 
 
-def store_payload_for_default(session: Session, params: Dict[str, Any]) -> bool:
-    """Catch-all condition that caches payload and defaults to provided diagram type."""
-    default_type = params.get('default_diagram_type')
-    prepare_payload_from_session(session, default_diagram_type=default_type)
+def get_user_message(session: Session) -> str:
+    """Extract the user's message from the session event.
+    
+    For JSON events, this extracts the 'message' field.
+    For text events, this returns the message directly.
+    """
+    payload = extract_json_payload(session)
+    
+    # First check for message in JSON payload
+    if payload and 'message' in payload:
+        message = payload['message']
+        # Clean up diagram type prefix if present
+        if isinstance(message, str):
+            prefix_match = re.match(r'^\[DIAGRAM_TYPE:\w+\]\s*(.+)', message, re.DOTALL)
+            if prefix_match:
+                return prefix_match.group(1).strip()
+            return message.strip()
+    
+    # Fallback to event message
+    if hasattr(session.event, 'message') and session.event.message:
+        message = session.event.message
+        if isinstance(message, str):
+            # Check if it's a JSON string
+            if message.strip().startswith('{'):
+                try:
+                    parsed = json.loads(message)
+                    if isinstance(parsed, dict) and 'message' in parsed:
+                        inner = parsed['message']
+                        prefix_match = re.match(r'^\[DIAGRAM_TYPE:\w+\]\s*(.+)', inner, re.DOTALL)
+                        if prefix_match:
+                            return prefix_match.group(1).strip()
+                        return inner.strip() if isinstance(inner, str) else str(inner)
+                except Exception:
+                    pass
+            # Clean diagram type prefix
+            prefix_match = re.match(r'^\[DIAGRAM_TYPE:\w+\]\s*(.+)', message, re.DOTALL)
+            if prefix_match:
+                return prefix_match.group(1).strip()
+            return message.strip()
+    
+    return ""
+
+
+def get_diagram_type(session: Session, default: str = 'ClassDiagram') -> str:
+    """Extract the diagram type from the session event."""
+    payload = extract_json_payload(session)
+    
+    # Check payload for diagramType
+    if payload and payload.get('diagramType'):
+        return payload['diagramType']
+    
+    # Check message for prefix
+    message = get_user_message(session)
+    if message:
+        extracted = extract_diagram_type_from_message(message)
+        if extracted:
+            return extracted
+        detected = detect_diagram_type_from_keywords(message)
+        if detected:
+            return detected
+    
+    return default
+
+
+def get_current_model(session: Session) -> Optional[Dict[str, Any]]:
+    """Extract the current model from the session event's payload."""
+    payload = extract_json_payload(session)
+    return payload.get('currentModel') if payload else None
+
+
+# Intent matching condition functions for JSON events
+def json_intent_matches(session: Session, params: Dict[str, Any]) -> bool:
+    """Check if the predicted intent matches the target intent for JSON events."""
+    target_intent_name = params.get('intent_name')
+    if not target_intent_name:
+        return False
+    
+    # The ReceiveJSONEvent should have predicted_intent after intent prediction
+    if hasattr(session.event, 'predicted_intent') and session.event.predicted_intent:
+        matched_intent = session.event.predicted_intent.intent
+        return matched_intent.name == target_intent_name
+    
+    return False
+
+
+def json_no_intent_matched(session: Session) -> bool:
+    """Check if no specific intent was matched (fallback).
+    
+    Note: This function takes only session (no params) because it doesn't need any parameters.
+    """
+    if hasattr(session.event, 'predicted_intent') and session.event.predicted_intent:
+        matched_intent = session.event.predicted_intent.intent
+        return matched_intent.name == 'fallback_intent'
     return True
 
-
-def route_to_modify(session: Session, params: Dict[str, Any]) -> bool:
-    """Detect if we should route to modification state based on stored intent."""
-    prepare_payload_from_session(session, default_diagram_type=params.get('default_diagram_type'))
-    last_intent = session.get('last_matched_intent')
-    return last_intent == 'modify_model_intent'
-
-
-def route_to_rag_ignore(session: Session, params: Dict[str, Any]) -> bool:
-    """Return True if this JSON should be ignored (came from RAG question)."""
-    last_intent = session.get('last_matched_intent')
-    if last_intent == 'uml_spec_intent':
-        # Clear the intent so next request starts fresh
-        session.set('last_matched_intent', None)
-        return True
-    return False
-
-
-def route_to_help(session: Session, params: Dict[str, Any]) -> bool:
-    """Route to modeling help based on stored intent or empty message."""
-    info = prepare_payload_from_session(session, default_diagram_type=params.get('default_diagram_type'))
-    message = (info.get('message') or '').strip()
-    
-    # Check if we came from help intent
-    last_intent = session.get('last_matched_intent')
-    if last_intent == 'modeling_help_intent':
-        return True
-
-    # Empty message -> help
-    if not message:
-        return True
-
-    return False
-
-
-def route_to_single_element(session: Session, params: Dict[str, Any]) -> bool:
-    """Route to single element creation state."""
-    prepare_payload_from_session(session, default_diagram_type=params.get('default_diagram_type'))
-    # Check if we came from complete system intent
-    last_intent = session.get('last_matched_intent')
-    return last_intent != 'create_complete_system_intent'
-
-
-def route_to_complete_system(session: Session, params: Dict[str, Any]) -> bool:
-    """Route to complete system creation state."""
-    prepare_payload_from_session(session, default_diagram_type=params.get('default_diagram_type'))
-    # Check if we came from complete system intent
-    last_intent = session.get('last_matched_intent')
-    return last_intent == 'create_complete_system_intent'
-
-
-def clear_cached_payload(session: Session) -> None:
-    """Remove any cached payload data after a state has consumed it."""
-    for key in ('pending_payload', 'pending_message', 'pending_diagram_type'):
-        try:
-            session.delete(key)
-        except Exception:
-            continue
 
 def generate_layout_position(seed: Optional[str] = None) -> Dict[str, int]:
     """Compute a deterministic layout position near the top-left workspace area."""
@@ -256,7 +268,6 @@ agent.set_default_ic_config(ic_config)
 
 # STATES
 greetings_state = agent.new_state('greetings_state', initial=True)
-diagram_router_state = agent.new_state('diagram_router_state')
 create_single_element_state = agent.new_state('create_single_element_state')
 create_complete_system_state = agent.new_state('create_complete_system_state')
 modify_model_state = agent.new_state('modify_model_state')
@@ -417,158 +428,106 @@ Rules:
 # STATE BODY DEFINITIONS
 
 def global_fallback_body(session: Session):
-    user_message = session.event.message or ""
+    """Handle unrecognized messages."""
+    user_message = get_user_message(session) or "your message"
     answer = gpt.predict(f"You are a UML modeling assistant. The user said: '{user_message}'. If this is related to UML modeling, suggest how you can help them create models, classes, or diagrams. Otherwise, politely explain that you specialize in UML modeling assistance.")
     session.reply(answer)
 
 agent.set_global_fallback_body(global_fallback_body)
 
 def greetings_body(session: Session):
-    # Simple greeting - only send once per session to avoid double greetings
-    if session.get('has_greeted'):
-        return
-
-    if hasattr(session, 'event') and session.event is not None:
-        if getattr(session.event, 'human', True) is False:
-            return
-
+    """Send a greeting message when the user first connects or says hello."""
     greeting_message = """Hello! I'm your UML Assistant!
 
 I can help you:
 - Create classes: "Create a User class"
 - Build systems: "Create a library management system"
-- Create agent diagrams: "Create a agent"
+- Create agent diagrams: "Create an agent"
 - Modify diagrams: "Add transition from welcome to menu"
 - UML specification: "What does UML say about association classes?"
 
 What would you like to create?"""
 
-    session.reply(greeting_message)
-    session.set('has_greeted', True)
+    # On initial state entry, session.event is None and connection isn't ready yet
+    # Wait for the frontend's "hello" message to trigger the greeting
+    if session.event is None:
+        return
+    
+    # Check if this is a hello intent
+    is_hello_intent = False
+    if hasattr(session.event, 'predicted_intent') and session.event.predicted_intent:
+        is_hello_intent = session.event.predicted_intent.intent.name == 'hello_intent'
+    
+    # If user said hello and we haven't greeted yet, send full greeting
+    if is_hello_intent and not session.get('has_greeted'):
+        session.reply(greeting_message)
+        session.set('has_greeted', True)
+        return
+    
+    # If user said hello again after initial greeting, send short response
+    if is_hello_intent and session.get('has_greeted'):
+        session.reply("Hello again! How can I help you with UML modeling?")
+        return
 
 
 greetings_state.set_body(greetings_body)
 
 # Transitions from greetings state
+# Support both text events (backward compatibility) and JSON events (unified messages)
+# Text event transitions (for backward compatibility)
 greetings_state.when_intent_matched(hello_intent).go_to(greetings_state)
 greetings_state.when_intent_matched(create_single_element_intent).go_to(create_single_element_state)
 greetings_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
 greetings_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
 greetings_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
 greetings_state.when_intent_matched(uml_spec_intent).go_to(uml_rag_state)
+# JSON event transitions (for unified messages)
+# Note: ReceiveJSONEvent supports intent classification via predict_intent() when message field is present
 greetings_state.when_event(ReceiveJSONEvent())\
-    .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
-    .go_to(diagram_router_state)
+    .with_condition(json_intent_matches, {'intent_name': 'hello_intent'})\
+    .go_to(greetings_state)
+greetings_state.when_event(ReceiveJSONEvent())\
+    .with_condition(json_intent_matches, {'intent_name': 'create_single_element_intent'})\
+    .go_to(create_single_element_state)
+greetings_state.when_event(ReceiveJSONEvent())\
+    .with_condition(json_intent_matches, {'intent_name': 'create_complete_system_intent'})\
+    .go_to(create_complete_system_state)
+greetings_state.when_event(ReceiveJSONEvent())\
+    .with_condition(json_intent_matches, {'intent_name': 'modify_model_intent'})\
+    .go_to(modify_model_state)
+greetings_state.when_event(ReceiveJSONEvent())\
+    .with_condition(json_intent_matches, {'intent_name': 'modeling_help_intent'})\
+    .go_to(modeling_help_state)
+greetings_state.when_event(ReceiveJSONEvent())\
+    .with_condition(json_intent_matches, {'intent_name': 'uml_spec_intent'})\
+    .go_to(uml_rag_state)
+greetings_state.when_event(ReceiveJSONEvent())\
+    .with_condition(json_no_intent_matched)\
+    .go_to(modeling_help_state)
 greetings_state.when_no_intent_matched().go_to(modeling_help_state)
 
-def diagram_router_body(session: Session):
-    pass
-
-diagram_router_state.set_body(diagram_router_body)
-
-# JSON event routing (fallback only - prefer text messages for NLP intent detection)
-# First check if this JSON should be ignored (from RAG question)
-diagram_router_state.when_condition(route_to_rag_ignore, {'default_diagram_type': 'ClassDiagram'})\
-    .go_to(greetings_state)
-diagram_router_state.when_condition(route_to_modify, {'default_diagram_type': 'ClassDiagram'})\
-    .go_to(modify_model_state)
-diagram_router_state.when_condition(route_to_help, {'default_diagram_type': 'ClassDiagram'})\
-    .go_to(modeling_help_state)
-# Route based on previously matched intent (stored in session)
-diagram_router_state.when_condition(route_to_complete_system, {'default_diagram_type': 'ClassDiagram'})\
-    .go_to(create_complete_system_state)
-diagram_router_state.when_condition(route_to_single_element, {'default_diagram_type': 'ClassDiagram'})\
-    .go_to(create_single_element_state)
-
 def extract_modeling_context(session: Session) -> Optional[Dict[str, Any]]:
-    """Normalize request data for the specialized modeling states."""
-    if not session.event or not hasattr(session.event, 'message'):
-        user_message = ""
-    else:
-        user_message = session.event.message or ""
-
-    cached_payload = session.get('pending_payload')
-    cached_message = session.get('pending_message')
-    cached_diagram_type = session.get('pending_diagram_type')
-
-    diagram_type: Optional[str] = None
-    actual_message = user_message
-    payload_data: Optional[Dict[str, Any]] = None
-
-    prefix_match = re.match(r'^\[DIAGRAM_TYPE:(\w+)\]\s*(.+)', user_message)
-    if prefix_match:
-        diagram_type = prefix_match.group(1)
-        actual_message = prefix_match.group(2)
-
-    if hasattr(session.event, 'data') and isinstance(session.event.data, dict):
-        if not diagram_type:
-            diagram_type = session.event.data.get('diagramType')
-        if not payload_data:
-            payload_candidate = session.event.data.get('message')
-            if isinstance(payload_candidate, (dict, list)):
-                payload_data = payload_candidate
-            elif isinstance(payload_candidate, str) and payload_candidate.strip().startswith('{'):
-                try:
-                    payload_data = json.loads(payload_candidate)
-                except Exception:
-                    pass
-
-    if user_message.strip().startswith('{'):
-        try:
-            payload_data = json.loads(user_message)
-        except Exception:
-            pass
-
-    if payload_data and isinstance(payload_data, dict):
-        actual_message = payload_data.get('message', actual_message)
-        if not diagram_type:
-            diagram_type = payload_data.get('diagramType')
-        if isinstance(actual_message, str):
-            payload_prefix_match = re.match(r'^\[DIAGRAM_TYPE:(\w+)\]\s*(.+)', actual_message)
-            if payload_prefix_match:
-                if not diagram_type:
-                    diagram_type = payload_prefix_match.group(1)
-                actual_message = payload_prefix_match.group(2)
-
-    if not payload_data and isinstance(cached_payload, dict):
-        payload_data = cached_payload
-
-    if not actual_message.strip() and hasattr(session.event, 'data') and isinstance(session.event.data, dict):
-        actual_message = session.event.data.get('message', actual_message) or actual_message
-
-    if not actual_message.strip() and isinstance(cached_message, str):
-        actual_message = cached_message
-
-    if not diagram_type:
-        diagram_type = extract_diagram_type_from_message(user_message)
-
-    if not diagram_type and actual_message:
-        diagram_type = extract_diagram_type_from_message(actual_message)
-
-    if not diagram_type and cached_diagram_type:
-        diagram_type = cached_diagram_type
-
-    if not diagram_type:
-        diagram_type = detect_diagram_type_from_keywords(actual_message)
-
-    if not diagram_type:
-        diagram_type = 'ClassDiagram'
-
-    current_model = None
-    if payload_data and isinstance(payload_data, dict):
-        current_model = payload_data.get('currentModel')
-
-    if not current_model and hasattr(session.event, 'data') and isinstance(session.event.data, dict):
-        current_model = session.event.data.get('currentModel')
+    """Normalize request data for the specialized modeling states.
+    
+    With unified JSON messages, the context is extracted directly from the JSON payload.
+    """
+    # Use the new helper functions for unified JSON handling
+    actual_message = get_user_message(session)
+    diagram_type = get_diagram_type(session)
+    current_model = get_current_model(session)
+    payload_data = extract_json_payload(session)
+    
+    if not actual_message:
+        return None
 
     diagram_info = get_diagram_type_info(diagram_type)
     handler = diagram_factory.get_handler(diagram_type)
     
     # Log the diagram type and handler being used for this request
     logger.info(f"📊 {diagram_type} | Handler: {handler.__class__.__name__ if handler else 'None'}")
-    # logger.info(f" - User Message: {user_message}")
+    
     return {
-        'user_message': user_message,
+        'user_message': actual_message,
         'actual_message': actual_message,
         'diagram_type': diagram_type,
         'payload_data': payload_data,
@@ -578,12 +537,17 @@ def extract_modeling_context(session: Session) -> Optional[Dict[str, Any]]:
     }
 
 def create_single_element_body(session: Session):
-    """Generate a single UML element based on the user's request."""
+    """Generate a single UML element based on the user's request.
+    
+    With unified JSON messages, this processes the request directly without
+    waiting for a second message.
+    """
     # Store which intent brought us here
     session.set('last_matched_intent', 'create_single_element_intent')
     
     context = extract_modeling_context(session)
     if not context:
+        session.reply("I need more details about what you'd like to create. Could you describe it?")
         return
 
     handler = context['handler']
@@ -595,15 +559,7 @@ def create_single_element_body(session: Session):
         session.reply(f"Warning: {diagram_type} is not supported yet. Please use ClassDiagram for now.")
         return
 
-    # Check if this is the JSON event with full context (has currentModel)
-    is_json_event = isinstance(session.event, ReceiveJSONEvent) and current_model is not None
-    
-    # For text events, just acknowledge - wait for JSON with full context
-    if not is_json_event:
-        return
-
-    # Now we have the JSON event with full context - process it
-    
+    # Process the request directly (unified JSON contains all context)
     try:
         # Extract reference diagram if available (for ObjectDiagram)
         reference_diagram = None
@@ -625,39 +581,33 @@ def create_single_element_body(session: Session):
     except Exception as e:
         logger.error(f"Error in create_single_element_body: {e}")
         session.reply("I encountered an issue while creating the element. Could you try rephrasing your request?")
-    finally:
-        clear_cached_payload(session)
 
 create_single_element_state.set_body(create_single_element_body)
 
 
 def create_complete_system_body(session: Session):
-    """Generate a complete system with multiple elements and relationships."""
+    """Generate a complete system with multiple elements and relationships.
+    
+    With unified JSON messages, this processes the request directly without
+    waiting for a second message.
+    """
     # Store which intent brought us here
     session.set('last_matched_intent', 'create_complete_system_intent')
     
     context = extract_modeling_context(session)
     if not context:
+        session.reply("I need more details about the system you'd like to create. Could you describe it?")
         return
 
     handler = context['handler']
     diagram_type = context['diagram_type']
     actual_message = context['actual_message']
-    current_model = context['current_model']
 
     if not handler:
         session.reply(f"Warning: {diagram_type} is not supported yet. Please use ClassDiagram for now.")
         return
 
-    # Check if this is the JSON event with full context (has currentModel)
-    is_json_event = isinstance(session.event, ReceiveJSONEvent) and current_model is not None
-    
-    # For text events, just acknowledge - wait for JSON with full context
-    if not is_json_event:
-        return
-
-    # Now we have the JSON event with full context - process it
-    
+    # Process the request directly (unified JSON contains all context)
     try:
         result = handler.generate_complete_system(actual_message)
 
@@ -670,8 +620,6 @@ def create_complete_system_body(session: Session):
     except Exception as e:
         logger.error(f"Error in create_complete_system_body: {e}")
         session.reply("I encountered an issue while creating the system. Could you try rephrasing your request?")
-    finally:
-        clear_cached_payload(session)
 
 create_complete_system_state.set_body(create_complete_system_body)
 
@@ -693,29 +641,21 @@ def modify_modeling_body(session: Session):
         session.reply(f"Warning: {diagram_type} is not supported yet. Please use ClassDiagram for now.")
         return
 
-    # Check if this is the JSON event with full context (has currentModel)
-    is_json_event = isinstance(session.event, ReceiveJSONEvent) and current_model is not None
-    
-    # For text events, just acknowledge - wait for JSON with full context
-    if not is_json_event:
-        return
-
-    # Now we have the JSON event with full context - process it
-
+    # Process the modification request directly (unified JSON contains all context)
     try:
         # Use the handler's specialized generate_modification method
         modification_spec = handler.generate_modification(actual_message, current_model)
 
         if modification_spec and modification_spec.get('modification'):
             modification_spec['diagramType'] = diagram_type
-            
+
             # # Log what we're sending
             # logger.info(f"[MODIFY] Sending modification to frontend:")
             # logger.info(f"  - Action: {modification_spec.get('action')}")
             # logger.info(f"  - Modification action: {modification_spec['modification'].get('action')}")
             # logger.info(f"  - Target: {modification_spec['modification'].get('target')}")
             # logger.info(f"  - Changes: {modification_spec['modification'].get('changes')}")
-            
+
             session.reply(json.dumps(modification_spec))
         else:
             session.reply("I couldn't determine the modification to apply. Could you provide more detail?")
@@ -723,33 +663,27 @@ def modify_modeling_body(session: Session):
     except Exception as e:
         logger.error(f"Error in modify_modeling_body: {e}")
         session.reply("I encountered an issue while updating the model. Could you try rephrasing your request?")
-    finally:
-        clear_cached_payload(session)
 
 modify_model_state.set_body(modify_modeling_body)
 
 def modeling_help_body(session: Session):
-    """Offer guidance or clarifying questions when the user needs modeling help."""
+    """Offer guidance or clarifying questions when the user needs modeling help.
+    
+    With unified JSON messages, this processes the request directly.
+    """
     # Store which intent brought us here
     session.set('last_matched_intent', 'modeling_help_intent')
     
     context = extract_modeling_context(session)
     if not context:
+        # Provide general help if no context
+        session.reply("I can help you with UML modeling! Try asking me to create a class, design a system, or modify your diagram.")
         return
 
     diagram_info = context['diagram_info']
     actual_message = context['actual_message']
-    current_model = context['current_model']
 
-    # Check if this is the JSON event with full context
-    is_json_event = isinstance(session.event, ReceiveJSONEvent) and current_model is not None
-    
-    # For text events, just acknowledge - wait for JSON with full context
-    if not is_json_event:
-        return
-
-    # Now we have the JSON event with full context - process it
-
+    # Process the help request directly (unified JSON contains all context)
     help_prompt = f"""You are a UML modeling expert assistant working with {diagram_info['name']}. The user asked: "{actual_message}"
 
 Current diagram type: {diagram_info['name']} - {diagram_info['description']}
@@ -764,29 +698,22 @@ Keep your response conversational and encouraging. Suggest specific things they 
     except Exception as e:
         logger.error(f"Error in modeling_help_body: {e}")
         session.reply("I encountered an issue while preparing guidance. Could you try again?")
-    finally:
-        clear_cached_payload(session)
 
 modeling_help_state.set_body(modeling_help_body)
 
 def clarify_diagram_type_body(session: Session):
-    """Ask user to clarify the diagram type when it cannot be determined."""
+    """Ask user to clarify the diagram type when it cannot be determined.
+    
+    With unified JSON messages, this processes the request directly.
+    """
     context = extract_modeling_context(session)
     if not context:
+        session.reply("I need to know which diagram type you'd like. Please specify: Class, Object, StateMachine, or Agent diagram.")
         return
 
     actual_message = context['actual_message']
-    current_model = context['current_model']
-    
-    # Check if this is the JSON event with full context
-    is_json_event = isinstance(session.event, ReceiveJSONEvent) and current_model is not None
-    
-    # For text events, just acknowledge - wait for JSON with full context
-    if not is_json_event:
-        return
 
-    # Now we have the JSON event with full context
-
+    # Process the clarification request directly (unified JSON contains all context)
     clarification_prompt = f"""I'd like to help you with: "{actual_message}"
 
 However, I need to know which type of UML diagram you'd like to create:
@@ -808,85 +735,97 @@ For example:
     except Exception as e:
         logger.error(f"Error in clarify_diagram_type_body: {e}")
         session.reply("I need to know which diagram type you'd like. Please specify: Class, Object, StateMachine, or Agent diagram.")
-    finally:
-        clear_cached_payload(session)
 
 clarify_diagram_type_state.set_body(clarify_diagram_type_body)
 
+
+def add_unified_transitions(state, intents_map, fallback_state):
+    """Add both text and JSON event transitions for a state.
+    
+    Args:
+        state: The state to add transitions to
+        intents_map: Dict mapping intent objects to destination states
+        fallback_state: State to go to when no intent matches
+    """
+    # Text event transitions (backward compatibility)
+    for intent, dest_state in intents_map.items():
+        state.when_intent_matched(intent).go_to(dest_state)
+    
+    # JSON event transitions (unified messages)
+    for intent, dest_state in intents_map.items():
+        state.when_event(ReceiveJSONEvent())\
+            .with_condition(json_intent_matches, {'intent_name': intent.name})\
+            .go_to(dest_state)
+    
+    # Fallback transitions
+    state.when_event(ReceiveJSONEvent())\
+        .with_condition(json_no_intent_matched)\
+        .go_to(fallback_state)
+    state.when_no_intent_matched().go_to(fallback_state)
+
+
 # Transitions from create_single_element state
-create_single_element_state.when_intent_matched(create_single_element_intent).go_to(create_single_element_state)
-create_single_element_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
-create_single_element_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
-create_single_element_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
-create_single_element_state.when_intent_matched(hello_intent).go_to(greetings_state)
-create_single_element_state.when_event(ReceiveJSONEvent())\
-    .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
-    .go_to(diagram_router_state)
-create_single_element_state.when_no_intent_matched().go_to(create_single_element_state)
+add_unified_transitions(create_single_element_state, {
+    create_single_element_intent: create_single_element_state,
+    create_complete_system_intent: create_complete_system_state,
+    modify_model_intent: modify_model_state,
+    modeling_help_intent: modeling_help_state,
+    hello_intent: greetings_state
+}, create_single_element_state)
 
 # Transitions from create_complete_system state
-create_complete_system_state.when_intent_matched(create_single_element_intent).go_to(create_single_element_state)
-create_complete_system_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
-create_complete_system_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
-create_complete_system_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
-create_complete_system_state.when_intent_matched(hello_intent).go_to(greetings_state)
-create_complete_system_state.when_event(ReceiveJSONEvent())\
-    .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
-    .go_to(diagram_router_state)
-create_complete_system_state.when_no_intent_matched().go_to(create_complete_system_state)
+add_unified_transitions(create_complete_system_state, {
+    create_single_element_intent: create_single_element_state,
+    create_complete_system_intent: create_complete_system_state,
+    modify_model_intent: modify_model_state,
+    modeling_help_intent: modeling_help_state,
+    hello_intent: greetings_state
+}, create_complete_system_state)
 
 # Transitions from modify state
-modify_model_state.when_intent_matched(create_single_element_intent).go_to(create_single_element_state)
-modify_model_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
-modify_model_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
-modify_model_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
-modify_model_state.when_intent_matched(hello_intent).go_to(greetings_state)
-modify_model_state.when_event(ReceiveJSONEvent())\
-    .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
-    .go_to(diagram_router_state)
-modify_model_state.when_no_intent_matched().go_to(modify_model_state)
+add_unified_transitions(modify_model_state, {
+    create_single_element_intent: create_single_element_state,
+    create_complete_system_intent: create_complete_system_state,
+    modify_model_intent: modify_model_state,
+    modeling_help_intent: modeling_help_state,
+    hello_intent: greetings_state
+}, modify_model_state)
 
 # Transitions from modeling help state
-modeling_help_state.when_intent_matched(create_single_element_intent).go_to(create_single_element_state)
-modeling_help_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
-modeling_help_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
-modeling_help_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
-modeling_help_state.when_intent_matched(hello_intent).go_to(greetings_state)
-modeling_help_state.when_event(ReceiveJSONEvent())\
-    .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
-    .go_to(diagram_router_state)
-modeling_help_state.when_no_intent_matched().go_to(modeling_help_state)
+add_unified_transitions(modeling_help_state, {
+    create_single_element_intent: create_single_element_state,
+    create_complete_system_intent: create_complete_system_state,
+    modify_model_intent: modify_model_state,
+    modeling_help_intent: modeling_help_state,
+    hello_intent: greetings_state
+}, modeling_help_state)
 
 # Transitions from clarify_diagram_type state
-clarify_diagram_type_state.when_intent_matched(create_single_element_intent).go_to(create_single_element_state)
-clarify_diagram_type_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
-clarify_diagram_type_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
-clarify_diagram_type_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
-clarify_diagram_type_state.when_intent_matched(hello_intent).go_to(greetings_state)
-clarify_diagram_type_state.when_event(ReceiveJSONEvent())\
-    .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
-    .go_to(diagram_router_state)
-clarify_diagram_type_state.when_no_intent_matched().go_to(clarify_diagram_type_state)
+add_unified_transitions(clarify_diagram_type_state, {
+    create_single_element_intent: create_single_element_state,
+    create_complete_system_intent: create_complete_system_state,
+    modify_model_intent: modify_model_state,
+    modeling_help_intent: modeling_help_state,
+    hello_intent: greetings_state
+}, clarify_diagram_type_state)
 
 
 # UML RAG STATE BODY
 
 def uml_rag_body(session: Session):
-    """Answer UML specification questions using RAG."""
-    # Ignore JSON events - RAG only processes text messages
-    if isinstance(session.event, ReceiveJSONEvent):
-        return
+    """Answer UML specification questions using RAG.
     
+    With unified JSON messages, this extracts the message and processes it.
+    """
     # Mark that we're handling a RAG question
     session.set('last_matched_intent', 'uml_spec_intent')
-        
-    user_message = session.event.message or ""
     
-    # Clean up the message if it has diagram type prefix
-    if user_message.startswith('[DIAGRAM_TYPE:'):
-        match = re.match(r'^\[DIAGRAM_TYPE:\w+\]\s*(.+)', user_message)
-        if match:
-            user_message = match.group(1)
+    # Get the user message (works for both text and JSON events)
+    user_message = get_user_message(session)
+    
+    if not user_message:
+        session.reply("Please ask a question about UML specifications.")
+        return
     
     if uml_rag is None:
         # Fallback if RAG is not initialized
@@ -917,23 +856,16 @@ Provide accurate information based on UML 2.x specifications."""
 
 uml_rag_state.set_body(uml_rag_body)
 
-# Route JSON events through diagram router - it will check last_matched_intent
-uml_rag_state.when_event(ReceiveJSONEvent())\
-    .with_condition(store_payload_for_default, {'default_diagram_type': 'ClassDiagram'})\
-    .go_to(diagram_router_state)
+# Transitions from uml_rag_state (with unified JSON support)
+add_unified_transitions(uml_rag_state, {
+    create_single_element_intent: create_single_element_state,
+    create_complete_system_intent: create_complete_system_state,
+    modify_model_intent: modify_model_state,
+    modeling_help_intent: modeling_help_state,
+    uml_spec_intent: uml_rag_state,
+    hello_intent: greetings_state
+}, greetings_state)
 
-# Transitions from uml_rag_state
-uml_rag_state.when_intent_matched(create_single_element_intent).go_to(create_single_element_state)
-uml_rag_state.when_intent_matched(create_complete_system_intent).go_to(create_complete_system_state)
-uml_rag_state.when_intent_matched(modify_model_intent).go_to(modify_model_state)
-uml_rag_state.when_intent_matched(modeling_help_intent).go_to(modeling_help_state)
-uml_rag_state.when_intent_matched(uml_spec_intent).go_to(uml_rag_state)
-uml_rag_state.when_intent_matched(hello_intent).go_to(greetings_state)
-# After answering a RAG question, go back to greetings for fresh context on next message
-uml_rag_state.when_no_intent_matched().go_to(greetings_state)
-
-
-# No automatic return to greetings - specialized states maintain context
 
 # RUN APPLICATION
 if __name__ == '__main__':
