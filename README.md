@@ -51,6 +51,12 @@ The  Modeling Agent is an intelligent backend service that interprets natural la
 - ✅ Generate multi-agent systems
 - ✅ Specify agent communication protocols
 
+#### 5. **UML Specification Queries** (Fully Supported ✅)
+- ✅ Query official UML specification documents
+- ✅ Get definitions of UML concepts and notation
+- ✅ Retrieve best practices and formal definitions
+- ✅ RAG-powered retrieval from UML specification PDFs
+
 ### Interaction Modes
 
 - 🎯 **Single Element Creation**: "add a class User"
@@ -77,6 +83,7 @@ The  Modeling Agent is an intelligent backend service that interprets natural la
 | **Object Diagram** | ✅ | ✅ | ❌ | Fully Supported |
 | **State Machine** | ✅ | ✅ | ❌ | Fully Supported |
 | **Agent Diagram** | ✅ | ✅ | ❌ | Fully Supported |
+| **UML Specification** | N/A | N/A | N/A | Fully Supported |
 
 ---
 
@@ -97,11 +104,18 @@ The  Modeling Agent is an intelligent backend service that interprets natural la
 │ • Diagram       │
 │   Handlers      │
 │ • LLM Service   │
+│ • RAG Service   │
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
 │   GPT/LLM       │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   UML Specs     │
+│   (Vector DB)   │
 └─────────────────┘
 ```
 
@@ -123,7 +137,13 @@ The  Modeling Agent is an intelligent backend service that interprets natural la
    - Handles prompt engineering
    - Parses and validates JSON responses
 
-4. **WebSocket Service**:
+4. **RAG Service**:
+   - Retrieval-Augmented Generation for UML specifications
+   - Vector-based document retrieval from UML spec PDFs
+   - Context-aware answers to UML specification questions
+   - Leverages Chroma vector store for efficient document search
+
+5. **WebSocket Service**:
    - Real-time communication with frontend
    - Sends structured BESSER model updates
 
