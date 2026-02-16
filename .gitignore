@@ -4,5 +4,5 @@ docs/_build/
 .env
 venv/
 *.log
-/__pycache__/
-diagram_handlers/__pycache__/
+__pycache__/
+uml_vector_store/

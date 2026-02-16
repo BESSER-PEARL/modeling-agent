@@ -3,8 +3,12 @@ Object Diagram Handler
 Handles generation of UML Object Diagrams (instances of classes)
 """
 
-from typing import Dict, Any
+import logging
+import re
+from typing import Dict, Any, List, Optional, Tuple
 from .base_handler import BaseDiagramHandler
+
+logger = logging.getLogger(__name__)
 
 
 class ObjectDiagramHandler(BaseDiagramHandler):
@@ -12,6 +16,354 @@ class ObjectDiagramHandler(BaseDiagramHandler):
     
     def get_diagram_type(self) -> str:
         return "ObjectDiagram"
+
+    def _sanitize_object_name(self, value: str, default_name: str = "object1") -> str:
+        if not isinstance(value, str):
+            return default_name
+        base = re.sub(r"[^A-Za-z0-9_]", "", value.strip())
+        if not base:
+            return default_name
+        if not base[0].isalpha():
+            base = f"obj{base}"
+        return base[0].lower() + base[1:]
+
+    def _value_for_attribute(self, attr_name: str, attr_type: str, class_name: str, index: int) -> str:
+        normalized_type = (attr_type or "").strip().lower()
+        key = (attr_name or "").strip().lower()
+
+        if "id" in key:
+            prefix = re.sub(r"[^A-Za-z]", "", class_name).upper()[:3] or "OBJ"
+            return f"{prefix}{index:03d}"
+        if "name" in key:
+            return f"{class_name}{index}"
+        if "email" in key:
+            return f"{class_name.lower()}{index}@example.com"
+        if "date" in key:
+            return "2026-01-01"
+        if "time" in key:
+            return "10:00:00"
+        if "price" in key or "amount" in key or "cost" in key:
+            return "99.99"
+        if "count" in key or "quantity" in key or "copies" in key or "stock" in key:
+            return "10"
+        if "status" in key:
+            return "active"
+
+        if normalized_type in {"int", "integer", "long"}:
+            return str(index)
+        if normalized_type in {"float", "double", "decimal"}:
+            return "1.0"
+        if normalized_type in {"bool", "boolean"}:
+            return "true"
+        if normalized_type in {"date"}:
+            return "2026-01-01"
+        if normalized_type in {"time"}:
+            return "10:00:00"
+        if normalized_type in {"datetime", "timestamp"}:
+            return "2026-01-01T10:00:00"
+        return f"sample_{attr_name or 'value'}_{index}"
+
+    def _extract_reference_catalog(
+        self, reference_diagram: Optional[Dict[str, Any]]
+    ) -> Tuple[Dict[str, Dict[str, Any]], List[Dict[str, str]]]:
+        if not isinstance(reference_diagram, dict):
+            return {}, []
+
+        elements = reference_diagram.get("elements")
+        relationships = reference_diagram.get("relationships")
+        if not isinstance(elements, dict):
+            return {}, []
+
+        classes: Dict[str, Dict[str, Any]] = {}
+        by_id: Dict[str, Dict[str, Any]] = {}
+
+        for class_id, element in elements.items():
+            if not isinstance(element, dict):
+                continue
+            if element.get("type") != "Class":
+                continue
+            class_name = element.get("name")
+            if not isinstance(class_name, str) or not class_name.strip():
+                continue
+            class_name = class_name.strip()
+            class_attrs: List[Dict[str, str]] = []
+            for attr_id in element.get("attributes", []):
+                if attr_id not in elements:
+                    continue
+                attr = elements.get(attr_id)
+                if not isinstance(attr, dict):
+                    continue
+                if attr.get("type") != "ClassAttribute":
+                    continue
+                raw_name = attr.get("name", "")
+                attr_name = str(raw_name).replace("+ ", "").replace("- ", "").replace("# ", "")
+                attr_name = attr_name.split(":")[0].strip()
+                if not attr_name:
+                    continue
+                class_attrs.append(
+                    {
+                        "name": attr_name,
+                        "id": attr_id,
+                        "type": str(attr.get("attributeType", "str")),
+                    }
+                )
+
+            class_info = {
+                "name": class_name,
+                "id": class_id,
+                "attributes": class_attrs,
+            }
+            classes[class_name.lower()] = class_info
+            by_id[class_id] = class_info
+
+        class_relationships: List[Dict[str, str]] = []
+        if isinstance(relationships, dict):
+            for relation in relationships.values():
+                if not isinstance(relation, dict):
+                    continue
+                source = relation.get("source")
+                target = relation.get("target")
+                if not isinstance(source, dict) or not isinstance(target, dict):
+                    continue
+                source_element_id = source.get("element")
+                target_element_id = target.get("element")
+                if source_element_id not in by_id or target_element_id not in by_id:
+                    continue
+                rel_name = relation.get("name")
+                if not isinstance(rel_name, str) or not rel_name.strip():
+                    rel_name = "relatedTo"
+                class_relationships.append(
+                    {
+                        "sourceClass": by_id[source_element_id]["name"],
+                        "targetClass": by_id[target_element_id]["name"],
+                        "name": rel_name.strip(),
+                    }
+                )
+
+        return classes, class_relationships
+
+    def _format_reference_relationships(self, relationships: List[Dict[str, str]]) -> str:
+        if not relationships:
+            return "No explicit class relationships were found."
+        lines = []
+        for rel in relationships:
+            lines.append(
+                f"- {rel['sourceClass']} -> {rel['targetClass']} (name: {rel['name']})"
+            )
+        return "\n".join(lines)
+
+    def _build_reference_fallback_system(
+        self,
+        classes: Dict[str, Dict[str, Any]],
+        relationships: List[Dict[str, str]],
+    ) -> Dict[str, Any]:
+        if not classes:
+            return {
+                "systemName": "BasicObjectDiagram",
+                "objects": [],
+                "links": [],
+            }
+
+        sorted_classes = sorted(classes.values(), key=lambda item: item["name"])[:6]
+        objects: List[Dict[str, Any]] = []
+        class_to_object: Dict[str, str] = {}
+
+        for index, class_info in enumerate(sorted_classes, start=1):
+            class_name = class_info["name"]
+            object_name = self._sanitize_object_name(f"{class_name}{index}", f"object{index}")
+            class_to_object[class_name.lower()] = object_name
+            attributes = []
+            for attr in class_info.get("attributes", []):
+                attributes.append(
+                    {
+                        "name": attr["name"],
+                        "attributeId": attr["id"],
+                        "value": self._value_for_attribute(
+                            attr["name"], attr.get("type", "str"), class_name, index
+                        ),
+                    }
+                )
+
+            objects.append(
+                {
+                    "objectName": object_name,
+                    "className": class_name,
+                    "classId": class_info["id"],
+                    "attributes": attributes,
+                }
+            )
+
+        links: List[Dict[str, str]] = []
+        for relation in relationships:
+            source_obj = class_to_object.get(relation["sourceClass"].lower())
+            target_obj = class_to_object.get(relation["targetClass"].lower())
+            if not source_obj or not target_obj:
+                continue
+            links.append(
+                {
+                    "source": source_obj,
+                    "target": target_obj,
+                    "relationshipType": relation["name"],
+                }
+            )
+
+        return {
+            "systemName": "ObjectDiagramFromStructuralModel",
+            "objects": objects,
+            "links": links,
+        }
+
+    def _normalize_system_from_reference(
+        self,
+        system_spec: Dict[str, Any],
+        classes: Dict[str, Dict[str, Any]],
+        relationships: List[Dict[str, str]],
+    ) -> Dict[str, Any]:
+        if not isinstance(system_spec, dict):
+            return self._build_reference_fallback_system(classes, relationships)
+
+        raw_objects = system_spec.get("objects")
+        if not isinstance(raw_objects, list):
+            return self._build_reference_fallback_system(classes, relationships)
+
+        normalized_objects: List[Dict[str, Any]] = []
+        object_lookup: Dict[str, Dict[str, str]] = {}
+        per_class_counter: Dict[str, int] = {}
+
+        for raw_obj in raw_objects:
+            if not isinstance(raw_obj, dict):
+                continue
+
+            class_name_raw = raw_obj.get("className")
+            if not isinstance(class_name_raw, str) or not class_name_raw.strip():
+                continue
+            class_info = classes.get(class_name_raw.strip().lower())
+            if not class_info:
+                continue
+
+            class_name = class_info["name"]
+            per_class_counter[class_name] = per_class_counter.get(class_name, 0) + 1
+            object_index = per_class_counter[class_name]
+            fallback_object_name = f"{class_name}{object_index}"
+            object_name = self._sanitize_object_name(
+                str(raw_obj.get("objectName", fallback_object_name)),
+                default_name=fallback_object_name[0].lower() + fallback_object_name[1:],
+            )
+
+            raw_attrs = raw_obj.get("attributes") if isinstance(raw_obj.get("attributes"), list) else []
+            incoming_by_name: Dict[str, Dict[str, Any]] = {}
+            for attr in raw_attrs:
+                if not isinstance(attr, dict):
+                    continue
+                attr_name = attr.get("name")
+                if not isinstance(attr_name, str):
+                    continue
+                incoming_by_name[attr_name.strip().lower()] = attr
+
+            normalized_attrs: List[Dict[str, str]] = []
+            for ref_attr in class_info.get("attributes", []):
+                ref_attr_name = ref_attr["name"]
+                incoming_attr = incoming_by_name.get(ref_attr_name.lower(), {})
+                value = incoming_attr.get("value")
+                if not isinstance(value, str) or not value.strip():
+                    value = self._value_for_attribute(
+                        ref_attr_name, ref_attr.get("type", "str"), class_name, object_index
+                    )
+                normalized_attrs.append(
+                    {
+                        "name": ref_attr_name,
+                        "attributeId": ref_attr["id"],
+                        "value": value,
+                    }
+                )
+
+            normalized_obj = {
+                "objectName": object_name,
+                "className": class_name,
+                "classId": class_info["id"],
+                "attributes": normalized_attrs,
+            }
+            normalized_objects.append(normalized_obj)
+            object_lookup[object_name.lower()] = {
+                "className": class_name,
+                "objectName": object_name,
+            }
+
+        if not normalized_objects:
+            return self._build_reference_fallback_system(classes, relationships)
+
+        known_class_pairs = {
+            (rel["sourceClass"].lower(), rel["targetClass"].lower()): rel["name"]
+            for rel in relationships
+        }
+        known_class_pairs.update(
+            {
+                (rel["targetClass"].lower(), rel["sourceClass"].lower()): rel["name"]
+                for rel in relationships
+            }
+        )
+
+        normalized_links: List[Dict[str, str]] = []
+        raw_links = system_spec.get("links") if isinstance(system_spec.get("links"), list) else []
+        for raw_link in raw_links:
+            if not isinstance(raw_link, dict):
+                continue
+            source_name = raw_link.get("source")
+            target_name = raw_link.get("target")
+            if not isinstance(source_name, str) or not isinstance(target_name, str):
+                continue
+            source_obj = object_lookup.get(source_name.strip().lower())
+            target_obj = object_lookup.get(target_name.strip().lower())
+            if not source_obj or not target_obj:
+                continue
+
+            rel_name = raw_link.get("relationshipType")
+            if not isinstance(rel_name, str) or not rel_name.strip():
+                rel_name = known_class_pairs.get(
+                    (
+                        source_obj["className"].lower(),
+                        target_obj["className"].lower(),
+                    ),
+                    "relatedTo",
+                )
+
+            normalized_links.append(
+                {
+                    "source": source_obj["objectName"],
+                    "target": target_obj["objectName"],
+                    "relationshipType": rel_name.strip(),
+                }
+            )
+
+        if not normalized_links and relationships:
+            first_obj_by_class: Dict[str, str] = {}
+            for obj in normalized_objects:
+                class_key = obj["className"].lower()
+                if class_key not in first_obj_by_class:
+                    first_obj_by_class[class_key] = obj["objectName"]
+
+            for rel in relationships:
+                source_obj = first_obj_by_class.get(rel["sourceClass"].lower())
+                target_obj = first_obj_by_class.get(rel["targetClass"].lower())
+                if not source_obj or not target_obj:
+                    continue
+                normalized_links.append(
+                    {
+                        "source": source_obj,
+                        "target": target_obj,
+                        "relationshipType": rel["name"],
+                    }
+                )
+
+        system_name = system_spec.get("systemName")
+        if not isinstance(system_name, str) or not system_name.strip():
+            system_name = "ObjectDiagramFromStructuralModel"
+
+        return {
+            "systemName": system_name.strip(),
+            "objects": normalized_objects,
+            "links": normalized_links,
+        }
     
     def get_system_prompt(self) -> str:
         return """You are a UML modeling expert. Create an object instance specification based on the user's request.
@@ -37,7 +389,8 @@ CRITICAL RULES:
    - value: an ACTUAL example value (not a type)
 6. Include ALL attributes from the referenced class with realistic example values
 7. Keep values realistic and coherent
-8. Return ONLY the JSON, no explanations
+8. Do NOT include any "position" field - positioning is handled automatically
+9. Return ONLY the JSON, no explanations
 
 Examples:
 - "create user object" -> {"objectName": "user1", "className": "User", "classId": "class_abc123", "attributes": [{"name": "id", "attributeId": "attr_xyz", "value": "001"}, {"name": "name", "attributeId": "attr_def", "value": "John Doe"}]}
@@ -45,8 +398,9 @@ Examples:
 
 Return ONLY the JSON, no explanations."""
     
-    def generate_single_element(self, user_request: str, reference_diagram: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Generate a single object instance"""
+    def generate_single_element(self, user_request: str, reference_diagram: Dict[str, Any] = None,
+                                existing_model: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Generate a single object instance with deterministic positioning."""
         
         system_prompt = self.get_system_prompt()
         
@@ -58,10 +412,7 @@ Return ONLY the JSON, no explanations."""
             user_prompt += self._format_reference_classes(reference_diagram['elements'])
         
         try:
-            response = self.llm.predict(f"{system_prompt}\n\nUser Request: {user_prompt}")
-            
-            if not response:
-                raise Exception("GPT returned empty response")
+            response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_prompt}")
             
             json_text = self.clean_json_response(response)
             object_spec = self.parse_json_safely(json_text)
@@ -69,19 +420,30 @@ Return ONLY the JSON, no explanations."""
             if not object_spec:
                 raise Exception("Failed to parse JSON response")
             
+            # Remove any hallucinated position and apply deterministic layout
+            object_spec.pop("position", None)
+            self.apply_single_layout(object_spec, existing_model)
+            
             return {
                 "action": "inject_element",
                 "element": object_spec,
                 "diagramType": "ObjectDiagram",
-                "message": f"✅ Successfully created object '{object_spec['objectName']}' (instance of {object_spec['className']}) with {len(object_spec.get('attributes', []))} attributes!"
+                "message": (
+                    f"Created object '{object_spec['objectName']}' "
+                    f"(instance of {object_spec['className']}) with "
+                    f"{len(object_spec.get('attributes', []))} attribute(s)."
+                )
             }
             
-        except Exception as e:
+        except Exception:
+            logger.error("[ObjectDiagram] generate_single_element FAILED", exc_info=True)
             return self.generate_fallback_element(user_request)
     
-    def generate_complete_system(self, user_request: str) -> Dict[str, Any]:
-        """Generate a complete object diagram with multiple object instances"""
-        
+    def generate_complete_system(self, user_request: str, reference_diagram: Dict[str, Any] = None,
+                                existing_model: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Generate a complete object diagram with deterministic positioning."""
+
+        classes, class_relationships = self._extract_reference_catalog(reference_diagram)
         system_prompt = """You are a UML modeling expert. Create a COMPLETE object diagram with multiple related object instances.
 
 Return ONLY a JSON object with this structure:
@@ -111,27 +473,57 @@ IMPORTANT RULES:
 3. Object names: lowercase (user1, order1, product2)
 4. Include meaningful links between objects
 5. Values should be realistic and coherent
-6. Keep the scenario focused
+6. Do NOT include any "position" field - positioning is handled automatically
+7. Keep the scenario focused
+8. If a REFERENCE CLASS DIAGRAM is provided, STRICTLY derive objects from it:
+   - Use ONLY class names from the reference classes.
+   - Every object MUST include className + classId from reference.
+   - Every object attribute MUST include name + attributeId from reference.
+   - Do NOT invent classes such as User/Order/Product unless they exist in the reference.
+9. If the user asks "according to structural/class diagram", prioritise the reference model over generic examples.
 
 Return ONLY the JSON, no explanations."""
-        
+
+        user_prompt = user_request
+        if classes:
+            user_prompt += "\n\nREFERENCE CLASS DIAGRAM (use these exact classes and attributes):\n"
+            user_prompt += self._format_reference_classes(reference_diagram.get("elements", {}))
+            user_prompt += "\n\nREFERENCE CLASS RELATIONSHIPS:\n"
+            user_prompt += self._format_reference_relationships(class_relationships)
+
         try:
-            response = self.llm.predict(f"{system_prompt}\n\nUser Request: {user_request}")
+            response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_prompt}")
             
             json_text = self.clean_json_response(response)
             system_spec = self.parse_json_safely(json_text)
             
             if not system_spec:
                 raise Exception("Failed to parse JSON response")
+
+            if classes:
+                system_spec = self._normalize_system_from_reference(
+                    system_spec, classes, class_relationships
+                )
             
+            # Strip any hallucinated positions and apply deterministic layout
+            for obj in system_spec.get("objects", []):
+                obj.pop("position", None)
+            self.apply_system_layout(system_spec, existing_model)
+            
+            mode_note = " from structural model" if classes else ""
             return {
                 "action": "inject_complete_system",
                 "systemSpec": system_spec,
                 "diagramType": "ObjectDiagram",
-                "message": f"✨ **Created {system_spec.get('systemName', 'object')} diagram!**\n\n🏗️ Generated:\n• {len(system_spec.get('objects', []))} object instances\n• {len(system_spec.get('links', []))} link(s)\n\n🎯 The complete object diagram has been automatically injected into your editor!"
+                "message": (
+                    f"Created object diagram{mode_note} '{system_spec.get('systemName', 'ObjectDiagram')}' with "
+                    f"{len(system_spec.get('objects', []))} object(s) and "
+                    f"{len(system_spec.get('links', []))} link(s)."
+                )
             }
             
-        except Exception as e:
+        except Exception:
+            logger.error("[ObjectDiagram] generate_complete_system FAILED", exc_info=True)
             return self.generate_fallback_system()
     
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
@@ -147,33 +539,41 @@ Return ONLY the JSON, no explanations."""
                 {"name": "name", "value": "Sample"}
             ]
         }
+
+        # Apply deterministic layout so the fallback doesn't render at 0,0
+        self.apply_single_layout(fallback_spec)
         
         return {
             "action": "inject_element",
             "element": fallback_spec,
             "diagramType": "ObjectDiagram",
-            "message": f"⚠️ Created basic object '{object_name}' (AI generation failed)"
+            "message": f"Created a starter object '{object_name}'. Try being more specific about the class it instantiates."
         }
     
     def generate_fallback_system(self) -> Dict[str, Any]:
         """Generate a fallback object diagram"""
+        fallback_system = {
+            "systemName": "BasicObjectDiagram",
+            "objects": [
+                {
+                    "objectName": "instance1",
+                    "className": "Entity",
+                    "attributes": [
+                        {"name": "id", "value": "001"}
+                    ]
+                }
+            ],
+            "links": []
+        }
+
+        # Apply deterministic layout so the fallback doesn't render at 0,0
+        self.apply_system_layout(fallback_system)
+
         return {
             "action": "inject_complete_system",
-            "systemSpec": {
-                "systemName": "BasicObjectDiagram",
-                "objects": [
-                    {
-                        "objectName": "instance1",
-                        "className": "Entity",
-                        "attributes": [
-                            {"name": "id", "value": "001"}
-                        ]
-                    }
-                ],
-                "links": []
-            },
+            "systemSpec": fallback_system,
             "diagramType": "ObjectDiagram",
-            "message": "⚠️ Created basic object diagram (AI generation failed)"
+            "message": "Created a starter object diagram. Try describing your scenario in more detail."
         }
     
     def _format_reference_classes(self, elements: Dict[str, Any]) -> str:

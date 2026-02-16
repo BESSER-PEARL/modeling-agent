@@ -1,46 +1,55 @@
 """
 Base Diagram Handler
-Provides common functionality for all diagram type handlers
+Provides common functionality for all diagram type handlers.
+
+Positions are computed **after** the LLM returns semantic content by the
+deterministic :pymod:`layout_engine` – the LLM is never asked to produce
+pixel coordinates.
 """
 
 import json
+import logging
 import uuid
 from typing import Dict, Any, Optional
 from abc import ABC, abstractmethod
 
+from .layout_engine import apply_layout
+
+logger = logging.getLogger(__name__)
+
 
 class BaseDiagramHandler(ABC):
     """Base class for all diagram type handlers"""
-    
+
     def __init__(self, llm):
         """Initialize handler with LLM instance"""
         self.llm = llm
-    
+
     @abstractmethod
     def get_diagram_type(self) -> str:
         """Return the diagram type this handler supports"""
         pass
-    
+
     @abstractmethod
     def get_system_prompt(self) -> str:
         """Return the system prompt for this diagram type"""
         pass
-    
+
     @abstractmethod
-    def generate_single_element(self, user_request: str) -> Dict[str, Any]:
-        """Generate a single element for this diagram type"""
+    def generate_single_element(self, user_request: str, existing_model: Optional[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
+        """Generate a single element for this diagram type."""
         pass
-    
+
     @abstractmethod
-    def generate_complete_system(self, user_request: str) -> Dict[str, Any]:
-        """Generate a complete system/diagram with multiple elements"""
+    def generate_complete_system(self, user_request: str, existing_model: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Generate a complete system/diagram with multiple elements."""
         pass
-    
+
     @abstractmethod
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
         """Generate a fallback element when AI generation fails"""
         pass
-    
+
     def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Generate modifications for existing diagram elements.
@@ -57,27 +66,97 @@ class BaseDiagramHandler(ABC):
             "diagramType": self.get_diagram_type(),
             "message": "Modification not implemented for this diagram type."
         }
-    
+
+    # ------------------------------------------------------------------
+    # Layout helpers – deterministic positioning after LLM generation
+    # ------------------------------------------------------------------
+
+    def apply_single_layout(
+        self, spec: Dict[str, Any], existing_model: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Apply the deterministic layout engine to a single-element spec."""
+        return apply_layout(spec, self.get_diagram_type(), mode="single",
+                            existing_model=existing_model)
+
+    def apply_system_layout(
+        self, system_spec: Dict[str, Any], existing_model: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Apply the deterministic layout engine to a complete-system spec."""
+        return apply_layout(system_spec, self.get_diagram_type(), mode="system",
+                            existing_model=existing_model)
+
+    # ------------------------------------------------------------------
+    # LLM call with retry
+    # ------------------------------------------------------------------
+
+    def predict_with_retry(self, prompt: str, max_retries: int = 1) -> str:
+        """Call the LLM with automatic retry on transient failures.
+
+        Args:
+            prompt: Full prompt to send.
+            max_retries: Number of additional attempts after the first (default 1).
+
+        Returns:
+            Non-empty string response.
+
+        Raises:
+            ValueError: If all attempts return empty or fail.
+        """
+        last_error: Optional[Exception] = None
+        for attempt in range(1 + max_retries):
+            try:
+                response = self.llm.predict(prompt)
+                if response and response.strip():
+                    return response
+                last_error = ValueError("LLM returned empty response")
+                logger.warning(
+                    f"[{self.get_diagram_type()}] Empty LLM response "
+                    f"(attempt {attempt + 1}/{1 + max_retries})"
+                )
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    f"[{self.get_diagram_type()}] LLM call failed "
+                    f"(attempt {attempt + 1}/{1 + max_retries}): {exc}"
+                )
+        raise last_error or ValueError("LLM prediction failed after all retries")
+
+    # ------------------------------------------------------------------
+    # JSON / text utilities
+    # ------------------------------------------------------------------
+
     def clean_json_response(self, response: str) -> str:
-        """Clean JSON response from LLM (remove markdown formatting)"""
-        json_text = response.strip()
-        if json_text.startswith('```json'):
-            json_text = json_text[7:]
-        if json_text.endswith('```'):
-            json_text = json_text[:-3]
-        return json_text.strip()
-    
+        """Clean JSON response from LLM — strip markdown fences, leading prose, etc."""
+        text = response.strip()
+        # Remove markdown code fences
+        if text.startswith('```json'):
+            text = text[7:]
+        elif text.startswith('```'):
+            text = text[3:]
+        if text.endswith('```'):
+            text = text[:-3]
+        text = text.strip()
+        # Skip any leading prose to find the JSON object/array
+        for i, ch in enumerate(text):
+            if ch in ('{', '['):
+                text = text[i:]
+                break
+        return text.strip()
+
     def generate_uuid(self) -> str:
         """Generate a unique UUID"""
         return str(uuid.uuid4())
-    
+
     def parse_json_safely(self, json_text: str) -> Optional[Dict[str, Any]]:
         """Parse JSON with error handling"""
         try:
-            return json.loads(json_text)
-        except json.JSONDecodeError:
+            result = json.loads(json_text)
+            logger.debug(f"[BaseHandler] JSON parsed successfully, keys: {list(result.keys()) if isinstance(result, dict) else type(result).__name__}")
+            return result
+        except json.JSONDecodeError as e:
+            logger.error(f"[BaseHandler] JSON parse failed: {e}. Text (first 300 chars): {json_text[:300]!r}")
             return None
-    
+
     def extract_name_from_request(self, request: str, default: str = "New") -> str:
         """Extract a name from user request"""
         words = request.split()

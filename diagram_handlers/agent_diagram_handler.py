@@ -55,16 +55,17 @@ IMPORTANT RULES:
 3. Add "fallbackBodies" only when the request mentions fallbacks or error handling.
 4. For intents include 3-4 "trainingPhrases" that reflect how a user would trigger the intent.
 5. Keep names concise (camelCase for states, TitleCase for intents).
-6. Return ONLY the JSON object – no explanations."""
+6. Do NOT include any "position" field - positioning is handled automatically.
+7. Return ONLY the JSON object - no explanations."""
 
-    def generate_single_element(self, user_request: str) -> Dict[str, Any]:
-        """Generate a single agent diagram element"""
+    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Generate a single agent diagram element with deterministic positioning."""
 
         system_prompt = self.get_system_prompt()
         user_prompt = f"Create an agent diagram element specification for: {user_request}"
 
         try:
-            response = self.llm.predict(f"{system_prompt}\n\nUser Request: {user_prompt}")
+            response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_prompt}")
 
             if not response:
                 raise ValueError("GPT returned empty response")
@@ -76,6 +77,11 @@ IMPORTANT RULES:
                 raise ValueError("Failed to parse JSON response")
 
             normalized_spec = self._normalize_single_element_spec(agent_spec, user_request)
+
+            # Remove any hallucinated position and apply deterministic layout
+            normalized_spec.pop("position", None)
+            self.apply_single_layout(normalized_spec, existing_model)
+
             message = self._build_single_element_message(normalized_spec)
 
             return {
@@ -86,10 +92,11 @@ IMPORTANT RULES:
             }
 
         except Exception:
+            logger.error("[AgentDiagram] generate_single_element FAILED", exc_info=True)
             return self.generate_fallback_element(user_request)
 
-    def generate_complete_system(self, user_request: str) -> Dict[str, Any]:
-        """Generate a complete agent conversation flow"""
+    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Generate a complete agent conversation flow with deterministic positioning."""
 
         system_prompt = """You are a conversational agent modeling expert. Create a COMPLETE agent diagram specification.
 
@@ -97,18 +104,11 @@ Return ONLY a JSON object with this structure:
 {
   "systemName": "CustomerSupportAgent",
   "hasInitialNode": true,
+  "initialNode": {},
   "intents": [
     {
       "intentName": "Greeting",
       "trainingPhrases": ["hi", "hello there", "hey assistant", "good morning"]
-    },
-    {
-      "intentName": "RequestHelp",
-      "trainingPhrases": ["I need help", "support please", "can you assist", "help me"]
-    },
-    {
-      "intentName": "Goodbye",
-      "trainingPhrases": ["bye", "goodbye", "see you later", "thanks bye"]
     }
   ],
   "states": [
@@ -116,37 +116,7 @@ Return ONLY a JSON object with this structure:
       "type": "state",
       "stateName": "welcome",
       "replies": [
-        {"text": "Hello! Welcome to our support system.", "replyType": "text"},
-        {"text": "I'm here to help you today.", "replyType": "text"},
-        {"text": "What can I do for you?", "replyType": "text"}
-      ],
-      "fallbackBodies": []
-    },
-    {
-      "type": "state",
-      "stateName": "askingDetails",
-      "replies": [
-        {"text": "I understand you need assistance. Let me help with that.", "replyType": "text"},
-        {"text": "Could you provide more details about your issue?", "replyType": "text"}
-      ],
-      "fallbackBodies": [
-        {"text": "Sorry, I didn't catch that. Can you rephrase?", "replyType": "text"}
-      ]
-    },
-    {
-      "type": "state",
-      "stateName": "providingHelp",
-      "replies": [
-        {"text": "", "replyType": "llm"}
-      ],
-      "fallbackBodies": []
-    },
-    {
-      "type": "state",
-      "stateName": "farewell",
-      "replies": [
-        {"text": "Thank you for contacting us!", "replyType": "text"},
-        {"text": "Have a great day!", "replyType": "text"}
+        {"text": "Hello! Welcome to our support system.", "replyType": "text"}
       ],
       "fallbackBodies": []
     }
@@ -160,113 +130,30 @@ Return ONLY a JSON object with this structure:
       "label": "",
       "sourceDirection": "Right",
       "targetDirection": "Left"
-    },
-    {
-      "source": "welcome",
-      "target": "askingDetails",
-      "condition": "when_intent_matched",
-      "conditionValue": "RequestHelp",
-      "label": "",
-      "sourceDirection": "Right",
-      "targetDirection": "Left"
-    },
-    {
-      "source": "welcome",
-      "target": "farewell",
-      "condition": "when_intent_matched",
-      "conditionValue": "Goodbye",
-      "label": "",
-      "sourceDirection": "Down",
-      "targetDirection": "Up"
-    },
-    {
-      "source": "askingDetails",
-      "target": "providingHelp",
-      "condition": "when_intent_matched",
-      "conditionValue": "RequestHelp",
-      "label": "",
-      "sourceDirection": "Right",
-      "targetDirection": "Left"
-    },
-    {
-      "source": "askingDetails",
-      "target": "providingHelp",
-      "condition": "when_no_intent_matched",
-      "conditionValue": "",
-      "label": "",
-      "sourceDirection": "Down",
-      "targetDirection": "Up"
-    },
-    {
-      "source": "providingHelp",
-      "target": "welcome",
-      "condition": "auto",
-      "conditionValue": "",
-      "label": "",
-      "sourceDirection": "Left",
-      "targetDirection": "Right"
-    },
-    {
-      "source": "providingHelp",
-      "target": "farewell",
-      "condition": "when_intent_matched",
-      "conditionValue": "Goodbye",
-      "label": "",
-      "sourceDirection": "Down",
-      "targetDirection": "Up"
-    },
-    {
-      "source": "farewell",
-      "target": "welcome",
-      "condition": "auto",
-      "conditionValue": "",
-      "label": "",
-      "sourceDirection": "Up",
-      "targetDirection": "Down"
     }
   ]
 }
 
 IMPORTANT RULES:
-1. Create AS MANY states and intents as needed for the conversation (no fixed limits - can be 2, 5, 10, or more).
-2. Each state can have MULTIPLE replies (text lines) - these are ALL displayed sequentially to the user:
-   - Use replyType="text" for scripted, predefined responses (most common)
-   - Use replyType="llm" when you want AI to generate dynamic, personalized responses
-   - When using replyType="llm", the "text" field can be empty ("") - the LLM generates the response automatically
-   - A state can have 1-10+ reply lines depending on what makes sense
-3. AVOID DEAD-ENDS: Every state MUST have at least one way out - no state should trap the user with no exit path.
-   - Even "farewell" or "goodbye" states should loop back to the initial state or main menu
-   - Never create a state that ends the conversation permanently
-4. States can have MULTIPLE incoming and outgoing transitions - create complex flows as needed.
-5. Transition types - CRITICAL:
-   - Use "when_intent_matched" when a specific user intent triggers the transition (e.g., user says "goodbye")
-     * Requires "conditionValue" with the intent name
-   - Use "when_no_intent_matched" as a FALLBACK when user input doesn't match any defined intent
-     * Typically leads to an LLM response state that can handle unexpected user input
-     * "conditionValue" should be empty ("") for this transition type
-   - Use "auto" ONLY when the bot continues immediately without waiting for user input (e.g., after displaying info, automatically loop back)
-     * "conditionValue" should be empty ("") for auto transitions
-   - When the bot asks a question and needs to WAIT for user response, use "when_intent_matched" with the expected intent, NOT "auto"
-6. Always include an initial transition from "initial" to the first conversational state when hasInitialNode is true.
-7. Keep names consistent and concise (state names camelCase, intent names TitleCase).
-8. Include "sourceDirection" and "targetDirection" for transitions for better visual flow:
-   - For left-to-right flow: sourceDirection="Right", targetDirection="Left"
-   - For upward flow: sourceDirection="Up", targetDirection="Down"
-   - For downward flow: sourceDirection="Down", targetDirection="Up"
-   - For return/loop flows: sourceDirection="Left" or "Up", targetDirection="Right" or "Down"
-9. Order states logically in the array to represent the conversation flow sequence (first state receives initial transition).
-10. FallbackBodies are optional - only add them when the state needs error handling or alternative responses.
-11. Return ONLY the JSON object – no explanations.
-
-LAYOUT GUIDANCE:
-- States are positioned in a grid (left-to-right, top-to-bottom) based on array order
-- Intents appear at the top of the diagram
-- Initial node connects to the first state
-- Design transitions to flow naturally with multiple paths and loops where appropriate
-- Think about realistic conversation flows: greetings → information gathering → processing → resolution → farewell"""
+1. Create AS MANY states and intents as needed for the conversation.
+2. Each state can have MULTIPLE replies (text lines):
+   - Use replyType="text" for scripted responses (most common)
+   - Use replyType="llm" for AI-generated dynamic responses
+3. AVOID DEAD-ENDS: Every state MUST have at least one exit path.
+4. States can have MULTIPLE transitions.
+5. Transition types:
+   - "when_intent_matched" with "conditionValue" = intent name
+   - "when_no_intent_matched" as fallback (conditionValue = "")
+   - "auto" for immediate continuation without waiting (conditionValue = "")
+6. Always include an initial transition from "initial" to the first state.
+7. Keep names consistent (camelCase for states, TitleCase for intents).
+8. Include "sourceDirection" and "targetDirection" for visual flow.
+9. FallbackBodies are optional.
+10. Do NOT include any "position" field - positioning is handled automatically.
+11. Return ONLY the JSON object - no explanations."""
 
         try:
-            response = self.llm.predict(f"{system_prompt}\n\nUser Request: {user_request}")
+            response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_request}")
 
             if not response:
                 raise ValueError("GPT returned empty response")
@@ -278,6 +165,20 @@ LAYOUT GUIDANCE:
                 raise ValueError("Failed to parse JSON response")
 
             normalized_system = self._normalize_system_spec(system_spec, user_request)
+
+            # Strip any hallucinated positions and apply deterministic layout
+            for s in normalized_system.get("states", []):
+                s.pop("position", None)
+            for i in normalized_system.get("intents", []):
+                i.pop("position", None)
+            for n in normalized_system.get("initialNodes", []):
+                if isinstance(n, dict):
+                    n.pop("position", None)
+            initial_node = normalized_system.get("initialNode")
+            if isinstance(initial_node, dict):
+                initial_node.pop("position", None)
+            self.apply_system_layout(normalized_system, existing_model)
+
             message = (
                 f"Created agent system '{normalized_system.get('systemName')}' with "
                 f"{len(normalized_system.get('states', []))} states and "
@@ -292,6 +193,7 @@ LAYOUT GUIDANCE:
             }
 
         except Exception:
+            logger.error("[AgentDiagram] generate_complete_system FAILED", exc_info=True)
             return self.generate_fallback_system(user_request)
 
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
@@ -313,7 +215,7 @@ LAYOUT GUIDANCE:
             "action": "inject_element",
             "element": fallback_spec,
             "diagramType": self.get_diagram_type(),
-            "message": f"Created basic agent state '{fallback_spec['stateName']}' (default fallback)."
+            "message": f"Created a starter agent state '{fallback_spec['stateName']}'. Try describing the conversation flow in more detail."
         }
 
     def generate_fallback_system(self, request: str = "Agent") -> Dict[str, Any]:
@@ -387,7 +289,7 @@ LAYOUT GUIDANCE:
             "action": "inject_complete_system",
             "systemSpec": system_spec,
             "diagramType": self.get_diagram_type(),
-            "message": "Created basic agent system (default fallback)."
+            "message": "Created a starter agent system. Try describing the conversation scenarios in more detail for a richer result."
         }
 
     # ------------------------------------------------------------------
@@ -405,7 +307,11 @@ LAYOUT GUIDANCE:
             return normalized_intent
 
         if element_type in {"initial", "initialnode", "start"}:
-            return {"type": "initial"}
+            normalized_initial = {"type": "initial"}
+            position = self._normalize_position(spec)
+            if position:
+                normalized_initial["position"] = position
+            return normalized_initial
 
         # Default to state specification
         return self._normalize_state_spec(spec, request)
@@ -425,12 +331,16 @@ LAYOUT GUIDANCE:
             default_text=""
         )
 
-        return {
+        normalized_state = {
             "type": "state",
             "stateName": state_name,
             "replies": replies,
             "fallbackBodies": fallback_bodies
         }
+        position = self._normalize_position(spec)
+        if position:
+            normalized_state["position"] = position
+        return normalized_state
 
     def _normalize_intent_spec(self, spec: Dict[str, Any], request: str) -> Dict[str, Any]:
         """Normalize an intent specification. Returns None if no usable phrases."""
@@ -453,11 +363,15 @@ LAYOUT GUIDANCE:
         if not phrases:
             return None
 
-        return {
+        normalized_intent = {
             "type": "intent",
             "intentName": intent_name,
             "trainingPhrases": phrases[:5]
         }
+        position = self._normalize_position(spec)
+        if position:
+            normalized_intent["position"] = position
+        return normalized_intent
 
     def _normalize_reply_list(self, replies: Any, default_text: str) -> List[Dict[str, str]]:
         """Normalize reply/fallback entries into structured dictionaries"""
@@ -521,13 +435,41 @@ LAYOUT GUIDANCE:
                     "label": ""
                 })
 
-        return {
+        normalized_system = {
             "systemName": system_name,
             "hasInitialNode": has_initial,
             "intents": intents,
             "states": states,
             "transitions": transitions
         }
+        initial_position = self._normalize_position(spec.get("initialNode"))
+        if not initial_position:
+            initial_position = self._normalize_position({"position": spec.get("initialPosition")})
+        if initial_position:
+            normalized_system["initialNode"] = {"position": initial_position}
+        return normalized_system
+
+    def _normalize_position(self, spec: Any) -> Optional[Dict[str, int]]:
+        """Normalize any x/y position payload into integer coordinates."""
+        if not isinstance(spec, dict):
+            return None
+
+        position = spec.get("position")
+        if isinstance(position, dict):
+            x = position.get("x")
+            y = position.get("y")
+        else:
+            x = spec.get("x")
+            y = spec.get("y")
+
+        try:
+            if x is None or y is None:
+                return None
+            x_value = int(float(x))
+            y_value = int(float(y))
+            return {"x": x_value, "y": y_value}
+        except (TypeError, ValueError):
+            return None
 
     def _normalize_transition_spec(self, transition: Dict[str, Any], states: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """Normalize transition specification"""
@@ -788,3 +730,4 @@ IMPORTANT RULES:
             "diagramType": self.get_diagram_type(),
             "message": "Failed to generate modification automatically (fallback used)."
         }
+

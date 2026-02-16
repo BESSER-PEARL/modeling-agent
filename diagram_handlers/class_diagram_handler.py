@@ -3,9 +3,12 @@ Class Diagram Handler
 Handles generation of UML Class Diagrams
 """
 
+import logging
 from typing import Dict, Any
 
 from .base_handler import BaseDiagramHandler
+
+logger = logging.getLogger(__name__)
 
 
 class ClassDiagramHandler(BaseDiagramHandler):
@@ -32,15 +35,15 @@ Return ONLY a JSON object with this structure:
 }
 
 IMPORTANT RULES:
-1. FOLLOW THE USER'S REQUEST STRICTLY - if they specify certain attributes, methods, or details, include exactly what they ask for
-2. Create AS MANY attributes as needed (no fixed limits - can be 1, 3, 8, or more) based on what makes sense for the class
+1. FOLLOW THE USER'S REQUEST STRICTLY - include exactly the attributes, methods, or details they specify
+2. Create AS MANY attributes as needed (no fixed limits) based on what makes sense for the class
 3. Methods: Generally SKIP methods unless the user asks for them. Only include a method if it's core to the domain logic (e.g., BankAccount.withdraw(), Order.calculateTotal()). Never include getters/setters.
 4. If the user just says "create X class", generate relevant attributes and typically NO methods
 5. Use proper programming conventions (camelCase for attributes/methods, PascalCase for classes)
-6. visibility options: "public", "private", "protected", or "package" (default to "public" for attributes, "public" for methods)
+6. visibility options: "public", "private", "protected", or "package" (default to "public")
 7. Common types: String, int, boolean, double, Date, or custom class names
 8. Method parameters are optional - empty array [] if no parameters needed
-9. Keep it focused but complete - don't artificially limit essential properties
+9. Do NOT include any "position" field - positioning is handled automatically
 10. Return ONLY the JSON, no explanations or markdown
 
 Examples:
@@ -50,23 +53,33 @@ Examples:
 
 Return ONLY the JSON, no explanations."""
 
-    def generate_single_element(self, user_request: str) -> Dict[str, Any]:
-        """Generate a single class element"""
+    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Generate a single class element with deterministic positioning."""
 
         system_prompt = self.get_system_prompt()
         user_prompt = f"Create a class specification for: {user_request}"
 
-        try:
-            response = self.llm.predict(f"{system_prompt}\n\nUser Request: {user_prompt}")
+        full_prompt = f"{system_prompt}\n\nUser Request: {user_prompt}"
+        logger.info(f"[ClassDiagram] generate_single_element called with: {user_request!r}")
+        logger.debug(f"[ClassDiagram] Full prompt length: {len(full_prompt)} chars")
 
-            if not response:
-                raise ValueError("GPT returned empty response")
+        try:
+            response = self.predict_with_retry(full_prompt)
+
+            logger.info(f"[ClassDiagram] LLM raw response length: {len(response)}")
+            logger.debug(f"[ClassDiagram] LLM raw response: {response[:500]!r}")
 
             json_text = self.clean_json_response(response)
+            logger.debug(f"[ClassDiagram] Cleaned JSON: {json_text!r}")
+
             simple_spec = self.parse_json_safely(json_text)
 
             if not simple_spec:
-                raise ValueError("Failed to parse JSON response")
+                raise ValueError(f"Failed to parse JSON response: {json_text[:200]}")
+
+            # Remove any position the LLM might have hallucinated, then apply layout engine
+            simple_spec.pop("position", None)
+            self.apply_single_layout(simple_spec, existing_model)
 
             message = (
                 f"Created class '{simple_spec['className']}' with "
@@ -81,11 +94,12 @@ Return ONLY the JSON, no explanations."""
                 "message": message
             }
 
-        except Exception:
+        except Exception as exc:
+            logger.error(f"[ClassDiagram] generate_single_element FAILED: {exc}", exc_info=True)
             return self.generate_fallback_element(user_request)
 
-    def generate_complete_system(self, user_request: str) -> Dict[str, Any]:
-        """Generate a complete class diagram with multiple classes"""
+    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Generate a complete class diagram with multiple classes and deterministic layout."""
 
         system_prompt = """You are a UML modeling expert. Create a COMPLETE, well-structured class diagram system.
 
@@ -118,25 +132,22 @@ Return ONLY a JSON object with this structure:
 }
 
 IMPORTANT RULES:
-1. FOLLOW THE USER'S REQUEST STRICTLY - if they specify certain classes, attributes, methods, or relationships, include exactly what they ask for
-2. Create AS MANY classes as needed for a complete system (no fixed limits - can be 2, 5, 10, or more depending on complexity)
-3. Each class should have AS MANY attributes as needed (can be 1-10+ attributes) - don't artificially limit essential properties
-4. Methods: Generally SKIP methods unless the user asks for them. Only include 1-2 methods per class MAX if they represent core domain behavior (e.g., Order.checkout(), Account.transfer()). Never include getters/setters.
-5. Relationships are CRITICAL - always include meaningful connections between classes:
-   - "Association" - general relationship between classes (most common)
-   - "Inheritance" (also called "Generalization") - parent-child "is-a" relationship (use sparingly, only when true inheritance)
-   - "Composition" - strong "has-a" relationship (part cannot exist without whole)
-   - "Aggregation" - weak "has-a" relationship (part can exist independently)
+1. FOLLOW THE USER'S REQUEST STRICTLY - include exactly the classes, attributes, methods, or relationships they specify
+2. Create AS MANY classes as needed for a complete system (no fixed limits)
+3. Each class should have AS MANY attributes as needed - don't artificially limit essential properties
+4. Methods: Generally SKIP methods unless the user asks for them. Only include 1-2 methods per class MAX if they represent core domain behavior. Never include getters/setters.
+5. Relationships are CRITICAL - always include meaningful connections:
+   - "Association" - general relationship (most common)
+   - "Inheritance" / "Generalization" - parent-child "is-a" (use sparingly)
+   - "Composition" - strong "has-a" (part cannot exist without whole)
+   - "Aggregation" - weak "has-a" (part can exist independently)
    - "Realization" - interface implementation
-5. Relationship properties:
-   - "name": Optional descriptive name for the relationship
-   - "sourceMultiplicity": "1", "0..1", "*", "1..*" etc. (how many source instances)
-   - "targetMultiplicity": "1", "0..1", "*", "1..*" etc. (how many target instances)
-6. Use proper naming: PascalCase for classes, camelCase for attributes/methods/parameters
-7. visibility: "public", "private", "protected", or "package" (default: public for attributes, public for methods)
-8. Common types: String, int, boolean, double, Date, or custom class names
-9. For complex systems, create a coherent architecture with proper separation of concerns
-10. Return ONLY the JSON, no explanations or markdown
+6. Relationship properties: "name", "sourceMultiplicity", "targetMultiplicity"
+7. Use proper naming: PascalCase for classes, camelCase for attributes/methods
+8. visibility: "public", "private", "protected", or "package"
+9. Common types: String, int, boolean, double, Date, or custom class names
+10. Do NOT include any "position" field - positioning is handled automatically
+11. Return ONLY the JSON, no explanations or markdown
 
 Examples:
 - E-commerce system: User, Product, Order, Payment, ShoppingCart with appropriate associations
@@ -145,17 +156,34 @@ Examples:
 
 Return ONLY the JSON, no explanations."""
 
-        try:
-            response = self.llm.predict(f"{system_prompt}\n\nUser Request: {user_request}")
+        full_prompt = f"{system_prompt}\n\nUser Request: {user_request}"
+        logger.info(f"[ClassDiagram] generate_complete_system called with: {user_request!r}")
+        logger.debug(f"[ClassDiagram] System prompt length: {len(full_prompt)} chars")
 
-            if not response:
-                raise ValueError("GPT returned empty response")
+        try:
+            response = self.predict_with_retry(full_prompt)
+
+            logger.info(f"[ClassDiagram] System LLM response length: {len(response)}")
+            logger.debug(f"[ClassDiagram] System LLM response: {response[:500]!r}")
 
             json_text = self.clean_json_response(response)
+            logger.debug(f"[ClassDiagram] Cleaned system JSON: {json_text[:500]!r}")
+
             system_spec = self.parse_json_safely(json_text)
 
             if not system_spec:
-                raise ValueError("Failed to parse JSON response")
+                raise ValueError(f"Failed to parse JSON response: {json_text[:300]}")
+
+            logger.info(
+                f"[ClassDiagram] Parsed system spec: "
+                f"{len(system_spec.get('classes', []))} classes, "
+                f"{len(system_spec.get('relationships', []))} relationships"
+            )
+
+            # Strip any LLM-hallucinated positions, then apply deterministic layout
+            for cls in system_spec.get("classes", []):
+                cls.pop("position", None)
+            self.apply_system_layout(system_spec, existing_model)
 
             message = (
                 f"Created {system_spec.get('systemName', 'your')} system with "
@@ -170,7 +198,8 @@ Return ONLY the JSON, no explanations."""
                 "message": message
             }
 
-        except Exception:
+        except Exception as exc:
+            logger.error(f"[ClassDiagram] generate_complete_system FAILED: {exc}", exc_info=True)
             return self.generate_fallback_system()
 
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
@@ -186,32 +215,40 @@ Return ONLY the JSON, no explanations."""
             "methods": []
         }
 
+        # Apply deterministic layout so the fallback doesn't render at 0,0
+        self.apply_single_layout(fallback_spec)
+
         return {
             "action": "inject_element",
             "element": fallback_spec,
             "diagramType": self.get_diagram_type(),
-            "message": f"Created basic {class_name} class (fallback)."
+            "message": f"Created a starter {class_name} class. Try describing it in more detail for a richer result."
         }
 
     def generate_fallback_system(self) -> Dict[str, Any]:
         """Generate a fallback system"""
+        fallback_system = {
+            "systemName": "BasicSystem",
+            "classes": [
+                {
+                    "className": "Entity",
+                    "attributes": [
+                        {"name": "id", "type": "String", "visibility": "public"}
+                    ],
+                    "methods": []
+                }
+            ],
+            "relationships": []
+        }
+
+        # Apply deterministic layout so the fallback doesn't render at 0,0
+        self.apply_system_layout(fallback_system)
+
         return {
             "action": "inject_complete_system",
-            "systemSpec": {
-                "systemName": "BasicSystem",
-                "classes": [
-                    {
-                        "className": "Entity",
-                        "attributes": [
-                            {"name": "id", "type": "String", "visibility": "public"}
-                        ],
-                        "methods": []
-                    }
-                ],
-                "relationships": []
-            },
+            "systemSpec": fallback_system,
             "diagramType": self.get_diagram_type(),
-            "message": "Created basic class system (fallback)."
+            "message": "Created a starter diagram. Try describing your system in more detail for a richer result."
         }
     
     # ------------------------------------------------------------------
@@ -403,18 +440,23 @@ Return ONLY the JSON object – no explanations"""
             context_block = "\n\nCurrent class diagram:\n- " + "\n- ".join(context_info[:8])
         
         user_prompt = f"Modify the class diagram: {user_request}{context_block}"
-        
+        full_prompt = f"{system_prompt}\n\nUser Request: {user_prompt}"
+
+        logger.info(f"[ClassDiagram] generate_modification called with: {user_request!r}")
+        logger.debug(f"[ClassDiagram] Modification context: {context_info}")
+        logger.debug(f"[ClassDiagram] Full modification prompt length: {len(full_prompt)} chars")
+
         try:
-            response = self.llm.predict(f"{system_prompt}\n\nUser Request: {user_prompt}")
-            
-            if not response:
-                raise ValueError("GPT returned empty response")
-            
+            response = self.predict_with_retry(full_prompt)
+
+            logger.info(f"[ClassDiagram] Modification LLM response length: {len(response)}")
+            logger.debug(f"[ClassDiagram] Modification LLM response: {response[:500]!r}")
+
             json_text = self.clean_json_response(response)
             modification_spec = self.parse_json_safely(json_text)
             
             if not modification_spec or not modification_spec.get('modification'):
-                raise ValueError("Failed to parse modification JSON")
+                raise ValueError(f"Failed to parse modification JSON: {json_text[:300]}")
             
             # Ensure proper structure
             modification_spec.setdefault('action', 'modify_model')
@@ -426,13 +468,16 @@ Return ONLY the JSON object – no explanations"""
                 target = modification_spec['modification'].get('target', {})
                 target_name = target.get('className') or target.get('attributeName') or target.get('methodName') or 'element'
                 modification_spec['message'] = f"Applied {mod_action} to {target_name}"
+
+            logger.info(
+                f"[ClassDiagram] Modification spec: action={modification_spec['modification'].get('action')}, "
+                f"target={modification_spec['modification'].get('target')}"
+            )
             
             return modification_spec
             
-        except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Error generating class diagram modification: {e}")
+        except Exception as exc:
+            logger.error(f"[ClassDiagram] generate_modification FAILED: {exc}", exc_info=True)
             return self.generate_fallback_modification(user_request)
     
     def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
@@ -445,5 +490,5 @@ Return ONLY the JSON object – no explanations"""
                 "changes": {"name": "ModifiedClass"}
             },
             "diagramType": self.get_diagram_type(),
-            "message": "Failed to generate modification automatically (fallback used)."
+            "message": "Could not apply the modification automatically. Try rephrasing your request."
         }
