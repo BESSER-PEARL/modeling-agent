@@ -6,7 +6,14 @@ Handles generation of UML Object Diagrams (instances of classes)
 import logging
 import re
 from typing import Dict, Any, List, Optional, Tuple
-from .base_handler import BaseDiagramHandler
+from .base_handler import (
+    BaseDiagramHandler,
+    SINGLE_OBJECT_REQUIRED,
+    SINGLE_OBJECT_OPTIONAL,
+    SYSTEM_OBJECT_REQUIRED,
+    SYSTEM_OBJECT_OPTIONAL,
+)
+from utilities.model_helpers import detailed_model_summary
 
 logger = logging.getLogger(__name__)
 
@@ -414,11 +421,12 @@ Return ONLY the JSON, no explanations."""
         try:
             response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_prompt}")
             
-            json_text = self.clean_json_response(response)
-            object_spec = self.parse_json_safely(json_text)
-            
-            if not object_spec:
-                raise Exception("Failed to parse JSON response")
+            object_spec = self.parse_and_validate(
+                response,
+                required_keys=SINGLE_OBJECT_REQUIRED,
+                optional_keys=SINGLE_OBJECT_OPTIONAL,
+                label="ObjectDiagram.single_element",
+            )
             
             # Remove any hallucinated position and apply deterministic layout
             object_spec.pop("position", None)
@@ -494,11 +502,12 @@ Return ONLY the JSON, no explanations."""
         try:
             response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_prompt}")
             
-            json_text = self.clean_json_response(response)
-            system_spec = self.parse_json_safely(json_text)
-            
-            if not system_spec:
-                raise Exception("Failed to parse JSON response")
+            system_spec = self.parse_and_validate(
+                response,
+                required_keys=SYSTEM_OBJECT_REQUIRED,
+                optional_keys=SYSTEM_OBJECT_OPTIONAL,
+                label="ObjectDiagram.complete_system",
+            )
 
             if classes:
                 system_spec = self._normalize_system_from_reference(
@@ -598,3 +607,136 @@ Return ONLY the JSON, no explanations."""
                     formatted.append(f"  - {attr_name_only} (attributeId: {attr_id})")
         
         return '\n'.join(formatted)
+
+    # ------------------------------------------------------------------
+    # Modification Support
+    # ------------------------------------------------------------------
+
+    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+        """Generate modifications for existing object diagram elements."""
+
+        # If a reference class diagram is available, include it for context
+        reference_diagram = kwargs.get("reference_diagram")
+        reference_context = ""
+        if reference_diagram and isinstance(reference_diagram, dict):
+            ref_elements = reference_diagram.get("elements")
+            if isinstance(ref_elements, dict):
+                ref_classes = self._format_reference_classes(ref_elements)
+                if ref_classes:
+                    reference_context = (
+                        "\n\nReference class diagram (use these classes and attributes "
+                        "when creating or modifying objects):\n" + ref_classes
+                    )
+
+        system_prompt = """You are a UML modeling expert. The user wants to modify an existing object diagram.
+
+Return ONLY a JSON object with one of these structures:
+
+MODIFY OBJECT (rename or change class)
+{
+  "action": "modify_model",
+  "modification": {
+    "action": "modify_object",
+    "target": {
+      "objectName": "currentObjectName"
+    },
+    "changes": {
+      "objectName": "newObjectName"
+    }
+  }
+}
+
+ADD ATTRIBUTE VALUE (set or add attribute value on existing object)
+{
+  "action": "modify_model",
+  "modification": {
+    "action": "modify_attribute_value",
+    "target": {
+      "objectName": "objectName",
+      "attributeName": "attributeName"
+    },
+    "changes": {
+      "value": "newValue"
+    }
+  }
+}
+
+ADD LINK (connect two objects)
+{
+  "action": "modify_model",
+  "modification": {
+    "action": "add_link",
+    "target": {
+      "sourceObject": "object1",
+      "targetObject": "object2"
+    },
+    "changes": {
+      "relationshipType": "association"
+    }
+  }
+}
+
+REMOVE ELEMENT (delete object or link)
+{
+  "action": "modify_model",
+  "modification": {
+    "action": "remove_element",
+    "target": {
+      "objectName": "objectToRemove"
+    }
+  }
+}
+
+IMPORTANT RULES:
+1. Actions available: "modify_object", "modify_attribute_value", "add_link", "remove_element"
+2. Always specify exact target names that exist in the current model
+3. For remove_element, only specify the target — no "changes" needed
+4. Return ONLY the JSON object — no explanations or markdown
+
+Return ONLY the JSON object — no explanations"""
+
+        # Build context from current model using centralized helper
+        context_block = ''
+        if current_model and isinstance(current_model, dict):
+            summary = detailed_model_summary(current_model, 'ObjectDiagram')
+            if summary:
+                context_block = f"\n\n{summary}"
+
+        user_prompt = f"Modify the object diagram: {user_request}{context_block}{reference_context}"
+        full_prompt = f"{system_prompt}\n\nUser Request: {user_prompt}"
+
+        logger.info(f"[ObjectDiagram] generate_modification called with: {user_request!r}")
+
+        try:
+            response = self.predict_with_retry(full_prompt)
+            json_text = self.clean_json_response(response)
+            modification_spec = self.parse_json_safely(json_text)
+
+            if not modification_spec:
+                raise ValueError(f"Failed to parse modification JSON: {json_text[:300]}")
+
+            self.validate_modification_spec(modification_spec)
+
+            modification_spec.setdefault('action', 'modify_model')
+            modification_spec.setdefault('diagramType', self.get_diagram_type())
+
+            if 'message' not in modification_spec:
+                mod_action = modification_spec['modification'].get('action', 'modification')
+                target = modification_spec['modification'].get('target', {})
+                target_name = target.get('objectName') or target.get('sourceObject') or 'element'
+                modification_spec['message'] = f"Applied {mod_action} to {target_name}"
+
+            return modification_spec
+
+        except Exception as exc:
+            logger.error(f"[ObjectDiagram] generate_modification FAILED: {exc}", exc_info=True)
+            return {
+                "action": "modify_model",
+                "modification": {
+                    "action": "modify_object",
+                    "target": {"objectName": "Unknown"},
+                    "changes": {"objectName": "ModifiedObject"}
+                },
+                "diagramType": self.get_diagram_type(),
+                "message": "Could not apply the modification automatically. Try rephrasing your request."
+            }

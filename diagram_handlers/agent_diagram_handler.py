@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional
 import logging
 
 from .base_handler import BaseDiagramHandler
+from utilities.model_helpers import detailed_model_summary
 
 # Get logger
 logger = logging.getLogger(__name__)
@@ -58,7 +59,7 @@ IMPORTANT RULES:
 6. Do NOT include any "position" field - positioning is handled automatically.
 7. Return ONLY the JSON object - no explanations."""
 
-    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None) -> Dict[str, Any]:
+    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a single agent diagram element with deterministic positioning."""
 
         system_prompt = self.get_system_prompt()
@@ -95,7 +96,7 @@ IMPORTANT RULES:
             logger.error("[AgentDiagram] generate_single_element FAILED", exc_info=True)
             return self.generate_fallback_element(user_request)
 
-    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None) -> Dict[str, Any]:
+    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a complete agent conversation flow with deterministic positioning."""
 
         system_prompt = """You are a conversational agent modeling expert. Create a COMPLETE agent diagram specification.
@@ -541,7 +542,7 @@ IMPORTANT RULES:
     # Modification Support (NEW)
     # ------------------------------------------------------------------
 
-    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None) -> Dict[str, Any]:
+    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate modifications for existing agent diagram elements"""
         
         system_prompt = """You are a conversational agent modeling expert. The user wants to modify an existing agent diagram.
@@ -656,41 +657,17 @@ IMPORTANT RULES:
 8. Only reference elements that exist in the current model
 9. Return ONLY the JSON object – no explanations"""
 
-        # Build context from current model
-        context_info = []
-        if current_model and isinstance(current_model, dict):
-            elements = current_model.get('elements', {})
-            relationships = current_model.get('relationships', {})
-            
-            # List states
-            states = [e.get('name') for e in elements.values() if e.get('type') == 'AgentState']
-            if states:
-                context_info.append(f"States: {', '.join(states[:10])}")
-            
-            # List intents
-            intents = [e.get('name') for e in elements.values() if e.get('type') == 'AgentIntent']
-            if intents:
-                context_info.append(f"Intents: {', '.join(intents[:10])}")
-            
-            # List transitions
-            transitions = []
-            for rel in relationships.values():
-                if rel.get('type') == 'AgentTransition':
-                    source = elements.get(rel.get('source', {}))
-                    target = elements.get(rel.get('target', {}))
-                    if source and target:
-                        transitions.append(f"{source.get('name')} → {target.get('name')}")
-            if transitions:
-                context_info.append(f"Transitions: {', '.join(transitions[:5])}")
-        
+        # Build context from current model using centralized summariser
         context_block = ''
-        if context_info:
-            context_block = "\n\nCurrent agent diagram:\n- " + "\n- ".join(context_info)
+        if current_model and isinstance(current_model, dict):
+            summary = detailed_model_summary(current_model, 'AgentDiagram')
+            if summary and 'no model data' not in summary and 'no structured model' not in summary:
+                context_block = '\n\n' + summary
         
         user_prompt = f"Modify the agent diagram: {user_request}{context_block}"
         
         try:
-            response = self.llm.predict(f"{system_prompt}\n\nUser Request: {user_prompt}")
+            response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_prompt}")
             
             if not response:
                 raise ValueError("GPT returned empty response")

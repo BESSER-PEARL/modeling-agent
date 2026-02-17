@@ -6,12 +6,20 @@ Handles generation of GUINoCodeDiagram models for GrapesJS-based editor.
 from __future__ import annotations
 
 import copy
+import json
 import re
 from typing import Any, Dict, List, Optional
 
 from .base_handler import BaseDiagramHandler
+from utilities.model_helpers import format_class_metadata_for_prompt
 
 DEFAULT_GUI_VERSION = "0.21.13"
+
+# Chart colour palette (deterministic cycling)
+_CHART_COLORS = [
+    "#3498db", "#e74c3c", "#2ecc71", "#f39c12", "#9b59b6",
+    "#1abc9c", "#e67e22", "#34495e", "#16a085", "#d35400",
+]
 
 
 def _clean_text(value: Any, fallback: str = "") -> str:
@@ -244,7 +252,297 @@ def _form_component(title: str, fields: List[str], cta_label: str) -> Dict[str, 
     }
 
 
-def _build_section_component(section_spec: Dict[str, Any]) -> Dict[str, Any]:
+# ---------------------------------------------------------------------------
+# Data-bound component builders (charts, tables, dashboards)
+# ---------------------------------------------------------------------------
+
+def _resolve_class_binding(
+    section_spec: Dict[str, Any],
+    class_metadata: Optional[List[Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    """Resolve which class from the metadata the section should bind to.
+
+    The LLM may provide a ``className`` or ``classId`` in the section spec.
+    Falls back to the first class in metadata if nothing matches.
+    """
+    if not class_metadata:
+        return None
+    class_name = _clean_text(section_spec.get("className"))
+    class_id = _clean_text(section_spec.get("classId"))
+
+    # Try matching by ID first
+    if class_id:
+        for cls in class_metadata:
+            if cls["id"] == class_id:
+                return cls
+    # Try matching by name (case-insensitive)
+    if class_name:
+        for cls in class_metadata:
+            if cls["name"].lower() == class_name.lower():
+                return cls
+    # Fallback: first class with attributes
+    for cls in class_metadata:
+        if cls.get("attributes"):
+            return cls
+    return class_metadata[0] if class_metadata else None
+
+
+def _pick_label_field(cls: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Pick the best string attribute for chart label-field."""
+    attrs = cls.get("attributes", [])
+    for a in attrs:
+        if a.get("isString"):
+            return a
+    return attrs[0] if attrs else None
+
+
+def _pick_data_field(cls: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Pick the best numeric attribute for chart data-field."""
+    attrs = cls.get("attributes", [])
+    for a in attrs:
+        if a.get("isNumeric"):
+            return a
+    return attrs[0] if attrs else None
+
+
+def _build_series(
+    chart_type: str,
+    cls: Dict[str, Any],
+    section_spec: Dict[str, Any],
+) -> str:
+    """Build the JSON-serialized series array for a chart component."""
+    label_attr = _pick_label_field(cls)
+    data_attr = _pick_data_field(cls)
+
+    series_list: List[Dict[str, Any]] = []
+    # If the LLM provided explicit series, use them
+    raw_series = section_spec.get("series")
+    if isinstance(raw_series, list) and raw_series:
+        for idx, raw in enumerate(raw_series):
+            if not isinstance(raw, dict):
+                continue
+            s: Dict[str, Any] = {
+                "name": _clean_text(raw.get("name"), fallback=f"Series {idx + 1}"),
+                "data-source": raw.get("classId") or cls["id"],
+                "color": raw.get("color") or _CHART_COLORS[idx % len(_CHART_COLORS)],
+                "data": [],
+            }
+            # Resolve label/data fields
+            lf = raw.get("labelField") or raw.get("label-field")
+            df = raw.get("dataField") or raw.get("data-field")
+            if lf:
+                s["label-field"] = lf
+            elif label_attr:
+                s["label-field"] = label_attr["id"]
+            if df:
+                s["data-field"] = df
+            elif data_attr:
+                s["data-field"] = data_attr["id"]
+            series_list.append(s)
+    else:
+        # Auto-generate one series per numeric attribute (up to 3)
+        numeric_attrs = [a for a in cls.get("attributes", []) if a.get("isNumeric")]
+        if not numeric_attrs:
+            numeric_attrs = cls.get("attributes", [])[:1]
+        for idx, num_attr in enumerate(numeric_attrs[:3]):
+            s = {
+                "name": num_attr["name"].replace("_", " ").title(),
+                "data-source": cls["id"],
+                "color": _CHART_COLORS[idx % len(_CHART_COLORS)],
+                "data": [],
+            }
+            if label_attr:
+                s["label-field"] = label_attr["id"]
+            s["data-field"] = num_attr["id"]
+            series_list.append(s)
+
+    if not series_list:
+        series_list = [{"name": "Series 1", "data-source": cls["id"], "color": _CHART_COLORS[0], "data": []}]
+
+    return json.dumps(series_list)
+
+
+def _chart_component(
+    chart_type: str,
+    section_spec: Dict[str, Any],
+    class_metadata: Optional[List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """Build a GrapesJS chart component (bar-chart, pie-chart, line-chart, etc.)
+    bound to class diagram data.
+    """
+    title = _clean_text(section_spec.get("title"), fallback=chart_type.replace("-", " ").title())
+    cls = _resolve_class_binding(section_spec, class_metadata)
+
+    # Chart attributes that GrapesJS chart components expect
+    chart_attrs: Dict[str, Any] = {
+        "class": f"{chart_type}-component",
+        "chart-title": title,
+        "show-grid": "true",
+        "show-legend": "true",
+    }
+
+    if cls:
+        label_attr = _pick_label_field(cls)
+        data_attr = _pick_data_field(cls)
+
+        # For pie-chart: data-source, label-field, data-field go directly on attrs
+        if chart_type == "pie-chart":
+            chart_attrs["data-source"] = cls["id"]
+            if label_attr:
+                chart_attrs["label-field"] = label_attr["id"]
+            if data_attr:
+                chart_attrs["data-field"] = data_attr["id"]
+        # For line/bar/radar charts: binding goes inside the series
+        chart_attrs["series"] = _build_series(chart_type, cls, section_spec)
+    else:
+        chart_attrs["series"] = "[]"
+
+    # Chart-type specific defaults
+    if chart_type == "bar-chart":
+        chart_attrs.setdefault("bar-width", "30")
+        chart_attrs.setdefault("orientation", "vertical")
+        chart_attrs.setdefault("stacked", "false")
+    elif chart_type == "line-chart":
+        chart_attrs.setdefault("line-width", "2")
+        chart_attrs.setdefault("curve-type", "monotone")
+        chart_attrs.setdefault("show-tooltip", "true")
+        chart_attrs.setdefault("animate", "true")
+    elif chart_type == "pie-chart":
+        chart_attrs.setdefault("legend-position", "right")
+        chart_attrs.setdefault("show-labels", "true")
+        chart_attrs.setdefault("label-position", "inside")
+        chart_attrs.setdefault("padding-angle", "0")
+    elif chart_type == "radar-chart":
+        chart_attrs.setdefault("show-tooltip", "true")
+        chart_attrs.setdefault("show-radius-axis", "true")
+
+    return {
+        "type": chart_type,
+        "attributes": chart_attrs,
+        "style": {
+            "width": "100%",
+            "min-height": "400px",
+            "margin": "16px 0",
+        },
+    }
+
+
+def _table_component(
+    section_spec: Dict[str, Any],
+    class_metadata: Optional[List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """Build a GrapesJS data-table component bound to a class."""
+    title = _clean_text(section_spec.get("title"), fallback="Data Table")
+    cls = _resolve_class_binding(section_spec, class_metadata)
+
+    table_attrs: Dict[str, Any] = {
+        "class": "data-table-component",
+        "show-header": "true",
+        "striped-rows": "false",
+        "show-pagination": "true",
+        "rows-per-page": "5",
+    }
+
+    if cls:
+        table_attrs["data-source"] = cls["id"]
+        # Build field columns from class attributes
+        field_columns = []
+        for attr in cls.get("attributes", []):
+            field_columns.append({
+                "id": attr["id"],
+                "name": attr["name"],
+                "type": attr.get("type", "string"),
+            })
+        table_attrs["field-columns"] = json.dumps(field_columns)
+
+    wrapper_components: List[Dict[str, Any]] = [
+        {"tagName": "h2", "content": title, "style": {"margin": "0 0 14px 0", "font-size": "1.35rem"}},
+    ]
+
+    table_comp: Dict[str, Any] = {
+        "type": "data-table",
+        "attributes": table_attrs,
+        "style": {
+            "width": "100%",
+            "min-height": "300px",
+        },
+    }
+
+    return {
+        "tagName": "section",
+        "attributes": {"class": "assistant-table-section"},
+        "style": {
+            "padding": "24px",
+            "border": "1px solid #e2e8f0",
+            "border-radius": "12px",
+            "margin": "16px 0",
+            "background-color": "#ffffff",
+        },
+        "components": wrapper_components + [table_comp],
+    }
+
+
+def _dashboard_component(
+    section_spec: Dict[str, Any],
+    class_metadata: Optional[List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """Build a dashboard section with a table + charts for the bound class."""
+    title = _clean_text(section_spec.get("title"), fallback="Dashboard")
+    cls = _resolve_class_binding(section_spec, class_metadata)
+
+    # Build sub-components: a table + up to 2 charts
+    components: List[Dict[str, Any]] = [
+        {"tagName": "h2", "content": title, "style": {"margin": "0 0 18px 0", "font-size": "1.5rem", "font-weight": "700"}},
+    ]
+
+    # Table
+    table_spec = dict(section_spec)
+    table_spec["type"] = "table"
+    table_spec["title"] = f"{cls['name']} Data" if cls else "Data Table"
+    components.append(_table_component(table_spec, class_metadata))
+
+    if cls:
+        numeric_attrs = [a for a in cls.get("attributes", []) if a.get("isNumeric")]
+        if numeric_attrs:
+            # Bar chart
+            chart_spec = dict(section_spec)
+            chart_spec["type"] = "bar_chart"
+            chart_spec["title"] = f"{cls['name']} Overview"
+            components.append(_chart_component("bar-chart", chart_spec, class_metadata))
+
+            if len(numeric_attrs) >= 2:
+                # Pie chart for the second numeric attribute
+                pie_spec = dict(section_spec)
+                pie_spec["type"] = "pie_chart"
+                pie_spec["title"] = f"{cls['name']} Distribution"
+                components.append(_chart_component("pie-chart", pie_spec, class_metadata))
+
+    # Charts grid container
+    chart_grid: Dict[str, Any] = {
+        "tagName": "div",
+        "style": {
+            "display": "grid",
+            "grid-template-columns": "1fr 1fr",
+            "gap": "20px",
+            "margin-top": "20px",
+        },
+        "components": components[2:],  # Charts only (skip h2 + table)
+    }
+
+    return {
+        "tagName": "section",
+        "attributes": {"class": "assistant-dashboard"},
+        "style": {
+            "padding": "28px",
+            "background-color": "#f8fafc",
+            "border-radius": "14px",
+            "margin": "16px 0",
+        },
+        "components": [components[0], components[1], chart_grid] if len(components) > 2 else components,
+    }
+
+
+def _build_section_component(section_spec: Dict[str, Any], class_metadata: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     section_type = _clean_text(section_spec.get("type"), fallback="content").lower()
     title = _clean_text(section_spec.get("title"), fallback="New Section")
     body = _clean_text(section_spec.get("body"), fallback="Section content")
@@ -258,6 +556,24 @@ def _build_section_component(section_spec: Dict[str, Any]) -> Dict[str, Any]:
         return _feature_list_component(title, [str(item) for item in items])
     if section_type in {"form", "contact_form", "signup_form"}:
         return _form_component(title, [str(field) for field in fields], cta_label)
+
+    # ── Data-bound components (charts, tables, dashboards) ──────────
+    if section_type in {"table", "data_table"}:
+        return _table_component(section_spec, class_metadata)
+    if section_type in {"bar_chart", "bar-chart", "barchart"}:
+        return _chart_component("bar-chart", section_spec, class_metadata)
+    if section_type in {"pie_chart", "pie-chart", "piechart"}:
+        return _chart_component("pie-chart", section_spec, class_metadata)
+    if section_type in {"line_chart", "line-chart", "linechart"}:
+        return _chart_component("line-chart", section_spec, class_metadata)
+    if section_type in {"radar_chart", "radar-chart", "radarchart"}:
+        return _chart_component("radar-chart", section_spec, class_metadata)
+    if section_type in {"chart"}:
+        # Generic "chart" – pick bar-chart as default
+        return _chart_component("bar-chart", section_spec, class_metadata)
+    if section_type in {"dashboard"}:
+        return _dashboard_component(section_spec, class_metadata)
+
     return _content_component(title, body)
 
 
@@ -267,34 +583,57 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
     def get_diagram_type(self) -> str:
         return "GUINoCodeDiagram"
 
-    def get_system_prompt(self) -> str:
-        return """You are a UI modeling expert for a no-code web editor.
+    def get_system_prompt(self, class_info: str = "") -> str:
+        class_block = f"\n\n{class_info}" if class_info else ""
+        return f"""You are a UI modeling expert for a no-code web editor.
 
 Return ONLY JSON with this shape:
-{
+{{
   "pageName": "Home",
-  "section": {
-    "type": "hero|feature_list|content|form",
+  "section": {{
+    "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard",
     "title": "Section title",
     "body": "Optional descriptive text",
     "items": ["Optional item"],
     "fields": ["Optional field label"],
-    "ctaLabel": "Optional button label"
-  }
-}
+    "ctaLabel": "Optional button label",
+    "className": "Optional class name from Class Diagram to bind data to"
+  }}
+}}
+
+Section types:
+- hero: Hero/landing banner with title, body, CTA button
+- feature_list: List of feature items
+- content: Generic text section
+- form: Input form with fields
+- table: Data table bound to a class (requires className)
+- bar_chart: Bar chart visualisation bound to a class
+- pie_chart: Pie chart visualisation bound to a class
+- line_chart: Line chart visualisation bound to a class
+- radar_chart: Radar chart visualisation bound to a class
+- dashboard: Combined table + charts for a class
 
 Rules:
 1. Keep content concise and practical.
 2. Use section type that best matches user request.
-3. Return JSON only."""
+3. When the user mentions data, statistics, or visualisation, prefer chart/table/dashboard types.
+4. When a className is provided or classes are available, bind data sections to them.
+5. Return JSON only.{class_block}"""
 
-    def _parse_page_spec(self, spec: Dict[str, Any]) -> Dict[str, Any]:
+    def _parse_page_spec(
+        self,
+        spec: Dict[str, Any],
+        class_metadata: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         page_name = _sanitize_page_name(spec.get("name"), fallback="Page")
         raw_sections = spec.get("sections") if isinstance(spec.get("sections"), list) else []
         sections = [item for item in raw_sections if isinstance(item, dict)]
 
         wrapper = _default_wrapper_component()
-        wrapper["components"] = [_build_section_component(section) for section in sections]
+        wrapper["components"] = [
+            _build_section_component(section, class_metadata)
+            for section in sections
+        ]
 
         return {
             "name": page_name,
@@ -334,17 +673,21 @@ Rules:
         return model
 
     def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        prompt = self.get_system_prompt()
+        class_metadata: Optional[List[Dict[str, Any]]] = kwargs.get("class_metadata")
+        class_info = ""
+        if class_metadata:
+            class_info = format_class_metadata_for_prompt(class_metadata)
+        prompt = self.get_system_prompt(class_info=class_info)
 
         try:
-            response = self.llm.predict(f"{prompt}\n\nUser Request: {user_request}")
+            response = self.predict_with_retry(f"{prompt}\n\nUser Request: {user_request}")
             spec = self.parse_json_safely(self.clean_json_response(response or ""))
             if not isinstance(spec, dict):
                 raise ValueError("Invalid section spec")
 
             page_name = _sanitize_page_name(spec.get("pageName"), fallback="Home")
             section_spec = spec.get("section") if isinstance(spec.get("section"), dict) else {}
-            section_component = _build_section_component(section_spec)
+            section_component = _build_section_component(section_spec, class_metadata)
 
             model = _default_gui_model()
             model = self._append_section(model, page_name, section_component)
@@ -357,42 +700,72 @@ Rules:
         except Exception:
             return self.generate_fallback_element(user_request)
 
-    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None) -> Dict[str, Any]:
-        system_prompt = """You are a UI modeling expert.
+    def generate_complete_system(
+        self,
+        user_request: str,
+        existing_model: Dict[str, Any] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        class_metadata: Optional[List[Dict[str, Any]]] = kwargs.get("class_metadata")
+        class_block = ""
+        if class_metadata:
+            class_block = "\n\n" + format_class_metadata_for_prompt(class_metadata)
+
+        system_prompt = f"""You are a UI modeling expert.
 
 Return ONLY JSON with this shape:
-{
+{{
   "projectName": "Name",
   "pages": [
-    {
+    {{
       "name": "Home",
       "sections": [
-        {
-          "type": "hero|feature_list|content|form",
+        {{
+          "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard",
           "title": "Section title",
           "body": "Optional text",
           "items": ["Optional item"],
           "fields": ["Optional field"],
-          "ctaLabel": "Optional CTA"
-        }
+          "ctaLabel": "Optional CTA",
+          "className": "Optional class name to bind data to"
+        }}
       ]
-    }
+    }}
   ]
-}
+}}
+
+Section types:
+- hero: Hero/landing banner with title, body, CTA button
+- feature_list: List of feature items
+- content: Generic text section
+- form: Input form with fields
+- table: Data table bound to a class (use className to specify which class)
+- bar_chart: Bar chart bound to class data
+- pie_chart: Pie chart bound to class data
+- line_chart: Line chart bound to class data
+- radar_chart: Radar chart bound to class data
+- dashboard: Combined table + charts for a class (auto-generates table + relevant charts)
 
 Rules:
 1. Create 1-4 pages depending on request complexity.
 2. Each page should include 1-5 sections.
-3. Return JSON only."""
+3. When classes are available, include at least one data-bound section (table, chart, or dashboard) per page that manages class data.
+4. Use dashboard type for overview pages that need both data display and visualisation.
+5. Always set className when using table/chart/dashboard sections.
+6. Return JSON only.{class_block}"""
 
         try:
-            response = self.llm.predict(f"{system_prompt}\n\nUser Request: {user_request}")
+            response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_request}")
             spec = self.parse_json_safely(self.clean_json_response(response or ""))
             if not isinstance(spec, dict):
                 raise ValueError("Invalid system spec")
 
             pages_spec = spec.get("pages") if isinstance(spec.get("pages"), list) else []
-            pages = [self._parse_page_spec(page) for page in pages_spec if isinstance(page, dict)]
+            pages = [
+                self._parse_page_spec(page, class_metadata)
+                for page in pages_spec
+                if isinstance(page, dict)
+            ]
             if not pages:
                 fallback = self.generate_fallback_system()
                 return fallback
@@ -414,7 +787,17 @@ Rules:
         except Exception:
             return self.generate_fallback_system()
 
-    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None) -> Dict[str, Any]:
+    def generate_modification(
+        self,
+        user_request: str,
+        current_model: Dict[str, Any] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        class_metadata: Optional[List[Dict[str, Any]]] = kwargs.get("class_metadata")
+        class_block = ""
+        if class_metadata:
+            class_block = "\n\n" + format_class_metadata_for_prompt(class_metadata)
+
         model = _normalize_gui_model(current_model)
         page_names = [
             _clean_text(page.get("name"))
@@ -423,30 +806,32 @@ Rules:
         ]
         pages_hint = ", ".join(page_names) if page_names else "Home"
 
-        prompt = """You are a UI modeling assistant.
+        prompt = f"""You are a UI modeling assistant.
 
 Return ONLY JSON with this shape:
-{
+{{
   "operation": "append_section|rename_page|remove_page",
   "pageName": "Target page",
   "newPageName": "Required for rename_page",
-  "section": {
-    "type": "hero|feature_list|content|form",
+  "section": {{
+    "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard",
     "title": "Section title",
     "body": "Optional text",
     "items": ["Optional item"],
     "fields": ["Optional field"],
-    "ctaLabel": "Optional CTA"
-  }
-}
+    "ctaLabel": "Optional CTA",
+    "className": "Optional class name to bind data to"
+  }}
+}}
 
 Rules:
 1. Prefer append_section when request asks to add/update content.
 2. Use existing page names when possible.
-3. Return JSON only."""
+3. When adding data visualisation, use table/chart/dashboard types with className.
+4. Return JSON only.{class_block}"""
 
         try:
-            response = self.llm.predict(
+            response = self.predict_with_retry(
                 f"{prompt}\n\nAvailable pages: {pages_hint}\n\nUser Request: {user_request}"
             )
             spec = self.parse_json_safely(self.clean_json_response(response or ""))
@@ -477,7 +862,7 @@ Rules:
                 message = f"Removed page '{page_name}' from the GUI model."
             else:
                 section_spec = spec.get("section") if isinstance(spec.get("section"), dict) else {}
-                section_component = _build_section_component(section_spec)
+                section_component = _build_section_component(section_spec, class_metadata)
                 model = self._append_section(model, page_name, section_component)
                 message = f"Added a new section to page '{page_name}'."
 

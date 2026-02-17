@@ -9,6 +9,7 @@ import copy
 from typing import Any, Dict, List, Optional, Tuple
 
 from .base_handler import BaseDiagramHandler
+from utilities.model_helpers import detailed_model_summary
 
 DEFAULT_QUBITS = 5
 MAX_QUBITS = 12
@@ -204,7 +205,7 @@ Rules:
         prompt = self.get_system_prompt()
 
         try:
-            response = self.llm.predict(f"{prompt}\n\nUser Request: {user_request}")
+            response = self.predict_with_retry(f"{prompt}\n\nUser Request: {user_request}")
             spec = self.parse_json_safely(self.clean_json_response(response or ""))
             if not isinstance(spec, dict) or not isinstance(spec.get("operation"), dict):
                 raise ValueError("Invalid operation spec")
@@ -220,7 +221,7 @@ Rules:
         except Exception:
             return self.generate_fallback_element(user_request)
 
-    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None) -> Dict[str, Any]:
+    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         prompt = """You are a quantum circuit design assistant.
 
 Return ONLY JSON with this shape:
@@ -239,7 +240,7 @@ Rules:
 3. Return JSON only."""
 
         try:
-            response = self.llm.predict(f"{prompt}\n\nUser Request: {user_request}")
+            response = self.predict_with_retry(f"{prompt}\n\nUser Request: {user_request}")
             spec = self.parse_json_safely(self.clean_json_response(response or ""))
             if not isinstance(spec, dict):
                 raise ValueError("Invalid circuit spec")
@@ -264,8 +265,16 @@ Rules:
         except Exception:
             return self.generate_fallback_system()
 
-    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None) -> Dict[str, Any]:
+    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         base_model = _normalize_quantum_model(current_model)
+
+        # Build context from current circuit using centralized helper
+        context_block = ''
+        if current_model and isinstance(current_model, dict):
+            summary = detailed_model_summary(current_model, 'QuantumCircuitDiagram')
+            if summary:
+                context_block = f"\n\n{summary}"
+
         prompt = """You are a quantum circuit assistant.
 
 Return ONLY JSON with this shape:
@@ -284,7 +293,7 @@ Rules:
 3. Return JSON only."""
 
         try:
-            response = self.llm.predict(f"{prompt}\n\nUser Request: {user_request}")
+            response = self.predict_with_retry(f"{prompt}\n\nUser Request: {user_request}{context_block}")
             spec = self.parse_json_safely(self.clean_json_response(response or ""))
             if not isinstance(spec, dict):
                 raise ValueError("Invalid modification spec")

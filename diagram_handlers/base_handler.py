@@ -9,13 +9,90 @@ pixel coordinates.
 
 import json
 import logging
+import os
+import threading
 import uuid
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional, Set
 from abc import ABC, abstractmethod
 
 from .layout_engine import apply_layout
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Concurrency guard – limits parallel LLM calls across all handlers.
+# OpenAI rate-limits are per-org, so a global semaphore prevents bursts
+# from concurrent WebSocket sessions exhausting the quota.
+# ---------------------------------------------------------------------------
+_LLM_CONCURRENCY_LIMIT = int(os.environ.get("LLM_CONCURRENCY_LIMIT", "4"))
+_llm_semaphore = threading.Semaphore(_LLM_CONCURRENCY_LIMIT)
+
+
+# ---------------------------------------------------------------------------
+# Lightweight schema validation helpers
+# ---------------------------------------------------------------------------
+
+def _check_type(value: Any, expected: type, path: str) -> Optional[str]:
+    """Return an error string if *value* is not an instance of *expected*."""
+    if not isinstance(value, expected):
+        return f"{path}: expected {expected.__name__}, got {type(value).__name__}"
+    return None
+
+
+def validate_spec(
+    spec: Dict[str, Any],
+    required_keys: Dict[str, type],
+    optional_keys: Optional[Dict[str, type]] = None,
+    label: str = "spec",
+) -> List[str]:
+    """Validate that *spec* contains *required_keys* with matching types.
+
+    Returns a list of human-readable error strings (empty == valid).
+    """
+    errors: List[str] = []
+    if not isinstance(spec, dict):
+        return [f"{label}: expected a JSON object, got {type(spec).__name__}"]
+
+    for key, expected_type in required_keys.items():
+        if key not in spec:
+            errors.append(f"{label}.{key}: missing required field")
+        else:
+            err = _check_type(spec[key], expected_type, f"{label}.{key}")
+            if err:
+                errors.append(err)
+
+    if optional_keys:
+        for key, expected_type in optional_keys.items():
+            if key in spec:
+                err = _check_type(spec[key], expected_type, f"{label}.{key}")
+                if err:
+                    errors.append(err)
+
+    return errors
+
+
+# Reusable required-key dicts for the most common specs -----------------
+
+SINGLE_CLASS_REQUIRED = {"className": str}
+SINGLE_CLASS_OPTIONAL = {"attributes": list, "methods": list}
+
+SYSTEM_CLASS_REQUIRED = {"classes": list}
+SYSTEM_CLASS_OPTIONAL = {"systemName": str, "relationships": list}
+
+SINGLE_OBJECT_REQUIRED = {"objectName": str, "className": str}
+SINGLE_OBJECT_OPTIONAL = {"classId": str, "attributes": list}
+
+SYSTEM_OBJECT_REQUIRED = {"objects": list}
+SYSTEM_OBJECT_OPTIONAL = {"systemName": str, "links": list}
+
+SINGLE_STATE_REQUIRED = {"stateName": str}
+SINGLE_STATE_OPTIONAL = {"stateType": str, "entryAction": str, "exitAction": str, "doActivity": str}
+
+SYSTEM_STATE_REQUIRED = {"states": list}
+SYSTEM_STATE_OPTIONAL = {"systemName": str, "transitions": list}
+
+MODIFICATION_REQUIRED = {"modification": dict}
+MODIFICATION_INNER_REQUIRED = {"action": str, "target": dict}
 
 
 class BaseDiagramHandler(ABC):
@@ -50,7 +127,7 @@ class BaseDiagramHandler(ABC):
         """Generate a fallback element when AI generation fails"""
         pass
 
-    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None) -> Dict[str, Any]:
+    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """
         Generate modifications for existing diagram elements.
         Override this method in subclasses to provide diagram-specific modification logic.
@@ -92,6 +169,9 @@ class BaseDiagramHandler(ABC):
     def predict_with_retry(self, prompt: str, max_retries: int = 1) -> str:
         """Call the LLM with automatic retry on transient failures.
 
+        Acquires a module-level semaphore before calling the API so that
+        concurrent WebSocket sessions don't exhaust OpenAI rate limits.
+
         Args:
             prompt: Full prompt to send.
             max_retries: Number of additional attempts after the first (default 1).
@@ -105,7 +185,11 @@ class BaseDiagramHandler(ABC):
         last_error: Optional[Exception] = None
         for attempt in range(1 + max_retries):
             try:
-                response = self.llm.predict(prompt)
+                _llm_semaphore.acquire()
+                try:
+                    response = self.llm.predict(prompt)
+                finally:
+                    _llm_semaphore.release()
                 if response and response.strip():
                     return response
                 last_error = ValueError("LLM returned empty response")
@@ -156,6 +240,47 @@ class BaseDiagramHandler(ABC):
         except json.JSONDecodeError as e:
             logger.error(f"[BaseHandler] JSON parse failed: {e}. Text (first 300 chars): {json_text[:300]!r}")
             return None
+
+    def parse_and_validate(
+        self,
+        raw_response: str,
+        required_keys: Dict[str, type],
+        optional_keys: Optional[Dict[str, type]] = None,
+        label: str = "LLM response",
+    ) -> Dict[str, Any]:
+        """Clean, parse, and validate an LLM response in one call.
+
+        Returns the parsed dict on success.
+        Raises ``ValueError`` with a descriptive message on failure.
+        """
+        json_text = self.clean_json_response(raw_response)
+        spec = self.parse_json_safely(json_text)
+        if spec is None:
+            raise ValueError(f"Could not parse JSON from LLM response: {json_text[:200]}")
+
+        errors = validate_spec(spec, required_keys, optional_keys, label=label)
+        if errors:
+            joined = "; ".join(errors)
+            logger.warning(f"[{self.get_diagram_type()}] Schema validation failed: {joined}")
+            raise ValueError(f"Schema validation failed: {joined}")
+
+        return spec
+
+    def validate_modification_spec(self, spec: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate a modification response from the LLM.
+
+        Raises ``ValueError`` if the shape is invalid.
+        """
+        errors = validate_spec(spec, MODIFICATION_REQUIRED, label="modification")
+        if errors:
+            raise ValueError("; ".join(errors))
+
+        inner = spec["modification"]
+        inner_errors = validate_spec(inner, MODIFICATION_INNER_REQUIRED, label="modification.inner")
+        if inner_errors:
+            raise ValueError("; ".join(inner_errors))
+
+        return spec
 
     def extract_name_from_request(self, request: str, default: str = "New") -> str:
         """Extract a name from user request"""

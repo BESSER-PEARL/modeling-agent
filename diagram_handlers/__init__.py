@@ -6,7 +6,7 @@ Positions are computed deterministically by the :pymod:`layout_engine`
 after the LLM returns semantic content.
 """
 
-from .base_handler import BaseDiagramHandler
+from .base_handler import BaseDiagramHandler, validate_spec
 from .class_diagram_handler import ClassDiagramHandler
 from .object_diagram_handler import ObjectDiagramHandler
 from .state_machine_handler import StateMachineHandler
@@ -24,4 +24,5 @@ __all__ = [
     'GUINoCodeDiagramHandler',
     'QuantumCircuitDiagramHandler',
     'apply_layout',
+    'validate_spec',
 ]

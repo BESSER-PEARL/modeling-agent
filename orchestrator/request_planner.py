@@ -4,20 +4,14 @@ import re
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from handlers.generation_handler import GENERATOR_KEYWORDS, detect_generator_type
-from protocol.types import AssistantRequest
+from protocol.types import AssistantRequest, SUPPORTED_DIAGRAM_TYPES
 
 from .workspace_orchestrator import KEYWORD_TARGETS, determine_target_diagram_types
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_DIAGRAM_TYPES: Set[str] = {
-    "ClassDiagram",
-    "ObjectDiagram",
-    "StateMachineDiagram",
-    "AgentDiagram",
-    "GUINoCodeDiagram",
-    "QuantumCircuitDiagram",
-}
+# Re-export canonical set for backward compat; prefer SUPPORTED_DIAGRAM_TYPES.
+ALLOWED_DIAGRAM_TYPES: Set[str] = SUPPORTED_DIAGRAM_TYPES
 
 ALLOWED_MODEL_MODES: Set[str] = {
     "single_element",

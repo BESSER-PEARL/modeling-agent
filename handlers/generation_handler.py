@@ -20,8 +20,8 @@ GENERATOR_KEYWORDS: Dict[str, List[str]] = {
         "generate gui",
         "grapesjs",
     ],
+    "sqlalchemy": ["sqlalchemy", "sql alchemy"],
     "sql": ["sql ddl", "sql schema", "generate sql", "sql"],
-    "sqlalchemy": ["sqlalchemy"],
     "python": ["python classes", "generate python"],
     "java": ["java classes", "generate java"],
     "pydantic": ["pydantic"],
@@ -33,9 +33,11 @@ GENERATOR_KEYWORDS: Dict[str, List[str]] = {
 
 GENERATOR_REQUIRED_FIELDS: Dict[str, List[str]] = {
     "django": ["project_name", "app_name", "containerization"],
+    "backend": [],
     "sql": ["dialect"],
     "sqlalchemy": ["dbms"],
     "jsonschema": ["mode"],
+    "smartdata": [],
     "qiskit": ["backend", "shots"],
 }
 
@@ -125,6 +127,20 @@ def parse_inline_generator_config(
         elif "regular" in lower:
             config["mode"] = "regular"
 
+    elif generator_type == "backend":
+        # Backend generator: optional framework preference
+        for fw in ["fastapi", "flask", "django"]:
+            if fw in lower:
+                config["framework"] = fw
+                break
+
+    elif generator_type == "smartdata":
+        # SmartData generator: optional output format
+        if "json" in lower:
+            config["output_format"] = "json"
+        elif "rdf" in lower:
+            config["output_format"] = "rdf"
+
     elif generator_type == "qiskit":
         for backend in QISKIT_BACKENDS:
             if backend in lower:
@@ -154,6 +170,10 @@ def _build_config_prompt(generator_type: str, missing_fields: List[str]) -> str:
         return f"Choose SQLAlchemy DBMS: {', '.join(DIALECT_VALUES)}."
     if generator_type == "jsonschema":
         return f"Choose JSON Schema mode: {', '.join(MODE_VALUES)}."
+    if generator_type == "backend":
+        return "Choose a backend framework: fastapi, flask, or django (default: django)."
+    if generator_type == "smartdata":
+        return "Choose SmartData output format: json or rdf (default: json)."
     if generator_type == "qiskit":
         return (
             "Provide qiskit backend and shots.\n"
@@ -236,6 +256,10 @@ def _normalize_defaults(generator_type: str, request: AssistantRequest, config: 
         config.setdefault("dbms", "sqlite")
     elif generator_type == "jsonschema":
         config.setdefault("mode", "regular")
+    elif generator_type == "backend":
+        config.setdefault("framework", "django")
+    elif generator_type == "smartdata":
+        config.setdefault("output_format", "json")
     elif generator_type == "qiskit":
         config.setdefault("backend", "aer_simulator")
         config.setdefault("shots", 1024)

@@ -6,7 +6,14 @@ Handles generation of UML Class Diagrams
 import logging
 from typing import Dict, Any
 
-from .base_handler import BaseDiagramHandler
+from .base_handler import (
+    BaseDiagramHandler,
+    SINGLE_CLASS_REQUIRED,
+    SINGLE_CLASS_OPTIONAL,
+    SYSTEM_CLASS_REQUIRED,
+    SYSTEM_CLASS_OPTIONAL,
+)
+from utilities.model_helpers import detailed_model_summary
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +60,7 @@ Examples:
 
 Return ONLY the JSON, no explanations."""
 
-    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None) -> Dict[str, Any]:
+    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a single class element with deterministic positioning."""
 
         system_prompt = self.get_system_prompt()
@@ -69,13 +76,12 @@ Return ONLY the JSON, no explanations."""
             logger.info(f"[ClassDiagram] LLM raw response length: {len(response)}")
             logger.debug(f"[ClassDiagram] LLM raw response: {response[:500]!r}")
 
-            json_text = self.clean_json_response(response)
-            logger.debug(f"[ClassDiagram] Cleaned JSON: {json_text!r}")
-
-            simple_spec = self.parse_json_safely(json_text)
-
-            if not simple_spec:
-                raise ValueError(f"Failed to parse JSON response: {json_text[:200]}")
+            simple_spec = self.parse_and_validate(
+                response,
+                required_keys=SINGLE_CLASS_REQUIRED,
+                optional_keys=SINGLE_CLASS_OPTIONAL,
+                label="ClassDiagram.single_element",
+            )
 
             # Remove any position the LLM might have hallucinated, then apply layout engine
             simple_spec.pop("position", None)
@@ -98,7 +104,7 @@ Return ONLY the JSON, no explanations."""
             logger.error(f"[ClassDiagram] generate_single_element FAILED: {exc}", exc_info=True)
             return self.generate_fallback_element(user_request)
 
-    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None) -> Dict[str, Any]:
+    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a complete class diagram with multiple classes and deterministic layout."""
 
         system_prompt = """You are a UML modeling expert. Create a COMPLETE, well-structured class diagram system.
@@ -166,13 +172,12 @@ Return ONLY the JSON, no explanations."""
             logger.info(f"[ClassDiagram] System LLM response length: {len(response)}")
             logger.debug(f"[ClassDiagram] System LLM response: {response[:500]!r}")
 
-            json_text = self.clean_json_response(response)
-            logger.debug(f"[ClassDiagram] Cleaned system JSON: {json_text[:500]!r}")
-
-            system_spec = self.parse_json_safely(json_text)
-
-            if not system_spec:
-                raise ValueError(f"Failed to parse JSON response: {json_text[:300]}")
+            system_spec = self.parse_and_validate(
+                response,
+                required_keys=SYSTEM_CLASS_REQUIRED,
+                optional_keys=SYSTEM_CLASS_OPTIONAL,
+                label="ClassDiagram.complete_system",
+            )
 
             logger.info(
                 f"[ClassDiagram] Parsed system spec: "
@@ -255,7 +260,7 @@ Return ONLY the JSON, no explanations."""
     # Modification Support (Existing - Updated for new architecture)
     # ------------------------------------------------------------------
     
-    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None) -> Dict[str, Any]:
+    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate modifications for existing class diagram elements"""
         
         system_prompt = """You are a UML modeling expert. The user wants to modify an existing class diagram.
@@ -408,42 +413,18 @@ Examples:
 
 Return ONLY the JSON object – no explanations"""
 
-        # Build context from current model
-        context_info = []
-        if current_model and isinstance(current_model, dict):
-            elements = current_model.get('elements', {})
-            
-            for element in elements.values():
-                if element.get('type') == 'Class':
-                    name = element.get('name', 'Unknown')
-                    attr_names = []
-                    for attr_id in element.get('attributes', []) or []:
-                        attr = elements.get(attr_id, {})
-                        attr_name = attr.get('name')
-                        if attr_name:
-                            attr_names.append(attr_name)
-                    method_names = []
-                    for method_id in element.get('methods', []) or []:
-                        method = elements.get(method_id, {})
-                        method_name = method.get('name')
-                        if method_name:
-                            method_names.append(method_name)
-                    summary = f"Class {name}"
-                    if attr_names:
-                        summary += f" | attributes: {', '.join(attr_names[:4])}"
-                    if method_names:
-                        summary += f" | methods: {', '.join(method_names[:4])}"
-                    context_info.append(summary)
-        
+        # Build context from current model using centralized helper
         context_block = ''
-        if context_info:
-            context_block = "\n\nCurrent class diagram:\n- " + "\n- ".join(context_info[:8])
+        if current_model and isinstance(current_model, dict):
+            summary = detailed_model_summary(current_model, 'ClassDiagram')
+            if summary:
+                context_block = f"\n\n{summary}"
         
         user_prompt = f"Modify the class diagram: {user_request}{context_block}"
         full_prompt = f"{system_prompt}\n\nUser Request: {user_prompt}"
 
         logger.info(f"[ClassDiagram] generate_modification called with: {user_request!r}")
-        logger.debug(f"[ClassDiagram] Modification context: {context_info}")
+        logger.debug(f"[ClassDiagram] Modification context block length: {len(context_block)} chars")
         logger.debug(f"[ClassDiagram] Full modification prompt length: {len(full_prompt)} chars")
 
         try:
@@ -455,8 +436,10 @@ Return ONLY the JSON object – no explanations"""
             json_text = self.clean_json_response(response)
             modification_spec = self.parse_json_safely(json_text)
             
-            if not modification_spec or not modification_spec.get('modification'):
+            if not modification_spec:
                 raise ValueError(f"Failed to parse modification JSON: {json_text[:300]}")
+
+            self.validate_modification_spec(modification_spec)
             
             # Ensure proper structure
             modification_spec.setdefault('action', 'modify_model')

@@ -5,7 +5,14 @@ Handles generation of UML State Machine Diagrams
 
 import logging
 from typing import Dict, Any
-from .base_handler import BaseDiagramHandler
+from .base_handler import (
+    BaseDiagramHandler,
+    SINGLE_STATE_REQUIRED,
+    SINGLE_STATE_OPTIONAL,
+    SYSTEM_STATE_REQUIRED,
+    SYSTEM_STATE_OPTIONAL,
+)
+from utilities.model_helpers import detailed_model_summary
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +51,7 @@ Examples:
 
 Return ONLY the JSON, no explanations."""
     
-    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None) -> Dict[str, Any]:
+    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a single state with deterministic positioning."""
         
         system_prompt = self.get_system_prompt()
@@ -53,11 +60,12 @@ Return ONLY the JSON, no explanations."""
         try:
             response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_prompt}")
             
-            json_text = self.clean_json_response(response)
-            state_spec = self.parse_json_safely(json_text)
-            
-            if not state_spec:
-                raise Exception("Failed to parse JSON response")
+            state_spec = self.parse_and_validate(
+                response,
+                required_keys=SINGLE_STATE_REQUIRED,
+                optional_keys=SINGLE_STATE_OPTIONAL,
+                label="StateMachine.single_element",
+            )
             
             # Remove any hallucinated position and apply deterministic layout
             state_spec.pop("position", None)
@@ -74,7 +82,7 @@ Return ONLY the JSON, no explanations."""
             logger.error(f"[StateMachine] generate_single_element FAILED: {e}", exc_info=True)
             return self.generate_fallback_element(user_request)
     
-    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None) -> Dict[str, Any]:
+    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a complete state machine with deterministic positioning."""
         
         system_prompt = """You are a UML modeling expert. Create a COMPLETE state machine diagram.
@@ -118,11 +126,12 @@ Return ONLY the JSON, no explanations."""
         try:
             response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_request}")
             
-            json_text = self.clean_json_response(response)
-            system_spec = self.parse_json_safely(json_text)
-            
-            if not system_spec:
-                raise Exception("Failed to parse JSON response")
+            system_spec = self.parse_and_validate(
+                response,
+                required_keys=SYSTEM_STATE_REQUIRED,
+                optional_keys=SYSTEM_STATE_OPTIONAL,
+                label="StateMachine.complete_system",
+            )
             
             # Strip any hallucinated positions and apply deterministic layout
             for s in system_spec.get("states", []):
@@ -220,3 +229,147 @@ Return ONLY the JSON, no explanations."""
             "diagramType": "StateMachineDiagram",
             "message": "Created a starter state machine. Try describing your workflow in more detail for a richer result."
         }
+
+    # ------------------------------------------------------------------
+    # Modification Support
+    # ------------------------------------------------------------------
+
+    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+        """Generate modifications for existing state machine elements."""
+
+        system_prompt = """You are a UML modeling expert. The user wants to modify an existing state machine diagram.
+
+Return ONLY a JSON object with one of these structures:
+
+MODIFY STATE (rename or change properties)
+{
+  "action": "modify_model",
+  "modification": {
+    "action": "modify_state",
+    "target": {
+      "stateName": "CurrentStateName"
+    },
+    "changes": {
+      "name": "NewStateName",
+      "entryAction": "new entry action",
+      "exitAction": "new exit action",
+      "doActivity": "new activity"
+    }
+  }
+}
+
+ADD TRANSITION (connect two states)
+{
+  "action": "modify_model",
+  "modification": {
+    "action": "add_transition",
+    "target": {
+      "sourceState": "SourceState",
+      "targetState": "TargetState"
+    },
+    "changes": {
+      "trigger": "event",
+      "guard": "condition",
+      "effect": "action"
+    }
+  }
+}
+
+MODIFY TRANSITION (change existing transition properties)
+{
+  "action": "modify_model",
+  "modification": {
+    "action": "modify_transition",
+    "target": {
+      "sourceState": "SourceState",
+      "targetState": "TargetState"
+    },
+    "changes": {
+      "trigger": "newTrigger",
+      "guard": "newGuard",
+      "effect": "newEffect"
+    }
+  }
+}
+
+REMOVE ELEMENT (delete a state or transition)
+{
+  "action": "modify_model",
+  "modification": {
+    "action": "remove_element",
+    "target": {
+      "stateName": "StateToRemove"
+    }
+  }
+}
+
+OR for removing a transition:
+{
+  "action": "modify_model",
+  "modification": {
+    "action": "remove_element",
+    "target": {
+      "sourceState": "SourceState",
+      "targetState": "TargetState"
+    }
+  }
+}
+
+IMPORTANT RULES:
+1. Actions available: "modify_state", "add_transition", "modify_transition", "remove_element"
+2. Always specify exact target names that exist in the current model
+3. guard and effect are optional (can be empty strings)
+4. For remove_element, only specify the target — no "changes" needed
+5. When modifying, only include the fields that should change in "changes" object
+6. Return ONLY the JSON object — no explanations or markdown
+
+Return ONLY the JSON object — no explanations"""
+
+        # Build context from current model using centralized helper
+        context_block = ''
+        if current_model and isinstance(current_model, dict):
+            summary = detailed_model_summary(current_model, 'StateMachineDiagram')
+            if summary:
+                context_block = f"\n\n{summary}"
+
+        user_prompt = f"Modify the state machine: {user_request}{context_block}"
+        full_prompt = f"{system_prompt}\n\nUser Request: {user_prompt}"
+
+        logger.info(f"[StateMachine] generate_modification called with: {user_request!r}")
+
+        try:
+            response = self.predict_with_retry(full_prompt)
+            json_text = self.clean_json_response(response)
+            modification_spec = self.parse_json_safely(json_text)
+
+            if not modification_spec:
+                raise ValueError(f"Failed to parse modification JSON: {json_text[:300]}")
+
+            self.validate_modification_spec(modification_spec)
+
+            modification_spec.setdefault('action', 'modify_model')
+            modification_spec.setdefault('diagramType', self.get_diagram_type())
+
+            if 'message' not in modification_spec:
+                mod_action = modification_spec['modification'].get('action', 'modification')
+                target = modification_spec['modification'].get('target', {})
+                target_name = (
+                    target.get('stateName')
+                    or f"{target.get('sourceState', '?')} -> {target.get('targetState', '?')}"
+                )
+                modification_spec['message'] = f"Applied {mod_action} to {target_name}"
+
+            return modification_spec
+
+        except Exception as exc:
+            logger.error(f"[StateMachine] generate_modification FAILED: {exc}", exc_info=True)
+            return {
+                "action": "modify_model",
+                "modification": {
+                    "action": "modify_state",
+                    "target": {"stateName": "Unknown"},
+                    "changes": {"name": "ModifiedState"}
+                },
+                "diagramType": self.get_diagram_type(),
+                "message": "Could not apply the modification automatically. Try rephrasing your request."
+            }

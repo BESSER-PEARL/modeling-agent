@@ -1,4 +1,5 @@
 besser-agentic-framework[extras,llms,tensorflow] == 4.2.3
+python-dotenv
 langchain-community
 langchain-text-splitters
 langchain-openai
