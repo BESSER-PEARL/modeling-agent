@@ -655,7 +655,10 @@ IMPORTANT RULES:
 6. Use "remove_element" to delete states or intents
 7. For transitions, "condition" is usually "when_intent_matched" with an "intentName"
 8. Only reference elements that exist in the current model
-9. Return ONLY the JSON object – no explanations"""
+9. When the user asks for MULTIPLE changes at once (e.g., "add replies to state1 and state2"), use the "modifications" array format:
+   { "action": "modify_model", "modifications": [ { "action": "...", "target": {...}, "changes": {...} }, ... ] }
+10. Use "modification" (singular) for a single change, "modifications" (plural array) for multiple changes
+11. Return ONLY the JSON object – no explanations"""
 
         # Build context from current model using centralized summariser
         context_block = ''
@@ -675,19 +678,32 @@ IMPORTANT RULES:
             json_text = self.clean_json_response(response)
             modification_spec = self.parse_json_safely(json_text)
             
-            if not modification_spec or not modification_spec.get('modification'):
+            if not modification_spec or (not modification_spec.get('modification') and not modification_spec.get('modifications')):
                 raise ValueError("Failed to parse modification JSON")
             
+            # Validate (supports both single and batch)
+            self.validate_modification_spec(modification_spec)
+
             # Ensure proper structure
             modification_spec.setdefault('action', 'modify_model')
             modification_spec.setdefault('diagramType', self.get_diagram_type())
             
             # Generate message if not provided
             if 'message' not in modification_spec:
-                mod_action = modification_spec['modification'].get('action', 'modification')
-                target = modification_spec['modification'].get('target', {})
-                target_name = target.get('stateName') or target.get('intentName') or 'element'
-                modification_spec['message'] = f"Applied {mod_action} to {target_name}"
+                if 'modifications' in modification_spec and isinstance(modification_spec['modifications'], list):
+                    mods = modification_spec['modifications']
+                    actions_summary = ", ".join(m.get('action', '?') for m in mods)
+                    target_names = set()
+                    for m in mods:
+                        t = m.get('target', {})
+                        n = t.get('stateName') or t.get('intentName') or 'element'
+                        target_names.add(n)
+                    modification_spec['message'] = f"Applied {len(mods)} modifications ({actions_summary}) to {', '.join(target_names)}"
+                else:
+                    mod_action = modification_spec['modification'].get('action', 'modification')
+                    target = modification_spec['modification'].get('target', {})
+                    target_name = target.get('stateName') or target.get('intentName') or 'element'
+                    modification_spec['message'] = f"Applied {mod_action} to {target_name}"
             
             return modification_spec
             

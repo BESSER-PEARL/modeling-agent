@@ -691,7 +691,10 @@ IMPORTANT RULES:
 1. Actions available: "modify_object", "modify_attribute_value", "add_link", "remove_element"
 2. Always specify exact target names that exist in the current model
 3. For remove_element, only specify the target — no "changes" needed
-4. Return ONLY the JSON object — no explanations or markdown
+4. When the user asks for MULTIPLE changes at once (e.g., "set name and age on obj1"), use the "modifications" array format:
+   { "action": "modify_model", "modifications": [ { "action": "...", "target": {...}, "changes": {...} }, ... ] }
+5. Use "modification" (singular) for a single change, "modifications" (plural array) for multiple changes
+6. Return ONLY the JSON object — no explanations or markdown
 
 Return ONLY the JSON object — no explanations"""
 
@@ -721,10 +724,20 @@ Return ONLY the JSON object — no explanations"""
             modification_spec.setdefault('diagramType', self.get_diagram_type())
 
             if 'message' not in modification_spec:
-                mod_action = modification_spec['modification'].get('action', 'modification')
-                target = modification_spec['modification'].get('target', {})
-                target_name = target.get('objectName') or target.get('sourceObject') or 'element'
-                modification_spec['message'] = f"Applied {mod_action} to {target_name}"
+                if 'modifications' in modification_spec and isinstance(modification_spec['modifications'], list):
+                    mods = modification_spec['modifications']
+                    actions_summary = ", ".join(m.get('action', '?') for m in mods)
+                    target_names = set()
+                    for m in mods:
+                        t = m.get('target', {})
+                        n = t.get('objectName') or t.get('sourceObject') or 'element'
+                        target_names.add(n)
+                    modification_spec['message'] = f"Applied {len(mods)} modifications ({actions_summary}) to {', '.join(target_names)}"
+                else:
+                    mod_action = modification_spec['modification'].get('action', 'modification')
+                    target = modification_spec['modification'].get('target', {})
+                    target_name = target.get('objectName') or target.get('sourceObject') or 'element'
+                    modification_spec['message'] = f"Applied {mod_action} to {target_name}"
 
             return modification_spec
 

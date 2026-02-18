@@ -269,8 +269,22 @@ class BaseDiagramHandler(ABC):
     def validate_modification_spec(self, spec: Dict[str, Any]) -> Dict[str, Any]:
         """Validate a modification response from the LLM.
 
-        Raises ``ValueError`` if the shape is invalid.
+        Supports both single ``modification`` (dict) and batch
+        ``modifications`` (list of dicts).  Raises ``ValueError`` if the
+        shape is invalid.
         """
+        # Batch path: "modifications" is a list of inner objects
+        if 'modifications' in spec and isinstance(spec['modifications'], list):
+            for i, inner in enumerate(spec['modifications']):
+                inner_errors = validate_spec(
+                    inner, MODIFICATION_INNER_REQUIRED,
+                    label=f"modifications[{i}]",
+                )
+                if inner_errors:
+                    raise ValueError("; ".join(inner_errors))
+            return spec
+
+        # Single path: "modification" is a dict
         errors = validate_spec(spec, MODIFICATION_REQUIRED, label="modification")
         if errors:
             raise ValueError("; ".join(errors))

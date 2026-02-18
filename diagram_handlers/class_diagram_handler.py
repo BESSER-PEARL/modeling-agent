@@ -406,6 +406,23 @@ OR for removing attribute:
   }
 }
 
+MULTIPLE MODIFICATIONS (batch – use when the request needs more than one change)
+{
+  "action": "modify_model",
+  "modifications": [
+    {
+      "action": "add_attribute",
+      "target": { "className": "ClassName" },
+      "changes": { "name": "attr1", "type": "String", "visibility": "public" }
+    },
+    {
+      "action": "add_attribute",
+      "target": { "className": "ClassName" },
+      "changes": { "name": "attr2", "type": "int", "visibility": "private" }
+    }
+  ]
+}
+
 IMPORTANT RULES:
 1. Actions available: "modify_class", "add_attribute", "modify_attribute", "add_method", "modify_method", "add_relationship", "modify_relationship", "remove_element"
 2. Always specify exact target names that exist in the current model
@@ -417,7 +434,9 @@ IMPORTANT RULES:
 8. For remove_element, only specify the target - no "changes" needed
 9. Use "modify_relationship" (NOT "add_relationship") when the user wants to update/change an EXISTING relationship (e.g., change multiplicity, change type, rename)
 10. Use "add_relationship" only when creating a brand-new connection between classes
-11. Return ONLY the JSON object – no explanations or markdown
+11. When the user asks for MULTIPLE changes at once (e.g., "add several attributes", "add name and age to Person"), use the "modifications" array format with ALL changes in a single response
+12. Use "modification" (singular) for a single change, "modifications" (plural array) for multiple changes
+13. Return ONLY the JSON object – no explanations or markdown
 
 Examples:
 - "rename User class to Customer" -> modify_class with name change
@@ -431,6 +450,8 @@ Examples:
 - "Author should have several Childs, update the relation" -> modify_relationship with sourceClass Author, targetClass Childs, targetMultiplicity "1..*"
 - "make the relation between Order and Product a composition" -> modify_relationship changing relationshipType to "Composition"
 - "delete the temp attribute" -> remove_element with attributeName
+- "add name, age, and email attributes to Person" -> use "modifications" array with 3 add_attribute entries
+- "add several attributes to Book" -> use "modifications" array with multiple add_attribute entries (infer sensible attributes for the domain)
 
 Return ONLY the JSON object – no explanations"""
 
@@ -461,21 +482,30 @@ Return ONLY the JSON object – no explanations"""
                 raise ValueError(f"Failed to parse modification JSON: {json_text[:300]}")
 
             self.validate_modification_spec(modification_spec)
-            
-            # Ensure proper structure
+
             modification_spec.setdefault('action', 'modify_model')
             modification_spec.setdefault('diagramType', self.get_diagram_type())
-            
-            # Generate message if not provided
+
             if 'message' not in modification_spec:
-                mod_action = modification_spec['modification'].get('action', 'modification')
-                target = modification_spec['modification'].get('target', {})
-                target_name = target.get('className') or target.get('attributeName') or target.get('methodName') or 'element'
-                modification_spec['message'] = f"Applied {mod_action} to {target_name}"
+                if 'modifications' in modification_spec and isinstance(modification_spec['modifications'], list):
+                    mods = modification_spec['modifications']
+                    actions_summary = ", ".join(m.get('action', '?') for m in mods)
+                    target_names = set()
+                    for m in mods:
+                        t = m.get('target', {})
+                        n = t.get('className') or t.get('attributeName') or t.get('methodName') or 'element'
+                        target_names.add(n)
+                    modification_spec['message'] = f"Applied {len(mods)} modifications ({actions_summary}) to {', '.join(target_names)}"
+                else:
+                    mod_action = modification_spec['modification'].get('action', 'modification')
+                    target = modification_spec['modification'].get('target', {})
+                    target_name = target.get('className') or target.get('attributeName') or target.get('methodName') or 'element'
+                    modification_spec['message'] = f"Applied {mod_action} to {target_name}"
 
             logger.info(
-                f"[ClassDiagram] Modification spec: action={modification_spec['modification'].get('action')}, "
-                f"target={modification_spec['modification'].get('target')}"
+                f"[ClassDiagram] Modification spec: "
+                f"batch={'modifications' in modification_spec}, "
+                f"keys={list(modification_spec.keys())}"
             )
             
             return modification_spec

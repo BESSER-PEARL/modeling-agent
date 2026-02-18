@@ -321,7 +321,10 @@ IMPORTANT RULES:
 3. guard and effect are optional (can be empty strings)
 4. For remove_element, only specify the target — no "changes" needed
 5. When modifying, only include the fields that should change in "changes" object
-6. Return ONLY the JSON object — no explanations or markdown
+6. When the user asks for MULTIPLE changes at once (e.g., "add states Idle, Running, and Done"), use the "modifications" array format:
+   { "action": "modify_model", "modifications": [ { "action": "...", "target": {...}, "changes": {...} }, ... ] }
+7. Use "modification" (singular) for a single change, "modifications" (plural array) for multiple changes
+8. Return ONLY the JSON object — no explanations or markdown
 
 Return ONLY the JSON object — no explanations"""
 
@@ -351,13 +354,26 @@ Return ONLY the JSON object — no explanations"""
             modification_spec.setdefault('diagramType', self.get_diagram_type())
 
             if 'message' not in modification_spec:
-                mod_action = modification_spec['modification'].get('action', 'modification')
-                target = modification_spec['modification'].get('target', {})
-                target_name = (
-                    target.get('stateName')
-                    or f"{target.get('sourceState', '?')} -> {target.get('targetState', '?')}"
-                )
-                modification_spec['message'] = f"Applied {mod_action} to {target_name}"
+                if 'modifications' in modification_spec and isinstance(modification_spec['modifications'], list):
+                    mods = modification_spec['modifications']
+                    actions_summary = ", ".join(m.get('action', '?') for m in mods)
+                    target_names = set()
+                    for m in mods:
+                        t = m.get('target', {})
+                        n = (
+                            t.get('stateName')
+                            or f"{t.get('sourceState', '?')} -> {t.get('targetState', '?')}"
+                        )
+                        target_names.add(n)
+                    modification_spec['message'] = f"Applied {len(mods)} modifications ({actions_summary}) to {', '.join(target_names)}"
+                else:
+                    mod_action = modification_spec['modification'].get('action', 'modification')
+                    target = modification_spec['modification'].get('target', {})
+                    target_name = (
+                        target.get('stateName')
+                        or f"{target.get('sourceState', '?')} -> {target.get('targetState', '?')}"
+                    )
+                    modification_spec['message'] = f"Applied {mod_action} to {target_name}"
 
             return modification_spec
 
