@@ -367,6 +367,22 @@ ADD RELATIONSHIP (connect two classes)
   }
 }
 
+MODIFY RELATIONSHIP (change multiplicity, type, or name of an existing relationship)
+{
+  "action": "modify_model",
+  "modification": {
+    "action": "modify_relationship",
+    "target": {
+      "sourceClass": "SourceClass",
+      "targetClass": "TargetClass"
+    },
+    "changes": {
+      "sourceMultiplicity": "1",
+      "targetMultiplicity": "1..*"
+    }
+  }
+}
+
 REMOVE ELEMENT (delete class, attribute, method, or relationship)
 {
   "action": "modify_model",
@@ -391,7 +407,7 @@ OR for removing attribute:
 }
 
 IMPORTANT RULES:
-1. Actions available: "modify_class", "add_attribute", "modify_attribute", "add_method", "modify_method", "add_relationship", "remove_element"
+1. Actions available: "modify_class", "add_attribute", "modify_attribute", "add_method", "modify_method", "add_relationship", "modify_relationship", "remove_element"
 2. Always specify exact target names that exist in the current model
 3. visibility options: "public", "private", "protected", "package"
 4. Relationship types (case-sensitive): "Association", "Inheritance" (also called Generalization), "Composition", "Aggregation", "Realization"
@@ -399,7 +415,9 @@ IMPORTANT RULES:
 6. When adding methods, include empty parameters array [] if no parameters needed
 7. When modifying, only include the fields that should change in "changes" object
 8. For remove_element, only specify the target - no "changes" needed
-9. Return ONLY the JSON object – no explanations or markdown
+9. Use "modify_relationship" (NOT "add_relationship") when the user wants to update/change an EXISTING relationship (e.g., change multiplicity, change type, rename)
+10. Use "add_relationship" only when creating a brand-new connection between classes
+11. Return ONLY the JSON object – no explanations or markdown
 
 Examples:
 - "rename User class to Customer" -> modify_class with name change
@@ -409,6 +427,9 @@ Examples:
 - "connect Order to Customer" -> add_relationship with Association type
 - "add generalization between Member and Author" -> add_relationship with Inheritance type (Member inherits from Author)
 - "create inheritance from Student to Person" -> add_relationship with Inheritance type (Student is child, Person is parent)
+- "change multiplicity to many" -> modify_relationship changing targetMultiplicity to "*"
+- "Author should have several Childs, update the relation" -> modify_relationship with sourceClass Author, targetClass Childs, targetMultiplicity "1..*"
+- "make the relation between Order and Product a composition" -> modify_relationship changing relationshipType to "Composition"
 - "delete the temp attribute" -> remove_element with attributeName
 
 Return ONLY the JSON object – no explanations"""

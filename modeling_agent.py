@@ -140,6 +140,7 @@ def _reply_payload(session: Session, payload: Dict[str, Any]):
     logger.info(
         f"[Reply] Sending payload: action={payload.get('action')}, "
         f"diagramType={payload.get('diagramType')}, "
+        f"replaceExisting={payload.get('replaceExisting', 'NOT SET')}, "
         f"message={str(payload.get('message', ''))[:100]!r}"
     )
     logger.debug(f"[Reply] Full payload keys: {list(payload.keys())}")
@@ -269,11 +270,107 @@ def _resolve_class_diagram(request: AssistantRequest) -> Optional[Dict[str, Any]
     return None
 
 
+# ---------------------------------------------------------------------------
+# Pending complete-system confirmation
+# ---------------------------------------------------------------------------
+# When the user asks to create a new complete system but a non-trivial model
+# already exists for that diagram type, we store the pending creation and ask
+# whether to replace or keep the existing one.  The confirmation answer may be
+# routed to ANY state by the intent classifier ("yes", "replace", "keep" …),
+# so _handle_pending_system_confirmation() is checked at the top of every body.
+# ---------------------------------------------------------------------------
+
+_REPLACE_KEYWORDS = [
+    'replace', 'yes', 'overwrite', 'new one', 'start fresh',
+    'remove', 'clear', 'delete', 'erase', 'fresh',
+]
+_KEEP_KEYWORDS = [
+    'keep', 'no', 'add', 'both', 'alongside', 'merge',
+    "don't remove", 'do not remove',
+]
+_CANCEL_KEYWORDS = ['cancel', 'never mind', 'forget', 'stop', 'abort']
+
+
+def _model_has_elements(model: Optional[Dict[str, Any]]) -> bool:
+    """Return True when *model* contains at least one user-visible element."""
+    if not isinstance(model, dict):
+        return False
+    elements = model.get('elements')
+    return isinstance(elements, dict) and len(elements) > 0
+
+
+def _handle_pending_system_confirmation(session: Session) -> bool:
+    """Process a pending complete-system confirmation, if one exists.
+
+    Returns ``True`` when a pending confirmation was found **and** handled
+    (the caller should ``return`` immediately).  Returns ``False`` otherwise
+    so the normal body logic can proceed.
+    """
+    pending = session.get('pending_complete_system')
+    if not pending:
+        return False
+
+    request = parse_assistant_request(session)
+    user_msg = (request.message or '').lower().strip()
+
+    wants_cancel = any(w in user_msg for w in _CANCEL_KEYWORDS)
+    if wants_cancel:
+        session.set('pending_complete_system', None)
+        _reply_message(session, "Cancelled. Your existing model is unchanged.")
+        return True
+
+    wants_replace = any(w in user_msg for w in _REPLACE_KEYWORDS)
+    wants_keep = any(w in user_msg for w in _KEEP_KEYWORDS)
+
+    if not wants_replace and not wants_keep:
+        # The user's message doesn't look like a confirmation — clear the
+        # pending state and let the normal body logic handle it as a new request.
+        session.set('pending_complete_system', None)
+        return False
+
+    # --- User answered: execute the stored creation -----------------------
+    session.set('pending_complete_system', None)
+
+    replace_existing = wants_replace
+
+    # Re-execute the stored operation with the original parameters.
+    stored_message = pending.get('message', '')
+    stored_diagram_type = pending.get('diagram_type', 'ClassDiagram')
+    stored_operation = pending.get('operation', {})
+    stored_default_mode = pending.get('default_mode', 'complete_system')
+
+    # Rebuild a minimal request that carries the stored message.
+    working_request = request
+    working_request.message = stored_message
+
+    if replace_existing:
+        logger.info(f"[PendingConfirm] User chose REPLACE for {stored_diagram_type}")
+    else:
+        logger.info(f"[PendingConfirm] User chose KEEP for {stored_diagram_type}")
+
+    try:
+        _execute_model_operation(
+            session=session,
+            request=working_request,
+            operation=stored_operation,
+            default_mode=stored_default_mode,
+            _skip_existing_check=True,
+            _replace_existing=replace_existing,
+        )
+    except Exception as exc:
+        logger.error(f"[PendingConfirm] Error executing stored operation: {exc}", exc_info=True)
+        _reply_message(session, "Something went wrong while creating the model. Please try again.")
+
+    return True
+
+
 def _execute_model_operation(
     session: Session,
     request: AssistantRequest,
     operation: Dict[str, Any],
     default_mode: str,
+    _skip_existing_check: bool = False,
+    _replace_existing: Optional[bool] = None,
 ) -> Optional[str]:
     target_diagram_type = operation.get("diagramType")
     if not isinstance(target_diagram_type, str) or not target_diagram_type:
@@ -292,6 +389,34 @@ def _execute_model_operation(
         f"[ModelOp] Executing: diagram={target_diagram_type}, mode={operation_mode}, "
         f"request={operation_request[:120]!r}"
     )
+
+    # ── Existing-model guard for complete_system ─────────────────────────
+    # When creating a whole new system and the target diagram already has a
+    # non-trivial model, ask the user whether to replace or keep it.
+    if (
+        not _skip_existing_check
+        and operation_mode == 'complete_system'
+    ):
+        existing_model = resolve_target_model(request, target_diagram_type)
+        if _model_has_elements(existing_model):
+            from utilities.model_context import compact_model_summary
+            summary = compact_model_summary(existing_model, target_diagram_type)
+            session.set('pending_complete_system', {
+                'message': operation_request,
+                'diagram_type': target_diagram_type,
+                'operation': operation,
+                'default_mode': default_mode,
+            })
+            _reply_message(
+                session,
+                f"You already have a {target_diagram_type} model ({summary}). "
+                "Would you like me to **replace** it with a new one, or **keep** "
+                "the existing model and add alongside it?",
+            )
+            logger.info(
+                f"[ModelOp] Asked user to confirm replace/keep for existing {target_diagram_type}"
+            )
+            return None
 
     # NOTE: We no longer send a standalone switch_diagram action here.
     # The result payload already carries `diagramType`, and the frontend's
@@ -431,6 +556,22 @@ def _execute_model_operation(
     if isinstance(diagram_id, str):
         result["diagramId"] = diagram_id
 
+    # Propagate replaceExisting flag — prefer direct parameter, fall back to session
+    if _replace_existing is not None:
+        result["replaceExisting"] = bool(_replace_existing)
+        logger.info(f"[ModelOp] replaceExisting={_replace_existing} (from direct parameter)")
+    else:
+        replace_flag = session.get('_replace_existing_model')
+        if replace_flag is not None:
+            result["replaceExisting"] = bool(replace_flag)
+            session.set('_replace_existing_model', None)
+            logger.info(f"[ModelOp] replaceExisting={replace_flag} (from session variable)")
+
+    logger.info(
+        f"[ModelOp] Sending result: action={result.get('action')}, "
+        f"replaceExisting={result.get('replaceExisting', 'NOT SET')}, "
+        f"keys={list(result.keys())}"
+    )
     _reply_payload(session, result)
     return target_diagram_type
 
@@ -462,6 +603,12 @@ def _execute_planned_operations(
         if operation_type == "model":
             try:
                 executed_target = _execute_model_operation(session, working_request, operation, default_mode=default_mode)
+                if executed_target is None:
+                    # _execute_model_operation returned None — a pending confirmation
+                    # was stored (existing model guard).  Stop processing further
+                    # operations to avoid duplicate confirmation messages.
+                    logger.info("[PlannedOps] Pending confirmation stored — halting remaining operations")
+                    return
                 if isinstance(executed_target, str) and executed_target:
                     working_request = build_request_for_target(working_request, executed_target)
             except Exception as error:
@@ -547,6 +694,10 @@ generation_intent = agent.new_intent(
 
 def global_fallback_body(session: Session):
     """Handle unrecognized messages."""
+    # ── Pending complete-system confirmation ──
+    if _handle_pending_system_confirmation(session):
+        return
+
     request = parse_assistant_request(session)
 
     # ── File attachment shortcut ──
@@ -569,6 +720,10 @@ agent.set_global_fallback_body(global_fallback_body)
 
 def greetings_body(session: Session):
     """Send a greeting message when the user first connects or says hello."""
+    # ── Pending complete-system confirmation ──
+    if _handle_pending_system_confirmation(session):
+        return
+
     greeting_message = (
         "Hello! I'm your modeling assistant.\n\n"
         "I can help you:\n"
@@ -636,6 +791,10 @@ def _handle_file_attachments(session: Session, request: AssistantRequest) -> boo
 
 def _modeling_state_body(session: Session, intent_name: str, default_mode: str, empty_msg: str):
     """Unified handler for all modeling operations (single element, system, modification)."""
+    # ── Pending complete-system confirmation ──
+    if _handle_pending_system_confirmation(session):
+        return
+
     session.set('last_matched_intent', intent_name)
     request = parse_assistant_request(session)
 
@@ -695,6 +854,10 @@ modify_model_state.set_body(modify_modeling_body)
 
 def modeling_help_body(session: Session):
     """Offer guidance or clarifying questions when the user needs modeling help."""
+    # ── Pending complete-system confirmation ──
+    if _handle_pending_system_confirmation(session):
+        return
+
     session.set('last_matched_intent', 'modeling_help_intent')
     request = parse_assistant_request(session)
 
@@ -734,6 +897,10 @@ modeling_help_state.set_body(modeling_help_body)
 
 def generation_body(session: Session):
     """Handle assistant-driven code generation orchestration."""
+    # ── Pending complete-system confirmation ──
+    if _handle_pending_system_confirmation(session):
+        return
+
     session.set('last_matched_intent', GENERATION_INTENT_NAME)
     request = parse_assistant_request(session)
 
@@ -820,6 +987,10 @@ for _state, _fallback in [
 
 def uml_rag_body(session: Session):
     """Answer UML specification questions using RAG."""
+    # ── Pending complete-system confirmation ──
+    if _handle_pending_system_confirmation(session):
+        return
+
     session.set('last_matched_intent', 'uml_spec_intent')
     request = parse_assistant_request(session)
 
