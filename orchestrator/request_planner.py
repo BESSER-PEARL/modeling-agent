@@ -297,13 +297,21 @@ def plan_assistant_operations(
     - {"type":"generation","generatorType":"...","config":{...}}
     """
     fallback = _fallback_operations(request, default_mode=default_mode, matched_intent=matched_intent)
-    inferred_targets = determine_target_diagram_types(request, last_intent=matched_intent, max_targets=3)
+    inferred_targets = determine_target_diagram_types(request, last_intent=matched_intent, max_targets=6)
     has_generation_request = detect_generator_type(request.message) is not None
 
     if not _should_use_llm_planner(request.message, len(inferred_targets), has_generation_request):
         return fallback
 
     context_summary = _build_context_summary(request)
+
+    # Give the LLM strong hints about which diagram types were detected
+    detected_targets_hint = ", ".join(inferred_targets) if inferred_targets else "ClassDiagram"
+    generation_hint = ""
+    detected_gen = detect_generator_type(request.message)
+    if detected_gen:
+        generation_hint = f"\nDetected generation request: {detected_gen}"
+
     planner_prompt = f"""You are an assistant operation planner for BESSER modeling.
 
 User request:
@@ -312,6 +320,8 @@ User request:
 Workspace context:
 {context_summary}
 
+Detected diagram targets (from user message keywords): {detected_targets_hint}{generation_hint}
+
 Create a JSON plan with an "operations" array.
 Operation types:
 1) model:
@@ -319,7 +329,7 @@ Operation types:
   "type": "model",
   "diagramType": "ClassDiagram|ObjectDiagram|StateMachineDiagram|AgentDiagram|GUINoCodeDiagram|QuantumCircuitDiagram",
   "mode": "single_element|complete_system|modify_model",
-  "request": "sub-request focused for this diagram"
+  "request": "sub-request focused ONLY on this specific diagram type"
 }}
 2) generation:
 {{
@@ -329,8 +339,10 @@ Operation types:
 }}
 
 Rules:
-- If the user asks for multiple diagrams in one prompt, emit multiple model operations in order.
-- If the user asks for generation too, emit a generation operation after modeling operations.
+- You MUST emit one model operation for EACH detected diagram target, in the order listed above.
+- Each model operation's "request" should be a focused sub-request for that specific diagram only.
+- If the user asks for generation too, emit a generation operation AFTER all modeling operations.
+- The ClassDiagram (structural) should always come first — other diagrams depend on it.
 - Keep operations minimal and deterministic.
 - Return ONLY valid JSON with the top-level shape: {{"operations":[...]}}.
 """

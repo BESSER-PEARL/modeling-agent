@@ -32,6 +32,7 @@ from handlers.generation_handler import (
     should_route_to_generation,
     detect_generator_type,
 )
+from handlers.file_conversion_handler import convert_file_to_diagram_spec
 from orchestrator import (
     plan_assistant_operations,
     determine_target_diagram_type,
@@ -152,16 +153,30 @@ def route_to_generation(session: Session) -> bool:
 
 
 try:
+    # NOTE: Do NOT put response_format in the global parameters dict.
+    # The BESSER framework's intent_classification() hardcodes
+    # response_format and then unpacks **parameters — having it in both
+    # causes "got multiple values for keyword argument 'response_format'".
     gpt = LLMOpenAI(
         agent=agent,
         name='gpt-4.1-mini',
         parameters={
             'temperature': 0.2,
             'max_completion_tokens': 8192,
-            'response_format': {'type': 'json_object'},
         },
         num_previous_messages=4
     )
+
+    # Thin wrapper that enforces JSON mode for predict() calls only.
+    _GPT_JSON_PARAMS = {
+        'temperature': 0.2,
+        'max_completion_tokens': 8192,
+        'response_format': {'type': 'json_object'},
+    }
+
+    def gpt_predict_json(prompt: str) -> str:
+        """Call gpt.predict with JSON-object response_format."""
+        return gpt.predict(prompt, parameters=_GPT_JSON_PARAMS)
 
     # Keep a second LLM handle WITHOUT json_object enforcement for free-text
     # responses (help, greetings, RAG fallback) where JSON mode would break.
@@ -430,7 +445,7 @@ def _execute_planned_operations(
         request=request,
         default_mode=default_mode,
         matched_intent=matched_intent,
-        llm_predict=gpt.predict,
+        llm_predict=gpt_predict_json,
     )
 
     if not operations:
@@ -532,7 +547,13 @@ generation_intent = agent.new_intent(
 
 def global_fallback_body(session: Session):
     """Handle unrecognized messages."""
-    user_message = get_user_message(session) or "your message"
+    request = parse_assistant_request(session)
+
+    # ── File attachment shortcut ──
+    if _handle_file_attachments(session, request):
+        return
+
+    user_message = request.message or "your message"
     try:
         answer = gpt_text.predict(
             f"You are a UML modeling assistant. The user said: '{user_message}'. "
@@ -555,13 +576,19 @@ def greetings_body(session: Session):
         "- Build systems: \"Create a library management system\"\n"
         "- Create agent diagrams: \"Create an agent\"\n"
         "- Modify diagrams: \"Add transition from welcome to menu\"\n"
-        "- UML specification: \"What does UML say about association classes?\"\n\n"
+        "- UML specification: \"What does UML say about association classes?\"\n"
+        "- Import from files: Attach a PlantUML, Knowledge Graph, or diagram image\n\n"
         "What would you like to create?"
     )
 
     # On initial state entry, session.event is None and connection isn't ready yet
     # Wait for the frontend's "hello" message to trigger the greeting
     if session.event is None:
+        return
+
+    # ── File attachment shortcut ──
+    request = parse_assistant_request(session)
+    if _handle_file_attachments(session, request):
         return
     
     # Check if this is a hello intent
@@ -583,10 +610,38 @@ def greetings_body(session: Session):
 
 greetings_state.set_body(greetings_body)
 
+
+def _handle_file_attachments(session: Session, request: AssistantRequest) -> bool:
+    """Process file attachments if present. Returns True if attachments were handled."""
+    if not request.has_attachments:
+        return False
+
+    openai_key = agent.get_property(nlp.OPENAI_API_KEY)
+
+    for attachment in request.attachments:
+        logger.info(
+            f"[FileConversion] Processing attachment: {attachment.filename} "
+            f"({attachment.mime_type}, {len(attachment.content_b64)} b64 chars)"
+        )
+        result = convert_file_to_diagram_spec(
+            file_content_b64=attachment.content_b64,
+            filename=attachment.filename,
+            llm_predict=gpt_predict_json,
+            openai_api_key=openai_key,
+        )
+        _reply_payload(session, result)
+
+    return True
+
+
 def _modeling_state_body(session: Session, intent_name: str, default_mode: str, empty_msg: str):
     """Unified handler for all modeling operations (single element, system, modification)."""
     session.set('last_matched_intent', intent_name)
     request = parse_assistant_request(session)
+
+    # ── File attachment shortcut ──
+    if _handle_file_attachments(session, request):
+        return
 
     if not request.message:
         _reply_message(session, empty_msg)
@@ -643,6 +698,10 @@ def modeling_help_body(session: Session):
     session.set('last_matched_intent', 'modeling_help_intent')
     request = parse_assistant_request(session)
 
+    # ── File attachment shortcut ──
+    if _handle_file_attachments(session, request):
+        return
+
     if not request.message:
         _reply_message(
             session,
@@ -677,6 +736,10 @@ def generation_body(session: Session):
     """Handle assistant-driven code generation orchestration."""
     session.set('last_matched_intent', GENERATION_INTENT_NAME)
     request = parse_assistant_request(session)
+
+    # ── File attachment shortcut ──
+    if _handle_file_attachments(session, request):
+        return
 
     try:
         response_payload = handle_generation_request(session, request)
@@ -758,8 +821,14 @@ for _state, _fallback in [
 def uml_rag_body(session: Session):
     """Answer UML specification questions using RAG."""
     session.set('last_matched_intent', 'uml_spec_intent')
-    user_message = get_user_message(session)
-    
+    request = parse_assistant_request(session)
+
+    # ── File attachment shortcut ──
+    if _handle_file_attachments(session, request):
+        return
+
+    user_message = request.message or get_user_message(session)
+
     if not user_message:
         _reply_message(session, "Please ask a question about UML specifications.")
         return

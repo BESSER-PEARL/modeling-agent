@@ -24,6 +24,15 @@ class WorkspaceContext:
 
 
 @dataclass
+class FileAttachment:
+    """A file uploaded alongside a user message."""
+
+    filename: str = ""
+    content_b64: str = ""
+    mime_type: str = ""
+
+
+@dataclass
 class AssistantRequest:
     """Canonical request object consumed by assistant states."""
 
@@ -37,7 +46,12 @@ class AssistantRequest:
     current_model: Optional[Dict[str, Any]] = None
     context: WorkspaceContext = field(default_factory=WorkspaceContext)
     raw_payload: Dict[str, Any] = field(default_factory=dict)
+    attachments: List[FileAttachment] = field(default_factory=list)
 
     @property
     def is_v2(self) -> bool:
         return self.protocol_version == "2.0"
+
+    @property
+    def has_attachments(self) -> bool:
+        return len(self.attachments) > 0

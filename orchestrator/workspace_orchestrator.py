@@ -3,18 +3,34 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from protocol.types import AssistantRequest, SUPPORTED_DIAGRAM_TYPES
 
 KEYWORD_TARGETS = [
+    # Class / Structural
+    ("class diagram", "ClassDiagram"),
+    ("class model", "ClassDiagram"),
+    ("structural model", "ClassDiagram"),
+    ("structural diagram", "ClassDiagram"),
+    ("the structural", "ClassDiagram"),
+    ("domain model", "ClassDiagram"),
+    # Object
+    ("object diagram", "ObjectDiagram"),
+    ("object model", "ObjectDiagram"),
+    # State Machine
     ("state machine", "StateMachineDiagram"),
     ("statemachine", "StateMachineDiagram"),
     ("state diagram", "StateMachineDiagram"),
-    ("object diagram", "ObjectDiagram"),
-    ("object model", "ObjectDiagram"),
+    # Agent
     ("agent diagram", "AgentDiagram"),
     ("agent model", "AgentDiagram"),
-    ("class diagram", "ClassDiagram"),
-    ("class model", "ClassDiagram"),
+    ("agent that", "AgentDiagram"),
+    ("an agent", "AgentDiagram"),
+    ("chatbot", "AgentDiagram"),
+    # GUI
     ("gui diagram", "GUINoCodeDiagram"),
     ("graphical ui", "GUINoCodeDiagram"),
     ("web ui", "GUINoCodeDiagram"),
+    ("the gui", "GUINoCodeDiagram"),
+    ("a gui", "GUINoCodeDiagram"),
+    ("gui generated", "GUINoCodeDiagram"),
+    # Quantum
     ("quantum circuit", "QuantumCircuitDiagram"),
     ("quantum diagram", "QuantumCircuitDiagram"),
     ("quantum", "QuantumCircuitDiagram"),

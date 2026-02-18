@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, Tuple
 from besser.agent.core.session import Session
 from besser.agent.library.transition.events.base_events import ReceiveJSONEvent
 
-from .types import AssistantRequest, WorkspaceContext, SUPPORTED_DIAGRAM_TYPES
+from .types import AssistantRequest, FileAttachment, WorkspaceContext, SUPPORTED_DIAGRAM_TYPES
 
 DIAGRAM_PREFIX_PATTERN = re.compile(r"^\[DIAGRAM_TYPE:(\w+)\]\s*(.+)$", re.DOTALL)
 
@@ -188,6 +188,20 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         diagram_summaries=diagram_summaries,
     )
 
+    # ── Parse file attachments ──
+    raw_attachments = raw_payload.get("attachments")
+    attachments = []
+    if isinstance(raw_attachments, list):
+        for att in raw_attachments:
+            if isinstance(att, dict) and isinstance(att.get("content"), str):
+                attachments.append(
+                    FileAttachment(
+                        filename=att.get("filename", "unknown") if isinstance(att.get("filename"), str) else "unknown",
+                        content_b64=att["content"],
+                        mime_type=att.get("mimeType", "") if isinstance(att.get("mimeType"), str) else "",
+                    )
+                )
+
     return AssistantRequest(
         action=raw_payload.get("action") if isinstance(raw_payload.get("action"), str) else "user_message",
         protocol_version="2.0",
@@ -203,6 +217,7 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         current_model=current_model,
         context=context,
         raw_payload=raw_payload,
+        attachments=attachments,
     )
 
 
