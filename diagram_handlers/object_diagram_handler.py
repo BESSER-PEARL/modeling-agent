@@ -405,8 +405,8 @@ Examples:
 
 Return ONLY the JSON, no explanations."""
     
-    def generate_single_element(self, user_request: str, reference_diagram: Dict[str, Any] = None,
-                                existing_model: Dict[str, Any] = None) -> Dict[str, Any]:
+    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
+                                reference_diagram: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a single object instance with deterministic positioning."""
         
         system_prompt = self.get_system_prompt()
@@ -447,8 +447,8 @@ Return ONLY the JSON, no explanations."""
             logger.error("[ObjectDiagram] generate_single_element FAILED", exc_info=True)
             return self.generate_fallback_element(user_request)
     
-    def generate_complete_system(self, user_request: str, reference_diagram: Dict[str, Any] = None,
-                                existing_model: Dict[str, Any] = None) -> Dict[str, Any]:
+    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None,
+                                reference_diagram: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a complete object diagram with deterministic positioning."""
 
         classes, class_relationships = self._extract_reference_catalog(reference_diagram)

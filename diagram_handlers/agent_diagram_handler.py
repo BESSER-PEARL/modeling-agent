@@ -212,6 +212,9 @@ IMPORTANT RULES:
             ]
         }
 
+        # Apply deterministic positioning so the element doesn't render at 0,0
+        self.apply_single_layout(fallback_spec, None)
+
         return {
             "action": "inject_element",
             "element": fallback_spec,
@@ -285,6 +288,9 @@ IMPORTANT RULES:
                 }
             ]
         }
+
+        # Apply deterministic positioning so elements don't render at 0,0
+        self.apply_system_layout(system_spec, None)
 
         return {
             "action": "inject_complete_system",

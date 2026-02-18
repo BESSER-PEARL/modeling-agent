@@ -6,10 +6,13 @@ Handles generation of QuantumCircuitDiagram models.
 from __future__ import annotations
 
 import copy
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from .base_handler import BaseDiagramHandler
 from utilities.model_helpers import detailed_model_summary
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_QUBITS = 5
 MAX_QUBITS = 12
@@ -219,6 +222,7 @@ Rules:
                 "message": "Added one quantum gate operation.",
             }
         except Exception:
+            logger.error("[QuantumCircuit] generate_single_element FAILED", exc_info=True)
             return self.generate_fallback_element(user_request)
 
     def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
@@ -263,6 +267,7 @@ Rules:
                 "message": f"Created quantum circuit with {len(model.get('cols', []))} column(s).",
             }
         except Exception:
+            logger.error("[QuantumCircuit] generate_complete_system FAILED", exc_info=True)
             return self.generate_fallback_system()
 
     def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:

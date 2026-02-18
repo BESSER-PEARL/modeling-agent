@@ -12,7 +12,7 @@ import logging
 import os
 import threading
 import uuid
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional
 from abc import ABC, abstractmethod
 
 from .layout_engine import apply_layout
@@ -223,9 +223,9 @@ class BaseDiagramHandler(ABC):
         # Skip any leading prose to find the JSON object/array
         for i, ch in enumerate(text):
             if ch in ('{', '['):
-                text = text[i:]
-                break
-        return text.strip()
+                return text[i:].strip()
+        # No JSON opener found — return text as-is and let the caller handle it
+        return text
 
     def generate_uuid(self) -> str:
         """Generate a unique UUID"""

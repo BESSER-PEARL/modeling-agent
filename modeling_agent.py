@@ -4,6 +4,7 @@
 import logging
 import json
 import os
+import re
 from typing import Dict, Any, List, Optional
 
 from langchain_openai import OpenAIEmbeddings
@@ -290,6 +291,17 @@ _KEEP_KEYWORDS = [
 ]
 _CANCEL_KEYWORDS = ['cancel', 'never mind', 'forget', 'stop', 'abort']
 
+# Short words that must match as whole words to avoid false positives
+# (e.g. "no" should not match inside "nothing", "note", "another").
+_WHOLE_WORD_KEYWORDS = {'no'}
+
+
+def _keyword_matches(keyword: str, text: str) -> bool:
+    """Check if *keyword* appears in *text*, using word-boundary matching for short ambiguous words."""
+    if keyword in _WHOLE_WORD_KEYWORDS:
+        return bool(re.search(rf'\b{re.escape(keyword)}\b', text))
+    return keyword in text
+
 
 def _model_has_elements(model: Optional[Dict[str, Any]]) -> bool:
     """Return True when *model* contains at least one user-visible element."""
@@ -313,14 +325,14 @@ def _handle_pending_system_confirmation(session: Session) -> bool:
     request = parse_assistant_request(session)
     user_msg = (request.message or '').lower().strip()
 
-    wants_cancel = any(w in user_msg for w in _CANCEL_KEYWORDS)
+    wants_cancel = any(_keyword_matches(w, user_msg) for w in _CANCEL_KEYWORDS)
     if wants_cancel:
         session.set('pending_complete_system', None)
         _reply_message(session, "Cancelled. Your existing model is unchanged.")
         return True
 
-    wants_replace = any(w in user_msg for w in _REPLACE_KEYWORDS)
-    wants_keep = any(w in user_msg for w in _KEEP_KEYWORDS)
+    wants_replace = any(_keyword_matches(w, user_msg) for w in _REPLACE_KEYWORDS)
+    wants_keep = any(_keyword_matches(w, user_msg) for w in _KEEP_KEYWORDS)
 
     if not wants_replace and not wants_keep:
         # The user's message doesn't look like a confirmation — clear the
