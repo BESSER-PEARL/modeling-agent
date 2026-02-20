@@ -293,6 +293,22 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     generator_type = detected_generator or pending_generator
 
     if not generator_type:
+        # Check if the user actually wants a diagram (GUI/frontend), not code
+        _gui_hints = [
+            "gui", "frontend", "no-code", "nocode", "grapesjs",
+            "diagram", "ui diagram", "gui diagram", "create the gui",
+        ]
+        _lower_msg = (request.message or "").lower()
+        if any(hint in _lower_msg for hint in _gui_hints):
+            return {
+                "action": "assistant_message",
+                "message": (
+                    "It sounds like you want to create a GUI diagram rather "
+                    "than generate source code. Try saying something like: "
+                    '**"create a GUI for the shoe store"** or '
+                    '**"create the frontend diagram"**.'
+                ),
+            }
         return {
             "action": "assistant_message",
             "message": (

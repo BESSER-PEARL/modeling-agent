@@ -93,8 +93,11 @@ create_complete_system_intent = agent.new_intent(
         'classes/elements. Keywords: "create a library system", "create a '
         'class diagram for", "design an e-commerce", "generate a banking '
         'application", "build a system", "create a diagram for", "model a", '
-        '"create classes for". This is for creating MULTIPLE elements or a '
-        "complete model."
+        '"create classes for", "generate the gui", "create the gui", '
+        '"generate the frontend", "create a frontend", "gui diagram", '
+        '"generate a gui diagram", "build the frontend". '
+        "This is for creating MULTIPLE elements, a complete model, or a "
+        "GUI / frontend diagram — NOT for generating source code artifacts."
     ),
 )
 modify_model_intent = agent.new_intent(
@@ -126,8 +129,12 @@ uml_spec_intent = agent.new_intent(
 generation_intent = agent.new_intent(
     name=GENERATION_INTENT_NAME,
     description=(
-        "The user wants to generate code/artifacts (e.g., django, backend, "
-        "web app, sql, jsonschema, qiskit, python, java, pydantic, agent)."
+        "The user wants to generate deployable source code or technical "
+        "artifacts from an existing model. Generators include: django, "
+        "backend, web_app, sql, sqlalchemy, jsonschema, qiskit, python, "
+        "java, pydantic, agent. This is strictly for CODE GENERATION, "
+        "NOT for creating or generating diagrams, models, GUIs, or "
+        "frontends — those belong to the modeling/creation intents."
     ),
 )
 
