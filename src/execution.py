@@ -134,21 +134,36 @@ def execute_model_operation(
             return None
 
     # ── GUI Auto-Generate shortcut ──────────────────────────────────────────
+    # Only use the deterministic frontend auto-generate when the user's
+    # request is generic (e.g. "create a GUI", "generate the frontend").
+    # When they ask for specific customisations (charts, dashboards, custom
+    # layouts, specific pages, etc.) let the LLM-driven handler run instead.
+    _CUSTOM_GUI_HINTS = {
+        "chart", "dashboard", "custom", "specific", "page for",
+        "sidebar", "metric", "kpi", "landing", "hero",
+        "form", "layout", "only", "just", "don't include",
+        "exclude", "style", "theme", "color", "dark",
+    }
     if target_diagram_type == "GUINoCodeDiagram" and operation_mode in ("complete_system", None, ""):
-        class_diagram_model = resolve_class_diagram(request)
-        if isinstance(class_diagram_model, dict):
-            elements = class_diagram_model.get("elements")
-            if isinstance(elements, dict) and len(elements) > 0:
-                logger.info("[ModelOp] Routing GUI complete_system to frontend auto-generate")
-                reply_payload(session, {
-                    "action": "auto_generate_gui",
-                    "diagramType": "GUINoCodeDiagram",
-                    "message": (
-                        "I'll generate the GUI automatically from your Class Diagram. "
-                        "Each class will get its own page with a data table and method buttons."
-                    ),
-                })
-                return target_diagram_type
+        _req_lower = (operation_request or "").lower()
+        _wants_custom = any(hint in _req_lower for hint in _CUSTOM_GUI_HINTS)
+        if not _wants_custom:
+            class_diagram_model = resolve_class_diagram(request)
+            if isinstance(class_diagram_model, dict):
+                elements = class_diagram_model.get("elements")
+                if isinstance(elements, dict) and len(elements) > 0:
+                    logger.info("[ModelOp] Routing GUI complete_system to frontend auto-generate")
+                    reply_payload(session, {
+                        "action": "auto_generate_gui",
+                        "diagramType": "GUINoCodeDiagram",
+                        "message": (
+                            "I'll generate the GUI automatically from your Class Diagram. "
+                            "Each class will get its own page with a data table and method buttons."
+                        ),
+                    })
+                    return target_diagram_type
+        else:
+            logger.info("[ModelOp] Custom GUI request detected — using LLM-driven path")
 
     handler = ctx.diagram_factory.get_handler(target_diagram_type)
     if not handler:
