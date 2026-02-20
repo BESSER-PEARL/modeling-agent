@@ -130,9 +130,12 @@ generation_intent = agent.new_intent(
     name=GENERATION_INTENT_NAME,
     description=(
         "The user wants to generate deployable source code or technical "
-        "artifacts from an existing model. Generators include: django, "
-        "backend, web_app, sql, sqlalchemy, jsonschema, qiskit, python, "
-        "java, pydantic, agent. This is strictly for CODE GENERATION, "
+        "artifacts from an existing model, or export/deploy their project. "
+        "Generators include: django, backend, web_app, sql, sqlalchemy, "
+        "jsonschema, qiskit, python, java, pydantic, agent. "
+        "Export: 'export to json', 'export buml', 'download project'. "
+        "Deploy: 'deploy to render', 'publish app', 'deploy application'. "
+        "This is strictly for CODE GENERATION, EXPORT, or DEPLOYMENT, "
         "NOT for creating or generating diagrams, models, GUIs, or "
         "frontends — those belong to the modeling/creation intents."
     ),

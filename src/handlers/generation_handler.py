@@ -29,6 +29,22 @@ GENERATOR_KEYWORDS: Dict[str, List[str]] = {
     "smartdata": ["smart data", "smartdata"],
     "agent": ["besser agent", "agent generator", "generate agent"],
     "qiskit": ["qiskit", "quantum code", "quantum generator", "quantum circuit code", "ibm quantum"],
+    "export": [
+        "export project", "export the project", "export my project",
+        "export to json", "export into json", "export as json", "export json",
+        "export to buml", "export into buml", "export as buml", "export buml",
+        "export model", "export the model", "export my model",
+        "download project", "download the project", "download my project",
+        "save as json", "save as buml", "save project",
+        "export diagram", "export the diagram",
+    ],
+    "deploy": [
+        "deploy to render", "deploy on render", "deploy app", "deploy the app",
+        "deploy application", "deploy the application", "deploy my app",
+        "deploy to cloud", "deploy project", "deploy the project",
+        "deploy my project", "render deploy", "publish app", "publish the app",
+        "publish to render", "publish my app",
+    ],
 }
 
 GENERATOR_REQUIRED_FIELDS: Dict[str, List[str]] = {
@@ -39,7 +55,11 @@ GENERATOR_REQUIRED_FIELDS: Dict[str, List[str]] = {
     "jsonschema": ["mode"],
     "smartdata": [],
     "qiskit": ["backend", "shots"],
+    "export": ["format"],
+    "deploy": [],
 }
+
+EXPORT_FORMATS = ["json", "buml"]
 
 DIALECT_VALUES = ["sqlite", "postgresql", "mysql", "mssql", "mariadb", "oracle"]
 MODE_VALUES = ["regular", "smart_data"]
@@ -55,12 +75,27 @@ def _sanitize_identifier(value: str, fallback: str) -> str:
     return cleaned
 
 
+# Regex fallback patterns for natural phrasing that keyword lists may miss.
+# These are tried only when no exact keyword matches.
+_FUZZY_PATTERNS: List[Tuple[str, re.Pattern]] = [
+    ("export", re.compile(
+        r"\b(?:export|download|save)\b.*\b(?:json|buml|project|model|diagram)\b", re.I)),
+    ("deploy", re.compile(
+        r"\b(?:deploy|publish)\b.*\b(?:render|cloud|app|application|project)\b", re.I)),
+]
+
+
 def detect_generator_type(message: str) -> Optional[str]:
     lower = (message or "").lower()
+    # 1. Exact keyword matching (fast path)
     for generator_type, keywords in GENERATOR_KEYWORDS.items():
         for keyword in keywords:
             if keyword in lower:
                 return generator_type
+    # 2. Regex fallback for flexible phrasing
+    for generator_type, pattern in _FUZZY_PATTERNS:
+        if pattern.search(lower):
+            return generator_type
     return None
 
 
@@ -150,6 +185,14 @@ def parse_inline_generator_config(
         if shots_match:
             config["shots"] = int(shots_match.group(1))
 
+    elif generator_type == "export":
+        for fmt in EXPORT_FORMATS:
+            if fmt in lower:
+                config["format"] = fmt
+                break
+
+    # Deploy: no inline config needed — the frontend dialog handles everything.
+
     return config
 
 
@@ -198,6 +241,13 @@ def _build_config_prompt(generator_type: str, missing_fields: List[str]) -> str:
             f"- **Backend**: {', '.join(f'`{b}`' for b in QISKIT_BACKENDS)}\n"
             "- **Shots**: number of measurement repetitions (e.g. `1024`)\n\n"
             "Example: `backend=aer_simulator shots=1024`"
+        )
+    if generator_type == "export":
+        return (
+            "Which **format** would you like to export your project in?\n\n"
+            "- `json` \u2014 full project snapshot as a JSON file\n"
+            "- `buml` \u2014 B-UML textual notation\n\n"
+            "Just type `json` or `buml`."
         )
     return f"I still need these settings: {', '.join(f'`{f}`' for f in missing_fields)}."
 
@@ -332,13 +382,15 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         return {
             "action": "assistant_message",
             "message": (
-                "What would you like me to generate? Here are the available generators:\n\n"
+                "What would you like me to generate? Here are the available options:\n\n"
                 "**Web & Backend**: `django`, `backend`, `web_app`\n"
                 "**Database**: `sql`, `sqlalchemy`\n"
                 "**Code**: `python`, `java`, `pydantic`\n"
                 "**Data formats**: `jsonschema`, `smartdata`\n"
                 "**Other**: `agent`, `qiskit`\n\n"
-                "Just say something like *'generate sqlalchemy'* or *'generate django'*."
+                "**Export**: `export json` or `export buml`\n"
+                "**Deploy**: `deploy to render`\n\n"
+                "Just say something like *'generate sqlalchemy'* or *'export to json'*."
             ),
         }
 
@@ -362,6 +414,28 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     config = _normalize_defaults(generator_type, request, config)
 
     _clear_pending_state(session)
+    # ------------------------------------------------------------------
+    # Special actions: export & deploy
+    # ------------------------------------------------------------------
+    if generator_type == "export":
+        fmt = config.get("format", "json")
+        return {
+            "action": "trigger_export",
+            "format": fmt,
+            "message": f"Exporting your project as **{fmt.upper()}** \u2014 the download should start shortly.",
+        }
+
+    if generator_type == "deploy":
+        return {
+            "action": "trigger_deploy",
+            "platform": "render",
+            "config": {},
+            "message": (
+                "Opening the **Deploy to Render** dialog \u2014 "
+                "please connect to GitHub if you haven\u2019t already, "
+                "then fill in the repository details and hit **Publish**."
+            ),
+        }
     return {
         "action": "trigger_generator",
         "generatorType": generator_type,
