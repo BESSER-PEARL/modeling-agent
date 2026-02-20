@@ -180,11 +180,18 @@ IMPORTANT RULES:
                 initial_node.pop("position", None)
             self.apply_system_layout(normalized_system, existing_model)
 
-            message = (
-                f"Created agent system '{normalized_system.get('systemName')}' with "
-                f"{len(normalized_system.get('states', []))} states and "
-                f"{len(normalized_system.get('intents', []))} intents."
-            )
+            states = normalized_system.get('states', [])
+            intents = normalized_system.get('intents', [])
+            sys_name = normalized_system.get('systemName', 'AgentSystem')
+            state_names = [s.get('stateName', '?') for s in states[:5]]
+            intent_names = [i.get('intentName', '?') for i in intents[:5]]
+            parts = [f"Built the **{sys_name}** agent system"]
+            if state_names:
+                parts.append(f" with states: {', '.join(f'**{n}**' for n in state_names)}")
+            if intent_names:
+                parts.append(f" and intents: {', '.join(f'**{n}**' for n in intent_names)}")
+            parts.append(". Feel free to ask me to add more conversation flows or modify existing ones!")
+            message = "".join(parts)
 
             return {
                 "action": "inject_complete_system",
@@ -219,7 +226,7 @@ IMPORTANT RULES:
             "action": "inject_element",
             "element": fallback_spec,
             "diagramType": self.get_diagram_type(),
-            "message": f"Created a starter agent state '{fallback_spec['stateName']}'. Try describing the conversation flow in more detail."
+            "message": f"I created a starter **{fallback_spec['stateName']}** agent state. Describe the conversation flow in more detail and I'll add intents, replies, and transitions!"
         }
 
     def generate_fallback_system(self, request: str = "Agent") -> Dict[str, Any]:
@@ -296,7 +303,7 @@ IMPORTANT RULES:
             "action": "inject_complete_system",
             "systemSpec": system_spec,
             "diagramType": self.get_diagram_type(),
-            "message": "Created a starter agent system. Try describing the conversation scenarios in more detail for a richer result."
+            "message": "I created a starter chatbot agent with greeting and support flows. Describe your conversation scenarios in more detail (e.g. *'Create a pizza ordering bot with menu browsing and checkout'*) and I'll build a richer system!"
         }
 
     # ------------------------------------------------------------------
@@ -525,24 +532,31 @@ IMPORTANT RULES:
         return normalized
 
     def _build_single_element_message(self, spec: Dict[str, Any]) -> str:
-        """Generate a friendly status message for a single element"""
+        """Generate a friendly status message for a single element."""
         element_type = spec.get("type")
 
         if element_type == "intent":
+            name = spec.get("intentName", "Intent")
             phrases = spec.get("trainingPhrases", [])
-            return (
-                f"Created agent intent '{spec.get('intentName')}' "
-                f"with {len(phrases)} training phrase(s)."
-            )
+            phrase_preview = ", ".join(f'*"{p}"*' for p in phrases[:3])
+            msg = f"Created the **{name}** intent"
+            if phrase_preview:
+                msg += f" with training phrases: {phrase_preview}"
+                if len(phrases) > 3:
+                    msg += f" (+{len(phrases) - 3} more)"
+            msg += ". You can ask me to add more intents or connect them to states!"
+            return msg
 
         if element_type == "initial":
-            return "Created agent initial node."
+            return "Created the **initial node** for the agent flow. Add states and intents to build out the conversation!"
 
+        name = spec.get("stateName", "State")
         replies = spec.get("replies", [])
-        return (
-            f"Created agent state '{spec.get('stateName')}' "
-            f"with {len(replies)} reply option(s)."
-        )
+        msg = f"Created agent state **{name}**"
+        if replies:
+            msg += f" with {len(replies)} reply option(s)"
+        msg += ". You can ask me to add transitions, intents, or more states!"
+        return msg
 
     # ------------------------------------------------------------------
     # Modification Support (NEW)
@@ -727,6 +741,6 @@ IMPORTANT RULES:
                 "changes": {"name": "modifiedState"}
             },
             "diagramType": self.get_diagram_type(),
-            "message": "Failed to generate modification automatically (fallback used)."
+                "message": "I couldn't apply that modification automatically. Could you rephrase it? For example: *'Rename the greeting state to welcome'* or *'Add a new intent called OrderPizza'*."
         }
 

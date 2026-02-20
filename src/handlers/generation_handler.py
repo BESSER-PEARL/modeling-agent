@@ -161,25 +161,45 @@ def _required_missing(generator_type: str, config: Dict[str, Any]) -> List[str]:
 def _build_config_prompt(generator_type: str, missing_fields: List[str]) -> str:
     if generator_type == "django":
         return (
-            "To generate Django code I need: `project_name`, `app_name`, and `containerization`.\n"
-            "Example: `project_name=my_project app_name=core_app containerization=true`."
+            "To generate your **Django** project, I need a few details:\n\n"
+            "- **Project name** — the top-level Django project (e.g. `my_project`)\n"
+            "- **App name** — the Django app inside it (e.g. `core_app`)\n"
+            "- **Containerization** — include Docker setup? (`true` / `false`)\n\n"
+            "You can provide them like: `project_name=my_project app_name=core_app containerization=true`"
         )
     if generator_type == "sql":
-        return f"Choose SQL dialect: {', '.join(DIALECT_VALUES)}."
+        return (
+            "Which **SQL dialect** should I target?\n\n"
+            f"Options: {', '.join(f'`{d}`' for d in DIALECT_VALUES)}"
+        )
     if generator_type == "sqlalchemy":
-        return f"Choose SQLAlchemy DBMS: {', '.join(DIALECT_VALUES)}."
+        return (
+            "Which **database management system** should the SQLAlchemy code target?\n\n"
+            f"Options: {', '.join(f'`{d}`' for d in DIALECT_VALUES)}"
+        )
     if generator_type == "jsonschema":
-        return f"Choose JSON Schema mode: {', '.join(MODE_VALUES)}."
+        return (
+            "Which **JSON Schema mode** would you like?\n\n"
+            f"Options: {', '.join(f'`{m}`' for m in MODE_VALUES)}"
+        )
     if generator_type == "backend":
-        return "Choose a backend framework: fastapi, flask, or django (default: django)."
+        return (
+            "Which **backend framework** should I use?\n\n"
+            "Options: `fastapi`, `flask`, or `django`"
+        )
     if generator_type == "smartdata":
-        return "Choose SmartData output format: json or rdf (default: json)."
+        return (
+            "Which **output format** for SmartData?\n\n"
+            "Options: `json` or `rdf`"
+        )
     if generator_type == "qiskit":
         return (
-            "Provide qiskit backend and shots.\n"
-            f"Backends: {', '.join(QISKIT_BACKENDS)}. Example: `backend=aer_simulator shots=1024`."
+            "I need a couple of settings for the **Qiskit** generator:\n\n"
+            f"- **Backend**: {', '.join(f'`{b}`' for b in QISKIT_BACKENDS)}\n"
+            "- **Shots**: number of measurement repetitions (e.g. `1024`)\n\n"
+            "Example: `backend=aer_simulator shots=1024`"
         )
-    return f"I still need: {', '.join(missing_fields)}."
+    return f"I still need these settings: {', '.join(f'`{f}`' for f in missing_fields)}."
 
 
 def _get_pending_state(session: Session) -> Tuple[Optional[str], Dict[str, Any]]:
@@ -312,8 +332,13 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         return {
             "action": "assistant_message",
             "message": (
-                "Tell me what to generate. Supported generators: django, backend, web_app, sql, "
-                "sqlalchemy, python, java, pydantic, jsonschema, smartdata, agent, qiskit."
+                "What would you like me to generate? Here are the available generators:\n\n"
+                "**Web & Backend**: `django`, `backend`, `web_app`\n"
+                "**Database**: `sql`, `sqlalchemy`\n"
+                "**Code**: `python`, `java`, `pydantic`\n"
+                "**Data formats**: `jsonschema`, `smartdata`\n"
+                "**Other**: `agent`, `qiskit`\n\n"
+                "Just say something like *'generate sqlalchemy'* or *'generate django'*."
             ),
         }
 
@@ -341,5 +366,5 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         "action": "trigger_generator",
         "generatorType": generator_type,
         "config": config,
-        "message": f"Triggering {generator_type} generation.",
+        "message": f"Starting **{generator_type}** code generation — this may take a moment.",
     }

@@ -87,11 +87,7 @@ Return ONLY the JSON, no explanations."""
             simple_spec.pop("position", None)
             self.apply_single_layout(simple_spec, existing_model)
 
-            message = (
-                f"Created class '{simple_spec['className']}' with "
-                f"{len(simple_spec.get('attributes', []))} attribute(s) and "
-                f"{len(simple_spec.get('methods', []))} method(s)."
-            )
+            message = self._build_single_element_message(simple_spec)
 
             return {
                 "action": "inject_element",
@@ -190,11 +186,7 @@ Return ONLY the JSON, no explanations."""
                 cls.pop("position", None)
             self.apply_system_layout(system_spec, existing_model)
 
-            message = (
-                f"Created {system_spec.get('systemName', 'your')} system with "
-                f"{len(system_spec.get('classes', []))} class(es) and "
-                f"{len(system_spec.get('relationships', []))} relationship(s)."
-            )
+            message = self._build_system_message(system_spec)
 
             return {
                 "action": "inject_complete_system",
@@ -227,7 +219,7 @@ Return ONLY the JSON, no explanations."""
             "action": "inject_element",
             "element": fallback_spec,
             "diagramType": self.get_diagram_type(),
-            "message": f"Created a starter {class_name} class. Try describing it in more detail for a richer result."
+            "message": f"I created a starter **{class_name}** class with some default attributes. Feel free to describe it in more detail and I'll refine it!"
         }
 
     def generate_fallback_system(self) -> Dict[str, Any]:
@@ -253,9 +245,45 @@ Return ONLY the JSON, no explanations."""
             "action": "inject_complete_system",
             "systemSpec": fallback_system,
             "diagramType": self.get_diagram_type(),
-            "message": "Created a starter diagram. Try describing your system in more detail for a richer result."
+            "message": "I created a starter diagram with a basic **Entity** class. Describe your system in more detail (e.g. *'Create a library with books, authors, and members'*) and I'll build a richer model!"
         }
     
+    # ------------------------------------------------------------------
+    # Message Builders
+    # ------------------------------------------------------------------
+
+    def _build_single_element_message(self, spec: Dict[str, Any]) -> str:
+        """Build a descriptive message for a single class creation."""
+        name = spec.get("className", "Class")
+        attrs = spec.get("attributes", [])
+        methods = spec.get("methods", [])
+        attr_names = [a.get("name", "") for a in attrs[:5]]
+        parts = [f"Created the **{name}** class"]
+        if attr_names:
+            parts.append(f" with attributes: {', '.join(f'`{n}`' for n in attr_names)}")
+            if len(attrs) > 5:
+                parts.append(f" (+{len(attrs) - 5} more)")
+        if methods:
+            parts.append(f" and {len(methods)} method(s)")
+        parts.append(". You can ask me to add relationships, new attributes, or create more classes!")
+        return "".join(parts)
+
+    def _build_system_message(self, spec: Dict[str, Any]) -> str:
+        """Build a descriptive message for a complete class diagram system."""
+        system_name = spec.get("systemName", "System")
+        classes = spec.get("classes", [])
+        rels = spec.get("relationships", [])
+        class_names = [c.get("className", "?") for c in classes[:6]]
+        msg = f"Built the **{system_name}** class diagram with {len(classes)} class(es)"
+        if class_names:
+            msg += f": {', '.join(f'**{n}**' for n in class_names)}"
+            if len(classes) > 6:
+                msg += f" (+{len(classes) - 6} more)"
+        if rels:
+            msg += f" and {len(rels)} relationship(s)"
+        msg += ". Feel free to ask me to modify or extend any part of the diagram!"
+        return msg
+
     # ------------------------------------------------------------------
     # Modification Support (Existing - Updated for new architecture)
     # ------------------------------------------------------------------
@@ -524,5 +552,5 @@ Return ONLY the JSON object – no explanations"""
                 "changes": {"name": "ModifiedClass"}
             },
             "diagramType": self.get_diagram_type(),
-            "message": "Could not apply the modification automatically. Try rephrasing your request."
+            "message": "I couldn't apply that modification automatically. Could you rephrase your request? For example: *'Add a phone attribute to User'* or *'Create a relationship between Order and Product'*."
         }

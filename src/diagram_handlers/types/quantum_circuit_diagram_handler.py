@@ -219,7 +219,7 @@ Rules:
                 "action": "inject_element",
                 "diagramType": self.get_diagram_type(),
                 "model": model,
-                "message": "Added one quantum gate operation.",
+                "message": "Added a quantum gate operation to the circuit.",
             }
         except Exception:
             logger.error("[QuantumCircuit] generate_single_element FAILED", exc_info=True)
@@ -264,7 +264,7 @@ Rules:
                 "action": "inject_complete_system",
                 "diagramType": self.get_diagram_type(),
                 "model": model,
-                "message": f"Created quantum circuit with {len(model.get('cols', []))} column(s).",
+                "message": f"Created a quantum circuit with {len(model.get('cols', []))} step(s) across {model.get('qubitCount', '?')} qubit(s).",
             }
         except Exception:
             logger.error("[QuantumCircuit] generate_complete_system FAILED", exc_info=True)
@@ -321,14 +321,14 @@ Rules:
                 "action": "modify_model",
                 "diagramType": self.get_diagram_type(),
                 "model": model,
-                "message": f"Quantum circuit {action_label} with {len(typed_operations)} operation(s).",
+                "message": f"Quantum circuit **{action_label}** with {len(typed_operations)} operation(s). You can add more gates or change the circuit layout!",
             }
         except Exception:
             return {
                 "action": "modify_model",
                 "diagramType": self.get_diagram_type(),
                 "model": base_model,
-                "message": "Could not parse requested quantum modification; kept the current circuit unchanged.",
+                "message": "I couldn't parse the requested modification, so the current circuit is unchanged. Try rephrasing, e.g. *'Add an X gate to qubit 1'*.",
             }
 
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
@@ -341,7 +341,7 @@ Rules:
             "action": "inject_element",
             "diagramType": self.get_diagram_type(),
             "model": model,
-            "message": "Added a basic Hadamard gate (fallback).",
+            "message": "I created a basic Hadamard gate as a starting point. Describe your circuit (e.g. *'Create a Bell state circuit'* or *'Apply H to qubit 0 then CNOT on qubits 0,1'*) for a more complex result!",
         }
 
     def generate_fallback_system(self) -> Dict[str, Any]:
@@ -359,5 +359,5 @@ Rules:
             "action": "inject_complete_system",
             "diagramType": self.get_diagram_type(),
             "model": model,
-            "message": "Created a basic Bell-state circuit (fallback).",
+            "message": "I created a basic Bell-state circuit as a starting point. Describe your quantum algorithm in more detail for a custom circuit!",
         }

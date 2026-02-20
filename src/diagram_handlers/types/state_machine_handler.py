@@ -75,7 +75,7 @@ Return ONLY the JSON, no explanations."""
                 "action": "inject_element",
                 "element": state_spec,
                 "diagramType": "StateMachineDiagram",
-                "message": f"Created state '{state_spec['stateName']}'."
+                "message": self._build_single_state_message(state_spec)
             }
             
         except Exception as e:
@@ -142,11 +142,7 @@ Return ONLY the JSON, no explanations."""
                 "action": "inject_complete_system",
                 "systemSpec": system_spec,
                 "diagramType": "StateMachineDiagram",
-                "message": (
-                    f"Created state machine '{system_spec.get('systemName', 'StateMachine')}' with "
-                    f"{len(system_spec.get('states', []))} state(s) and "
-                    f"{len(system_spec.get('transitions', []))} transition(s)."
-                )
+                "message": self._build_system_message(system_spec)
             }
             
         except Exception as e:
@@ -172,7 +168,7 @@ Return ONLY the JSON, no explanations."""
             "action": "inject_element",
             "element": fallback_spec,
             "diagramType": "StateMachineDiagram",
-            "message": f"Created a starter state '{state_name}'. Try describing your state machine in more detail."
+            "message": f"I created a starter **{state_name}** state. Describe the state machine flow in more detail and I'll add transitions and guards!"
         }
     
     def generate_fallback_system(self) -> Dict[str, Any]:
@@ -227,8 +223,39 @@ Return ONLY the JSON, no explanations."""
             "action": "inject_complete_system",
             "systemSpec": fallback_system,
             "diagramType": "StateMachineDiagram",
-            "message": "Created a starter state machine. Try describing your workflow in more detail for a richer result."
+            "message": "I created a starter state machine with a basic state. Describe your workflow (e.g. *'Create an order processing flow with states: pending, confirmed, shipped, delivered'*) and I'll build a richer model!"
         }
+
+    # ------------------------------------------------------------------
+    # Message Builders
+    # ------------------------------------------------------------------
+
+    def _build_single_state_message(self, spec: Dict[str, Any]) -> str:
+        """Build a descriptive message for a single state creation."""
+        name = spec.get("stateName", "State")
+        state_type = spec.get("stateType", "regular")
+        entry = spec.get("entryAction", "")
+        msg = f"Created a **{name}** state (type: {state_type})"
+        if entry:
+            msg += f" with entry action: *{entry}*"
+        msg += ". You can ask me to add transitions, guards, or more states!"
+        return msg
+
+    def _build_system_message(self, spec: Dict[str, Any]) -> str:
+        """Build a descriptive message for a complete state machine."""
+        system_name = spec.get("systemName", "StateMachine")
+        states = spec.get("states", [])
+        transitions = spec.get("transitions", [])
+        state_names = [s.get("stateName", "?") for s in states if s.get("stateType") == "regular"][:6]
+        msg = f"Built the **{system_name}** state machine with {len(states)} state(s)"
+        if state_names:
+            msg += f": {', '.join(f'**{n}**' for n in state_names)}"
+            if len(states) > len(state_names) + 2:  # account for initial/final
+                msg += " and more"
+        if transitions:
+            msg += f", connected by {len(transitions)} transition(s)"
+        msg += ". Feel free to ask me to add or modify states and transitions!"
+        return msg
 
     # ------------------------------------------------------------------
     # Modification Support
@@ -387,5 +414,5 @@ Return ONLY the JSON object — no explanations"""
                     "changes": {"name": "ModifiedState"}
                 },
                 "diagramType": self.get_diagram_type(),
-                "message": "Could not apply the modification automatically. Try rephrasing your request."
+                "message": "I couldn't apply that modification automatically. Could you rephrase it? For example: *'Add a transition from idle to active'* or *'Rename state X to Y'*."
             }

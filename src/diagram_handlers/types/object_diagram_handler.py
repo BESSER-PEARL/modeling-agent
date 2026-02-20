@@ -436,11 +436,7 @@ Return ONLY the JSON, no explanations."""
                 "action": "inject_element",
                 "element": object_spec,
                 "diagramType": "ObjectDiagram",
-                "message": (
-                    f"Created object '{object_spec['objectName']}' "
-                    f"(instance of {object_spec['className']}) with "
-                    f"{len(object_spec.get('attributes', []))} attribute(s)."
-                )
+                "message": self._build_single_object_message(object_spec)
             }
             
         except Exception:
@@ -524,11 +520,7 @@ Return ONLY the JSON, no explanations."""
                 "action": "inject_complete_system",
                 "systemSpec": system_spec,
                 "diagramType": "ObjectDiagram",
-                "message": (
-                    f"Created object diagram{mode_note} '{system_spec.get('systemName', 'ObjectDiagram')}' with "
-                    f"{len(system_spec.get('objects', []))} object(s) and "
-                    f"{len(system_spec.get('links', []))} link(s)."
-                )
+                "message": self._build_object_system_message(system_spec, mode_note)
             }
             
         except Exception:
@@ -556,7 +548,7 @@ Return ONLY the JSON, no explanations."""
             "action": "inject_element",
             "element": fallback_spec,
             "diagramType": "ObjectDiagram",
-            "message": f"Created a starter object '{object_name}'. Try being more specific about the class it instantiates."
+            "message": f"I created a starter **{object_name}** object (instance of {class_name}). Describe the scenario in more detail (e.g. which class it represents and its attribute values) for a more accurate result!"
         }
     
     def generate_fallback_system(self) -> Dict[str, Any]:
@@ -582,7 +574,7 @@ Return ONLY the JSON, no explanations."""
             "action": "inject_complete_system",
             "systemSpec": fallback_system,
             "diagramType": "ObjectDiagram",
-            "message": "Created a starter object diagram. Try describing your scenario in more detail."
+            "message": "I created a starter object diagram. Describe your scenario in more detail (e.g. *'Create objects for a library with 2 books and 1 author'*) and I'll build a richer diagram!"
         }
     
     def _format_reference_classes(self, elements: Dict[str, Any]) -> str:
@@ -607,6 +599,40 @@ Return ONLY the JSON, no explanations."""
                     formatted.append(f"  - {attr_name_only} (attributeId: {attr_id})")
         
         return '\n'.join(formatted)
+
+    # ------------------------------------------------------------------
+    # Message Builders
+    # ------------------------------------------------------------------
+
+    def _build_single_object_message(self, spec: Dict[str, Any]) -> str:
+        """Build a descriptive message for a single object creation."""
+        obj_name = spec.get("objectName", "object")
+        cls_name = spec.get("className", "Class")
+        attrs = spec.get("attributes", [])
+        msg = f"Created **{obj_name}** (an instance of **{cls_name}**)"
+        if attrs:
+            preview = [f'`{a.get("name", "")}={a.get("value", "")}`' for a in attrs[:4]]
+            msg += f" with values: {', '.join(preview)}"
+            if len(attrs) > 4:
+                msg += f" (+{len(attrs) - 4} more)"
+        msg += ". You can ask me to add more objects or links between them!"
+        return msg
+
+    def _build_object_system_message(self, spec: Dict[str, Any], mode_note: str = "") -> str:
+        """Build a descriptive message for a complete object diagram."""
+        system_name = spec.get("systemName", "ObjectDiagram")
+        objects = spec.get("objects", [])
+        links = spec.get("links", [])
+        obj_names = [o.get("objectName", "?") for o in objects[:6]]
+        msg = f"Built the **{system_name}** object diagram{mode_note} with {len(objects)} object(s)"
+        if obj_names:
+            msg += f": {', '.join(f'**{n}**' for n in obj_names)}"
+            if len(objects) > 6:
+                msg += f" (+{len(objects) - 6} more)"
+        if links:
+            msg += f" and {len(links)} link(s)"
+        msg += ". Feel free to ask me to modify values or add more objects!"
+        return msg
 
     # ------------------------------------------------------------------
     # Modification Support
@@ -751,5 +777,5 @@ Return ONLY the JSON object — no explanations"""
                     "changes": {"objectName": "ModifiedObject"}
                 },
                 "diagramType": self.get_diagram_type(),
-                "message": "Could not apply the modification automatically. Try rephrasing your request."
+                "message": "I couldn't apply that modification automatically. Could you rephrase it? For example: *'Change the name of object X to Y'* or *'Add a link between obj1 and obj2'*."
             }

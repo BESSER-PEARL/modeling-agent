@@ -1201,6 +1201,28 @@ Rules:
         components.append(section_component)
         return model
 
+    # ------------------------------------------------------------------
+    # Message Builders
+    # ------------------------------------------------------------------
+
+    def _build_gui_system_message(self, pages: list) -> str:
+        """Build a descriptive message for a complete GUI model."""
+        page_names = [p.get("name", "Page") for p in pages[:5] if isinstance(p, dict)]
+        section_count = sum(
+            len([c for c in p.get("frames", [{}])[0].get("component", {}).get("components", [])
+                 if isinstance(c, dict)])
+            for p in pages if isinstance(p, dict) and p.get("frames")
+        )
+        msg = f"Created a GUI with **{len(pages)}** page(s)"
+        if page_names:
+            msg += f": {', '.join(f'**{n}**' for n in page_names)}"
+            if len(pages) > 5:
+                msg += f" (+{len(pages) - 5} more)"
+        if section_count:
+            msg += f" containing {section_count} section(s) total"
+        msg += ". You can ask me to add more pages, sections, or modify the existing layout!"
+        return msg
+
     def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         class_metadata: Optional[List[Dict[str, Any]]] = kwargs.get("class_metadata")
         class_info = ""
@@ -1224,7 +1246,7 @@ Rules:
                 "action": "inject_element",
                 "diagramType": self.get_diagram_type(),
                 "model": model,
-                "message": f"Added a new UI section to page '{page_name}'.",
+                "message": f"Added a new UI section to the **{page_name}** page.",
             }
         except Exception:
             return self.generate_fallback_element(user_request)
@@ -1316,7 +1338,7 @@ Rules:
                 "action": "inject_complete_system",
                 "diagramType": self.get_diagram_type(),
                 "model": model,
-                "message": f"Created GUI model with {len(pages)} page(s).",
+                "message": self._build_gui_system_message(pages),
             }
         except Exception:
             return self.generate_fallback_system()
@@ -1388,7 +1410,7 @@ Rules:
                         page["name"] = new_page_name
                         page["route_path"] = f"/{re.sub(r'[^a-z0-9-]+', '-', new_page_name.lower()).strip('-') or 'page'}"
                         break
-                message = f"Renamed page '{page_name}' to '{new_page_name}'."
+                message = f"Renamed the **{page_name}** page to **{new_page_name}**."
             elif operation == "remove_page":
                 filtered_pages = [
                     page
@@ -1397,12 +1419,12 @@ Rules:
                 ]
                 if filtered_pages:
                     model["pages"] = filtered_pages
-                message = f"Removed page '{page_name}' from the GUI model."
+                message = f"Removed the **{page_name}** page from the GUI."
             else:
                 section_spec = spec.get("section") if isinstance(spec.get("section"), dict) else {}
                 section_component = _build_section_component(section_spec, class_metadata)
                 model = self._append_section(model, page_name, section_component)
-                message = f"Added a new section to page '{page_name}'."
+                message = f"Added a new section to the **{page_name}** page."
 
             return {
                 "action": "modify_model",
@@ -1415,7 +1437,7 @@ Rules:
                 "action": "modify_model",
                 "diagramType": self.get_diagram_type(),
                 "model": model,
-                "message": "Could not parse the requested GUI modification, but kept the existing model safe.",
+                "message": "I couldn't parse the requested GUI modification, but your existing model is safe. Could you rephrase what you'd like to change?",
             }
 
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
@@ -1429,7 +1451,7 @@ Rules:
             "action": "inject_element",
             "diagramType": self.get_diagram_type(),
             "model": model,
-            "message": "Created a basic GUI section (fallback).",
+            "message": "I created a basic GUI section as a starting point. Describe what you'd like (e.g. *'Create a dashboard for shoes with a bar chart and a table'*) and I'll build it!",
         }
 
     def generate_fallback_system(self) -> Dict[str, Any]:
@@ -1443,5 +1465,5 @@ Rules:
             "action": "inject_complete_system",
             "diagramType": self.get_diagram_type(),
             "model": model,
-            "message": "Created a basic GUI model (fallback).",
+            "message": "I created a basic GUI with a welcome page. Describe your app's pages and features for a richer result!",
         }

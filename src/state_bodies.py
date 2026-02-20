@@ -80,14 +80,16 @@ def greetings_body(session: Session):
         return
 
     greeting_message = (
-        "Hello! I'm your modeling assistant.\n\n"
-        "I can help you:\n"
-        "- Create classes: \"Create a User class\"\n"
-        "- Build systems: \"Create a library management system\"\n"
-        "- Create agent diagrams: \"Create an agent\"\n"
-        "- Modify diagrams: \"Add transition from welcome to menu\"\n"
-        "- UML specification: \"What does UML say about association classes?\"\n"
-        "- Import from files: Attach a PlantUML, Knowledge Graph, or diagram image\n\n"
+        "Hey there! I'm your modeling assistant.\n\n"
+        "Here's what I can do:\n"
+        "- **Create elements**: *\"Create a User class with name, email, and role\"*\n"
+        "- **Build full systems**: *\"Design a library management system\"*\n"
+        "- **Design chatbots**: *\"Create a pizza-ordering agent\"*\n"
+        "- **Build UIs**: *\"Create a dashboard for my Product class\"*\n"
+        "- **Modify diagrams**: *\"Add a phone attribute to the Customer class\"*\n"
+        "- **Generate code**: *\"Generate SQLAlchemy\"* or *\"Generate Django\"*\n"
+        "- **UML help**: *\"What does UML say about composition?\"*\n"
+        "- **Import from files**: Attach a PlantUML, Knowledge Graph, or diagram image\n\n"
         "What would you like to create?"
     )
 
@@ -108,7 +110,7 @@ def greetings_body(session: Session):
         return
 
     if is_hello_intent and session.get('has_greeted'):
-        reply_message(session, "Hello again! How can I help you with UML modeling?")
+        reply_message(session, "Welcome back! What would you like to work on?")
         return
 
 
@@ -140,7 +142,7 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
         )
     except Exception as e:
         logger.error(f"Error in {intent_name}: {e}", exc_info=True)
-        reply_message(session, "Something went wrong while processing your request. Could you rephrase it?")
+        reply_message(session, "Something went wrong while processing your request. Could you try rephrasing it?")
 
 
 def create_single_element_body(session: Session):
@@ -214,7 +216,7 @@ def modeling_help_body(session: Session):
         reply_message(session, answer)
     except Exception as e:
         logger.error(f"Error in modeling_help_body: {e}", exc_info=True)
-        reply_message(session, "I had trouble preparing guidance. Could you try again?")
+        reply_message(session, "I had trouble preparing guidance. Could you try rephrasing your question?")
 
 
 # ------------------------------------------------------------------
@@ -268,7 +270,7 @@ def uml_rag_body(session: Session):
     user_message = request.message or get_user_message(session)
 
     if not user_message:
-        reply_message(session, "Please ask a question about UML specifications.")
+        reply_message(session, "Please ask a question about UML — for example *'What is an association class?'*.")
         return
 
     if ctx.uml_rag is None:
