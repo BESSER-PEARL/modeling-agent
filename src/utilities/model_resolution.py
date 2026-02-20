@@ -82,3 +82,21 @@ def count_reference_classes(reference_diagram: Optional[Dict[str, Any]]) -> int:
         for element in elements.values()
         if isinstance(element, dict) and element.get("type") == "Class"
     )
+
+
+def resolve_class_diagram(request: AssistantRequest) -> Optional[Dict[str, Any]]:
+    """Return the ClassDiagram model from the workspace context, if available.
+
+    Checks the project snapshot first, then falls back to the active/current
+    model when the active diagram type is ``ClassDiagram``.
+    """
+    snapshot = request.context.project_snapshot
+    if isinstance(snapshot, dict):
+        diagrams = snapshot.get("diagrams")
+        if isinstance(diagrams, dict):
+            cd = diagrams.get("ClassDiagram")
+            if isinstance(cd, dict) and isinstance(cd.get("model"), dict):
+                return cd["model"]
+    if request.context.active_diagram_type == "ClassDiagram" and isinstance(request.current_model, dict):
+        return request.current_model
+    return None

@@ -24,7 +24,7 @@ EXPOSE 8765
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app/src:/app
 
 # Create entrypoint script that generates config.ini from environment variables
 RUN echo '#!/bin/bash\n\

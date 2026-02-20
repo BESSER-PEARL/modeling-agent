@@ -1,8 +1,15 @@
 """Shared test fixtures for the modeling-agent test suite."""
 
 import json
+import os
+import sys
 import pytest
 from typing import Any, Dict, Optional
+
+# ── Ensure src/ is importable for bare-style imports ─────────────────────
+_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 # ---------------------------------------------------------------------------
 # Minimal stub for besser.agent.core.session.Session
