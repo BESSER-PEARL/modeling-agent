@@ -24,6 +24,9 @@ _CHART_COLORS = [
     "#1abc9c", "#e67e22", "#34495e", "#16a085", "#d35400",
 ]
 
+# Pie / radial-bar palette — matches the drag-and-drop editor defaults
+_PIE_COLORS = ["#00C49F", "#0088FE", "#FFBB28", "#FF8042", "#A569BD"]
+
 
 def _clean_text(value: Any, fallback: str = "") -> str:
     if isinstance(value, str):
@@ -291,8 +294,17 @@ def _resolve_class_binding(
 
 
 def _pick_label_field(cls: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Pick the best string attribute for chart label-field."""
+    """Pick the best string attribute for chart label-field.
+
+    Prefers meaningful string attributes (skipping 'id') so that chart
+    labels show human-readable values like 'Nike' instead of 'S001'.
+    """
     attrs = cls.get("attributes", [])
+    # First pass: skip attributes named 'id'
+    for a in attrs:
+        if a.get("isString") and a.get("name", "").lower() != "id":
+            return a
+    # Second pass: accept 'id' if it's the only string attribute
     for a in attrs:
         if a.get("isString"):
             return a
@@ -308,6 +320,165 @@ def _pick_data_field(cls: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return attrs[0] if attrs else None
 
 
+def _dummy_chart_data(chart_type: str) -> List[Dict[str, Any]]:
+    """Return sample preview data appropriate for *chart_type*.
+
+    This data is shown inside the GrapesJS editor so that LLM-generated
+    charts are not empty placeholders.  At runtime the data is replaced
+    by real values fetched from the data source.
+    """
+    if chart_type == "radar-chart":
+        return [
+            {"subject": "Category A", "value": 85, "fullMark": 100},
+            {"subject": "Category B", "value": 75, "fullMark": 100},
+            {"subject": "Category C", "value": 90, "fullMark": 100},
+            {"subject": "Category D", "value": 80, "fullMark": 100},
+            {"subject": "Category E", "value": 70, "fullMark": 100},
+        ]
+    # bar-chart, line-chart, and general fallback
+    return [
+        {"name": "Category A", "value": 40},
+        {"name": "Category B", "value": 65},
+        {"name": "Category C", "value": 85},
+        {"name": "Category D", "value": 55},
+        {"name": "Category E", "value": 75},
+    ]
+
+
+def _dummy_pie_data() -> List[Dict[str, Any]]:
+    """Return sample preview data for pie / radial-bar charts."""
+    return [
+        {"name": "Desktop", "value": 45, "color": "#0088FE"},
+        {"name": "Mobile", "value": 35, "color": "#00C49F"},
+        {"name": "Tablet", "value": 15, "color": "#FFBB28"},
+        {"name": "Other", "value": 5, "color": "#FF8042"},
+    ]
+
+
+def _convert_table_rows_to_chart_data(
+    rows: List[Dict[str, Any]],
+    chart_type: str,
+    cls: Optional[Dict[str, Any]] = None,
+    value_attr_name: Optional[str] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Convert table-format rows to chart-format data points.
+
+    When the LLM provides ``sampleData`` in table format (keyed by column
+    names, e.g. ``{"brand": "Nike", "size": 42}``), this function picks
+    the best string column as label and the best numeric column as value
+    to produce ``{"name": "Nike", "value": 42}``.
+
+    If *value_attr_name* is given, that specific column is used as the
+    value source instead of auto-detecting the first numeric column.
+    This allows extracting per-series data (e.g. "size" for the Size
+    series and "price" for the Price series).
+    """
+    if not rows:
+        return None
+
+    first = rows[0]
+
+    # --- Determine label key (first string-valued column) ---
+    label_key: Optional[str] = None
+    # If we have class metadata, prefer the label-field attribute
+    if cls:
+        lf = _pick_label_field(cls)
+        if lf and lf["name"] in first:
+            label_key = lf["name"]
+    if not label_key:
+        for k, v in first.items():
+            if isinstance(v, str) and k.lower() not in ("id", "imageurl", "image_url", "url", "description"):
+                label_key = k
+                break
+    if not label_key:
+        # Fallback: any string at all
+        for k, v in first.items():
+            if isinstance(v, str):
+                label_key = k
+                break
+
+    # --- Determine value key ---
+    value_key: Optional[str] = None
+    # If a specific attribute name was requested, find it (case-insensitive)
+    if value_attr_name:
+        for k in first:
+            if k.lower() == value_attr_name.lower():
+                value_key = k
+                break
+    # Auto-detect from class metadata
+    if not value_key and cls:
+        df = _pick_data_field(cls)
+        if df and df["name"] in first:
+            value_key = df["name"]
+    # Auto-detect first numeric column
+    if not value_key:
+        for k, v in first.items():
+            if isinstance(v, (int, float)) and k != label_key:
+                value_key = k
+                break
+
+    if not label_key or not value_key:
+        return None
+
+    converted: List[Dict[str, Any]] = []
+    for idx, row in enumerate(rows):
+        label = row.get(label_key, f"Item {idx + 1}")
+        value = row.get(value_key, 0)
+        if chart_type == "radar-chart":
+            converted.append({"subject": str(label), "value": value, "fullMark": 100})
+        elif chart_type == "pie-chart":
+            converted.append({"name": str(label), "value": value,
+                              "color": _PIE_COLORS[idx % len(_PIE_COLORS)]})
+        else:
+            converted.append({"name": str(label), "value": value})
+    return converted if converted else None
+
+
+def _extract_sample_data(
+    section_spec: Dict[str, Any],
+    chart_type: str,
+    cls: Optional[Dict[str, Any]] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Extract LLM-provided sample data from the section spec.
+
+    The LLM is instructed to include a ``sampleData`` array with
+    realistic preview rows.  Returns ``None`` if nothing usable was
+    provided, so callers can fall back to generic dummy data.
+
+    Handles two formats:
+    1. **Chart format** — ``{"name": "...", "value": 42}`` (used directly)
+    2. **Table format** — ``{"brand": "Nike", "size": 42, ...}`` (converted
+       automatically by picking the best label/numeric columns)
+    """
+    raw = section_spec.get("sampleData")
+    if not isinstance(raw, list) or not raw:
+        return None
+
+    # --- Try chart-native format first ---
+    cleaned: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        if chart_type == "radar-chart":
+            if "subject" in item and "value" in item:
+                cleaned.append(item)
+            elif "name" in item and "value" in item:
+                cleaned.append({"subject": item["name"], "value": item["value"],
+                                "fullMark": item.get("fullMark", 100)})
+        elif chart_type == "pie-chart":
+            if "name" in item and "value" in item:
+                cleaned.append(item)
+        else:
+            if "name" in item and "value" in item:
+                cleaned.append(item)
+    if cleaned:
+        return cleaned
+
+    # --- Fallback: convert table-format rows to chart format ---
+    table_rows = [item for item in raw if isinstance(item, dict)]
+    return _convert_table_rows_to_chart_data(table_rows, chart_type, cls)
+
+
 def _build_series(
     chart_type: str,
     cls: Dict[str, Any],
@@ -317,6 +488,10 @@ def _build_series(
     label_attr = _pick_label_field(cls)
     data_attr = _pick_data_field(cls)
 
+    # Try to use LLM-provided contextual sample data, else generic fallback
+    llm_data = _extract_sample_data(section_spec, chart_type, cls)
+    fallback_data = llm_data or _dummy_chart_data(chart_type)
+
     series_list: List[Dict[str, Any]] = []
     # If the LLM provided explicit series, use them
     raw_series = section_spec.get("series")
@@ -324,11 +499,16 @@ def _build_series(
         for idx, raw in enumerate(raw_series):
             if not isinstance(raw, dict):
                 continue
+            # Per-series sample data takes priority over section-level
+            per_series_data = None
+            raw_data = raw.get("data")
+            if isinstance(raw_data, list) and raw_data and all(isinstance(d, dict) for d in raw_data):
+                per_series_data = raw_data
             s: Dict[str, Any] = {
                 "name": _clean_text(raw.get("name"), fallback=f"Series {idx + 1}"),
                 "data-source": raw.get("classId") or cls["id"],
                 "color": raw.get("color") or _CHART_COLORS[idx % len(_CHART_COLORS)],
-                "data": [],
+                "data": per_series_data or fallback_data,
             }
             # Resolve label/data fields
             lf = raw.get("labelField") or raw.get("label-field")
@@ -343,16 +523,35 @@ def _build_series(
                 s["data-field"] = data_attr["id"]
             series_list.append(s)
     else:
-        # Auto-generate one series per numeric attribute (up to 3)
+        # Auto-generate one series per numeric attribute (up to 3).
+        # Each series gets its OWN data extracted from the LLM sample rows
+        # so that e.g. the "Size" series shows size values and the "Price"
+        # series shows price values (instead of all sharing one column).
         numeric_attrs = [a for a in cls.get("attributes", []) if a.get("isNumeric")]
         if not numeric_attrs:
             numeric_attrs = cls.get("attributes", [])[:1]
+
+        # Grab raw table-format sampleData once for per-attribute extraction
+        raw_sample = section_spec.get("sampleData")
+        table_rows: Optional[List[Dict[str, Any]]] = None
+        if isinstance(raw_sample, list) and raw_sample:
+            candidate = [r for r in raw_sample if isinstance(r, dict)]
+            # Only treat as table rows if NOT already in chart-native format
+            if candidate and "name" not in candidate[0] and "subject" not in candidate[0]:
+                table_rows = candidate
+
         for idx, num_attr in enumerate(numeric_attrs[:3]):
+            # Try per-attribute extraction from table rows
+            per_attr_data = None
+            if table_rows:
+                per_attr_data = _convert_table_rows_to_chart_data(
+                    table_rows, chart_type, cls, value_attr_name=num_attr["name"],
+                )
             s = {
                 "name": num_attr["name"].replace("_", " ").title(),
                 "data-source": cls["id"],
                 "color": _CHART_COLORS[idx % len(_CHART_COLORS)],
-                "data": [],
+                "data": per_attr_data or fallback_data,
             }
             if label_attr:
                 s["label-field"] = label_attr["id"]
@@ -360,7 +559,12 @@ def _build_series(
             series_list.append(s)
 
     if not series_list:
-        series_list = [{"name": "Series 1", "data-source": cls["id"], "color": _CHART_COLORS[0], "data": []}]
+        series_list = [{
+            "name": "Series 1",
+            "data-source": cls["id"],
+            "color": _CHART_COLORS[0],
+            "data": fallback_data,
+        }]
 
     return json.dumps(series_list)
 
@@ -395,10 +599,32 @@ def _chart_component(
                 chart_attrs["label-field"] = label_attr["id"]
             if data_attr:
                 chart_attrs["data-field"] = data_attr["id"]
-        # For line/bar/radar charts: binding goes inside the series
-        chart_attrs["series"] = _build_series(chart_type, cls, section_spec)
+            # Use LLM-provided sample data for pie if available
+            llm_pie = _extract_sample_data(section_spec, "pie-chart", cls)
+            chart_attrs["series"] = json.dumps([{
+                "name": cls["name"],
+                "data-source": cls["id"],
+                "color": _PIE_COLORS[0],
+                "data": llm_pie or _dummy_pie_data(),
+            }])
+        else:
+            # For line/bar/radar charts: binding goes inside the series
+            chart_attrs["series"] = _build_series(chart_type, cls, section_spec)
     else:
-        chart_attrs["series"] = "[]"
+        # No class binding — use LLM sample data or generic fallback
+        llm_data = _extract_sample_data(section_spec, chart_type, None)
+        if chart_type == "pie-chart":
+            chart_attrs["series"] = json.dumps([{
+                "name": "Series 1",
+                "color": _PIE_COLORS[0],
+                "data": llm_data or _dummy_pie_data(),
+            }])
+        else:
+            chart_attrs["series"] = json.dumps([{
+                "name": "Series 1",
+                "color": _CHART_COLORS[0],
+                "data": llm_data or _dummy_chart_data(chart_type),
+            }])
 
     # Chart-type specific defaults
     if chart_type == "bar-chart":
@@ -411,7 +637,7 @@ def _chart_component(
         chart_attrs.setdefault("show-tooltip", "true")
         chart_attrs.setdefault("animate", "true")
     elif chart_type == "pie-chart":
-        chart_attrs.setdefault("legend-position", "right")
+        chart_attrs.setdefault("legend-position", "bottom")
         chart_attrs.setdefault("show-labels", "true")
         chart_attrs.setdefault("label-position", "inside")
         chart_attrs.setdefault("padding-angle", "0")
@@ -439,7 +665,7 @@ def _table_component(
     cls = _resolve_class_binding(section_spec, class_metadata)
 
     table_attrs: Dict[str, Any] = {
-        "class": "data-table-component",
+        "class": "table-component",
         "chart-title": title,
         "show-header": "true",
         "striped-rows": "false",
@@ -477,7 +703,7 @@ def _table_component(
             table_attrs["columns"] = json.dumps(auto_columns)
 
     return {
-        "type": "data-table",
+        "type": "table",
         "attributes": table_attrs,
         "style": {
             "width": "100%",
@@ -895,7 +1121,10 @@ Return ONLY JSON with this shape:
     "items": ["Optional item"],
     "fields": ["Optional field label"],
     "ctaLabel": "Optional button label",
-    "className": "Optional class name from Class Diagram to bind data to"
+    "className": "Optional class name from Class Diagram to bind data to",
+    "sampleData": [
+      {{"name": "Realistic label from domain", "value": 42}}
+    ]
   }}
 }}
 
@@ -917,7 +1146,8 @@ Rules:
 2. Use section type that best matches user request.
 3. When the user mentions data, statistics, or visualisation, prefer chart/table/dashboard types.
 4. When a className is provided or classes are available, bind data sections to them.
-5. Return JSON only.{class_block}"""
+5. For table/chart/dashboard sections, ALWAYS include a "sampleData" array with 4-6 realistic preview rows that use actual attribute names and plausible domain-specific values (e.g. for a Shoe class: {{"brand": "Nike", "size": 42, "price": 129.99}}). For charts, each item needs "name" (label) and "value" (number). For pie charts, add a "color" hex string.
+6. Return JSON only.{class_block}"""
 
     def _parse_page_spec(
         self,
@@ -1026,7 +1256,10 @@ Return ONLY JSON with this shape:
           "items": ["Optional item"],
           "fields": ["Optional field"],
           "ctaLabel": "Optional CTA",
-          "className": "Optional class name to bind data to"
+          "className": "Optional class name to bind data to",
+          "sampleData": [
+            {{"name": "Realistic label from domain", "value": 42}}
+          ]
         }}
       ]
     }}
@@ -1052,7 +1285,8 @@ Rules:
 3. When classes are available, include at least one data-bound section (table, chart, or dashboard) per page that manages class data.
 4. Use dashboard type for overview pages that need both data display and visualisation.
 5. Always set className when using table/chart/dashboard sections.
-6. Return JSON only.{class_block}"""
+6. For table/chart/dashboard sections, ALWAYS include a "sampleData" array with 4-6 realistic preview rows using actual attribute names and plausible domain-specific values (e.g. for a Shoe class: {{"brand": "Nike", "size": 42, "price": 129.99}}). For charts, each item needs "name" (label) and "value" (number). For pie charts, add a "color" hex string. For tables, each item should be a dict with column names as keys.
+7. Return JSON only.{class_block}"""
 
         try:
             response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_request}")
@@ -1120,7 +1354,10 @@ Return ONLY JSON with this shape:
     "items": ["Optional item"],
     "fields": ["Optional field"],
     "ctaLabel": "Optional CTA",
-    "className": "Optional class name to bind data to"
+    "className": "Optional class name to bind data to",
+    "sampleData": [
+      {{"name": "Realistic label from domain", "value": 42}}
+    ]
   }}
 }}
 
@@ -1128,7 +1365,8 @@ Rules:
 1. Prefer append_section when request asks to add/update content.
 2. Use existing page names when possible.
 3. When adding data visualisation, use table/chart/dashboard types with className.
-4. Return JSON only.{class_block}"""
+4. For table/chart/dashboard sections, ALWAYS include a "sampleData" array with 4-6 realistic preview rows using actual attribute names and plausible domain values. For charts: {{"name": "label", "value": number}}. For pie charts add "color". For tables: dict with column-name keys.
+5. Return JSON only.{class_block}"""
 
         try:
             response = self.predict_with_retry(
