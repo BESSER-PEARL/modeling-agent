@@ -323,7 +323,6 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         request=request,
         existing_config=pending_config,
     )
-    config = _normalize_defaults(generator_type, request, config)
 
     missing_fields = _required_missing(generator_type, config)
     if missing_fields:
@@ -332,6 +331,10 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             "action": "assistant_message",
             "message": _build_config_prompt(generator_type, missing_fields),
         }
+
+    # Only apply defaults AFTER confirming none are required-but-missing,
+    # so users are always asked for parameters the generator needs.
+    config = _normalize_defaults(generator_type, request, config)
 
     _clear_pending_state(session)
     return {
