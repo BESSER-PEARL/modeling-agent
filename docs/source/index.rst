@@ -1,17 +1,14 @@
-Welcome to BESSER's documentation!
-===================================
+Modeling Agent Documentation
+============================
 
-**This project** is a toolkit ...
-
-.. note::
-
-   This software is part of the BESSER (BEtter Smart Software fastER) project at the Luxembourg Institute of Science and Technology (LIST).
+Modeling Agent is the conversational backend for UML modeling in the BESSER Web Modeling Editor.
 
 Contents
 --------
 
 .. toctree::
+   :maxdepth: 2
 
-   usage
    getting_started
+   usage
    api

@@ -1,8 +1,17 @@
 # Sphinx documentation
 docs/_build/
-*.ini
+config.ini
 .env
 venv/
+.venv/
 *.log
+application.log
 __pycache__/
 uml_vector_store/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.pyc
+!config.ini.example

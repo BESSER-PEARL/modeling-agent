@@ -18,6 +18,10 @@ utilities.model_helpers import X`` statements keep working without any
 changes.
 """
 
+from __future__ import annotations
+
+from typing import Any
+
 # Re-export: model context (summaries)
 from .model_context import (                        # noqa: F401
     compact_model_summary,
@@ -50,8 +54,16 @@ from .workspace_context import (                    # noqa: F401
     build_workspace_context_block,
 )
 
-# Re-export: request builders
-from .request_builders import (                     # noqa: F401
-    build_request_for_target,
-    build_generation_request,
-)
+
+def build_request_for_target(*args: Any, **kwargs: Any):  # noqa: D401
+    """Lazy proxy for ``request_builders.build_request_for_target``."""
+    from .request_builders import build_request_for_target as _build_request_for_target
+
+    return _build_request_for_target(*args, **kwargs)
+
+
+def build_generation_request(*args: Any, **kwargs: Any):  # noqa: D401
+    """Lazy proxy for ``request_builders.build_generation_request``."""
+    from .request_builders import build_generation_request as _build_generation_request
+
+    return _build_generation_request(*args, **kwargs)

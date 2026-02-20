@@ -1,0 +1,35 @@
+[websocket_platform]
+websocket.host = 0.0.0.0
+websocket.port = 8765
+streamlit.host = localhost
+streamlit.port = 5001
+
+[api]
+api.server.url = http://localhost:3001
+
+[telegram_platform]
+telegram.token =
+
+[nlp]
+nlp.language = en
+nlp.region = US
+nlp.timezone = Europe/Madrid
+nlp.pre_processing = True
+nlp.intent_threshold = 0.6
+nlp.openai.api_key = your-openai-api-key-here
+nlp.intent.openai.model_name = gpt-4o-mini
+
+nlp.hf.api_key =
+nlp.intent.hf.model_name = mistralai/Mixtral-8x7B-Instruct-v0.1
+
+nlp.replicate.api_key =
+nlp.intent.replicate.model_name = mistralai/mixtral-8x7b-instruct-v0.1
+
+[db]
+db.monitoring = False
+db.monitoring.dialect = postgresql
+db.monitoring.host = localhost
+db.monitoring.port = 5432
+db.monitoring.database = DB-NAME
+db.monitoring.username = DB-USERNAME
+db.monitoring.password = DB-PASSWORD

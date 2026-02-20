@@ -298,7 +298,11 @@ class TestChartComponent:
         result = _chart_component("bar-chart", spec, None)
         assert result["type"] == "bar-chart"
         attrs = result["attributes"]
-        assert attrs["series"] == "[]"
+        # Without metadata, charts still get generic dummy data for preview
+        series = json.loads(attrs["series"])
+        assert isinstance(series, list)
+        assert len(series) == 1
+        assert len(series[0]["data"]) > 0
 
     def test_chart_with_empty_metadata(self):
         spec = {"title": "Empty"}
@@ -373,8 +377,7 @@ class TestTableComponent:
     def test_table_structure(self, metadata):
         spec = {"title": "Books Table", "className": "Book"}
         result = _table_component(spec, metadata)
-        # _table_component now returns the raw data-table component
-        assert result["type"] == "data-table"
+        assert result["type"] == "table"
         attrs = result["attributes"]
         assert attrs["data-source"] == "cls-book-1"
         columns = json.loads(attrs["columns"])
@@ -388,8 +391,7 @@ class TestTableComponent:
     def test_table_without_metadata(self):
         spec = {"title": "Empty Table"}
         result = _table_component(spec, None)
-        # Raw data-table component without data-source
-        assert result["type"] == "data-table"
+        assert result["type"] == "table"
         assert "data-source" not in result["attributes"]
 
 
@@ -420,7 +422,7 @@ class TestDashboardComponent:
             return types
 
         all_types = find_types(result)
-        assert "data-table" in all_types
+        assert "table" in all_types
         # Book has numeric attrs so should have at least one chart
         chart_types = [t for t in all_types if t.endswith("-chart")]
         assert len(chart_types) >= 1
@@ -441,8 +443,7 @@ class TestBuildSectionComponentDispatch:
     def test_table_dispatch(self, section_type, metadata):
         spec = {"type": section_type, "title": "Test Table", "className": "Book"}
         result = _build_section_component(spec, metadata)
-        # Table sections now return the raw data-table component
-        assert result["type"] == "data-table"
+        assert result["type"] == "table"
         assert result["attributes"]["data-source"] == "cls-book-1"
 
     @pytest.mark.parametrize("section_type,expected_chart_type", [
@@ -489,4 +490,8 @@ class TestBuildSectionComponentDispatch:
         result = _build_section_component({"type": "bar_chart", "title": "Test"})
         assert result["type"] == "bar-chart"
         attrs = result["attributes"]
-        assert attrs["series"] == "[]"
+        # Without metadata, charts still get generic dummy data for preview
+        series = json.loads(attrs["series"])
+        assert isinstance(series, list)
+        assert len(series) == 1
+        assert len(series[0]["data"]) > 0

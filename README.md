@@ -1,377 +1,136 @@
-# 🤖 UML Modeling Agent
+# Modeling Agent
 
-> **AI-powered conversational agent using BESSER Agentic framework for creating and modifying UML diagrams using natural language for the editor.besser-pearl.org**
+The Modeling Agent is the conversational backend used by the BESSER Web Modeling Editor.
+It interprets natural-language requests and returns structured modeling actions (create, modify,
+generate, convert) over WebSocket-compatible payloads.
 
-The  Modeling Agent is an intelligent backend service that interprets natural language requests and generates UML diagram elements in real-time. It uses LLM (Large Language Models) to understand user intent and produce structured diagram specifications in the BESSER model format.
+## What It Does
 
----
+- Creates and modifies UML models from natural language.
+- Supports multi-step orchestration (for example: model first, then generate code).
+- Supports code generation triggers for multiple BESSER generators.
+- Answers UML specification questions using RAG over UML documents.
+- Converts uploaded files (PlantUML, KG, images, text) into diagram specifications.
 
-## 📋 Table of Contents
+## Supported Diagram Types
 
-- [What the Bot Can Do](#-what-the-bot-can-do)
-- [Supported Diagram Types](#-supported-diagram-types)
-- [Architecture](#-architecture)
-- [API & Data Formats](#-api--data-formats)
-- [Installation & Setup](#-installation--setup)
-- [Usage Examples](#-usage-examples)
-- [Testing](#-testing)
-- [Known Issues & Limitations](#-known-issues--limitations)
+| Diagram type | Single element | Complete system | Modification |
+| --- | --- | --- | --- |
+| `ClassDiagram` | Yes | Yes | Yes |
+| `ObjectDiagram` | Yes | Yes | Yes |
+| `StateMachineDiagram` | Yes | Yes | Yes |
+| `AgentDiagram` | Yes | Yes | Yes |
+| `GUINoCodeDiagram` | Yes | Yes | Yes |
+| `QuantumCircuitDiagram` | Yes | Yes | Yes |
 
----
+## Supported Generators
 
-## ✅ What the Bot Can Do
+`django`, `backend`, `web_app`, `sql`, `sqlalchemy`, `python`, `java`, `pydantic`, `jsonschema`, `smartdata`, `agent`, `qiskit`
 
-### Core Capabilities
+## Repository Structure
 
-#### 1. **Class Diagrams** (Fully Supported ✅)
-- ✅ Create individual classes with attributes and methods
-- ✅ Generate complete class diagrams with multiple classes and relationships
-- ✅ Support relationships: Association, Composition, Aggregation, Inheritance, Realization
-- ✅ Specify visibility modifiers (+, -, #, ~)
-- ✅ Define attribute types and method signatures
-- ✅ Set multiplicity on relationships
-- ✅ Modify existing classes
-
-#### 2. **Object Diagrams** (Fully Supported ✅)
-- ✅ Create object instances from class definitions
-- ✅ **Reference class diagrams** to use exact class/attribute IDs
-- ✅ Populate objects with realistic example values
-- ✅ Create links between object instances
-- ✅ Validate objects against their class definitions
-
-#### 3. **State Machine Diagrams** (Fully Supported ✅)
-- ✅ Create states (simple, initial, final, choice)
-- ✅ Define transitions with triggers, guards, and effects
-- ✅ Generate complete state machines with multiple states
-- ✅ Support composite states and history states
-
-#### 4. **Agent Diagrams** (Fully Supported ✅)
-- ✅ Create agent nodes with goals and actions
-- ✅ Define message passing between agents
-- ✅ Generate multi-agent systems
-- ✅ Specify agent communication protocols
-
-#### 5. **UML Specification Queries** (Fully Supported ✅)
-- ✅ Query official UML specification documents
-- ✅ Get definitions of UML concepts and notation
-- ✅ Retrieve best practices and formal definitions
-- ✅ RAG-powered retrieval from UML specification PDFs
-
-### Interaction Modes
-
-- 🎯 **Single Element Creation**: "add a class User"
-- 🎨 **Complete System Generation**: "create a library management system"
-- 🔄 **Model Modification**: "add a method to the User class"
-- 💬 **Natural Language Understanding**: Works with conversational requests
-
-### Advanced Features
-
-- 📊 **Context-Aware Generation**: Uses current diagram state to make intelligent decisions
-- 🔗 **Reference Diagram Support**: ObjectDiagram can reference ClassDiagram definitions
-- 🧠 **LLM-Powered**: Uses GPT for intelligent interpretation of user requests
-- ⚡ **Real-Time WebSocket Communication**: Instant updates to frontend
-- 🛡️ **Fallback Mechanisms**: Generates basic elements if AI fails
-
-
----
-
-## 📊 Supported Diagram Types
-
-| Diagram Type | Single Element | Complete System | Modify | Status |
-|--------------|----------------|-----------------|--------|--------|
-| **Class Diagram** | ✅ | ✅ | ✅ | Fully Supported |
-| **Object Diagram** | ✅ | ✅ | ❌ | Fully Supported |
-| **State Machine** | ✅ | ✅ | ❌ | Fully Supported |
-| **Agent Diagram** | ✅ | ✅ | ❌ | Fully Supported |
-| **UML Specification** | N/A | N/A | N/A | Fully Supported |
-
----
-
-## 🏗️ Architecture
-
-```
-┌─────────────────┐
-│   Frontend      │ (TypeScript React Widget)
-│   (BESSER Web)  │
-└────────┬────────┘
-         │ WebSocket (JSON)
-         ▼
-┌─────────────────┐
-│  Modeling Agent │ (Python Backend)
-│  (BESSER AI)    │
-├─────────────────┤
-│ • Intent Router │
-│ • Diagram       │
-│   Handlers      │
-│ • LLM Service   │
-│ • RAG Service   │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   GPT/LLM       │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   UML Specs     │
-│   (Vector DB)   │
-└─────────────────┘
+```text
+modeling-agent/
+  modeling_agent.py                # Runtime entrypoint
+  src/
+    agent_setup.py                 # LLM/RAG/factory bootstrapping
+    execution.py                   # Operation execution engine
+    state_bodies.py                # Intent state logic
+    protocol/                      # Request parsing and protocol types
+    orchestrator/                  # Multi-operation planning and routing
+    handlers/                      # Generation and file-conversion handlers
+    utilities/                     # Shared context/model/request helpers
+    diagram_handlers/
+      core/                        # Base handler + deterministic layout
+      types/                       # Concrete per-diagram handlers
+      registry/                    # Factory + metadata registry
+      *.py                         # Backward-compat import shims
+  tests/
+  docs/
 ```
 
-### Key Components
+## Request Protocol (v2)
 
-1. **Intent Router** (`modeling_agent.py`):
-   - Detects user intent (create, modify, query)
-   - Routes requests to appropriate handlers
-   - Manages conversation state
+The agent consumes assistant payloads with `protocolVersion: "2.0"`.
+In BESSER WebSocket mode, this payload is often serialized inside the top-level `message` field.
 
-2. **Diagram Handlers** (`diagram_handlers/`):
-   - `ClassDiagramHandler`: Handles class diagram generation
-   - `ObjectDiagramHandler`: Handles object diagram generation (with reference support)
-   - `StateMachineHandler`: Handles state machine generation
-   - `AgentDiagramHandler`: Handles agent diagram generation
-
-3. **LLM Service**:
-   - Wraps GPT API calls
-   - Handles prompt engineering
-   - Parses and validates JSON responses
-
-4. **RAG Service**:
-   - Retrieval-Augmented Generation for UML specifications
-   - Vector-based document retrieval from UML spec PDFs
-   - Context-aware answers to UML specification questions
-   - Leverages Chroma vector store for efficient document search
-
-5. **WebSocket Service**:
-   - Real-time communication with frontend
-   - Sends structured BESSER model updates
-
----
-
-## 📡 API & Data Formats
-
-### Input Format (WebSocket JSON)
+Example payload:
 
 ```json
 {
-  "message": "[DIAGRAM_TYPE:ClassDiagram] create a User class",
-  "diagramType": "ClassDiagram",
-  "currentModel": {
-    "version": "3.0.0",
-    "type": "ClassDiagram",
-    "elements": {},
-    "relationships": {}
-  },
-  "referenceDiagramData": {
-    "version": "3.0.0",
-    "type": "ClassDiagram",
-    "elements": {...}
-  }
+  "action": "user_message",
+  "message": "{\"action\":\"user_message\",\"protocolVersion\":\"2.0\",\"clientMode\":\"workspace\",\"message\":\"create a User class\",\"context\":{\"activeDiagramType\":\"ClassDiagram\"}}"
 }
 ```
 
-### Output Format (BESSER Model)
+The agent normalizes this into an internal `AssistantRequest` object (`src/protocol/types.py`).
 
-#### Single Element Response
-
-```json
-{
-  "action": "inject_element",
-  "diagramType": "ClassDiagram",
-  "element": {
-    "name": "User",
-    "attributes": [
-      {"name": "id", "type": "String", "visibility": "+"},
-      {"name": "name", "type": "String", "visibility": "+"}
-    ],
-    "methods": [
-      {"name": "login", "returnType": "void", "visibility": "+"}
-    ]
-  },
-  "message": "✅ Successfully created class User with 2 attributes and 1 method!"
-}
-```
-
-#### Complete System Response
-
-```json
-{
-  "action": "inject_complete_system",
-  "diagramType": "ClassDiagram",
-  "systemSpec": {
-    "systemName": "LibraryManagement",
-    "classes": [...],
-    "relationships": [...]
-  },
-  "message": "✨ Created LibraryManagement diagram!"
-}
-```
-
-### Object Diagram with Class Reference
-
-```json
-{
-  "action": "inject_element",
-  "diagramType": "ObjectDiagram",
-  "element": {
-    "objectName": "harryPotter",
-    "className": "Book",
-    "classId": "class_j14u331vy_mh3ca9ma",
-    "attributes": [
-      {
-        "name": "title",
-        "attributeId": "attr_gsral672h_mh3ca9ma",
-        "value": "Harry Potter and the Sorcerer's Stone"
-      },
-      {
-        "name": "isbn",
-        "attributeId": "attr_zmzmcz7ud_mh3ca9ma",
-        "value": "978-0439708180"
-      }
-    ]
-  }
-}
-```
-
----
-
-## 🚀 Installation & Setup
+## Setup
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.10+
 - OpenAI API key
 
-### Installation
+### Install
 
 ```bash
-# Clone the repository
-cd ModelingAgent
+python -m venv .venv
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
 
-# Install dependencies
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-
-# Set up configuration
-cp config.ini.example config.ini
-# Edit config.ini with your OpenAI API key
 ```
 
-### Configuration (`config.ini`)
+### Configure
 
-```ini
-[DEFAULT]
-API_KEY = your_openai_api_key_here
-MODEL = gpt-4
-TEMPERATURE = 0.7
-PORT = 8765
+1. Copy `config.ini.example` to `config.ini`.
+2. Set `nlp.openai.api_key` in `config.ini`.
+3. Optional: copy `.env.example` to `.env` for local tooling.
+
+```bash
+copy config.ini.example config.ini
 ```
 
-### Running the Agent
+### Run
 
 ```bash
 python modeling_agent.py
 ```
 
-The agent will start a WebSocket server on `ws://localhost:8765`
+Default WebSocket host/port are configured in `config.ini` (`websocket_platform`).
 
----
-
-## 💡 Usage Examples
-
-### Class Diagram Examples
-
-```
-User: "create a User class with id, name, and email attributes"
-Agent: ✅ Created User class with 3 attributes
-
-User: "add a login method to User"
-Agent: ✅ Added login() method to User class
-
-User: "create a library management system"
-Agent: ✨ Created complete library system with Book, Author, Member, and Loan classes
-```
-
-### Object Diagram Examples
-
-```
-User: "create a book object named harryPotter"
-Agent: ✅ Created harryPotter object (instance of Book) with 4 attributes
-
-User: "add another book called lordOfTheRings"
-Agent: ✅ Created lordOfTheRings object with realistic values
-```
-
-### State Machine Examples
-
-```
-User: "create a login state machine"
-Agent: ✨ Created login state machine with Idle, Authenticating, and LoggedIn states
-
-User: "add a timeout transition"
-Agent: ✅ Added timeout transition from Authenticating to Idle
-```
-
-### Agent Diagram Examples
-
-```
-User: "create a multi-agent auction system"
-Agent: ✨ Created auction system with Auctioneer and Bidder agents
-```
-
----
-
-## 🧪 Testing
-
-### Running Tests
+## Testing
 
 ```bash
-# Run all tests
-pytest
+# Full test suite
+python -m pytest
 
-# Run specific test file
-pytest tests/test_class_diagram_handler.py
-
-# Run with verbose output
-pytest -v
-
-# Run with coverage
-pytest --cov=diagram_handlers
+# Focused suites
+python -m pytest tests/test_diagram_handlers.py
+python -m pytest tests/test_request_planner.py
+python -m pytest tests/test_protocol.py
 ```
 
-### Test Structure
+## Documentation
 
+```bash
+pip install -r docs/requirements.txt
+cd docs
+# Windows
+make.bat html
+# Linux/macOS
+make html
 ```
-tests/
-├── __init__.py
-├── conftest.py                     # Shared fixtures
-├── test_class_diagram_handler.py   # Class diagram tests
-├── test_payload_and_routing.py     # Integration tests
-└── test_workflow_scenarios.py      # End-to-end tests
-```
----
 
+## Notes for Contributors
 
----
+- Keep behavior changes synchronized across `src/`, `tests/`, and `docs/source/`.
+- Prefer deterministic handler outputs and shared helper functions under `src/utilities/`.
+- Keep backward-compatibility shims when moving modules used by imports/tests.
 
-## Contributing
+## Security
 
-Contributions are welcome! Please read the contributing guidelines before submitting PRs.
-
-### Development Workflow
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes
-4. Run tests (`pytest`)
-5. Commit your changes (`git commit -m 'Add amazing feature'`)
-6. Push to the branch (`git push origin feature/amazing-feature`)
-7. Open a Pull Request
-
----
-
-## 📄 License
-
-This project is part of the BESSER framework. See LICENSE for details.
-
----
+- Never commit real API keys.
+- Use `config.ini.example` and `.env.example` as templates.

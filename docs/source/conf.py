@@ -2,12 +2,12 @@
 
 # -- Project information
 
-project = 'BESSER'
+project = 'Modeling Agent'
 copyright = '2023, Luxembourg Institute of Science and Technology (LIST)'
 author = 'list-of-authors'
 
-release = '0.1'
-version = '0.1.0'
+release = '0.2'
+version = '0.2.0'
 
 # -- General configuration
 

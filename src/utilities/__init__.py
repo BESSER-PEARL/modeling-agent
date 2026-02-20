@@ -13,6 +13,10 @@ Sub-modules:
 For backward compatibility ``model_helpers`` re-exports all public names.
 """
 
+from __future__ import annotations
+
+from typing import Any
+
 # All public names are re-exported through the backward-compat shim so that
 # ``from utilities.model_helpers import X`` still works.  The package-level
 # ``__init__`` also exports them for ``from utilities import X``.
@@ -39,10 +43,20 @@ from .class_metadata import (
 from .workspace_context import (
     build_workspace_context_block,
 )
-from .request_builders import (
-    build_request_for_target,
-    build_generation_request,
-)
+
+
+def build_request_for_target(*args: Any, **kwargs: Any):
+    """Lazy proxy to avoid importing generation dependencies eagerly."""
+    from .request_builders import build_request_for_target as _build_request_for_target
+
+    return _build_request_for_target(*args, **kwargs)
+
+
+def build_generation_request(*args: Any, **kwargs: Any):
+    """Lazy proxy to avoid importing generation dependencies eagerly."""
+    from .request_builders import build_generation_request as _build_generation_request
+
+    return _build_generation_request(*args, **kwargs)
 
 __all__ = [
     'compact_model_summary',
