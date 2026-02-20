@@ -373,27 +373,24 @@ class TestTableComponent:
     def test_table_structure(self, metadata):
         spec = {"title": "Books Table", "className": "Book"}
         result = _table_component(spec, metadata)
-        assert result["tagName"] == "section"
-        # Should contain a data-table child
-        components = result["components"]
-        table_comp = [c for c in components if c.get("type") == "data-table"]
-        assert len(table_comp) == 1
-        attrs = table_comp[0]["attributes"]
+        # _table_component now returns the raw data-table component
+        assert result["type"] == "data-table"
+        attrs = result["attributes"]
         assert attrs["data-source"] == "cls-book-1"
-        field_cols = json.loads(attrs["field-columns"])
-        assert len(field_cols) == 3  # title, pages, price
-        names = {c["name"] for c in field_cols}
-        assert "title" in names
-        assert "pages" in names
+        columns = json.loads(attrs["columns"])
+        # Should have field columns for title, pages, price
+        field_cols = [c for c in columns if c.get("columnType") == "field"]
+        assert len(field_cols) == 3
+        labels = {c["label"] for c in field_cols}
+        assert "Title" in labels
+        assert "Pages" in labels
 
     def test_table_without_metadata(self):
         spec = {"title": "Empty Table"}
         result = _table_component(spec, None)
-        assert result["tagName"] == "section"
-        # data-table should exist but without data-source
-        comps = result["components"]
-        table = next(c for c in comps if c.get("type") == "data-table")
-        assert "data-source" not in table["attributes"]
+        # Raw data-table component without data-source
+        assert result["type"] == "data-table"
+        assert "data-source" not in result["attributes"]
 
 
 # ---------------------------------------------------------------------------
@@ -444,10 +441,9 @@ class TestBuildSectionComponentDispatch:
     def test_table_dispatch(self, section_type, metadata):
         spec = {"type": section_type, "title": "Test Table", "className": "Book"}
         result = _build_section_component(spec, metadata)
-        assert result["tagName"] == "section"
-        # Should contain data-table component
-        comps = result["components"]
-        assert any(c.get("type") == "data-table" for c in comps)
+        # Table sections now return the raw data-table component
+        assert result["type"] == "data-table"
+        assert result["attributes"]["data-source"] == "cls-book-1"
 
     @pytest.mark.parametrize("section_type,expected_chart_type", [
         ("bar_chart", "bar-chart"),

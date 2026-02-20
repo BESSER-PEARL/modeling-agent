@@ -133,7 +133,7 @@ def execute_model_operation(
             )
             return None
 
-    # ── GUI Auto-Generate shortcut ──────────────────────────────────────
+    # ── GUI Auto-Generate shortcut ──────────────────────────────────────────
     if target_diagram_type == "GUINoCodeDiagram" and operation_mode in ("complete_system", None, ""):
         class_diagram_model = resolve_class_diagram(request)
         if isinstance(class_diagram_model, dict):

@@ -8,10 +8,13 @@ from __future__ import annotations
 import copy
 import json
 import re
+import logging
 from typing import Any, Dict, List, Optional
 
 from .base_handler import BaseDiagramHandler
 from utilities.model_helpers import format_class_metadata_for_prompt
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_GUI_VERSION = "0.21.13"
 
@@ -437,48 +440,49 @@ def _table_component(
 
     table_attrs: Dict[str, Any] = {
         "class": "data-table-component",
+        "chart-title": title,
         "show-header": "true",
         "striped-rows": "false",
         "show-pagination": "true",
+        "action-buttons": "true",
         "rows-per-page": "5",
     }
 
     if cls:
         table_attrs["data-source"] = cls["id"]
-        # Build field columns from class attributes
-        field_columns = []
+        # Build auto-generated columns (field columns + lookup columns)
+        auto_columns: List[Dict[str, Any]] = []
+
+        # Field columns from attributes
         for attr in cls.get("attributes", []):
-            field_columns.append({
-                "id": attr["id"],
-                "name": attr["name"],
-                "type": attr.get("type", "string"),
+            auto_columns.append({
+                "field": attr["name"],
+                "label": attr["name"].replace("_", " ").title(),
+                "columnType": "field",
+                "_expanded": False,
             })
-        table_attrs["field-columns"] = json.dumps(field_columns)
 
-    wrapper_components: List[Dict[str, Any]] = [
-        {"tagName": "h2", "content": title, "style": {"margin": "0 0 14px 0", "font-size": "1.35rem"}},
-    ]
+        # Lookup columns from association ends
+        for end in cls.get("associationEnds", []):
+            auto_columns.append({
+                "field": end.get("targetClassName", end.get("targetClassId", "")),
+                "label": end.get("targetClassName", "Related").replace("_", " ").title(),
+                "columnType": "lookup",
+                "lookupEntity": end.get("targetClassId", ""),
+                "lookupField": end.get("displayAttributeName", ""),
+                "_expanded": False,
+            })
 
-    table_comp: Dict[str, Any] = {
+        if auto_columns:
+            table_attrs["columns"] = json.dumps(auto_columns)
+
+    return {
         "type": "data-table",
         "attributes": table_attrs,
         "style": {
             "width": "100%",
             "min-height": "300px",
         },
-    }
-
-    return {
-        "tagName": "section",
-        "attributes": {"class": "assistant-table-section"},
-        "style": {
-            "padding": "24px",
-            "border": "1px solid #e2e8f0",
-            "border-radius": "12px",
-            "margin": "16px 0",
-            "background-color": "#ffffff",
-        },
-        "components": wrapper_components + [table_comp],
     }
 
 
@@ -542,6 +546,298 @@ def _dashboard_component(
     }
 
 
+# ---------------------------------------------------------------------------
+# Metric card component
+# ---------------------------------------------------------------------------
+
+def _metric_card_component(
+    section_spec: Dict[str, Any],
+    class_metadata: Optional[List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """Build a GrapesJS metric-card component bound to a class attribute."""
+    title = _clean_text(section_spec.get("title"), fallback="Metric")
+    cls = _resolve_class_binding(section_spec, class_metadata)
+
+    card_attrs: Dict[str, Any] = {
+        "class": "metric-card-component",
+        "metric-title": title,
+        "value-color": "#2c3e50",
+        "value-size": "32",
+        "show-trend": "true",
+        "positive-color": "#27ae60",
+        "negative-color": "#e74c3c",
+        "format": "number",
+    }
+
+    if cls:
+        card_attrs["data-source"] = cls["id"]
+        # Pick the best numeric attribute for the metric
+        data_attr = _pick_data_field(cls)
+        if data_attr:
+            card_attrs["data-field"] = data_attr["id"]
+
+    return {
+        "type": "metric-card",
+        "attributes": card_attrs,
+        "style": {
+            "width": "100%",
+            "min-height": "140px",
+            "margin": "8px 0",
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Action button component (method execution)
+# ---------------------------------------------------------------------------
+
+def _action_button_component(
+    method: Dict[str, Any],
+    cls: Dict[str, Any],
+    table_id: str = "",
+) -> Dict[str, Any]:
+    """Build a GrapesJS action-button component for a class method."""
+    return {
+        "type": "action-button",
+        "content": method["name"],
+        "attributes": {
+            "class": "action-button-component",
+            "type": "button",
+            "data-button-label": method["name"],
+            "data-action-type": "run-method",
+            "data-method-class": cls["id"],
+            "data-method": method["id"],
+            "data-instance-source": table_id,
+            "instance-method": "true" if method.get("isInstanceMethod") else "false",
+        },
+        "button-label": method["name"],
+        "action-type": "run-method",
+        "method-class": cls["id"],
+        "method": method["id"],
+        "instance-source": table_id,
+        "confirmation-required": False,
+        "style": {
+            "display": "inline-flex",
+            "align-items": "center",
+            "padding": "6px 14px",
+            "background": "linear-gradient(90deg, #2563eb 0%, #1e40af 100%)",
+            "color": "#fff",
+            "border-radius": "4px",
+            "font-size": "13px",
+            "font-weight": "600",
+            "cursor": "pointer",
+            "border": "none",
+            "margin": "4px",
+        },
+    }
+
+
+def _method_buttons_row(cls: Dict[str, Any], table_id: str = "") -> Optional[Dict[str, Any]]:
+    """Build a row of action buttons for all methods in *cls*.
+
+    Returns ``None`` when the class has no methods.
+    """
+    methods = cls.get("methods", [])
+    if not methods:
+        return None
+
+    buttons = [_action_button_component(m, cls, table_id) for m in methods]
+    return {
+        "tagName": "div",
+        "attributes": {"class": "assistant-method-buttons"},
+        "style": {
+            "display": "flex",
+            "flex-wrap": "wrap",
+            "gap": "8px",
+            "margin": "16px 0",
+        },
+        "components": buttons,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Navigation sidebar
+# ---------------------------------------------------------------------------
+
+def _nav_sidebar_component(class_metadata: List[Dict[str, Any]], active_index: int = 0) -> Dict[str, Any]:
+    """Build a navigation sidebar with links to all class pages."""
+    nav_links: List[Dict[str, Any]] = []
+    for idx, cls in enumerate(class_metadata):
+        page_name = cls["name"].lower().replace(" ", "-")
+        is_active = idx == active_index
+        nav_links.append({
+            "tagName": "a",
+            "content": cls["name"],
+            "attributes": {
+                "href": f"/{page_name}",
+                "data-navigate-to": page_name,
+                "class": "nav-link" + (" active" if is_active else ""),
+            },
+            "style": {
+                "display": "block",
+                "padding": "10px 20px",
+                "color": "#e2e8f0" if not is_active else "#ffffff",
+                "text-decoration": "none",
+                "font-weight": "600" if is_active else "400",
+                "font-size": "0.9rem",
+                "border-left": "3px solid " + ("#38bdf8" if is_active else "transparent"),
+                "background-color": "rgba(255,255,255,0.1)" if is_active else "transparent",
+                "transition": "all 0.2s",
+            },
+        })
+
+    return {
+        "tagName": "nav",
+        "attributes": {"class": "assistant-nav-sidebar"},
+        "style": {
+            "width": "250px",
+            "min-height": "100vh",
+            "background": "linear-gradient(180deg, #4b3c82 0%, #5a3d91 100%)",
+            "padding": "20px 0",
+            "flex-shrink": "0",
+        },
+        "components": [
+            {
+                "tagName": "div",
+                "style": {"padding": "0 20px 20px 20px", "border-bottom": "1px solid rgba(255,255,255,0.15)"},
+                "components": [
+                    {
+                        "tagName": "h2",
+                        "content": "BESSER",
+                        "style": {"color": "#ffffff", "font-size": "1.4rem", "margin": "0", "font-weight": "700"},
+                    },
+                ],
+            },
+            {
+                "tagName": "div",
+                "style": {"padding-top": "16px"},
+                "components": nav_links,
+            },
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Full class page builder  (mirrors frontend autoGenerateGUIFromClassDiagram)
+# ---------------------------------------------------------------------------
+
+def _build_class_page(
+    cls: Dict[str, Any],
+    class_metadata: List[Dict[str, Any]],
+    page_counter: int,
+) -> Dict[str, Any]:
+    """Build one GrapesJS page for a single class, matching the auto-generate layout.
+
+    Layout:
+    ┌───────────┬──────────────────────────────────────────────┐
+    │ Nav       │ Page Title                                   │
+    │ sidebar   │ Description                                  │
+    │           │ [Data Table – bound to class]                │
+    │           │ [Method buttons – for each method]           │
+    │           │ [Bar Chart – if numeric attrs]               │
+    └───────────┴──────────────────────────────────────────────┘
+    """
+    class_name = cls["name"]
+    page_name = class_name.lower().replace(" ", "-")
+    table_id = f"table-{page_name}-{page_counter}"
+
+    # -- Sidebar --
+    sidebar = _nav_sidebar_component(class_metadata, active_index=page_counter)
+
+    # -- Main content components --
+    main_children: List[Dict[str, Any]] = [
+        # Page title
+        {
+            "tagName": "h1",
+            "content": class_name,
+            "style": {
+                "margin": "0 0 8px 0",
+                "font-size": "1.75rem",
+                "font-weight": "700",
+                "color": "#1e293b",
+            },
+        },
+        # Description
+        {
+            "tagName": "p",
+            "content": f"Manage {class_name} data",
+            "style": {"margin": "0 0 24px 0", "color": "#64748b", "font-size": "0.95rem"},
+        },
+    ]
+
+    # -- Data table bound to class --
+    table_spec: Dict[str, Any] = {"className": class_name, "title": f"{class_name} List"}
+    table_comp = _table_component(table_spec, class_metadata)
+    # Inject a stable ID for button linkage
+    table_comp.setdefault("attributes", {})["id"] = table_id
+    main_children.append(table_comp)
+
+    # -- Method buttons --
+    buttons_row = _method_buttons_row(cls, table_id=table_id)
+    if buttons_row:
+        main_children.append(buttons_row)
+
+    # -- Charts (bar chart if numeric attrs exist) --
+    numeric_attrs = [a for a in cls.get("attributes", []) if a.get("isNumeric")]
+    if numeric_attrs:
+        chart_spec: Dict[str, Any] = {"className": class_name, "title": f"{class_name} Overview"}
+        main_children.append(_chart_component("bar-chart", chart_spec, class_metadata))
+
+    # -- Main content area --
+    main_area: Dict[str, Any] = {
+        "tagName": "main",
+        "style": {
+            "flex": "1",
+            "padding": "32px",
+            "background-color": "#f1f5f9",
+            "min-height": "100vh",
+            "overflow-y": "auto",
+        },
+        "components": main_children,
+    }
+
+    # -- Root layout (flex row) --
+    root: Dict[str, Any] = {
+        "tagName": "div",
+        "attributes": {"class": "assistant-page-layout"},
+        "style": {"display": "flex", "min-height": "100vh"},
+        "components": [sidebar, main_area],
+    }
+
+    wrapper = _default_wrapper_component()
+    wrapper["components"] = [root]
+
+    return {
+        "name": class_name,
+        "route_path": f"/{page_name}",
+        "frames": [{"component": wrapper}],
+    }
+
+
+def _build_class_bound_gui(class_metadata: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Build a deterministic, fully class-bound GUI model.
+
+    Creates one page per class — each with a navigation sidebar, data table
+    with auto-generated columns, method buttons, and a chart when numeric
+    attributes exist.  This mirrors the frontend ``autoGenerateGUIFromClassDiagram``
+    but runs entirely server-side.
+    """
+    pages: List[Dict[str, Any]] = []
+    for idx, cls in enumerate(class_metadata):
+        pages.append(_build_class_page(cls, class_metadata, idx))
+
+    if not pages:
+        return _default_gui_model()
+
+    return {
+        "pages": pages,
+        "styles": [],
+        "assets": [],
+        "symbols": [],
+        "version": DEFAULT_GUI_VERSION,
+    }
+
+
 def _build_section_component(section_spec: Dict[str, Any], class_metadata: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     section_type = _clean_text(section_spec.get("type"), fallback="content").lower()
     title = _clean_text(section_spec.get("title"), fallback="New Section")
@@ -573,6 +869,8 @@ def _build_section_component(section_spec: Dict[str, Any], class_metadata: Optio
         return _chart_component("bar-chart", section_spec, class_metadata)
     if section_type in {"dashboard"}:
         return _dashboard_component(section_spec, class_metadata)
+    if section_type in {"metric_card", "metric-card", "metric_cards", "kpi", "metric"}:
+        return _metric_card_component(section_spec, class_metadata)
 
     return _content_component(title, body)
 
@@ -591,7 +889,7 @@ Return ONLY JSON with this shape:
 {{
   "pageName": "Home",
   "section": {{
-    "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard",
+    "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard|metric_card",
     "title": "Section title",
     "body": "Optional descriptive text",
     "items": ["Optional item"],
@@ -606,12 +904,13 @@ Section types:
 - feature_list: List of feature items
 - content: Generic text section
 - form: Input form with fields
-- table: Data table bound to a class (requires className)
+- table: Data table bound to a class (requires className) — auto-generates columns from attributes and relationships
 - bar_chart: Bar chart visualisation bound to a class
 - pie_chart: Pie chart visualisation bound to a class
 - line_chart: Line chart visualisation bound to a class
 - radar_chart: Radar chart visualisation bound to a class
 - dashboard: Combined table + charts for a class
+- metric_card: KPI metric card showing a single numeric value from a class
 
 Rules:
 1. Keep content concise and practical.
@@ -721,7 +1020,7 @@ Return ONLY JSON with this shape:
       "name": "Home",
       "sections": [
         {{
-          "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard",
+          "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard|metric_card",
           "title": "Section title",
           "body": "Optional text",
           "items": ["Optional item"],
@@ -739,12 +1038,13 @@ Section types:
 - feature_list: List of feature items
 - content: Generic text section
 - form: Input form with fields
-- table: Data table bound to a class (use className to specify which class)
+- table: Data table bound to a class — auto-generates columns from attributes and relationships
 - bar_chart: Bar chart bound to class data
 - pie_chart: Pie chart bound to class data
 - line_chart: Line chart bound to class data
 - radar_chart: Radar chart bound to class data
 - dashboard: Combined table + charts for a class (auto-generates table + relevant charts)
+- metric_card: KPI metric card showing a single numeric value from a class
 
 Rules:
 1. Create 1-4 pages depending on request complexity.
@@ -814,7 +1114,7 @@ Return ONLY JSON with this shape:
   "pageName": "Target page",
   "newPageName": "Required for rename_page",
   "section": {{
-    "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard",
+    "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard|metric_card",
     "title": "Section title",
     "body": "Optional text",
     "items": ["Optional item"],
