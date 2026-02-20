@@ -57,9 +57,11 @@ def global_fallback_body(session: Session):
     user_message = request.message or "your message"
     try:
         answer = ctx.gpt_text.predict(
-            f"You are a UML modeling assistant. The user said: '{user_message}'. "
-            "If this is related to UML modeling, suggest how you can help them create models, classes, or diagrams. "
-            "Otherwise, politely explain that you specialize in UML modeling assistance."
+            f"You are a modeling assistant that helps with UML diagrams, quantum circuits, "
+            f"GUI design, agent diagrams, and code generation. The user said: '{user_message}'. "
+            "If this is related to any kind of modeling (class diagrams, quantum circuits, "
+            "state machines, GUI design, etc.), suggest how you can help them. "
+            "Otherwise, politely explain your capabilities."
         )
         reply_message(session, answer)
     except Exception as e:
@@ -67,7 +69,7 @@ def global_fallback_body(session: Session):
         reply_message(
             session,
             "I'm not sure how to help with that. Try asking me to create a class, "
-            "design a system, or modify your diagram.",
+            "design a system, build a quantum circuit, or modify your diagram.",
         )
 
 
@@ -87,9 +89,11 @@ def greetings_body(session: Session):
         "- **Build full systems**: *\"Design a library management system\"*\n"
         "- **Design chatbots**: *\"Create a pizza-ordering agent\"*\n"
         "- **Build UIs**: *\"Create a dashboard for my Product class\"*\n"
+        "- **Quantum circuits**: *\"Create Grover's search algorithm\"* or *\"Build a Bell state circuit\"*\n"
         "- **Modify diagrams**: *\"Add a phone attribute to the Customer class\"*\n"
+        "- **Describe models**: *\"What does my circuit do?\"* or *\"Describe my class diagram\"*\n"
         "- **Generate code**: *\"Generate SQLAlchemy\"* or *\"Generate Django\"*\n"
-        "- **UML help**: *\"What does UML say about composition?\"*\n"
+        "- **Model help**: *\"Explain Grover's algorithm\"* or *\"What is composition?\"*\n"
         "- **Import from files**: Attach a PlantUML, Knowledge Graph, or diagram image\n\n"
         "What would you like to create?"
     )
@@ -202,15 +206,33 @@ def modeling_help_body(session: Session):
     diagram_type = determine_target_diagram_type(request, last_intent='modeling_help_intent')
     diagram_info = get_diagram_type_info(diagram_type)
 
-    help_prompt = (
-        f'You are a UML modeling expert assistant working with {diagram_info["name"]}. '
-        f'The user asked: "{request.message}"\n\n'
-        f'Current diagram type: {diagram_info["name"]} - {diagram_info["description"]}\n\n'
-        "Provide helpful, practical advice about UML modeling for this diagram type. "
-        "If they're asking about concepts, explain them clearly. "
-        "If they want to create something, guide them on how to express their requirements.\n\n"
-        "Keep your response conversational and encouraging. Suggest specific things they can ask you to create."
-    )
+    # Build context-aware help prompt depending on the diagram type
+    if diagram_type == "QuantumCircuitDiagram":
+        help_prompt = (
+            f'You are an expert quantum computing and quantum circuit modeling assistant. '
+            f'The user asked: "{request.message}"\n\n'
+            f'They are working with the Quantum Circuit Diagram editor.\n\n'
+            "You have deep knowledge of:\n"
+            "- Quantum gates (Hadamard, Pauli-X/Y/Z, CNOT, CZ, SWAP, S, T, QFT, etc.)\n"
+            "- Quantum algorithms (Grover's search, Shor's factoring, QFT, Deutsch-Jozsa, "
+            "Bernstein-Vazirani, quantum teleportation, superdense coding, phase estimation, VQE)\n"
+            "- Quantum concepts (superposition, entanglement, interference, measurement, decoherence)\n"
+            "- Circuit design principles (oracle construction, amplitude amplification, error correction)\n\n"
+            "Provide clear, educational explanations. If they ask about a quantum algorithm, "
+            "explain the key steps and intuition behind it. If they want to build something, "
+            "tell them they can ask you to create it (e.g., 'Create a Grover\\'s search circuit').\n\n"
+            "Keep your response conversational, encouraging, and technically accurate."
+        )
+    else:
+        help_prompt = (
+            f'You are an expert modeling assistant working with {diagram_info["name"]}. '
+            f'The user asked: "{request.message}"\n\n'
+            f'Current diagram type: {diagram_info["name"]} - {diagram_info["description"]}\n\n'
+            "Provide helpful, practical advice about modeling for this diagram type. "
+            "If they're asking about concepts, explain them clearly. "
+            "If they want to create something, guide them on how to express their requirements.\n\n"
+            "Keep your response conversational and encouraging. Suggest specific things they can ask you to create."
+        )
 
     try:
         answer = ctx.gpt_text.predict(help_prompt)
@@ -320,8 +342,17 @@ def describe_model_body(session: Session):
         "If they ask about a specific diagram type, focus on that one. "
         "If they ask a general question, consider all diagrams. "
         "Be specific \u2014 reference class names, attribute names, states, pages, "
-        "gates, relationships, etc. by name. Keep the answer concise and "
-        "well-formatted with Markdown."
+        "gates, relationships, etc. by name.\n\n"
+        "**For quantum circuits specifically**: when the user asks to 'describe' "
+        "or 'explain' a quantum circuit, do more than just list the gates. "
+        "Analyze the circuit and explain:\n"
+        "- What algorithm or pattern it implements (Bell state, Grover's search, "
+        "QFT, teleportation, entanglement, etc.)\n"
+        "- The purpose of each stage (initialization, oracle, diffusion, measurement)\n"
+        "- What the expected output/behavior would be\n"
+        "- The role of key gates (e.g., 'H creates superposition', "
+        "'CNOT entangles qubits')\n\n"
+        "Keep the answer concise and well-formatted with Markdown."
     )
 
     try:

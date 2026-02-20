@@ -288,16 +288,96 @@ def _summarize_agent_diagram(model: Dict[str, Any]) -> List[str]:
 
 # Mapping of Quirk-style gate symbols to human-readable names.
 _QUIRK_SYMBOL_MAP: Dict[str, str] = {
-    "H": "H", "X": "X", "Y": "Y", "Z": "Z",
-    "S": "S", "T": "T", "Swap": "SWAP", "Measure": "MEASURE",
+    # Half Turns
+    "H": "H (Hadamard)", "X": "X (Pauli-X/NOT)", "Y": "Y (Pauli-Y)", "Z": "Z (Pauli-Z)",
+    "Swap": "SWAP",
+    # Quarter Turns
+    "S": "S (π/2 phase)", "Z^-½": "S† (−π/2 phase)",
+    "V": "V (√X)", "X^-½": "V† (−√X)",
+    "Y^½": "√Y", "Y^-½": "√Y†",
+    # Eighth Turns
+    "Z^¼": "T (π/4 phase)", "Z^-¼": "T† (−π/4 phase)",
+    "X^¼": "√√X", "X^-¼": "√√X†",
+    "Y^¼": "√√Y", "Y^-¼": "√√Y†",
+    # Spinning (time-dependent)
+    "Z^t": "Z^t (spinning)", "Z^-t": "Z^-t (spinning)",
+    "Y^t": "Y^t (spinning)", "Y^-t": "Y^-t (spinning)",
+    "X^t": "X^t (spinning)", "X^-t": "X^-t (spinning)",
+    # Parametrized Rotations
+    "Exp(-iXt)": "Exp(-iXt)", "Exp(-iYt)": "Exp(-iYt)", "Exp(-iZt)": "Exp(-iZt)",
+    # Frequency
+    "QFT": "QFT", "QFT†": "QFT†",
+    "Grad": "Phase Gradient", "Grad†": "Phase Gradient†",
+    "Grad⁻¹": "Phase Gradient⁻¹", "Grad⁻¹†": "Phase Gradient⁻¹†",
+    # Arithmetic
+    "+=1": "INC (+1)", "-=1": "DEC (−1)",
+    "+=A": "ADD (+A)", "-=A": "SUB (−A)", "*=A": "MUL (×A)",
+    "+AB": "ADD_AB", "-AB": "SUB_AB", "×A⁻¹": "MUL_INV",
+    # Modular Arithmetic
+    "+A mod R": "MOD_ADD", "-A mod R": "MOD_SUB",
+    "*A mod R": "MOD_MUL", "/A mod R": "MOD_INV_MUL",
+    "+1 mod R": "MOD_INC", "-1 mod R": "MOD_DEC",
+    "*B mod R": "MOD_MUL_B", "*B A⁻¹ mod R": "MOD_MUL_B_INV",
+    # Compare / Logic
+    "A < B": "COMPARE (<)", "A > B": "GREATER_THAN",
+    "A ≤ B": "LESS_EQUAL", "A ≥ B": "GREATER_EQUAL",
+    "A = B": "EQUAL (=)", "A ≠ B": "NOT_EQUAL (≠)",
+    "Input < A": "CMP_A_LT", "Input > A": "CMP_A_GT", "Input = A": "CMP_A_EQ",
+    "Count 1s": "COUNT_1S", "Cycle": "CYCLE_BITS", "⊕": "XOR",
+    # Order
+    "Reverse": "REVERSE_BITS", "<<": "ROTATE_LEFT", ">>": "ROTATE_RIGHT",
+    # Scalar
+    "i": "PHASE_I", "-i": "PHASE_MINUS_I",
+    "√i": "PHASE_√I", "√-i": "PHASE_√−I",
+    # Probes / Displays
+    "Measure": "MEASURE", "Measure X": "MEASURE_X", "Measure Y": "MEASURE_Y",
+    "Chance": "PROB", "Amps": "AMP", "Bloch": "BLOCH", "Density": "DENSITY",
+    # Control dots (Unicode bullet = frontend, asterisk = legacy handler)
+    "\u2022": "● (control)", "\u25E6": "◦ (anti-control)", "*": "● (control)",
+    # Legacy symbol compat (old handler used ASCII fractions)
+    "Z^1/2": "S (π/2 phase)", "Z^-1/2": "S† (−π/2 phase)",
+    "Z^1/4": "T (π/4 phase)", "Z^-1/4": "T† (−π/4 phase)",
+    "QFT_dag": "QFT†",
+}
+
+# Short symbol map for compact gate counting
+_QUIRK_SHORT_MAP: Dict[str, str] = {
+    "H": "H", "X": "X", "Y": "Y", "Z": "Z", "Swap": "SWAP",
+    "S": "S", "Z^-½": "S†", "V": "V", "X^-½": "V†",
+    "Y^½": "√Y", "Y^-½": "√Y†",
+    "Z^¼": "T", "Z^-¼": "T†",
+    "X^¼": "√√X", "X^-¼": "√√X†", "Y^¼": "√√Y", "Y^-¼": "√√Y†",
+    "Z^t": "Z^t", "Z^-t": "Z^-t", "Y^t": "Y^t", "Y^-t": "Y^-t",
+    "X^t": "X^t", "X^-t": "X^-t",
+    "Exp(-iXt)": "e^-iXt", "Exp(-iYt)": "e^-iYt", "Exp(-iZt)": "e^-iZt",
+    "QFT": "QFT", "QFT†": "QFT†",
+    "Grad": "Grad", "Grad†": "Grad†", "Grad⁻¹": "Grad⁻¹", "Grad⁻¹†": "Grad⁻¹†",
+    "+=1": "INC", "-=1": "DEC", "+=A": "ADD", "-=A": "SUB", "*=A": "MUL",
+    "+AB": "ADD_AB", "-AB": "SUB_AB", "×A⁻¹": "MUL_INV",
+    "+A mod R": "MOD+", "-A mod R": "MOD-", "*A mod R": "MOD*", "/A mod R": "MOD/",
+    "+1 mod R": "MOD_INC", "-1 mod R": "MOD_DEC",
+    "*B mod R": "MOD*B", "*B A⁻¹ mod R": "MOD*B⁻¹",
+    "A < B": "<", "A > B": ">", "A ≤ B": "≤", "A ≥ B": "≥",
+    "A = B": "=", "A ≠ B": "≠",
+    "Input < A": "CMP<A", "Input > A": "CMP>A", "Input = A": "CMP=A",
+    "Count 1s": "#1s", "Cycle": "Cycle", "⊕": "XOR",
+    "Reverse": "Rev", "<<": "ROL", ">>": "ROR",
+    "i": "φ_i", "-i": "φ_-i", "√i": "φ_√i", "√-i": "φ_√-i",
+    "Measure": "MEASURE", "Measure X": "MEAS_X", "Measure Y": "MEAS_Y",
+    "Chance": "PROB", "Amps": "AMP", "Bloch": "BLOCH", "Density": "DENSITY",
+    "\u2022": "●", "\u25E6": "◦", "*": "●",
+    # Legacy compat
     "Z^1/2": "S", "Z^-1/2": "S†", "Z^1/4": "T", "Z^-1/4": "T†",
-    "QFT": "QFT", "QFT_dag": "QFT†", "Chance": "PROB", "Amps": "AMP",
-    "*": "●",  # Control dot
+    "QFT_dag": "QFT†",
 }
 
 
-def _summarize_quantum_circuit(model: Dict[str, Any], *, max_cols: int = 20) -> List[str]:
-    """Summarize a QuantumCircuitDiagram model: qubits, columns, gates."""
+def _summarize_quantum_circuit(model: Dict[str, Any], *, max_cols: int = 30) -> List[str]:
+    """Summarize a QuantumCircuitDiagram model with rich detail for LLM analysis.
+
+    Includes qubit count, column-by-column gate listing, and a gate histogram
+    so the LLM can identify which algorithm is implemented.
+    """
     cols = model.get("cols")
     if not isinstance(cols, list):
         return []
@@ -308,23 +388,89 @@ def _summarize_quantum_circuit(model: Dict[str, Any], *, max_cols: int = 20) -> 
             if isinstance(col, list):
                 qubit_count = max(qubit_count, len(col))
 
-    lines: List[str] = [f"Qubits: {qubit_count}, Columns: {len(cols)}"]
+    lines: List[str] = [f"Qubits: {qubit_count}, Columns (time steps): {len(cols)}"]
 
+    # Gate histogram for high-level analysis
+    gate_counts: Dict[str, int] = {}
+    has_control = False
+    has_measurement = False
+    controlled_pairs: List[str] = []
+
+    for col_idx, col in enumerate(cols):
+        if not isinstance(col, list):
+            continue
+        # Detect control-target pairs in this column
+        control_rows: List[int] = []
+        target_rows: Dict[int, str] = {}
+        for row_idx, cell in enumerate(col):
+            if cell == 1 or cell is None:
+                continue
+            symbol = str(cell)
+            # Handle special serialized symbols before map lookup
+            if symbol.startswith("__FUNC__"):
+                short = f"FUNC({symbol[8:]})"
+            elif symbol.startswith("<<") and len(symbol) > 2:
+                short = "INTERLEAVE"
+            else:
+                short = _QUIRK_SHORT_MAP.get(symbol, symbol)
+            if short == "●":
+                control_rows.append(row_idx)
+                has_control = True
+            elif short in {"MEASURE", "MEAS_X", "MEAS_Y"}:
+                has_measurement = True
+                gate_counts["MEASURE"] = gate_counts.get("MEASURE", 0) + 1
+                target_rows[row_idx] = short
+            else:
+                gate_counts[short] = gate_counts.get(short, 0) + 1
+                target_rows[row_idx] = short
+
+        # Record controlled-gate relationships
+        if control_rows and target_rows:
+            for cr in control_rows:
+                for tr, tg in target_rows.items():
+                    if tg != "MEASURE":
+                        controlled_pairs.append(f"q{cr}→q{tr} (C-{tg})")
+
+    # Gate summary line
+    if gate_counts:
+        gate_parts = [f"{name}×{count}" for name, count in sorted(gate_counts.items())]
+        lines.append(f"Gate counts: {', '.join(gate_parts)}")
+
+    if controlled_pairs:
+        lines.append(f"Controlled gates: {', '.join(controlled_pairs[:10])}")
+
+    # Column-by-column detail
     for col_idx, col in enumerate(cols[:max_cols]):
         if not isinstance(col, list):
             continue
         gate_entries: List[str] = []
         for row_idx, cell in enumerate(col):
             if cell == 1 or cell is None:
-                continue  # identity / empty wire
+                continue
             symbol = str(cell)
-            readable = _QUIRK_SYMBOL_MAP.get(symbol, symbol)
-            gate_entries.append(f"q{row_idx}:{readable}")
+            if symbol.startswith("__FUNC__"):
+                readable = f"FUNC({symbol[8:]})"
+            elif symbol.startswith("<<") and len(symbol) > 2:
+                readable = f"INTERLEAVE(h={symbol[2:]})"
+            else:
+                readable = _QUIRK_SYMBOL_MAP.get(symbol, symbol)
+            gate_entries.append(f"q{row_idx}: {readable}")
         if gate_entries:
             lines.append(f"Col {col_idx}: {', '.join(gate_entries)}")
 
     if len(cols) > max_cols:
         lines.append(f"... and {len(cols) - max_cols} more column(s)")
+
+    # High-level pattern hints to help the LLM identify algorithms
+    hints: List[str] = []
+    h_count = gate_counts.get("H", 0)
+    if h_count > 0 and has_control and has_measurement:
+        if h_count >= qubit_count and len(controlled_pairs) >= 1:
+            hints.append("Pattern suggests: may involve superposition + entanglement + measurement")
+    if h_count >= 2 * qubit_count:
+        hints.append("Multiple H layers detected (common in Grover's diffusion or QFT)")
+    if hints:
+        lines.append("Analysis hints: " + "; ".join(hints))
 
     return lines
 
