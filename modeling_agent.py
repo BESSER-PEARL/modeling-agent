@@ -69,6 +69,7 @@ create_single_element_state = agent.new_state("create_single_element_state")
 create_complete_system_state = agent.new_state("create_complete_system_state")
 modify_model_state = agent.new_state("modify_model_state")
 modeling_help_state = agent.new_state("modeling_help_state")
+describe_model_state = agent.new_state("describe_model_state")
 uml_rag_state = agent.new_state("uml_rag_state")
 generation_state = agent.new_state("generation_state")
 
@@ -115,6 +116,21 @@ modeling_help_intent = agent.new_intent(
     name="modeling_help_intent",
     description="The user asks for help with UML modeling, design patterns, or modeling concepts",
 )
+describe_model_intent = agent.new_intent(
+    name="describe_model_intent",
+    description=(
+        "The user asks a QUESTION about their current model or diagram, "
+        "wanting to inspect, understand, or get information about what already "
+        "exists on the canvas. Keywords: 'how many classes', 'what attributes', "
+        "'describe my diagram', 'list all classes', 'show my model', "
+        "'what relationships', 'tell me about my model', 'what does my diagram have', "
+        "'summarize my model', 'what states do I have', 'what pages', "
+        "'what is in my diagram', 'what objects exist', 'explain my model', "
+        "'what gates are in my circuit'. "
+        "This is for ASKING about an existing model, NOT for creating, "
+        "modifying, or generating anything."
+    ),
+)
 uml_spec_intent = agent.new_intent(
     name="uml_spec_intent",
     description=(
@@ -150,6 +166,7 @@ register_all(
         "create_complete_system": create_complete_system_state,
         "modify_model": modify_model_state,
         "modeling_help": modeling_help_state,
+        "describe_model": describe_model_state,
         "uml_rag": uml_rag_state,
         "generation": generation_state,
     },
@@ -159,6 +176,7 @@ register_all(
         "create_complete_system": create_complete_system_intent,
         "modify_model": modify_model_intent,
         "modeling_help": modeling_help_intent,
+        "describe_model": describe_model_intent,
         "uml_spec": uml_spec_intent,
         "generation": generation_intent,
     },

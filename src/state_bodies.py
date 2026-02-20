@@ -34,6 +34,7 @@ from execution import (
 from diagram_handlers.factory import get_diagram_type_info
 from handlers.generation_handler import handle_generation_request
 from orchestrator import determine_target_diagram_type
+from utilities.model_context import detailed_model_summary
 from routing.intents import GENERATION_INTENT_NAME
 
 logger = logging.getLogger(__name__)
@@ -223,6 +224,121 @@ def modeling_help_body(session: Session):
 # Code generation
 # ------------------------------------------------------------------
 
+def _build_full_project_summary(request: AssistantRequest) -> str:
+    """Build a detailed summary of ALL diagrams in the project.
+
+    Combines the active model (always included with full detail) with
+    every other diagram found in the project snapshot so the LLM can
+    answer cross-diagram questions.
+    """
+    sections: list[str] = []
+
+    # Project metadata
+    snapshot = request.context.project_snapshot
+    if isinstance(snapshot, dict):
+        name = snapshot.get("name")
+        if isinstance(name, str) and name.strip():
+            sections.append(f"**Project**: {name.strip()}")
+
+    active_dt = request.context.active_diagram_type or request.diagram_type
+    active_model = request.context.active_model or request.current_model
+
+    # Track which diagram types we've already summarised (avoid dupes)
+    summarised: set[str] = set()
+
+    # 1. Active diagram — always first, always detailed
+    if isinstance(active_model, dict):
+        active_info = get_diagram_type_info(active_dt)
+        sections.append(
+            f"### Active diagram: {active_info['name']}\n"
+            + detailed_model_summary(active_model, active_dt)
+        )
+        summarised.add(active_dt)
+
+    # 2. All other diagrams from project snapshot
+    if isinstance(snapshot, dict):
+        diagrams = snapshot.get("diagrams")
+        if isinstance(diagrams, dict):
+            for dt, payload in diagrams.items():
+                if not isinstance(payload, dict) or dt in summarised:
+                    continue
+                model = payload.get("model")
+                if not isinstance(model, dict):
+                    continue
+                dt_info = get_diagram_type_info(dt)
+                summary = detailed_model_summary(model, dt)
+                if summary:
+                    sections.append(
+                        f"### {dt_info['name']}\n{summary}"
+                    )
+                    summarised.add(dt)
+
+    if not sections:
+        return ""
+    return "\n\n".join(sections)
+
+
+def describe_model_body(session: Session):
+    """Answer user questions about the current diagram / project."""
+    if handle_pending_system_confirmation(session):
+        return
+
+    session.set('last_matched_intent', 'describe_model_intent')
+    request = parse_assistant_request(session)
+
+    if handle_file_attachments(session, request):
+        return
+
+    if not request.message:
+        reply_message(
+            session,
+            "What would you like to know about your project? "
+            "Try asking things like *\"how many classes do I have?\"*, "
+            "*\"describe my diagram\"*, or *\"what diagrams are in my project?\"*.",
+        )
+        return
+
+    # Build a comprehensive summary of the entire project
+    full_summary = _build_full_project_summary(request)
+
+    if not full_summary:
+        reply_message(
+            session,
+            "I don\u2019t see any diagrams in your project yet. "
+            "Create a diagram first, then ask me about it!",
+        )
+        return
+
+    qa_prompt = (
+        "You are an expert assistant for the BESSER Web Modeling Editor. "
+        "The user has a project that may contain multiple diagrams "
+        "(class, state machine, object, GUI, quantum circuit, agent).\n\n"
+        f"Here is a detailed summary of their full project:\n\n"
+        f"{full_summary}\n\n"
+        f"The user asks: \"{request.message}\"\n\n"
+        "Answer their question accurately based ONLY on the project data above. "
+        "If they ask about a specific diagram type, focus on that one. "
+        "If they ask a general question, consider all diagrams. "
+        "Be specific \u2014 reference class names, attribute names, states, pages, "
+        "gates, relationships, etc. by name. Keep the answer concise and "
+        "well-formatted with Markdown."
+    )
+
+    try:
+        answer = ctx.gpt_text.predict(qa_prompt)
+        reply_message(session, answer)
+    except Exception as e:
+        logger.error(f"Error in describe_model_body: {e}", exc_info=True)
+        reply_message(
+            session,
+            "I had trouble analysing your project. Could you try rephrasing your question?",
+        )
+
+
+# ------------------------------------------------------------------
+# Code generation (continued)
+# ------------------------------------------------------------------
+
 def generation_body(session: Session):
     """Handle assistant-driven code generation orchestration."""
     if handle_pending_system_confirmation(session):
@@ -338,6 +454,7 @@ def register_all(*, agent, states, intents):
     states['create_complete_system'].set_body(create_complete_system_body)
     states['modify_model'].set_body(modify_modeling_body)
     states['modeling_help'].set_body(modeling_help_body)
+    states['describe_model'].set_body(describe_model_body)
     states['generation'].set_body(generation_body)
     states['uml_rag'].set_body(uml_rag_body)
 
@@ -347,6 +464,7 @@ def register_all(*, agent, states, intents):
         intents['create_complete_system']: states['create_complete_system'],
         intents['modify_model']: states['modify_model'],
         intents['modeling_help']: states['modeling_help'],
+        intents['describe_model']: states['describe_model'],
         intents['uml_spec']: states['uml_rag'],
         intents['generation']: states['generation'],
         intents['hello']: states['greetings'],
@@ -360,6 +478,7 @@ def register_all(*, agent, states, intents):
         ('create_complete_system', 'create_complete_system'),
         ('modify_model', 'modify_model'),
         ('modeling_help', 'modeling_help'),
+        ('describe_model', 'describe_model'),
         ('uml_rag', 'greetings'),
         ('generation', 'generation'),
     ]:
