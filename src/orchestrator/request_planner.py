@@ -180,12 +180,28 @@ def _should_use_llm_planner(message: str, inferred_target_count: int, has_genera
     return False
 
 
+# Modeling intents that should never trigger an automatic generation operation.
+_MODELING_INTENTS = {
+    "create_single_element_intent",
+    "create_complete_system_intent",
+    "modify_model_intent",
+    "modeling_help_intent",
+    "describe_model_intent",
+}
+
+
 def _fallback_operations(
     request: AssistantRequest,
     default_mode: str,
     matched_intent: Optional[str],
 ) -> List[Dict[str, Any]]:
     targets = determine_target_diagram_types(request, last_intent=matched_intent, max_targets=3)
+
+    # ClassDiagram is a prerequisite for other diagram types (GUI, Object, etc.)
+    # so it must always be processed first when present alongside others.
+    if "ClassDiagram" in targets and targets[0] != "ClassDiagram":
+        targets = ["ClassDiagram"] + [t for t in targets if t != "ClassDiagram"]
+
     target_requests = _build_target_requests(request.message, targets)
     operations: List[Dict[str, Any]] = [
         {
@@ -197,17 +213,21 @@ def _fallback_operations(
         for target in targets
     ]
 
-    generator_type = detect_generator_type(request.message)
-    if generator_type:
-        generation_request = _extract_generation_request_fragment(request.message)
-        operations.append(
-            {
-                "type": "generation",
-                "generatorType": generator_type,
-                "config": {},
-                "request": generation_request,
-            }
-        )
+    # Only append a generation operation when the user's intent is actually
+    # about code generation, not when they happen to use a keyword like
+    # "web app" in a modeling request.
+    if matched_intent not in _MODELING_INTENTS:
+        generator_type = detect_generator_type(request.message)
+        if generator_type:
+            generation_request = _extract_generation_request_fragment(request.message)
+            operations.append(
+                {
+                    "type": "generation",
+                    "generatorType": generator_type,
+                    "config": {},
+                    "request": generation_request,
+                }
+            )
 
     return operations
 

@@ -81,54 +81,83 @@ hello_intent = agent.new_intent(
 create_single_element_intent = agent.new_intent(
     name="create_single_element_intent",
     description=(
-        "The user wants to create exactly ONE single UML element. "
+        "The user wants to create exactly ONE single element in a diagram. "
         'Examples: "create a class called User", "add a Person class", '
-        '"make one state", "create an object instance". '
-        "This is for creating ONE element only, NOT multiple elements or systems."
+        '"make one state", "create an object instance", '
+        '"add a Hadamard gate to qubit 0", "put an X gate on qubit 2", '
+        '"add a CNOT gate". '
+        "This is for creating ONE element only, NOT multiple elements, "
+        "systems, or complete algorithms."
     ),
 )
 create_complete_system_intent = agent.new_intent(
     name="create_complete_system_intent",
     description=(
-        "The user wants to create a complete system, diagram, or multiple "
-        'classes/elements. Keywords: "create a library system", "create a '
-        'class diagram for", "design an e-commerce", "generate a banking '
-        'application", "build a system", "create a diagram for", "model a", '
-        '"create classes for", "generate the gui", "create the gui", '
-        '"generate the frontend", "create a frontend", "gui diagram", '
-        '"generate a gui diagram", "build the frontend". '
-        "This is for creating MULTIPLE elements, a complete model, or a "
-        "GUI / frontend diagram — NOT for generating source code artifacts."
+        "The user wants to CREATE or BUILD a complete system, diagram, "
+        "algorithm, or multiple elements from scratch. "
+        'Keywords: "create a library system", "create a class diagram for", '
+        '"design an e-commerce", "build a system", "create a diagram for", '
+        '"model a", "create classes for", "generate the gui", "create the gui", '
+        '"generate the frontend", "build the frontend", '
+        '"create a web app for", "model a web application for", '
+        '"design a web app for", "build a web app for". '
+        "Quantum keywords: \"create Grover's algorithm\", "
+        '"build a quantum circuit", "implement Shor algorithm", '
+        '"make a Bell state", "create QFT circuit", '
+        '"do the Deutsch-Jozsa algorithm", "build a teleportation circuit", '
+        '"implement quantum fourier transform", "create a quantum algorithm", '
+        '"do grovers search", "implement bernstein vazirani", '
+        '"build a variational circuit", "create an entanglement circuit". '
+        "This is for creating MULTIPLE elements, a complete model, a "
+        "GUI / frontend diagram, a web application system, or a quantum "
+        "algorithm — NOT for generating source code artifacts or "
+        "describing/explaining existing models."
     ),
 )
 modify_model_intent = agent.new_intent(
     name="modify_model_intent",
     description=(
-        "The user wants to modify, change, update, edit, add to, or connect "
-        'elements in an EXISTING UML model. Keywords: "add relationship", '
-        '"connect", "add inheritance", "add generalization", "relate", '
+        "The user wants to modify, change, update, edit, add to, remove from, "
+        "or connect elements in an EXISTING model or diagram. "
+        'Keywords: "add relationship", "connect", "add inheritance", '
         '"modify class", "change attribute", "update method", "delete", '
-        '"remove", "rename", "add association", "add composition", '
-        '"add aggregation", "link classes"'
+        '"remove", "rename", "add association", "link classes". '
+        'Quantum modifications: "add a gate to the circuit", '
+        '"remove the measurement", "change gate on qubit 2", '
+        '"add more qubits", "extend the circuit", '
+        '"replace the X gate with a Y gate", "add a CNOT between q0 and q3".'
     ),
 )
 modeling_help_intent = agent.new_intent(
     name="modeling_help_intent",
-    description="The user asks for help with UML modeling, design patterns, or modeling concepts",
+    description=(
+        "The user asks for GENERAL HELP, explanation, or guidance about "
+        "modeling concepts, design patterns, or how things work. "
+        'Keywords: "help me", "how do I", "explain", "what is", '
+        '"tell me about", "how does X work", "what are best practices". '
+        'Quantum help: "explain quantum gates", "how does superposition work", '
+        '"what is entanglement", "explain Grover\'s algorithm concept", '
+        '"how do quantum circuits work", "what is a Hadamard gate". '
+        "This is for CONCEPTUAL help and explanations, NOT for creating, "
+        "modifying, or describing existing models."
+    ),
 )
 describe_model_intent = agent.new_intent(
     name="describe_model_intent",
     description=(
-        "The user asks a QUESTION about their current model or diagram, "
-        "wanting to inspect, understand, or get information about what already "
-        "exists on the canvas. Keywords: 'how many classes', 'what attributes', "
-        "'describe my diagram', 'list all classes', 'show my model', "
-        "'what relationships', 'tell me about my model', 'what does my diagram have', "
-        "'summarize my model', 'what states do I have', 'what pages', "
-        "'what is in my diagram', 'what objects exist', 'explain my model', "
-        "'what gates are in my circuit'. "
-        "This is for ASKING about an existing model, NOT for creating, "
-        "modifying, or generating anything."
+        "The user asks a QUESTION about their CURRENT model, diagram, or "
+        "circuit, wanting to inspect, understand, or get information about "
+        "what already EXISTS on the canvas. "
+        "Keywords: 'how many classes', 'what attributes', 'describe my diagram', "
+        "'list all classes', 'show my model', 'what relationships', "
+        "'tell me about my model', 'summarize my model', 'what states do I have', "
+        "'what is in my diagram', 'explain my model'. "
+        "Quantum: 'what gates are in my circuit', 'describe my quantum circuit', "
+        "'what algorithm does my circuit implement', 'how many qubits', "
+        "'describe the quantum algorithm', 'what does this circuit do', "
+        "'analyze my circuit'. "
+        "This is for ASKING about an existing model — NOT for creating, "
+        "building, modifying, or generating anything new."
     ),
 )
 uml_spec_intent = agent.new_intent(
@@ -146,14 +175,21 @@ generation_intent = agent.new_intent(
     name=GENERATION_INTENT_NAME,
     description=(
         "The user wants to generate deployable source code or technical "
-        "artifacts from an existing model, or export/deploy their project. "
+        "artifacts FROM AN EXISTING model, or export/deploy their project. "
+        "This requires an existing model to already be on the canvas. "
         "Generators include: django, backend, web_app, sql, sqlalchemy, "
         "jsonschema, qiskit, python, java, pydantic, agent. "
+        'Keywords: "generate django", "generate sql", "generate web_app", '
+        '"generate python code", "run the web_app generator", '
+        '"generate code from my model". '
         "Export: 'export to json', 'export buml', 'download project'. "
         "Deploy: 'deploy to render', 'publish app', 'deploy application'. "
-        "This is strictly for CODE GENERATION, EXPORT, or DEPLOYMENT, "
-        "NOT for creating or generating diagrams, models, GUIs, or "
-        "frontends — those belong to the modeling/creation intents."
+        "This is strictly for CODE GENERATION from existing models, EXPORT, "
+        "or DEPLOYMENT — NOT for creating, modeling, designing, or building "
+        "new diagrams, systems, models, GUIs, or frontends. "
+        "If the user says 'create a web app for X' or 'model a web "
+        "application for Y', that is a creation/modeling intent, NOT "
+        "generation."
     ),
 )
 

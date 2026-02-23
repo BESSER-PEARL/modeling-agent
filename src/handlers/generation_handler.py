@@ -301,6 +301,50 @@ def _looks_like_mixed_modeling_and_generation(message: str) -> bool:
     return has_modeling_language and has_multi_step_connector
 
 
+def _is_modeling_request(message: str) -> bool:
+    """Return True when the message is primarily asking to model/create/design a system.
+
+    This catches phrases like "create a web app for hotel booking" or
+    "model the web application for a library" which should be handled by
+    the modeling states, NOT the code-generation pipeline, even though
+    they contain generator keywords like "web app".
+    """
+    lower = (message or "").lower()
+
+    # Verbs that indicate the user wants to BUILD a model, not generate code
+    modeling_verbs = [
+        "model ", "create ", "design ", "build ", "make ",
+        "develop ", "architect ", "plan ", "draft ",
+    ]
+    has_modeling_verb = any(lower.startswith(v) or f" {v}" in lower for v in modeling_verbs)
+    if not has_modeling_verb:
+        return False
+
+    # Domain qualifiers that signal a business system to be modeled
+    domain_qualifiers = [
+        " for ", " system", " management", " booking", " tracking",
+        " platform", " portal", " store", " shop", " service",
+        " inventory", " order", " customer", " library", " school",
+        " hospital", " restaurant", " hotel", " e-commerce", " ecommerce",
+        " marketplace", " dashboard", " reservation", " rental",
+        " banking", " clinic", " university", " employee",
+    ]
+    has_domain = any(q in lower for q in domain_qualifiers)
+    if not has_domain:
+        return False
+
+    # If the user explicitly asks for code/source generation, honour that
+    explicit_generation_phrases = [
+        "generate code", "generate the code", "generate source",
+        "run generator", "trigger generator", "code generation",
+        "source code", "export", "deploy",
+    ]
+    if any(g in lower for g in explicit_generation_phrases):
+        return False
+
+    return True
+
+
 def should_route_to_generation(session: Session, request: AssistantRequest) -> bool:
     if request.action == "frontend_event":
         return True
@@ -308,6 +352,8 @@ def should_route_to_generation(session: Session, request: AssistantRequest) -> b
     if pending_generator:
         return True
     if _looks_like_mixed_modeling_and_generation(request.message):
+        return False
+    if _is_modeling_request(request.message):
         return False
     return detect_generator_type(request.message) is not None
 

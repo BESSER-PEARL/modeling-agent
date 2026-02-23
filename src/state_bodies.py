@@ -26,7 +26,7 @@ from session_helpers import (
     json_no_intent_matched,
     route_to_generation,
 )
-from confirmation import handle_pending_system_confirmation
+from confirmation import handle_pending_system_confirmation, handle_pending_gui_choice
 from execution import (
     execute_planned_operations,
     handle_file_attachments,
@@ -46,6 +46,8 @@ logger = logging.getLogger(__name__)
 
 def global_fallback_body(session: Session):
     """Handle unrecognized messages."""
+    if handle_pending_gui_choice(session):
+        return
     if handle_pending_system_confirmation(session):
         return
 
@@ -79,6 +81,8 @@ def global_fallback_body(session: Session):
 
 def greetings_body(session: Session):
     """Send a greeting message when the user first connects or says hello."""
+    if handle_pending_gui_choice(session):
+        return
     if handle_pending_system_confirmation(session):
         return
 
@@ -125,6 +129,8 @@ def greetings_body(session: Session):
 
 def _modeling_state_body(session: Session, intent_name: str, default_mode: str, empty_msg: str):
     """Unified handler for all modeling operations (single element, system, modification)."""
+    if handle_pending_gui_choice(session):
+        return
     if handle_pending_system_confirmation(session):
         return
 
@@ -186,6 +192,8 @@ def modify_modeling_body(session: Session):
 
 def modeling_help_body(session: Session):
     """Offer guidance or clarifying questions when the user needs modeling help."""
+    if handle_pending_gui_choice(session):
+        return
     if handle_pending_system_confirmation(session):
         return
 
@@ -302,6 +310,8 @@ def _build_full_project_summary(request: AssistantRequest) -> str:
 
 def describe_model_body(session: Session):
     """Answer user questions about the current diagram / project."""
+    if handle_pending_gui_choice(session):
+        return
     if handle_pending_system_confirmation(session):
         return
 
@@ -372,6 +382,8 @@ def describe_model_body(session: Session):
 
 def generation_body(session: Session):
     """Handle assistant-driven code generation orchestration."""
+    if handle_pending_gui_choice(session):
+        return
     if handle_pending_system_confirmation(session):
         return
 
@@ -405,6 +417,8 @@ def generation_body(session: Session):
 
 def uml_rag_body(session: Session):
     """Answer UML specification questions using RAG."""
+    if handle_pending_gui_choice(session):
+        return
     if handle_pending_system_confirmation(session):
         return
 
@@ -447,23 +461,33 @@ def uml_rag_body(session: Session):
 # ------------------------------------------------------------------
 
 def add_unified_transitions(state, intents_map, fallback_state, generation_state):
-    """Add both text and JSON event transitions for a state."""
-    # Direct generation route from JSON payload/callback events
-    state.when_event(ReceiveJSONEvent()) \
-        .with_condition(route_to_generation) \
-        .go_to(generation_state)
+    """Add both text and JSON event transitions for a state.
 
-    # Text event transitions (backward compatibility)
-    for intent, dest_state in intents_map.items():
-        state.when_intent_matched(intent).go_to(dest_state)
-
-    # JSON event transitions (unified messages)
+    Transition priority (first match wins):
+    1. Intent-matched JSON transitions — the LLM-based intent classifier is
+       the most accurate signal, so it gets first priority.
+    2. Keyword-based generation route — catches generator keywords, frontend
+       callback events, and pending-generator follow-ups that the intent
+       classifier might not detect.
+    3. Text-event intent transitions (backward compatibility).
+    4. Fallback transitions.
+    """
+    # 1. Intent-matched JSON transitions (highest priority for user messages)
     for intent, dest_state in intents_map.items():
         state.when_event(ReceiveJSONEvent()) \
             .with_condition(json_intent_matches, {'intent_name': intent.name}) \
             .go_to(dest_state)
 
-    # Fallback transitions
+    # 2. Keyword-based generation route (frontend events, pending config, etc.)
+    state.when_event(ReceiveJSONEvent()) \
+        .with_condition(route_to_generation) \
+        .go_to(generation_state)
+
+    # 3. Text event transitions (backward compatibility)
+    for intent, dest_state in intents_map.items():
+        state.when_intent_matched(intent).go_to(dest_state)
+
+    # 4. Fallback transitions
     state.when_event(ReceiveJSONEvent()) \
         .with_condition(json_no_intent_matched) \
         .go_to(fallback_state)

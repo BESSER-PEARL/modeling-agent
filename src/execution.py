@@ -80,11 +80,12 @@ def execute_model_operation(
     default_mode: str,
     _skip_existing_check: bool = False,
     _replace_existing: Optional[bool] = None,
+    _skip_gui_choice: bool = False,
 ) -> Optional[str]:
     """Execute a single model operation (create, modify, etc.).
 
     Returns the target diagram type on success, ``None`` if a confirmation
-    prompt was stored (existing-model guard) or on failure.
+    prompt was stored (existing-model guard or GUI-choice prompt) or on failure.
     """
     target_diagram_type = operation.get("diagramType")
     if not isinstance(target_diagram_type, str) or not target_diagram_type:
@@ -133,37 +134,57 @@ def execute_model_operation(
             )
             return None
 
-    # ── GUI Auto-Generate shortcut ──────────────────────────────────────────
-    # Only use the deterministic frontend auto-generate when the user's
-    # request is generic (e.g. "create a GUI", "generate the frontend").
-    # When they ask for specific customisations (charts, dashboards, custom
-    # layouts, specific pages, etc.) let the LLM-driven handler run instead.
+    # ── GUI generation-mode choice ───────────────────────────────────────
+    # When the user requests a full GUINoCodeDiagram and a class diagram
+    # exists, offer them a choice between:
+    #   (a) Deterministic auto-generate (one page per class, fast & stable)
+    #   (b) LLM-driven generation (personalized, experimental)
+    # If the user's request already contains strong customization hints,
+    # skip the prompt and go straight to the LLM path.
     _CUSTOM_GUI_HINTS = {
         "chart", "dashboard", "custom", "specific", "page for",
         "sidebar", "metric", "kpi", "landing", "hero",
         "form", "layout", "only", "just", "don't include",
         "exclude", "style", "theme", "color", "dark",
+        "personali", "unique", "tailored", "bespoke",
     }
     if target_diagram_type == "GUINoCodeDiagram" and operation_mode in ("complete_system", None, ""):
         _req_lower = (operation_request or "").lower()
         _wants_custom = any(hint in _req_lower for hint in _CUSTOM_GUI_HINTS)
-        if not _wants_custom:
-            class_diagram_model = resolve_class_diagram(request)
-            if isinstance(class_diagram_model, dict):
-                elements = class_diagram_model.get("elements")
-                if isinstance(elements, dict) and len(elements) > 0:
-                    logger.info("[ModelOp] Routing GUI complete_system to frontend auto-generate")
-                    reply_payload(session, {
-                        "action": "auto_generate_gui",
-                        "diagramType": "GUINoCodeDiagram",
-                        "message": (
-                            "I'll generate the GUI automatically from your Class Diagram. "
-                            "Each class will get its own page with a data table and method buttons."
-                        ),
-                    })
-                    return target_diagram_type
-        else:
+
+        class_diagram_model = resolve_class_diagram(request)
+        _has_class_diagram = (
+            isinstance(class_diagram_model, dict)
+            and isinstance(class_diagram_model.get("elements"), dict)
+            and len(class_diagram_model["elements"]) > 0
+        )
+
+        if _has_class_diagram and _wants_custom:
+            # Explicit customization hints → skip straight to LLM path
             logger.info("[ModelOp] Custom GUI request detected — using LLM-driven path")
+            # Fall through to the normal handler below
+
+        elif _has_class_diagram and not _skip_gui_choice:
+            # No explicit customization → ask the user which approach they prefer
+            session.set('pending_gui_choice', {
+                'operation_request': operation_request,
+                'operation': operation,
+                'default_mode': default_mode,
+                'diagram_type': target_diagram_type,
+                '_replace_existing': _replace_existing,
+            })
+            reply_message(
+                session,
+                "How would you like me to generate the GUI?\n\n"
+                "1️⃣ **Auto-generate** — Fast & deterministic. Creates one page per class "
+                "with data tables and method buttons.\n"
+                "2️⃣ **LLM-generated** *(experimental)* — AI-designed layout with "
+                "personalized pages, navigation, and styling.\n\n"
+                "Reply **auto** or **1** for the auto-generated GUI, "
+                "or **llm** / **2** / **personalized** for the AI-designed version.",
+            )
+            logger.info("[ModelOp] Asked user to choose GUI generation mode")
+            return None
 
     handler = ctx.diagram_factory.get_handler(target_diagram_type)
     if not handler:
@@ -319,7 +340,7 @@ def execute_planned_operations(
 
     working_request = request
 
-    for operation in operations:
+    for idx, operation in enumerate(operations):
         if not isinstance(operation, dict):
             continue
 
@@ -330,7 +351,19 @@ def execute_planned_operations(
                     session, working_request, operation, default_mode=default_mode,
                 )
                 if executed_target is None:
-                    # Pending confirmation stored — stop processing further ops.
+                    # Pending confirmation stored — save remaining ops so they
+                    # can be resumed after the user confirms.
+                    remaining = [op for op in operations[idx + 1:] if isinstance(op, dict)]
+                    if remaining:
+                        pending = session.get('pending_complete_system')
+                        if isinstance(pending, dict):
+                            pending['remaining_operations'] = remaining
+                            pending['original_message'] = request.message
+                            session.set('pending_complete_system', pending)
+                            logger.info(
+                                f"[PlannedOps] Stored {len(remaining)} remaining operation(s) "
+                                f"alongside pending confirmation"
+                            )
                     logger.info("[PlannedOps] Pending confirmation stored — halting remaining operations")
                     return
                 if isinstance(executed_target, str) and executed_target:

@@ -23,6 +23,22 @@ def compact_model_summary(model_data: Any, diagram_type: str) -> str:
         elements = model_data.get("elements")
         relationships = model_data.get("relationships")
         if isinstance(elements, dict) and isinstance(relationships, dict):
+            if diagram_type == "ClassDiagram":
+                # Count actual classes (not attributes/methods) for a clearer summary
+                class_names = [
+                    el.get("name") for el in elements.values()
+                    if isinstance(el, dict) and el.get("type") == "Class"
+                    and isinstance(el.get("name"), str) and el["name"].strip()
+                ]
+                class_count = len(class_names)
+                if class_count > 0:
+                    preview = ", ".join(class_names[:6])
+                    extra = f" (+{class_count - 6} more)" if class_count > 6 else ""
+                    return (
+                        f"{diagram_type}: {class_count} class(es): "
+                        f"{preview}{extra} and "
+                        f"{len(relationships)} relationship(s)."
+                    )
             return (
                 f"{diagram_type}: {len(elements)} element(s), "
                 f"{len(relationships)} relationship(s)."

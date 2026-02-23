@@ -18,7 +18,7 @@ from typing import Any, Dict, Optional
 from besser.agent.core.session import Session
 
 from protocol.adapters import parse_assistant_request
-from session_helpers import reply_message
+from session_helpers import reply_message, reply_payload
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,90 @@ def model_has_elements(model: Optional[Dict[str, Any]]) -> bool:
         return False
     elements = model.get('elements')
     return isinstance(elements, dict) and len(elements) > 0
+
+
+# ------------------------------------------------------------------
+# GUI generation-mode choice
+# ------------------------------------------------------------------
+
+_AUTO_KEYWORDS = ['auto', '1', 'deterministic', 'fast', 'standard', 'default', 'basic']
+_LLM_KEYWORDS = ['llm', '2', 'personali', 'ai', 'experimental', 'custom', 'design']
+
+
+def handle_pending_gui_choice(session: Session) -> bool:
+    """Process a pending GUI generation-mode choice, if one exists.
+
+    Returns ``True`` when a pending choice was found **and** handled
+    (caller should ``return``).  Returns ``False`` otherwise.
+    """
+    from execution import execute_model_operation
+
+    pending = session.get('pending_gui_choice')
+    if not pending:
+        return False
+
+    request = parse_assistant_request(session)
+    user_msg = (request.message or '').lower().strip()
+
+    wants_cancel = any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
+    if wants_cancel:
+        session.set('pending_gui_choice', None)
+        reply_message(session, "Cancelled. No GUI was generated.")
+        return True
+
+    wants_auto = any(keyword_matches(w, user_msg) for w in _AUTO_KEYWORDS)
+    wants_llm = any(keyword_matches(w, user_msg) for w in _LLM_KEYWORDS)
+
+    if not wants_auto and not wants_llm:
+        # Didn't understand the choice — clear and let normal logic handle it
+        session.set('pending_gui_choice', None)
+        return False
+
+    session.set('pending_gui_choice', None)
+
+    if wants_auto:
+        logger.info("[GUIChoice] User chose AUTO-GENERATE (deterministic)")
+        reply_payload(session, {
+            "action": "auto_generate_gui",
+            "diagramType": "GUINoCodeDiagram",
+            "message": (
+                "Generating GUI from your Class Diagram\u2026\n\n"
+                "I'll generate the GUI automatically from your Class Diagram. "
+                "Each class will get its own page with a data table and method buttons."
+            ),
+        })
+        return True
+
+    # LLM-driven path
+    logger.info("[GUIChoice] User chose LLM-GENERATED (experimental)")
+    stored_operation = pending.get('operation', {})
+    stored_default_mode = pending.get('default_mode', 'complete_system')
+    stored_replace = pending.get('_replace_existing')
+
+    # Restore the original request message for the operation
+    working_request = request
+    working_request.message = pending.get('operation_request', request.message)
+
+    try:
+        execute_model_operation(
+            session=session,
+            request=working_request,
+            operation=stored_operation,
+            default_mode=stored_default_mode,
+            _skip_existing_check=True,
+            _replace_existing=stored_replace,
+            _skip_gui_choice=True,
+        )
+    except Exception as exc:
+        logger.error(f"[GUIChoice] Error executing LLM GUI generation: {exc}", exc_info=True)
+        reply_message(session, "Something went wrong while generating the GUI. Please try again.")
+
+    return True
+
+
+# ------------------------------------------------------------------
+# Pending complete-system confirmation
+# ------------------------------------------------------------------
 
 
 def handle_pending_system_confirmation(session: Session) -> bool:
@@ -121,5 +205,84 @@ def handle_pending_system_confirmation(session: Session) -> bool:
     except Exception as exc:
         logger.error(f"[PendingConfirm] Error executing stored operation: {exc}", exc_info=True)
         reply_message(session, "Something went wrong while creating the model. Please try again.")
+        return True
+
+    # ── Resume remaining operations from the original plan ───────────
+    remaining_ops = pending.get('remaining_operations')
+    if isinstance(remaining_ops, list) and remaining_ops:
+        logger.info(
+            f"[PendingConfirm] Resuming {len(remaining_ops)} remaining operation(s) "
+            f"from original plan"
+        )
+        from utilities.model_helpers import build_request_for_target
+
+        # Rebuild the working request so subsequent operations see the
+        # just-created diagram in context.
+        resume_request = working_request
+        if stored_diagram_type:
+            resume_request = build_request_for_target(working_request, stored_diagram_type)
+
+        for op_idx, remaining_op in enumerate(remaining_ops):
+            if not isinstance(remaining_op, dict):
+                continue
+            op_type = remaining_op.get('type')
+            if op_type == 'model':
+                try:
+                    result = execute_model_operation(
+                        session=session,
+                        request=resume_request,
+                        operation=remaining_op,
+                        default_mode=stored_default_mode,
+                    )
+                    if result is None:
+                        # This operation stored a new pending confirmation.
+                        # Save the rest of the remaining ops so they can be
+                        # resumed after the user responds to the new prompt.
+                        new_pending = session.get('pending_complete_system')
+                        if isinstance(new_pending, dict):
+                            leftover = [
+                                op for op in remaining_ops[op_idx + 1:]
+                                if isinstance(op, dict)
+                            ]
+                            if leftover:
+                                new_pending['remaining_operations'] = leftover
+                                new_pending['original_message'] = (
+                                    pending.get('original_message', stored_message)
+                                )
+                                session.set('pending_complete_system', new_pending)
+                                logger.info(
+                                    f"[PendingConfirm] Nested pending stored with "
+                                    f"{len(leftover)} remaining op(s)"
+                                )
+                        break
+                    if isinstance(result, str) and result:
+                        resume_request = build_request_for_target(resume_request, result)
+                except Exception as exc:
+                    logger.error(
+                        f"[PendingConfirm] Error executing remaining operation "
+                        f"{remaining_op}: {exc}",
+                        exc_info=True,
+                    )
+            elif op_type == 'generation':
+                from handlers.generation_handler import handle_generation_request
+                from utilities.model_helpers import build_generation_request
+                from session_helpers import reply_payload
+
+                gen_type = remaining_op.get('generatorType')
+                if isinstance(gen_type, str) and gen_type:
+                    gen_req = build_generation_request(
+                        resume_request,
+                        generator_type=gen_type,
+                        config=remaining_op.get('config') if isinstance(remaining_op.get('config'), dict) else {},
+                    )
+                    try:
+                        gen_response = handle_generation_request(session, gen_req)
+                        if isinstance(gen_response, dict):
+                            reply_payload(session, gen_response)
+                    except Exception as exc:
+                        logger.error(
+                            f"[PendingConfirm] Error executing remaining generation: {exc}",
+                            exc_info=True,
+                        )
 
     return True

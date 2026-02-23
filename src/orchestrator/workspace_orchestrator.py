@@ -41,6 +41,8 @@ IMPLICIT_TARGET_RULES: Dict[str, List[Tuple[str, int]]] = {
     "ClassDiagram": [
         ("structural", 5),
         ("domain model", 5),
+        ("web application", 5),
+        ("web app", 5),
         ("entity", 4),
         ("entities", 4),
         ("class", 4),
@@ -88,6 +90,8 @@ IMPLICIT_TARGET_RULES: Dict[str, List[Tuple[str, int]]] = {
         ("gui", 4),
         ("ui", 4),
         ("user interface", 5),
+        ("web application", 4),
+        ("web app", 4),
         ("screen", 4),
         ("page", 4),
         ("dashboard", 4),
