@@ -5,6 +5,10 @@ from besser.agent.core.session import Session
 
 from protocol.types import AssistantRequest
 
+# Sentinel value for pending_generator when the user has been shown the
+# generator selection menu and we're waiting for their choice.
+_AWAITING_SELECTION = "_awaiting_selection"
+
 GENERATOR_KEYWORDS: Dict[str, List[str]] = {
     "django": ["django"],
     "backend": ["full backend", "backend"],
@@ -406,7 +410,14 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
 
     pending_generator, pending_config = _get_pending_state(session)
     detected_generator = detect_generator_type(request.message)
-    generator_type = detected_generator or pending_generator
+
+    # If we were awaiting a generator selection, use the detected type only.
+    # The sentinel "_awaiting_selection" is not a real generator.
+    if pending_generator == _AWAITING_SELECTION:
+        _clear_pending_state(session)
+        generator_type = detected_generator
+    else:
+        generator_type = detected_generator or pending_generator
 
     if not generator_type:
         # Check if the user actually wants a diagram (GUI/frontend), not code
@@ -416,6 +427,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         ]
         _lower_msg = (request.message or "").lower()
         if any(hint in _lower_msg for hint in _gui_hints):
+            _clear_pending_state(session)
             return {
                 "action": "assistant_message",
                 "message": (
@@ -425,6 +437,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                     '**"create the frontend diagram"**.'
                 ),
             }
+        _set_pending_state(session, _AWAITING_SELECTION, {})
         return {
             "action": "assistant_message",
             "message": (

@@ -58,7 +58,18 @@ def get_current_model(session: Session) -> Optional[Dict[str, Any]]:
 # ------------------------------------------------------------------
 
 def json_intent_matches(session: Session, params: Dict[str, Any]) -> bool:
-    """Check if the predicted intent matches the target intent for JSON events."""
+    """Check if the predicted intent matches the target intent for JSON events.
+
+    Skips intent matching when the generation handler is awaiting a generator
+    selection — the user's reply should be routed to the generation handler
+    unconditionally so the keyword detector can identify the chosen generator.
+    """
+    # If awaiting generator selection, suppress intent matching so the
+    # route_to_generation condition (next priority) can capture the reply.
+    pending = session.get("pending_generator_type")
+    if pending == "_awaiting_selection":
+        return False
+
     target_intent_name = params.get('intent_name')
     if not target_intent_name:
         return False
