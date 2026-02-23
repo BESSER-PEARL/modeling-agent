@@ -43,9 +43,29 @@ def _sanitize_page_name(value: Any, fallback: str = "Page") -> str:
     return label[:40]
 
 
+def _main_container(children: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Wrap a list of section components inside a centered <main> container."""
+    return {
+        "tagName": "main",
+        "attributes": {"class": "assistant-main"},
+        "style": {
+            "max-width": "1200px",
+            "margin": "0 auto",
+            "padding": "24px 16px",
+        },
+        "components": children,
+    }
+
+
 def _default_wrapper_component() -> Dict[str, Any]:
     return {
         "type": "wrapper",
+        "style": {
+            "background-color": "#f8fafc",
+            "font-family": "'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif",
+            "color": "#1e293b",
+            "min-height": "100vh",
+        },
         "stylable": [
             "background",
             "background-color",
@@ -128,34 +148,50 @@ def _hero_component(title: str, body: str, cta_label: str) -> Dict[str, Any]:
         "tagName": "section",
         "attributes": {"class": "assistant-hero"},
         "style": {
-            "padding": "48px 32px",
-            "background": "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)",
+            "padding": "64px 48px",
+            "background": "linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%)",
             "color": "#ffffff",
-            "border-radius": "18px",
-            "margin": "20px 0",
+            "border-radius": "16px",
+            "margin": "24px",
+            "text-align": "center",
         },
         "components": [
             {
                 "tagName": "h1",
                 "content": title,
-                "style": {"margin": "0 0 12px 0", "font-size": "2rem", "font-weight": "700"},
+                "style": {
+                    "margin": "0 0 16px 0",
+                    "font-size": "2.25rem",
+                    "font-weight": "800",
+                    "letter-spacing": "-0.02em",
+                    "line-height": "1.2",
+                },
             },
             {
                 "tagName": "p",
                 "content": body,
-                "style": {"margin": "0 0 20px 0", "font-size": "1.05rem", "line-height": "1.5"},
+                "style": {
+                    "margin": "0 auto 28px auto",
+                    "font-size": "1.1rem",
+                    "line-height": "1.6",
+                    "max-width": "600px",
+                    "opacity": "0.9",
+                },
             },
             {
                 "tagName": "button",
                 "content": cta_label,
                 "attributes": {"class": "assistant-cta"},
                 "style": {
-                    "padding": "10px 18px",
+                    "padding": "12px 28px",
                     "border": "none",
                     "border-radius": "10px",
                     "font-weight": "600",
-                    "background-color": "#38bdf8",
-                    "color": "#0f172a",
+                    "font-size": "1rem",
+                    "background-color": "#ffffff",
+                    "color": "#2563eb",
+                    "cursor": "pointer",
+                    "box-shadow": "0 2px 8px rgba(0,0,0,0.15)",
                 },
             },
         ],
@@ -170,17 +206,40 @@ def _feature_list_component(title: str, items: List[str]) -> Dict[str, Any]:
     return {
         "tagName": "section",
         "attributes": {"class": "assistant-features"},
-        "style": {"padding": "28px", "background-color": "#f8fafc", "border-radius": "14px", "margin": "16px 0"},
+        "style": {
+            "padding": "32px",
+            "background-color": "#ffffff",
+            "border-radius": "14px",
+            "margin": "12px 24px",
+            "box-shadow": "0 1px 4px rgba(0,0,0,0.06)",
+            "border": "1px solid #f1f5f9",
+        },
         "components": [
             {
                 "tagName": "h2",
                 "content": title,
-                "style": {"margin": "0 0 14px 0", "font-size": "1.45rem"},
+                "style": {
+                    "margin": "0 0 18px 0",
+                    "font-size": "1.35rem",
+                    "font-weight": "700",
+                    "color": "#0f172a",
+                },
             },
             {
                 "tagName": "ul",
                 "style": {"padding-left": "20px", "margin": "0"},
-                "components": [{"tagName": "li", "content": item, "style": {"margin": "8px 0"}} for item in cleaned_items],
+                "components": [
+                    {
+                        "tagName": "li",
+                        "content": item,
+                        "style": {
+                            "margin": "10px 0",
+                            "color": "#334155",
+                            "line-height": "1.5",
+                        },
+                    }
+                    for item in cleaned_items
+                ],
             },
         ],
     }
@@ -190,10 +249,34 @@ def _content_component(title: str, body: str) -> Dict[str, Any]:
     return {
         "tagName": "section",
         "attributes": {"class": "assistant-content"},
-        "style": {"padding": "24px", "border": "1px solid #e2e8f0", "border-radius": "12px", "margin": "14px 0"},
+        "style": {
+            "padding": "32px",
+            "background-color": "#ffffff",
+            "border": "1px solid #f1f5f9",
+            "border-radius": "14px",
+            "margin": "12px 24px",
+            "box-shadow": "0 1px 4px rgba(0,0,0,0.06)",
+        },
         "components": [
-            {"tagName": "h2", "content": title, "style": {"margin": "0 0 10px 0", "font-size": "1.35rem"}},
-            {"tagName": "p", "content": body, "style": {"margin": "0", "line-height": "1.55"}},
+            {
+                "tagName": "h2",
+                "content": title,
+                "style": {
+                    "margin": "0 0 12px 0",
+                    "font-size": "1.35rem",
+                    "font-weight": "700",
+                    "color": "#0f172a",
+                },
+            },
+            {
+                "tagName": "p",
+                "content": body,
+                "style": {
+                    "margin": "0",
+                    "line-height": "1.6",
+                    "color": "#475569",
+                },
+            },
         ],
     }
 
@@ -207,20 +290,30 @@ def _form_component(title: str, fields: List[str], cta_label: str) -> Dict[str, 
         "tagName": "section",
         "attributes": {"class": "assistant-form"},
         "style": {
-            "padding": "26px",
-            "border": "1px solid #cbd5e1",
-            "border-radius": "12px",
-            "margin": "16px 0",
+            "padding": "32px",
+            "border": "1px solid #f1f5f9",
+            "border-radius": "14px",
+            "margin": "12px 24px",
             "background-color": "#ffffff",
+            "box-shadow": "0 1px 4px rgba(0,0,0,0.06)",
         },
         "components": [
-            {"tagName": "h2", "content": title, "style": {"margin": "0 0 14px 0", "font-size": "1.3rem"}},
+            {
+                "tagName": "h2",
+                "content": title,
+                "style": {
+                    "margin": "0 0 20px 0",
+                    "font-size": "1.35rem",
+                    "font-weight": "700",
+                    "color": "#0f172a",
+                },
+            },
             {
                 "tagName": "form",
                 "components": [
                     {
                         "tagName": "div",
-                        "style": {"display": "grid", "gap": "10px"},
+                        "style": {"display": "grid", "gap": "14px"},
                         "components": [
                             {
                                 "tagName": "input",
@@ -230,9 +323,12 @@ def _form_component(title: str, fields: List[str], cta_label: str) -> Dict[str, 
                                     "placeholder": field,
                                 },
                                 "style": {
-                                    "padding": "10px 12px",
-                                    "border": "1px solid #94a3b8",
-                                    "border-radius": "8px",
+                                    "padding": "12px 14px",
+                                    "border": "1px solid #e2e8f0",
+                                    "border-radius": "10px",
+                                    "font-size": "0.95rem",
+                                    "background-color": "#f8fafc",
+                                    "outline": "none",
                                 },
                             }
                             for field in cleaned_fields
@@ -243,13 +339,15 @@ def _form_component(title: str, fields: List[str], cta_label: str) -> Dict[str, 
                         "content": cta_label,
                         "attributes": {"type": "button"},
                         "style": {
-                            "margin-top": "12px",
-                            "padding": "10px 16px",
+                            "margin-top": "16px",
+                            "padding": "12px 24px",
                             "border": "none",
-                            "border-radius": "8px",
-                            "background-color": "#0f172a",
+                            "border-radius": "10px",
+                            "background-color": "#2563eb",
                             "color": "#ffffff",
                             "font-weight": "600",
+                            "font-size": "0.95rem",
+                            "cursor": "pointer",
                         },
                     },
                 ],
@@ -651,7 +749,8 @@ def _chart_component(
         "style": {
             "width": "100%",
             "min-height": "400px",
-            "margin": "16px 0",
+            "margin": "12px 0",
+            "border-radius": "12px",
         },
     }
 
@@ -708,6 +807,8 @@ def _table_component(
         "style": {
             "width": "100%",
             "min-height": "300px",
+            "margin": "12px 0",
+            "border-radius": "12px",
         },
     }
 
@@ -722,7 +823,16 @@ def _dashboard_component(
 
     # Build sub-components: a table + up to 2 charts
     components: List[Dict[str, Any]] = [
-        {"tagName": "h2", "content": title, "style": {"margin": "0 0 18px 0", "font-size": "1.5rem", "font-weight": "700"}},
+        {
+            "tagName": "h2",
+            "content": title,
+            "style": {
+                "margin": "0 0 20px 0",
+                "font-size": "1.35rem",
+                "font-weight": "700",
+                "color": "#0f172a",
+            },
+        },
     ]
 
     # Table
@@ -763,12 +873,48 @@ def _dashboard_component(
         "tagName": "section",
         "attributes": {"class": "assistant-dashboard"},
         "style": {
-            "padding": "28px",
-            "background-color": "#f8fafc",
+            "padding": "32px",
+            "background-color": "#ffffff",
             "border-radius": "14px",
-            "margin": "16px 0",
+            "margin": "12px 24px",
+            "box-shadow": "0 1px 4px rgba(0,0,0,0.06)",
+            "border": "1px solid #f1f5f9",
         },
         "components": [components[0], components[1], chart_grid] if len(components) > 2 else components,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Card wrapper — wraps bare data components (table, chart) inside a styled card
+# ---------------------------------------------------------------------------
+
+def _card_wrap(title: str, inner: Dict[str, Any]) -> Dict[str, Any]:
+    """Wrap a bare data component (table, chart) inside a styled card with a title."""
+    components: List[Dict[str, Any]] = []
+    if title:
+        components.append({
+            "tagName": "h2",
+            "content": title,
+            "style": {
+                "margin": "0 0 16px 0",
+                "font-size": "1.25rem",
+                "font-weight": "700",
+                "color": "#0f172a",
+            },
+        })
+    components.append(inner)
+    return {
+        "tagName": "section",
+        "attributes": {"class": "assistant-card"},
+        "style": {
+            "padding": "28px",
+            "background-color": "#ffffff",
+            "border-radius": "14px",
+            "margin": "12px 24px",
+            "box-shadow": "0 1px 4px rgba(0,0,0,0.06)",
+            "border": "1px solid #f1f5f9",
+        },
+        "components": components,
     }
 
 
@@ -810,6 +956,235 @@ def _metric_card_component(
             "min-height": "140px",
             "margin": "8px 0",
         },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Stats grid — multiple metric cards in a responsive grid
+# ---------------------------------------------------------------------------
+
+def _stats_grid_component(
+    section_spec: Dict[str, Any],
+    class_metadata: Optional[List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """Build a grid of metric cards from a list of stat items."""
+    title = _clean_text(section_spec.get("title"), fallback="Key Metrics")
+    items = section_spec.get("items") if isinstance(section_spec.get("items"), list) else []
+
+    # Resolve class metadata for data binding
+    cls = _resolve_class_binding(section_spec, class_metadata)
+
+    cards: List[Dict[str, Any]] = []
+    for item in items:
+        if isinstance(item, dict):
+            label = _clean_text(item.get("label") or item.get("name"), fallback="Metric")
+            fmt = _clean_text(item.get("format"), fallback="number")
+        elif isinstance(item, str):
+            label = item
+            fmt = "number"
+        else:
+            continue
+
+        card_attrs: Dict[str, Any] = {
+            "class": "metric-card-component",
+            "metric-title": label,
+            "value-color": "#2c3e50",
+            "value-size": "32",
+            "show-trend": "true",
+            "positive-color": "#27ae60",
+            "negative-color": "#e74c3c",
+            "format": fmt,
+        }
+        if cls:
+            card_attrs["data-source"] = cls["id"]
+            data_attr = _pick_data_field(cls)
+            if data_attr:
+                card_attrs["data-field"] = data_attr["id"]
+
+        cards.append({
+            "type": "metric-card",
+            "attributes": card_attrs,
+            "style": {
+                "width": "100%",
+                "min-height": "140px",
+            },
+        })
+
+    if not cards:
+        cards = [
+            _stat_placeholder("Total", cls),
+            _stat_placeholder("Active", cls),
+            _stat_placeholder("Growth", cls),
+        ]
+
+    col_count = min(len(cards), 4)
+    return {
+        "tagName": "section",
+        "attributes": {"class": "assistant-stats-grid"},
+        "style": {
+            "display": "grid",
+            "grid-template-columns": f"repeat({col_count}, 1fr)",
+            "gap": "16px",
+            "margin": "12px 24px",
+        },
+        "components": [
+            *([
+                {
+                    "tagName": "h2",
+                    "content": title,
+                    "style": {
+                        "grid-column": f"1 / -1",
+                        "font-size": "1.25rem",
+                        "font-weight": "700",
+                        "color": "#0f172a",
+                        "margin": "0 0 4px 0",
+                    },
+                }
+            ] if title else []),
+            *cards,
+        ],
+    }
+
+
+def _stat_placeholder(label: str, cls: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return a real metric-card component as a placeholder stat card."""
+    card_attrs: Dict[str, Any] = {
+        "class": "metric-card-component",
+        "metric-title": label,
+        "value-color": "#2c3e50",
+        "value-size": "32",
+        "show-trend": "true",
+        "positive-color": "#27ae60",
+        "negative-color": "#e74c3c",
+        "format": "number",
+    }
+    if cls:
+        card_attrs["data-source"] = cls["id"]
+        data_attr = _pick_data_field(cls)
+        if data_attr:
+            card_attrs["data-field"] = data_attr["id"]
+    return {
+        "type": "metric-card",
+        "attributes": card_attrs,
+        "style": {
+            "width": "100%",
+            "min-height": "140px",
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Footer component
+# ---------------------------------------------------------------------------
+
+def _footer_component(title: str, body: str, items: List[str]) -> Dict[str, Any]:
+    """Build a page footer with project name and optional link labels."""
+    link_components = []
+    for item in items:
+        if isinstance(item, str) and item.strip():
+            link_components.append({
+                "tagName": "a",
+                "attributes": {"href": "#"},
+                "content": item.strip(),
+                "style": {
+                    "color": "#94a3b8",
+                    "text-decoration": "none",
+                    "font-size": "0.85rem",
+                    "transition": "color 0.2s",
+                },
+            })
+
+    return {
+        "tagName": "footer",
+        "attributes": {"class": "assistant-footer"},
+        "style": {
+            "padding": "32px 48px",
+            "background-color": "#0f172a",
+            "color": "#94a3b8",
+            "display": "flex",
+            "justify-content": "space-between",
+            "align-items": "center",
+            "margin-top": "24px",
+            "font-family": "'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif",
+        },
+        "components": [
+            {
+                "tagName": "div",
+                "components": [
+                    {
+                        "tagName": "div",
+                        "content": title or "Project",
+                        "style": {
+                            "font-weight": "700",
+                            "font-size": "1.1rem",
+                            "color": "#ffffff",
+                            "margin-bottom": "4px",
+                        },
+                    },
+                    {
+                        "tagName": "div",
+                        "content": body or "\u00a9 2026 All rights reserved.",
+                        "style": {"font-size": "0.8rem"},
+                    },
+                ],
+            },
+            *([
+                {
+                    "tagName": "div",
+                    "style": {"display": "flex", "gap": "20px"},
+                    "components": link_components,
+                }
+            ] if link_components else []),
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Two-column layout
+# ---------------------------------------------------------------------------
+
+def _two_column_component(
+    section_spec: Dict[str, Any],
+    class_metadata: Optional[List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """Build a two-column layout.  The LLM provides left/right sub-sections."""
+    title = _clean_text(section_spec.get("title"), fallback="")
+    left_spec = section_spec.get("left") if isinstance(section_spec.get("left"), dict) else {}
+    right_spec = section_spec.get("right") if isinstance(section_spec.get("right"), dict) else {}
+
+    left_child = _build_section_component(left_spec, class_metadata) if left_spec else _content_component("Left", "Content")
+    right_child = _build_section_component(right_spec, class_metadata) if right_spec else _content_component("Right", "Content")
+
+    # Remove outer margins from children since the grid handles spacing
+    for child in (left_child, right_child):
+        if isinstance(child, dict) and "style" in child:
+            child["style"]["margin"] = "0"
+
+    components: List[Dict[str, Any]] = []
+    if title:
+        components.append({
+            "tagName": "h2",
+            "content": title,
+            "style": {
+                "grid-column": "1 / -1",
+                "font-size": "1.35rem",
+                "font-weight": "700",
+                "color": "#0f172a",
+                "margin": "0 0 8px 0",
+            },
+        })
+    components.extend([left_child, right_child])
+
+    return {
+        "tagName": "section",
+        "attributes": {"class": "assistant-two-column"},
+        "style": {
+            "display": "grid",
+            "grid-template-columns": "1fr 1fr",
+            "gap": "20px",
+            "margin": "12px 24px",
+        },
+        "components": components,
     }
 
 
@@ -884,6 +1259,80 @@ def _method_buttons_row(cls: Dict[str, Any], table_id: str = "") -> Optional[Dic
 # ---------------------------------------------------------------------------
 # Navigation sidebar
 # ---------------------------------------------------------------------------
+
+def _nav_header_component(
+    page_names: List[str],
+    active_page: str = "",
+    project_name: str = "BESSER",
+) -> Dict[str, Any]:
+    """Build a horizontal navigation header bar with links to all pages.
+
+    This is injected at the top of every LLM-generated page so users can
+    navigate between pages.  The active page link is visually highlighted.
+    Uses a clean white design with subtle accents.
+    """
+    nav_links: List[Dict[str, Any]] = []
+    for name in page_names:
+        route = f"/{re.sub(r'[^a-z0-9-]+', '-', name.lower()).strip('-') or 'page'}"
+        is_active = name.lower() == active_page.lower()
+        nav_links.append({
+            "type": "link",
+            "attributes": {
+                "href": route,
+                "data-navigate-to": name.lower().replace(" ", "-"),
+            },
+            "style": {
+                "color": "#2563eb" if is_active else "#64748b",
+                "text-decoration": "none",
+                "font-weight": "600" if is_active else "500",
+                "font-size": "0.9rem",
+                "padding": "8px 16px",
+                "border-radius": "8px",
+                "background-color": "#eff6ff" if is_active else "transparent",
+                "transition": "all 0.2s",
+            },
+            "components": [{"type": "textnode", "content": name}],
+        })
+
+    return {
+        "tagName": "nav",
+        "attributes": {"class": "assistant-nav-header"},
+        "style": {
+            "background-color": "#ffffff",
+            "padding": "0 32px",
+            "height": "64px",
+            "display": "flex",
+            "justify-content": "space-between",
+            "align-items": "center",
+            "font-family": "'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif",
+            "box-shadow": "0 1px 3px rgba(0,0,0,0.06)",
+            "border-bottom": "1px solid #e2e8f0",
+            "position": "sticky",
+            "top": "0",
+            "z-index": "50",
+        },
+        "components": [
+            {
+                "type": "text",
+                "style": {
+                    "font-size": "1.25rem",
+                    "font-weight": "700",
+                    "color": "#0f172a",
+                    "letter-spacing": "-0.01em",
+                },
+                "components": [{"type": "textnode", "content": project_name}],
+            },
+            {
+                "style": {
+                    "display": "flex",
+                    "gap": "4px",
+                    "align-items": "center",
+                },
+                "components": nav_links,
+            },
+        ],
+    }
+
 
 def _nav_sidebar_component(class_metadata: List[Dict[str, Any]], active_index: int = 0) -> Dict[str, Any]:
     """Build a navigation sidebar with links to all class pages."""
@@ -1078,21 +1527,26 @@ def _build_section_component(section_spec: Dict[str, Any], class_metadata: Optio
         return _feature_list_component(title, [str(item) for item in items])
     if section_type in {"form", "contact_form", "signup_form"}:
         return _form_component(title, [str(field) for field in fields], cta_label)
+    if section_type in {"footer"}:
+        return _footer_component(title, body, [str(i) for i in items])
+    if section_type in {"stats_grid", "stats-grid", "stats", "metrics_grid", "metrics"}:
+        return _stats_grid_component(section_spec, class_metadata)
+    if section_type in {"two_column", "two-column", "split", "columns"}:
+        return _two_column_component(section_spec, class_metadata)
 
     # ── Data-bound components (charts, tables, dashboards) ──────────
     if section_type in {"table", "data_table"}:
-        return _table_component(section_spec, class_metadata)
+        return _card_wrap(title, _table_component(section_spec, class_metadata))
     if section_type in {"bar_chart", "bar-chart", "barchart"}:
-        return _chart_component("bar-chart", section_spec, class_metadata)
+        return _card_wrap(title, _chart_component("bar-chart", section_spec, class_metadata))
     if section_type in {"pie_chart", "pie-chart", "piechart"}:
-        return _chart_component("pie-chart", section_spec, class_metadata)
+        return _card_wrap(title, _chart_component("pie-chart", section_spec, class_metadata))
     if section_type in {"line_chart", "line-chart", "linechart"}:
-        return _chart_component("line-chart", section_spec, class_metadata)
+        return _card_wrap(title, _chart_component("line-chart", section_spec, class_metadata))
     if section_type in {"radar_chart", "radar-chart", "radarchart"}:
-        return _chart_component("radar-chart", section_spec, class_metadata)
+        return _card_wrap(title, _chart_component("radar-chart", section_spec, class_metadata))
     if section_type in {"chart"}:
-        # Generic "chart" – pick bar-chart as default
-        return _chart_component("bar-chart", section_spec, class_metadata)
+        return _card_wrap(title, _chart_component("bar-chart", section_spec, class_metadata))
     if section_type in {"dashboard"}:
         return _dashboard_component(section_spec, class_metadata)
     if section_type in {"metric_card", "metric-card", "metric_cards", "kpi", "metric"}:
@@ -1115,16 +1569,18 @@ Return ONLY JSON with this shape:
 {{
   "pageName": "Home",
   "section": {{
-    "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard|metric_card",
+    "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard|metric_card|stats_grid|footer|two_column",
     "title": "Section title",
     "body": "Optional descriptive text",
-    "items": ["Optional item"],
+    "items": ["Optional item or stat object"],
     "fields": ["Optional field label"],
     "ctaLabel": "Optional button label",
     "className": "Optional class name from Class Diagram to bind data to",
     "sampleData": [
       {{"name": "Realistic label from domain", "value": 42}}
-    ]
+    ],
+    "left": {{"type": "...", "title": "..."}},
+    "right": {{"type": "...", "title": "..."}}
   }}
 }}
 
@@ -1133,36 +1589,77 @@ Section types:
 - feature_list: List of feature items
 - content: Generic text section
 - form: Input form with fields
-- table: Data table bound to a class (requires className) — auto-generates columns from attributes and relationships
-- bar_chart: Bar chart visualisation bound to a class
-- pie_chart: Pie chart visualisation bound to a class
-- line_chart: Line chart visualisation bound to a class
-- radar_chart: Radar chart visualisation bound to a class
+- table: Data table bound to a class (requires className)
+- bar_chart / pie_chart / line_chart / radar_chart: Chart visualisations bound to a class
 - dashboard: Combined table + charts for a class
-- metric_card: KPI metric card showing a single numeric value from a class
+- metric_card: Single KPI metric card from a class
+- stats_grid: Row of stat cards. Provide \"items\" as [{{\"label\": \"Total Users\", \"value\": \"1,234\"}}]
+- footer: Page footer with project name and links. Provide items as link labels
+- two_column: Side-by-side layout. Provide "left" and "right" as nested section specs
 
 Rules:
 1. Keep content concise and practical.
 2. Use section type that best matches user request.
 3. When the user mentions data, statistics, or visualisation, prefer chart/table/dashboard types.
 4. When a className is provided or classes are available, bind data sections to them.
-5. For table/chart/dashboard sections, ALWAYS include a "sampleData" array with 4-6 realistic preview rows that use actual attribute names and plausible domain-specific values (e.g. for a Shoe class: {{"brand": "Nike", "size": 42, "price": 129.99}}). For charts, each item needs "name" (label) and "value" (number). For pie charts, add a "color" hex string.
+5. For table/chart/dashboard sections, ALWAYS include a "sampleData" array with 4-6 realistic preview rows.
 6. Return JSON only.{class_block}"""
 
     def _parse_page_spec(
         self,
         spec: Dict[str, Any],
         class_metadata: Optional[List[Dict[str, Any]]] = None,
+        all_page_names: Optional[List[str]] = None,
+        project_name: str = "BESSER",
     ) -> Dict[str, Any]:
         page_name = _sanitize_page_name(spec.get("name"), fallback="Page")
         raw_sections = spec.get("sections") if isinstance(spec.get("sections"), list) else []
         sections = [item for item in raw_sections if isinstance(item, dict)]
 
         wrapper = _default_wrapper_component()
-        wrapper["components"] = [
+
+        # Inject a navigation header bar at the top of every page
+        page_components: List[Dict[str, Any]] = []
+        if all_page_names and len(all_page_names) > 1:
+            page_components.append(
+                _nav_header_component(
+                    page_names=all_page_names,
+                    active_page=page_name,
+                    project_name=project_name,
+                )
+            )
+
+        page_components.extend(
             _build_section_component(section, class_metadata)
             for section in sections
-        ]
+        )
+
+        # Separate full-width components (hero, footer, nav) from card sections.
+        # Card sections are wrapped in a <main> container with max-width for
+        # a clean centered layout.
+        final_components: List[Dict[str, Any]] = []
+        main_children: List[Dict[str, Any]] = []
+        _FULL_WIDTH_CLASSES = {"assistant-hero", "assistant-footer", "assistant-nav-header"}
+
+        def _is_full_width(comp: Dict[str, Any]) -> bool:
+            cls = comp.get("attributes", {}).get("class", "")
+            tag = comp.get("tagName", "")
+            return cls in _FULL_WIDTH_CLASSES or tag in ("nav", "footer")
+
+        for comp in page_components:
+            if _is_full_width(comp):
+                # Flush accumulated main children first
+                if main_children:
+                    final_components.append(_main_container(main_children))
+                    main_children = []
+                final_components.append(comp)
+            else:
+                main_children.append(comp)
+
+        if main_children:
+            final_components.append(_main_container(main_children))
+
+        wrapper["components"] = final_components
 
         return {
             "name": page_name,
@@ -1272,16 +1769,18 @@ Return ONLY JSON with this shape:
       "name": "Home",
       "sections": [
         {{
-          "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard|metric_card",
+          "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard|metric_card|stats_grid|footer|two_column",
           "title": "Section title",
           "body": "Optional text",
-          "items": ["Optional item"],
+          "items": ["Optional item or stat object"],
           "fields": ["Optional field"],
           "ctaLabel": "Optional CTA",
           "className": "Optional class name to bind data to",
           "sampleData": [
             {{"name": "Realistic label from domain", "value": 42}}
-          ]
+          ],
+          "left": {{"type": "...", "title": "..."}},
+          "right": {{"type": "...", "title": "..."}}
         }}
       ]
     }}
@@ -1289,26 +1788,30 @@ Return ONLY JSON with this shape:
 }}
 
 Section types:
-- hero: Hero/landing banner with title, body, CTA button
+- hero: Hero/landing banner with title, body, CTA button (full-width, great for first section on home page)
 - feature_list: List of feature items
 - content: Generic text section
 - form: Input form with fields
 - table: Data table bound to a class — auto-generates columns from attributes and relationships
-- bar_chart: Bar chart bound to class data
-- pie_chart: Pie chart bound to class data
-- line_chart: Line chart bound to class data
-- radar_chart: Radar chart bound to class data
+- bar_chart / pie_chart / line_chart / radar_chart: Chart visualisations bound to class data
 - dashboard: Combined table + charts for a class (auto-generates table + relevant charts)
-- metric_card: KPI metric card showing a single numeric value from a class
+- metric_card: Single KPI metric card from a class
+- stats_grid: Row of stat cards. Provide "items" as [{{"label": "Total Users", "value": "1,234"}}, ...] (3-4 items)
+- footer: Page footer with project name and links. Provide "items" as link labels like ["Privacy", "Terms", "Contact"]
+- two_column: Side-by-side layout. Provide "left" and "right" as nested section specs (e.g. left: table, right: pie_chart)
 
-Rules:
-1. Create 1-4 pages depending on request complexity.
-2. Each page should include 1-5 sections.
-3. When classes are available, include at least one data-bound section (table, chart, or dashboard) per page that manages class data.
-4. Use dashboard type for overview pages that need both data display and visualisation.
-5. Always set className when using table/chart/dashboard sections.
-6. For table/chart/dashboard sections, ALWAYS include a "sampleData" array with 4-6 realistic preview rows using actual attribute names and plausible domain-specific values (e.g. for a Shoe class: {{"brand": "Nike", "size": 42, "price": 129.99}}). For charts, each item needs "name" (label) and "value" (number). For pie charts, add a "color" hex string. For tables, each item should be a dict with column names as keys.
-7. Return JSON only.{class_block}"""
+Layout rules:
+1. Create 2-4 pages depending on request complexity.
+2. Each page should include 2-5 sections.
+3. FIRST page MUST start with a hero section as the first section.
+4. EVERY page MUST end with a footer section as the last section.
+5. Use stats_grid for overview numbers at the top of dashboard pages (after hero or at start).
+6. Use two_column to pair related content side by side (e.g. a table + a chart).
+7. When classes are available, include at least one data-bound section (table, chart, or dashboard) per page.
+8. Use dashboard type for overview pages that need both data display and visualisation.
+9. Always set className when using table/chart/dashboard sections.
+10. For table/chart/dashboard sections, ALWAYS include a "sampleData" array with 4-6 realistic preview rows using actual attribute names and plausible domain-specific values (e.g. for a Shoe class: {{"brand": "Nike", "size": 42, "price": 129.99}}). For charts, each item needs "name" (label) and "value" (number). For pie charts, add a "color" hex string. For tables, each item should be a dict with column names as keys.
+11. Return JSON only.{class_block}"""
 
         try:
             response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_request}")
@@ -1317,8 +1820,19 @@ Rules:
                 raise ValueError("Invalid system spec")
 
             pages_spec = spec.get("pages") if isinstance(spec.get("pages"), list) else []
+            project_name = spec.get("projectName", "App")
+            all_page_names = [
+                _clean_text(p.get("name")) or f"Page{i}"
+                for i, p in enumerate(pages_spec, 1)
+                if isinstance(p, dict)
+            ]
             pages = [
-                self._parse_page_spec(page, class_metadata)
+                self._parse_page_spec(
+                    page,
+                    class_metadata,
+                    all_page_names=all_page_names,
+                    project_name=project_name,
+                )
                 for page in pages_spec
                 if isinstance(page, dict)
             ]
