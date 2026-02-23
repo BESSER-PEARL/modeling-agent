@@ -27,9 +27,9 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     # causes "got multiple values for keyword argument 'response_format'".
     gpt = LLMOpenAI(
         agent=agent,
-        name='gpt-4.1-mini',
+        name='gpt-5-mini',
         parameters={
-            'temperature': 0.2,
+            # temperature': 0.2,
             'max_completion_tokens': 8192,
         },
         num_previous_messages=4,
@@ -37,7 +37,6 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
 
     # Thin wrapper that enforces JSON mode for predict() calls only.
     _gpt_json_params: Dict[str, Any] = {
-        'temperature': 0.2,
         'max_completion_tokens': 8192,
         'response_format': {'type': 'json_object'},
     }
@@ -49,9 +48,9 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     # Free-text LLM (help, greetings, RAG fallback) — JSON mode would break.
     gpt_text = LLMOpenAI(
         agent=agent,
-        name='gpt-4.1-nano',
+        name='gpt-5-nano',
         parameters={
-            'temperature': 0.4,
+            # temperature': 0.2, dont work with gpt 5 models as they are reasoning models
             'max_completion_tokens': 4096,
         },
         num_previous_messages=4,
@@ -60,7 +59,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     if gpt is None:
         raise RuntimeError("LLM initialization returned None")
 
-    logger.info("LLMs initialized: gpt-4.1-mini (json), gpt-4.1-nano (text), conversation memory=4")
+    logger.info("LLMs initialized: gpt-5-mini (json), gpt-5-nano (text), conversation memory=4")
     return gpt, gpt_text, gpt_predict_json
 
 
@@ -93,7 +92,7 @@ def init_rag(agent: Agent):
             agent=agent,
             vector_store=vector_store,
             splitter=splitter,
-            llm_name='gpt-4.1-mini',
+            llm_name='gpt-5-mini',
             k=4,
             num_previous_messages=4,
         )
@@ -128,7 +127,7 @@ def init_diagram_factory(gpt: LLMOpenAI):
 def init_intent_classifier_config() -> LLMIntentClassifierConfiguration:
     """Return the default intent-classifier configuration."""
     return LLMIntentClassifierConfiguration(
-        llm_name='gpt-4.1-mini',
+        llm_name='gpt-5-mini',
         parameters={},
         use_intent_descriptions=True,
         use_training_sentences=False,
