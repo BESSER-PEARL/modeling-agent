@@ -27,9 +27,9 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     # causes "got multiple values for keyword argument 'response_format'".
     gpt = LLMOpenAI(
         agent=agent,
-        name='gpt-5-mini',
+        name='gpt-4.1-mini',
         parameters={
-            # temperature': 0.2,
+            'temperature': 0.2,
             'max_completion_tokens': 8192,
         },
         num_previous_messages=4,
@@ -37,6 +37,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
 
     # Thin wrapper that enforces JSON mode for predict() calls only.
     _gpt_json_params: Dict[str, Any] = {
+        'temperature': 0.2,
         'max_completion_tokens': 8192,
         'response_format': {'type': 'json_object'},
     }
@@ -46,20 +47,27 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
         return gpt.predict(prompt, parameters=_gpt_json_params)
 
     # Free-text LLM (help, greetings, RAG fallback) — JSON mode would break.
+    # IMPORTANT: The BESSER framework registers LLMs by name in a dict, and
+    # also uses name as the OpenAI model parameter.  Two LLMs with the same
+    # name would overwrite each other, leaving the first un-initialised.
+    # We register under a unique key ('gpt-4.1-mini-text') and immediately
+    # correct the model name back to the real API model so OpenAI calls work.
     gpt_text = LLMOpenAI(
         agent=agent,
-        name='gpt-5-nano',
+        name='gpt-4.1-mini-text',
         parameters={
-            # temperature': 0.2, dont work with gpt 5 models as they are reasoning models
+            'temperature': 0.4,
             'max_completion_tokens': 4096,
         },
         num_previous_messages=4,
     )
+    # Fix the model name used in API calls (registry key stays 'gpt-4.1-mini-text')
+    gpt_text.name = 'gpt-4.1-mini'
 
     if gpt is None:
         raise RuntimeError("LLM initialization returned None")
 
-    logger.info("LLMs initialized: gpt-5-mini (json), gpt-5-nano (text), conversation memory=4")
+    logger.info("LLMs initialized: gpt-4.1-mini (json, t=0.2), gpt-4.1-mini (text, t=0.4), conversation memory=4")
     return gpt, gpt_text, gpt_predict_json
 
 
@@ -92,7 +100,7 @@ def init_rag(agent: Agent):
             agent=agent,
             vector_store=vector_store,
             splitter=splitter,
-            llm_name='gpt-5-mini',
+            llm_name='gpt-4.1-mini',
             k=4,
             num_previous_messages=4,
         )
@@ -127,7 +135,7 @@ def init_diagram_factory(gpt: LLMOpenAI):
 def init_intent_classifier_config() -> LLMIntentClassifierConfiguration:
     """Return the default intent-classifier configuration."""
     return LLMIntentClassifierConfiguration(
-        llm_name='gpt-5-mini',
+        llm_name='gpt-4.1-mini',
         parameters={},
         use_intent_descriptions=True,
         use_training_sentences=False,
