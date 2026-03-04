@@ -6,6 +6,7 @@ from diagram_handlers.factory import DiagramHandlerFactory, get_diagram_type_inf
 from diagram_handlers.base_handler import (
     validate_spec,
     BaseDiagramHandler,
+    LLMPredictionError,
     SINGLE_CLASS_REQUIRED,
     SINGLE_CLASS_OPTIONAL,
     SYSTEM_CLASS_REQUIRED,
@@ -166,7 +167,7 @@ class TestBaseDiagramHandlerUtils:
         llm.responses = ["", ""]
         factory = DiagramHandlerFactory(llm)
         h = factory.get_handler("ClassDiagram")
-        with pytest.raises(ValueError):
+        with pytest.raises(LLMPredictionError):
             h.predict_with_retry("test prompt", max_retries=1)
 
     def test_generate_uuid(self):

@@ -6,7 +6,7 @@ Handles generation of UML Agent Diagrams (multi-agent conversational flows)
 from typing import Dict, Any, List, Optional
 import logging
 
-from ..core.base_handler import BaseDiagramHandler
+from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
 from utilities.model_helpers import detailed_model_summary
 
 # Get logger
@@ -92,6 +92,9 @@ IMPORTANT RULES:
                 "message": message
             }
 
+        except LLMPredictionError:
+            logger.error("[AgentDiagram] generate_single_element LLM FAILED", exc_info=True)
+            return self._error_response("I couldn't generate that agent element. Please try again or rephrase your request.")
         except Exception:
             logger.error("[AgentDiagram] generate_single_element FAILED", exc_info=True)
             return self.generate_fallback_element(user_request)
@@ -200,6 +203,9 @@ IMPORTANT RULES:
                 "message": message
             }
 
+        except LLMPredictionError:
+            logger.error("[AgentDiagram] generate_complete_system LLM FAILED", exc_info=True)
+            return self._error_response("I couldn't generate that agent system. Please try again or rephrase your request.")
         except Exception:
             logger.error("[AgentDiagram] generate_complete_system FAILED", exc_info=True)
             return self.generate_fallback_system(user_request)
@@ -727,6 +733,9 @@ IMPORTANT RULES:
             
             return modification_spec
             
+        except LLMPredictionError as e:
+            logger.error(f"[AgentDiagram] generate_modification LLM FAILED: {e}")
+            return self._error_response("I couldn't process that modification. Please try again or rephrase your request.")
         except Exception as e:
             logger.error(f"Error generating agent diagram modification: {e}")
             return self.generate_fallback_modification(user_request)

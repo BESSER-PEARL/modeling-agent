@@ -38,6 +38,8 @@ from utilities.model_helpers import (
     extract_class_metadata,
 )
 from utilities.model_resolution import resolve_class_diagram
+from utilities.workspace_context import record_session_action
+from quality_review import review_generated_model
 
 logger = logging.getLogger(__name__)
 
@@ -225,8 +227,14 @@ def execute_model_operation(
                 )
             else:
                 logger.warning(
-                    "[ModelOp] ObjectDiagram reference is missing or empty; output may drift."
+                    "[ModelOp] ObjectDiagram reference is missing or empty."
                 )
+                reply_message(
+                    session,
+                    "Please create a **Class Diagram** first — Object Diagrams "
+                    "need class definitions to instantiate from.",
+                )
+                return None
             result = handler.generate_single_element(
                 modeling_prompt,
                 reference_diagram=reference_diagram,
@@ -267,8 +275,14 @@ def execute_model_operation(
                 )
             else:
                 logger.warning(
-                    "[ModelOp] ObjectDiagram reference is missing or empty; output may drift."
+                    "[ModelOp] ObjectDiagram reference is missing or empty."
                 )
+                reply_message(
+                    session,
+                    "Please create a **Class Diagram** first — Object Diagrams "
+                    "need class definitions to instantiate from.",
+                )
+                return None
             result = handler.generate_complete_system(
                 modeling_prompt,
                 reference_diagram=reference_diagram,
@@ -289,6 +303,12 @@ def execute_model_operation(
 
     if not isinstance(result, dict):
         reply_message(session, f"I could not create a valid {target_diagram_type} response.")
+        return None
+
+    # If the handler returned an error message (e.g. LLM failure), send it
+    # directly without injecting diagram metadata.
+    if result.get("action") == "assistant_message":
+        reply_message(session, result.get("message", "Something went wrong. Please try again."))
         return None
 
     result["diagramType"] = target_diagram_type
@@ -313,7 +333,38 @@ def execute_model_operation(
         f"keys={list(result.keys())}"
     )
     reply_payload(session, result)
+
+    # Track for "what's next" suggestions in state bodies
+    session.set('_last_executed_diagram_type', target_diagram_type)
+
+    # Record action in session history for context-aware prompts
+    action_label = result.get("action", "unknown")
+    record_session_action(
+        session,
+        f"{action_label} on {target_diagram_type} (mode={operation_mode}): "
+        f"{operation_request[:80]}",
+    )
+
+    # Proactive quality review — suggest improvements after generation
+    available_diagrams = _collect_available_diagrams(request)
+    quality_suggestions = review_generated_model(
+        result, target_diagram_type, available_diagrams,
+    )
+    if quality_suggestions:
+        reply_message(session, quality_suggestions)
+
     return target_diagram_type
+
+
+def _collect_available_diagrams(request: AssistantRequest) -> list:
+    """Collect diagram types available in the current project snapshot."""
+    snapshot = request.context.project_snapshot
+    if not isinstance(snapshot, dict):
+        return []
+    diagrams = snapshot.get("diagrams")
+    if not isinstance(diagrams, dict):
+        return []
+    return list(diagrams.keys())
 
 
 # ------------------------------------------------------------------

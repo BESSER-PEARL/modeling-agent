@@ -2,6 +2,7 @@
 
 from .core.base_handler import (
     BaseDiagramHandler,
+    LLMPredictionError,
     MODIFICATION_INNER_REQUIRED,
     MODIFICATION_REQUIRED,
     SINGLE_CLASS_OPTIONAL,
@@ -21,6 +22,7 @@ from .core.base_handler import (
 
 __all__ = [
     "BaseDiagramHandler",
+    "LLMPredictionError",
     "validate_spec",
     "SINGLE_CLASS_REQUIRED",
     "SINGLE_CLASS_OPTIONAL",

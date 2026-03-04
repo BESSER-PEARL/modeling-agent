@@ -21,6 +21,24 @@ ALLOWED_MODEL_MODES: Set[str] = {
 
 ALLOWED_GENERATORS: Set[str] = set(GENERATOR_KEYWORDS.keys())
 
+# Maps generator type → diagram types that must exist before generation can run.
+GENERATOR_PREREQUISITES: Dict[str, List[str]] = {
+    "web_app": ["ClassDiagram", "GUINoCodeDiagram"],
+    "react": ["ClassDiagram", "GUINoCodeDiagram"],
+    "flutter": ["ClassDiagram", "GUINoCodeDiagram"],
+    "django": ["ClassDiagram"],
+    "backend": ["ClassDiagram"],
+    "sql": ["ClassDiagram"],
+    "sqlalchemy": ["ClassDiagram"],
+    "python": ["ClassDiagram"],
+    "java": ["ClassDiagram"],
+    "pydantic": ["ClassDiagram"],
+    "jsonschema": ["ClassDiagram"],
+    "rest_api": ["ClassDiagram"],
+    "agent": ["AgentDiagram"],
+    "qiskit": ["QuantumCircuitDiagram"],
+}
+
 PLANNER_CONNECTORS = (
     " and ",
     " then ",
@@ -30,7 +48,20 @@ PLANNER_CONNECTORS = (
     " finally ",
 )
 
-SEGMENT_SPLIT_PATTERN = re.compile(r"\s*(?:;| and then | then | also | after that | after | finally | next )\s*", re.IGNORECASE)
+SEGMENT_SPLIT_PATTERN = re.compile(
+    r"(?:"
+    r"\s*;\s*"                         # semicolon separator
+    r"|\s+and then\s+"                 # "and then"
+    r"|\s+then\s+"                     # "then"
+    r"|\s+also\s+"                     # "also"
+    r"|\s+after that\s+"               # "after that"
+    r"|\s+finally\s+"                  # "finally"
+    r"|\s+next\s+"                     # "next"
+    r"|(?:^|\n)\s*\d+[\.\)]\s+"        # numbered list items (1. / 2) / etc.)
+    r"|(?:^|\n)\s*[-*]\s+"             # bulleted list items (- / * )
+    r")",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def _clean_json_response(raw_response: str) -> str:
@@ -300,6 +331,16 @@ def _normalize_operations(
                 }
             )
 
+    # Enforce ordering: model ops before generation ops, ClassDiagram first among models
+    model_ops = [op for op in normalized if op.get("type") == "model"]
+    gen_ops = [op for op in normalized if op.get("type") == "generation"]
+    if model_ops:
+        # ClassDiagram must come first — other diagrams may depend on it
+        class_ops = [op for op in model_ops if op.get("diagramType") == "ClassDiagram"]
+        other_ops = [op for op in model_ops if op.get("diagramType") != "ClassDiagram"]
+        model_ops = class_ops + other_ops
+    normalized = model_ops + gen_ops
+
     return normalized
 
 
@@ -318,7 +359,9 @@ def plan_assistant_operations(
     """
     fallback = _fallback_operations(request, default_mode=default_mode, matched_intent=matched_intent)
     inferred_targets = determine_target_diagram_types(request, last_intent=matched_intent, max_targets=6)
-    has_generation_request = detect_generator_type(request.message) is not None
+    # Cache detect_generator_type — called once and reused
+    detected_gen = detect_generator_type(request.message)
+    has_generation_request = detected_gen is not None
 
     if not _should_use_llm_planner(request.message, len(inferred_targets), has_generation_request):
         return fallback
@@ -328,9 +371,16 @@ def plan_assistant_operations(
     # Give the LLM strong hints about which diagram types were detected
     detected_targets_hint = ", ".join(inferred_targets) if inferred_targets else "ClassDiagram"
     generation_hint = ""
-    detected_gen = detect_generator_type(request.message)
     if detected_gen:
         generation_hint = f"\nDetected generation request: {detected_gen}"
+        prereqs = GENERATOR_PREREQUISITES.get(detected_gen)
+        if prereqs:
+            generation_hint += f"\nPrerequisite diagrams for {detected_gen}: {', '.join(prereqs)}"
+
+    # A1: Inject matched intent so the planner knows the classified intent
+    intent_hint = ""
+    if matched_intent:
+        intent_hint = f"\nUser intent classified as: {matched_intent}"
 
     planner_prompt = f"""You are an assistant operation planner for BESSER modeling.
 
@@ -338,7 +388,7 @@ User request:
 {request.message}
 
 Workspace context:
-{context_summary}
+{context_summary}{intent_hint}
 
 Detected diagram targets (from user message keywords): {detected_targets_hint}{generation_hint}
 
@@ -358,13 +408,27 @@ Operation types:
   "config": {{}}
 }}
 
+Generator prerequisites (the planner must ensure these diagrams are created BEFORE the generation step):
+{json.dumps(GENERATOR_PREREQUISITES, indent=2)}
+
 Rules:
-- You MUST emit one model operation for EACH detected diagram target, in the order listed above.
+- Emit one model operation for EACH detected diagram target, in dependency order.
+- ClassDiagram always comes first — other diagrams depend on it.
 - Each model operation's "request" should be a focused sub-request for that specific diagram only.
-- If the user asks for generation too, emit a generation operation AFTER all modeling operations.
-- The ClassDiagram (structural) should always come first — other diagrams depend on it.
+  IMPORTANT: Each sub-request MUST contain enough detail from the original request so the
+  handler knows what to generate. Don't just say "create a class diagram" — include the
+  domain details like "create a class diagram for a library system with books, authors, and members".
+- If the user asks for generation, emit a generation operation AFTER all required model operations.
+- If prerequisite diagrams are missing from the workspace, create them first.
+- For complex multi-step requests like "create X system then generate Y", decompose into:
+  1. model operation (create the diagram)
+  2. generation operation (generate the code)
+- If the user says "create a web app for X", this means:
+  1. Create ClassDiagram for X (complete_system)
+  2. Create GUINoCodeDiagram for X (complete_system)
+  3. Generate web_app code
 - Keep operations minimal and deterministic.
-- Return ONLY valid JSON with the top-level shape: {{"operations":[...]}}.
+- Return ONLY valid JSON: {{"operations":[...]}}.
 """
 
     try:
@@ -376,6 +440,6 @@ Rules:
         if normalized:
             return normalized
     except Exception as error:
-        logger.debug("Planner JSON parsing failed, using fallback operations: %s", error)
+        logger.warning("Planner JSON parsing failed, using fallback operations: %s", error)
 
     return fallback

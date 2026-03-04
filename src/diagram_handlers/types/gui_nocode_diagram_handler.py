@@ -11,7 +11,7 @@ import re
 import logging
 from typing import Any, Dict, List, Optional
 
-from ..core.base_handler import BaseDiagramHandler
+from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
 from utilities.model_helpers import format_class_metadata_for_prompt
 
 logger = logging.getLogger(__name__)
@@ -1745,6 +1745,9 @@ Rules:
                 "model": model,
                 "message": f"Added a new UI section to the **{page_name}** page.",
             }
+        except LLMPredictionError:
+            logger.error("[GUINoCode] generate_single_element LLM FAILED", exc_info=True)
+            return self._error_response("I couldn't generate that GUI element. Please try again or rephrase your request.")
         except Exception:
             return self.generate_fallback_element(user_request)
 
@@ -1811,10 +1814,44 @@ Layout rules:
 8. Use dashboard type for overview pages that need both data display and visualisation.
 9. Always set className when using table/chart/dashboard sections.
 10. For table/chart/dashboard sections, ALWAYS include a "sampleData" array with 4-6 realistic preview rows using actual attribute names and plausible domain-specific values (e.g. for a Shoe class: {{"brand": "Nike", "size": 42, "price": 129.99}}). For charts, each item needs "name" (label) and "value" (number). For pie charts, add a "color" hex string. For tables, each item should be a dict with column names as keys.
-11. Return JSON only.{class_block}"""
+11. Return JSON only.
+
+Page design patterns (use as reference):
+- DASHBOARD pattern: hero -> stats_grid (3-4 KPIs) -> two_column(table + bar_chart) -> footer
+- CRUD LIST pattern: content(intro) -> table(class data) -> form(add new item) -> footer
+- OVERVIEW pattern: hero -> feature_list(capabilities) -> stats_grid -> footer
+- DETAIL pattern: content(description) -> dashboard(class data) -> form(edit) -> footer
+
+When classes are available, design pages around the data:
+- One page per major entity (e.g., Products page, Orders page, Users page)
+- Overview/Home page with stats_grid summarizing all entities
+- Each entity page should have at least a table showing its data
+- Add charts that make sense for the entity (pie for categories, bar for quantities, line for time series)
+- Sample data should use realistic values that match the domain{class_block}"""
+
+        logger.info(f"[GUINoCode] generate_complete_system called with: {user_request[:120]!r}")
 
         try:
-            response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_request}")
+            # --- Two-pass generation for richer UI design ---
+            reasoning_prompt = (
+                "You are a UI/UX design expert. Think step by step about "
+                "the following web application request and plan the page layout.\n\n"
+                f"User Request: {user_request}\n\n"
+                "Analyze:\n"
+                "1. What pages does this app need? (Home, Dashboard, Detail pages, Settings?)\n"
+                "2. For each page, what sections make sense? (hero banner, data tables, charts, forms?)\n"
+                "3. What data entities should be displayed? What charts visualize them best?\n"
+                "4. What is the navigation flow between pages?\n"
+                "5. What realistic sample data would make the preview look professional?\n\n"
+                "Design a modern, clean UI layout. Think like a Lovable/Vercel designer — "
+                "clean typography, generous spacing, purposeful color use."
+            )
+
+            response = self.predict_two_pass(
+                user_request=user_request,
+                system_prompt=system_prompt,
+                reasoning_prompt=reasoning_prompt,
+            )
             spec = self.parse_json_safely(self.clean_json_response(response or ""))
             if not isinstance(spec, dict):
                 raise ValueError("Invalid system spec")
@@ -1854,6 +1891,9 @@ Layout rules:
                 "model": model,
                 "message": self._build_gui_system_message(pages),
             }
+        except LLMPredictionError:
+            logger.error("[GUINoCode] generate_complete_system LLM FAILED", exc_info=True)
+            return self._error_response("I couldn't generate that GUI. Please try again or rephrase your request.")
         except Exception:
             return self.generate_fallback_system()
 
@@ -1946,6 +1986,9 @@ Rules:
                 "model": model,
                 "message": message,
             }
+        except LLMPredictionError:
+            logger.error("[GUINoCode] generate_modification LLM FAILED", exc_info=True)
+            return self._error_response("I couldn't process that GUI modification. Please try again or rephrase your request.")
         except Exception:
             return {
                 "action": "modify_model",

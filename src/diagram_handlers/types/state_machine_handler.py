@@ -1,28 +1,36 @@
 """
 State Machine Diagram Handler
-Handles generation of UML State Machine Diagrams
+Handles generation of UML State Machine Diagrams.
+
+Enhanced with:
+- Two-pass generation (reasoning → structured JSON)
+- Behavioral pattern injection for common domains
+- Validation-feedback loop for state machine quality
+- Richer prompts with transition design guidance
 """
 
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 from ..core.base_handler import (
     BaseDiagramHandler,
+    LLMPredictionError,
     SINGLE_STATE_REQUIRED,
     SINGLE_STATE_OPTIONAL,
     SYSTEM_STATE_REQUIRED,
     SYSTEM_STATE_OPTIONAL,
 )
 from utilities.model_helpers import detailed_model_summary
+from state_patterns import get_state_pattern_hint
 
 logger = logging.getLogger(__name__)
 
 
 class StateMachineHandler(BaseDiagramHandler):
     """Handler for State Machine Diagram generation"""
-    
+
     def get_diagram_type(self) -> str:
         return "StateMachineDiagram"
-    
+
     def get_system_prompt(self) -> str:
         return """You are a UML modeling expert. Create a state specification based on the user's request.
 
@@ -38,54 +46,62 @@ Return ONLY a JSON object with this structure:
 State Types: "initial", "final", "regular"
 
 IMPORTANT RULES:
-1. State names should be descriptive (Idle, Processing, Complete)
-2. entryAction, exitAction, doActivity are optional (can be empty strings)
-3. Use camelCase for state names
-4. Keep it SIMPLE and focused
-5. Do NOT include any "position" field - positioning is handled automatically
-6. Return ONLY the JSON, no explanations
+1. State names should be descriptive and represent real lifecycle stages (e.g., PendingPayment, Shipped, Authenticated — NOT generic names like State1, Active)
+2. entryAction: one-time action when entering the state (e.g., "send confirmation email", "lock account")
+3. exitAction: one-time action when leaving the state (e.g., "save progress", "release lock")
+4. doActivity: ongoing activity while in the state (e.g., "await payment", "monitor session", "process data")
+5. Use PascalCase for state names (e.g., PaymentProcessing, not payment_processing)
+6. Keep it SIMPLE and focused
+7. Do NOT include any "position" field - positioning is handled automatically
+8. Return ONLY the JSON, no explanations
 
 Examples:
-- "create idle state" -> {"stateName": "Idle", "stateType": "regular", "entryAction": "", "exitAction": "", "doActivity": ""}
+- "create idle state" -> {"stateName": "Idle", "stateType": "regular", "entryAction": "", "exitAction": "", "doActivity": "await user input"}
 - "create processing state" -> {"stateName": "Processing", "stateType": "regular", "entryAction": "start timer", "exitAction": "stop timer", "doActivity": "process data"}
+- "create payment pending state" -> {"stateName": "PendingPayment", "stateType": "regular", "entryAction": "display payment form", "exitAction": "", "doActivity": "await payment confirmation"}
 
 Return ONLY the JSON, no explanations."""
-    
+
     def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a single state with deterministic positioning."""
-        
+
         system_prompt = self.get_system_prompt()
         user_prompt = f"Create a state specification for: {user_request}"
-        
+
         try:
             response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_prompt}")
-            
-            state_spec = self.parse_and_validate(
+
+            state_spec = self.parse_and_validate_with_repair(
                 response,
                 required_keys=SINGLE_STATE_REQUIRED,
                 optional_keys=SINGLE_STATE_OPTIONAL,
                 label="StateMachine.single_element",
             )
-            
+
             # Remove any hallucinated position and apply deterministic layout
             state_spec.pop("position", None)
             self.apply_single_layout(state_spec, existing_model)
-            
+
             return {
                 "action": "inject_element",
                 "element": state_spec,
                 "diagramType": "StateMachineDiagram",
                 "message": self._build_single_state_message(state_spec)
             }
-            
+
+        except LLMPredictionError as e:
+            logger.error(f"[StateMachine] generate_single_element LLM FAILED: {e}")
+            return self._error_response(
+                "I couldn't generate that state. Please try again or rephrase your request.",
+                code="llm_failure",
+            )
         except Exception as e:
             logger.error(f"[StateMachine] generate_single_element FAILED: {e}", exc_info=True)
             return self.generate_fallback_element(user_request)
-    
-    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate a complete state machine with deterministic positioning."""
-        
-        system_prompt = """You are a UML modeling expert. Create a COMPLETE state machine diagram.
+
+    def _get_system_generation_prompt(self) -> str:
+        """Return the enhanced system prompt for complete state machine generation."""
+        return """You are a UML modeling expert. Create a COMPLETE, well-structured state machine diagram.
 
 Return ONLY a JSON object with this structure:
 {
@@ -113,41 +129,200 @@ Return ONLY a JSON object with this structure:
 State Types: "initial", "final", "regular"
 
 IMPORTANT RULES:
-1. Always start with ONE "initial" state
-2. Include 3-6 regular states
-3. End with ONE "final" state (optional)
-4. Include meaningful transitions with triggers
-5. Guards and effects are optional
-6. Do NOT include any "position" field - positioning is handled automatically
-7. Keep transitions logical and coherent
+1. Always start with exactly ONE "initial" state
+2. Include 4-8 regular states that represent REAL lifecycle stages
+3. End with ONE "final" state
+4. EVERY regular state MUST have at least one incoming and one outgoing transition (no orphan states)
+5. State names should be domain-specific and descriptive:
+   - GOOD: PendingPayment, Shipped, UnderReview, Authenticated, InProgress
+   - BAD: State1, Active, Process, Step2
+6. Transitions MUST have meaningful triggers (events that cause the transition):
+   - GOOD: submitPayment, approveRequest, sessionTimeout, deliveryConfirmed
+   - BAD: go, next, transition1, move
+7. Use guards to express conditions: [guard: "payment valid"], [guard: "attempts < max"]
+8. Use effects for side-effects: [effect: "send notification"], [effect: "update inventory"]
+9. Include error/exception paths — not just the happy path:
+   - Payment failures, validation errors, timeouts, cancellations
+   - Loop-back transitions for retry scenarios
+10. entryAction: one-time action on state entry (e.g., "send email", "start timer")
+11. doActivity: ongoing activity during the state (e.g., "await response", "monitor progress")
+12. Do NOT include any "position" field - positioning is handled automatically
+
+TRANSITION DESIGN GUIDELINES:
+- Every state (except initial/final) should have both incoming AND outgoing transitions
+- Include at least one alternative/error path (not just the happy flow)
+- Self-transitions are valid for retry/refresh scenarios
+- Guard conditions should be specific and testable
+- Trigger names should be verbs or verb phrases in camelCase
 
 Return ONLY the JSON, no explanations."""
-        
+
+    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+        """Generate a complete state machine with two-pass reasoning, pattern injection,
+        validation-feedback loop, and deterministic layout."""
+
+        system_prompt = self._get_system_generation_prompt()
+
+        # Inject behavioral pattern reference if the request matches a known domain
+        pattern_hint = get_state_pattern_hint(user_request)
+        if pattern_hint:
+            system_prompt += pattern_hint
+
+        logger.info(f"[StateMachine] generate_complete_system called with: {user_request!r}")
+
         try:
-            response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_request}")
-            
-            system_spec = self.parse_and_validate(
+            # --- Two-pass generation: reason about behavior first, then produce JSON ---
+            reasoning_prompt = (
+                "You are a UML behavioral modeling expert. Think step by step about "
+                "the following state machine request and plan the design.\n\n"
+                f"User Request: {user_request}\n\n"
+                "Analyze:\n"
+                "1. What are the key lifecycle stages (states) of this process?\n"
+                "2. What events (triggers) cause transitions between states?\n"
+                "3. What conditions (guards) determine which path to take?\n"
+                "4. What side effects (effects) occur during transitions?\n"
+                "5. What error/exception paths exist? (timeouts, failures, cancellations)\n"
+                "6. Are there any loop-back or retry scenarios?\n"
+                "7. What entry/exit actions and ongoing activities does each state have?\n\n"
+                "Provide a clear behavioral analysis. Focus on TRANSITIONS — they are "
+                "the most commonly under-specified element."
+            )
+
+            response = self.predict_two_pass(
+                user_request=user_request,
+                system_prompt=system_prompt,
+                reasoning_prompt=reasoning_prompt,
+            )
+
+            system_spec = self.parse_and_validate_with_repair(
                 response,
                 required_keys=SYSTEM_STATE_REQUIRED,
                 optional_keys=SYSTEM_STATE_OPTIONAL,
                 label="StateMachine.complete_system",
             )
-            
+
+            # --- Validation-feedback loop for state machine quality ---
+            system_spec = self._validate_and_refine_state_machine(system_spec, user_request)
+
             # Strip any hallucinated positions and apply deterministic layout
             for s in system_spec.get("states", []):
                 s.pop("position", None)
             self.apply_system_layout(system_spec, existing_model)
-            
+
             return {
                 "action": "inject_complete_system",
                 "systemSpec": system_spec,
                 "diagramType": "StateMachineDiagram",
                 "message": self._build_system_message(system_spec)
             }
-            
+
+        except LLMPredictionError as e:
+            logger.error(f"[StateMachine] generate_complete_system LLM FAILED: {e}")
+            return self._error_response(
+                "I couldn't generate that state machine. Please try again or rephrase your request.",
+                code="llm_failure",
+            )
         except Exception as e:
             logger.error(f"[StateMachine] generate_complete_system FAILED: {e}", exc_info=True)
             return self.generate_fallback_system()
+
+    # ------------------------------------------------------------------
+    # State Machine Validation & Refinement
+    # ------------------------------------------------------------------
+
+    def _validate_and_refine_state_machine(
+        self, spec: Dict[str, Any], user_request: str,
+    ) -> Dict[str, Any]:
+        """Validate a generated state machine and fix common issues.
+
+        Checks for:
+        - Missing initial/final states
+        - Orphan states (no incoming or outgoing transitions)
+        - States with only generic names
+        - Missing error/alternative paths
+        """
+        states = spec.get("states", [])
+        transitions = spec.get("transitions", [])
+
+        if len(states) <= 2:
+            return spec
+
+        # Check for orphan states (no transitions connecting them)
+        state_names = {s.get("stateName") for s in states}
+        sources = {t.get("source") for t in transitions}
+        targets = {t.get("target") for t in transitions}
+        connected = sources | targets
+
+        orphans = []
+        for s in states:
+            name = s.get("stateName", "")
+            stype = s.get("stateType", "regular")
+            if stype == "initial" and name not in sources:
+                # Initial state should be a source of at least one transition
+                orphans.append(name)
+            elif stype == "final" and name not in targets:
+                # Final state should be a target of at least one transition
+                orphans.append(name)
+            elif stype == "regular" and name not in connected:
+                orphans.append(name)
+
+        # Check for missing initial state
+        has_initial = any(s.get("stateType") == "initial" for s in states)
+        has_final = any(s.get("stateType") == "final" for s in states)
+
+        if not has_initial:
+            states.insert(0, {
+                "stateName": "Initial",
+                "stateType": "initial",
+                "entryAction": "",
+                "exitAction": "",
+                "doActivity": "",
+            })
+            # Connect initial to first regular state
+            first_regular = next(
+                (s.get("stateName") for s in states if s.get("stateType") == "regular"),
+                None,
+            )
+            if first_regular:
+                transitions.insert(0, {
+                    "source": "Initial",
+                    "target": first_regular,
+                    "trigger": "start",
+                    "guard": "",
+                    "effect": "",
+                })
+            logger.info("[StateMachine] Validation: added missing initial state")
+
+        if not has_final:
+            states.append({
+                "stateName": "Final",
+                "stateType": "final",
+                "entryAction": "",
+                "exitAction": "",
+                "doActivity": "",
+            })
+            # Connect last regular state to final
+            last_regular = None
+            for s in reversed(states):
+                if s.get("stateType") == "regular":
+                    last_regular = s.get("stateName")
+                    break
+            if last_regular:
+                transitions.append({
+                    "source": last_regular,
+                    "target": "Final",
+                    "trigger": "complete",
+                    "guard": "",
+                    "effect": "",
+                })
+            logger.info("[StateMachine] Validation: added missing final state")
+
+        if orphans:
+            logger.info(f"[StateMachine] Validation: found {len(orphans)} orphan state(s): {orphans}")
+
+        spec["states"] = states
+        spec["transitions"] = transitions
+        return spec
     
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
         """Generate a fallback state when AI generation fails"""
@@ -404,6 +579,9 @@ Return ONLY the JSON object — no explanations"""
 
             return modification_spec
 
+        except LLMPredictionError as exc:
+            logger.error(f"[StateMachine] generate_modification LLM FAILED: {exc}")
+            return self._error_response("I couldn't process that modification. Please try again or rephrase your request.")
         except Exception as exc:
             logger.error(f"[StateMachine] generate_modification FAILED: {exc}", exc_info=True)
             return {

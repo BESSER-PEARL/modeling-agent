@@ -32,7 +32,10 @@ from execution import (
     handle_file_attachments,
 )
 from diagram_handlers.factory import get_diagram_type_info
-from handlers.generation_handler import handle_generation_request
+from handlers.generation_handler import (
+    handle_generation_request,
+    _looks_like_mixed_modeling_and_generation,
+)
 from orchestrator import determine_target_diagram_type
 from utilities.model_context import detailed_model_summary
 from routing.intents import GENERATION_INTENT_NAME
@@ -41,22 +44,153 @@ logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------
+# Common preamble helper
+# ------------------------------------------------------------------
+
+def _common_preamble(session: Session) -> Optional[AssistantRequest]:
+    """Run the shared preamble checks for every state body.
+
+    Returns the parsed :class:`AssistantRequest` if the message should be
+    handled normally, or ``None`` if a pending flow or file attachment
+    already consumed it.
+    """
+    if handle_pending_gui_choice(session):
+        return None
+    if handle_pending_system_confirmation(session):
+        return None
+
+    request = parse_assistant_request(session)
+
+    if handle_file_attachments(session, request):
+        return None
+
+    return request
+
+
+# ------------------------------------------------------------------
+# "What's next" suggestions
+# ------------------------------------------------------------------
+
+_NEXT_STEP_HINTS: Dict[str, str] = {
+    "ClassDiagram": (
+        "You can now create an **Object Diagram**, **State Machine**, **GUI**, "
+        "or **generate code** (e.g. *\"generate Django\"* or *\"generate SQLAlchemy\"*)."
+    ),
+    "GUINoCodeDiagram": (
+        "You can now **generate a web app** or **React frontend** from your GUI + class diagram."
+    ),
+    "AgentDiagram": (
+        "You can now **generate BAF agent code** (e.g. *\"generate agent code\"*)."
+    ),
+    "StateMachineDiagram": (
+        "You can now **describe** your state machine or combine it with a class diagram."
+    ),
+    "ObjectDiagram": (
+        "Your object diagram is ready! You can **modify** it or **describe** it."
+    ),
+    "QuantumCircuitDiagram": (
+        "You can now ask me to **describe** your circuit or **generate Qiskit code**."
+    ),
+}
+
+
+# ------------------------------------------------------------------
+# Quick info responses (no LLM call needed)
+# ------------------------------------------------------------------
+
+_QUICK_RESPONSES = {
+    "what_is_besser": (
+        "**BESSER** (Better Smart Software Engineering Research) is an open-source "
+        "low-code platform for building software through model-driven engineering.\n\n"
+        "It lets you:\n"
+        "- Design domain models visually (class diagrams, state machines, GUIs, agents, quantum circuits)\n"
+        "- Generate production code automatically (Django, FastAPI, React, Flutter, SQL, and more)\n"
+        "- Deploy full-stack web applications from your models\n\n"
+        "Learn more at [besser.readthedocs.io](https://besser.readthedocs.io/) "
+        "or try the online editor at [editor.besser-pearl.org](https://editor.besser-pearl.org/)."
+    ),
+    "what_can_you_do": (
+        "Here's everything I can help you with:\n\n"
+        "**Create diagrams:**\n"
+        "- **Class Diagrams** — *\"Create an e-commerce system with customers, orders, and products\"*\n"
+        "- **State Machines** — *\"Create an order processing workflow\"*\n"
+        "- **Object Diagrams** — *\"Create instances of my classes\"*\n"
+        "- **GUI / Web UI** — *\"Design a dashboard for my Product class\"*\n"
+        "- **Agent Diagrams** — *\"Create a pizza-ordering chatbot agent\"*\n"
+        "- **Quantum Circuits** — *\"Create Grover's search algorithm\"*\n\n"
+        "**Modify diagrams:**\n"
+        "- *\"Add email attribute to User\"*, *\"Rename Order to Purchase\"*, *\"Add a transition from Idle to Active\"*\n\n"
+        "**Generate code:**\n"
+        "- *\"Generate Django\"*, *\"Generate React\"*, *\"Generate SQLAlchemy\"*, *\"Generate a web app\"*\n\n"
+        "**Other:**\n"
+        "- *\"Describe my diagram\"* — I'll analyze what you've built\n"
+        "- *\"What is an association class?\"* — I can explain UML concepts\n"
+        "- Attach a **PlantUML file** or **diagram image** and I'll convert it\n\n"
+        "What would you like to do?"
+    ),
+    "help": (
+        "**Quick Start Guide:**\n\n"
+        "1. **Describe your system** in plain language — I'll create the diagram\n"
+        "   *Example: \"Create a library system with books, authors, and members\"*\n\n"
+        "2. **Refine it** by asking for changes\n"
+        "   *Example: \"Add a phone attribute to Member\"* or *\"Add inheritance between DigitalBook and Book\"*\n\n"
+        "3. **Generate code** when you're ready\n"
+        "   *Example: \"Generate Django\"* or *\"Generate a web app\"*\n\n"
+        "**Tips:**\n"
+        "- Be specific about what you want — more detail = better results\n"
+        "- I support 6 diagram types: Class, State Machine, Object, GUI, Agent, and Quantum Circuit\n"
+        "- You can switch between diagram types anytime\n"
+        "- Ask *\"What can you do?\"* for a full list of capabilities"
+    ),
+}
+
+# Patterns that trigger quick responses (checked in order)
+_QUICK_PATTERNS = [
+    # What is BESSER?
+    (["what is besser", "what's besser", "tell me about besser", "explain besser", "about besser"],
+     "what_is_besser"),
+    # What can you do?
+    (["what can you do", "what do you do", "your capabilities", "what are your features",
+      "list your features", "show me what you can do", "what are you capable of",
+      "how can you help", "what do you support", "what diagrams"],
+     "what_can_you_do"),
+    # Help
+    (["help me", "i need help", "how does this work", "how do i use",
+      "getting started", "quick start", "tutorial", "guide me"],
+     "help"),
+]
+
+
+def _check_quick_response(message: str) -> Optional[str]:
+    """Check if the message matches a quick-response pattern. Returns the response or None."""
+    msg_lower = message.lower().strip()
+    # Exact short matches
+    if msg_lower in ("help", "?", "help!", "help?"):
+        return _QUICK_RESPONSES["help"]
+    for patterns, key in _QUICK_PATTERNS:
+        if any(p in msg_lower for p in patterns):
+            return _QUICK_RESPONSES[key]
+    return None
+
+
+# ------------------------------------------------------------------
 # Global fallback
 # ------------------------------------------------------------------
 
 def global_fallback_body(session: Session):
     """Handle unrecognized messages."""
-    if handle_pending_gui_choice(session):
-        return
-    if handle_pending_system_confirmation(session):
-        return
-
-    request = parse_assistant_request(session)
-
-    if handle_file_attachments(session, request):
+    request = _common_preamble(session)
+    if request is None:
         return
 
     user_message = request.message or "your message"
+
+    # Check for quick info responses first (no LLM needed)
+    quick = _check_quick_response(user_message)
+    if quick:
+        reply_message(session, quick)
+        return
+
     try:
         answer = ctx.gpt_text.predict(
             f"You are a modeling assistant that helps with UML diagrams, quantum circuits, "
@@ -81,11 +215,6 @@ def global_fallback_body(session: Session):
 
 def greetings_body(session: Session):
     """Send a greeting message when the user first connects or says hello."""
-    if handle_pending_gui_choice(session):
-        return
-    if handle_pending_system_confirmation(session):
-        return
-
     greeting_message = (
         "Hey there! I'm your modeling assistant.\n\n"
         "Here's what I can do:\n"
@@ -105,8 +234,8 @@ def greetings_body(session: Session):
     if session.event is None:
         return
 
-    request = parse_assistant_request(session)
-    if handle_file_attachments(session, request):
+    request = _common_preamble(session)
+    if request is None:
         return
 
     is_hello_intent = False
@@ -129,16 +258,11 @@ def greetings_body(session: Session):
 
 def _modeling_state_body(session: Session, intent_name: str, default_mode: str, empty_msg: str):
     """Unified handler for all modeling operations (single element, system, modification)."""
-    if handle_pending_gui_choice(session):
-        return
-    if handle_pending_system_confirmation(session):
+    request = _common_preamble(session)
+    if request is None:
         return
 
     session.set('last_matched_intent', intent_name)
-    request = parse_assistant_request(session)
-
-    if handle_file_attachments(session, request):
-        return
 
     if not request.message:
         reply_message(session, empty_msg)
@@ -151,6 +275,11 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
             default_mode=default_mode,
             matched_intent=intent_name,
         )
+        # Suggest logical next steps based on the diagram type that was acted on
+        last_diagram = session.get('_last_executed_diagram_type')
+        if isinstance(last_diagram, str) and last_diagram in _NEXT_STEP_HINTS:
+            reply_message(session, f"**What's next?** {_NEXT_STEP_HINTS[last_diagram]}")
+            session.set('_last_executed_diagram_type', None)
     except Exception as e:
         logger.error(f"Error in {intent_name}: {e}", exc_info=True)
         reply_message(session, "Something went wrong while processing your request. Could you try rephrasing it?")
@@ -192,16 +321,11 @@ def modify_modeling_body(session: Session):
 
 def modeling_help_body(session: Session):
     """Offer guidance or clarifying questions when the user needs modeling help."""
-    if handle_pending_gui_choice(session):
-        return
-    if handle_pending_system_confirmation(session):
+    request = _common_preamble(session)
+    if request is None:
         return
 
     session.set('last_matched_intent', 'modeling_help_intent')
-    request = parse_assistant_request(session)
-
-    if handle_file_attachments(session, request):
-        return
 
     if not request.message:
         reply_message(
@@ -209,6 +333,12 @@ def modeling_help_body(session: Session):
             "I can help you with UML modeling! Try asking me to create a class, "
             "design a system, or modify your diagram.",
         )
+        return
+
+    # Check for quick info responses first (no LLM needed)
+    quick = _check_quick_response(request.message)
+    if quick:
+        reply_message(session, quick)
         return
 
     diagram_type = determine_target_diagram_type(request, last_intent='modeling_help_intent')
@@ -310,16 +440,11 @@ def _build_full_project_summary(request: AssistantRequest) -> str:
 
 def describe_model_body(session: Session):
     """Answer user questions about the current diagram / project."""
-    if handle_pending_gui_choice(session):
-        return
-    if handle_pending_system_confirmation(session):
+    request = _common_preamble(session)
+    if request is None:
         return
 
     session.set('last_matched_intent', 'describe_model_intent')
-    request = parse_assistant_request(session)
-
-    if handle_file_attachments(session, request):
-        return
 
     if not request.message:
         reply_message(
@@ -382,15 +507,30 @@ def describe_model_body(session: Session):
 
 def generation_body(session: Session):
     """Handle assistant-driven code generation orchestration."""
-    if handle_pending_gui_choice(session):
-        return
-    if handle_pending_system_confirmation(session):
+    request = _common_preamble(session)
+    if request is None:
         return
 
     session.set('last_matched_intent', GENERATION_INTENT_NAME)
-    request = parse_assistant_request(session)
 
-    if handle_file_attachments(session, request):
+    # If the request mixes modeling + generation ("create a class diagram and generate Django"),
+    # route through the modeling pipeline first — it will handle both steps via the orchestrator.
+    if _looks_like_mixed_modeling_and_generation(request.message or ""):
+        logger.info("[GenerationBody] Mixed request detected — routing through modeling pipeline")
+        reply_message(
+            session,
+            "I'll **create the diagram first**, then **generate the code**. Let me handle both steps.",
+        )
+        try:
+            execute_planned_operations(
+                session=session,
+                request=request,
+                default_mode="complete_system",
+                matched_intent=GENERATION_INTENT_NAME,
+            )
+        except Exception as error:
+            logger.error(f"Error in mixed request routing: {error}", exc_info=True)
+            reply_message(session, "Something went wrong while processing your multi-step request.")
         return
 
     try:
@@ -417,16 +557,11 @@ def generation_body(session: Session):
 
 def uml_rag_body(session: Session):
     """Answer UML specification questions using RAG."""
-    if handle_pending_gui_choice(session):
-        return
-    if handle_pending_system_confirmation(session):
+    request = _common_preamble(session)
+    if request is None:
         return
 
     session.set('last_matched_intent', 'uml_spec_intent')
-    request = parse_assistant_request(session)
-
-    if handle_file_attachments(session, request):
-        return
 
     user_message = request.message or get_user_message(session)
 
@@ -435,13 +570,18 @@ def uml_rag_body(session: Session):
         return
 
     if ctx.uml_rag is None:
+        logger.info("[UML_RAG] RAG unavailable — falling back to standard LLM")
         fallback_response = ctx.gpt_text.predict(
             f"You are a UML specification expert. Answer the following question about UML:\n\n"
             f"{user_message}\n\n"
             "Provide accurate information based on UML 2.x specifications. "
             "Be precise and reference specific UML concepts when applicable."
         )
-        reply_message(session, fallback_response)
+        reply_message(
+            session,
+            "*Note: UML knowledge base unavailable — answering from general knowledge.*\n\n"
+            + fallback_response,
+        )
     else:
         try:
             rag_message: RAGMessage = session.run_rag(user_message)

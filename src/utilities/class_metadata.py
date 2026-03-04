@@ -25,7 +25,7 @@ def _parse_attribute_type(element: Dict[str, Any]) -> str:
     name = element.get("name")
     if isinstance(name, str) and ":" in name:
         return name.rsplit(":", 1)[1].strip().lower()
-    return "string"
+    return "unknown"
 
 
 def _clean_method_name(raw: str) -> str:
@@ -182,8 +182,18 @@ def extract_class_metadata(model: Optional[Dict[str, Any]]) -> List[Dict[str, An
             if not isinstance(rel, dict):
                 continue
             rel_type = rel.get("type", "")
-            # Skip inheritance — only care about associations/compositions/aggregations
+            # Capture inheritance as metadata on the child class
             if rel_type == "ClassInheritance":
+                source = rel.get("source")
+                target = rel.get("target")
+                if isinstance(source, dict) and isinstance(target, dict):
+                    child_id = source.get("element")
+                    parent_id = target.get("element")
+                    if child_id in classes and parent_id in classes:
+                        parent_name = classes[parent_id]["name"]
+                        if "inheritsFrom" not in classes[child_id]:
+                            classes[child_id]["inheritsFrom"] = []
+                        classes[child_id]["inheritsFrom"].append(parent_name)
                 continue
             source = rel.get("source")
             target = rel.get("target")
@@ -234,7 +244,9 @@ def format_class_metadata_for_prompt(class_metadata: List[Dict[str, Any]]) -> st
             attrs_str = ", ".join(attr_parts)
         else:
             attrs_str = "no attributes"
-        lines.append(f"- Class \"{cls['name']}\" (id: {cls['id']}): {attrs_str}")
+        inherits = cls.get("inheritsFrom")
+        inherit_str = f" extends {', '.join(inherits)}" if inherits else ""
+        lines.append(f"- Class \"{cls['name']}\"{inherit_str} (id: {cls['id']}): {attrs_str}")
 
         methods = cls.get("methods", [])
         if methods:

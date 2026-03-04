@@ -205,14 +205,44 @@ def _required_missing(generator_type: str, config: Dict[str, Any]) -> List[str]:
     return [field for field in required_fields if field not in config or config[field] in (None, "", [])]
 
 
-def _build_config_prompt(generator_type: str, missing_fields: List[str]) -> str:
+def _validate_config(generator_type: str, config: Dict[str, Any]) -> List[str]:
+    """Return list of validation error messages for invalid config values."""
+    errors = []
+    if generator_type in ("sql",) and "dialect" in config:
+        if config["dialect"] not in DIALECT_VALUES:
+            errors.append(f"Invalid SQL dialect '{config['dialect']}'. Valid: {', '.join(DIALECT_VALUES)}")
+    if generator_type in ("sqlalchemy",) and "dbms" in config:
+        if config["dbms"] not in DIALECT_VALUES:
+            errors.append(f"Invalid DBMS '{config['dbms']}'. Valid: {', '.join(DIALECT_VALUES)}")
+    if generator_type == "jsonschema" and "mode" in config:
+        if config["mode"] not in MODE_VALUES:
+            errors.append(f"Invalid mode '{config['mode']}'. Valid: {', '.join(MODE_VALUES)}")
+    if generator_type == "qiskit" and "backend" in config:
+        if config["backend"] not in QISKIT_BACKENDS:
+            errors.append(f"Invalid backend '{config['backend']}'. Valid: {', '.join(QISKIT_BACKENDS)}")
+    return errors
+
+
+def _build_config_prompt(
+    generator_type: str,
+    missing_fields: List[str],
+    request: Optional[AssistantRequest] = None,
+) -> str:
+    # Build suggested defaults from the project context
+    suggested_project = "my_project"
+    suggested_app = "core_app"
+    if request is not None:
+        suggested_project = _extract_project_name_from_context(request)
+        suggested_app = _extract_app_name_from_context(request)
+
     if generator_type == "django":
         return (
             "To generate your **Django** project, I need a few details:\n\n"
-            "- **Project name** — the top-level Django project (e.g. `my_project`)\n"
-            "- **App name** — the Django app inside it (e.g. `core_app`)\n"
+            f"- **Project name** — the top-level Django project (suggested: `{suggested_project}`)\n"
+            f"- **App name** — the Django app inside it (suggested: `{suggested_app}`)\n"
             "- **Containerization** — include Docker setup? (`true` / `false`)\n\n"
-            "You can provide them like: `project_name=my_project app_name=core_app containerization=true`"
+            f"You can provide them like: `project_name={suggested_project} app_name={suggested_app} containerization=true`\n\n"
+            "Or just say **use defaults** to accept the suggested values."
         )
     if generator_type == "sql":
         return (
@@ -460,19 +490,46 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         existing_config=pending_config,
     )
 
-    missing_fields = _required_missing(generator_type, config)
-    if missing_fields:
-        _set_pending_state(session, generator_type, config)
+    # Validate config enum values early
+    config_errors = _validate_config(generator_type, config)
+    if config_errors:
+        _set_pending_state(session, generator_type, {})
         return {
             "action": "assistant_message",
-            "message": _build_config_prompt(generator_type, missing_fields),
+            "message": "\n".join(config_errors) + "\n\nPlease provide a valid value.",
         }
+
+    # "use defaults" shortcut — accept suggested values immediately
+    _lower_msg = (request.message or "").lower()
+    if "use default" in _lower_msg or "defaults" == _lower_msg.strip():
+        config = _normalize_defaults(generator_type, request, config)
+
+    missing_fields = _required_missing(generator_type, config)
+    if missing_fields:
+        # Track how many times we've prompted for config to avoid infinite loops
+        config_attempts = (session.get("_config_prompt_attempts") or 0) + 1
+        session.set("_config_prompt_attempts", config_attempts)
+
+        if config_attempts >= 3:
+            # After 2 failed attempts, auto-fill with defaults and proceed
+            config = _normalize_defaults(generator_type, request, config)
+            session.set("_config_prompt_attempts", 0)
+        else:
+            _set_pending_state(session, generator_type, config)
+            prompt = _build_config_prompt(generator_type, missing_fields, request=request)
+            if config_attempts >= 2:
+                prompt += "\n\n*Or just say **use defaults** to proceed with suggested values.*"
+            return {
+                "action": "assistant_message",
+                "message": prompt,
+            }
 
     # Only apply defaults AFTER confirming none are required-but-missing,
     # so users are always asked for parameters the generator needs.
     config = _normalize_defaults(generator_type, request, config)
 
     _clear_pending_state(session)
+    session.set("_config_prompt_attempts", 0)
     # ------------------------------------------------------------------
     # Special actions: export & deploy
     # ------------------------------------------------------------------
@@ -495,6 +552,29 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 "then fill in the repository details and hit **Publish**."
             ),
         }
+    # Empty model guard: check that the active diagram has elements before generating
+    context = getattr(request, 'context', None)
+    active_model = getattr(context, 'active_model', None) if context else None
+    if active_model is None:
+        snapshot = getattr(context, 'project_snapshot', None) if context else None
+        if isinstance(snapshot, dict):
+            diagrams = snapshot.get('diagrams', {})
+            active_type = getattr(context, 'active_diagram_type', None)
+            if isinstance(diagrams, dict) and active_type:
+                diagram_data = diagrams.get(active_type, {})
+                if isinstance(diagram_data, dict):
+                    active_model = diagram_data.get('model')
+
+    if not active_model or (isinstance(active_model, dict) and not active_model.get('elements')):
+        return {
+            "action": "assistant_message",
+            "message": (
+                f"Your diagram is empty — please create a model first before "
+                f"generating **{generator_type}** code. Try describing your system "
+                f"(e.g. *\"create a library management system\"*)."
+            ),
+        }
+
     return {
         "action": "trigger_generator",
         "generatorType": generator_type,

@@ -114,7 +114,8 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
             class_data[owner]["methods"].append(clean)
 
     # Format class lines
-    for cid, cd in list(class_data.items())[:max_classes]:
+    class_items = list(class_data.items())
+    for cid, cd in class_items[:max_classes]:
         parts = [f"Class {cd['name']}"]
         if cd["attrs"]:
             attrs_str = ", ".join(cd["attrs"][:max_attrs])
@@ -125,10 +126,13 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
             methods_str = ", ".join(cd["methods"][:max_attrs])
             parts.append(f"methods: {methods_str}")
         lines.append(" | ".join(parts))
+    if len(class_items) > max_classes:
+        lines.append(f"  …and {len(class_items) - max_classes} more class(es)")
 
     # Format relationships
     if isinstance(relationships, dict):
-        for rel in list(relationships.values())[:15]:
+        rel_items = list(relationships.values())
+        for rel in rel_items[:15]:
             if not isinstance(rel, dict):
                 continue
             source = rel.get("source")
@@ -148,6 +152,8 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
                 mult_str = f" [{src_mult}..{tgt_mult}]"
             name_str = f' "{rel_name}"' if rel_name else ""
             lines.append(f"{rel_type}: {src_name} -> {tgt_name}{mult_str}{name_str}")
+        if len(rel_items) > 15:
+            lines.append(f"  …and {len(rel_items) - 15} more relationship(s)")
 
     return lines
 
@@ -211,7 +217,11 @@ def _summarize_state_machine(model: Dict[str, Any], *, max_items: int = 20) -> L
                 parts[0] += f" {' '.join(detail_parts)}"
             lines.append(parts[0])
 
-    return lines[:max_items]
+    if len(lines) > max_items:
+        overflow = len(lines) - max_items
+        lines = lines[:max_items]
+        lines.append(f"  …and {overflow} more state/transition item(s)")
+    return lines
 
 
 def _summarize_object_diagram(model: Dict[str, Any], *, max_objects: int = 15) -> List[str]:
@@ -238,10 +248,17 @@ def _summarize_object_diagram(model: Dict[str, Any], *, max_objects: int = 15) -
                 attrs.append(f"{attr_name}={attr_value}" if attr_value else attr_name)
         summary = f"Object {name}{class_part}"
         if attrs:
-            summary += f" | attributes: {', '.join(attrs[:8])}"
+            attr_list = attrs[:8]
+            if len(attrs) > 8:
+                attr_list.append(f"…+{len(attrs) - 8} more")
+            summary += f" | attributes: {', '.join(attr_list)}"
         lines.append(summary)
 
-    return lines[:max_objects]
+    if len(lines) > max_objects:
+        overflow = len(lines) - max_objects
+        lines = lines[:max_objects]
+        lines.append(f"  …and {overflow} more object(s)")
+    return lines
 
 
 def _summarize_gui_model(model: Dict[str, Any]) -> List[str]:
@@ -265,6 +282,8 @@ def _summarize_gui_model(model: Dict[str, Any]) -> List[str]:
                     section_count = len(components)
         lines.append(f"Page {page_name} ({section_count} section(s))")
 
+    if len(pages) > 10:
+        lines.append(f"  …and {len(pages) - 10} more page(s)")
     return lines
 
 
@@ -280,12 +299,18 @@ def _summarize_agent_diagram(model: Dict[str, Any]) -> List[str]:
     states = [e.get("name") for e in elements.values()
               if isinstance(e, dict) and e.get("type") == "AgentState" and e.get("name")]
     if states:
-        lines.append(f"States: {', '.join(states[:10])}")
+        state_str = ', '.join(states[:10])
+        if len(states) > 10:
+            state_str += f" …+{len(states) - 10} more"
+        lines.append(f"States: {state_str}")
 
     intents = [e.get("name") for e in elements.values()
                if isinstance(e, dict) and e.get("type") == "AgentIntent" and e.get("name")]
     if intents:
-        lines.append(f"Intents: {', '.join(intents[:10])}")
+        intent_str = ', '.join(intents[:10])
+        if len(intents) > 10:
+            intent_str += f" …+{len(intents) - 10} more"
+        lines.append(f"Intents: {intent_str}")
 
     if isinstance(relationships, dict):
         transitions: List[str] = []
@@ -297,7 +322,10 @@ def _summarize_agent_diagram(model: Dict[str, Any]) -> List[str]:
             if isinstance(source, dict) and isinstance(target, dict):
                 transitions.append(f"{source.get('name')} → {target.get('name')}")
         if transitions:
-            lines.append(f"Transitions: {', '.join(transitions[:5])}")
+            trans_str = ', '.join(transitions[:5])
+            if len(transitions) > 5:
+                trans_str += f" …+{len(transitions) - 5} more"
+            lines.append(f"Transitions: {trans_str}")
 
     return lines
 

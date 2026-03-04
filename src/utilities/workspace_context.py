@@ -3,15 +3,23 @@ Workspace Context Builder
 --------------------------
 Builds the multi-line workspace context block that is appended to every
 LLM prompt, giving the model awareness of the project structure, active
-diagram, and existing layout.
+diagram, existing layout, and session history.
 """
 
-from typing import Any, Dict, List, Optional
+from __future__ import annotations
+
+import logging
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from besser.agent.core.session import Session
 
 from protocol.types import AssistantRequest
 from .model_context import compact_model_summary, detailed_model_summary
 from .model_resolution import resolve_target_model
 from .layout_helpers import build_layout_anchor_lines
+
+logger = logging.getLogger(__name__)
 
 
 def build_workspace_context_block(
@@ -19,7 +27,12 @@ def build_workspace_context_block(
     target_diagram_type: str,
     target_model: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Build a multi-line workspace context string to append to LLM prompts."""
+    """Build a multi-line workspace context string to append to LLM prompts.
+
+    Enhanced with cross-diagram awareness: when generating a StateMachine,
+    GUI, or ObjectDiagram, the ClassDiagram summary is included as reference
+    so the LLM can produce consistent models.
+    """
     lines: List[str] = []
     lines.append(f"Target diagram type: {target_diagram_type}")
     lines.append(f"Active diagram type: {request.context.active_diagram_type or request.diagram_type}")
@@ -63,6 +76,15 @@ def build_workspace_context_block(
                 lines.append("Project diagrams overview:")
                 lines.extend(diagram_lines[:10])
 
+            # --- Cross-diagram context ---
+            # When the target is NOT a ClassDiagram, include the ClassDiagram
+            # summary as reference so the LLM can produce consistent models.
+            cross_ref = _build_cross_diagram_reference(
+                target_diagram_type, diagrams,
+            )
+            if cross_ref:
+                lines.append(cross_ref)
+
     summaries = request.context.diagram_summaries or []
     if summaries:
         compact_summaries: List[str] = []
@@ -80,3 +102,87 @@ def build_workspace_context_block(
             lines.append("Diagram summaries: " + ", ".join(compact_summaries[:10]))
 
     return "Workspace context:\n" + "\n".join(lines)
+
+
+def _build_cross_diagram_reference(
+    target_diagram_type: str,
+    diagrams: Dict[str, Any],
+) -> str:
+    """Build cross-diagram reference context.
+
+    When the target is a non-ClassDiagram type, include the ClassDiagram
+    summary so the LLM can reference existing classes, attributes, and
+    relationships for consistency.
+    """
+    # Diagram types that benefit from ClassDiagram context
+    _NEEDS_CLASS_CONTEXT = {
+        "StateMachineDiagram",
+        "ObjectDiagram",
+        "GUINoCodeDiagram",
+    }
+
+    if target_diagram_type not in _NEEDS_CLASS_CONTEXT:
+        return ""
+
+    class_payload = diagrams.get("ClassDiagram")
+    if not isinstance(class_payload, dict):
+        return ""
+
+    class_model = class_payload.get("model")
+    if not isinstance(class_model, dict):
+        return ""
+
+    summary = detailed_model_summary(class_model, "ClassDiagram")
+    if not summary:
+        return ""
+
+    hint = ""
+    if target_diagram_type == "StateMachineDiagram":
+        hint = (
+            "\nUse the class diagram above as reference: states should correspond "
+            "to real operations and lifecycle stages of the domain entities."
+        )
+    elif target_diagram_type == "GUINoCodeDiagram":
+        hint = (
+            "\nUse the class diagram above as reference: GUI pages/components "
+            "should display and manage the attributes and relationships defined "
+            "in the class diagram."
+        )
+    elif target_diagram_type == "ObjectDiagram":
+        hint = (
+            "\nUse the class diagram above as reference: objects must be instances "
+            "of the classes defined above, with matching attribute names and types."
+        )
+
+    return f"Reference ClassDiagram (for consistency):\n{summary}{hint}"
+
+
+# ---------------------------------------------------------------------------
+# Session history tracking
+# ---------------------------------------------------------------------------
+
+_SESSION_HISTORY_KEY = "_session_action_history"
+_MAX_HISTORY_ENTRIES = 15
+
+
+def record_session_action(session: Session, action_summary: str) -> None:
+    """Record a completed action in session history for LLM context."""
+    history: List[str] = session.get(_SESSION_HISTORY_KEY) or []
+    history.append(action_summary)
+    if len(history) > _MAX_HISTORY_ENTRIES:
+        history = history[-_MAX_HISTORY_ENTRIES:]
+    session.set(_SESSION_HISTORY_KEY, history)
+
+
+def build_session_summary(session: Session) -> str:
+    """Build a compact session summary string from recorded actions.
+
+    Returns an empty string if no actions have been recorded yet.
+    """
+    history: List[str] = session.get(_SESSION_HISTORY_KEY) or []
+    if not history:
+        return ""
+    lines = ["Session history (what you've done so far):"]
+    for i, entry in enumerate(history, 1):
+        lines.append(f"  {i}. {entry}")
+    return "\n".join(lines)

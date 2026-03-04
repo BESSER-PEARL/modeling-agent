@@ -4,16 +4,18 @@ Handles generation of UML Class Diagrams
 """
 
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 
 from ..core.base_handler import (
     BaseDiagramHandler,
+    LLMPredictionError,
     SINGLE_CLASS_REQUIRED,
     SINGLE_CLASS_OPTIONAL,
     SYSTEM_CLASS_REQUIRED,
     SYSTEM_CLASS_OPTIONAL,
 )
 from utilities.model_helpers import detailed_model_summary
+from domain_patterns import get_pattern_hint
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +78,7 @@ Return ONLY the JSON, no explanations."""
             logger.info(f"[ClassDiagram] LLM raw response length: {len(response)}")
             logger.debug(f"[ClassDiagram] LLM raw response: {response[:500]!r}")
 
-            simple_spec = self.parse_and_validate(
+            simple_spec = self.parse_and_validate_with_repair(
                 response,
                 required_keys=SINGLE_CLASS_REQUIRED,
                 optional_keys=SINGLE_CLASS_OPTIONAL,
@@ -96,14 +98,19 @@ Return ONLY the JSON, no explanations."""
                 "message": message
             }
 
+        except LLMPredictionError as exc:
+            logger.error(f"[ClassDiagram] generate_single_element LLM FAILED: {exc}")
+            return self._error_response(
+                "I couldn't generate that class. Please try again or rephrase your request.",
+                code="llm_failure",
+            )
         except Exception as exc:
             logger.error(f"[ClassDiagram] generate_single_element FAILED: {exc}", exc_info=True)
             return self.generate_fallback_element(user_request)
 
-    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate a complete class diagram with multiple classes and deterministic layout."""
-
-        system_prompt = """You are a UML modeling expert. Create a COMPLETE, well-structured class diagram system.
+    def _get_system_generation_prompt(self) -> str:
+        """Return the system prompt for complete class diagram generation."""
+        return """You are a UML modeling expert. Create a COMPLETE, well-structured class diagram system.
 
 Return ONLY a JSON object with this structure:
 {
@@ -158,17 +165,49 @@ Examples:
 
 Return ONLY the JSON, no explanations."""
 
-        full_prompt = f"{system_prompt}\n\nUser Request: {user_request}"
+    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+        """Generate a complete class diagram with two-pass reasoning, domain patterns,
+        validation-feedback loop, and deterministic layout."""
+
+        system_prompt = self._get_system_generation_prompt()
+
+        # Inject domain pattern reference if the request matches a known domain
+        pattern_hint = get_pattern_hint(user_request)
+        if pattern_hint:
+            system_prompt += pattern_hint
+
         logger.info(f"[ClassDiagram] generate_complete_system called with: {user_request!r}")
-        logger.debug(f"[ClassDiagram] System prompt length: {len(full_prompt)} chars")
+        logger.debug(f"[ClassDiagram] System prompt length: {len(system_prompt)} chars")
 
         try:
-            response = self.predict_with_retry(full_prompt)
+            # --- Two-pass generation: reason first, then produce JSON ---
+            reasoning_prompt = (
+                "You are a UML domain modeling expert. Think step by step about "
+                "the following system request and plan the class diagram design.\n\n"
+                f"User Request: {user_request}\n\n"
+                "Analyze:\n"
+                "1. What are the core domain entities (classes) needed?\n"
+                "2. What attributes does each class need? (be thorough)\n"
+                "3. What relationships connect these classes? What type (Association, "
+                "Composition, Aggregation, Inheritance)? What multiplicities?\n"
+                "4. Are there any association classes needed (e.g., Enrollment between "
+                "Student and Course with grade)?\n"
+                "5. Is there any inheritance hierarchy that makes sense?\n\n"
+                "Provide a clear design analysis. Be thorough about relationships — "
+                "they are the most commonly missed element."
+            )
+
+            response = self.predict_two_pass(
+                user_request=user_request,
+                system_prompt=system_prompt,
+                reasoning_prompt=reasoning_prompt,
+            )
 
             logger.info(f"[ClassDiagram] System LLM response length: {len(response)}")
             logger.debug(f"[ClassDiagram] System LLM response: {response[:500]!r}")
 
-            system_spec = self.parse_and_validate(
+            # Use parse_and_validate_with_repair for better error recovery
+            system_spec = self.parse_and_validate_with_repair(
                 response,
                 required_keys=SYSTEM_CLASS_REQUIRED,
                 optional_keys=SYSTEM_CLASS_OPTIONAL,
@@ -179,6 +218,13 @@ Return ONLY the JSON, no explanations."""
                 f"[ClassDiagram] Parsed system spec: "
                 f"{len(system_spec.get('classes', []))} classes, "
                 f"{len(system_spec.get('relationships', []))} relationships"
+            )
+
+            # --- Validation-feedback loop: self-critique and refine ---
+            system_spec = self.validate_and_refine(
+                system_spec,
+                user_request=user_request,
+                diagram_type="ClassDiagram",
             )
 
             # Strip any LLM-hallucinated positions, then apply deterministic layout
@@ -195,9 +241,97 @@ Return ONLY the JSON, no explanations."""
                 "message": message
             }
 
+        except LLMPredictionError as exc:
+            logger.error(f"[ClassDiagram] generate_complete_system LLM FAILED: {exc}")
+            # --- Graceful degradation: try generating classes one by one ---
+            return self._incremental_system_fallback(user_request, existing_model)
         except Exception as exc:
             logger.error(f"[ClassDiagram] generate_complete_system FAILED: {exc}", exc_info=True)
+            return self._incremental_system_fallback(user_request, existing_model)
+
+    def _incremental_system_fallback(
+        self, user_request: str, existing_model: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Fallback: try to generate the system by creating classes individually.
+
+        When the full system generation fails, this extracts class names from
+        the user's request and generates each one separately, then combines
+        them into a system spec.
+        """
+        logger.info("[ClassDiagram] Attempting incremental fallback generation")
+
+        # Try to extract class names from the request
+        extraction_prompt = (
+            "From this request, extract ONLY the class/entity names the user wants. "
+            "Return a JSON array of strings. Example: [\"User\", \"Product\", \"Order\"]\n\n"
+            f"Request: {user_request}\n\n"
+            "Return ONLY the JSON array, no explanations."
+        )
+
+        try:
+            response = self.predict_with_retry(extraction_prompt, max_retries=1)
+            cleaned = self.clean_json_response(response)
+            import json as _json
+            class_names = _json.loads(cleaned)
+            if not isinstance(class_names, list) or len(class_names) == 0:
+                raise ValueError("No class names extracted")
+        except Exception:
+            logger.warning("[ClassDiagram] Could not extract class names, using basic fallback")
             return self.generate_fallback_system()
+
+        # Generate each class individually
+        classes: List[Dict[str, Any]] = []
+        for name in class_names[:10]:  # Cap at 10 to avoid excessive calls
+            if not isinstance(name, str) or not name.strip():
+                continue
+            try:
+                single_prompt = (
+                    f"{self.get_system_prompt()}\n\n"
+                    f"User Request: Create a {name} class with appropriate attributes "
+                    f"for a system about: {user_request}"
+                )
+                resp = self.predict_with_retry(single_prompt, max_retries=1)
+                spec = self.parse_and_validate(
+                    resp,
+                    required_keys=SINGLE_CLASS_REQUIRED,
+                    optional_keys=SINGLE_CLASS_OPTIONAL,
+                    label=f"ClassDiagram.incremental.{name}",
+                )
+                spec.pop("position", None)
+                classes.append(spec)
+                logger.info(f"[ClassDiagram] Incremental: generated class {name}")
+            except Exception as exc:
+                logger.warning(f"[ClassDiagram] Incremental: failed to generate {name}: {exc}")
+                classes.append({
+                    "className": name,
+                    "attributes": [
+                        {"name": "id", "type": "String", "visibility": "public"},
+                    ],
+                    "methods": [],
+                })
+
+        if not classes:
+            return self.generate_fallback_system()
+
+        system_spec = {
+            "systemName": "System",
+            "classes": classes,
+            "relationships": [],
+        }
+
+        self.apply_system_layout(system_spec, existing_model)
+
+        class_names_str = ", ".join(f"**{c.get('className', '?')}**" for c in classes)
+        return {
+            "action": "inject_complete_system",
+            "systemSpec": system_spec,
+            "diagramType": self.get_diagram_type(),
+            "message": (
+                f"I had some trouble generating the full system at once, but I created "
+                f"{len(classes)} class(es): {class_names_str}. "
+                "You may want to ask me to add relationships between them!"
+            ),
+        }
 
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
         """Generate a fallback class when AI generation fails"""
@@ -289,8 +423,15 @@ Return ONLY the JSON, no explanations."""
     # ------------------------------------------------------------------
     
     def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate modifications for existing class diagram elements"""
-        
+        """Generate modifications for existing class diagram elements.
+
+        Enhanced with impact analysis: when renaming or removing a class,
+        the LLM is informed of dependent relationships so it can cascade
+        changes appropriately.
+        """
+        # Build impact context for modifications that affect relationships
+        impact_context = self._build_impact_context(current_model)
+
         system_prompt = """You are a UML modeling expert. The user wants to modify an existing class diagram.
 
 Return ONLY a JSON object with one of these structures:
@@ -451,6 +592,11 @@ MULTIPLE MODIFICATIONS (batch – use when the request needs more than one chang
   ]
 }
 
+CASCADING CHANGES:
+When renaming or removing a class, you MUST also update or remove any relationships
+that reference that class. Use the "modifications" array to batch the class rename
+AND all affected relationship updates in a single response.
+
 IMPORTANT RULES:
 1. Actions available: "modify_class", "add_attribute", "modify_attribute", "add_method", "modify_method", "add_relationship", "modify_relationship", "remove_element"
 2. Always specify exact target names that exist in the current model
@@ -489,7 +635,11 @@ Return ONLY the JSON object – no explanations"""
             summary = detailed_model_summary(current_model, 'ClassDiagram')
             if summary:
                 context_block = f"\n\n{summary}"
-        
+
+        # Add impact context (relationship dependencies per class)
+        if impact_context:
+            context_block += f"\n\n{impact_context}"
+
         user_prompt = f"Modify the class diagram: {user_request}{context_block}"
         full_prompt = f"{system_prompt}\n\nUser Request: {user_prompt}"
 
@@ -538,6 +688,12 @@ Return ONLY the JSON object – no explanations"""
             
             return modification_spec
             
+        except LLMPredictionError as exc:
+            logger.error(f"[ClassDiagram] generate_modification LLM FAILED: {exc}")
+            return self._error_response(
+                "I couldn't process that modification. Please try again or rephrase your request.",
+                code="llm_failure",
+            )
         except Exception as exc:
             logger.error(f"[ClassDiagram] generate_modification FAILED: {exc}", exc_info=True)
             return self.generate_fallback_modification(user_request)
@@ -554,3 +710,62 @@ Return ONLY the JSON object – no explanations"""
             "diagramType": self.get_diagram_type(),
             "message": "I couldn't apply that modification automatically. Could you rephrase your request? For example: *'Add a phone attribute to User'* or *'Create a relationship between Order and Product'*."
         }
+
+    # ------------------------------------------------------------------
+    # Impact Analysis Helpers
+    # ------------------------------------------------------------------
+
+    def _build_impact_context(self, model: Optional[Dict[str, Any]]) -> str:
+        """Build a relationship dependency map for modification impact analysis.
+
+        For each class, lists all relationships it participates in so the LLM
+        knows to cascade changes when renaming or removing a class.
+        """
+        if not isinstance(model, dict):
+            return ""
+
+        elements = model.get("elements")
+        relationships = model.get("relationships")
+        if not isinstance(elements, dict) or not isinstance(relationships, dict):
+            return ""
+
+        # Build class ID -> name mapping
+        class_names: Dict[str, str] = {}
+        for eid, el in elements.items():
+            if isinstance(el, dict) and el.get("type") == "Class":
+                name = el.get("name", "")
+                if name:
+                    class_names[eid] = name
+
+        if not class_names or not relationships:
+            return ""
+
+        # Build dependency map: class_name -> list of relationship descriptions
+        deps: Dict[str, List[str]] = {name: [] for name in class_names.values()}
+        for rel in relationships.values():
+            if not isinstance(rel, dict):
+                continue
+            source = rel.get("source")
+            target = rel.get("target")
+            if not isinstance(source, dict) or not isinstance(target, dict):
+                continue
+            src_id = source.get("element", "")
+            tgt_id = target.get("element", "")
+            src_name = class_names.get(src_id, "")
+            tgt_name = class_names.get(tgt_id, "")
+            rel_type = rel.get("type", "Association")
+            if src_name and tgt_name:
+                deps.setdefault(src_name, []).append(
+                    f"{rel_type} -> {tgt_name}"
+                )
+                deps.setdefault(tgt_name, []).append(
+                    f"{rel_type} <- {src_name}"
+                )
+
+        # Format as context block
+        lines = ["Relationship dependencies (cascade changes if renaming/removing):"]
+        for class_name, dep_list in deps.items():
+            if dep_list:
+                lines.append(f"  {class_name}: {', '.join(dep_list)}")
+
+        return "\n".join(lines) if len(lines) > 1 else ""

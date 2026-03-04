@@ -9,7 +9,7 @@ import copy
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..core.base_handler import BaseDiagramHandler
+from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
 from utilities.model_helpers import detailed_model_summary
 
 logger = logging.getLogger(__name__)
@@ -451,6 +451,9 @@ Rules:
                 "model": model,
                 "message": f"Added **{gate_desc}** to the circuit. Ask me to add more gates or build a complete algorithm!",
             }
+        except LLMPredictionError:
+            logger.error("[QuantumCircuit] generate_single_element LLM FAILED", exc_info=True)
+            return self._error_response("I couldn't generate that quantum gate. Please try again or rephrase your request.")
         except Exception:
             logger.error("[QuantumCircuit] generate_single_element FAILED", exc_info=True)
             return self.generate_fallback_element(user_request)
@@ -655,6 +658,9 @@ Rules:
                     f"You can ask me to modify it, add more gates, or explain how it works!"
                 ),
             }
+        except LLMPredictionError:
+            logger.error("[QuantumCircuit] generate_complete_system LLM FAILED", exc_info=True)
+            return self._error_response("I couldn't generate that quantum circuit. Please try again or rephrase your request.")
         except Exception:
             logger.error("[QuantumCircuit] generate_complete_system FAILED", exc_info=True)
             return self.generate_fallback_system()
@@ -749,6 +755,9 @@ Rules:
                 "model": model,
                 "message": f"Quantum circuit **{action_label}** with {len(typed_operations)} operation(s). You can add more gates or change the circuit layout!",
             }
+        except LLMPredictionError:
+            logger.error("[QuantumCircuit] generate_modification LLM FAILED", exc_info=True)
+            return self._error_response("I couldn't process that circuit modification. Please try again or rephrase your request.")
         except Exception:
             return {
                 "action": "modify_model",

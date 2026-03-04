@@ -38,7 +38,7 @@ CANCEL_KEYWORDS = ['cancel', 'never mind', 'forget', 'stop', 'abort']
 
 # Short words that must match as whole words to avoid false positives
 # (e.g. "no" should not match inside "nothing", "note", "another").
-_WHOLE_WORD_KEYWORDS = {'no'}
+_WHOLE_WORD_KEYWORDS = {'no', 'yes', 'add', 'keep'}
 
 
 def keyword_matches(keyword: str, text: str) -> bool:
@@ -89,13 +89,18 @@ def handle_pending_gui_choice(session: Session) -> bool:
     wants_llm = any(keyword_matches(w, user_msg) for w in _LLM_KEYWORDS)
 
     if not wants_auto and not wants_llm:
-        # Didn't understand the choice — clear and let normal logic handle it
+        # The user's message doesn't look like a GUI choice answer.
+        # Treat it as a brand-new request: clear the pending state and let
+        # the normal processing pipeline handle it.
+        logger.info(
+            "[GUIChoice] Message doesn't match auto/llm/cancel — "
+            "treating as new request, clearing pending state"
+        )
         session.set('pending_gui_choice', None)
-        return False
-
-    session.set('pending_gui_choice', None)
+        return False  # Let normal state body handle the new request
 
     if wants_auto:
+        session.set('pending_gui_choice', None)
         logger.info("[GUIChoice] User chose AUTO-GENERATE (deterministic)")
         reply_payload(session, {
             "action": "auto_generate_gui",
@@ -128,9 +133,13 @@ def handle_pending_gui_choice(session: Session) -> bool:
             _replace_existing=stored_replace,
             _skip_gui_choice=True,
         )
+        session.set('pending_gui_choice', None)  # Clear only on success
     except Exception as exc:
         logger.error(f"[GUIChoice] Error executing LLM GUI generation: {exc}", exc_info=True)
-        reply_message(session, "Something went wrong while generating the GUI. Please try again.")
+        reply_message(
+            session,
+            "Something went wrong. You can try again by saying **auto** or **llm**, or **cancel** to abort.",
+        )
 
     return True
 
@@ -168,14 +177,17 @@ def handle_pending_system_confirmation(session: Session) -> bool:
     wants_keep = any(keyword_matches(w, user_msg) for w in KEEP_KEYWORDS)
 
     if not wants_replace and not wants_keep:
-        # The user's message doesn't look like a confirmation — clear the
-        # pending state and let the normal body logic handle it as a new request.
+        # The user's message doesn't look like a confirmation answer.
+        # Treat it as a brand-new request: clear the pending state and let
+        # the normal processing pipeline handle it.
+        logger.info(
+            "[PendingConfirm] Message doesn't match replace/keep/cancel — "
+            "treating as new request, clearing pending state"
+        )
         session.set('pending_complete_system', None)
-        return False
+        return False  # Let normal state body handle the new request
 
     # --- User answered: execute the stored creation -----------------------
-    session.set('pending_complete_system', None)
-
     replace_existing = wants_replace
 
     # Re-execute the stored operation with the original parameters.
@@ -202,9 +214,13 @@ def handle_pending_system_confirmation(session: Session) -> bool:
             _skip_existing_check=True,
             _replace_existing=replace_existing,
         )
+        session.set('pending_complete_system', None)  # Clear only on success
     except Exception as exc:
         logger.error(f"[PendingConfirm] Error executing stored operation: {exc}", exc_info=True)
-        reply_message(session, "Something went wrong while creating the model. Please try again.")
+        reply_message(
+            session,
+            "Something went wrong. You can try again by saying **replace** or **keep**, or **cancel** to abort.",
+        )
         return True
 
     # ── Resume remaining operations from the original plan ───────────

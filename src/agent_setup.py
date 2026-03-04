@@ -32,7 +32,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
             'temperature': 0.2,
             'max_completion_tokens': 8192,
         },
-        num_previous_messages=4,
+        num_previous_messages=20,
     )
 
     # Thin wrapper that enforces JSON mode for predict() calls only.
@@ -59,7 +59,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
             'temperature': 0.4,
             'max_completion_tokens': 4096,
         },
-        num_previous_messages=4,
+        num_previous_messages=20,
     )
     # Fix the model name used in API calls (registry key stays 'gpt-4.1-mini-text')
     gpt_text.name = 'gpt-4.1-mini'
@@ -67,7 +67,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     if gpt is None:
         raise RuntimeError("LLM initialization returned None")
 
-    logger.info("LLMs initialized: gpt-4.1-mini (json, t=0.2), gpt-4.1-mini (text, t=0.4), conversation memory=4")
+    logger.info("LLMs initialized: gpt-4.1-mini (json, t=0.2), gpt-4.1-mini (text, t=0.4), conversation memory=20")
     return gpt, gpt_text, gpt_predict_json
 
 
@@ -102,7 +102,7 @@ def init_rag(agent: Agent):
             splitter=splitter,
             llm_name='gpt-4.1-mini',
             k=4,
-            num_previous_messages=4,
+            num_previous_messages=6,
         )
 
         uml_rag.llm_prompt = (

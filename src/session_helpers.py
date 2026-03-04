@@ -34,10 +34,17 @@ def get_user_message(session: Session) -> str:
     request = parse_assistant_request(session)
     message = request.message or ""
     if len(message) > MAX_USER_MESSAGE_CHARS:
+        original_len = len(message)
         logger.warning(
-            f"User message truncated from {len(message)} to {MAX_USER_MESSAGE_CHARS} chars"
+            f"User message truncated from {original_len} to {MAX_USER_MESSAGE_CHARS} chars"
         )
-        message = message[:MAX_USER_MESSAGE_CHARS]
+        message = message[:MAX_USER_MESSAGE_CHARS] + "\u2026[truncated]"
+        reply_message(
+            session,
+            f"Your message was quite long ({original_len:,} characters) and has been "
+            f"trimmed to {MAX_USER_MESSAGE_CHARS:,} characters. If important details "
+            "were near the end, consider splitting your request into smaller parts.",
+        )
     return message
 
 

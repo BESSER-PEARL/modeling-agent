@@ -8,6 +8,7 @@ import re
 from typing import Dict, Any, List, Optional, Tuple
 from ..core.base_handler import (
     BaseDiagramHandler,
+    LLMPredictionError,
     SINGLE_OBJECT_REQUIRED,
     SINGLE_OBJECT_OPTIONAL,
     SYSTEM_OBJECT_REQUIRED,
@@ -439,6 +440,9 @@ Return ONLY the JSON, no explanations."""
                 "message": self._build_single_object_message(object_spec)
             }
             
+        except LLMPredictionError:
+            logger.error("[ObjectDiagram] generate_single_element LLM FAILED", exc_info=True)
+            return self._error_response("I couldn't generate that object. Please try again or rephrase your request.")
         except Exception:
             logger.error("[ObjectDiagram] generate_single_element FAILED", exc_info=True)
             return self.generate_fallback_element(user_request)
@@ -523,6 +527,9 @@ Return ONLY the JSON, no explanations."""
                 "message": self._build_object_system_message(system_spec, mode_note)
             }
             
+        except LLMPredictionError:
+            logger.error("[ObjectDiagram] generate_complete_system LLM FAILED", exc_info=True)
+            return self._error_response("I couldn't generate that object diagram. Please try again or rephrase your request.")
         except Exception:
             logger.error("[ObjectDiagram] generate_complete_system FAILED", exc_info=True)
             return self.generate_fallback_system()
@@ -767,6 +774,9 @@ Return ONLY the JSON object — no explanations"""
 
             return modification_spec
 
+        except LLMPredictionError as exc:
+            logger.error(f"[ObjectDiagram] generate_modification LLM FAILED: {exc}")
+            return self._error_response("I couldn't process that modification. Please try again or rephrase your request.")
         except Exception as exc:
             logger.error(f"[ObjectDiagram] generate_modification FAILED: {exc}", exc_info=True)
             return {

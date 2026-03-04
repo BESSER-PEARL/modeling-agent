@@ -23,10 +23,16 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 # Canvas & sizing constants (match the web editor coordinate system)
 # ---------------------------------------------------------------------------
 
-CANVAS_MIN_X = -900
-CANVAS_MAX_X = 900
-CANVAS_MIN_Y = -500
-CANVAS_MAX_Y = 500
+_BASE_CANVAS_MIN_X = -900
+_BASE_CANVAS_MAX_X = 900
+_BASE_CANVAS_MIN_Y = -500
+_BASE_CANVAS_MAX_Y = 500
+
+# Active canvas bounds — may be expanded dynamically for large diagrams
+CANVAS_MIN_X = _BASE_CANVAS_MIN_X
+CANVAS_MAX_X = _BASE_CANVAS_MAX_X
+CANVAS_MIN_Y = _BASE_CANVAS_MIN_Y
+CANVAS_MAX_Y = _BASE_CANVAS_MAX_Y
 
 # Element sizing defaults per diagram type
 CLASS_WIDTH = 220
@@ -57,6 +63,40 @@ V_GAP = 80          # vertical gap between elements
 REL_EXTRA_GAP = 60  # additional gap between classes connected by a relationship
 MARGIN = 40         # minimum margin from any existing occupied rect
 GRID_SNAP = 20      # snap coordinates to multiples of this value
+
+
+def _dynamic_canvas_bounds(num_elements: int) -> tuple:
+    """Return (min_x, max_x, min_y, max_y) expanded for large diagrams.
+
+    The web editor canvas can scroll arbitrarily, so we expand beyond
+    the default viewport for big diagrams to avoid cramming elements.
+    """
+    if num_elements <= 6:
+        return _BASE_CANVAS_MIN_X, _BASE_CANVAS_MAX_X, _BASE_CANVAS_MIN_Y, _BASE_CANVAS_MAX_Y
+
+    # Scale canvas proportionally: +300px per 4 extra elements
+    extra = num_elements - 6
+    expand_x = (extra // 4 + 1) * 300
+    expand_y = (extra // 4 + 1) * 200
+    return (
+        _BASE_CANVAS_MIN_X - expand_x,
+        _BASE_CANVAS_MAX_X + expand_x,
+        _BASE_CANVAS_MIN_Y - expand_y,
+        _BASE_CANVAS_MAX_Y + expand_y,
+    )
+
+
+def _ideal_grid_shape(n: int) -> tuple:
+    """Return (rows, cols) for an approximately square grid of n elements.
+
+    Prefers slightly wider than taller layouts (cols >= rows).
+    """
+    import math
+    if n <= 0:
+        return (1, 1)
+    cols = math.ceil(math.sqrt(n * 1.4))  # bias toward wider
+    rows = math.ceil(n / cols)
+    return (rows, cols)
 
 
 # ---------------------------------------------------------------------------
@@ -222,11 +262,16 @@ def _find_free_position(
     preferred_x: int = CANVAS_MIN_X,
     preferred_y: int = CANVAS_MIN_Y,
     scan_direction: str = "right-then-down",
+    canvas_bounds: Optional[Tuple[int, int, int, int]] = None,
 ) -> Tuple[int, int]:
     """Find the first non-overlapping position using a scanning strategy.
 
     Starts near (preferred_x, preferred_y) and scans outward.
+    canvas_bounds: optional (min_x, max_x, min_y, max_y) for dynamic sizing.
     """
+    c_min_x, c_max_x, c_min_y, c_max_y = canvas_bounds or (
+        CANVAS_MIN_X, CANVAS_MAX_X, CANVAS_MIN_Y, CANVAS_MAX_Y,
+    )
     step_x = width + H_GAP
     step_y = height + V_GAP
 
@@ -236,7 +281,7 @@ def _find_free_position(
         return candidate.x, candidate.y
 
     # Spiral outward from the preferred position
-    for ring in range(1, 40):
+    for ring in range(1, 60):
         for dx_mult in range(-ring, ring + 1):
             for dy_mult in range(-ring, ring + 1):
                 if abs(dx_mult) != ring and abs(dy_mult) != ring:
@@ -244,9 +289,9 @@ def _find_free_position(
                 cx = _snap(preferred_x + dx_mult * step_x)
                 cy = _snap(preferred_y + dy_mult * step_y)
                 # Keep within canvas bounds
-                if cx < CANVAS_MIN_X or cx + width > CANVAS_MAX_X:
+                if cx < c_min_x or cx + width > c_max_x:
                     continue
-                if cy < CANVAS_MIN_Y or cy + height > CANVAS_MAX_Y:
+                if cy < c_min_y or cy + height > c_max_y:
                     continue
                 candidate = Rect(cx, cy, width, height)
                 if not _collides(candidate, occupied):
@@ -473,11 +518,19 @@ def layout_class_system(
 
     The grid is then converted to pixel coordinates with per-column widths
     and per-row heights, producing a clean, compact diagram with short edges.
+
+    For large diagrams (>6 classes), the canvas bounds expand dynamically
+    and the layout is centered on the origin.
     """
     classes: List[Dict[str, Any]] = system_spec.get("classes", [])
     relationships: List[Dict[str, Any]] = system_spec.get("relationships", [])
     if not classes:
         return system_spec
+
+    # Dynamic canvas bounds for large diagrams
+    n_classes = len(classes)
+    canvas_bounds = _dynamic_canvas_bounds(n_classes)
+    c_min_x, c_max_x, c_min_y, c_max_y = canvas_bounds
 
     occupied = extract_occupied_rects(existing_model, "ClassDiagram")
 
@@ -530,6 +583,8 @@ def layout_class_system(
                 queue.append(n)
 
     # --- Assign logical grid cells ---
+    # For large diagrams, limit the number of columns to keep the grid readable
+    ideal_rows, ideal_cols = _ideal_grid_shape(n_classes)
     grid: Dict[Tuple[int, int], str] = {}
     name_to_grid: Dict[str, Tuple[int, int]] = {}
 
@@ -550,9 +605,22 @@ def layout_class_system(
             elif placed_neighbors:
                 cell = _best_neighbor_grid_cell(grid, placed_neighbors)
             else:
-                # Isolated class — extend rightward in first row
-                max_col = max(c for _, c in grid.keys()) if grid else -1
-                cell = _nearest_free_grid_cell(grid, 0, max_col + 1)
+                # Isolated class — wrap to next row if current row is full
+                used_cols_in_row_0 = sum(1 for (r, _) in grid if r == 0)
+                if used_cols_in_row_0 >= ideal_cols:
+                    # Find the first row with space
+                    for try_row in range(ideal_rows):
+                        used_in_row = sum(1 for (r, _) in grid if r == try_row)
+                        if used_in_row < ideal_cols:
+                            max_c = max((c for r, c in grid if r == try_row), default=-1)
+                            cell = _nearest_free_grid_cell(grid, try_row, max_c + 1)
+                            break
+                    else:
+                        max_col = max(c for _, c in grid.keys()) if grid else -1
+                        cell = _nearest_free_grid_cell(grid, 0, max_col + 1)
+                else:
+                    max_col = max(c for _, c in grid.keys()) if grid else -1
+                    cell = _nearest_free_grid_cell(grid, 0, max_col + 1)
 
         grid[cell] = name
         name_to_grid[name] = cell
@@ -583,7 +651,6 @@ def layout_class_system(
         )
 
     # --- Relationship-aware gaps between adjacent columns / rows ---
-    # Build a symmetric set of class-name pairs that share a relationship
     rel_pairs: Set[Tuple[str, str]] = set()
     for rel in relationships:
         s = rel.get("source", "")
@@ -592,6 +659,11 @@ def layout_class_system(
             rel_pairs.add((s, t))
             rel_pairs.add((t, s))
 
+    # Scale gaps for large diagrams to maintain readability
+    h_gap = H_GAP if n_classes <= 8 else max(H_GAP, 120)
+    v_gap = V_GAP if n_classes <= 8 else max(V_GAP, 100)
+    rel_gap = REL_EXTRA_GAP if n_classes <= 8 else max(REL_EXTRA_GAP, 80)
+
     col_gaps: Dict[int, int] = {}
     for col in range(min_col, max_col):
         names_a = [grid[(r, col)] for r in range(min_row, max_row + 1)
@@ -599,7 +671,7 @@ def layout_class_system(
         names_b = [grid[(r, col + 1)] for r in range(min_row, max_row + 1)
                    if (r, col + 1) in grid]
         has_rel = any((a, b) in rel_pairs for a in names_a for b in names_b)
-        col_gaps[col] = H_GAP + REL_EXTRA_GAP if has_rel else H_GAP
+        col_gaps[col] = h_gap + rel_gap if has_rel else h_gap
 
     row_gaps: Dict[int, int] = {}
     for row in range(min_row, max_row):
@@ -608,17 +680,23 @@ def layout_class_system(
         names_b = [grid[(row + 1, c)] for c in range(min_col, max_col + 1)
                    if (row + 1, c) in grid]
         has_rel = any((a, b) in rel_pairs for a in names_a for b in names_b)
-        row_gaps[row] = V_GAP + REL_EXTRA_GAP if has_rel else V_GAP
+        row_gaps[row] = v_gap + rel_gap if has_rel else v_gap
 
-    start_x = _snap(CANVAS_MIN_X + 100)
-    start_y = _snap(CANVAS_MIN_Y + 60)
+    # --- Calculate total layout size and center on origin ---
+    total_width = sum(col_widths.get(c, CLASS_WIDTH) for c in range(min_col, max_col + 1)) \
+        + sum(col_gaps.get(c, h_gap) for c in range(min_col, max_col))
+    total_height = sum(row_heights.get(r, CLASS_MIN_HEIGHT) for r in range(min_row, max_row + 1)) \
+        + sum(row_gaps.get(r, v_gap) for r in range(min_row, max_row))
+
+    # Center the grid on the canvas origin
+    start_x = _snap(-total_width // 2)
+    start_y = _snap(-total_height // 2)
 
     for (row, col), name in grid.items():
         w, h = sizes.get(name, (CLASS_WIDTH, CLASS_MIN_HEIGHT))
-        # Pixel = start + sum of preceding column widths + per-gap spacing
-        px = start_x + sum(col_widths.get(c, CLASS_WIDTH) + col_gaps.get(c, H_GAP)
+        px = start_x + sum(col_widths.get(c, CLASS_WIDTH) + col_gaps.get(c, h_gap)
                            for c in range(min_col, col))
-        py = start_y + sum(row_heights.get(r, CLASS_MIN_HEIGHT) + row_gaps.get(r, V_GAP)
+        py = start_y + sum(row_heights.get(r, CLASS_MIN_HEIGHT) + row_gaps.get(r, v_gap)
                            for r in range(min_row, row))
         # Centre horizontally within cell; top-align vertically
         cell_w = col_widths.get(col, CLASS_WIDTH)
@@ -626,7 +704,8 @@ def layout_class_system(
 
         x, y = _find_free_position(w, h, occupied,
                                     preferred_x=_snap(px),
-                                    preferred_y=_snap(py))
+                                    preferred_y=_snap(py),
+                                    canvas_bounds=canvas_bounds)
         class_names[name]["position"] = {"x": x, "y": y}
         occupied.append(Rect(x, y, w, h))
 
@@ -659,39 +738,139 @@ def layout_object_system(
     system_spec: Dict[str, Any],
     existing_model: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Assign positions to all objects in a complete object diagram."""
+    """Assign positions to all objects in a complete object diagram.
+
+    Uses link-aware grid placement with dynamic canvas expansion and
+    centering for large diagrams.
+    """
     objects: List[Dict[str, Any]] = system_spec.get("objects", [])
     if not objects:
         return system_spec
 
-    occupied = extract_occupied_rects(existing_model, "ObjectDiagram")
-    start_x = _snap(CANVAS_MIN_X + 100)
-    start_y = _snap(CANVAS_MIN_Y + 60)
-    row_x = start_x
-    row_y = start_y
-    row_max_height = 0
-
-    for obj in objects:
-        w, h = estimate_object_size(obj)
-        if row_x + w > CANVAS_MAX_X - 100 and row_x != start_x:
-            row_x = start_x
-            row_y += row_max_height + V_GAP
-            row_max_height = 0
-        x, y = _find_free_position(w, h, occupied,
-                                    preferred_x=row_x, preferred_y=row_y)
-        obj["position"] = {"x": x, "y": y}
-        occupied.append(Rect(x, y, w, h))
-        row_x = x + w + H_GAP
-        row_max_height = max(row_max_height, h)
-
-    # --- Compute link directions ---
     links: List[Dict[str, Any]] = system_spec.get("links", [])
+    n_objects = len(objects)
+    canvas_bounds = _dynamic_canvas_bounds(n_objects)
+
+    occupied = extract_occupied_rects(existing_model, "ObjectDiagram")
+
+    # --- Build adjacency graph from links ---
     obj_names: Dict[str, Dict[str, Any]] = {
         o.get("objectName", ""): o for o in objects
     }
+    adjacency: Dict[str, Set[str]] = {name: set() for name in obj_names}
+    for link in links:
+        src = link.get("source", "")
+        tgt = link.get("target", "")
+        if src in adjacency and tgt in adjacency:
+            adjacency[src].add(tgt)
+            adjacency[tgt].add(src)
+
+    # --- Compute sizes ---
+    sizes: Dict[str, Tuple[int, int]] = {}
+    for obj in objects:
+        name = obj.get("objectName", "")
+        sizes[name] = estimate_object_size(obj)
+
+    # --- BFS placement order (most-connected first) ---
+    placement_order: List[str] = []
+    remaining = set(obj_names.keys())
+    while remaining:
+        root = max(remaining, key=lambda n: (len(adjacency.get(n, set())), n))
+        queue = [root]
+        bfs_seen: Set[str] = {root}
+        while queue:
+            current = queue.pop(0)
+            placement_order.append(current)
+            remaining.discard(current)
+            for n in sorted(adjacency.get(current, set())):
+                if n not in bfs_seen and n in remaining:
+                    bfs_seen.add(n)
+                    queue.append(n)
+
+    # --- Assign grid cells ---
+    ideal_rows, ideal_cols = _ideal_grid_shape(n_objects)
+    grid: Dict[Tuple[int, int], str] = {}
+    name_to_grid: Dict[str, Tuple[int, int]] = {}
+
+    for name in placement_order:
+        if not grid:
+            cell = (0, 0)
+        else:
+            placed_neighbors = [
+                (n, name_to_grid[n])
+                for n in adjacency.get(name, set())
+                if n in name_to_grid
+            ]
+            if placed_neighbors:
+                cell = _best_neighbor_grid_cell(grid, placed_neighbors)
+            else:
+                max_col = max(c for _, c in grid.keys()) if grid else -1
+                if max_col + 1 >= ideal_cols:
+                    max_row = max(r for r, _ in grid.keys()) if grid else 0
+                    cell = _nearest_free_grid_cell(grid, max_row + 1, 0)
+                else:
+                    cell = _nearest_free_grid_cell(grid, 0, max_col + 1)
+
+        grid[cell] = name
+        name_to_grid[name] = cell
+
+    if not grid:
+        return system_spec
+
+    # --- Convert grid → pixel coordinates ---
+    min_row = min(r for r, _ in grid.keys())
+    min_col = min(c for _, c in grid.keys())
+    max_row = max(r for r, _ in grid.keys())
+    max_col = max(c for _, c in grid.keys())
+
+    col_widths: Dict[int, int] = {}
+    for col in range(min_col, max_col + 1):
+        col_widths[col] = max(
+            (sizes.get(grid.get((row, col), ""), (OBJECT_WIDTH, OBJECT_MIN_HEIGHT))[0]
+             for row in range(min_row, max_row + 1) if (row, col) in grid),
+            default=OBJECT_WIDTH,
+        )
+
+    row_heights: Dict[int, int] = {}
+    for row in range(min_row, max_row + 1):
+        row_heights[row] = max(
+            (sizes.get(grid.get((row, col), ""), (OBJECT_WIDTH, OBJECT_MIN_HEIGHT))[1]
+             for col in range(min_col, max_col + 1) if (row, col) in grid),
+            default=OBJECT_MIN_HEIGHT,
+        )
+
+    h_gap = H_GAP if n_objects <= 8 else max(H_GAP, 120)
+    v_gap = V_GAP if n_objects <= 8 else max(V_GAP, 100)
+
+    # --- Center layout on origin ---
+    total_width = sum(col_widths.get(c, OBJECT_WIDTH) for c in range(min_col, max_col + 1)) \
+        + h_gap * max(0, max_col - min_col)
+    total_height = sum(row_heights.get(r, OBJECT_MIN_HEIGHT) for r in range(min_row, max_row + 1)) \
+        + v_gap * max(0, max_row - min_row)
+
+    start_x = _snap(-total_width // 2)
+    start_y = _snap(-total_height // 2)
+
+    for (row, col), name in grid.items():
+        w, h = sizes.get(name, (OBJECT_WIDTH, OBJECT_MIN_HEIGHT))
+        px = start_x + sum(col_widths.get(c, OBJECT_WIDTH) + h_gap
+                           for c in range(min_col, col))
+        py = start_y + sum(row_heights.get(r, OBJECT_MIN_HEIGHT) + v_gap
+                           for r in range(min_row, row))
+        cell_w = col_widths.get(col, OBJECT_WIDTH)
+        px += (cell_w - w) // 2
+
+        x, y = _find_free_position(w, h, occupied,
+                                    preferred_x=_snap(px),
+                                    preferred_y=_snap(py),
+                                    canvas_bounds=canvas_bounds)
+        obj_names[name]["position"] = {"x": x, "y": y}
+        occupied.append(Rect(x, y, w, h))
+
+    # --- Compute link directions ---
     _compute_edge_directions(
         links,
-        {name: (spec.get("position", {}), estimate_object_size(spec))
+        {name: (spec.get("position", {}), sizes.get(name, (OBJECT_WIDTH, OBJECT_MIN_HEIGHT)))
          for name, spec in obj_names.items()},
     )
 
@@ -717,72 +896,211 @@ def layout_state_system(
     system_spec: Dict[str, Any],
     existing_model: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Assign positions to a complete state machine (left-to-right flow).
+    """Assign positions to a complete state machine using transition-aware layout.
 
-    Places initial state on the left, regular states flowing rightward,
-    and final state on the right.
+    Layout strategy:
+    - BFS from initial state following transitions to determine flow order
+    - Transition-aware grid: connected states placed in adjacent cells
+    - Initial state anchored at left, final state(s) at right
+    - Dynamic canvas expansion for large state machines
+    - Layout centered on origin for clean presentation
     """
     states: List[Dict[str, Any]] = system_spec.get("states", [])
     if not states:
         return system_spec
 
+    transitions = system_spec.get("transitions", [])
+    n_states = len(states)
+    canvas_bounds = _dynamic_canvas_bounds(n_states)
+
     occupied = extract_occupied_rects(existing_model, "StateMachineDiagram")
 
-    # Sort: initial first, then regular, then final
-    type_order = {"initial": 0, "regular": 1, "final": 2}
-    ordered = sorted(states, key=lambda s: type_order.get(s.get("stateType", "regular"), 1))
+    # --- Build state lookup and adjacency graph ---
+    state_names: Dict[str, Dict[str, Any]] = {
+        s.get("stateName", ""): s for s in states
+    }
+    adjacency: Dict[str, Set[str]] = {name: set() for name in state_names}
+    outgoing: Dict[str, List[str]] = {name: [] for name in state_names}
 
-    # Build a transition adjacency to order regular states by flow
-    transitions = system_spec.get("transitions", [])
-    state_names = {s.get("stateName", ""): s for s in states}
-    # BFS from initial state
+    for t in transitions:
+        src = t.get("source", "")
+        tgt = t.get("target", "")
+        if src in adjacency and tgt in adjacency:
+            adjacency[src].add(tgt)
+            adjacency[tgt].add(src)
+            outgoing[src].append(tgt)
+
+    # --- Categorize states ---
+    initial_states: List[str] = []
+    final_states: List[str] = []
+    regular_states: List[str] = []
+    for s in states:
+        name = s.get("stateName", "")
+        stype = s.get("stateType", "regular")
+        if stype == "initial":
+            initial_states.append(name)
+        elif stype == "final":
+            final_states.append(name)
+        else:
+            regular_states.append(name)
+
+    # --- BFS from initial state(s) to determine flow order ---
     visited: List[str] = []
+    visited_set: Set[str] = set()
     queue: List[str] = []
-    for s in ordered:
-        if s.get("stateType") == "initial":
-            name = s.get("stateName", "")
-            if name:
-                queue.append(name)
-                visited.append(name)
-                break
+
+    for name in initial_states:
+        if name and name not in visited_set:
+            queue.append(name)
+            visited.append(name)
+            visited_set.add(name)
+
     while queue:
         current = queue.pop(0)
-        for t in transitions:
-            if t.get("source") == current:
-                target = t.get("target", "")
-                if target and target not in visited:
-                    visited.append(target)
-                    queue.append(target)
-    # Add any states not reachable from initial
-    for s in ordered:
-        name = s.get("stateName", "")
-        if name and name not in visited:
-            visited.append(name)
+        # Sort outgoing targets: regular states before final, then alphabetical
+        targets = sorted(
+            [tgt for tgt in outgoing.get(current, []) if tgt not in visited_set],
+            key=lambda n: (
+                0 if state_names.get(n, {}).get("stateType", "regular") == "regular" else 1,
+                n,
+            ),
+        )
+        for tgt in targets:
+            visited.append(tgt)
+            visited_set.add(tgt)
+            queue.append(tgt)
 
-    # Place states left-to-right following the BFS order
-    start_x = _snap(CANVAS_MIN_X + 80)
-    start_y = _snap((CANVAS_MIN_Y + CANVAS_MAX_Y) // 2 - STATE_MIN_HEIGHT // 2)
-    cursor_x = start_x
-    row_y = start_y
+    # Add unreachable states
+    for name in regular_states + final_states:
+        if name and name not in visited_set:
+            visited.append(name)
+            visited_set.add(name)
+
+    # --- Compute element sizes ---
+    sizes: Dict[str, Tuple[int, int]] = {}
+    for s in states:
+        name = s.get("stateName", "")
+        sizes[name] = estimate_state_size(s)
+
+    # --- Assign grid cells using transition-aware placement ---
+    ideal_rows, ideal_cols = _ideal_grid_shape(n_states)
+    grid: Dict[Tuple[int, int], str] = {}
+    name_to_grid: Dict[str, Tuple[int, int]] = {}
 
     for name in visited:
-        s = state_names.get(name)
-        if not s:
-            continue
-        w, h = estimate_state_size(s)
-        if cursor_x + w > CANVAS_MAX_X - 80:
-            cursor_x = start_x
-            row_y += h + V_GAP + 40
+        if not grid:
+            cell = (0, 0)
+        else:
+            stype = state_names.get(name, {}).get("stateType", "regular")
+            placed_neighbors = [
+                (n, name_to_grid[n])
+                for n in adjacency.get(name, set())
+                if n in name_to_grid
+            ]
+
+            if stype == "final" and placed_neighbors:
+                # Final states go to the right of their last connected state
+                last_neighbor = placed_neighbors[-1]
+                nr, nc = last_neighbor[1]
+                cell = _nearest_free_grid_cell(grid, nr, nc + 1)
+            elif placed_neighbors:
+                cell = _best_neighbor_grid_cell(grid, placed_neighbors)
+            else:
+                # Isolated state — append in next available slot
+                max_col = max(c for _, c in grid.keys()) if grid else -1
+                if max_col + 1 >= ideal_cols:
+                    # Wrap to next row
+                    max_row = max(r for r, _ in grid.keys()) if grid else 0
+                    cell = _nearest_free_grid_cell(grid, max_row + 1, 0)
+                else:
+                    cell = _nearest_free_grid_cell(grid, 0, max_col + 1)
+
+        grid[cell] = name
+        name_to_grid[name] = cell
+
+    if not grid:
+        return system_spec
+
+    # --- Convert grid → pixel coordinates ---
+    min_row = min(r for r, _ in grid.keys())
+    min_col = min(c for _, c in grid.keys())
+    max_row = max(r for r, _ in grid.keys())
+    max_col = max(c for _, c in grid.keys())
+
+    col_widths: Dict[int, int] = {}
+    for col in range(min_col, max_col + 1):
+        col_widths[col] = max(
+            (sizes.get(grid.get((row, col), ""), (STATE_WIDTH, STATE_MIN_HEIGHT))[0]
+             for row in range(min_row, max_row + 1) if (row, col) in grid),
+            default=STATE_WIDTH,
+        )
+
+    row_heights: Dict[int, int] = {}
+    for row in range(min_row, max_row + 1):
+        row_heights[row] = max(
+            (sizes.get(grid.get((row, col), ""), (STATE_WIDTH, STATE_MIN_HEIGHT))[1]
+             for col in range(min_col, max_col + 1) if (row, col) in grid),
+            default=STATE_MIN_HEIGHT,
+        )
+
+    # --- Transition-aware gaps ---
+    trans_pairs: Set[Tuple[str, str]] = set()
+    for t in transitions:
+        s = t.get("source", "")
+        tgt = t.get("target", "")
+        if s in state_names and tgt in state_names:
+            trans_pairs.add((s, tgt))
+            trans_pairs.add((tgt, s))
+
+    # Scale gaps for large diagrams
+    h_gap = H_GAP if n_states <= 8 else max(H_GAP, 120)
+    v_gap = V_GAP if n_states <= 8 else max(V_GAP, 100)
+    rel_gap = REL_EXTRA_GAP if n_states <= 8 else max(REL_EXTRA_GAP, 80)
+
+    col_gaps: Dict[int, int] = {}
+    for col in range(min_col, max_col):
+        names_a = [grid[(r, col)] for r in range(min_row, max_row + 1) if (r, col) in grid]
+        names_b = [grid[(r, col + 1)] for r in range(min_row, max_row + 1) if (r, col + 1) in grid]
+        has_trans = any((a, b) in trans_pairs for a in names_a for b in names_b)
+        col_gaps[col] = h_gap + rel_gap if has_trans else h_gap
+
+    row_gaps: Dict[int, int] = {}
+    for row in range(min_row, max_row):
+        names_a = [grid[(row, c)] for c in range(min_col, max_col + 1) if (row, c) in grid]
+        names_b = [grid[(row + 1, c)] for c in range(min_col, max_col + 1) if (row + 1, c) in grid]
+        has_trans = any((a, b) in trans_pairs for a in names_a for b in names_b)
+        row_gaps[row] = v_gap + rel_gap if has_trans else v_gap
+
+    # --- Calculate total layout size and center on origin ---
+    total_width = sum(col_widths.get(c, STATE_WIDTH) for c in range(min_col, max_col + 1)) \
+        + sum(col_gaps.get(c, h_gap) for c in range(min_col, max_col))
+    total_height = sum(row_heights.get(r, STATE_MIN_HEIGHT) for r in range(min_row, max_row + 1)) \
+        + sum(row_gaps.get(r, v_gap) for r in range(min_row, max_row))
+
+    start_x = _snap(-total_width // 2)
+    start_y = _snap(-total_height // 2)
+
+    for (row, col), name in grid.items():
+        w, h = sizes.get(name, (STATE_WIDTH, STATE_MIN_HEIGHT))
+        px = start_x + sum(col_widths.get(c, STATE_WIDTH) + col_gaps.get(c, h_gap)
+                           for c in range(min_col, col))
+        py = start_y + sum(row_heights.get(r, STATE_MIN_HEIGHT) + row_gaps.get(r, v_gap)
+                           for r in range(min_row, row))
+        # Centre horizontally within cell
+        cell_w = col_widths.get(col, STATE_WIDTH)
+        px += (cell_w - w) // 2
+
         x, y = _find_free_position(w, h, occupied,
-                                    preferred_x=cursor_x, preferred_y=row_y)
-        s["position"] = {"x": x, "y": y}
+                                    preferred_x=_snap(px),
+                                    preferred_y=_snap(py),
+                                    canvas_bounds=canvas_bounds)
+        state_names[name]["position"] = {"x": x, "y": y}
         occupied.append(Rect(x, y, w, h))
-        cursor_x = x + w + H_GAP
 
     # --- Compute transition directions ---
     _compute_edge_directions(
         transitions,
-        {name: (spec.get("position", {}), estimate_state_size(spec))
+        {name: (spec.get("position", {}), sizes.get(name, (STATE_WIDTH, STATE_MIN_HEIGHT)))
          for name, spec in state_names.items()},
     )
 
@@ -817,53 +1135,147 @@ def layout_agent_system(
 ) -> Dict[str, Any]:
     """Assign positions to a complete agent diagram.
 
-    Places intents in an upper lane and states in a lower lane,
-    with the initial node on the left.
+    Layout strategy:
+    - Two-lane layout: intents in upper lane, states in lower lane
+    - Initial node anchored at left, centered vertically between lanes
+    - Dynamic canvas expansion for large agent diagrams
+    - Grid-based placement within each lane with centering
+    - Transition-aware: connected intents/states placed near each other
     """
     states_list: List[Dict[str, Any]] = system_spec.get("states", [])
     intents_list: List[Dict[str, Any]] = system_spec.get("intents", [])
     initial_nodes: List[Dict[str, Any]] = system_spec.get("initialNodes", [])
 
+    n_total = len(states_list) + len(intents_list) + len(initial_nodes)
+    canvas_bounds = _dynamic_canvas_bounds(n_total)
+    c_min_x, c_max_x, c_min_y, c_max_y = canvas_bounds
+
     occupied = extract_occupied_rects(existing_model, "AgentDiagram")
 
-    # Place initial node(s) first, top-left
-    cursor_x = _snap(CANVAS_MIN_X + 80)
-    initial_y = _snap(CANVAS_MIN_Y + 40)
+    # --- Compute sizes for all elements ---
+    intent_sizes: List[Tuple[int, int]] = []
+    for intent in intents_list:
+        intent_sizes.append(estimate_agent_element_size({"type": "intent", **intent}))
+
+    state_sizes: List[Tuple[int, int]] = []
+    for state in states_list:
+        state_sizes.append(estimate_agent_element_size({"type": "state", **state}))
+
+    # --- Calculate lane dimensions ---
+    # Determine how many columns per lane
+    n_intents = len(intents_list)
+    n_states = len(states_list)
+    _, intent_cols = _ideal_grid_shape(max(n_intents, 1))
+    _, state_cols = _ideal_grid_shape(max(n_states, 1))
+
+    h_gap = H_GAP if n_total <= 8 else max(H_GAP, 120)
+    v_gap = V_GAP if n_total <= 8 else max(V_GAP, 100)
+    lane_gap = 60  # vertical gap between intent lane and state lane
+
+    # --- Calculate intent lane dimensions ---
+    intent_row_heights: List[int] = []
+    intent_col_widths: List[int] = []
+    if n_intents > 0:
+        intent_rows_count = max(1, (n_intents + intent_cols - 1) // intent_cols)
+        for row_idx in range(intent_rows_count):
+            row_start = row_idx * intent_cols
+            row_end = min(row_start + intent_cols, n_intents)
+            row_max_h = max((intent_sizes[i][1] for i in range(row_start, row_end)), default=AGENT_NODE_MIN_HEIGHT)
+            intent_row_heights.append(row_max_h)
+        for col_idx in range(min(intent_cols, n_intents)):
+            col_max_w = max(
+                (intent_sizes[row_idx * intent_cols + col_idx][0]
+                 for row_idx in range((n_intents + intent_cols - 1) // intent_cols)
+                 if row_idx * intent_cols + col_idx < n_intents),
+                default=AGENT_INTENT_WIDTH,
+            )
+            intent_col_widths.append(col_max_w)
+
+    intent_lane_width = sum(intent_col_widths) + h_gap * max(0, len(intent_col_widths) - 1) if intent_col_widths else 0
+    intent_lane_height = sum(intent_row_heights) + v_gap * max(0, len(intent_row_heights) - 1) if intent_row_heights else 0
+
+    # --- Calculate state lane dimensions ---
+    state_row_heights: List[int] = []
+    state_col_widths: List[int] = []
+    if n_states > 0:
+        state_rows_count = max(1, (n_states + state_cols - 1) // state_cols)
+        for row_idx in range(state_rows_count):
+            row_start = row_idx * state_cols
+            row_end = min(row_start + state_cols, n_states)
+            row_max_h = max((state_sizes[i][1] for i in range(row_start, row_end)), default=AGENT_NODE_MIN_HEIGHT)
+            state_row_heights.append(row_max_h)
+        for col_idx in range(min(state_cols, n_states)):
+            col_max_w = max(
+                (state_sizes[row_idx * state_cols + col_idx][0]
+                 for row_idx in range((n_states + state_cols - 1) // state_cols)
+                 if row_idx * state_cols + col_idx < n_states),
+                default=AGENT_STATE_WIDTH,
+            )
+            state_col_widths.append(col_max_w)
+
+    state_lane_width = sum(state_col_widths) + h_gap * max(0, len(state_col_widths) - 1) if state_col_widths else 0
+    state_lane_height = sum(state_row_heights) + v_gap * max(0, len(state_row_heights) - 1) if state_row_heights else 0
+
+    # --- Compute total layout size and center ---
+    initial_col_width = INITIAL_NODE_SIZE + h_gap if initial_nodes else 0
+    total_width = max(intent_lane_width, state_lane_width) + initial_col_width
+    total_height = intent_lane_height + lane_gap + state_lane_height
+
+    origin_x = _snap(-total_width // 2)
+    origin_y = _snap(-total_height // 2)
+
+    # --- Place initial node(s) ---
+    initial_x = origin_x
+    initial_center_y = _snap(origin_y + total_height // 2 - INITIAL_NODE_SIZE // 2)
     for node in initial_nodes:
         w, h = INITIAL_NODE_SIZE, INITIAL_NODE_SIZE
         x, y = _find_free_position(w, h, occupied,
-                                    preferred_x=cursor_x, preferred_y=initial_y)
+                                    preferred_x=initial_x,
+                                    preferred_y=initial_center_y,
+                                    canvas_bounds=canvas_bounds)
         node["position"] = {"x": x, "y": y}
         occupied.append(Rect(x, y, w, h))
-        cursor_x = x + w + H_GAP
 
-    # Place intents in upper lane
-    intent_y = _snap(CANVAS_MIN_Y + 120)
-    intent_x = _snap(CANVAS_MIN_X + 100)
-    for intent in intents_list:
-        w, h = estimate_agent_element_size({"type": "intent", **intent})
-        if intent_x + w > CANVAS_MAX_X - 80:
-            intent_x = _snap(CANVAS_MIN_X + 100)
-            intent_y += h + V_GAP
+    content_start_x = origin_x + initial_col_width
+
+    # --- Place intents in upper lane (grid) ---
+    intent_start_y = origin_y
+    for idx, intent in enumerate(intents_list):
+        row_idx = idx // intent_cols
+        col_idx = idx % intent_cols
+        w, h = intent_sizes[idx]
+
+        px = content_start_x + sum(intent_col_widths[c] + h_gap for c in range(col_idx) if c < len(intent_col_widths))
+        py = intent_start_y + sum(intent_row_heights[r] + v_gap for r in range(row_idx) if r < len(intent_row_heights))
+        # Center horizontally within cell
+        if col_idx < len(intent_col_widths):
+            px += (intent_col_widths[col_idx] - w) // 2
+
         x, y = _find_free_position(w, h, occupied,
-                                    preferred_x=intent_x, preferred_y=intent_y)
+                                    preferred_x=_snap(px),
+                                    preferred_y=_snap(py),
+                                    canvas_bounds=canvas_bounds)
         intent["position"] = {"x": x, "y": y}
         occupied.append(Rect(x, y, w, h))
-        intent_x = x + w + H_GAP
 
-    # Place states in lower lane
-    state_y = _snap((CANVAS_MIN_Y + CANVAS_MAX_Y) // 2 + 40)
-    state_x = _snap(CANVAS_MIN_X + 100)
-    for state in states_list:
-        w, h = estimate_agent_element_size({"type": "state", **state})
-        if state_x + w > CANVAS_MAX_X - 80:
-            state_x = _snap(CANVAS_MIN_X + 100)
-            state_y += h + V_GAP
+    # --- Place states in lower lane (grid) ---
+    state_start_y = origin_y + intent_lane_height + lane_gap
+    for idx, state in enumerate(states_list):
+        row_idx = idx // state_cols
+        col_idx = idx % state_cols
+        w, h = state_sizes[idx]
+
+        px = content_start_x + sum(state_col_widths[c] + h_gap for c in range(col_idx) if c < len(state_col_widths))
+        py = state_start_y + sum(state_row_heights[r] + v_gap for r in range(row_idx) if r < len(state_row_heights))
+        if col_idx < len(state_col_widths):
+            px += (state_col_widths[col_idx] - w) // 2
+
         x, y = _find_free_position(w, h, occupied,
-                                    preferred_x=state_x, preferred_y=state_y)
+                                    preferred_x=_snap(px),
+                                    preferred_y=_snap(py),
+                                    canvas_bounds=canvas_bounds)
         state["position"] = {"x": x, "y": y}
         occupied.append(Rect(x, y, w, h))
-        state_x = x + w + H_GAP
 
     # --- Compute transition directions ---
     agent_transitions: List[Dict[str, Any]] = system_spec.get("transitions", [])

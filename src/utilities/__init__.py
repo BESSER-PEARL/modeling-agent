@@ -42,6 +42,8 @@ from .class_metadata import (
 )
 from .workspace_context import (
     build_workspace_context_block,
+    record_session_action,
+    build_session_summary,
 )
 
 
@@ -71,6 +73,8 @@ __all__ = [
     'extract_class_metadata',
     'format_class_metadata_for_prompt',
     'build_workspace_context_block',
+    'record_session_action',
+    'build_session_summary',
     'build_request_for_target',
     'build_generation_request',
 ]

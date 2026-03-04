@@ -52,6 +52,8 @@ from .class_metadata import (                       # noqa: F401
 # Re-export: workspace context
 from .workspace_context import (                    # noqa: F401
     build_workspace_context_block,
+    record_session_action,
+    build_session_summary,
 )
 
 
