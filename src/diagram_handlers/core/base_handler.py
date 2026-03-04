@@ -198,6 +198,62 @@ class BaseDiagramHandler(ABC):
             "diagramType": self.get_diagram_type(),
         }
 
+    # ------------------------------------------------------------------
+    # Friendly modification message helpers
+    # ------------------------------------------------------------------
+
+    _ACTION_LABELS = {
+        'modify_class': 'Updated',
+        'add_attribute': 'Added attribute to',
+        'modify_attribute': 'Updated attribute in',
+        'remove_attribute': 'Removed attribute from',
+        'add_method': 'Added method to',
+        'modify_method': 'Updated method in',
+        'remove_method': 'Removed method from',
+        'add_relationship': 'Added relationship to',
+        'modify_relationship': 'Updated relationship in',
+        'remove_relationship': 'Removed relationship from',
+        'remove_element': 'Removed',
+        'add_class': 'Added',
+        'rename': 'Renamed',
+        'modify_state': 'Updated',
+        'add_state': 'Added',
+        'remove_state': 'Removed',
+        'add_transition': 'Added transition to',
+        'modify_transition': 'Updated transition in',
+        'remove_transition': 'Removed transition from',
+        'modify_intent': 'Updated',
+        'add_intent': 'Added',
+        'modify_object': 'Updated',
+        'add_object': 'Added',
+        'add_link': 'Added link to',
+    }
+
+    @classmethod
+    def _friendly_mod_message(cls, action: str, target_name: str) -> str:
+        """Turn a raw action + target into a user-friendly message."""
+        label = cls._ACTION_LABELS.get(action)
+        if label:
+            return f"{label} **{target_name}**."
+        # Fallback: humanize the action string
+        human = action.replace('_', ' ').capitalize()
+        return f"{human} **{target_name}**."
+
+    @classmethod
+    def _friendly_batch_message(cls, mods: list) -> str:
+        """Produce a friendly summary for a batch of modifications."""
+        parts = []
+        for m in mods:
+            act = m.get('action', 'modification')
+            t = m.get('target', {})
+            name = (t.get('className') or t.get('stateName') or t.get('intentName')
+                    or t.get('objectName') or t.get('attributeName') or t.get('methodName')
+                    or 'element')
+            parts.append(cls._friendly_mod_message(act, name))
+        if len(parts) == 1:
+            return parts[0]
+        return f"Applied {len(parts)} changes:\n" + "\n".join(f"- {p}" for p in parts)
+
     def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """
         Generate modifications for existing diagram elements.

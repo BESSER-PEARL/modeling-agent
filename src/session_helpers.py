@@ -67,14 +67,24 @@ def get_current_model(session: Session) -> Optional[Dict[str, Any]]:
 def json_intent_matches(session: Session, params: Dict[str, Any]) -> bool:
     """Check if the predicted intent matches the target intent for JSON events.
 
-    Skips intent matching when the generation handler is awaiting a generator
-    selection — the user's reply should be routed to the generation handler
-    unconditionally so the keyword detector can identify the chosen generator.
+    Skips intent matching when a pending confirmation or selection flow is
+    active — the user's reply (e.g. "replace", "auto") should stay in the
+    current state so _common_preamble can handle it, instead of being
+    misrouted by the intent classifier.
     """
     # If awaiting generator selection, suppress intent matching so the
     # route_to_generation condition (next priority) can capture the reply.
     pending = session.get("pending_generator_type")
     if pending == "_awaiting_selection":
+        return False
+
+    # If a pending confirmation or GUI choice is active, suppress intent
+    # matching so the message stays in the current state and _common_preamble
+    # handles it.  This prevents "replace"/"keep"/"auto"/"llm" from being
+    # misclassified as modify_model_intent or fallback_intent.
+    if session.get("pending_complete_system"):
+        return False
+    if session.get("pending_gui_choice"):
         return False
 
     target_intent_name = params.get('intent_name')
@@ -89,7 +99,13 @@ def json_intent_matches(session: Session, params: Dict[str, Any]) -> bool:
 
 
 def json_no_intent_matched(session: Session) -> bool:
-    """Check if no specific intent was matched (fallback)."""
+    """Check if no specific intent was matched (fallback).
+
+    Also returns True when a pending confirmation suppressed intent matching,
+    so the message stays in the current state for _common_preamble to handle.
+    """
+    if session.get("pending_complete_system") or session.get("pending_gui_choice"):
+        return True
     if hasattr(session.event, 'predicted_intent') and session.event.predicted_intent:
         matched_intent = session.event.predicted_intent.intent
         return matched_intent.name == 'fallback_intent'

@@ -275,11 +275,18 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
             default_mode=default_mode,
             matched_intent=intent_name,
         )
-        # Suggest logical next steps based on the diagram type that was acted on
+        # Consolidate quality suggestions + "What's next?" into one message
+        parts: list = []
+        quality = session.get('_pending_quality_suggestions')
+        if isinstance(quality, str) and quality:
+            parts.append(quality)
+            session.set('_pending_quality_suggestions', None)
         last_diagram = session.get('_last_executed_diagram_type')
         if isinstance(last_diagram, str) and last_diagram in _NEXT_STEP_HINTS:
-            reply_message(session, f"**What's next?** {_NEXT_STEP_HINTS[last_diagram]}")
+            parts.append(f"**What's next?** {_NEXT_STEP_HINTS[last_diagram]}")
             session.set('_last_executed_diagram_type', None)
+        if parts:
+            reply_message(session, "\n\n".join(parts))
     except Exception as e:
         logger.error(f"Error in {intent_name}: {e}", exc_info=True)
         reply_message(session, "Something went wrong while processing your request. Could you try rephrasing it?")

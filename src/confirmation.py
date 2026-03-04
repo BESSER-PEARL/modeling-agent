@@ -22,6 +22,14 @@ from session_helpers import reply_message, reply_payload
 
 logger = logging.getLogger(__name__)
 
+
+def _flush_pending_suggestions(session: Session) -> None:
+    """Send any pending quality suggestions stored by execute_model_operation."""
+    quality = session.get('_pending_quality_suggestions')
+    if isinstance(quality, str) and quality:
+        reply_message(session, quality)
+        session.set('_pending_quality_suggestions', None)
+
 # ------------------------------------------------------------------
 # Keyword lists
 # ------------------------------------------------------------------
@@ -134,6 +142,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
             _skip_gui_choice=True,
         )
         session.set('pending_gui_choice', None)  # Clear only on success
+        _flush_pending_suggestions(session)
     except Exception as exc:
         logger.error(f"[GUIChoice] Error executing LLM GUI generation: {exc}", exc_info=True)
         reply_message(
@@ -300,5 +309,8 @@ def handle_pending_system_confirmation(session: Session) -> bool:
                             f"[PendingConfirm] Error executing remaining generation: {exc}",
                             exc_info=True,
                         )
+
+    # Flush any pending quality suggestions stored by execute_model_operation
+    _flush_pending_suggestions(session)
 
     return True

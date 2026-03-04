@@ -119,10 +119,14 @@ def execute_model_operation(
             from utilities.model_context import compact_model_summary
 
             summary = compact_model_summary(existing_model, target_diagram_type)
+            # Store the resolved mode in the operation so re-execution
+            # always uses complete_system, not whatever the LLM planner
+            # originally returned (which may have been missing or wrong).
+            stored_operation = {**operation, 'mode': operation_mode}
             session.set('pending_complete_system', {
                 'message': operation_request,
                 'diagram_type': target_diagram_type,
-                'operation': operation,
+                'operation': stored_operation,
                 'default_mode': default_mode,
             })
             reply_message(
@@ -345,13 +349,13 @@ def execute_model_operation(
         f"{operation_request[:80]}",
     )
 
-    # Proactive quality review — suggest improvements after generation
+    # Proactive quality review — store for consolidated message in state body
     available_diagrams = _collect_available_diagrams(request)
     quality_suggestions = review_generated_model(
         result, target_diagram_type, available_diagrams,
     )
     if quality_suggestions:
-        reply_message(session, quality_suggestions)
+        session.set('_pending_quality_suggestions', quality_suggestions)
 
     return target_diagram_type
 

@@ -717,19 +717,13 @@ IMPORTANT RULES:
             # Generate message if not provided
             if 'message' not in modification_spec:
                 if 'modifications' in modification_spec and isinstance(modification_spec['modifications'], list):
-                    mods = modification_spec['modifications']
-                    actions_summary = ", ".join(m.get('action', '?') for m in mods)
-                    target_names = set()
-                    for m in mods:
-                        t = m.get('target', {})
-                        n = t.get('stateName') or t.get('intentName') or 'element'
-                        target_names.add(n)
-                    modification_spec['message'] = f"Applied {len(mods)} modifications ({actions_summary}) to {', '.join(target_names)}"
-                else:
-                    mod_action = modification_spec['modification'].get('action', 'modification')
-                    target = modification_spec['modification'].get('target', {})
-                    target_name = target.get('stateName') or target.get('intentName') or 'element'
-                    modification_spec['message'] = f"Applied {mod_action} to {target_name}"
+                    modification_spec['message'] = self._friendly_batch_message(modification_spec['modifications'])
+                elif 'modification' in modification_spec and isinstance(modification_spec['modification'], dict):
+                    mod = modification_spec['modification']
+                    act = mod.get('action', 'modification')
+                    target = mod.get('target', {})
+                    name = target.get('stateName') or target.get('intentName') or 'element'
+                    modification_spec['message'] = self._friendly_mod_message(act, name)
             
             return modification_spec
             

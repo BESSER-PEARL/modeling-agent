@@ -484,6 +484,127 @@ def _compute_edge_directions(
 
 
 # ---------------------------------------------------------------------------
+# Shared grid → pixel helpers (used by class, object, state layouts)
+# ---------------------------------------------------------------------------
+
+def _build_edge_pairs(
+    edges: List[Dict[str, Any]],
+    element_lookup: Dict[str, Any],
+) -> Set[Tuple[str, str]]:
+    """Build a set of canonical (name1, name2) pairs from edge dicts.
+
+    Works for relationships, links, and transitions — any dict with
+    ``source`` and ``target`` keys.
+    """
+    pairs: Set[Tuple[str, str]] = set()
+    for edge in edges:
+        src = edge.get("source", "")
+        tgt = edge.get("target", "")
+        if src in element_lookup and tgt in element_lookup:
+            pair = (min(src, tgt), max(src, tgt))
+            pairs.add(pair)
+    return pairs
+
+
+def _grid_to_pixel_positions(
+    grid: Dict[Tuple[int, int], str],
+    sizes: Dict[str, Tuple[int, int]],
+    element_lookup: Dict[str, Dict[str, Any]],
+    occupied: List[Rect],
+    canvas_bounds: Tuple[int, int, int, int],
+    default_size: Tuple[int, int],
+    edge_pairs: Optional[Set[Tuple[str, str]]] = None,
+    n_elements: int = 0,
+) -> None:
+    """Convert logical grid positions to pixel coordinates.
+
+    Mutates each element dict in *element_lookup* by setting its
+    ``position`` key.  Also appends placed :class:`Rect` instances to
+    *occupied* so subsequent single-element placements avoid collisions.
+
+    Parameters
+    ----------
+    grid : dict[(row, col) → element_name]
+    sizes : dict[name → (width, height)]
+    element_lookup : dict[name → element dict]  (mutated: ``position`` set)
+    occupied : list[Rect]  (mutated: new rects appended)
+    canvas_bounds : (min_x, max_x, min_y, max_y)
+    default_size : fallback (width, height)
+    edge_pairs : optional set of connected name pairs (unused for now,
+        reserved for future edge-aware gap adjustment)
+    n_elements : total element count (for future scaling)
+    """
+    if not grid:
+        return
+
+    # --- Grid bounds ---
+    min_row = min(r for r, _ in grid)
+    max_row = max(r for r, _ in grid)
+    min_col = min(c for _, c in grid)
+    max_col = max(c for _, c in grid)
+
+    n_rows = max_row - min_row + 1
+    n_cols = max_col - min_col + 1
+
+    # --- Per-column widths and per-row heights ---
+    col_widths: Dict[int, int] = {}
+    row_heights: Dict[int, int] = {}
+
+    for (r, c), name in grid.items():
+        w, h = sizes.get(name, default_size)
+        col_widths[c] = max(col_widths.get(c, 0), w)
+        row_heights[r] = max(row_heights.get(r, 0), h)
+
+    # --- Compact gap calculation ---
+    h_gap = 60
+    v_gap = 50
+
+    # --- Total layout dimensions ---
+    total_width = sum(col_widths.get(c, default_size[0]) for c in range(min_col, max_col + 1))
+    total_width += h_gap * max(0, n_cols - 1)
+
+    total_height = sum(row_heights.get(r, default_size[1]) for r in range(min_row, max_row + 1))
+    total_height += v_gap * max(0, n_rows - 1)
+
+    # --- Center on origin ---
+    origin_x = _snap(-total_width // 2)
+    origin_y = _snap(-total_height // 2)
+
+    # --- Assign pixel coordinates ---
+    for (r, c), name in grid.items():
+        elem = element_lookup.get(name)
+        if not elem:
+            continue
+
+        w, h = sizes.get(name, default_size)
+
+        # X: sum of column widths + gaps for columns before this one
+        px = origin_x
+        for cc in range(min_col, c):
+            px += col_widths.get(cc, default_size[0]) + h_gap
+
+        # Center element within its column cell
+        col_w = col_widths.get(c, default_size[0])
+        px += (col_w - w) // 2
+
+        # Y: sum of row heights + gaps for rows before this one
+        py = origin_y
+        for rr in range(min_row, r):
+            py += row_heights.get(rr, default_size[1]) + v_gap
+
+        # Center element within its row cell
+        row_h = row_heights.get(r, default_size[1])
+        py += (row_h - h) // 2
+
+        x, y = _find_free_position(w, h, occupied,
+                                    preferred_x=_snap(px),
+                                    preferred_y=_snap(py),
+                                    canvas_bounds=canvas_bounds)
+        elem["position"] = {"x": x, "y": y}
+        occupied.append(Rect(x, y, w, h))
+
+
+# ---------------------------------------------------------------------------
 # Public layout functions per diagram type
 # ---------------------------------------------------------------------------
 
@@ -530,7 +651,6 @@ def layout_class_system(
     # Dynamic canvas bounds for large diagrams
     n_classes = len(classes)
     canvas_bounds = _dynamic_canvas_bounds(n_classes)
-    c_min_x, c_max_x, c_min_y, c_max_y = canvas_bounds
 
     occupied = extract_occupied_rects(existing_model, "ClassDiagram")
 
@@ -625,89 +745,13 @@ def layout_class_system(
         grid[cell] = name
         name_to_grid[name] = cell
 
-    # --- Convert grid → pixel coordinates ---
-    if not grid:
-        return system_spec
-
-    min_row = min(r for r, _ in grid.keys())
-    min_col = min(c for _, c in grid.keys())
-    max_row = max(r for r, _ in grid.keys())
-    max_col = max(c for _, c in grid.keys())
-
-    col_widths: Dict[int, int] = {}
-    for col in range(min_col, max_col + 1):
-        col_widths[col] = max(
-            (sizes.get(grid.get((row, col), ""), (CLASS_WIDTH, CLASS_MIN_HEIGHT))[0]
-             for row in range(min_row, max_row + 1) if (row, col) in grid),
-            default=CLASS_WIDTH,
-        )
-
-    row_heights: Dict[int, int] = {}
-    for row in range(min_row, max_row + 1):
-        row_heights[row] = max(
-            (sizes.get(grid.get((row, col), ""), (CLASS_WIDTH, CLASS_MIN_HEIGHT))[1]
-             for col in range(min_col, max_col + 1) if (row, col) in grid),
-            default=CLASS_MIN_HEIGHT,
-        )
-
-    # --- Relationship-aware gaps between adjacent columns / rows ---
-    rel_pairs: Set[Tuple[str, str]] = set()
-    for rel in relationships:
-        s = rel.get("source", "")
-        t = rel.get("target", "")
-        if s in class_names and t in class_names:
-            rel_pairs.add((s, t))
-            rel_pairs.add((t, s))
-
-    # Scale gaps for large diagrams to maintain readability
-    h_gap = H_GAP if n_classes <= 8 else max(H_GAP, 120)
-    v_gap = V_GAP if n_classes <= 8 else max(V_GAP, 100)
-    rel_gap = REL_EXTRA_GAP if n_classes <= 8 else max(REL_EXTRA_GAP, 80)
-
-    col_gaps: Dict[int, int] = {}
-    for col in range(min_col, max_col):
-        names_a = [grid[(r, col)] for r in range(min_row, max_row + 1)
-                   if (r, col) in grid]
-        names_b = [grid[(r, col + 1)] for r in range(min_row, max_row + 1)
-                   if (r, col + 1) in grid]
-        has_rel = any((a, b) in rel_pairs for a in names_a for b in names_b)
-        col_gaps[col] = h_gap + rel_gap if has_rel else h_gap
-
-    row_gaps: Dict[int, int] = {}
-    for row in range(min_row, max_row):
-        names_a = [grid[(row, c)] for c in range(min_col, max_col + 1)
-                   if (row, c) in grid]
-        names_b = [grid[(row + 1, c)] for c in range(min_col, max_col + 1)
-                   if (row + 1, c) in grid]
-        has_rel = any((a, b) in rel_pairs for a in names_a for b in names_b)
-        row_gaps[row] = v_gap + rel_gap if has_rel else v_gap
-
-    # --- Calculate total layout size and center on origin ---
-    total_width = sum(col_widths.get(c, CLASS_WIDTH) for c in range(min_col, max_col + 1)) \
-        + sum(col_gaps.get(c, h_gap) for c in range(min_col, max_col))
-    total_height = sum(row_heights.get(r, CLASS_MIN_HEIGHT) for r in range(min_row, max_row + 1)) \
-        + sum(row_gaps.get(r, v_gap) for r in range(min_row, max_row))
-
-    # Center the grid on the canvas origin
-    start_x = _snap(-total_width // 2)
-    start_y = _snap(-total_height // 2)
-
-    for (row, col), name in grid.items():
-        w, h = sizes.get(name, (CLASS_WIDTH, CLASS_MIN_HEIGHT))
-        px = start_x + sum(col_widths.get(c, CLASS_WIDTH) + col_gaps.get(c, h_gap)
-                           for c in range(min_col, col))
-        py = start_y + sum(row_heights.get(r, CLASS_MIN_HEIGHT) + row_gaps.get(r, v_gap)
-                           for r in range(min_row, row))
-        # Centre horizontally within cell; top-align vertically
-        cell_w = col_widths.get(col, CLASS_WIDTH)
-        px += (cell_w - w) // 2
-
-        x, y = _find_free_position(w, h, occupied,
-                                    preferred_x=_snap(px),
-                                    preferred_y=_snap(py),
-                                    canvas_bounds=canvas_bounds)
-        class_names[name]["position"] = {"x": x, "y": y}
-        occupied.append(Rect(x, y, w, h))
+    # --- Convert grid → pixel coordinates (shared helper) ---
+    edge_pairs = _build_edge_pairs(relationships, class_names)
+    _grid_to_pixel_positions(
+        grid, sizes, class_names, occupied, canvas_bounds,
+        default_size=(CLASS_WIDTH, CLASS_MIN_HEIGHT),
+        edge_pairs=edge_pairs, n_elements=n_classes,
+    )
 
     # --- Compute relationship connection directions ---
     _compute_edge_directions(
@@ -817,55 +861,13 @@ def layout_object_system(
     if not grid:
         return system_spec
 
-    # --- Convert grid → pixel coordinates ---
-    min_row = min(r for r, _ in grid.keys())
-    min_col = min(c for _, c in grid.keys())
-    max_row = max(r for r, _ in grid.keys())
-    max_col = max(c for _, c in grid.keys())
-
-    col_widths: Dict[int, int] = {}
-    for col in range(min_col, max_col + 1):
-        col_widths[col] = max(
-            (sizes.get(grid.get((row, col), ""), (OBJECT_WIDTH, OBJECT_MIN_HEIGHT))[0]
-             for row in range(min_row, max_row + 1) if (row, col) in grid),
-            default=OBJECT_WIDTH,
-        )
-
-    row_heights: Dict[int, int] = {}
-    for row in range(min_row, max_row + 1):
-        row_heights[row] = max(
-            (sizes.get(grid.get((row, col), ""), (OBJECT_WIDTH, OBJECT_MIN_HEIGHT))[1]
-             for col in range(min_col, max_col + 1) if (row, col) in grid),
-            default=OBJECT_MIN_HEIGHT,
-        )
-
-    h_gap = H_GAP if n_objects <= 8 else max(H_GAP, 120)
-    v_gap = V_GAP if n_objects <= 8 else max(V_GAP, 100)
-
-    # --- Center layout on origin ---
-    total_width = sum(col_widths.get(c, OBJECT_WIDTH) for c in range(min_col, max_col + 1)) \
-        + h_gap * max(0, max_col - min_col)
-    total_height = sum(row_heights.get(r, OBJECT_MIN_HEIGHT) for r in range(min_row, max_row + 1)) \
-        + v_gap * max(0, max_row - min_row)
-
-    start_x = _snap(-total_width // 2)
-    start_y = _snap(-total_height // 2)
-
-    for (row, col), name in grid.items():
-        w, h = sizes.get(name, (OBJECT_WIDTH, OBJECT_MIN_HEIGHT))
-        px = start_x + sum(col_widths.get(c, OBJECT_WIDTH) + h_gap
-                           for c in range(min_col, col))
-        py = start_y + sum(row_heights.get(r, OBJECT_MIN_HEIGHT) + v_gap
-                           for r in range(min_row, row))
-        cell_w = col_widths.get(col, OBJECT_WIDTH)
-        px += (cell_w - w) // 2
-
-        x, y = _find_free_position(w, h, occupied,
-                                    preferred_x=_snap(px),
-                                    preferred_y=_snap(py),
-                                    canvas_bounds=canvas_bounds)
-        obj_names[name]["position"] = {"x": x, "y": y}
-        occupied.append(Rect(x, y, w, h))
+    # --- Convert grid → pixel coordinates (shared helper) ---
+    edge_pairs = _build_edge_pairs(links, obj_names)
+    _grid_to_pixel_positions(
+        grid, sizes, obj_names, occupied, canvas_bounds,
+        default_size=(OBJECT_WIDTH, OBJECT_MIN_HEIGHT),
+        edge_pairs=edge_pairs, n_elements=n_objects,
+    )
 
     # --- Compute link directions ---
     _compute_edge_directions(
@@ -1021,81 +1023,13 @@ def layout_state_system(
     if not grid:
         return system_spec
 
-    # --- Convert grid → pixel coordinates ---
-    min_row = min(r for r, _ in grid.keys())
-    min_col = min(c for _, c in grid.keys())
-    max_row = max(r for r, _ in grid.keys())
-    max_col = max(c for _, c in grid.keys())
-
-    col_widths: Dict[int, int] = {}
-    for col in range(min_col, max_col + 1):
-        col_widths[col] = max(
-            (sizes.get(grid.get((row, col), ""), (STATE_WIDTH, STATE_MIN_HEIGHT))[0]
-             for row in range(min_row, max_row + 1) if (row, col) in grid),
-            default=STATE_WIDTH,
-        )
-
-    row_heights: Dict[int, int] = {}
-    for row in range(min_row, max_row + 1):
-        row_heights[row] = max(
-            (sizes.get(grid.get((row, col), ""), (STATE_WIDTH, STATE_MIN_HEIGHT))[1]
-             for col in range(min_col, max_col + 1) if (row, col) in grid),
-            default=STATE_MIN_HEIGHT,
-        )
-
-    # --- Transition-aware gaps ---
-    trans_pairs: Set[Tuple[str, str]] = set()
-    for t in transitions:
-        s = t.get("source", "")
-        tgt = t.get("target", "")
-        if s in state_names and tgt in state_names:
-            trans_pairs.add((s, tgt))
-            trans_pairs.add((tgt, s))
-
-    # Scale gaps for large diagrams
-    h_gap = H_GAP if n_states <= 8 else max(H_GAP, 120)
-    v_gap = V_GAP if n_states <= 8 else max(V_GAP, 100)
-    rel_gap = REL_EXTRA_GAP if n_states <= 8 else max(REL_EXTRA_GAP, 80)
-
-    col_gaps: Dict[int, int] = {}
-    for col in range(min_col, max_col):
-        names_a = [grid[(r, col)] for r in range(min_row, max_row + 1) if (r, col) in grid]
-        names_b = [grid[(r, col + 1)] for r in range(min_row, max_row + 1) if (r, col + 1) in grid]
-        has_trans = any((a, b) in trans_pairs for a in names_a for b in names_b)
-        col_gaps[col] = h_gap + rel_gap if has_trans else h_gap
-
-    row_gaps: Dict[int, int] = {}
-    for row in range(min_row, max_row):
-        names_a = [grid[(row, c)] for c in range(min_col, max_col + 1) if (row, c) in grid]
-        names_b = [grid[(row + 1, c)] for c in range(min_col, max_col + 1) if (row + 1, c) in grid]
-        has_trans = any((a, b) in trans_pairs for a in names_a for b in names_b)
-        row_gaps[row] = v_gap + rel_gap if has_trans else v_gap
-
-    # --- Calculate total layout size and center on origin ---
-    total_width = sum(col_widths.get(c, STATE_WIDTH) for c in range(min_col, max_col + 1)) \
-        + sum(col_gaps.get(c, h_gap) for c in range(min_col, max_col))
-    total_height = sum(row_heights.get(r, STATE_MIN_HEIGHT) for r in range(min_row, max_row + 1)) \
-        + sum(row_gaps.get(r, v_gap) for r in range(min_row, max_row))
-
-    start_x = _snap(-total_width // 2)
-    start_y = _snap(-total_height // 2)
-
-    for (row, col), name in grid.items():
-        w, h = sizes.get(name, (STATE_WIDTH, STATE_MIN_HEIGHT))
-        px = start_x + sum(col_widths.get(c, STATE_WIDTH) + col_gaps.get(c, h_gap)
-                           for c in range(min_col, col))
-        py = start_y + sum(row_heights.get(r, STATE_MIN_HEIGHT) + row_gaps.get(r, v_gap)
-                           for r in range(min_row, row))
-        # Centre horizontally within cell
-        cell_w = col_widths.get(col, STATE_WIDTH)
-        px += (cell_w - w) // 2
-
-        x, y = _find_free_position(w, h, occupied,
-                                    preferred_x=_snap(px),
-                                    preferred_y=_snap(py),
-                                    canvas_bounds=canvas_bounds)
-        state_names[name]["position"] = {"x": x, "y": y}
-        occupied.append(Rect(x, y, w, h))
+    # --- Convert grid → pixel coordinates (shared helper) ---
+    edge_pairs = _build_edge_pairs(transitions, state_names)
+    _grid_to_pixel_positions(
+        grid, sizes, state_names, occupied, canvas_bounds,
+        default_size=(STATE_WIDTH, STATE_MIN_HEIGHT),
+        edge_pairs=edge_pairs, n_elements=n_states,
+    )
 
     # --- Compute transition directions ---
     _compute_edge_directions(
@@ -1168,8 +1102,8 @@ def layout_agent_system(
     _, intent_cols = _ideal_grid_shape(max(n_intents, 1))
     _, state_cols = _ideal_grid_shape(max(n_states, 1))
 
-    h_gap = H_GAP if n_total <= 8 else max(H_GAP, 120)
-    v_gap = V_GAP if n_total <= 8 else max(V_GAP, 100)
+    h_gap = 60   # compact horizontal gap
+    v_gap = 50   # compact vertical gap
     lane_gap = 60  # vertical gap between intent lane and state lane
 
     # --- Calculate intent lane dimensions ---
