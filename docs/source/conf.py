@@ -6,8 +6,8 @@ project = 'Modeling Agent'
 copyright = '2023, Luxembourg Institute of Science and Technology (LIST)'
 author = 'list-of-authors'
 
-release = '0.2'
-version = '0.2.0'
+release = '0.3'
+version = '0.3.0'
 
 # -- General configuration
 
@@ -30,6 +30,12 @@ templates_path = ['_templates']
 # -- Options for HTML output
 
 html_theme = 'sphinx_rtd_theme'
+
+html_static_path = ['_static']
+
+html_context = {
+    'display_github': True,
+}
 
 # -- Options for EPUB output
 epub_show_urls = 'footnote'

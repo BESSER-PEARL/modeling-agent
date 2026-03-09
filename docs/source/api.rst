@@ -1,38 +1,274 @@
-API and Module Map
-==================
+API and Module Reference
+========================
 
-Entrypoint
-----------
+This document maps all Python modules in the Modeling Agent codebase.
 
-- ``modeling_agent.py``: creates the BESSER agent, intents/states, and starts runtime.
+.. contents:: On this page
+   :local:
+   :depth: 2
 
-Core runtime modules
+Entry Point
+-----------
+
+``modeling_agent.py``
+  Creates the BESSER agent, defines 8 intents and 8 states, wires state bodies,
+  and starts the WebSocket runtime.
+
+Core Runtime Modules
 --------------------
 
-- ``src/agent_setup.py``: initializes LLM, RAG, and diagram factory.
-- ``src/agent_context.py``: shared runtime context container.
-- ``src/state_bodies.py``: state handlers and transition wiring.
-- ``src/execution.py``: operation execution engine.
+``src/agent_context.py``
+  Shared runtime context container. Stores module-level globals (``agent``,
+  ``gpt``, ``gpt_text``, ``gpt_predict_json``, ``uml_rag``, ``diagram_factory``,
+  ``openai_api_key``) populated at startup.
 
-Protocol and orchestration
---------------------------
+``src/agent_setup.py``
+  Initialization functions called during startup:
 
-- ``src/protocol/types.py``: protocol dataclasses.
-- ``src/protocol/adapters.py``: payload extraction/normalization.
-- ``src/orchestrator/request_planner.py``: multi-operation planning.
-- ``src/orchestrator/workspace_orchestrator.py``: target diagram selection helpers.
+  - ``init_llm(agent)`` — Creates two LLMOpenAI instances (JSON + text mode)
+  - ``init_rag(agent)`` — Builds ChromaDB-backed RAG
+  - ``init_diagram_factory(gpt)`` — Creates DiagramHandlerFactory
+  - ``init_intent_classifier_config()`` — Configures LLM-based intent classifier
 
-Diagram handlers
+``src/state_bodies.py``
+  All state body functions and transition wiring:
+
+  - ``register_all(states, intents)`` — Wires state bodies and transitions
+  - ``greetings_body(session)`` — Welcome message handler
+  - ``create_single_element_body(session)``
+  - ``create_complete_system_body(session)``
+  - ``modify_modeling_body(session)``
+  - ``modeling_help_body(session)`` — Conceptual Q&A
+  - ``describe_model_body(session)`` — Model summarization
+  - ``uml_rag_body(session)`` — RAG query handler
+  - ``generation_body(session)`` — Code generation routing
+
+``src/execution.py``
+  Operation execution engine:
+
+  - ``execute_planned_operations(session, request, default_mode, matched_intent)``
+  - ``execute_model_operation(session, request, operation, default_mode, ...)``
+  - ``handle_file_attachments(session, request)``
+
+``src/confirmation.py``
+  Pending confirmation flow handlers:
+
+  - ``handle_pending_system_confirmation(session, request)``
+  - ``handle_pending_gui_choice(session, request)``
+
+``src/session_helpers.py``
+  Protocol-agnostic reply utilities:
+
+  - ``reply_payload(session, result)``
+  - ``reply_text(session, text)``
+
+``src/quality_review.py``
+  Post-generation quality analysis:
+
+  - ``review_generated_model(session, request, diagram_type, result)``
+  - ``consolidate_suggestions(session)``
+
+Protocol Layer
+--------------
+
+``src/protocol/types.py``
+  Protocol data classes:
+
+  - ``AssistantRequest`` — Canonical request object
+  - ``WorkspaceContext`` — Editor state snapshot
+  - ``FileAttachment`` — Uploaded file metadata
+  - ``SUPPORTED_DIAGRAM_TYPES`` — Set of valid diagram type strings
+
+``src/protocol/adapters.py``
+  Payload extraction and normalization:
+
+  - ``parse_assistant_request(session)`` — Main entry point
+  - ``extract_event_payload(session)`` — Extract from BESSER event
+  - ``parse_v2_payload(payload)`` — Parse v2 protocol format
+  - ``normalize_diagram_type(diagram_type)`` — Normalize type strings
+  - ``strip_diagram_prefix(message)`` — Remove diagram type prefixes
+
+Orchestration Layer
+-------------------
+
+``src/orchestrator/__init__.py``
+  Re-exports for convenience.
+
+``src/orchestrator/request_planner.py``
+  Multi-operation planning:
+
+  - ``plan_assistant_operations(session, request, default_mode, matched_intent)``
+  - ``_should_use_llm_planner(message)`` — Complexity check
+  - ``_fallback_operations(request, default_mode)`` — Heuristic operations
+  - ``_normalize_operations(operations)`` — Deduplicate and validate
+
+``src/orchestrator/workspace_orchestrator.py``
+  Diagram type targeting:
+
+  - ``resolve_diagram_type(message, context)`` — Three-level resolution
+  - ``score_implicit_type(message)`` — Semantic token scoring
+  - ``KEYWORD_TARGETS`` — Explicit keyword-to-type mappings
+  - ``IMPLICIT_WEIGHTS`` — Token/weight scoring tables
+
+Diagram Handlers
 ----------------
 
-- ``src/diagram_handlers/core``: abstract base handler + deterministic layout engine.
-- ``src/diagram_handlers/types``: concrete handlers by diagram type.
-- ``src/diagram_handlers/registry``: factory and metadata.
-- ``src/diagram_handlers/*.py``: backward-compatible import shims.
+``src/diagram_handlers/core/base_handler.py``
+  Abstract base handler with shared infrastructure:
 
-Auxiliary handlers and utilities
---------------------------------
+  - ``BaseDiagramHandler`` (abstract class)
+  - ``predict_with_retry(system_prompt, user_prompt)``
+  - ``predict_two_pass(system_prompt, user_prompt)``
+  - ``validate_and_refine(spec, system_prompt)``
+  - ``repair_json_response(raw_text)``
+  - ``apply_single_layout(spec, existing_model)``
+  - ``apply_system_layout(spec, existing_model)``
 
-- ``src/handlers/generation_handler.py``
-- ``src/handlers/file_conversion_handler.py``
-- ``src/utilities/*``
+``src/diagram_handlers/core/layout_engine.py``
+  Deterministic canvas layout:
+
+  - ``apply_layout(spec, diagram_type, mode, existing_model)``
+  - ``compute_canvas_bounds(element_count)``
+  - ``compute_grid_shape(element_count)``
+  - ``find_free_position(placed_rects, element_size)``
+
+``src/diagram_handlers/registry/factory.py``
+  Handler factory:
+
+  - ``DiagramHandlerFactory(llm)``
+  - ``get_handler(diagram_type) -> Optional[BaseDiagramHandler]``
+  - ``get_supported_types() -> list[str]``
+  - ``is_supported(diagram_type) -> bool``
+
+``src/diagram_handlers/registry/metadata.py``
+  Per-type display metadata (labels, descriptions).
+
+``src/diagram_handlers/types/class_diagram_handler.py``
+  - ``ClassDiagramHandler(llm)``
+  - Domain pattern detection and injection
+  - Two-pass generation with validation loop
+
+``src/diagram_handlers/types/state_machine_handler.py``
+  - ``StateMachineHandler(llm)``
+  - State pattern detection and injection
+  - Initial/final/orphan state validation
+
+``src/diagram_handlers/types/object_diagram_handler.py``
+  - ``ObjectDiagramHandler(llm)``
+  - Class reference catalog extraction
+  - Heuristic value generation
+
+``src/diagram_handlers/types/agent_diagram_handler.py``
+  - ``AgentDiagramHandler(llm)``
+  - 7-step normalization pipeline
+
+``src/diagram_handlers/types/gui_nocode_diagram_handler.py``
+  - ``GUINoCodeDiagramHandler(llm)``
+  - Auto-generate and LLM generation modes
+
+``src/diagram_handlers/types/quantum_circuit_diagram_handler.py``
+  - ``QuantumCircuitDiagramHandler(llm)``
+  - 60+ gate symbol mappings
+
+Auxiliary Handlers
+------------------
+
+``src/handlers/generation_handler.py``
+  Code generation routing:
+
+  - ``handle_generation_request(session, request)``
+  - ``match_generator_type(message)``
+  - ``parse_inline_config(message, generator_type)``
+  - ``GENERATOR_KEYWORDS`` — Keyword-to-generator mappings
+  - ``GENERATOR_PREREQUISITES`` — Required diagram types per generator
+
+``src/handlers/file_conversion_handler.py``
+  File upload conversion:
+
+  - ``handle_file_attachments(session, request)``
+  - ``convert_plantuml(content)``
+  - ``convert_knowledge_graph(content)``
+  - ``convert_image(content_b64, mime_type)``
+  - ``convert_generic_text(content)``
+
+Utilities
+---------
+
+``src/utilities/model_resolution.py``
+  Target model resolution:
+
+  - ``resolve_target_model(request, target_type)``
+  - ``resolve_class_diagram(request)``
+  - ``resolve_object_reference_diagram(request, target_model)``
+  - ``count_reference_classes(reference_diagram)``
+
+``src/utilities/model_context.py``
+  Model summarization:
+
+  - ``compact_model_summary(model, diagram_type)``
+  - ``detailed_model_summary(request)``
+
+``src/utilities/workspace_context.py``
+  LLM context block builder:
+
+  - ``build_workspace_context_block(request, target_diagram_type, target_model)``
+  - ``record_session_action(session, action_label)``
+
+``src/utilities/class_metadata.py``
+  Class attribute/method extraction for GUI binding:
+
+  - ``extract_class_metadata(model)``
+
+``src/utilities/layout_helpers.py``
+  Position extraction and anchor lines:
+
+  - ``extract_element_position(element)``
+  - ``build_layout_anchor_lines(model, diagram_type)``
+  - ``is_primary_layout_element(element, diagram_type)``
+
+``src/utilities/request_builders.py``
+  Derived request factories:
+
+  - ``build_request_for_target(request, target_type)``
+  - ``build_generation_request(request, generator_type, config, message_override)``
+
+``src/utilities/model_helpers.py``
+  Backward-compatibility re-exporter for moved functions.
+
+Knowledge Libraries
+-------------------
+
+``src/domain_patterns.py``
+  10 expert domain patterns for ClassDiagram generation:
+
+  - ``DOMAIN_PATTERNS`` — Dictionary of domain definitions
+  - ``detect_domain_pattern(message)`` — Match message to domain
+  - ``format_pattern_for_prompt(pattern)`` — Format for LLM injection
+
+``src/state_patterns.py``
+  8 behavioral lifecycle patterns for StateMachine generation:
+
+  - ``STATE_PATTERNS`` — Dictionary of pattern definitions
+  - ``detect_state_pattern(message)`` — Match message to pattern
+  - ``format_state_pattern_for_prompt(pattern)`` — Format for LLM injection
+
+Routing
+-------
+
+``src/routing/intents.py``
+  Intent name constants:
+
+  - ``GENERATION_INTENT_NAME`` — The string name for the generation intent
+
+Test Infrastructure
+-------------------
+
+``tests/conftest.py``
+  Shared test fixtures:
+
+  - ``FakeSession`` — Lightweight session stand-in
+  - ``FakeLLM`` — Stub LLM with round-robin responses
+  - ``make_v2_payload(message, ...)`` — Build v2 protocol payloads
+  - ``make_session(message, ...)`` — Pre-loaded session fixture
+  - ``MINIMAL_CLASS_MODEL`` — Fixture model with one class
+  - ``EMPTY_CLASS_MODEL`` — Empty model fixture
