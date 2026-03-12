@@ -545,11 +545,30 @@ def _can_run_parallel(operations: List[dict]) -> Tuple[List[List[dict]], List[di
     model_ops = [op for op in operations if isinstance(op, dict) and op.get("type") == "model"]
     gen_ops = [op for op in operations if isinstance(op, dict) and op.get("type") == "generation"]
 
+    # Diagram types that depend on another type being completed first.
+    # When both sides of a dependency are present, all model ops must run
+    # sequentially so that confirmations (replace/keep, GUI choice) are
+    # resolved one at a time.
+    _DIAGRAM_DEPENDENCIES: Dict[str, set] = {
+        "GUINoCodeDiagram": {"ClassDiagram"},
+        "ObjectDiagram": {"ClassDiagram"},
+    }
+
     # Model ops for different diagram types are independent
     independent_model_groups: Dict[str, List[dict]] = {}
     for op in model_ops:
         dt = op.get("diagramType", "unknown")
         independent_model_groups.setdefault(dt, []).append(op)
+
+    # If any planned type depends on another planned type, fall back to
+    # fully sequential execution to avoid asking two questions at once.
+    all_types = set(independent_model_groups.keys())
+    has_dependency = any(
+        _DIAGRAM_DEPENDENCIES.get(dtype, set()) & all_types
+        for dtype in all_types
+    )
+    if has_dependency:
+        return [model_ops], gen_ops
 
     return list(independent_model_groups.values()), gen_ops
 
@@ -741,13 +760,19 @@ def _store_remaining_ops(
 ) -> None:
     """Persist remaining operations alongside a pending confirmation."""
     remaining = [op for op in remaining if isinstance(op, dict)]
-    if remaining:
-        pending = session.get('pending_complete_system')
+    if not remaining:
+        return
+
+    # Check both pending types — the operation that returned None may have
+    # stored either a complete-system confirmation or a GUI-choice prompt.
+    for key in ('pending_complete_system', 'pending_gui_choice'):
+        pending = session.get(key)
         if isinstance(pending, dict):
             pending['remaining_operations'] = remaining
             pending['original_message'] = request.message
-            session.set('pending_complete_system', pending)
+            session.set(key, pending)
             logger.info(
                 f"[PlannedOps] Stored {len(remaining)} remaining operation(s) "
-                f"alongside pending confirmation"
+                f"alongside {key}"
             )
+            return

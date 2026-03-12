@@ -109,6 +109,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
         return False  # Let normal state body handle the new request
 
     if wants_auto:
+        remaining_ops = pending.get('remaining_operations')
         session.set('pending_gui_choice', None)
         logger.info("[GUIChoice] User chose AUTO-GENERATE (deterministic)")
         reply_payload(session, {
@@ -120,6 +121,14 @@ def handle_pending_gui_choice(session: Session) -> bool:
                 "Each class will get its own page with a data table and method buttons."
             ),
         })
+        # Resume any remaining operations from the original plan
+        if isinstance(remaining_ops, list) and remaining_ops:
+            logger.info(f"[GUIChoice] Resuming {len(remaining_ops)} remaining op(s) after auto-generate")
+            _resume_remaining_ops(
+                session, remaining_ops, request,
+                'GUINoCodeDiagram', 'complete_system',
+                pending.get('operation_request', ''), pending,
+            )
         return True
 
     # LLM-driven path
@@ -127,6 +136,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
     stored_operation = pending.get('operation', {})
     stored_default_mode = pending.get('default_mode', 'complete_system')
     stored_replace = pending.get('_replace_existing')
+    remaining_ops = pending.get('remaining_operations')
 
     # Restore the original request message for the operation
     working_request = request
@@ -149,6 +159,16 @@ def handle_pending_gui_choice(session: Session) -> bool:
         reply_message(
             session,
             "Something went wrong. You can try again by saying **auto** or **llm**, or **cancel** to abort.",
+        )
+        return True
+
+    # Resume any remaining operations from the original plan
+    if isinstance(remaining_ops, list) and remaining_ops:
+        logger.info(f"[GUIChoice] Resuming {len(remaining_ops)} remaining op(s) after LLM generation")
+        _resume_remaining_ops(
+            session, remaining_ops, working_request,
+            'GUINoCodeDiagram', stored_default_mode,
+            pending.get('operation_request', ''), pending,
         )
 
     return True
@@ -325,22 +345,26 @@ def _resume_remaining_ops(
                     # This operation stored a new pending confirmation.
                     # Save the rest of the remaining ops so they can be
                     # resumed after the user responds to the new prompt.
-                    new_pending = session.get('pending_complete_system')
-                    if isinstance(new_pending, dict):
-                        leftover = [
-                            op for op in remaining_ops[op_idx + 1:]
-                            if isinstance(op, dict)
-                        ]
-                        if leftover:
-                            new_pending['remaining_operations'] = leftover
-                            new_pending['original_message'] = (
-                                pending.get('original_message', stored_message)
-                            )
-                            session.set('pending_complete_system', new_pending)
-                            logger.info(
-                                f"[PendingConfirm] Nested pending stored with "
-                                f"{len(leftover)} remaining op(s)"
-                            )
+                    leftover = [
+                        op for op in remaining_ops[op_idx + 1:]
+                        if isinstance(op, dict)
+                    ]
+                    if leftover:
+                        # Check both pending types — the operation may have
+                        # stored either a system confirmation or a GUI choice.
+                        for key in ('pending_complete_system', 'pending_gui_choice'):
+                            new_pending = session.get(key)
+                            if isinstance(new_pending, dict):
+                                new_pending['remaining_operations'] = leftover
+                                new_pending['original_message'] = (
+                                    pending.get('original_message', stored_message)
+                                )
+                                session.set(key, new_pending)
+                                logger.info(
+                                    f"[PendingConfirm] Nested pending stored in {key} with "
+                                    f"{len(leftover)} remaining op(s)"
+                                )
+                                break
                     break
                 if isinstance(result, str) and result:
                     resume_request = build_request_for_target(resume_request, result)
