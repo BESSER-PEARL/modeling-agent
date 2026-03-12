@@ -198,7 +198,14 @@ def _fallback_diagram_from_context(request: AssistantRequest, last_intent: Optio
         diagrams = snapshot.get("diagrams")
         if isinstance(diagrams, dict):
             for preferred in FALLBACK_PRIORITY:
-                if preferred in diagrams:
+                payload = diagrams.get(preferred)
+                if payload is None:
+                    continue
+                if isinstance(payload, list):
+                    # Multi-tab: only count as present when at least one tab has content
+                    if any(isinstance(d, dict) and isinstance(d.get("model"), dict) and d["model"] for d in payload):
+                        return preferred
+                elif isinstance(payload, dict):
                     return preferred
 
     request_type = _normalize_context_type(request.diagram_type)
@@ -264,7 +271,25 @@ def resolve_diagram_id(request: AssistantRequest, target_diagram_type: str) -> O
         return None
 
     target_diagram = diagrams.get(target_diagram_type)
-    if isinstance(target_diagram, dict):
+    if isinstance(target_diagram, list):
+        # Multi-tab: use the active index for this type, fall back to first entry.
+        idx = (
+            request.context.get_active_index(target_diagram_type)
+            if hasattr(request.context, "get_active_index")
+            else 0
+        )
+        # Try the active index first.
+        if 0 <= idx < len(target_diagram) and isinstance(target_diagram[idx], dict):
+            diagram_id = target_diagram[idx].get("id")
+            if isinstance(diagram_id, str):
+                return diagram_id
+        # Fallback: return the id of the first dict entry found.
+        for d in target_diagram:
+            if isinstance(d, dict):
+                diagram_id = d.get("id")
+                if isinstance(diagram_id, str):
+                    return diagram_id
+    elif isinstance(target_diagram, dict):
         diagram_id = target_diagram.get("id")
         if isinstance(diagram_id, str):
             return diagram_id

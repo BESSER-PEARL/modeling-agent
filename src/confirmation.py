@@ -40,6 +40,10 @@ KEEP_KEYWORDS = [
     "don't remove", 'do not remove',
 ]
 CANCEL_KEYWORDS = ['cancel', 'never mind', 'forget', 'stop', 'abort']
+NEW_TAB_KEYWORDS = [
+    'new tab', 'new diagram', 'another tab', 'separate', 'own tab',
+    'different tab', 'create new', 'add tab', 'fresh tab',
+]
 
 # Short words that must match as whole words to avoid false positives
 # (e.g. "no" should not match inside "nothing", "note", "another").
@@ -179,22 +183,22 @@ def handle_pending_system_confirmation(session: Session) -> bool:
         reply_message(session, "Cancelled. Your existing model is unchanged.")
         return True
 
+    wants_new_tab = pending.get('can_add_tab', False) and any(keyword_matches(w, user_msg) for w in NEW_TAB_KEYWORDS)
     wants_replace = any(keyword_matches(w, user_msg) for w in REPLACE_KEYWORDS)
     wants_keep = any(keyword_matches(w, user_msg) for w in KEEP_KEYWORDS)
 
-    if not wants_replace and not wants_keep:
+    if not wants_replace and not wants_keep and not wants_new_tab:
         # The user's message doesn't look like a confirmation answer.
         # Treat it as a brand-new request: clear the pending state and let
         # the normal processing pipeline handle it.
         logger.info(
-            "[PendingConfirm] Message doesn't match replace/keep/cancel — "
+            "[PendingConfirm] Message doesn't match replace/keep/new-tab/cancel — "
             "treating as new request, clearing pending state"
         )
         session.set('pending_complete_system', None)
         return False  # Let normal state body handle the new request
 
     # --- User answered: execute the stored creation -----------------------
-    replace_existing = wants_replace
 
     # Re-execute the stored operation with the original parameters.
     stored_message = pending.get('message', '')
@@ -205,6 +209,45 @@ def handle_pending_system_confirmation(session: Session) -> bool:
     # Rebuild a minimal request that carries the stored message.
     working_request = request
     working_request.message = stored_message
+
+    # ── New tab path ──────────────────────────────────────────────────
+    if wants_new_tab:
+        logger.info(f"[PendingConfirm] User chose NEW TAB for {stored_diagram_type}")
+        # Execute the creation with _create_new_tab=True so the frontend
+        # creates a new tab before injecting the model (all in one payload).
+        try:
+            execute_model_operation(
+                session=session,
+                request=working_request,
+                operation=stored_operation,
+                default_mode=stored_default_mode,
+                _skip_existing_check=True,
+                _replace_existing=True,  # New tab is empty, replace is fine
+                _create_new_tab=True,
+            )
+            session.set('pending_complete_system', None)
+        except Exception as exc:
+            logger.error(f"[PendingConfirm] Error after new tab creation: {exc}", exc_info=True)
+            reply_message(session, "Something went wrong creating the new tab. Please try again.")
+            return True
+
+        # Resume remaining operations same as replace/keep path
+        remaining_ops = pending.get('remaining_operations')
+        if isinstance(remaining_ops, list) and remaining_ops:
+            logger.info(
+                f"[PendingConfirm] Resuming {len(remaining_ops)} remaining operation(s) "
+                f"after new tab creation"
+            )
+            _resume_remaining_ops(
+                session, remaining_ops, working_request,
+                stored_diagram_type, stored_default_mode, stored_message, pending,
+            )
+
+        _flush_pending_suggestions(session)
+        return True
+
+    # ── Replace / Keep path ───────────────────────────────────────────
+    replace_existing = wants_replace
 
     if replace_existing:
         logger.info(f"[PendingConfirm] User chose REPLACE for {stored_diagram_type}")
@@ -225,7 +268,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
         logger.error(f"[PendingConfirm] Error executing stored operation: {exc}", exc_info=True)
         reply_message(
             session,
-            "Something went wrong. You can try again by saying **replace** or **keep**, or **cancel** to abort.",
+            "Something went wrong. You can try again by saying **replace**, **keep**, or **new tab**, or **cancel** to abort.",
         )
         return True
 
@@ -236,78 +279,95 @@ def handle_pending_system_confirmation(session: Session) -> bool:
             f"[PendingConfirm] Resuming {len(remaining_ops)} remaining operation(s) "
             f"from original plan"
         )
-        from utilities.model_helpers import build_request_for_target
-
-        # Rebuild the working request so subsequent operations see the
-        # just-created diagram in context.
-        resume_request = working_request
-        if stored_diagram_type:
-            resume_request = build_request_for_target(working_request, stored_diagram_type)
-
-        for op_idx, remaining_op in enumerate(remaining_ops):
-            if not isinstance(remaining_op, dict):
-                continue
-            op_type = remaining_op.get('type')
-            if op_type == 'model':
-                try:
-                    result = execute_model_operation(
-                        session=session,
-                        request=resume_request,
-                        operation=remaining_op,
-                        default_mode=stored_default_mode,
-                    )
-                    if result is None:
-                        # This operation stored a new pending confirmation.
-                        # Save the rest of the remaining ops so they can be
-                        # resumed after the user responds to the new prompt.
-                        new_pending = session.get('pending_complete_system')
-                        if isinstance(new_pending, dict):
-                            leftover = [
-                                op for op in remaining_ops[op_idx + 1:]
-                                if isinstance(op, dict)
-                            ]
-                            if leftover:
-                                new_pending['remaining_operations'] = leftover
-                                new_pending['original_message'] = (
-                                    pending.get('original_message', stored_message)
-                                )
-                                session.set('pending_complete_system', new_pending)
-                                logger.info(
-                                    f"[PendingConfirm] Nested pending stored with "
-                                    f"{len(leftover)} remaining op(s)"
-                                )
-                        break
-                    if isinstance(result, str) and result:
-                        resume_request = build_request_for_target(resume_request, result)
-                except Exception as exc:
-                    logger.error(
-                        f"[PendingConfirm] Error executing remaining operation "
-                        f"{remaining_op}: {exc}",
-                        exc_info=True,
-                    )
-            elif op_type == 'generation':
-                from handlers.generation_handler import handle_generation_request
-                from utilities.model_helpers import build_generation_request
-                from session_helpers import reply_payload
-
-                gen_type = remaining_op.get('generatorType')
-                if isinstance(gen_type, str) and gen_type:
-                    gen_req = build_generation_request(
-                        resume_request,
-                        generator_type=gen_type,
-                        config=remaining_op.get('config') if isinstance(remaining_op.get('config'), dict) else {},
-                    )
-                    try:
-                        gen_response = handle_generation_request(session, gen_req)
-                        if isinstance(gen_response, dict):
-                            reply_payload(session, gen_response)
-                    except Exception as exc:
-                        logger.error(
-                            f"[PendingConfirm] Error executing remaining generation: {exc}",
-                            exc_info=True,
-                        )
+        _resume_remaining_ops(
+            session, remaining_ops, working_request,
+            stored_diagram_type, stored_default_mode, stored_message, pending,
+        )
 
     # Flush any pending quality suggestions stored by execute_model_operation
     _flush_pending_suggestions(session)
 
     return True
+
+
+def _resume_remaining_ops(
+    session: Session,
+    remaining_ops: list,
+    working_request: Any,
+    stored_diagram_type: str,
+    stored_default_mode: str,
+    stored_message: str,
+    pending: dict,
+) -> None:
+    """Execute remaining operations that were queued behind a pending confirmation."""
+    from execution import execute_model_operation
+    from utilities.model_helpers import build_request_for_target
+
+    # Rebuild the working request so subsequent operations see the
+    # just-created diagram in context.
+    resume_request = working_request
+    if stored_diagram_type:
+        resume_request = build_request_for_target(working_request, stored_diagram_type)
+
+    for op_idx, remaining_op in enumerate(remaining_ops):
+        if not isinstance(remaining_op, dict):
+            continue
+        op_type = remaining_op.get('type')
+        if op_type == 'model':
+            try:
+                result = execute_model_operation(
+                    session=session,
+                    request=resume_request,
+                    operation=remaining_op,
+                    default_mode=stored_default_mode,
+                )
+                if result is None:
+                    # This operation stored a new pending confirmation.
+                    # Save the rest of the remaining ops so they can be
+                    # resumed after the user responds to the new prompt.
+                    new_pending = session.get('pending_complete_system')
+                    if isinstance(new_pending, dict):
+                        leftover = [
+                            op for op in remaining_ops[op_idx + 1:]
+                            if isinstance(op, dict)
+                        ]
+                        if leftover:
+                            new_pending['remaining_operations'] = leftover
+                            new_pending['original_message'] = (
+                                pending.get('original_message', stored_message)
+                            )
+                            session.set('pending_complete_system', new_pending)
+                            logger.info(
+                                f"[PendingConfirm] Nested pending stored with "
+                                f"{len(leftover)} remaining op(s)"
+                            )
+                    break
+                if isinstance(result, str) and result:
+                    resume_request = build_request_for_target(resume_request, result)
+            except Exception as exc:
+                logger.error(
+                    f"[PendingConfirm] Error executing remaining operation "
+                    f"{remaining_op}: {exc}",
+                    exc_info=True,
+                )
+        elif op_type == 'generation':
+            from handlers.generation_handler import handle_generation_request
+            from utilities.model_helpers import build_generation_request
+            from session_helpers import reply_payload
+
+            gen_type = remaining_op.get('generatorType')
+            if isinstance(gen_type, str) and gen_type:
+                gen_req = build_generation_request(
+                    resume_request,
+                    generator_type=gen_type,
+                    config=remaining_op.get('config') if isinstance(remaining_op.get('config'), dict) else {},
+                )
+                try:
+                    gen_response = handle_generation_request(session, gen_req)
+                    if isinstance(gen_response, dict):
+                        reply_payload(session, gen_response)
+                except Exception as exc:
+                    logger.error(
+                        f"[PendingConfirm] Error executing remaining generation: {exc}",
+                        exc_info=True,
+                    )

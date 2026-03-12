@@ -400,17 +400,34 @@ def _build_full_project_summary(request: AssistantRequest) -> str:
         diagrams = snapshot.get("diagrams")
         if isinstance(diagrams, dict):
             for dt, payload in diagrams.items():
-                if not isinstance(payload, dict) or dt in summarised:
-                    continue
-                model = payload.get("model")
-                if not isinstance(model, dict):
+                if dt in summarised:
                     continue
                 dt_info = get_diagram_type_info(dt)
-                summary = detailed_model_summary(model, dt)
-                if summary:
-                    sections.append(
-                        f"### {dt_info['name']}\n{summary}"
-                    )
+                if isinstance(payload, list):
+                    # Multi-tab: summarise each tab that has a model
+                    tabs_with_model = [
+                        d for d in payload
+                        if isinstance(d, dict) and isinstance(d.get("model"), dict)
+                    ]
+                    for i, tab in enumerate(tabs_with_model):
+                        model = tab["model"]
+                        tab_title = tab.get("title", "").strip()
+                        summary = detailed_model_summary(model, dt)
+                        if summary:
+                            label = dt_info["name"]
+                            if tab_title:
+                                label = f"{dt_info['name']} — {tab_title}"
+                            elif len(tabs_with_model) > 1:
+                                label = f"{dt_info['name']} (tab {i})"
+                            sections.append(f"### {label}\n{summary}")
+                    summarised.add(dt)
+                elif isinstance(payload, dict):
+                    model = payload.get("model")
+                    if not isinstance(model, dict):
+                        continue
+                    summary = detailed_model_summary(model, dt)
+                    if summary:
+                        sections.append(f"### {dt_info['name']}\n{summary}")
                     summarised.add(dt)
 
     if not sections:
@@ -534,7 +551,13 @@ def generation_body(session: Session):
     if isinstance(snapshot, dict):
         diagrams = snapshot.get("diagrams")
         if isinstance(diagrams, dict):
-            avail_diagrams = list(diagrams.keys())
+            for dtype, value in diagrams.items():
+                if isinstance(value, list):
+                    # Multi-tab: only include type when at least one tab has a model
+                    if any(isinstance(d, dict) and d.get("model") for d in value):
+                        avail_diagrams.append(dtype)
+                elif isinstance(value, dict) and value.get("model"):
+                    avail_diagrams.append(dtype)
     gen_suggestions = get_suggested_actions(
         diagram_type="",
         operation_mode="generation",
@@ -616,16 +639,15 @@ def workflow_body(session: Session):
     # Also check the project snapshot for the model we just created
     snapshot = request.context.project_snapshot
     if not active_model and isinstance(snapshot, dict):
-        diagrams = snapshot.get("diagrams")
-        if isinstance(diagrams, dict):
-            # Prefer ClassDiagram as primary validation target
-            for dt in ["ClassDiagram", active_diagram_type]:
-                if dt in diagrams and isinstance(diagrams[dt], dict):
-                    candidate = diagrams[dt].get("model")
-                    if isinstance(candidate, dict):
-                        active_model = candidate
-                        active_diagram_type = dt
-                        break
+        # Prefer ClassDiagram as primary validation target
+        for dt in ["ClassDiagram", active_diagram_type]:
+            diagram = request.context.get_diagram_from_snapshot(dt)
+            if isinstance(diagram, dict):
+                candidate = diagram.get("model")
+                if isinstance(candidate, dict):
+                    active_model = candidate
+                    active_diagram_type = dt
+                    break
 
     validation_result = {"valid": True, "errors": [], "warnings": []}
     if isinstance(active_model, dict) and active_model:

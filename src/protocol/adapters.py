@@ -113,6 +113,21 @@ def _derive_diagram_summaries_from_snapshot(project_snapshot: Any) -> list[Dict[
     for diagram_type, payload in diagrams.items():
         if not isinstance(diagram_type, str):
             continue
+        # New format: payload is an array of diagram tabs
+        if isinstance(payload, list):
+            for item in payload:
+                if not isinstance(item, dict):
+                    summaries.append({"diagramType": diagram_type})
+                    continue
+                summaries.append(
+                    {
+                        "diagramType": diagram_type,
+                        "diagramId": item.get("id") if isinstance(item.get("id"), str) else None,
+                        "title": item.get("title") if isinstance(item.get("title"), str) else None,
+                    }
+                )
+            continue
+        # Legacy format: payload is a single dict
         if not isinstance(payload, dict):
             summaries.append({"diagramType": diagram_type})
             continue
@@ -180,12 +195,16 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         else _derive_diagram_summaries_from_snapshot(project_snapshot)
     )
 
+    raw_indices = context_payload.get("currentDiagramIndices")
+    current_diagram_indices = raw_indices if isinstance(raw_indices, dict) else None
+
     context = WorkspaceContext(
         active_diagram_type=active_diagram_type,
         active_diagram_id=context_payload.get("activeDiagramId"),
         active_model=current_model,
         project_snapshot=project_snapshot,
         diagram_summaries=diagram_summaries,
+        current_diagram_indices=current_diagram_indices,
     )
 
     # ── Parse file attachments ──

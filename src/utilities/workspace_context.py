@@ -66,12 +66,33 @@ def build_workspace_context_block(
         if isinstance(diagrams, dict):
             diagram_lines: List[str] = []
             for dt, payload in diagrams.items():
-                if not isinstance(payload, dict):
-                    continue
-                title = payload.get("title")
-                model = payload.get("model")
-                title_part = f" ({title})" if isinstance(title, str) and title.strip() else ""
-                diagram_lines.append(f"- {dt}{title_part}: {compact_model_summary(model, dt)}")
+                if isinstance(payload, list):
+                    # New format: array of tabs
+                    tab_count = len(payload)
+                    if tab_count == 0:
+                        continue
+                    active_idx = request.context.get_active_index(dt)
+                    active_tab = payload[active_idx] if 0 <= active_idx < tab_count else payload[0]
+                    active_title = (
+                        active_tab.get("title")
+                        if isinstance(active_tab, dict) and isinstance(active_tab.get("title"), str)
+                        else None
+                    )
+                    active_model = active_tab.get("model") if isinstance(active_tab, dict) else None
+                    if tab_count == 1:
+                        title_part = f" ({active_title})" if active_title and active_title.strip() else ""
+                        diagram_lines.append(f"- {dt}{title_part}: {compact_model_summary(active_model, dt)}")
+                    else:
+                        active_label = f"active: '{active_title.strip()}'" if active_title and active_title.strip() else f"active tab {active_idx}"
+                        diagram_lines.append(
+                            f"- {dt} ({tab_count} tabs, {active_label}): {compact_model_summary(active_model, dt)}"
+                        )
+                elif isinstance(payload, dict):
+                    # Legacy format: single dict
+                    title = payload.get("title")
+                    model = payload.get("model")
+                    title_part = f" ({title})" if isinstance(title, str) and title.strip() else ""
+                    diagram_lines.append(f"- {dt}{title_part}: {compact_model_summary(model, dt)}")
             if diagram_lines:
                 lines.append("Project diagrams overview:")
                 lines.extend(diagram_lines[:10])
@@ -80,7 +101,7 @@ def build_workspace_context_block(
             # When the target is NOT a ClassDiagram, include the ClassDiagram
             # summary as reference so the LLM can produce consistent models.
             cross_ref = _build_cross_diagram_reference(
-                target_diagram_type, diagrams,
+                target_diagram_type, diagrams, request.context,
             )
             if cross_ref:
                 lines.append(cross_ref)
@@ -107,6 +128,7 @@ def build_workspace_context_block(
 def _build_cross_diagram_reference(
     target_diagram_type: str,
     diagrams: Dict[str, Any],
+    context: Optional[Any] = None,
 ) -> str:
     """Build cross-diagram reference context.
 
@@ -125,10 +147,19 @@ def _build_cross_diagram_reference(
         return ""
 
     class_payload = diagrams.get("ClassDiagram")
-    if not isinstance(class_payload, dict):
+
+    # New format: array of tabs — pick the active one via context
+    if isinstance(class_payload, list):
+        if not class_payload:
+            return ""
+        active_idx = context.get_active_index("ClassDiagram") if context is not None else 0
+        tab = class_payload[active_idx] if 0 <= active_idx < len(class_payload) else class_payload[0]
+        class_model = tab.get("model") if isinstance(tab, dict) else None
+    elif isinstance(class_payload, dict):
+        class_model = class_payload.get("model")
+    else:
         return ""
 
-    class_model = class_payload.get("model")
     if not isinstance(class_model, dict):
         return ""
 

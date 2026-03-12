@@ -29,6 +29,7 @@ def build_request_for_target(
         active_model=resolved_model,
         project_snapshot=base_request.context.project_snapshot,
         diagram_summaries=base_request.context.diagram_summaries,
+        current_diagram_indices=base_request.context.current_diagram_indices,
     )
 
     raw_payload = dict(base_request.raw_payload or {})
@@ -113,6 +114,7 @@ def build_generation_request(
             active_model=active_model,
             project_snapshot=base_request.context.project_snapshot,
             diagram_summaries=base_request.context.diagram_summaries,
+            current_diagram_indices=base_request.context.current_diagram_indices,
         ),
         raw_payload=raw_payload,
     )

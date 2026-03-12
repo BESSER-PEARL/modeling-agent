@@ -95,6 +95,16 @@ def _build_context_summary(request: AssistantRequest) -> str:
     if context.active_diagram_id:
         lines.append(f"Active diagram id: {context.active_diagram_id}")
 
+    # Surface the active tab index for each diagram type so the planner is
+    # aware that multiple tabs may exist and which one is currently visible.
+    if context.current_diagram_indices:
+        index_parts = [
+            f"{dt}=tab{idx}"
+            for dt, idx in context.current_diagram_indices.items()
+        ]
+        if index_parts:
+            lines.append(f"Active tab indices: {', '.join(index_parts)}")
+
     snapshot = context.project_snapshot
     if isinstance(snapshot, dict):
         project_name = snapshot.get("name")
@@ -105,13 +115,32 @@ def _build_context_summary(request: AssistantRequest) -> str:
         if isinstance(diagrams, dict):
             summarized: List[str] = []
             for diagram_type, diagram_payload in diagrams.items():
-                if not isinstance(diagram_payload, dict):
-                    continue
-                title = diagram_payload.get("title")
-                label = diagram_type
-                if isinstance(title, str) and title.strip():
-                    label = f"{diagram_type} ({title.strip()})"
-                summarized.append(label)
+                if isinstance(diagram_payload, list):
+                    # Multi-tab: each entry in the list is a diagram tab
+                    tabs = [d for d in diagram_payload if isinstance(d, dict)]
+                    if not tabs:
+                        continue
+                    if len(tabs) == 1:
+                        title = tabs[0].get("title")
+                        label = diagram_type
+                        if isinstance(title, str) and title.strip():
+                            label = f"{diagram_type} ({title.strip()})"
+                        summarized.append(label)
+                    else:
+                        tab_labels = []
+                        for i, tab in enumerate(tabs):
+                            title = tab.get("title")
+                            if isinstance(title, str) and title.strip():
+                                tab_labels.append(f'tab {i}: "{title.strip()}"')
+                            else:
+                                tab_labels.append(f"tab {i}")
+                        summarized.append(f"{diagram_type} ({len(tabs)} tabs: {', '.join(tab_labels)})")
+                elif isinstance(diagram_payload, dict):
+                    title = diagram_payload.get("title")
+                    label = diagram_type
+                    if isinstance(title, str) and title.strip():
+                        label = f"{diagram_type} ({title.strip()})"
+                    summarized.append(label)
             if summarized:
                 lines.append("Available diagrams: " + ", ".join(summarized[:8]))
 
@@ -432,13 +461,26 @@ def _try_heuristic_decomposition(
 # ---------------------------------------------------------------------------
 
 def _get_workspace_diagram_types(request: AssistantRequest) -> Set[str]:
-    """Return the set of diagram types already present in the workspace."""
+    """Return the set of diagram types already present (with content) in the workspace.
+
+    For multi-tab arrays, a type is considered present only when at least one
+    tab contains a non-empty model dict.  This prevents spurious prerequisite
+    satisfaction when the frontend sends an empty placeholder tab.
+    """
     existing: Set[str] = set()
     snapshot = request.context.project_snapshot
     if isinstance(snapshot, dict):
         diagrams = snapshot.get("diagrams")
         if isinstance(diagrams, dict):
-            existing.update(diagrams.keys())
+            for diagram_type, payload in diagrams.items():
+                if isinstance(payload, list):
+                    # Multi-tab: type is present only when ≥1 tab has a model
+                    for tab in payload:
+                        if isinstance(tab, dict) and isinstance(tab.get("model"), dict) and tab["model"]:
+                            existing.add(diagram_type)
+                            break
+                elif isinstance(payload, dict):
+                    existing.add(diagram_type)
     for summary in (request.context.diagram_summaries or []):
         if isinstance(summary, dict):
             dt = summary.get("diagramType")

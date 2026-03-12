@@ -85,6 +85,7 @@ def execute_model_operation(
     _skip_existing_check: bool = False,
     _replace_existing: Optional[bool] = None,
     _skip_gui_choice: bool = False,
+    _create_new_tab: bool = False,
 ) -> Optional[str]:
     """Execute a single model operation (create, modify, etc.).
 
@@ -125,20 +126,39 @@ def execute_model_operation(
             # always uses complete_system, not whatever the LLM planner
             # originally returned (which may have been missing or wrong).
             stored_operation = {**operation, 'mode': operation_mode}
+
+            # Count existing tabs to determine if a new tab can be opened
+            all_tabs = request.context.get_all_diagrams_of_type(target_diagram_type)
+            tab_count = len(all_tabs) if all_tabs else 1
+            max_tabs = 5
+            can_add_tab = tab_count < max_tabs
+
             session.set('pending_complete_system', {
                 'message': operation_request,
                 'diagram_type': target_diagram_type,
                 'operation': stored_operation,
                 'default_mode': default_mode,
+                'can_add_tab': can_add_tab,
             })
-            reply_message(
-                session,
-                f"You already have a {target_diagram_type} model ({summary}). "
-                "Would you like me to **replace** it with a new one, or **keep** "
-                "the existing model and add alongside it?",
-            )
+
+            if can_add_tab:
+                reply_message(
+                    session,
+                    f"You already have a {target_diagram_type} model ({summary}). "
+                    "Would you like me to **replace** it, **keep** it and add alongside, "
+                    f"or create in a **new tab**? (You have {tab_count}/{max_tabs} tabs used)",
+                )
+            else:
+                reply_message(
+                    session,
+                    f"You already have a {target_diagram_type} model ({summary}). "
+                    "Would you like me to **replace** it, or **keep** it and add alongside? "
+                    f"(All {max_tabs} tabs are in use)",
+                )
             logger.info(
-                f"[ModelOp] Asked user to confirm replace/keep for existing {target_diagram_type}"
+                f"[ModelOp] Asked user to confirm replace/keep"
+                f"{'/new-tab' if can_add_tab else ''} for existing {target_diagram_type} "
+                f"({tab_count}/{max_tabs} tabs)"
             )
             return None
 
@@ -333,6 +353,10 @@ def execute_model_operation(
             session.set('_replace_existing_model', None)
             logger.info(f"[ModelOp] replaceExisting={replace_flag} (from session variable)")
 
+    # Signal the frontend to create a new tab before injecting
+    if _create_new_tab:
+        result["createNewTab"] = True
+
     # Attach contextual suggestions to the payload
     available_diagrams = _collect_available_diagrams(request)
     model_summary = _get_model_summary(result)
@@ -371,14 +395,26 @@ def execute_model_operation(
 
 
 def _collect_available_diagrams(request: AssistantRequest) -> list:
-    """Collect diagram types available in the current project snapshot."""
+    """Collect diagram types that have at least one non-empty diagram in the project snapshot.
+
+    Handles both the legacy single-dict format and the multi-tab array format
+    where each diagram type maps to a list of ProjectDiagram objects.
+    """
     snapshot = request.context.project_snapshot
     if not isinstance(snapshot, dict):
         return []
     diagrams = snapshot.get("diagrams")
     if not isinstance(diagrams, dict):
         return []
-    return list(diagrams.keys())
+    available = []
+    for dtype, value in diagrams.items():
+        if isinstance(value, list):
+            # Multi-tab: include type only when at least one tab has a model
+            if any(isinstance(d, dict) and d.get("model") for d in value):
+                available.append(dtype)
+        elif isinstance(value, dict) and value.get("model"):
+            available.append(dtype)
+    return available
 
 
 def _get_model_summary(result: dict) -> dict:
