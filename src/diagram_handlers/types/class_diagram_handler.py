@@ -144,19 +144,23 @@ IMPORTANT RULES:
 1. FOLLOW THE USER'S REQUEST STRICTLY - include exactly the classes, attributes, methods, or relationships they specify
 2. Create AS MANY classes as needed for a complete system (no fixed limits)
 3. Each class should have AS MANY attributes as needed - don't artificially limit essential properties
-4. Methods: Generally SKIP methods unless the user asks for them. Only include 1-2 methods per class MAX if they represent core domain behavior. Never include getters/setters.
-5. Relationships are CRITICAL - always include meaningful connections:
+4. Include at least 3-5 attributes per class. Don't just create stub classes.
+5. Always consider the following for each class: an ID attribute, creation/modification timestamps where appropriate, and status fields for entities with lifecycles.
+6. Methods: Generally SKIP methods unless the user asks for them. Only include 1-2 methods per class MAX if they represent core domain behavior. Never include getters/setters.
+7. Relationships are CRITICAL - always include meaningful connections:
    - "Association" - general relationship (most common)
    - "Inheritance" / "Generalization" - parent-child "is-a" (use sparingly)
    - "Composition" - strong "has-a" (part cannot exist without whole)
    - "Aggregation" - weak "has-a" (part can exist independently)
    - "Realization" - interface implementation
-6. Relationship properties: "name", "sourceMultiplicity", "targetMultiplicity"
-7. Use proper naming: PascalCase for classes, camelCase for attributes/methods
-8. visibility: "public", "private", "protected", or "package"
-9. Common types: String, int, boolean, double, Date, or custom class names
-10. Do NOT include any "position" field - positioning is handled automatically
-11. Return ONLY the JSON, no explanations or markdown
+8. When generating relationships, ALWAYS include multiplicity values (min and max). Use standard UML multiplicities: 1, 0..1, 0..*, 1..*
+9. Generate both associations AND inheritance where appropriate. If there are clearly related types (e.g., SavingsAccount/CheckingAccount), use inheritance.
+10. Relationship properties: "name", "sourceMultiplicity", "targetMultiplicity"
+11. Use proper naming: PascalCase for classes, camelCase for attributes/methods
+12. visibility: "public", "private", "protected", or "package"
+13. Common types: String, int, boolean, double, Date, or custom class names
+14. Do NOT include any "position" field - positioning is handled automatically
+15. Return ONLY the JSON, no explanations or markdown
 
 Examples:
 - E-commerce system: User, Product, Order, Payment, ShoppingCart with appropriate associations
@@ -592,13 +596,34 @@ MULTIPLE MODIFICATIONS (batch – use when the request needs more than one chang
   ]
 }
 
+REFACTORING ACTIONS (use these for complex structural changes):
+- "extract_class": Pull attributes from an existing class into a new class with a relationship
+  Example: Extract "street", "city", "zip" from User into a new Address class
+  Format: {"action": "extract_class", "sourceClass": "User", "newClass": "Address", "attributes": ["street", "city", "zip"], "relationshipType": "ClassComposition"}
+
+- "split_class": Divide a class into two separate classes
+  Example: Split User into Customer and AdminUser
+  Format: {"action": "split_class", "sourceClass": "User", "newClasses": [{"className": "Customer", "attributes": ["name", "email"]}, {"className": "AdminUser", "attributes": ["role", "permissions"]}], "inheritFrom": "User"}
+
+- "merge_classes": Combine two classes into one
+  Example: Merge Address and Location into Address
+  Format: {"action": "merge_classes", "classes": ["Address", "Location"], "targetName": "Address"}
+
+- "promote_attribute": Turn a primitive attribute into its own class with a relationship
+  Example: Promote "address: String" on User to an Address class
+  Format: {"action": "promote_attribute", "sourceClass": "User", "attribute": "address", "newClass": "Address", "newAttributes": [{"name": "street", "type": "String"}, {"name": "city", "type": "String"}, {"name": "zipCode", "type": "String"}]}
+
+- "add_enum": Create an enumeration type and use it as an attribute type
+  Example: Add OrderStatus enum with PENDING, CONFIRMED, SHIPPED, DELIVERED
+  Format: {"action": "add_enum", "enumName": "OrderStatus", "values": ["PENDING", "CONFIRMED", "SHIPPED", "DELIVERED"], "usedBy": [{"className": "Order", "attributeName": "status"}]}
+
 CASCADING CHANGES:
 When renaming or removing a class, you MUST also update or remove any relationships
 that reference that class. Use the "modifications" array to batch the class rename
 AND all affected relationship updates in a single response.
 
 IMPORTANT RULES:
-1. Actions available: "modify_class", "add_attribute", "modify_attribute", "add_method", "modify_method", "add_relationship", "modify_relationship", "remove_element"
+1. Actions available: "modify_class", "add_attribute", "modify_attribute", "add_method", "modify_method", "add_relationship", "modify_relationship", "remove_element", "extract_class", "split_class", "merge_classes", "promote_attribute", "add_enum"
 2. Always specify exact target names that exist in the current model
 3. visibility options: "public", "private", "protected", "package"
 4. Relationship types (case-sensitive): "Association", "Inheritance" (also called Generalization), "Composition", "Aggregation", "Realization"
@@ -626,6 +651,11 @@ Examples:
 - "delete the temp attribute" -> remove_element with attributeName
 - "add name, age, and email attributes to Person" -> use "modifications" array with 3 add_attribute entries
 - "add several attributes to Book" -> use "modifications" array with multiple add_attribute entries (infer sensible attributes for the domain)
+- "extract address fields from User into a separate Address class" -> extract_class with sourceClass "User", newClass "Address", attributes list, and relationshipType
+- "split User into Customer and AdminUser" -> split_class with sourceClass, newClasses array, and optional inheritFrom
+- "merge Address and Location into one class" -> merge_classes with classes array and targetName
+- "promote address attribute on User to its own class" -> promote_attribute with sourceClass, attribute, newClass, and newAttributes
+- "add an OrderStatus enum with PENDING, CONFIRMED, SHIPPED" -> add_enum with enumName, values, and usedBy
 
 Return ONLY the JSON object – no explanations"""
 
@@ -658,6 +688,11 @@ Return ONLY the JSON object – no explanations"""
             
             if not modification_spec:
                 raise ValueError(f"Failed to parse modification JSON: {json_text[:300]}")
+
+            # Expand refactoring actions into primitive modifications before validation
+            if self._is_refactoring_action(modification_spec):
+                logger.info("[ClassDiagram] Detected refactoring action, expanding into primitives")
+                modification_spec = self._expand_refactoring_actions(modification_spec, current_model)
 
             self.validate_modification_spec(modification_spec)
 
@@ -704,6 +739,446 @@ Return ONLY the JSON object – no explanations"""
             "diagramType": self.get_diagram_type(),
             "message": "I couldn't apply that modification automatically. Could you rephrase your request? For example: *'Add a phone attribute to User'* or *'Create a relationship between Order and Product'*."
         }
+
+    # ------------------------------------------------------------------
+    # Refactoring Action Expansion
+    # ------------------------------------------------------------------
+
+    _REFACTORING_ACTIONS = frozenset({
+        "extract_class", "split_class", "merge_classes",
+        "promote_attribute", "add_enum",
+    })
+
+    def _is_refactoring_action(self, spec: Dict[str, Any]) -> bool:
+        """Return True if the modification spec contains a refactoring action."""
+        mod = spec.get("modification", {})
+        if isinstance(mod, dict) and mod.get("action") in self._REFACTORING_ACTIONS:
+            return True
+        for m in spec.get("modifications", []):
+            if isinstance(m, dict) and m.get("action") in self._REFACTORING_ACTIONS:
+                return True
+        return False
+
+    def _expand_refactoring_actions(
+        self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Expand high-level refactoring actions into batches of primitive modifications.
+
+        Each refactoring action (extract_class, split_class, etc.) is decomposed
+        into a list of standard modification primitives (add_attribute,
+        remove_element, add_relationship, etc.) that the frontend already knows
+        how to apply.
+
+        Returns a new spec with all refactoring actions expanded.
+        """
+        # Collect all inner modifications (single or batch)
+        if "modifications" in spec and isinstance(spec["modifications"], list):
+            raw_mods = list(spec["modifications"])
+        elif "modification" in spec and isinstance(spec["modification"], dict):
+            raw_mods = [spec["modification"]]
+        else:
+            return spec
+
+        expanded: List[Dict[str, Any]] = []
+        messages: List[str] = []
+
+        for mod in raw_mods:
+            action = mod.get("action", "")
+            if action == "extract_class":
+                sub_mods, msg = self._expand_extract_class(mod, current_model)
+                expanded.extend(sub_mods)
+                messages.append(msg)
+            elif action == "split_class":
+                sub_mods, msg = self._expand_split_class(mod, current_model)
+                expanded.extend(sub_mods)
+                messages.append(msg)
+            elif action == "merge_classes":
+                sub_mods, msg = self._expand_merge_classes(mod, current_model)
+                expanded.extend(sub_mods)
+                messages.append(msg)
+            elif action == "promote_attribute":
+                sub_mods, msg = self._expand_promote_attribute(mod, current_model)
+                expanded.extend(sub_mods)
+                messages.append(msg)
+            elif action == "add_enum":
+                sub_mods, msg = self._expand_add_enum(mod, current_model)
+                expanded.extend(sub_mods)
+                messages.append(msg)
+            else:
+                # Not a refactoring action; pass through as-is
+                expanded.append(mod)
+
+        result = dict(spec)
+        # Always use batch format for expanded results
+        result.pop("modification", None)
+        result["modifications"] = expanded
+        if messages:
+            result["message"] = " ".join(messages)
+        return result
+
+    def _expand_extract_class(
+        self, mod: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,
+    ) -> tuple:
+        """Expand an extract_class action into primitive modifications.
+
+        Produces:
+        1. An inject_element for the new class (with the extracted attributes)
+        2. A remove_element for each extracted attribute on the source class
+        3. An add_relationship between source and new class
+        """
+        source_class = mod.get("sourceClass", "")
+        new_class = mod.get("newClass", "NewClass")
+        attributes = mod.get("attributes", [])
+        rel_type = mod.get("relationshipType", "Composition")
+
+        primitives: List[Dict[str, Any]] = []
+
+        # Resolve attribute details from current model if available
+        extracted_attrs = self._resolve_attributes(source_class, attributes, current_model)
+
+        # 1. Create the new class with extracted attributes
+        primitives.append({
+            "action": "add_class",
+            "target": {"className": new_class},
+            "changes": {
+                "className": new_class,
+                "attributes": extracted_attrs,
+                "methods": [],
+            },
+        })
+
+        # 2. Remove each extracted attribute from the source class
+        for attr_name in attributes:
+            primitives.append({
+                "action": "remove_element",
+                "target": {
+                    "className": source_class,
+                    "attributeName": attr_name,
+                },
+            })
+
+        # 3. Add a relationship from source to new class
+        primitives.append({
+            "action": "add_relationship",
+            "target": {
+                "sourceClass": source_class,
+                "targetClass": new_class,
+            },
+            "changes": {
+                "relationshipType": rel_type,
+                "sourceMultiplicity": "1",
+                "targetMultiplicity": "1",
+                "name": f"has{new_class}",
+            },
+        })
+
+        msg = (
+            f"Extracted **{new_class}** from **{source_class}** with "
+            f"attributes: {', '.join(f'`{a}`' for a in attributes)}."
+        )
+        return primitives, msg
+
+    def _expand_split_class(
+        self, mod: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,
+    ) -> tuple:
+        """Expand a split_class action into primitive modifications.
+
+        Produces:
+        1. An add_class for each new class (with its subset of attributes)
+        2. Optionally, add_relationship (Inheritance) from each new class to the source
+        """
+        source_class = mod.get("sourceClass", "")
+        new_classes = mod.get("newClasses", [])
+        inherit_from = mod.get("inheritFrom", "")
+
+        primitives: List[Dict[str, Any]] = []
+        class_names: List[str] = []
+
+        for cls_spec in new_classes:
+            cls_name = cls_spec.get("className", "NewClass")
+            class_names.append(cls_name)
+            attr_names = cls_spec.get("attributes", [])
+
+            # Resolve full attribute definitions from the current model
+            resolved_attrs = self._resolve_attributes(source_class, attr_names, current_model)
+
+            primitives.append({
+                "action": "add_class",
+                "target": {"className": cls_name},
+                "changes": {
+                    "className": cls_name,
+                    "attributes": resolved_attrs,
+                    "methods": [],
+                },
+            })
+
+            # If inheritance is requested, each new class inherits from source
+            if inherit_from:
+                primitives.append({
+                    "action": "add_relationship",
+                    "target": {
+                        "sourceClass": cls_name,
+                        "targetClass": inherit_from,
+                    },
+                    "changes": {
+                        "relationshipType": "Inheritance",
+                        "name": f"{cls_name}_extends_{inherit_from}",
+                    },
+                })
+
+        msg = (
+            f"Split **{source_class}** into {', '.join(f'**{n}**' for n in class_names)}"
+            + (f" (inheriting from **{inherit_from}**)." if inherit_from else ".")
+        )
+        return primitives, msg
+
+    def _expand_merge_classes(
+        self, mod: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,
+    ) -> tuple:
+        """Expand a merge_classes action into primitive modifications.
+
+        Produces:
+        1. An add_class for the merged target (union of all attributes)
+        2. A remove_element for each source class being merged
+        """
+        classes_to_merge = mod.get("classes", [])
+        target_name = mod.get("targetName", classes_to_merge[0] if classes_to_merge else "MergedClass")
+
+        primitives: List[Dict[str, Any]] = []
+
+        # Collect all attributes from all classes being merged
+        merged_attrs: List[Dict[str, Any]] = []
+        seen_attr_names: set = set()
+
+        for cls_name in classes_to_merge:
+            cls_attrs = self._get_class_attributes(cls_name, current_model)
+            for attr in cls_attrs:
+                attr_name = attr.get("name", "")
+                if attr_name and attr_name not in seen_attr_names:
+                    seen_attr_names.add(attr_name)
+                    merged_attrs.append(attr)
+
+        # 1. Create the merged class
+        primitives.append({
+            "action": "add_class",
+            "target": {"className": target_name},
+            "changes": {
+                "className": target_name,
+                "attributes": merged_attrs,
+                "methods": [],
+            },
+        })
+
+        # 2. Remove the original classes (except the target if it already exists)
+        for cls_name in classes_to_merge:
+            if cls_name != target_name:
+                primitives.append({
+                    "action": "remove_element",
+                    "target": {"className": cls_name},
+                })
+
+        msg = (
+            f"Merged {', '.join(f'**{c}**' for c in classes_to_merge)} "
+            f"into **{target_name}** with {len(merged_attrs)} attribute(s)."
+        )
+        return primitives, msg
+
+    def _expand_promote_attribute(
+        self, mod: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,
+    ) -> tuple:
+        """Expand a promote_attribute action into primitive modifications.
+
+        Produces:
+        1. An add_class for the new class (with the provided new attributes)
+        2. A remove_element to remove the original attribute from the source class
+        3. An add_relationship from source to the new class
+        """
+        source_class = mod.get("sourceClass", "")
+        attribute = mod.get("attribute", "")
+        new_class = mod.get("newClass", attribute.capitalize() if attribute else "PromotedClass")
+        new_attributes = mod.get("newAttributes", [])
+
+        primitives: List[Dict[str, Any]] = []
+
+        # Ensure new attributes have required fields
+        full_attrs: List[Dict[str, Any]] = []
+        for attr in new_attributes:
+            if isinstance(attr, dict):
+                full_attrs.append({
+                    "name": attr.get("name", "value"),
+                    "type": attr.get("type", "String"),
+                    "visibility": attr.get("visibility", "public"),
+                })
+
+        # If no attributes specified, create a sensible default
+        if not full_attrs:
+            full_attrs = [
+                {"name": "id", "type": "String", "visibility": "public"},
+                {"name": "value", "type": "String", "visibility": "public"},
+            ]
+
+        # 1. Create the new class
+        primitives.append({
+            "action": "add_class",
+            "target": {"className": new_class},
+            "changes": {
+                "className": new_class,
+                "attributes": full_attrs,
+                "methods": [],
+            },
+        })
+
+        # 2. Remove the original primitive attribute from the source class
+        primitives.append({
+            "action": "remove_element",
+            "target": {
+                "className": source_class,
+                "attributeName": attribute,
+            },
+        })
+
+        # 3. Add relationship from source class to the new class
+        primitives.append({
+            "action": "add_relationship",
+            "target": {
+                "sourceClass": source_class,
+                "targetClass": new_class,
+            },
+            "changes": {
+                "relationshipType": "Association",
+                "sourceMultiplicity": "1",
+                "targetMultiplicity": "1",
+                "name": f"has{new_class}",
+            },
+        })
+
+        msg = (
+            f"Promoted `{attribute}` from **{source_class}** into a new "
+            f"**{new_class}** class with {len(full_attrs)} attribute(s)."
+        )
+        return primitives, msg
+
+    def _expand_add_enum(
+        self, mod: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,
+    ) -> tuple:
+        """Expand an add_enum action into primitive modifications.
+
+        Produces:
+        1. An add_class for the enumeration (with values as attributes)
+        2. A modify_attribute for each class/attribute pair that should use the enum type
+        """
+        enum_name = mod.get("enumName", "NewEnum")
+        values = mod.get("values", [])
+        used_by = mod.get("usedBy", [])
+
+        primitives: List[Dict[str, Any]] = []
+
+        # 1. Create the enum as a class with <<enumeration>> stereotype
+        enum_attrs = [
+            {"name": v, "type": enum_name, "visibility": "public"}
+            for v in values if isinstance(v, str)
+        ]
+        primitives.append({
+            "action": "add_class",
+            "target": {"className": enum_name},
+            "changes": {
+                "className": enum_name,
+                "stereotype": "enumeration",
+                "attributes": enum_attrs,
+                "methods": [],
+            },
+        })
+
+        # 2. Update each referencing attribute to use the enum type
+        for usage in used_by:
+            if not isinstance(usage, dict):
+                continue
+            cls_name = usage.get("className", "")
+            attr_name = usage.get("attributeName", "")
+            if cls_name and attr_name:
+                primitives.append({
+                    "action": "modify_attribute",
+                    "target": {
+                        "className": cls_name,
+                        "attributeName": attr_name,
+                    },
+                    "changes": {
+                        "type": enum_name,
+                    },
+                })
+
+        msg = (
+            f"Created enumeration **{enum_name}** with values: "
+            f"{', '.join(f'`{v}`' for v in values)}"
+        )
+        if used_by:
+            refs = ", ".join(
+                f"**{u.get('className', '?')}**.`{u.get('attributeName', '?')}`"
+                for u in used_by if isinstance(u, dict)
+            )
+            msg += f" (used by {refs})"
+        msg += "."
+        return primitives, msg
+
+    # ------------------------------------------------------------------
+    # Attribute Resolution Helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_attributes(
+        self,
+        class_name: str,
+        attr_names: List[str],
+        current_model: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Resolve attribute names to full attribute dicts from the current model.
+
+        If the attribute exists in *current_model*, its type and visibility are
+        preserved.  Otherwise a sensible default (type String, visibility public)
+        is used.
+        """
+        model_attrs = self._get_class_attributes(class_name, current_model)
+        model_map: Dict[str, Dict[str, Any]] = {}
+        for attr in model_attrs:
+            name = attr.get("name", "")
+            if name:
+                model_map[name] = attr
+
+        resolved: List[Dict[str, Any]] = []
+        for name in attr_names:
+            if name in model_map:
+                resolved.append(dict(model_map[name]))
+            else:
+                resolved.append({
+                    "name": name,
+                    "type": "String",
+                    "visibility": "public",
+                })
+        return resolved
+
+    def _get_class_attributes(
+        self, class_name: str, current_model: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Return the list of attribute dicts for *class_name* from the current model.
+
+        Searches through the model's elements dict to find the matching class.
+        Returns an empty list if the class or model is not available.
+        """
+        if not isinstance(current_model, dict):
+            return []
+        elements = current_model.get("elements")
+        if not isinstance(elements, dict):
+            return []
+        for el in elements.values():
+            if not isinstance(el, dict):
+                continue
+            if el.get("type") == "Class" and el.get("name") == class_name:
+                attrs = el.get("attributes", [])
+                if isinstance(attrs, list):
+                    return attrs
+                # Sometimes attributes are stored as a dict keyed by ID
+                if isinstance(attrs, dict):
+                    return list(attrs.values())
+        return []
 
     # ------------------------------------------------------------------
     # Impact Analysis Helpers

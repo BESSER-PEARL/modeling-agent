@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import threading
 import time
 import uuid
@@ -32,21 +33,31 @@ class LLMPredictionError(Exception):
     pass
 
 
-_LLM_CONCURRENCY_LIMIT = int(os.environ.get("LLM_CONCURRENCY_LIMIT", "4"))
+_LLM_CONCURRENCY_LIMIT = int(os.environ.get("LLM_CONCURRENCY_LIMIT", "6"))
 _llm_semaphore = threading.Semaphore(_LLM_CONCURRENCY_LIMIT)
 
 # ---------------------------------------------------------------------------
 # Lightweight prompt-response cache
 # ---------------------------------------------------------------------------
-_PROMPT_CACHE_MAX_SIZE = int(os.environ.get("LLM_CACHE_MAX_SIZE", "50"))
-_PROMPT_CACHE_TTL = int(os.environ.get("LLM_CACHE_TTL", "300"))  # 5 min
+_PROMPT_CACHE_MAX_SIZE = int(os.environ.get("LLM_CACHE_MAX_SIZE", "200"))
+_PROMPT_CACHE_TTL = int(os.environ.get("LLM_CACHE_TTL", "600"))  # 10 min
 _prompt_cache: OrderedDict[str, Tuple[str, float]] = OrderedDict()
 _prompt_cache_lock = threading.Lock()
 
 
+def _normalize_cache_key(key: str) -> str:
+    """Normalize cache key to improve hit rate.
+
+    Strips extra whitespace so that prompts differing only in formatting
+    (trailing newlines, double spaces, etc.) map to the same cache entry.
+    """
+    return ' '.join(key.split())
+
+
 def _cache_key(prompt: str) -> str:
     """Compute a compact hash key for a prompt string."""
-    return hashlib.sha256(prompt.encode("utf-8", errors="replace")).hexdigest()[:24]
+    normalized = _normalize_cache_key(prompt)
+    return hashlib.sha256(normalized.encode("utf-8", errors="replace")).hexdigest()[:24]
 
 
 def _cache_get(prompt: str) -> Optional[str]:
@@ -141,6 +152,52 @@ SYSTEM_STATE_OPTIONAL = {"systemName": str, "transitions": list}
 MODIFICATION_REQUIRED = {"modification": dict}
 MODIFICATION_INNER_REQUIRED = {"action": str, "target": dict}
 
+# ---------------------------------------------------------------------------
+# Error taxonomy with user-facing recovery hints
+# ---------------------------------------------------------------------------
+_ERROR_RECOVERY: Dict[str, Dict[str, Any]] = {
+    "llm_failure": {
+        "message": "The AI service is temporarily unavailable.",
+        "recovery": "try again",
+        "retryable": True,
+    },
+    "parse_error": {
+        "message": "I had trouble structuring that response.",
+        "recovery": "try rephrasing your request more specifically",
+        "retryable": True,
+    },
+    "validation_error": {
+        "message": "The generated model had structural issues.",
+        "recovery": "try simplifying your request",
+        "retryable": True,
+    },
+    "timeout": {
+        "message": "That request was too complex to process in time.",
+        "recovery": "try breaking it into smaller steps",
+        "retryable": True,
+    },
+    "schema_error": {
+        "message": "The response format was unexpected.",
+        "recovery": "try again with a simpler description",
+        "retryable": True,
+    },
+    "context_error": {
+        "message": "I couldn't find the diagram or element you're referring to.",
+        "recovery": "make sure you have an active diagram open",
+        "retryable": False,
+    },
+    "generation_error": {
+        "message": "Something went wrong during generation.",
+        "recovery": "try rephrasing your request",
+        "retryable": True,
+    },
+    "unsupported": {
+        "message": "This operation is not supported for this diagram type.",
+        "recovery": "check the documentation for supported operations",
+        "retryable": False,
+    },
+}
+
 
 class BaseDiagramHandler(ABC):
     """Base class for all diagram type handlers"""
@@ -176,25 +233,85 @@ class BaseDiagramHandler(ABC):
 
     def _error_response(
         self,
-        message: str,
-        code: str = "generation_error",
-        retryable: bool = True,
+        error_code_or_message: str = "generation_error",
+        details: str = "",
+        *,
+        message: Optional[str] = None,
+        code: Optional[str] = None,
+        retryable: Optional[bool] = None,
     ) -> Dict[str, Any]:
-        """Return a structured error payload to surface to the user.
+        """Return a structured error payload with recovery hints.
 
-        Error codes:
+        Uses the module-level ``_ERROR_RECOVERY`` taxonomy to produce
+        user-friendly messages and actionable recovery suggestions.
+
+        **Backward compatible**: existing callers that pass a human-readable
+        message as the first positional argument (with an optional ``code=``
+        keyword) continue to work.  The method detects whether the first arg
+        is a known error code or a legacy message string.
+
+        Supported error codes (see ``_ERROR_RECOVERY``):
         - ``llm_failure``: LLM call failed after retries
         - ``parse_error``: JSON parsing failed
         - ``validation_error``: Schema validation failed
         - ``generation_error``: General generation failure (default)
         - ``timeout``: Request timed out
+        - ``schema_error``: Unexpected response format
+        - ``context_error``: Missing diagram/element context
         - ``unsupported``: Unsupported diagram type or operation
+
+        Args:
+            error_code_or_message: Either a key from ``_ERROR_RECOVERY`` **or**
+                a legacy human-readable message string.  When a known error
+                code is given the taxonomy message is used; otherwise the
+                value is treated as the display message.
+            details: Extra context appended to the taxonomy message.
+            message: Explicit message override (takes priority over both the
+                taxonomy message and the legacy first-arg message).
+            code: Explicit error code override (takes priority over the
+                first-arg code detection).
+            retryable: Override for the retryable flag.
         """
+        # Detect whether first arg is a known error code or a legacy message
+        first_arg = error_code_or_message
+        is_known_code = first_arg in _ERROR_RECOVERY
+
+        if code is not None:
+            # Explicit code= keyword — first arg is a legacy message
+            effective_code = code
+            legacy_message = first_arg if not is_known_code else None
+        elif is_known_code:
+            effective_code = first_arg
+            legacy_message = None
+        else:
+            # First arg looks like a legacy message string (contains spaces, etc.)
+            effective_code = "generation_error"
+            legacy_message = first_arg
+
+        recovery = _ERROR_RECOVERY.get(effective_code, {
+            "message": "Something went wrong.",
+            "recovery": "try rephrasing your request",
+            "retryable": True,
+        })
+        effective_retryable = retryable if retryable is not None else recovery["retryable"]
+
+        # Priority: explicit message= > legacy positional message > taxonomy + details
+        if message is not None:
+            effective_message = message
+        elif legacy_message is not None:
+            effective_message = legacy_message
+        else:
+            effective_message = f"{recovery['message']} {details}".strip()
+
         return {
             "action": "assistant_message",
-            "message": message,
-            "error_code": code,
-            "retryable": retryable,
+            "error": True,
+            "errorCode": effective_code,
+            "message": effective_message,
+            "suggestedRecovery": recovery["recovery"],
+            "retryable": effective_retryable,
+            # Keep legacy key for backward compat
+            "error_code": effective_code,
             "diagramType": self.get_diagram_type(),
         }
 
@@ -294,12 +411,17 @@ class BaseDiagramHandler(ABC):
     # ------------------------------------------------------------------
 
     def predict_with_retry(self, prompt: str, max_retries: int = 2, *, use_cache: bool = True) -> str:
-        """Call the LLM with automatic retry, cache check, and exponential backoff.
+        """Call the LLM with automatic retry, cache check, and jittered exponential backoff.
 
         Acquires a module-level semaphore before calling the API so that
         concurrent WebSocket sessions don't exhaust OpenAI rate limits.
         Backoff sleeps happen **outside** the semaphore to avoid blocking
         other sessions.
+
+        Retry improvements:
+        - Jitter added to backoff delays to prevent thundering-herd retries.
+        - On parse-error retries, a simplified "JSON-only" prompt is tried as
+          a self-healing mechanism.
 
         Args:
             prompt: Full prompt to send.
@@ -320,20 +442,37 @@ class BaseDiagramHandler(ABC):
                 return cached
 
         last_error: Optional[Exception] = None
+        last_error_type: str = "unknown"
         total_attempts = 1 + max_retries
         for attempt in range(total_attempts):
-            # Exponential backoff before retries (0s, 2s, 4s, …)
+            # Jittered exponential backoff before retries (0s, ~2-3s, ~4-5s, …)
             if attempt > 0:
-                backoff = 2 ** attempt
+                base_delay = 2 ** attempt
+                jitter = random.uniform(0, 1)
+                backoff = base_delay + jitter
                 logger.info(
-                    f"[{self.get_diagram_type()}] Retrying in {backoff}s "
-                    f"(attempt {attempt + 1}/{total_attempts})"
+                    f"[{self.get_diagram_type()}] Retrying in {backoff:.1f}s "
+                    f"(attempt {attempt + 1}/{total_attempts}, "
+                    f"last_error_type={last_error_type})"
                 )
                 time.sleep(backoff)
+
+            # On parse_error retries, try a simplified prompt that enforces JSON
+            effective_prompt = prompt
+            if attempt > 0 and last_error_type == "parse_error":
+                effective_prompt = (
+                    prompt + "\n\n"
+                    "IMPORTANT: Return ONLY valid JSON, no markdown, no explanation."
+                )
+                logger.info(
+                    f"[{self.get_diagram_type()}] Self-healing: using simplified "
+                    f"JSON-only prompt on attempt {attempt + 1}"
+                )
+
             try:
                 _llm_semaphore.acquire()
                 try:
-                    response = self.llm.predict(prompt)
+                    response = self.llm.predict(effective_prompt)
                 finally:
                     _llm_semaphore.release()
                 if response and response.strip():
@@ -341,19 +480,41 @@ class BaseDiagramHandler(ABC):
                         _cache_put(prompt, response)
                     return response
                 last_error = LLMPredictionError("LLM returned empty response")
+                last_error_type = "llm_failure"
                 logger.warning(
                     f"[{self.get_diagram_type()}] Empty LLM response "
                     f"(attempt {attempt + 1}/{total_attempts})"
                 )
             except LLMPredictionError:
                 raise
+            except json.JSONDecodeError as exc:
+                last_error = LLMPredictionError(f"JSON parse error: {exc}")
+                last_error_type = "parse_error"
+                logger.warning(
+                    f"[{self.get_diagram_type()}] JSON parse error "
+                    f"(attempt {attempt + 1}/{total_attempts}): {exc}"
+                )
             except Exception as exc:
                 last_error = LLMPredictionError(str(exc))
+                last_error_type = "llm_failure"
                 logger.warning(
                     f"[{self.get_diagram_type()}] LLM call failed "
                     f"(attempt {attempt + 1}/{total_attempts}): {exc}"
                 )
         raise last_error or LLMPredictionError("LLM prediction failed after all retries")
+
+    def _classify_error(self, exc: Exception) -> str:
+        """Classify an exception into an error code from the recovery taxonomy."""
+        exc_str = str(exc).lower()
+        if "timeout" in exc_str or "timed out" in exc_str:
+            return "timeout"
+        if "json" in exc_str or "parse" in exc_str:
+            return "parse_error"
+        if "validation" in exc_str or "schema" in exc_str:
+            return "validation_error"
+        if isinstance(exc, LLMPredictionError):
+            return "llm_failure"
+        return "generation_error"
 
     # ------------------------------------------------------------------
     # JSON / text utilities
@@ -739,3 +900,108 @@ Return ONLY the JSON, no explanations."""
             raise ValueError(f"Schema validation failed: {joined}")
 
         return spec
+
+    # ------------------------------------------------------------------
+    # Degraded generation fallback for complex failures
+    # ------------------------------------------------------------------
+
+    def _extract_element_names(self, user_request: str, element_label: str = "entity") -> List[str]:
+        """Ask the LLM to extract element names from a user request.
+
+        This is used by the degraded fallback path when full system generation
+        fails.  The LLM is asked to return just the names (a simple task that
+        is much less likely to fail than generating a full schema).
+
+        Args:
+            user_request: The original user request text.
+            element_label: What to call the elements (e.g. "class", "state",
+                "entity") in the extraction prompt.
+
+        Returns:
+            A list of name strings.  Empty list on failure.
+        """
+        extraction_prompt = (
+            f"From this request, extract ONLY the {element_label} names the user wants. "
+            "Return a JSON array of strings. Example: [\"User\", \"Product\", \"Order\"]\n\n"
+            f"Request: {user_request}\n\n"
+            "Return ONLY the JSON array, no explanations."
+        )
+        try:
+            response = self.predict_with_retry(extraction_prompt, max_retries=1)
+            cleaned = self.clean_json_response(response)
+            names = json.loads(cleaned)
+            if isinstance(names, list) and len(names) > 0:
+                return [str(n) for n in names if isinstance(n, str) and n.strip()]
+        except Exception as exc:
+            logger.warning(
+                f"[{self.get_diagram_type()}] Could not extract {element_label} names: {exc}"
+            )
+        return []
+
+    def _generate_degraded_system(
+        self,
+        user_request: str,
+        existing_model: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Attempt degraded generation: extract names first, then fill details.
+
+        This two-step approach is a safety net when ``generate_complete_system``
+        fails after all retries.  It is cheaper and more reliable because each
+        LLM call is smaller.
+
+        Subclasses that override ``generate_complete_system`` can call this
+        from their exception handler as a last resort before falling back to
+        ``generate_fallback_element``.
+
+        Returns ``None`` if even the degraded approach fails, so the caller
+        can fall through to a static fallback.
+        """
+        diagram_type = self.get_diagram_type()
+        logger.info(f"[{diagram_type}] Attempting degraded generation fallback")
+
+        # Step 1: Extract just the names (simple, high success rate)
+        element_label = {
+            "ClassDiagram": "class",
+            "StateMachine": "state",
+            "ObjectDiagram": "object",
+            "AgentDiagram": "agent",
+        }.get(diagram_type, "entity")
+
+        names = self._extract_element_names(user_request, element_label)
+        if not names:
+            logger.warning(f"[{diagram_type}] Degraded fallback: no names extracted")
+            return None
+
+        # Step 2: Generate each element individually
+        elements: List[Dict[str, Any]] = []
+        for name in names[:10]:  # Cap to prevent excessive LLM calls
+            try:
+                single_prompt = (
+                    f"{self.get_system_prompt()}\n\n"
+                    f"User Request: Create a {name} {element_label} with appropriate "
+                    f"attributes for a system about: {user_request}\n\n"
+                    "Return ONLY valid JSON, no markdown, no explanation."
+                )
+                resp = self.predict_with_retry(single_prompt, max_retries=1)
+                cleaned = self.clean_json_response(resp)
+                spec = self.parse_json_safely(cleaned)
+                if spec and isinstance(spec, dict):
+                    spec.pop("position", None)
+                    elements.append(spec)
+                    logger.info(f"[{diagram_type}] Degraded fallback: generated {name}")
+            except Exception as exc:
+                logger.warning(
+                    f"[{diagram_type}] Degraded fallback: failed to generate {name}: {exc}"
+                )
+
+        if not elements:
+            return None
+
+        logger.info(
+            f"[{diagram_type}] Degraded fallback: produced "
+            f"{len(elements)}/{len(names)} elements"
+        )
+        return {
+            "elements": elements,
+            "names": [n for n in names[:10] if n.strip()],
+        }

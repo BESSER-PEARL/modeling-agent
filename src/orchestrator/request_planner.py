@@ -218,6 +218,7 @@ _MODELING_INTENTS = {
     "modify_model_intent",
     "modeling_help_intent",
     "describe_model_intent",
+    "workflow_intent",
 }
 
 
@@ -344,6 +345,190 @@ def _normalize_operations(
     return normalized
 
 
+# ---------------------------------------------------------------------------
+# Heuristic pre-decomposer: fast regex patterns for common request shapes.
+# When a pattern matches the entire intent can be resolved without an LLM call.
+# ---------------------------------------------------------------------------
+
+_HEURISTIC_WEB_APP = re.compile(
+    r"^(?:create|build|design|make)\s+(?:a\s+)?web\s*app(?:lication)?\s+(?:for\s+)?(?P<domain>.+)$",
+    re.IGNORECASE,
+)
+
+_HEURISTIC_MODEL_AND_GENERATE = re.compile(
+    r"^(?P<model_part>(?:create|build|design|make)\s+.+?)"
+    r"\s+(?:and\s+)?(?:then\s+)?(?:generate|export|produce|output)\s+(?P<gen_part>.+)$",
+    re.IGNORECASE,
+)
+
+_HEURISTIC_GENERATE_ONLY = re.compile(
+    r"^(?:generate|export|produce|output)\s+(?P<gen_part>.+)$",
+    re.IGNORECASE,
+)
+
+
+def _try_heuristic_decomposition(
+    message: str,
+    request: AssistantRequest,
+    default_mode: str,
+) -> Optional[List[Dict[str, Any]]]:
+    """Attempt a fast regex-based decomposition.  Returns *None* when no
+    heuristic matches so the caller falls through to the LLM planner."""
+    stripped = (message or "").strip()
+    if not stripped:
+        return None
+
+    # Pattern 1: "create/build a web app for X"
+    match = _HEURISTIC_WEB_APP.match(stripped)
+    if match:
+        domain = match.group("domain").strip().rstrip(".")
+        return [
+            {"type": "model", "diagramType": "ClassDiagram", "mode": "complete_system",
+             "request": f"create a class diagram for {domain}"},
+            {"type": "model", "diagramType": "GUINoCodeDiagram", "mode": "complete_system",
+             "request": f"create a GUI for {domain}"},
+            {"type": "generation", "generatorType": "web_app", "config": {}},
+        ]
+
+    # Pattern 2: "create/design X and generate Y"
+    match = _HEURISTIC_MODEL_AND_GENERATE.match(stripped)
+    if match:
+        model_part = match.group("model_part").strip()
+        gen_part = match.group("gen_part").strip().rstrip(".")
+        gen_type = detect_generator_type(gen_part)
+        if gen_type:
+            # Determine diagram type from the modeling part
+            target = _match_segment_target(model_part) or "ClassDiagram"
+            operations: List[Dict[str, Any]] = [
+                {"type": "model", "diagramType": target, "mode": "complete_system",
+                 "request": model_part},
+            ]
+            # If the generator needs additional prerequisite diagrams, add them
+            prereqs = GENERATOR_PREREQUISITES.get(gen_type, [])
+            for prereq in prereqs:
+                if prereq != target:
+                    domain_hint = re.sub(
+                        r"^(?:create|build|design|make)\s+(?:a\s+)?", "", model_part, flags=re.IGNORECASE
+                    ).strip()
+                    operations.append(
+                        {"type": "model", "diagramType": prereq, "mode": "complete_system",
+                         "request": f"create {prereq} for {domain_hint}"}
+                    )
+            operations.append({"type": "generation", "generatorType": gen_type, "config": {}})
+            return operations
+
+    # Pattern 3: "generate X" (standalone generation, no modeling)
+    match = _HEURISTIC_GENERATE_ONLY.match(stripped)
+    if match:
+        gen_type = detect_generator_type(stripped)
+        if gen_type:
+            return [{"type": "generation", "generatorType": gen_type, "config": {}}]
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Post-planning validation: ensure prerequisites and remove duplicates.
+# ---------------------------------------------------------------------------
+
+def _get_workspace_diagram_types(request: AssistantRequest) -> Set[str]:
+    """Return the set of diagram types already present in the workspace."""
+    existing: Set[str] = set()
+    snapshot = request.context.project_snapshot
+    if isinstance(snapshot, dict):
+        diagrams = snapshot.get("diagrams")
+        if isinstance(diagrams, dict):
+            existing.update(diagrams.keys())
+    for summary in (request.context.diagram_summaries or []):
+        if isinstance(summary, dict):
+            dt = summary.get("diagramType")
+            if isinstance(dt, str):
+                existing.add(dt)
+    return existing
+
+
+def _validate_and_fix_plan(
+    operations: List[Dict[str, Any]],
+    request: AssistantRequest,
+) -> List[Dict[str, Any]]:
+    """Post-planning validation pass.
+
+    * Ensures prerequisite diagrams exist for every generation operation
+      (either already in the workspace or earlier in the plan).
+    * Removes exact duplicate operations.
+    """
+    workspace_diagrams = _get_workspace_diagram_types(request)
+
+    # Collect diagram types that will be produced by model operations in the plan
+    planned_diagrams: Set[str] = set()
+    for op in operations:
+        if op.get("type") == "model":
+            dt = op.get("diagramType")
+            if isinstance(dt, str):
+                planned_diagrams.add(dt)
+
+    # Check each generation op for missing prerequisites and inject them
+    injected: List[Dict[str, Any]] = []
+    for op in operations:
+        if op.get("type") != "generation":
+            continue
+        gen_type = op.get("generatorType")
+        if not isinstance(gen_type, str):
+            continue
+        prereqs = GENERATOR_PREREQUISITES.get(gen_type, [])
+        for prereq in prereqs:
+            if prereq not in planned_diagrams and prereq not in workspace_diagrams:
+                # Build a helpful sub-request from the original user message
+                domain_hint = request.message.strip()
+                injected.append({
+                    "type": "model",
+                    "diagramType": prereq,
+                    "mode": "complete_system",
+                    "request": f"create {prereq} for: {domain_hint}",
+                })
+                planned_diagrams.add(prereq)
+
+    if injected:
+        # Insert injected model ops at the front (before existing ops),
+        # but respect ClassDiagram-first ordering.
+        all_model_ops = injected + [op for op in operations if op.get("type") == "model"]
+        gen_ops = [op for op in operations if op.get("type") == "generation"]
+        # Sort model ops: ClassDiagram first
+        class_ops = [op for op in all_model_ops if op.get("diagramType") == "ClassDiagram"]
+        other_ops = [op for op in all_model_ops if op.get("diagramType") != "ClassDiagram"]
+        operations = class_ops + other_ops + gen_ops
+
+    # Remove duplicates (preserve order)
+    seen: Set[str] = set()
+    deduped: List[Dict[str, Any]] = []
+    for op in operations:
+        key = json.dumps(op, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(op)
+
+    return deduped
+
+
+# ---------------------------------------------------------------------------
+# Few-shot examples appended to the LLM planner prompt.
+# ---------------------------------------------------------------------------
+
+_FEW_SHOT_EXAMPLES = """
+EXAMPLES:
+User: "create a library system with books and authors" → [{"type":"model","diagramType":"ClassDiagram","mode":"complete_system","subRequest":"create a library system with books and authors"}]
+User: "create a User class" → [{"type":"model","diagramType":"ClassDiagram","mode":"create_single_element","subRequest":"create a User class"}]
+User: "create a library system and generate django" → [{"type":"model","diagramType":"ClassDiagram","mode":"complete_system","subRequest":"create a library system"},{"type":"generation","generatorType":"django","subRequest":"generate django code"}]
+User: "create a web app for a hotel booking" → [{"type":"model","diagramType":"ClassDiagram","mode":"complete_system","subRequest":"create hotel booking system"},{"type":"model","diagramType":"GUINoCodeDiagram","mode":"complete_system","subRequest":"create GUI for hotel booking"},{"type":"generation","generatorType":"web_app","subRequest":"generate web app"}]
+User: "add an email attribute to the User class" → [{"type":"model","diagramType":"ClassDiagram","mode":"modify_model","subRequest":"add email attribute to User class"}]
+User: "create a state machine for order processing" → [{"type":"model","diagramType":"StateMachineDiagram","mode":"complete_system","subRequest":"create order processing state machine"}]
+User: "generate python code" → [{"type":"generation","generatorType":"python","subRequest":"generate python code"}]
+User: "create a pizza ordering chatbot agent" → [{"type":"model","diagramType":"AgentDiagram","mode":"complete_system","subRequest":"create pizza ordering chatbot agent"}]
+User: "design an e-commerce system, create a gui for it, and generate a web app" → [{"type":"model","diagramType":"ClassDiagram","mode":"complete_system","subRequest":"design e-commerce system"},{"type":"model","diagramType":"GUINoCodeDiagram","mode":"complete_system","subRequest":"create GUI for e-commerce"},{"type":"generation","generatorType":"web_app","subRequest":"generate web app"}]
+User: "create a quantum circuit with 3 qubits and hadamard gates" → [{"type":"model","diagramType":"QuantumCircuitDiagram","mode":"complete_system","subRequest":"create quantum circuit with 3 qubits and hadamard gates"}]
+""".strip()
+
+
 def plan_assistant_operations(
     request: AssistantRequest,
     default_mode: str,
@@ -357,6 +542,17 @@ def plan_assistant_operations(
     - {"type":"model","diagramType":"...","mode":"single_element|complete_system|modify_model","request":"..."}
     - {"type":"generation","generatorType":"...","config":{...}}
     """
+
+    # ----- Phase 0: fast heuristic pre-decomposition -----
+    heuristic_result = _try_heuristic_decomposition(request.message, request, default_mode)
+    if heuristic_result is not None:
+        normalized = _normalize_operations(heuristic_result, request=request, default_mode=default_mode)
+        if normalized:
+            validated = _validate_and_fix_plan(normalized, request)
+            logger.debug("Heuristic planner produced %d operations", len(validated))
+            return validated
+
+    # ----- Phase 1: keyword-based fallback -----
     fallback = _fallback_operations(request, default_mode=default_mode, matched_intent=matched_intent)
     inferred_targets = determine_target_diagram_types(request, last_intent=matched_intent, max_targets=6)
     # Cache detect_generator_type — called once and reused
@@ -364,8 +560,9 @@ def plan_assistant_operations(
     has_generation_request = detected_gen is not None
 
     if not _should_use_llm_planner(request.message, len(inferred_targets), has_generation_request):
-        return fallback
+        return _validate_and_fix_plan(fallback, request)
 
+    # ----- Phase 2: LLM planner -----
     context_summary = _build_context_summary(request)
 
     # Give the LLM strong hints about which diagram types were detected
@@ -429,6 +626,8 @@ Rules:
   3. Generate web_app code
 - Keep operations minimal and deterministic.
 - Return ONLY valid JSON: {{"operations":[...]}}.
+
+{_FEW_SHOT_EXAMPLES}
 """
 
     try:
@@ -438,8 +637,9 @@ Rules:
         operations = parsed.get("operations") if isinstance(parsed, dict) else None
         normalized = _normalize_operations(operations, request=request, default_mode=default_mode)
         if normalized:
-            return normalized
+            validated = _validate_and_fix_plan(normalized, request)
+            return validated
     except Exception as error:
         logger.warning("Planner JSON parsing failed, using fallback operations: %s", error)
 
-    return fallback
+    return _validate_and_fix_plan(fallback, request)

@@ -2,6 +2,12 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 
+# Streaming actions
+ACTION_STREAM_CHUNK = "stream_chunk"
+ACTION_STREAM_DONE = "stream_done"
+ACTION_PROGRESS = "progress"
+
+
 SUPPORTED_DIAGRAM_TYPES = {
     "ClassDiagram",
     "ObjectDiagram",

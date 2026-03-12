@@ -24,11 +24,8 @@ logger = logging.getLogger(__name__)
 
 
 def _flush_pending_suggestions(session: Session) -> None:
-    """Send any pending quality suggestions stored by execute_model_operation."""
-    quality = session.get('_pending_quality_suggestions')
-    if isinstance(quality, str) and quality:
-        reply_message(session, quality)
-        session.set('_pending_quality_suggestions', None)
+    """No-op — quality review is now opt-in only (user must ask explicitly)."""
+    pass
 
 # ------------------------------------------------------------------
 # Keyword lists

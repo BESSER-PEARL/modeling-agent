@@ -9,6 +9,8 @@ they only use the ``session`` object and the protocol adapters.
 
 import json
 import logging
+import time
+import uuid
 from typing import Any, Dict, Optional
 
 from besser.agent.core.session import Session
@@ -139,6 +141,116 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
     logger.debug(f"[Reply] Full payload keys: {list(payload.keys())}")
     session.reply(json.dumps(payload))
 
+
+def _send_to_session(session: Session, payload: Dict[str, Any]):
+    """Low-level helper: serialize *payload* as JSON and send it via the session.
+
+    This mirrors the mechanism used by :func:`reply_payload` — a single
+    ``session.reply(json.dumps(...))`` call — so streaming messages travel
+    through the exact same WebSocket path as every other server-initiated
+    message.
+    """
+    session.reply(json.dumps(payload))
+
+
+# ------------------------------------------------------------------
+# Streaming reply helpers
+# ------------------------------------------------------------------
+
+def reply_stream_start(session: Session, stream_id: str = None) -> str:
+    """Start a streaming response.  Returns the stream ID."""
+    if stream_id is None:
+        stream_id = str(uuid.uuid4())[:8]
+    payload = {
+        "action": "stream_start",
+        "streamId": stream_id,
+    }
+    _send_to_session(session, payload)
+    return stream_id
+
+
+def reply_stream_chunk(session: Session, chunk: str, stream_id: str):
+    """Send a streaming text chunk to the frontend."""
+    payload = {
+        "action": "stream_chunk",
+        "streamId": stream_id,
+        "chunk": chunk,
+        "done": False,
+    }
+    _send_to_session(session, payload)
+
+
+def reply_stream_done(session: Session, stream_id: str, full_text: str = ""):
+    """Signal the end of a streaming response."""
+    payload = {
+        "action": "stream_done",
+        "streamId": stream_id,
+        "fullText": full_text,
+        "done": True,
+    }
+    _send_to_session(session, payload)
+
+
+def reply_progress(session: Session, message: str, step: int = 0, total: int = 0):
+    """Send a progress indicator to the frontend."""
+    payload = {
+        "action": "progress",
+        "message": message,
+        "step": step,
+        "total": total,
+    }
+    _send_to_session(session, payload)
+
+
+def stream_llm_response(
+    session: Session, llm_instance: Any, prompt: str, system_prompt: str = ""
+) -> str:
+    """Stream an LLM response chunk by chunk to the frontend.
+
+    Args:
+        session: The WebSocket session.
+        llm_instance: The OpenAI LLM instance.
+        prompt: The user prompt.
+        system_prompt: Optional system prompt.
+
+    Returns:
+        The full completed text.
+    """
+    stream_id = reply_stream_start(session)
+    full_text = ""
+
+    try:
+        # Note: This depends on how the BESSER framework's LLM predict works.
+        # If it doesn't support streaming natively, fall back to non-streaming
+        # and send the full response as a single chunk.
+
+        # Attempt streaming if available
+        response = llm_instance.predict(prompt)
+
+        # If we can't stream, send as one chunk
+        full_text = response if isinstance(response, str) else str(response)
+
+        # Send in word-sized chunks to simulate streaming
+        words = full_text.split(' ')
+        chunk_size = 3  # Send 3 words at a time
+        for i in range(0, len(words), chunk_size):
+            chunk = ' '.join(words[i:i + chunk_size])
+            if i > 0:
+                chunk = ' ' + chunk
+            reply_stream_chunk(session, chunk, stream_id)
+            time.sleep(0.03)  # Small delay for natural feel
+
+    except Exception as e:
+        full_text = f"I encountered an issue: {str(e)}"
+        reply_stream_chunk(session, full_text, stream_id)
+
+    reply_stream_done(session, stream_id, full_text)
+    return full_text
+
+
+# ------------------------------------------------------------------
+# Generation routing
+# ------------------------------------------------------------------
 
 def route_to_generation(session: Session) -> bool:
     """Detect generation workflow requests or frontend callback events."""

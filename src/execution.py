@@ -8,9 +8,10 @@ Functions in this module access shared globals (LLM, diagram factory) via
 :mod:`src.agent_context` at **call time**, not import time.
 """
 
+import concurrent.futures
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from besser.agent import nlp
 from besser.agent.core.session import Session
@@ -39,7 +40,8 @@ from utilities.model_helpers import (
 )
 from utilities.model_resolution import resolve_class_diagram
 from utilities.workspace_context import record_session_action
-from quality_review import review_generated_model
+from quality_review import review_generated_model  # noqa: F401 – kept for explicit quality-check intent
+from suggestions import get_suggested_actions
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +333,18 @@ def execute_model_operation(
             session.set('_replace_existing_model', None)
             logger.info(f"[ModelOp] replaceExisting={replace_flag} (from session variable)")
 
+    # Attach contextual suggestions to the payload
+    available_diagrams = _collect_available_diagrams(request)
+    model_summary = _get_model_summary(result)
+    suggestions = get_suggested_actions(
+        diagram_type=target_diagram_type,
+        operation_mode=operation_mode,
+        available_diagrams=available_diagrams,
+        model_summary=model_summary,
+    )
+    if suggestions:
+        result["suggestedActions"] = suggestions
+
     logger.info(
         f"[ModelOp] Sending result: action={result.get('action')}, "
         f"replaceExisting={result.get('replaceExisting', 'NOT SET')}, "
@@ -349,13 +363,9 @@ def execute_model_operation(
         f"{operation_request[:80]}",
     )
 
-    # Proactive quality review — store for consolidated message in state body
-    available_diagrams = _collect_available_diagrams(request)
-    quality_suggestions = review_generated_model(
-        result, target_diagram_type, available_diagrams,
-    )
-    if quality_suggestions:
-        session.set('_pending_quality_suggestions', quality_suggestions)
+    # Quality review is opt-in — only run when user explicitly asks
+    # (e.g., "review my model", "check quality").  Removed automatic
+    # post-generation review to keep responses fast and focused.
 
     return target_diagram_type
 
@@ -371,6 +381,143 @@ def _collect_available_diagrams(request: AssistantRequest) -> list:
     return list(diagrams.keys())
 
 
+def _get_model_summary(result: dict) -> dict:
+    """Summarize what was created/modified from a handler result payload.
+
+    Extracts high-level statistics (class count, relationship count, element
+    names) so downstream suggestion logic can tailor recommendations without
+    needing the full result.
+    """
+    if not isinstance(result, dict):
+        return {}
+    summary: Dict[str, Any] = {
+        "action": result.get("action", "unknown"),
+    }
+    elements = result.get("elements")
+    if isinstance(elements, dict):
+        summary["element_count"] = len(elements)
+        # Collect top-level element names (classes, states, screens, etc.)
+        names = [
+            el.get("name") or el.get("id", "")
+            for el in elements.values()
+            if isinstance(el, dict)
+        ]
+        summary["element_names"] = names[:20]  # cap to avoid bloated payloads
+    elif isinstance(elements, list):
+        summary["element_count"] = len(elements)
+
+    relationships = result.get("relationships")
+    if isinstance(relationships, (list, dict)):
+        summary["relationship_count"] = (
+            len(relationships) if isinstance(relationships, list)
+            else len(relationships.keys()) if isinstance(relationships, dict)
+            else 0
+        )
+    return summary
+
+
+# ------------------------------------------------------------------
+# Structured error payloads
+# ------------------------------------------------------------------
+
+def _build_error_payload(operation: dict, error: Exception, error_code: str = "unknown") -> dict:
+    """Build a structured error payload with recovery hints."""
+    return {
+        "action": "agent_error",
+        "errorCode": error_code,
+        "message": str(error),
+        "operation": {
+            "type": operation.get("type"),
+            "diagramType": operation.get("diagramType"),
+            "mode": operation.get("mode"),
+        },
+        "suggestedRecovery": _get_recovery_hint(error_code),
+        "retryable": error_code in ("llm_failure", "parse_error", "timeout"),
+    }
+
+
+def _get_recovery_hint(error_code: str) -> str:
+    """Return a user-facing hint for recovering from a specific error type."""
+    hints = {
+        "llm_failure": "try again",
+        "parse_error": "try rephrasing more specifically",
+        "validation_error": "try simplifying the model",
+        "timeout": "try breaking into smaller steps",
+        "prerequisite_missing": "create the required diagram first",
+        "handler_missing": "this diagram type is not yet supported",
+        "generation_handler_error": "try regenerating — if it persists, check the model for issues",
+    }
+    return hints.get(error_code, "try rephrasing your request")
+
+
+def _classify_error(error: Exception) -> str:
+    """Map an exception to a structured error code."""
+    err_name = type(error).__name__.lower()
+    err_msg = str(error).lower()
+
+    if "timeout" in err_name or "timeout" in err_msg:
+        return "timeout"
+    if "parse" in err_name or "json" in err_name or "decode" in err_msg:
+        return "parse_error"
+    if "validation" in err_name or "invalid" in err_msg:
+        return "validation_error"
+    if any(kw in err_msg for kw in ("openai", "llm", "rate limit", "api")):
+        return "llm_failure"
+    return "unknown"
+
+
+# ------------------------------------------------------------------
+# Progress reporting
+# ------------------------------------------------------------------
+
+def _report_progress(session: Session, current_idx: int, total: int, operation: dict):
+    """Send a progress update to the user for multi-step plans."""
+    op_type = operation.get("type", "unknown")
+    diagram_type = operation.get("diagramType", "")
+
+    if total > 1:
+        progress_msg = f"Step {current_idx + 1}/{total}: "
+        if op_type == "model":
+            progress_msg += f"Creating {diagram_type}..." if diagram_type else "Processing model..."
+        elif op_type == "generation":
+            gen_type = operation.get("generatorType", "code")
+            progress_msg += f"Generating {gen_type}..."
+        else:
+            progress_msg += "Processing..."
+
+        # Send as a lightweight status message
+        reply_message(session, progress_msg)
+
+
+# ------------------------------------------------------------------
+# Parallel operation dispatch helpers
+# ------------------------------------------------------------------
+
+def _can_run_parallel(operations: List[dict]) -> Tuple[List[List[dict]], List[dict]]:
+    """Split operations into parallel-safe groups.
+
+    Model operations for DIFFERENT diagram types with no dependencies can run
+    in parallel.  Generation ops always run after their prerequisite model ops.
+
+    Returns
+    -------
+    independent_model_groups : list[list[dict]]
+        Each inner list is a group of model ops for one diagram type.
+    gen_ops : list[dict]
+        Generation operations, to be executed sequentially after all model ops.
+    """
+    model_ops = [op for op in operations if isinstance(op, dict) and op.get("type") == "model"]
+    gen_ops = [op for op in operations if isinstance(op, dict) and op.get("type") == "generation"]
+
+    # Model ops for different diagram types are independent
+    independent_model_groups: Dict[str, List[dict]] = {}
+    for op in model_ops:
+        dt = op.get("diagramType", "unknown")
+        independent_model_groups.setdefault(dt, []).append(op)
+
+    return list(independent_model_groups.values()), gen_ops
+
+
 # ------------------------------------------------------------------
 # Planned-operation dispatch
 # ------------------------------------------------------------------
@@ -381,7 +528,14 @@ def execute_planned_operations(
     default_mode: str,
     matched_intent: Optional[str],
 ) -> None:
-    """Run the orchestrator planner and dispatch each resulting operation."""
+    """Run the orchestrator planner and dispatch each resulting operation.
+
+    Improvements over sequential-only execution:
+    - Independent model operations (different diagram types) run in parallel
+    - Structured error payloads with recovery hints replace generic messages
+    - Progress messages keep the user informed during multi-step plans
+    - Suggestion attachments are enriched with model summaries
+    """
     operations = plan_assistant_operations(
         request=request,
         default_mode=default_mode,
@@ -393,14 +547,98 @@ def execute_planned_operations(
         reply_message(session, "I couldn't determine an execution plan from your request.")
         return
 
+    # Split into parallel-safe model groups and sequential generation ops
+    model_groups, gen_ops = _can_run_parallel(operations)
+    total_steps = sum(len(g) for g in model_groups) + len(gen_ops)
+
     working_request = request
+    step_counter = 0
 
-    for idx, operation in enumerate(operations):
-        if not isinstance(operation, dict):
-            continue
+    # ── Phase 1: Model operations ────────────────────────────────────
+    # Multiple independent diagram-type groups can run in parallel.
+    # Within each group, operations run sequentially (same diagram type).
+    if len(model_groups) > 1:
+        # Parallel execution across independent diagram-type groups
+        logger.info(
+            f"[PlannedOps] Running {len(model_groups)} independent model group(s) in parallel"
+        )
 
-        operation_type = operation.get("type")
-        if operation_type == "model":
+        # We need to detect if any group triggers a pending confirmation.
+        # If so, we must store remaining ops and halt.
+        confirmation_triggered = False
+        all_flat_ops = [op for group in model_groups for op in group]
+
+        def _run_model_group(group: List[dict]) -> List[Tuple[dict, Optional[str], Optional[Exception]]]:
+            """Execute a group of model ops sequentially, return results."""
+            results = []
+            for op in group:
+                try:
+                    executed = execute_model_operation(
+                        session, working_request, op, default_mode=default_mode,
+                    )
+                    results.append((op, executed, None))
+                except Exception as exc:
+                    results.append((op, None, exc))
+            return results
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(len(model_groups), 4),
+        ) as executor:
+            futures = {
+                executor.submit(_run_model_group, group): group
+                for group in model_groups
+            }
+            for future in concurrent.futures.as_completed(futures):
+                group = futures[future]
+                try:
+                    group_results = future.result()
+                except Exception as exc:
+                    # Entire group failed — report structured error for each op
+                    for op in group:
+                        step_counter += 1
+                        _report_progress(session, step_counter - 1, total_steps, op)
+                        error_code = _classify_error(exc)
+                        error_payload = _build_error_payload(op, exc, error_code)
+                        reply_payload(session, error_payload)
+                        logger.error(f"[PlannedOps] Parallel group error: {exc}")
+                    continue
+
+                for op, executed_target, error in group_results:
+                    step_counter += 1
+                    _report_progress(session, step_counter - 1, total_steps, op)
+
+                    if error is not None:
+                        error_code = _classify_error(error)
+                        error_payload = _build_error_payload(op, error, error_code)
+                        reply_payload(session, error_payload)
+                        logger.error(f"[PlannedOps] Model op error: {error}")
+                        continue
+
+                    if executed_target is None:
+                        # Pending confirmation — store remaining ops
+                        remaining_ops = gen_ops[:]  # gen ops always remain
+                        _store_remaining_ops(session, remaining_ops, request)
+                        confirmation_triggered = True
+                        continue
+
+                    if isinstance(executed_target, str) and executed_target:
+                        working_request = build_request_for_target(
+                            working_request, executed_target,
+                        )
+
+        if confirmation_triggered:
+            logger.info("[PlannedOps] Pending confirmation stored — halting remaining operations")
+            return
+
+    else:
+        # Single group (or empty) — sequential execution, no thread overhead
+        flat_model_ops = model_groups[0] if model_groups else []
+        all_ops_flat = flat_model_ops + gen_ops
+
+        for idx, operation in enumerate(flat_model_ops):
+            step_counter += 1
+            _report_progress(session, step_counter - 1, total_steps, operation)
+
             try:
                 executed_target = execute_model_operation(
                     session, working_request, operation, default_mode=default_mode,
@@ -408,50 +646,72 @@ def execute_planned_operations(
                 if executed_target is None:
                     # Pending confirmation stored — save remaining ops so they
                     # can be resumed after the user confirms.
-                    remaining = [op for op in operations[idx + 1:] if isinstance(op, dict)]
-                    if remaining:
-                        pending = session.get('pending_complete_system')
-                        if isinstance(pending, dict):
-                            pending['remaining_operations'] = remaining
-                            pending['original_message'] = request.message
-                            session.set('pending_complete_system', pending)
-                            logger.info(
-                                f"[PlannedOps] Stored {len(remaining)} remaining operation(s) "
-                                f"alongside pending confirmation"
-                            )
+                    remaining = (
+                        [op for op in flat_model_ops[idx + 1:] if isinstance(op, dict)]
+                        + gen_ops
+                    )
+                    _store_remaining_ops(session, remaining, request)
                     logger.info("[PlannedOps] Pending confirmation stored — halting remaining operations")
                     return
                 if isinstance(executed_target, str) and executed_target:
                     working_request = build_request_for_target(working_request, executed_target)
             except Exception as error:
-                logger.error(f"Error executing model operation {operation}: {error}")
-                reply_message(session, "I encountered an issue while applying a modeling step.")
+                error_code = _classify_error(error)
+                error_payload = _build_error_payload(operation, error, error_code)
+                reply_payload(session, error_payload)
+                logger.error(f"[PlannedOps] Model op error ({error_code}): {error}")
             continue
 
-        if operation_type == "generation":
-            generator_type = operation.get("generatorType")
-            if not isinstance(generator_type, str) or not generator_type:
-                continue
+    # ── Phase 2: Generation operations (always sequential) ───────────
+    for operation in gen_ops:
+        step_counter += 1
+        _report_progress(session, step_counter - 1, total_steps, operation)
 
-            generation_message = operation.get("request") if isinstance(operation.get("request"), str) else None
-            generation_request = build_generation_request(
-                working_request,
+        generator_type = operation.get("generatorType")
+        if not isinstance(generator_type, str) or not generator_type:
+            continue
+
+        generation_message = operation.get("request") if isinstance(operation.get("request"), str) else None
+        generation_request = build_generation_request(
+            working_request,
+            generator_type=generator_type,
+            config=operation.get("config") if isinstance(operation.get("config"), dict) else {},
+            message_override=generation_message,
+        )
+        try:
+            response_payload = handle_generation_request(session, generation_request)
+        except Exception as error:
+            error_code = _classify_error(error)
+            response_payload = _build_error_payload(operation, error, error_code)
+            logger.error(f"[PlannedOps] Generation error ({error_code}): {error}")
+
+        if isinstance(response_payload, dict):
+            # Attach suggestions after code generation
+            gen_suggestions = get_suggested_actions(
+                diagram_type="",
+                operation_mode="generation",
+                available_diagrams=_collect_available_diagrams(working_request),
                 generator_type=generator_type,
-                config=operation.get("config") if isinstance(operation.get("config"), dict) else {},
-                message_override=generation_message,
             )
-            try:
-                response_payload = handle_generation_request(session, generation_request)
-            except Exception as error:
-                logger.error(f"Error executing generation operation {operation}: {error}")
-                response_payload = {
-                    "action": "agent_error",
-                    "code": "generation_handler_error",
-                    "message": f"Failed to process {generator_type} generation request.",
-                    "retryable": True,
-                }
+            if gen_suggestions:
+                response_payload["suggestedActions"] = gen_suggestions
+            reply_payload(session, response_payload)
+        elif isinstance(response_payload, str):
+            reply_message(session, response_payload)
 
-            if isinstance(response_payload, dict):
-                reply_payload(session, response_payload)
-            elif isinstance(response_payload, str):
-                reply_message(session, response_payload)
+
+def _store_remaining_ops(
+    session: Session, remaining: List[dict], request: AssistantRequest,
+) -> None:
+    """Persist remaining operations alongside a pending confirmation."""
+    remaining = [op for op in remaining if isinstance(op, dict)]
+    if remaining:
+        pending = session.get('pending_complete_system')
+        if isinstance(pending, dict):
+            pending['remaining_operations'] = remaining
+            pending['original_message'] = request.message
+            session.set('pending_complete_system', pending)
+            logger.info(
+                f"[PlannedOps] Stored {len(remaining)} remaining operation(s) "
+                f"alongside pending confirmation"
+            )

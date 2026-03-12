@@ -31,11 +31,14 @@ from execution import (
     execute_planned_operations,
     handle_file_attachments,
 )
+from suggestions import get_suggested_actions, format_suggestions_as_text
 from diagram_handlers.factory import get_diagram_type_info
 from handlers.generation_handler import (
     handle_generation_request,
     _looks_like_mixed_modeling_and_generation,
+    detect_generator_type,
 )
+from handlers.validation_handler import validate_diagram
 from orchestrator import determine_target_diagram_type
 from utilities.model_context import detailed_model_summary
 from routing.intents import GENERATION_INTENT_NAME
@@ -68,30 +71,8 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
 
 
 # ------------------------------------------------------------------
-# "What's next" suggestions
+# "What's next" suggestions (powered by the suggestion engine)
 # ------------------------------------------------------------------
-
-_NEXT_STEP_HINTS: Dict[str, str] = {
-    "ClassDiagram": (
-        "You can now create an **Object Diagram**, **State Machine**, **GUI**, "
-        "or **generate code** (e.g. *\"generate Django\"* or *\"generate SQLAlchemy\"*)."
-    ),
-    "GUINoCodeDiagram": (
-        "You can now **generate a web app** or **React frontend** from your GUI + class diagram."
-    ),
-    "AgentDiagram": (
-        "You can now **generate BAF agent code** (e.g. *\"generate agent code\"*)."
-    ),
-    "StateMachineDiagram": (
-        "You can now **describe** your state machine or combine it with a class diagram."
-    ),
-    "ObjectDiagram": (
-        "Your object diagram is ready! You can **modify** it or **describe** it."
-    ),
-    "QuantumCircuitDiagram": (
-        "You can now ask me to **describe** your circuit or **generate Qiskit code**."
-    ),
-}
 
 
 # ------------------------------------------------------------------
@@ -275,18 +256,10 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
             default_mode=default_mode,
             matched_intent=intent_name,
         )
-        # Consolidate quality suggestions + "What's next?" into one message
-        parts: list = []
-        quality = session.get('_pending_quality_suggestions')
-        if isinstance(quality, str) and quality:
-            parts.append(quality)
-            session.set('_pending_quality_suggestions', None)
-        last_diagram = session.get('_last_executed_diagram_type')
-        if isinstance(last_diagram, str) and last_diagram in _NEXT_STEP_HINTS:
-            parts.append(f"**What's next?** {_NEXT_STEP_HINTS[last_diagram]}")
-            session.set('_last_executed_diagram_type', None)
-        if parts:
-            reply_message(session, "\n\n".join(parts))
+        # "What's next?" suggestions are delivered as interactive QuickAction
+        # buttons via suggestedActions in the result payload (execution.py).
+        # No need for a separate text message.
+        session.set('_last_executed_diagram_type', None)
     except Exception as e:
         logger.error(f"Error in {intent_name}: {e}", exc_info=True)
         reply_message(session, "Something went wrong while processing your request. Could you try rephrasing it?")
@@ -555,7 +528,176 @@ def generation_body(session: Session):
         reply_message(session, "I could not process your generation request.")
         return
 
+    # Attach contextual suggestions after code generation
+    snapshot = request.context.project_snapshot
+    avail_diagrams: list = []
+    if isinstance(snapshot, dict):
+        diagrams = snapshot.get("diagrams")
+        if isinstance(diagrams, dict):
+            avail_diagrams = list(diagrams.keys())
+    gen_suggestions = get_suggested_actions(
+        diagram_type="",
+        operation_mode="generation",
+        available_diagrams=avail_diagrams,
+    )
+    if gen_suggestions:
+        response_payload["suggestedActions"] = gen_suggestions
+
     reply_payload(session, response_payload)
+
+
+# ------------------------------------------------------------------
+# End-to-end workflow: model -> validate -> generate
+# ------------------------------------------------------------------
+
+def workflow_body(session: Session):
+    """End-to-end workflow: create model(s), validate, and generate code in one go."""
+    request = _common_preamble(session)
+    if request is None:
+        return
+
+    session.set('last_matched_intent', 'workflow_intent')
+
+    if not request.message:
+        reply_message(
+            session,
+            "What would you like me to build end-to-end? For example: "
+            "*\"Create a complete web app for a hotel booking system\"*",
+        )
+        return
+
+    user_message = request.message
+
+    # ── Step 0: Parse generator target from the user message ─────────
+    target_generator = detect_generator_type(user_message)
+    if not target_generator:
+        # Default to web_app for generic "complete application" requests
+        target_generator = "web_app"
+
+    reply_message(
+        session,
+        f"Starting the **end-to-end workflow** for your request. "
+        f"I will create the model(s), validate them, and generate **{target_generator}** code.\n\n"
+        f"**Step 1/3** — Building your model...",
+    )
+
+    # ── Step 1: Create the model(s) via the existing planner ─────────
+    try:
+        execute_planned_operations(
+            session=session,
+            request=request,
+            default_mode="complete_system",
+            matched_intent="workflow_intent",
+        )
+    except Exception as e:
+        logger.error(f"[Workflow] Model creation failed: {e}", exc_info=True)
+        reply_message(
+            session,
+            "Something went wrong while creating the model. "
+            "Could you try rephrasing your request?",
+        )
+        return
+
+    # If there's a pending confirmation (e.g. replace existing model),
+    # we have to stop here — the user needs to respond first.
+    if session.get('pending_complete_system') or session.get('pending_gui_choice'):
+        logger.info("[Workflow] Paused — waiting for user confirmation before continuing")
+        # Store workflow continuation state so we could resume later
+        session.set('_workflow_pending_generator', target_generator)
+        return
+
+    # ── Step 2: Validate the model ───────────────────────────────────
+    reply_message(session, "**Step 2/3** — Running validation on your model...")
+
+    # Collect the active model from the session context for validation
+    active_model = request.context.active_model or request.current_model
+    active_diagram_type = request.context.active_diagram_type or request.diagram_type
+
+    # Also check the project snapshot for the model we just created
+    snapshot = request.context.project_snapshot
+    if not active_model and isinstance(snapshot, dict):
+        diagrams = snapshot.get("diagrams")
+        if isinstance(diagrams, dict):
+            # Prefer ClassDiagram as primary validation target
+            for dt in ["ClassDiagram", active_diagram_type]:
+                if dt in diagrams and isinstance(diagrams[dt], dict):
+                    candidate = diagrams[dt].get("model")
+                    if isinstance(candidate, dict):
+                        active_model = candidate
+                        active_diagram_type = dt
+                        break
+
+    validation_result = {"valid": True, "errors": [], "warnings": []}
+    if isinstance(active_model, dict) and active_model:
+        validation_result = validate_diagram(
+            diagram_json=active_model,
+            diagram_type=active_diagram_type,
+        )
+
+    # Report validation results
+    if validation_result["errors"]:
+        error_list = "\n".join(f"- {err}" for err in validation_result["errors"])
+        warning_section = ""
+        if validation_result["warnings"]:
+            warning_list = "\n".join(f"- {w}" for w in validation_result["warnings"])
+            warning_section = f"\n\n**Warnings:**\n{warning_list}"
+        reply_message(
+            session,
+            f"Validation found **{len(validation_result['errors'])} error(s)**:\n"
+            f"{error_list}{warning_section}\n\n"
+            f"I recommend fixing these issues before generating code. "
+            f"You can say *\"fix the validation errors\"* or modify the model manually.",
+        )
+        return
+
+    # Validation passed
+    warning_msg = ""
+    if validation_result["warnings"]:
+        warning_list = "\n".join(f"- {w}" for w in validation_result["warnings"])
+        warning_msg = f"\n\n**Warnings** (non-blocking):\n{warning_list}"
+
+    reply_message(
+        session,
+        f"Validation **passed** with 0 errors.{warning_msg}\n\n"
+        f"**Step 3/3** — Generating **{target_generator}** code...",
+    )
+
+    # ── Step 3: Trigger code generation ──────────────────────────────
+    from utilities.model_helpers import build_generation_request
+
+    generation_request = build_generation_request(
+        request,
+        generator_type=target_generator,
+        config={},
+        message_override=f"generate {target_generator}",
+    )
+
+    try:
+        response_payload = handle_generation_request(session, generation_request)
+    except Exception as error:
+        logger.error(f"[Workflow] Generation failed: {error}", exc_info=True)
+        response_payload = {
+            "action": "agent_error",
+            "code": "generation_handler_error",
+            "message": f"Failed to generate {target_generator} code.",
+            "retryable": True,
+        }
+
+    if isinstance(response_payload, dict):
+        # Add a completion summary to the payload message
+        original_message = response_payload.get("message", "")
+        response_payload["message"] = (
+            f"{original_message}\n\n"
+            f"**Workflow complete!** Your model was created, validated, and "
+            f"**{target_generator}** code has been generated."
+        )
+        reply_payload(session, response_payload)
+    else:
+        reply_message(
+            session,
+            f"Code generation for **{target_generator}** did not return a valid result. "
+            f"You can try again by saying *\"generate {target_generator}\"*.",
+        )
 
 
 # ------------------------------------------------------------------
@@ -659,6 +801,7 @@ def register_all(*, agent, states, intents):
     states['describe_model'].set_body(describe_model_body)
     states['generation'].set_body(generation_body)
     states['uml_rag'].set_body(uml_rag_body)
+    states['workflow'].set_body(workflow_body)
 
     # -- Wire transitions --
     intent_map = {
@@ -670,6 +813,7 @@ def register_all(*, agent, states, intents):
         intents['uml_spec']: states['uml_rag'],
         intents['generation']: states['generation'],
         intents['hello']: states['greetings'],
+        intents['workflow']: states['workflow'],
     }
 
     generation_st = states['generation']
@@ -683,6 +827,7 @@ def register_all(*, agent, states, intents):
         ('describe_model', 'describe_model'),
         ('uml_rag', 'greetings'),
         ('generation', 'generation'),
+        ('workflow', 'workflow'),
     ]:
         add_unified_transitions(
             states[state_name], intent_map, states[fallback_name], generation_st,
