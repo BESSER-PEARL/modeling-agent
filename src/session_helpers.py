@@ -9,7 +9,6 @@ they only use the ``session`` object and the protocol adapters.
 
 import json
 import logging
-import time
 import uuid
 from typing import Any, Dict, Optional
 
@@ -230,15 +229,10 @@ def stream_llm_response(
         # If we can't stream, send as one chunk
         full_text = response if isinstance(response, str) else str(response)
 
-        # Send in word-sized chunks to simulate streaming
-        words = full_text.split(' ')
-        chunk_size = 3  # Send 3 words at a time
-        for i in range(0, len(words), chunk_size):
-            chunk = ' '.join(words[i:i + chunk_size])
-            if i > 0:
-                chunk = ' ' + chunk
-            reply_stream_chunk(session, chunk, stream_id)
-            time.sleep(0.03)  # Small delay for natural feel
+        # Send full response as a single chunk — no artificial delays.
+        # The frontend already handles streaming display; adding sleep()
+        # here only increases end-to-end latency without benefiting UX.
+        reply_stream_chunk(session, full_text, stream_id)
 
     except Exception as e:
         full_text = f"I encountered an issue: {str(e)}"

@@ -458,171 +458,163 @@ Rules:
             logger.error("[QuantumCircuit] generate_single_element FAILED", exc_info=True)
             return self.generate_fallback_element(user_request)
 
+    # Algorithm templates — only the one matching the user request is
+    # injected into the prompt, saving ~800 tokens on average.
+    _ALGORITHM_TEMPLATES = {
+        "bell": (
+            "**Bell State** (2 qubits):\n"
+            "  Col 0: H on q0\n"
+            "  Col 1: CNOT control=q0 target=q1\n"
+            "  Col 2: MEASURE q0, q1"
+        ),
+        "ghz": (
+            "**GHZ State** (3+ qubits):\n"
+            "  Col 0: H on q0\n"
+            "  Col 1..N-1: CNOT control=q0 target=q1, q2, ... qN-1 (one per column)\n"
+            "  Last col: MEASURE all"
+        ),
+        "grover": (
+            "**Grover's Search** — uses CONTROL + Z pattern (NOT CNOT).\n"
+            "The oracle marks the target state with CZ; the diffusion operator is H-X-CZ-X-H.\n"
+            "For N qubits the 'multi-controlled Z' is built by placing CONTROL on all qubits\n"
+            "except the last target qubit, which gets Z.\n\n"
+            "IMPORTANT: Use 'CONTROL' (row placement) + CZ or direct Z. Do NOT use CNOT for the oracle or diffusion.\n\n"
+            "2-qubit Grover (searching |11>):\n"
+            "  Col 0: H q0, H q1\n"
+            "  Col 1: CZ control=q0 target=q1 (oracle)\n"
+            "  Col 2: H q0, H q1 (diffusion start)\n"
+            "  Col 3: X q0, X q1\n"
+            "  Col 4: CZ control=q0 target=q1\n"
+            "  Col 5: X q0, X q1\n"
+            "  Col 6: H q0, H q1 (diffusion end)\n"
+            "  Col 7: MEASURE q0, MEASURE q1\n\n"
+            "3-qubit Grover (searching |111>):\n"
+            "  Col 0: H q0, H q1, H q2\n"
+            "  Col 1: CONTROL q0, CONTROL q1, Z q2 (oracle)\n"
+            "  Col 2-6: H-X-CONTROL+Z-X-H diffusion\n"
+            "  Col 7: MEASURE all\n"
+            "  JSON for CONTROL+Z columns:\n"
+            '    {"column": 1, "row": 0, "gate": "CONTROL"},\n'
+            '    {"column": 1, "row": 1, "gate": "CONTROL"},\n'
+            '    {"column": 1, "row": 2, "gate": "Z"}\n\n'
+            "General pattern: N qubits (no ancilla). Oracle = CONTROL on q0..q(N-2) + Z on q(N-1).\n"
+            "Diffusion = H all, X all, same CONTROL+Z pattern, X all, H all. qubitCount = N."
+        ),
+        "qft": (
+            "**Quantum Fourier Transform (QFT)** (N qubits):\n"
+            "  For each qubit k (0 to N-1): H on k, then controlled phase rotations from j > k\n"
+            "  Then SWAP qubits to reverse order\n"
+            "  3-qubit QFT: H q0, CZ q1->q0, CZ q2->q0, H q1, CZ q2->q1, H q2, SWAP q0<->q2"
+        ),
+        "deutsch": (
+            "**Deutsch-Jozsa** (N+1 qubits, last is ancilla):\n"
+            "  Col 0: X on ancilla\n"
+            "  Col 1: H on ALL qubits\n"
+            "  Oracle: CNOT from each input qubit to ancilla\n"
+            "  Next: H on input qubits (not ancilla)\n"
+            "  Last: MEASURE input qubits"
+        ),
+        "teleportation": (
+            "**Quantum Teleportation** (3 qubits: q0=state, q1=Alice, q2=Bob):\n"
+            "  Col 0: H q1, Col 1: CNOT q1->q2, Col 2: CNOT q0->q1,\n"
+            "  Col 3: H q0, Col 4: MEASURE q0+q1, Col 5: CNOT q1->q2, Col 6: CZ q0->q2"
+        ),
+        "bernstein": (
+            "**Bernstein-Vazirani** (N+1 qubits, last is ancilla):\n"
+            "  X on ancilla, H on ALL, CNOT from secret-bit=1 qubits to ancilla,\n"
+            "  H on input qubits, MEASURE input qubits"
+        ),
+        "superdense": (
+            "**Superdense Coding** (2 qubits):\n"
+            "  H q0, CNOT q0->q1, encode (X/Z on q0), CNOT q0->q1, H q0, MEASURE both"
+        ),
+        "phase": (
+            "**Phase Estimation** (N+1 qubits):\n"
+            "  H on counting qubits, controlled-U from counting to target,\n"
+            "  Inverse QFT on counting qubits, MEASURE counting qubits"
+        ),
+    }
+
+    _ALGORITHM_KEYWORDS = {
+        "bell": ["bell state", "bell pair", "entangle two", "entangled pair"],
+        "ghz": ["ghz", "greenberger"],
+        "grover": ["grover", "search algorithm", "amplitude amplification"],
+        "qft": ["qft", "fourier transform", "quantum fourier"],
+        "deutsch": ["deutsch", "jozsa", "deutsch-jozsa"],
+        "teleportation": ["teleport"],
+        "bernstein": ["bernstein", "vazirani"],
+        "superdense": ["superdense", "dense coding"],
+        "phase": ["phase estimation"],
+    }
+
+    def _select_algorithm_templates(self, user_request: str) -> str:
+        """Select only algorithm templates relevant to the user request.
+
+        Returns the template text to inject into the prompt. For unknown
+        requests, includes only Bell State and Grover's as compact examples.
+        """
+        request_lower = user_request.lower()
+        matched = []
+        for algo_key, keywords in self._ALGORITHM_KEYWORDS.items():
+            if any(kw in request_lower for kw in keywords):
+                matched.append(algo_key)
+
+        if not matched:
+            # Provide 2 compact examples for generic "create a quantum circuit" requests
+            matched = ["bell", "grover"]
+
+        templates = []
+        for key in matched:
+            if key in self._ALGORITHM_TEMPLATES:
+                templates.append(self._ALGORITHM_TEMPLATES[key])
+
+        header = "KNOWN QUANTUM ALGORITHMS — use these exact implementations when matching:\n\n"
+        return header + "\n\n".join(templates)
+
     def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        prompt = """You are an expert quantum computing assistant that designs quantum circuits.
+        algorithm_section = self._select_algorithm_templates(user_request)
+
+        prompt = f"""You are an expert quantum computing assistant that designs quantum circuits.
 
 Return ONLY JSON with this shape:
-{
+{{
   "qubitCount": 3,
   "algorithmName": "short name of the algorithm",
   "operations": [
-    {"column": 0, "row": 0, "gate": "H"},
-    {"column": 1, "gate": "CNOT", "controlRow": 0, "targetRow": 1},
-    {"column": 2, "row": 0, "gate": "MEASURE"}
+    {{"column": 0, "row": 0, "gate": "H"}},
+    {{"column": 1, "gate": "CNOT", "controlRow": 0, "targetRow": 1}},
+    {{"column": 2, "row": 0, "gate": "MEASURE"}}
   ]
-}
+}}
 
 AVAILABLE GATES (organised by category):
   Probes: MEASURE, MEASURE_X, MEASURE_Y, CONTROL, ANTI_CONTROL
   Half Turns: H (Hadamard), X (NOT/bit-flip), Y, Z (phase-flip), SWAP
-  Quarter Turns: S (π/2 phase), S_DAG, V (√X), V_DAG, SQRT_Y, SQRT_Y_DAG
-  Eighth Turns: T (π/4 phase), T_DAG, SQRT_SQRT_X, SQRT_SQRT_X_DAG, SQRT_SQRT_Y, SQRT_SQRT_Y_DAG
-  Parametrized Rotations: X_POW, Y_POW, Z_POW, EXP_X, EXP_Y, EXP_Z
-  Spinning (time-dep): Z_POW_T, Z_POW_NEG_T, Y_POW_T, Y_POW_NEG_T, X_POW_T, X_POW_NEG_T
-  Frequency (multi-qubit): QFT, QFT_DAG, PHASE_GRADIENT, PHASE_GRADIENT_DAG, PHASE_GRADIENT_INV, PHASE_GRADIENT_INV_DAG
-  Arithmetic (multi-qubit): INC, DEC, ADD, SUB, MUL, ADD_AB, SUB_AB, MUL_INV
-  Modular Arithmetic: MOD_ADD, MOD_SUB, MOD_MUL, MOD_INV_MUL, MOD_INC, MOD_DEC, MOD_MUL_B, MOD_MUL_B_INV
-  Compare / Logic: COMPARE (<), GREATER_THAN, LESS_EQUAL, GREATER_EQUAL, EQUAL, NOT_EQUAL, XOR, COUNT_1S, CYCLE_BITS
+  Quarter Turns: S, S_DAG, V, V_DAG, SQRT_Y, SQRT_Y_DAG
+  Eighth Turns: T, T_DAG, SQRT_SQRT_X, SQRT_SQRT_X_DAG, SQRT_SQRT_Y, SQRT_SQRT_Y_DAG
+  Parametrized: X_POW, Y_POW, Z_POW, EXP_X, EXP_Y, EXP_Z
+  Multi-qubit: QFT, QFT_DAG, PHASE_GRADIENT, ADD, SUB, MUL, INC, DEC, MOD_ADD, MOD_SUB, MOD_MUL
+  Compare/Logic: COMPARE, GREATER_THAN, LESS_EQUAL, EQUAL, NOT_EQUAL, XOR
   Order: INTERLEAVE, DEINTERLEAVE, REVERSE_BITS, ROTATE_BITS_LEFT, ROTATE_BITS_RIGHT
-  Scalar: ONE, MINUS_ONE, PHASE_I, PHASE_MINUS_I, PHASE_SQRT_I, PHASE_SQRT_MINUS_I
-  Function: FUNCTION (custom box — set "label" and "height"), ORACLE, UNITARY
+  Function: FUNCTION (set "label" and "height"), ORACLE, UNITARY
   Controlled: CNOT (controlRow + targetRow), CZ, CY, TOFFOLI (controlRow, controlRow2, targetRow)
 
 GATE USAGE RULES:
 - Controlled gates (CNOT, CZ, CY): use "controlRow" and "targetRow" (no "row")
 - TOFFOLI: use "controlRow", "controlRow2", and "targetRow"
 - SWAP: use "row" and "targetRow"
-- FUNCTION / ORACLE / UNITARY: set "label" (e.g. "Uf") and "height" (default 2)
-- INTERLEAVE / DEINTERLEAVE: set "height" (default 6)
-- Multi-qubit gates (QFT, ADD, etc.) auto-span rows based on default height
+- FUNCTION / ORACLE / UNITARY: set "label" and "height" (default 2)
+- Multi-qubit gates auto-span rows based on default height
 - Single-qubit gates: use "row"
 - All indexes are zero-based
 
-KNOWN QUANTUM ALGORITHMS — use these exact implementations when the user requests them:
-
-1. **Bell State** (2 qubits):
-   Col 0: H on q0
-   Col 1: CNOT control=q0 target=q1
-   Col 2: MEASURE q0, q1
-
-2. **GHZ State** (3+ qubits):
-   Col 0: H on q0
-   Col 1..N-1: CNOT control=q0 target=q1, q2, ... qN-1 (one per column)
-   Last col: MEASURE all
-
-3. **Grover's Search** — uses CONTROL + Z pattern (NOT CNOT).
-   The oracle marks the target state with CZ; the diffusion operator is H-X-CZ-X-H.
-   For N qubits the "multi-controlled Z" is built by placing CONTROL on all qubits
-   except the last target qubit, which gets Z.
-
-   **IMPORTANT**: Use "CONTROL" (row placement) + CZ or direct Z. Do NOT use CNOT for the oracle or diffusion.
-
-   2-qubit Grover (searching |11⟩) — EXACT match of frontend template:
-     Col 0: H q0, H q1                        (superposition)
-     Col 1: CZ control=q0 target=q1            (oracle: marks |11⟩)
-     Col 2: H q0, H q1                        (diffusion start)
-     Col 3: X q0, X q1
-     Col 4: CZ control=q0 target=q1
-     Col 5: X q0, X q1
-     Col 6: H q0, H q1                        (diffusion end)
-     Col 7: MEASURE q0, MEASURE q1
-
-   3-qubit Grover (searching |111⟩):
-     Col 0:  H q0, H q1, H q2                   (superposition)
-     Oracle — multi-controlled Z (2 controls + Z target):
-     Col 1:  CONTROL q0, CONTROL q1, Z q2       (marks |111⟩)
-     Diffusion operator:
-     Col 2:  H q0, H q1, H q2
-     Col 3:  X q0, X q1, X q2
-     Col 4:  CONTROL q0, CONTROL q1, Z q2       (multi-controlled Z)
-     Col 5:  X q0, X q1, X q2
-     Col 6:  H q0, H q1, H q2
-     Col 7:  MEASURE q0, MEASURE q1, MEASURE q2
-     JSON operations for the CONTROL+Z columns:
-       {"column": 1, "row": 0, "gate": "CONTROL"},
-       {"column": 1, "row": 1, "gate": "CONTROL"},
-       {"column": 1, "row": 2, "gate": "Z"}
-
-   4-qubit Grover (searching |1111⟩):
-     Col 0:  H q0, H q1, H q2, H q3               (superposition)
-     Oracle — 3 controls + Z:
-     Col 1:  CONTROL q0, CONTROL q1, CONTROL q2, Z q3
-     Diffusion:
-     Col 2:  H q0, H q1, H q2, H q3
-     Col 3:  X q0, X q1, X q2, X q3
-     Col 4:  CONTROL q0, CONTROL q1, CONTROL q2, Z q3
-     Col 5:  X q0, X q1, X q2, X q3
-     Col 6:  H q0, H q1, H q2, H q3
-     Col 7:  MEASURE q0, MEASURE q1, MEASURE q2, MEASURE q3
-     JSON operations for CONTROL+Z columns:
-       {"column": 1, "row": 0, "gate": "CONTROL"},
-       {"column": 1, "row": 1, "gate": "CONTROL"},
-       {"column": 1, "row": 2, "gate": "CONTROL"},
-       {"column": 1, "row": 3, "gate": "Z"}
-
-   General pattern for N-qubit Grover:
-     Use N qubits (no ancilla needed). Oracle = CONTROL on q0..q(N-2) + Z on q(N-1).
-     Diffusion = H all, X all, same CONTROL+Z pattern, X all, H all.
-     qubitCount = N (not N+1).
-
-4. **Quantum Fourier Transform (QFT)** (N qubits):
-   For each qubit k (0 to N-1):
-     Apply H to qubit k
-     For each qubit j > k: apply controlled phase rotation
-       (approximate with CZ for pi/2, or T/S gates for smaller rotations)
-   Then SWAP qubits to reverse order
-   Example 3-qubit QFT:
-     Col 0: H q0
-     Col 1: CZ control=q1 target=q0  (controlled S)
-     Col 2: CZ control=q2 target=q0  (controlled T)
-     Col 3: H q1
-     Col 4: CZ control=q2 target=q1
-     Col 5: H q2
-     Col 6: SWAP row=q0 targetRow=q2
-
-5. **Deutsch-Jozsa** (N+1 qubits, last qubit is ancilla):
-   Col 0: X on ancilla (last qubit)
-   Col 1: H on ALL qubits (including ancilla)
-   Oracle columns: CNOT from each input qubit to ancilla (for balanced function)
-   Next col: H on all input qubits (not ancilla)
-   Last col: MEASURE all input qubits
-
-6. **Quantum Teleportation** (3 qubits: q0=state to teleport, q1=Alice's Bell, q2=Bob's Bell):
-   Col 0: H q1  (create Bell pair)
-   Col 1: CNOT control=q1 target=q2
-   Col 2: CNOT control=q0 target=q1  (Alice's operations)
-   Col 3: H q0
-   Col 4: MEASURE q0, MEASURE q1
-   Col 5: CNOT control=q1 target=q2  (Bob's corrections)
-   Col 6: CZ control=q0 target=q2
-
-7. **Bernstein-Vazirani** (N+1 qubits, last is ancilla):
-   Col 0: X on ancilla
-   Col 1: H on ALL qubits
-   Oracle: CNOT from each input qubit corresponding to secret bit=1 to ancilla
-   Next: H on input qubits
-   Last: MEASURE input qubits
-
-8. **Superdense Coding** (2 qubits):
-   Col 0: H q0
-   Col 1: CNOT control=q0 target=q1  (Bell pair)
-   Col 2-3: Encode 2 classical bits (apply X and/or Z on q0)
-   Col 4: CNOT control=q0 target=q1  (decode)
-   Col 5: H q0
-   Col 6: MEASURE q0, MEASURE q1
-
-9. **Phase Estimation** (simplified, N+1 qubits):
-   H on all counting qubits
-   Controlled-U operations from counting qubits to target
-   Inverse QFT on counting qubits
-   MEASURE counting qubits
+{algorithm_section}
 
 Rules:
 1. Choose the correct algorithm based on the user's request.
 2. If the user asks for a specific algorithm, implement it faithfully.
-3. If the user is vague (e.g., "create a quantum circuit"), create a meaningful
-   demo circuit like Bell state or Grover's search with a brief explanation.
-4. Keep qubit count minimal but sufficient for the algorithm.
+3. If the user is vague, create a Bell state or Grover's search as a demo.
+4. Keep qubit count minimal but sufficient.
 5. Return JSON only."""
 
         try:

@@ -241,6 +241,15 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
 
 
 def parse_assistant_request(session: Session, default_diagram_type: str = "ClassDiagram") -> AssistantRequest:
+    # Cache the parsed request on the session to avoid redundant JSON
+    # parsing — this function is called 3-5 times per message from
+    # get_user_message(), get_diagram_type(), get_current_model(),
+    # _common_preamble(), reply_message(), and route_to_generation().
+    cache_key = "_parsed_assistant_request"
+    cached = session.get(cache_key) if hasattr(session, 'get') else None
+    if isinstance(cached, AssistantRequest):
+        return cached
+
     raw_payload = extract_event_payload(session)
 
     if not raw_payload:
@@ -248,7 +257,7 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
         cleaned_message, prefixed_diagram = strip_diagram_prefix(event_message if isinstance(event_message, str) else "")
         diagram_type = normalize_diagram_type(prefixed_diagram or default_diagram_type, default=default_diagram_type)
         context = WorkspaceContext(active_diagram_type=diagram_type)
-        return AssistantRequest(
+        request = AssistantRequest(
             action="user_message",
             protocol_version="2.0",
             client_mode="workspace",
@@ -257,6 +266,11 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
             context=context,
             raw_payload={},
         )
+        try:
+            session.set(cache_key, request)
+        except Exception:
+            pass
+        return request
 
     request = parse_v2_payload(raw_payload, default_diagram_type=default_diagram_type)
 
@@ -265,4 +279,8 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
     if not request.context.active_diagram_type:
         request.context.active_diagram_type = request.diagram_type
 
+    try:
+        session.set(cache_key, request)
+    except Exception:
+        pass
     return request

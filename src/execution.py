@@ -359,12 +359,10 @@ def execute_model_operation(
 
     # Attach contextual suggestions to the payload
     available_diagrams = _collect_available_diagrams(request)
-    model_summary = _get_model_summary(result)
     suggestions = get_suggested_actions(
         diagram_type=target_diagram_type,
         operation_mode=operation_mode,
         available_diagrams=available_diagrams,
-        model_summary=model_summary,
     )
     if suggestions:
         result["suggestedActions"] = suggestions
