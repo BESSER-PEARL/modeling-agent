@@ -83,7 +83,7 @@ class TestNormalizeCacheKey:
 
 
 # =========================================================================
-# 2. _cache_key
+# 2. _cache_key  (cache disabled — returns constant)
 # =========================================================================
 
 class TestCacheKey:
@@ -91,26 +91,26 @@ class TestCacheKey:
         assert _cache_key("hello world") == _cache_key("hello world")
 
     def test_different_prompts_different_keys(self):
-        assert _cache_key("hello world") != _cache_key("goodbye world")
+        # Cache is disabled — key is always the same empty string
+        assert _cache_key("hello world") == _cache_key("goodbye world")
 
     def test_whitespace_variants_same_key(self):
-        """Prompts differing only in whitespace should produce the same key."""
         assert _cache_key("hello  world") == _cache_key("hello world")
 
     def test_returns_string_of_expected_length(self):
         key = _cache_key("anything")
         assert isinstance(key, str)
-        assert len(key) == 24  # sha256 hex truncated to 24 chars
 
 
 # =========================================================================
-# 3. _cache_put / _cache_get
+# 3. _cache_put / _cache_get  (cache disabled — always returns None)
 # =========================================================================
 
 class TestCachePutGet:
     def test_put_then_get(self):
         _cache_put("prompt A", "response A")
-        assert _cache_get("prompt A") == "response A"
+        # Cache disabled: always returns None
+        assert _cache_get("prompt A") is None
 
     def test_get_missing_returns_none(self):
         assert _cache_get("nonexistent prompt") is None
@@ -118,45 +118,37 @@ class TestCachePutGet:
     def test_overwrite_existing(self):
         _cache_put("p", "v1")
         _cache_put("p", "v2")
-        assert _cache_get("p") == "v2"
+        assert _cache_get("p") is None
 
 
 # =========================================================================
-# 4. Cache TTL expiration
+# 4. Cache TTL  (cache disabled — no-op)
 # =========================================================================
 
 class TestCacheTTL:
     def test_expired_entry_returns_none(self, monkeypatch):
         _cache_put("ttl-prompt", "ttl-response")
-        # Fast-forward time past the TTL
-        future = time.time() + _PROMPT_CACHE_TTL + 10
-        monkeypatch.setattr(time, "time", lambda: future)
         assert _cache_get("ttl-prompt") is None
 
     def test_fresh_entry_survives(self, monkeypatch):
         _cache_put("fresh-prompt", "fresh-response")
-        # Advance time, but stay within TTL
-        almost = time.time() + _PROMPT_CACHE_TTL - 10
-        monkeypatch.setattr(time, "time", lambda: almost)
-        assert _cache_get("fresh-prompt") == "fresh-response"
+        # Cache disabled — even fresh entries return None
+        assert _cache_get("fresh-prompt") is None
 
 
 # =========================================================================
-# 5. Cache LRU eviction
+# 5. Cache LRU eviction  (cache disabled — no-op)
 # =========================================================================
 
 class TestCacheLRUEviction:
     def test_oldest_evicted_when_full(self, monkeypatch):
-        # Shrink cache to 3 entries for this test
-        monkeypatch.setattr(_bh_module, "_PROMPT_CACHE_MAX_SIZE", 3)
         _cache_put("p1", "r1")
         _cache_put("p2", "r2")
         _cache_put("p3", "r3")
-        # This should evict p1
         _cache_put("p4", "r4")
         assert _cache_get("p1") is None
-        assert _cache_get("p2") == "r2"
-        assert _cache_get("p4") == "r4"
+        assert _cache_get("p2") is None
+        assert _cache_get("p4") is None
 
 
 # =========================================================================

@@ -142,12 +142,6 @@ def handle_pending_gui_choice(session: Session) -> bool:
     working_request = request
     working_request.message = pending.get('operation_request', request.message)
 
-    # Acknowledge immediately so the frontend's response timer is reset.
-    reply_payload(session, {
-        "action": "progress",
-        "message": "Generating LLM-designed GUI\u2026",
-    })
-
     try:
         execute_model_operation(
             session=session,
@@ -239,10 +233,6 @@ def handle_pending_system_confirmation(session: Session) -> bool:
     # ── New tab path ──────────────────────────────────────────────────
     if wants_new_tab:
         logger.info(f"[PendingConfirm] User chose NEW TAB for {stored_diagram_type}")
-        reply_payload(session, {
-            "action": "progress",
-            "message": f"Creating new {stored_diagram_type} tab\u2026",
-        })
         # Execute the creation with _create_new_tab=True so the frontend
         # creates a new tab before injecting the model (all in one payload).
         try:
@@ -283,14 +273,6 @@ def handle_pending_system_confirmation(session: Session) -> bool:
         logger.info(f"[PendingConfirm] User chose REPLACE for {stored_diagram_type}")
     else:
         logger.info(f"[PendingConfirm] User chose KEEP for {stored_diagram_type}")
-
-    # Send an immediate acknowledgment so the frontend's response timer
-    # is reset before the potentially slow LLM generation starts.
-    action_word = "Replacing" if replace_existing else "Adding to"
-    reply_payload(session, {
-        "action": "progress",
-        "message": f"{action_word} {stored_diagram_type}\u2026",
-    })
 
     try:
         execute_model_operation(

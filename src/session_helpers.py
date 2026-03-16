@@ -160,7 +160,7 @@ def _record_assistant_response(session: Session, content: str) -> None:
     """Best-effort recording of assistant response in conversation memory."""
     try:
         if content and len(content) > 5:  # skip trivial messages
-            session_id = str(id(session))
+            session_id = getattr(session, 'id', None) or str(id(session))
             mem = get_memory(session_id)
             mem.add_assistant(content[:500])  # cap to avoid bloating memory
     except Exception:

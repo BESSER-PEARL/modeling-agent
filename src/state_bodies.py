@@ -72,7 +72,7 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     # Record user message in conversation memory
     if request.message:
         try:
-            session_id = str(id(session))
+            session_id = getattr(session, 'id', None) or str(id(session))
             summarizer = getattr(ctx, 'gpt_text', None)
             summarize_fn = summarizer.predict if summarizer else None
             mem = get_memory(session_id, summarizer=summarize_fn)

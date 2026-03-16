@@ -7,17 +7,14 @@ deterministic :pymod:`layout_engine` – the LLM is never asked to produce
 pixel coordinates.
 """
 
-import hashlib
 import json
 import logging
 import os
 import random
-import threading
 import time
 import uuid
 from typing import Dict, Any, List, Optional, Tuple, Type
 from abc import ABC, abstractmethod
-from collections import OrderedDict
 
 from pydantic import BaseModel
 
@@ -29,54 +26,33 @@ class LLMPredictionError(Exception):
     """Raised when the LLM fails to produce a usable response after retries."""
     pass
 
+
 # ---------------------------------------------------------------------------
-# Lightweight prompt-response cache
+# Prompt-response cache stubs
 # ---------------------------------------------------------------------------
-_PROMPT_CACHE_MAX_SIZE = int(os.environ.get("LLM_CACHE_MAX_SIZE", "200"))
-_PROMPT_CACHE_TTL = int(os.environ.get("LLM_CACHE_TTL", "3600"))  # 1 hour
-_prompt_cache: OrderedDict[str, Tuple[str, float]] = OrderedDict()
-_prompt_cache_lock = threading.Lock()
+# Prompt caching was removed because every prompt includes the current
+# workspace context (model data) which changes on every interaction,
+# yielding a ~0% cache hit rate.  These stubs remain so that callers
+# (predict_with_retry, predict_structured) and tests don't need changes.
+
+_PROMPT_CACHE_MAX_SIZE = 0
+_PROMPT_CACHE_TTL = 3600
+_prompt_cache: Dict[str, Any] = {}
 
 
 def _normalize_cache_key(key: str) -> str:
-    """Normalize cache key to improve hit rate.
-
-    Strips extra whitespace so that prompts differing only in formatting
-    (trailing newlines, double spaces, etc.) map to the same cache entry.
-    """
+    """Normalize whitespace (kept for backward compat / tests)."""
     return ' '.join(key.split())
 
+def _cache_key(_prompt: str) -> str:
+    """Return a constant — caching is disabled."""
+    return ""
 
-def _cache_key(prompt: str) -> str:
-    """Compute a compact hash key for a prompt string."""
-    normalized = _normalize_cache_key(prompt)
-    return hashlib.sha256(normalized.encode("utf-8", errors="replace")).hexdigest()[:24]
+def _cache_get(_prompt: str) -> Optional[str]:
+    return None
 
-
-def _cache_get(prompt: str) -> Optional[str]:
-    """Return cached response if still valid, else None."""
-    key = _cache_key(prompt)
-    with _prompt_cache_lock:
-        entry = _prompt_cache.get(key)
-        if entry is None:
-            return None
-        response, ts = entry
-        if time.time() - ts > _PROMPT_CACHE_TTL:
-            _prompt_cache.pop(key, None)
-            return None
-        # Move to end (most recently used)
-        _prompt_cache.move_to_end(key)
-        return response
-
-
-def _cache_put(prompt: str, response: str) -> None:
-    """Store a prompt-response pair in the cache."""
-    key = _cache_key(prompt)
-    with _prompt_cache_lock:
-        _prompt_cache[key] = (response, time.time())
-        _prompt_cache.move_to_end(key)
-        while len(_prompt_cache) > _PROMPT_CACHE_MAX_SIZE:
-            _prompt_cache.popitem(last=False)
+def _cache_put(_prompt: str, _response: str) -> None:
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -719,6 +695,10 @@ class BaseDiagramHandler(ABC):
 
         return parsed
 
+    # Threshold: requests shorter than this are "simple" and skip the
+    # reasoning pass, saving one full LLM round-trip (~1-3 s).
+    _TWO_PASS_MIN_LENGTH = 80
+
     def predict_two_pass_structured(
         self,
         user_request: str,
@@ -735,8 +715,26 @@ class BaseDiagramHandler(ABC):
         Pass 2 (structured): Converts reasoning into a validated Pydantic model
         via ``predict_structured``, guaranteeing schema conformance.
 
+        For short / simple requests (< _TWO_PASS_MIN_LENGTH chars) the
+        reasoning pass is skipped and a single structured call is made
+        directly — the LLM can handle simple systems without a chain-of-
+        thought preamble.
+
         Falls back to single-pass structured if reasoning fails.
         """
+        # Fast path: simple requests don't need a reasoning pass
+        if len(user_request) < self._TWO_PASS_MIN_LENGTH:
+            logger.info(
+                f"[{self.get_diagram_type()}] Simple request ({len(user_request)} chars) "
+                "— skipping reasoning pass, using single-pass structured"
+            )
+            return self.predict_structured(
+                f"User Request: {user_request}",
+                response_schema,
+                system_prompt=system_prompt,
+                temperature=temperature,
+            )
+
         # Pass 1: Design reasoning (free-text)
         logger.info(f"[{self.get_diagram_type()}] Two-pass structured: reasoning pass")
         try:

@@ -176,15 +176,17 @@ def execute_model_operation(
         "exclude", "style", "theme", "color", "dark",
         "personali", "unique", "tailored", "bespoke",
     }
+    # Resolve the ClassDiagram once here; reused below for metadata extraction.
+    _resolved_class_diagram = None
     if target_diagram_type == "GUINoCodeDiagram" and operation_mode in ("complete_system", None, ""):
         _req_lower = (operation_request or "").lower()
         _wants_custom = any(hint in _req_lower for hint in _CUSTOM_GUI_HINTS)
 
-        class_diagram_model = resolve_class_diagram(request)
+        _resolved_class_diagram = resolve_class_diagram(request)
         _has_class_diagram = (
-            isinstance(class_diagram_model, dict)
-            and isinstance(class_diagram_model.get("elements"), dict)
-            and len(class_diagram_model["elements"]) > 0
+            isinstance(_resolved_class_diagram, dict)
+            and isinstance(_resolved_class_diagram.get("elements"), dict)
+            and len(_resolved_class_diagram["elements"]) > 0
         )
 
         if _has_class_diagram and _wants_custom:
@@ -229,7 +231,7 @@ def execute_model_operation(
     conversation_context = ""
     try:
         from memory import get_memory
-        session_id = str(id(session))
+        session_id = getattr(session, 'id', None) or str(id(session))
         mem = get_memory(session_id)
         recent = mem.get_last_n(5)  # Last 5 messages for context
         if recent and len(recent) > 1:  # Only if there's actual history
@@ -256,7 +258,9 @@ def execute_model_operation(
     # ── Resolve class metadata for GUI diagram (charts/tables need it) ──
     gui_class_metadata = None
     if target_diagram_type == "GUINoCodeDiagram":
-        class_diagram_model = resolve_class_diagram(request)
+        # Reuse the ClassDiagram resolved by the GUI-choice guard above
+        # to avoid a redundant snapshot traversal.
+        class_diagram_model = _resolved_class_diagram or resolve_class_diagram(request)
         if isinstance(class_diagram_model, dict):
             gui_class_metadata = extract_class_metadata(class_diagram_model)
             if gui_class_metadata:
