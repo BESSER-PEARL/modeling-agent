@@ -533,9 +533,12 @@ def _classify_error(error: Exception) -> str:
 def _report_progress(session: Session, current_idx: int, total: int, operation: dict):
     """Send a lightweight progress indicator for multi-step plans.
 
-    Uses ``reply_progress`` so the frontend receives a transient status
-    event (not a permanent chat message) that resets its response timer.
+    Only emits a message when there are 2+ steps — single-step plans
+    don't need a "Step 1/1" indicator.
     """
+    if total <= 1:
+        return
+
     op_type = operation.get("type", "unknown")
     diagram_type = operation.get("diagramType", "")
 
@@ -617,10 +620,6 @@ def execute_planned_operations(
     - Progress messages keep the user informed during multi-step plans
     - Suggestion attachments are enriched with model summaries
     """
-    # Lightweight progress indicator so the frontend resets its response
-    # timer while we plan (the planner may invoke an LLM call).
-    reply_progress(session, "Analyzing your request\u2026")
-
     operations = plan_assistant_operations(
         request=request,
         default_mode=default_mode,
