@@ -552,28 +552,30 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 "then fill in the repository details and hit **Publish**."
             ),
         }
-    # Empty model guard: check that the active diagram has elements before generating
-    context = getattr(request, 'context', None)
-    active_model = getattr(context, 'active_model', None) if context else None
-    if active_model is None:
-        snapshot = getattr(context, 'project_snapshot', None) if context else None
-        if isinstance(snapshot, dict):
-            diagrams = snapshot.get('diagrams', {})
-            active_type = getattr(context, 'active_diagram_type', None)
-            if isinstance(diagrams, dict) and active_type:
-                diagram_data = diagrams.get(active_type, {})
-                if isinstance(diagram_data, dict):
-                    active_model = diagram_data.get('model')
-
-    if not active_model or (isinstance(active_model, dict) and not active_model.get('elements')):
-        return {
-            "action": "assistant_message",
-            "message": (
-                f"Your diagram is empty — please create a model first before "
-                f"generating **{generator_type}** code. Try describing your system "
-                f"(e.g. *\"create a library management system\"*)."
-            ),
-        }
+    # Empty model guard: disabled because the WebSocket context may be stale
+    # right after an injection (frontend has the model but sends pre-injection
+    # snapshot with the next message). Frontend validates before calling backend.
+    # context = getattr(request, 'context', None)
+    # active_model = getattr(context, 'active_model', None) if context else None
+    # if active_model is None:
+    #     snapshot = getattr(context, 'project_snapshot', None) if context else None
+    #     if isinstance(snapshot, dict):
+    #         diagrams = snapshot.get('diagrams', {})
+    #         active_type = getattr(context, 'active_diagram_type', None)
+    #         if isinstance(diagrams, dict) and active_type:
+    #             diagram_data = diagrams.get(active_type, {})
+    #             if isinstance(diagram_data, dict):
+    #                 active_model = diagram_data.get('model')
+    #
+    # if not active_model or (isinstance(active_model, dict) and not active_model.get('elements')):
+    #     return {
+    #         "action": "assistant_message",
+    #         "message": (
+    #             f"Your diagram is empty — please create a model first before "
+    #             f"generating **{generator_type}** code. Try describing your system "
+    #             f"(e.g. *\"create a library management system\"*)."
+    #         ),
+    #     }
 
     return {
         "action": "trigger_generator",
