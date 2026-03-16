@@ -19,6 +19,7 @@ from ..core.base_handler import (
     SYSTEM_STATE_REQUIRED,
     SYSTEM_STATE_OPTIONAL,
 )
+from schemas import SingleStateSpec as SingleStateSchema, SystemStateMachineSpec, StateMachineModificationResponse
 from utilities.model_helpers import detailed_model_summary
 from state_patterns import get_state_pattern_hint
 
@@ -63,20 +64,18 @@ Examples:
 Return ONLY the JSON, no explanations."""
 
     def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate a single state with deterministic positioning."""
+        """Generate a single state with structured outputs and deterministic positioning."""
 
         system_prompt = self.get_system_prompt()
         user_prompt = f"Create a state specification for: {user_request}"
 
         try:
-            response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_prompt}")
-
-            state_spec = self.parse_and_validate_with_repair(
-                response,
-                required_keys=SINGLE_STATE_REQUIRED,
-                optional_keys=SINGLE_STATE_OPTIONAL,
-                label="StateMachine.single_element",
+            parsed = self.predict_structured(
+                user_prompt,
+                SingleStateSchema,
+                system_prompt=system_prompt,
             )
+            state_spec = parsed.model_dump()
 
             # Remove any hallucinated position and apply deterministic layout
             state_spec.pop("position", None)
@@ -158,7 +157,7 @@ TRANSITION DESIGN GUIDELINES:
 Return ONLY the JSON, no explanations."""
 
     def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate a complete state machine with two-pass reasoning, pattern injection,
+        """Generate a complete state machine with two-pass structured outputs, pattern injection,
         validation-feedback loop, and deterministic layout."""
 
         system_prompt = self._get_system_generation_prompt()
@@ -171,7 +170,7 @@ Return ONLY the JSON, no explanations."""
         logger.info(f"[StateMachine] generate_complete_system called with: {user_request!r}")
 
         try:
-            # --- Two-pass generation: reason about behavior first, then produce JSON ---
+            # --- Two-pass structured: reason about behavior first, then produce validated model ---
             reasoning_prompt = (
                 "You are a UML behavioral modeling expert. Think step by step about "
                 "the following state machine request and plan the design.\n\n"
@@ -188,18 +187,13 @@ Return ONLY the JSON, no explanations."""
                 "the most commonly under-specified element."
             )
 
-            response = self.predict_two_pass(
+            parsed = self.predict_two_pass_structured(
                 user_request=user_request,
                 system_prompt=system_prompt,
                 reasoning_prompt=reasoning_prompt,
+                response_schema=SystemStateMachineSpec,
             )
-
-            system_spec = self.parse_and_validate_with_repair(
-                response,
-                required_keys=SYSTEM_STATE_REQUIRED,
-                optional_keys=SYSTEM_STATE_OPTIONAL,
-                label="StateMachine.complete_system",
-            )
+            system_spec = parsed.model_dump()
 
             # --- Validation-feedback loop for state machine quality ---
             system_spec = self._validate_and_refine_state_machine(system_spec, user_request)
@@ -538,17 +532,16 @@ Return ONLY the JSON object — no explanations"""
                 context_block = f"\n\n{summary}"
 
         user_prompt = f"Modify the state machine: {user_request}{context_block}"
-        full_prompt = f"{system_prompt}\n\nUser Request: {user_prompt}"
 
         logger.info(f"[StateMachine] generate_modification called with: {user_request!r}")
 
         try:
-            response = self.predict_with_retry(full_prompt)
-            json_text = self.clean_json_response(response)
-            modification_spec = self.parse_json_safely(json_text)
-
-            if not modification_spec:
-                raise ValueError(f"Failed to parse modification JSON: {json_text[:300]}")
+            parsed = self.predict_structured(user_prompt, StateMachineModificationResponse, system_prompt=system_prompt)
+            mod_list = parsed.model_dump()["modifications"]
+            if len(mod_list) == 1:
+                modification_spec = {"action": "modify_model", "modification": mod_list[0]}
+            else:
+                modification_spec = {"action": "modify_model", "modifications": mod_list}
 
             self.validate_modification_spec(modification_spec)
 

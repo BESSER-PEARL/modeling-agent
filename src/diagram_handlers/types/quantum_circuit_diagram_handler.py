@@ -10,6 +10,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
+from schemas import SingleQuantumGateSpec, SystemQuantumCircuitSpec, QuantumModificationSpec
 from utilities.model_helpers import detailed_model_summary
 
 logger = logging.getLogger(__name__)
@@ -427,10 +428,8 @@ Rules:
         prompt = self.get_system_prompt()
 
         try:
-            response = self.predict_with_retry(f"{prompt}\n\nUser Request: {user_request}")
-            spec = self.parse_json_safely(self.clean_json_response(response or ""))
-            if not isinstance(spec, dict) or not isinstance(spec.get("operation"), dict):
-                raise ValueError("Invalid operation spec")
+            parsed = self.predict_structured(user_request, SingleQuantumGateSpec, system_prompt=prompt)
+            spec = parsed.model_dump()
 
             operation = spec.get("operation")
             model = self._apply_operations(_default_quantum_model(), [operation], append=False)
@@ -617,11 +616,12 @@ Rules:
 4. Keep qubit count minimal but sufficient.
 5. Return JSON only."""
 
+        system_prompt = prompt
+        user_prompt = f"User Request: {user_request}"
+
         try:
-            response = self.predict_with_retry(f"{prompt}\n\nUser Request: {user_request}")
-            spec = self.parse_json_safely(self.clean_json_response(response or ""))
-            if not isinstance(spec, dict):
-                raise ValueError("Invalid circuit spec")
+            parsed = self.predict_structured(user_prompt, SystemQuantumCircuitSpec, system_prompt=system_prompt)
+            spec = parsed.model_dump()
 
             operations = spec.get("operations") if isinstance(spec.get("operations"), list) else []
             typed_operations = [op for op in operations if isinstance(op, dict)]
@@ -722,10 +722,9 @@ Rules:
 7. Return JSON only."""
 
         try:
-            response = self.predict_with_retry(f"{prompt}\n\nUser Request: {user_request}{context_block}")
-            spec = self.parse_json_safely(self.clean_json_response(response or ""))
-            if not isinstance(spec, dict):
-                raise ValueError("Invalid modification spec")
+            user_prompt = f"User Request: {user_request}{context_block}"
+            parsed = self.predict_structured(user_prompt, QuantumModificationSpec, system_prompt=prompt)
+            spec = parsed.model_dump()
 
             operations = spec.get("operations") if isinstance(spec.get("operations"), list) else []
             typed_operations = [op for op in operations if isinstance(op, dict)]

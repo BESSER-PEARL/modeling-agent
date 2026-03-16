@@ -67,6 +67,14 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     if gpt is None:
         raise RuntimeError("LLM initialization returned None")
 
+    # Initialize the LLM provider abstraction (for structured outputs, streaming)
+    try:
+        from llm import get_provider
+        get_provider(gpt, model_name='gpt-4.1-mini')
+        logger.info("LLM provider abstraction initialized")
+    except Exception as exc:
+        logger.warning(f"LLM provider init failed (non-critical): {exc}")
+
     logger.info("LLMs initialized: gpt-4.1-mini (json, t=0.2), gpt-4.1-mini (text, t=0.4), conversation memory=20")
     return gpt, gpt_text, gpt_predict_json
 

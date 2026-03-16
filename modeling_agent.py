@@ -12,6 +12,7 @@
 import logging
 import os
 import sys
+import threading
 
 # ── Make ``src/`` importable for bare-style imports ──────────────────────
 _SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
@@ -31,6 +32,7 @@ from agent_setup import (
 )
 from routing.intents import GENERATION_INTENT_NAME
 from state_bodies import register_all
+from memory.conversation_memory import cleanup_stale_memories
 
 # ── Logging ──────────────────────────────────────────────────────────────
 logger.setLevel(logging.INFO)
@@ -239,6 +241,22 @@ register_all(
 # ── Backward-compatible re-export for tests ──────────────────────────────
 # ``test_model_helpers.py`` imports ``_resolve_class_diagram`` from here.
 from utilities.model_resolution import resolve_class_diagram as _resolve_class_diagram  # noqa: E402, F401
+
+
+# ── Session memory cleanup ───────────────────────────────────────────────
+def _start_memory_cleanup_timer():
+    def _cleanup_loop():
+        import time
+        while True:
+            time.sleep(3600)  # Every hour
+            try:
+                cleanup_stale_memories(max_age_seconds=86400)
+            except Exception:
+                pass
+    t = threading.Thread(target=_cleanup_loop, daemon=True)
+    t.start()
+
+_start_memory_cleanup_timer()
 
 
 # ── Run ──────────────────────────────────────────────────────────────────

@@ -16,6 +16,7 @@ from besser.agent.core.session import Session
 
 from protocol.adapters import parse_assistant_request
 from handlers.generation_handler import should_route_to_generation
+from memory import get_memory
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,9 @@ def reply_message(session: Session, message: str):
     else:
         session.reply(message)
 
+    # Record in conversation memory
+    _record_assistant_response(session, message)
+
 
 def reply_payload(session: Session, payload: Dict[str, Any]):
     """Send JSON payload response for both protocol versions."""
@@ -150,6 +154,17 @@ def _send_to_session(session: Session, payload: Dict[str, Any]):
     message.
     """
     session.reply(json.dumps(payload))
+
+
+def _record_assistant_response(session: Session, content: str) -> None:
+    """Best-effort recording of assistant response in conversation memory."""
+    try:
+        if content and len(content) > 5:  # skip trivial messages
+            session_id = str(id(session))
+            mem = get_memory(session_id)
+            mem.add_assistant(content[:500])  # cap to avoid bloating memory
+    except Exception:
+        pass
 
 
 # ------------------------------------------------------------------
@@ -204,11 +219,14 @@ def reply_progress(session: Session, message: str, step: int = 0, total: int = 0
 def stream_llm_response(
     session: Session, llm_instance: Any, prompt: str, system_prompt: str = ""
 ) -> str:
-    """Stream an LLM response chunk by chunk to the frontend.
+    """Stream an LLM response token-by-token to the frontend.
+
+    Attempts real OpenAI streaming via ``llm_instance.client``.  Falls back
+    to a single-chunk send if the client doesn't support streaming.
 
     Args:
         session: The WebSocket session.
-        llm_instance: The OpenAI LLM instance.
+        llm_instance: The BESSER LLMOpenAI instance (has ``.client``).
         prompt: The user prompt.
         system_prompt: Optional system prompt.
 
@@ -219,26 +237,103 @@ def stream_llm_response(
     full_text = ""
 
     try:
-        # Note: This depends on how the BESSER framework's LLM predict works.
-        # If it doesn't support streaming natively, fall back to non-streaming
-        # and send the full response as a single chunk.
-
-        # Attempt streaming if available
-        response = llm_instance.predict(prompt)
-
-        # If we can't stream, send as one chunk
-        full_text = response if isinstance(response, str) else str(response)
-
-        # Send full response as a single chunk — no artificial delays.
-        # The frontend already handles streaming display; adding sleep()
-        # here only increases end-to-end latency without benefiting UX.
-        reply_stream_chunk(session, full_text, stream_id)
+        client = getattr(llm_instance, 'client', None)
+        if client is not None and hasattr(client, 'chat'):
+            # Real streaming via OpenAI SDK
+            full_text = _stream_openai(
+                session, client, prompt, system_prompt, stream_id,
+                model=getattr(llm_instance, 'name', 'gpt-4.1-mini'),
+            )
+        else:
+            # Fallback: single-chunk non-streaming
+            response = llm_instance.predict(prompt)
+            full_text = response if isinstance(response, str) else str(response)
+            reply_stream_chunk(session, full_text, stream_id)
 
     except Exception as e:
-        full_text = f"I encountered an issue: {str(e)}"
-        reply_stream_chunk(session, full_text, stream_id)
+        logger.error(f"[Streaming] Error: {e}")
+        if not full_text:
+            full_text = f"I encountered an issue: {str(e)}"
+            reply_stream_chunk(session, full_text, stream_id)
 
     reply_stream_done(session, stream_id, full_text)
+    _record_assistant_response(session, full_text)
+    return full_text
+
+
+def _stream_openai(
+    session: Session,
+    client: Any,
+    prompt: str,
+    system_prompt: str,
+    stream_id: str,
+    model: str = "gpt-4.1-mini",
+) -> str:
+    """Real token-by-token streaming using the OpenAI SDK.
+
+    Sends each delta chunk to the frontend immediately, giving users
+    instant visual feedback instead of waiting for the full response.
+    Tracks token usage via stream_options.
+    """
+    from tracking import get_tracker
+
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    full_text = ""
+    chunk_buffer = ""
+    # Buffer threshold — balance between WebSocket flood (too small) and
+    # perceived latency (too large).  ~200 chars ≈ 1-2 sentences, giving
+    # fluid streaming without overwhelming the connection.
+    _BUFFER_THRESHOLD = 200
+
+    stream = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=0.4,
+        max_completion_tokens=4096,
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+
+    usage = None
+    try:
+        for event in stream:
+            # Final chunk with usage stats
+            if hasattr(event, 'usage') and event.usage is not None:
+                usage = event.usage
+
+            if not event.choices:
+                continue
+
+            delta = event.choices[0].delta
+            content = getattr(delta, 'content', None)
+            if content:
+                full_text += content
+                chunk_buffer += content
+
+                # Flush buffer when it has enough content or hits a natural break
+                if (
+                    len(chunk_buffer) >= _BUFFER_THRESHOLD
+                    or content.endswith(('\n', '.', '!', '?', ':'))
+                ):
+                    reply_stream_chunk(session, chunk_buffer, stream_id)
+                    chunk_buffer = ""
+    except Exception as exc:
+        logger.error(f"[Streaming] Mid-stream error: {exc}")
+        # Partial text already captured in full_text; fall through to flush
+    finally:
+        # Always flush remaining buffer so no text is silently lost
+        if chunk_buffer:
+            reply_stream_chunk(session, chunk_buffer, stream_id)
+
+    # Track tokens
+    if usage:
+        tracker = get_tracker()
+        tracker.record_from_usage(usage, model=model)
+
     return full_text
 
 

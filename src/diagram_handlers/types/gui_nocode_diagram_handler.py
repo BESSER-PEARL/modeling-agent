@@ -12,6 +12,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
+from schemas import SingleGUIElementSpec, GUIModificationSpec
 from utilities.model_helpers import format_class_metadata_for_prompt
 
 logger = logging.getLogger(__name__)
@@ -1728,10 +1729,12 @@ Rules:
         prompt = self.get_system_prompt(class_info=class_info)
 
         try:
-            response = self.predict_with_retry(f"{prompt}\n\nUser Request: {user_request}")
-            spec = self.parse_json_safely(self.clean_json_response(response or ""))
-            if not isinstance(spec, dict):
-                raise ValueError("Invalid section spec")
+            parsed = self.predict_structured(
+                f"User Request: {user_request}",
+                SingleGUIElementSpec,
+                system_prompt=prompt,
+            )
+            spec = parsed.model_dump()
 
             page_name = _sanitize_page_name(spec.get("pageName"), fallback="Home")
             section_spec = spec.get("section") if isinstance(spec.get("section"), dict) else {}
@@ -1945,12 +1948,9 @@ Rules:
 5. Return JSON only.{class_block}"""
 
         try:
-            response = self.predict_with_retry(
-                f"{prompt}\n\nAvailable pages: {pages_hint}\n\nUser Request: {user_request}"
-            )
-            spec = self.parse_json_safely(self.clean_json_response(response or ""))
-            if not isinstance(spec, dict):
-                raise ValueError("Invalid modification spec")
+            user_prompt = f"Available pages: {pages_hint}\n\nUser Request: {user_request}"
+            parsed = self.predict_structured(user_prompt, GUIModificationSpec, system_prompt=prompt)
+            spec = parsed.model_dump()
 
             operation = _clean_text(spec.get("operation"), fallback="append_section")
             page_name = _sanitize_page_name(spec.get("pageName"), fallback=page_names[0] if page_names else "Home")

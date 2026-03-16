@@ -119,18 +119,15 @@ def get_suggested_actions(
     type, what operation just completed, and which diagrams already
     exist in the project.
 
+    Context-aware: when ``model_summary`` includes element names, suggestions
+    reference actual classes/states by name for a more personalized UX.
+
     Args:
-        diagram_type: The diagram type that was just operated on
-            (e.g. ``"ClassDiagram"``, ``"StateMachineDiagram"``).
-        operation_mode: The mode of the operation that just completed
-            (``"complete_system"``, ``"single_element"``, ``"modify_model"``,
-            ``"generation"``).
-        available_diagrams: List of diagram type strings that currently
-            exist in the project workspace.
-        model_summary: Optional dict with model metadata (unused today,
-            reserved for future context-sensitive filtering).
-        generator_type: If the last action was code generation, the
-            generator that was used (e.g. ``"python"``, ``"django"``).
+        diagram_type: The diagram type that was just operated on.
+        operation_mode: The mode of the operation that just completed.
+        available_diagrams: List of diagram type strings in the project.
+        model_summary: Optional dict with model metadata for context-aware suggestions.
+        generator_type: If the last action was code generation, the generator used.
     """
     if not diagram_type and not generator_type:
         return []
@@ -140,6 +137,14 @@ def get_suggested_actions(
         return _suggestions_after_generation(
             generator_type, available_diagrams,
         )
+
+    # --- Context-aware suggestions using model content ---
+    if model_summary:
+        context_suggestions = _context_aware_suggestions(
+            diagram_type, operation_mode, model_summary, available_diagrams,
+        )
+        if context_suggestions:
+            return context_suggestions
 
     # --- Diagram-specific suggestions ---
     handler = _DIAGRAM_SUGGESTION_HANDLERS.get(diagram_type)
@@ -253,6 +258,63 @@ def _suggestions_after_generation(
 # ------------------------------------------------------------------
 # Formatting helper for text messages
 # ------------------------------------------------------------------
+
+def _context_aware_suggestions(
+    diagram_type: str,
+    operation_mode: str,
+    model_summary: Dict[str, Any],
+    available_diagrams: Optional[List[str]],
+) -> List[Dict[str, str]]:
+    """Generate context-aware suggestions using actual model content.
+
+    When element names are available from the model summary, suggestions
+    reference them by name for a personalized experience.
+    """
+    element_names = model_summary.get("element_names", [])
+    element_count = model_summary.get("element_count", 0)
+    relationship_count = model_summary.get("relationship_count", 0)
+
+    if not element_names:
+        return []  # Fall through to static suggestions
+
+    candidates: List[tuple] = []
+
+    if diagram_type == "ClassDiagram":
+        # Suggest adding attributes to a specific class
+        if element_names and operation_mode == "complete_system":
+            first_class = element_names[0]
+            candidates.append(
+                (f"Add attributes to {first_class}", f"add more attributes to {first_class}")
+            )
+        # If no relationships, suggest adding some
+        if relationship_count == 0 and element_count > 1:
+            candidates.append(
+                ("Add relationships between classes", "add relationships between my classes")
+            )
+        # Cross-diagram suggestions
+        if not _has_diagram(available_diagrams, "StateMachineDiagram"):
+            candidates.append(
+                ("Add a state machine", "create a state machine for this system")
+            )
+        if not _has_diagram(available_diagrams, "GUINoCodeDiagram"):
+            candidates.append(
+                ("Create a GUI", "create a gui for this system")
+            )
+        candidates.append(("Generate code", "generate python"))
+
+    elif diagram_type == "StateMachineDiagram":
+        if element_names:
+            first_state = element_names[0]
+            candidates.append(
+                (f"Add transitions from {first_state}", f"add a transition from {first_state}")
+            )
+        candidates.append(("Generate code", "generate python"))
+
+    if not candidates:
+        return []
+
+    return _build_actions(candidates, limit=4)
+
 
 def format_suggestions_as_text(actions: List[Dict[str, str]]) -> str:
     """Format a list of suggested actions into a Markdown-friendly string.

@@ -224,7 +224,31 @@ def execute_model_operation(
         return None
 
     target_model = resolve_target_model(request, target_diagram_type)
+
+    # Inject conversation context for multi-turn awareness
+    conversation_context = ""
+    try:
+        from memory import get_memory
+        session_id = str(id(session))
+        mem = get_memory(session_id)
+        recent = mem.get_last_n(5)  # Last 5 messages for context
+        if recent and len(recent) > 1:  # Only if there's actual history
+            history_lines = []
+            for msg in recent[:-1]:  # Exclude current message (already in operation_request)
+                role = msg.get("role", "user")
+                content = msg.get("content", "")[:200]  # Cap each message
+                history_lines.append(f"  {role}: {content}")
+            if history_lines:
+                conversation_context = (
+                    "Recent conversation context (use this to understand what the user has been working on):\n"
+                    + "\n".join(history_lines)
+                    + "\n\n"
+                )
+    except Exception:
+        pass  # memory is best-effort
+
     modeling_prompt = (
+        f"{conversation_context}"
         f"{operation_request}\n\n"
         f"{build_workspace_context_block(request, target_diagram_type, target_model)}"
     )
@@ -359,10 +383,12 @@ def execute_model_operation(
 
     # Attach contextual suggestions to the payload
     available_diagrams = _collect_available_diagrams(request)
+    model_summary = _get_model_summary(result)
     suggestions = get_suggested_actions(
         diagram_type=target_diagram_type,
         operation_mode=operation_mode,
         available_diagrams=available_diagrams,
+        model_summary=model_summary,
     )
     if suggestions:
         result["suggestedActions"] = suggestions

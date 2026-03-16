@@ -18,10 +18,12 @@ from besser.agent.nlp.rag.rag import RAGMessage
 import agent_context as ctx
 from protocol.adapters import parse_assistant_request
 from protocol.types import AssistantRequest
+from memory import get_memory
 from session_helpers import (
     get_user_message,
     reply_message,
     reply_payload,
+    stream_llm_response,
     json_intent_matches,
     json_no_intent_matched,
     route_to_generation,
@@ -66,6 +68,17 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
 
     if handle_file_attachments(session, request):
         return None
+
+    # Record user message in conversation memory
+    if request.message:
+        try:
+            session_id = str(id(session))
+            summarizer = getattr(ctx, 'gpt_text', None)
+            summarize_fn = summarizer.predict if summarizer else None
+            mem = get_memory(session_id, summarizer=summarize_fn)
+            mem.add_user(request.message)
+        except Exception:
+            pass  # memory is best-effort
 
     return request
 
@@ -173,14 +186,14 @@ def global_fallback_body(session: Session):
         return
 
     try:
-        answer = ctx.gpt_text.predict(
+        prompt = (
             f"You are a modeling assistant that helps with UML diagrams, quantum circuits, "
             f"GUI design, agent diagrams, and code generation. The user said: '{user_message}'. "
             "If this is related to any kind of modeling (class diagrams, quantum circuits, "
             "state machines, GUI design, etc.), suggest how you can help them. "
             "Otherwise, politely explain your capabilities."
         )
-        reply_message(session, answer)
+        stream_llm_response(session, ctx.gpt_text, prompt)
     except Exception as e:
         logger.error(f"Error in global_fallback_body: {e}")
         reply_message(
@@ -353,8 +366,7 @@ def modeling_help_body(session: Session):
         )
 
     try:
-        answer = ctx.gpt_text.predict(help_prompt)
-        reply_message(session, answer)
+        stream_llm_response(session, ctx.gpt_text, help_prompt)
     except Exception as e:
         logger.error(f"Error in modeling_help_body: {e}", exc_info=True)
         reply_message(session, "I had trouble preparing guidance. Could you try rephrasing your question?")
@@ -488,8 +500,7 @@ def describe_model_body(session: Session):
     )
 
     try:
-        answer = ctx.gpt_text.predict(qa_prompt)
-        reply_message(session, answer)
+        stream_llm_response(session, ctx.gpt_text, qa_prompt)
     except Exception as e:
         logger.error(f"Error in describe_model_body: {e}", exc_info=True)
         reply_message(

@@ -14,6 +14,7 @@ from ..core.base_handler import (
     SYSTEM_OBJECT_REQUIRED,
     SYSTEM_OBJECT_OPTIONAL,
 )
+from schemas import SingleObjectSpec, SystemObjectSpec, ObjectModificationResponse
 from utilities.model_helpers import detailed_model_summary
 
 logger = logging.getLogger(__name__)
@@ -420,15 +421,9 @@ Return ONLY the JSON, no explanations."""
             user_prompt += self._format_reference_classes(reference_diagram['elements'])
         
         try:
-            response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_prompt}")
-            
-            object_spec = self.parse_and_validate(
-                response,
-                required_keys=SINGLE_OBJECT_REQUIRED,
-                optional_keys=SINGLE_OBJECT_OPTIONAL,
-                label="ObjectDiagram.single_element",
-            )
-            
+            parsed = self.predict_structured(user_prompt, SingleObjectSpec, system_prompt=system_prompt)
+            object_spec = parsed.model_dump()
+
             # Remove any hallucinated position and apply deterministic layout
             object_spec.pop("position", None)
             self.apply_single_layout(object_spec, existing_model)
@@ -500,14 +495,10 @@ Return ONLY the JSON, no explanations."""
             user_prompt += self._format_reference_relationships(class_relationships)
 
         try:
-            response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_prompt}")
-            
-            system_spec = self.parse_and_validate(
-                response,
-                required_keys=SYSTEM_OBJECT_REQUIRED,
-                optional_keys=SYSTEM_OBJECT_OPTIONAL,
-                label="ObjectDiagram.complete_system",
+            parsed = self.predict_structured(
+                user_prompt, SystemObjectSpec, system_prompt=system_prompt
             )
+            system_spec = parsed.model_dump()
 
             if classes:
                 system_spec = self._normalize_system_from_reference(
@@ -739,17 +730,16 @@ Return ONLY the JSON object — no explanations"""
                 context_block = f"\n\n{summary}"
 
         user_prompt = f"Modify the object diagram: {user_request}{context_block}{reference_context}"
-        full_prompt = f"{system_prompt}\n\nUser Request: {user_prompt}"
 
         logger.info(f"[ObjectDiagram] generate_modification called with: {user_request!r}")
 
         try:
-            response = self.predict_with_retry(full_prompt)
-            json_text = self.clean_json_response(response)
-            modification_spec = self.parse_json_safely(json_text)
-
-            if not modification_spec:
-                raise ValueError(f"Failed to parse modification JSON: {json_text[:300]}")
+            parsed = self.predict_structured(user_prompt, ObjectModificationResponse, system_prompt=system_prompt)
+            mod_list = parsed.model_dump()["modifications"]
+            if len(mod_list) == 1:
+                modification_spec = {"action": "modify_model", "modification": mod_list[0]}
+            else:
+                modification_spec = {"action": "modify_model", "modifications": mod_list}
 
             self.validate_modification_spec(modification_spec)
 

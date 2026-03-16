@@ -15,9 +15,11 @@ import random
 import threading
 import time
 import uuid
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Type
 from abc import ABC, abstractmethod
 from collections import OrderedDict
+
+from pydantic import BaseModel
 
 from .layout_engine import apply_layout
 
@@ -475,6 +477,25 @@ class BaseDiagramHandler(ABC):
                     response = self.llm.predict(effective_prompt)
                 finally:
                     _llm_semaphore.release()
+
+                # Track tokens from the last API call if available
+                try:
+                    from tracking import get_tracker
+                    client = getattr(self.llm, 'client', None)
+                    if client is not None:
+                        # OpenAI client stores last response in thread-local
+                        # We estimate tokens from response length as a fallback
+                        tracker = get_tracker()
+                        est_prompt = len(effective_prompt) // 4
+                        est_completion = len(response) // 4 if response else 0
+                        tracker.record(
+                            prompt_tokens=est_prompt,
+                            completion_tokens=est_completion,
+                            model=getattr(self.llm, 'name', 'gpt-4.1-mini'),
+                        )
+                except Exception:
+                    pass  # tracking is best-effort
+
                 if response and response.strip():
                     if use_cache:
                         _cache_put(prompt, response)
@@ -495,6 +516,13 @@ class BaseDiagramHandler(ABC):
                     f"(attempt {attempt + 1}/{total_attempts}): {exc}"
                 )
             except Exception as exc:
+                exc_name = type(exc).__name__
+                exc_str = str(exc).lower()
+                # Rate-limit: don't retry, tell the user to wait
+                if "RateLimitError" in exc_name or "429" in exc_str or "rate limit" in exc_str:
+                    raise LLMPredictionError(
+                        f"API rate limit reached. Please wait a moment and try again. ({exc})"
+                    )
                 last_error = LLMPredictionError(str(exc))
                 last_error_type = "llm_failure"
                 logger.warning(
@@ -502,6 +530,280 @@ class BaseDiagramHandler(ABC):
                     f"(attempt {attempt + 1}/{total_attempts}): {exc}"
                 )
         raise last_error or LLMPredictionError("LLM prediction failed after all retries")
+
+    # ------------------------------------------------------------------
+    # Structured output via OpenAI .parse() — eliminates JSON repair
+    # ------------------------------------------------------------------
+
+    def predict_structured(
+        self,
+        prompt: str,
+        response_schema: Type[BaseModel],
+        *,
+        max_retries: int = 2,
+        use_cache: bool = True,
+        system_prompt: str = "",
+        temperature: float = 0.2,
+    ) -> BaseModel:
+        """Call the LLM with OpenAI Structured Outputs, returning a validated Pydantic model.
+
+        Uses ``client.beta.chat.completions.parse()`` which guarantees the
+        response conforms to the Pydantic schema — no manual JSON cleaning,
+        repair loops, or regex extraction needed.
+
+        Falls back to ``predict_with_retry`` + manual parsing if the OpenAI
+        client doesn't support ``.parse()`` (older SDK versions).
+
+        Args:
+            prompt: The user/request prompt.
+            response_schema: Pydantic model class defining the expected output.
+            max_retries: Number of retry attempts (default 2).
+            use_cache: Check/populate prompt cache (default True).
+            system_prompt: Optional system instruction prepended to messages.
+            temperature: LLM temperature (default 0.2).
+
+        Returns:
+            Validated Pydantic model instance.
+
+        Raises:
+            LLMPredictionError: If all attempts fail.
+        """
+        # --- Cache check (keyed on prompt + schema name) ---
+        cache_prompt = f"{prompt}||schema={response_schema.__name__}"
+        if use_cache:
+            cached = _cache_get(cache_prompt)
+            if cached:
+                try:
+                    parsed = response_schema.model_validate_json(cached)
+                    logger.info(
+                        f"[{self.get_diagram_type()}] Structured cache hit "
+                        f"(schema={response_schema.__name__})"
+                    )
+                    return parsed
+                except Exception:
+                    pass  # Cache entry invalid for this schema, re-generate
+
+        # --- Check if client supports .parse() ---
+        client = getattr(self.llm, 'client', None)
+        has_parse = (
+            client is not None
+            and hasattr(client, 'beta')
+            and hasattr(client.beta, 'chat')
+        )
+
+        if not has_parse:
+            # Fallback: predict_with_retry + manual parse
+            logger.info(
+                f"[{self.get_diagram_type()}] Structured outputs unavailable, "
+                "falling back to predict_with_retry"
+            )
+            return self._structured_fallback(
+                prompt, response_schema, system_prompt, max_retries, use_cache,
+            )
+
+        # --- Structured parse with retry ---
+        from tracking import get_tracker
+        tracker = get_tracker()
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        last_error: Optional[Exception] = None
+        total_attempts = 1 + max_retries
+
+        for attempt in range(total_attempts):
+            if attempt > 0:
+                backoff = 2 ** attempt + random.uniform(0, 1)
+                logger.info(
+                    f"[{self.get_diagram_type()}] Structured retry in {backoff:.1f}s "
+                    f"(attempt {attempt + 1}/{total_attempts})"
+                )
+                time.sleep(backoff)
+
+            try:
+                _llm_semaphore.acquire()
+                try:
+                    completion = client.beta.chat.completions.parse(
+                        model=self.llm.name if hasattr(self.llm, 'name') else "gpt-4.1-mini",
+                        messages=messages,
+                        response_format=response_schema,
+                        temperature=temperature,
+                        max_completion_tokens=8192,
+                    )
+                finally:
+                    _llm_semaphore.release()
+
+                # Track tokens
+                if hasattr(completion, 'usage') and completion.usage:
+                    tracker.record_from_usage(
+                        completion.usage,
+                        model=self.llm.name if hasattr(self.llm, 'name') else "gpt-4.1-mini",
+                    )
+
+                parsed = completion.choices[0].message.parsed
+                if parsed is None:
+                    # Refusal or empty
+                    refusal = getattr(completion.choices[0].message, 'refusal', None)
+                    if refusal:
+                        raise LLMPredictionError(f"LLM refused: {refusal}")
+                    raise LLMPredictionError("LLM returned empty structured output")
+
+                # Cache the JSON representation
+                if use_cache:
+                    _cache_put(cache_prompt, parsed.model_dump_json())
+
+                logger.info(
+                    f"[{self.get_diagram_type()}] Structured output success "
+                    f"(schema={response_schema.__name__}, attempt={attempt + 1})"
+                )
+                return parsed
+
+            except LLMPredictionError:
+                raise
+            except Exception as exc:
+                # Non-retryable errors: bail immediately instead of wasting retries
+                exc_name = type(exc).__name__
+                if "BadRequestError" in exc_name or "AuthenticationError" in exc_name or "RateLimitError" in exc_name or "429" in str(exc):
+                    raise LLMPredictionError(f"Structured parse failed (non-retryable): {exc}")
+                last_error = LLMPredictionError(f"Structured parse failed: {exc}")
+                logger.warning(
+                    f"[{self.get_diagram_type()}] Structured parse attempt "
+                    f"{attempt + 1}/{total_attempts} failed: {exc}"
+                )
+
+        raise last_error or LLMPredictionError("Structured prediction failed after all retries")
+
+    def _structured_fallback(
+        self,
+        prompt: str,
+        response_schema: Type[BaseModel],
+        system_prompt: str,
+        max_retries: int,
+        use_cache: bool,
+    ) -> BaseModel:
+        """Fallback path when structured outputs API is unavailable.
+
+        Uses predict_with_retry + JSON mode, then validates against the schema.
+        Cache key is schema-qualified to match ``predict_structured``.
+        """
+        # Use the same schema-qualified cache key as predict_structured
+        # so hits/puts are consistent across both code paths.
+        cache_prompt = f"{prompt}||schema={response_schema.__name__}"
+        if use_cache:
+            cached = _cache_get(cache_prompt)
+            if cached:
+                try:
+                    return response_schema.model_validate_json(cached)
+                except Exception:
+                    pass  # stale entry — regenerate
+
+        # Build the schema description for the prompt so the LLM knows the shape
+        schema_desc = ""
+        try:
+            schema_json = json.dumps(response_schema.model_json_schema(), indent=2)
+            schema_desc = f"\n\nExpected JSON schema:\n{schema_json}\n"
+        except Exception:
+            pass
+
+        full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+        full_prompt += schema_desc
+        full_prompt += (
+            "\n\nIMPORTANT: Return ONLY valid JSON matching this schema. "
+            "No markdown, no explanation."
+        )
+
+        # predict_with_retry uses its own cache (sha256 of full_prompt) — disable
+        # it to avoid double-caching with mismatched keys.
+        response = self.predict_with_retry(full_prompt, max_retries=max_retries, use_cache=False)
+        json_text = self.clean_json_response(response)
+
+        try:
+            parsed = response_schema.model_validate_json(json_text)
+        except Exception as exc:
+            # One more try: parse as dict and validate
+            try:
+                data = json.loads(json_text)
+                parsed = response_schema.model_validate(data)
+            except Exception:
+                raise LLMPredictionError(
+                    f"Failed to validate LLM response against "
+                    f"{response_schema.__name__}: {exc}"
+                )
+
+        # Cache the validated result with the schema-qualified key
+        if use_cache:
+            _cache_put(cache_prompt, parsed.model_dump_json())
+
+        return parsed
+
+    def predict_two_pass_structured(
+        self,
+        user_request: str,
+        system_prompt: str,
+        reasoning_prompt: str,
+        response_schema: Type[BaseModel],
+        *,
+        temperature: float = 0.2,
+    ) -> BaseModel:
+        """Two-pass generation with structured output for pass 2.
+
+        Pass 1 (reasoning): Free-text design analysis via ``predict_with_retry``
+        (handles semaphore, retry, and caching internally).
+        Pass 2 (structured): Converts reasoning into a validated Pydantic model
+        via ``predict_structured``, guaranteeing schema conformance.
+
+        Falls back to single-pass structured if reasoning fails.
+
+        Thread-safety: Each pass acquires ``_llm_semaphore`` independently
+        through the helper methods, avoiding nested acquisition that could
+        deadlock under high concurrency.
+        """
+        # Pass 1: Design reasoning (free-text) — uses predict_with_retry which
+        # handles semaphore acquire/release internally, avoiding nested locks.
+        logger.info(f"[{self.get_diagram_type()}] Two-pass structured: reasoning pass")
+        try:
+            reasoning = self.predict_with_retry(reasoning_prompt, max_retries=1, use_cache=False)
+        except Exception as exc:
+            logger.warning(
+                f"[{self.get_diagram_type()}] Reasoning pass failed ({exc}), "
+                "falling back to single-pass structured"
+            )
+            return self.predict_structured(
+                f"User Request: {user_request}",
+                response_schema,
+                system_prompt=system_prompt,
+                temperature=temperature,
+            )
+
+        if not reasoning or not reasoning.strip():
+            logger.warning(f"[{self.get_diagram_type()}] Reasoning pass empty, falling back")
+            return self.predict_structured(
+                f"User Request: {user_request}",
+                response_schema,
+                system_prompt=system_prompt,
+                temperature=temperature,
+            )
+
+        logger.info(
+            f"[{self.get_diagram_type()}] Two-pass structured: reasoning complete "
+            f"({len(reasoning)} chars), starting structured pass"
+        )
+
+        # Pass 2: Structured output using the reasoning as context
+        structured_prompt = (
+            f"Design analysis (use this as your guide):\n{reasoning}\n\n"
+            f"User Request: {user_request}\n\n"
+            "Convert the design analysis above into the exact JSON format specified."
+        )
+
+        return self.predict_structured(
+            structured_prompt,
+            response_schema,
+            system_prompt=system_prompt,
+            temperature=temperature,
+        )
 
     def _classify_error(self, exc: Exception) -> str:
         """Classify an exception into an error code from the recovery taxonomy."""
@@ -641,14 +943,11 @@ class BaseDiagramHandler(ABC):
 
         Returns the raw JSON string from pass 2.
         """
-        # Pass 1: Design reasoning (free-text, slightly higher temperature)
+        # Pass 1: Design reasoning (free-text) — delegates to predict_with_retry
+        # which handles semaphore, retry and backoff internally.
         logger.info(f"[{self.get_diagram_type()}] Two-pass: starting reasoning pass")
         try:
-            _llm_semaphore.acquire()
-            try:
-                reasoning = self.llm.predict(reasoning_prompt)
-            finally:
-                _llm_semaphore.release()
+            reasoning = self.predict_with_retry(reasoning_prompt, max_retries=1, use_cache=False)
         except Exception as exc:
             logger.warning(
                 f"[{self.get_diagram_type()}] Reasoning pass failed ({exc}), "
@@ -835,6 +1134,112 @@ Return ONLY the JSON, no explanations."""
     # ------------------------------------------------------------------
     # Error recovery: JSON repair
     # ------------------------------------------------------------------
+
+    def self_correct(
+        self,
+        original_response: str,
+        validation_errors: List[str],
+        system_prompt: str,
+        user_request: str,
+    ) -> Optional[str]:
+        """Self-correcting error recovery: show the LLM its validation errors
+        and ask it to fix them.
+
+        This is called when a generated spec passes JSON parsing but fails
+        schema or domain validation.  Instead of falling back to a static
+        template, the LLM gets a second chance with explicit feedback about
+        what went wrong.
+
+        Returns the corrected JSON string, or ``None`` if correction fails.
+        """
+        error_list = "\n".join(f"- {e}" for e in validation_errors[:10])
+        correction_prompt = (
+            f"{system_prompt}\n\n"
+            f"Your previous response had these validation errors:\n{error_list}\n\n"
+            f"Original user request: {user_request}\n\n"
+            f"Your previous (invalid) response:\n{original_response[:3000]}\n\n"
+            "Fix ALL the validation errors listed above and return the corrected JSON. "
+            "Return ONLY valid JSON, no explanations."
+        )
+
+        try:
+            logger.info(
+                f"[{self.get_diagram_type()}] Self-correcting: "
+                f"{len(validation_errors)} error(s) to fix"
+            )
+            _llm_semaphore.acquire()
+            try:
+                corrected = self.llm.predict(correction_prompt)
+            finally:
+                _llm_semaphore.release()
+
+            if corrected and corrected.strip():
+                cleaned = self.clean_json_response(corrected)
+                # Verify it parses
+                json.loads(cleaned)
+                logger.info(f"[{self.get_diagram_type()}] Self-correction succeeded")
+                return cleaned
+        except Exception as exc:
+            logger.warning(f"[{self.get_diagram_type()}] Self-correction failed: {exc}")
+        return None
+
+    def parse_validate_or_correct(
+        self,
+        raw_response: str,
+        required_keys: Dict[str, type],
+        optional_keys: Optional[Dict[str, type]] = None,
+        label: str = "LLM response",
+        system_prompt: str = "",
+        user_request: str = "",
+    ) -> Dict[str, Any]:
+        """Parse, validate, and self-correct if validation fails.
+
+        This is the most resilient parsing pipeline:
+        1. Clean + parse JSON
+        2. Validate against schema
+        3. If validation fails, try self-correction (LLM fixes its own errors)
+        4. If that fails, try JSON repair
+        5. If everything fails, raise ValueError
+
+        Returns the validated dict.
+        """
+        json_text = self.clean_json_response(raw_response)
+        spec = self.parse_json_safely(json_text)
+
+        if spec is None:
+            # Try repair first
+            schema_hint = f"Required keys: {list(required_keys.keys())}"
+            repaired = self.repair_json_response(json_text, schema_hint)
+            if repaired:
+                spec = self.parse_json_safely(repaired)
+            if spec is None:
+                raise ValueError(f"Could not parse JSON: {json_text[:200]}")
+
+        errors = validate_spec(spec, required_keys, optional_keys, label=label)
+        if not errors:
+            return spec
+
+        # Try self-correction
+        if system_prompt and user_request:
+            corrected_json = self.self_correct(
+                raw_response, errors, system_prompt, user_request,
+            )
+            if corrected_json:
+                corrected_spec = self.parse_json_safely(corrected_json)
+                if corrected_spec is not None:
+                    retry_errors = validate_spec(
+                        corrected_spec, required_keys, optional_keys, label=label,
+                    )
+                    if not retry_errors:
+                        return corrected_spec
+                    logger.warning(
+                        f"[{self.get_diagram_type()}] Self-corrected response still has errors: "
+                        f"{retry_errors}"
+                    )
+
+        joined = "; ".join(errors)
+        logger.warning(f"[{self.get_diagram_type()}] Schema validation failed: {joined}")
+        raise ValueError(f"Schema validation failed: {joined}")
 
     def repair_json_response(self, malformed_json: str, schema_hint: str) -> Optional[str]:
         """Attempt to repair malformed JSON by sending it back to the LLM.

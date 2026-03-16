@@ -14,6 +14,7 @@ from ..core.base_handler import (
     SYSTEM_CLASS_REQUIRED,
     SYSTEM_CLASS_OPTIONAL,
 )
+from schemas import SingleClassSpec, SystemClassSpec, ClassModificationResponse
 from utilities.model_helpers import detailed_model_summary
 from domain_patterns import get_pattern_hint
 
@@ -63,27 +64,20 @@ Examples:
 Return ONLY the JSON, no explanations."""
 
     def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate a single class element with deterministic positioning."""
+        """Generate a single class element with structured outputs and deterministic positioning."""
 
         system_prompt = self.get_system_prompt()
         user_prompt = f"Create a class specification for: {user_request}"
 
-        full_prompt = f"{system_prompt}\n\nUser Request: {user_prompt}"
         logger.info(f"[ClassDiagram] generate_single_element called with: {user_request!r}")
-        logger.debug(f"[ClassDiagram] Full prompt length: {len(full_prompt)} chars")
 
         try:
-            response = self.predict_with_retry(full_prompt)
-
-            logger.info(f"[ClassDiagram] LLM raw response length: {len(response)}")
-            logger.debug(f"[ClassDiagram] LLM raw response: {response[:500]!r}")
-
-            simple_spec = self.parse_and_validate_with_repair(
-                response,
-                required_keys=SINGLE_CLASS_REQUIRED,
-                optional_keys=SINGLE_CLASS_OPTIONAL,
-                label="ClassDiagram.single_element",
+            parsed = self.predict_structured(
+                user_prompt,
+                SingleClassSpec,
+                system_prompt=system_prompt,
             )
+            simple_spec = parsed.model_dump()
 
             # Remove any position the LLM might have hallucinated, then apply layout engine
             simple_spec.pop("position", None)
@@ -170,7 +164,7 @@ Examples:
 Return ONLY the JSON, no explanations."""
 
     def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate a complete class diagram with two-pass reasoning, domain patterns,
+        """Generate a complete class diagram with two-pass structured outputs, domain patterns,
         validation-feedback loop, and deterministic layout."""
 
         system_prompt = self._get_system_generation_prompt()
@@ -181,10 +175,9 @@ Return ONLY the JSON, no explanations."""
             system_prompt += pattern_hint
 
         logger.info(f"[ClassDiagram] generate_complete_system called with: {user_request!r}")
-        logger.debug(f"[ClassDiagram] System prompt length: {len(system_prompt)} chars")
 
         try:
-            # --- Two-pass generation: reason first, then produce JSON ---
+            # --- Two-pass structured: reason first, then produce validated Pydantic model ---
             reasoning_prompt = (
                 "You are a UML domain modeling expert. Think step by step about "
                 "the following system request and plan the class diagram design.\n\n"
@@ -201,25 +194,16 @@ Return ONLY the JSON, no explanations."""
                 "they are the most commonly missed element."
             )
 
-            response = self.predict_two_pass(
+            parsed = self.predict_two_pass_structured(
                 user_request=user_request,
                 system_prompt=system_prompt,
                 reasoning_prompt=reasoning_prompt,
+                response_schema=SystemClassSpec,
             )
-
-            logger.info(f"[ClassDiagram] System LLM response length: {len(response)}")
-            logger.debug(f"[ClassDiagram] System LLM response: {response[:500]!r}")
-
-            # Use parse_and_validate_with_repair for better error recovery
-            system_spec = self.parse_and_validate_with_repair(
-                response,
-                required_keys=SYSTEM_CLASS_REQUIRED,
-                optional_keys=SYSTEM_CLASS_OPTIONAL,
-                label="ClassDiagram.complete_system",
-            )
+            system_spec = parsed.model_dump()
 
             logger.info(
-                f"[ClassDiagram] Parsed system spec: "
+                f"[ClassDiagram] Structured system spec: "
                 f"{len(system_spec.get('classes', []))} classes, "
                 f"{len(system_spec.get('relationships', []))} relationships"
             )
@@ -247,7 +231,6 @@ Return ONLY the JSON, no explanations."""
 
         except LLMPredictionError as exc:
             logger.error(f"[ClassDiagram] generate_complete_system LLM FAILED: {exc}")
-            # --- Graceful degradation: try generating classes one by one ---
             return self._incremental_system_fallback(user_request, existing_model)
         except Exception as exc:
             logger.error(f"[ClassDiagram] generate_complete_system FAILED: {exc}", exc_info=True)
@@ -678,16 +661,14 @@ Return ONLY the JSON object – no explanations"""
         logger.debug(f"[ClassDiagram] Full modification prompt length: {len(full_prompt)} chars")
 
         try:
-            response = self.predict_with_retry(full_prompt)
+            parsed = self.predict_structured(full_prompt, ClassModificationResponse, system_prompt="")
+            mod_list = parsed.model_dump()["modifications"]
+            if len(mod_list) == 1:
+                modification_spec = {"action": "modify_model", "modification": mod_list[0]}
+            else:
+                modification_spec = {"action": "modify_model", "modifications": mod_list}
 
-            logger.info(f"[ClassDiagram] Modification LLM response length: {len(response)}")
-            logger.debug(f"[ClassDiagram] Modification LLM response: {response[:500]!r}")
-
-            json_text = self.clean_json_response(response)
-            modification_spec = self.parse_json_safely(json_text)
-            
-            if not modification_spec:
-                raise ValueError(f"Failed to parse modification JSON: {json_text[:300]}")
+            logger.info(f"[ClassDiagram] Structured modification: {len(mod_list)} item(s)")
 
             # Expand refactoring actions into primitive modifications before validation
             if self._is_refactoring_action(modification_spec):

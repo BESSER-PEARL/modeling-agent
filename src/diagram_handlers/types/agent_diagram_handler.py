@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional
 import logging
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
+from schemas import AgentSingleElementSpec, SystemAgentSpec, AgentModificationResponse
 from utilities.model_helpers import detailed_model_summary
 
 # Get logger
@@ -66,16 +67,8 @@ IMPORTANT RULES:
         user_prompt = f"Create an agent diagram element specification for: {user_request}"
 
         try:
-            response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_prompt}")
-
-            if not response:
-                raise ValueError("GPT returned empty response")
-
-            json_text = self.clean_json_response(response)
-            agent_spec = self.parse_json_safely(json_text)
-
-            if not agent_spec:
-                raise ValueError("Failed to parse JSON response")
+            parsed = self.predict_structured(user_prompt, AgentSingleElementSpec, system_prompt=system_prompt)
+            agent_spec = parsed.model_dump()
 
             normalized_spec = self._normalize_single_element_spec(agent_spec, user_request)
 
@@ -156,17 +149,11 @@ IMPORTANT RULES:
 10. Do NOT include any "position" field - positioning is handled automatically.
 11. Return ONLY the JSON object - no explanations."""
 
+        user_request_prompt = f"{user_request}"
+
         try:
-            response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_request}")
-
-            if not response:
-                raise ValueError("GPT returned empty response")
-
-            json_text = self.clean_json_response(response)
-            system_spec = self.parse_json_safely(json_text)
-
-            if not system_spec:
-                raise ValueError("Failed to parse JSON response")
+            parsed = self.predict_structured(user_request_prompt, SystemAgentSpec, system_prompt=system_prompt)
+            system_spec = parsed.model_dump()
 
             normalized_system = self._normalize_system_spec(system_spec, user_request)
 
@@ -696,17 +683,13 @@ IMPORTANT RULES:
         user_prompt = f"Modify the agent diagram: {user_request}{context_block}"
         
         try:
-            response = self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_prompt}")
-            
-            if not response:
-                raise ValueError("GPT returned empty response")
-            
-            json_text = self.clean_json_response(response)
-            modification_spec = self.parse_json_safely(json_text)
-            
-            if not modification_spec or (not modification_spec.get('modification') and not modification_spec.get('modifications')):
-                raise ValueError("Failed to parse modification JSON")
-            
+            parsed = self.predict_structured(user_prompt, AgentModificationResponse, system_prompt=system_prompt)
+            mod_list = parsed.model_dump()["modifications"]
+            if len(mod_list) == 1:
+                modification_spec = {"action": "modify_model", "modification": mod_list[0]}
+            else:
+                modification_spec = {"action": "modify_model", "modifications": mod_list}
+
             # Validate (supports both single and batch)
             self.validate_modification_spec(modification_spec)
 
