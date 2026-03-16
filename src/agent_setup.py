@@ -25,6 +25,11 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     # The BESSER framework's intent_classification() hardcodes
     # response_format and then unpacks **parameters — having it in both
     # causes "got multiple values for keyword argument 'response_format'".
+    # num_previous_messages is only used by BESSER's .chat() method, not
+    # by .predict() which is our main call path.  Keep at 1 (the minimum
+    # the framework validates) to avoid accidental context bloat if .chat()
+    # is ever invoked.  Conversation context is injected explicitly in
+    # execution.py via the ConversationMemory module.
     gpt = LLMOpenAI(
         agent=agent,
         name='gpt-4.1-mini',
@@ -32,7 +37,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
             'temperature': 0.2,
             'max_completion_tokens': 8192,
         },
-        num_previous_messages=20,
+        num_previous_messages=5,
     )
 
     # Thin wrapper that enforces JSON mode for predict() calls only.

@@ -245,10 +245,24 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
     # parsing — this function is called 3-5 times per message from
     # get_user_message(), get_diagram_type(), get_current_model(),
     # _common_preamble(), reply_message(), and route_to_generation().
+    #
+    # IMPORTANT: The cache is keyed on the *identity* of ``session.event``
+    # so that a new incoming WebSocket message (which assigns a fresh event
+    # object) automatically invalidates the stale cached request.
     cache_key = "_parsed_assistant_request"
-    cached = session.get(cache_key) if hasattr(session, 'get') else None
-    if isinstance(cached, AssistantRequest):
-        return cached
+    event_id_key = "_parsed_request_event_id"
+
+    current_event_id = id(session.event) if session and session.event else None
+
+    if current_event_id is not None:
+        try:
+            cached_event_id = session.get(event_id_key)
+            if cached_event_id == current_event_id:
+                cached = session.get(cache_key)
+                if isinstance(cached, AssistantRequest):
+                    return cached
+        except Exception:
+            pass
 
     raw_payload = extract_event_payload(session)
 
@@ -268,6 +282,7 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
         )
         try:
             session.set(cache_key, request)
+            session.set(event_id_key, current_event_id)
         except Exception:
             pass
         return request
@@ -281,6 +296,7 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
 
     try:
         session.set(cache_key, request)
+        session.set(event_id_key, current_event_id)
     except Exception:
         pass
     return request

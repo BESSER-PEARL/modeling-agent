@@ -25,18 +25,9 @@ from .layout_engine import apply_layout
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Concurrency guard – limits parallel LLM calls across all handlers.
-# OpenAI rate-limits are per-org, so a global semaphore prevents bursts
-# from concurrent WebSocket sessions exhausting the quota.
-# ---------------------------------------------------------------------------
 class LLMPredictionError(Exception):
     """Raised when the LLM fails to produce a usable response after retries."""
     pass
-
-
-_LLM_CONCURRENCY_LIMIT = int(os.environ.get("LLM_CONCURRENCY_LIMIT", "6"))
-_llm_semaphore = threading.Semaphore(_LLM_CONCURRENCY_LIMIT)
 
 # ---------------------------------------------------------------------------
 # Lightweight prompt-response cache
@@ -415,10 +406,8 @@ class BaseDiagramHandler(ABC):
     def predict_with_retry(self, prompt: str, max_retries: int = 2, *, use_cache: bool = True) -> str:
         """Call the LLM with automatic retry, cache check, and jittered exponential backoff.
 
-        Acquires a module-level semaphore before calling the API so that
-        concurrent WebSocket sessions don't exhaust OpenAI rate limits.
-        Backoff sleeps happen **outside** the semaphore to avoid blocking
-        other sessions.
+        Rate-limit handling is delegated to OpenAI's API (429 responses)
+        and the retry loop below — no local semaphore is used.
 
         Retry improvements:
         - Jitter added to backoff delays to prevent thundering-herd retries.
@@ -472,11 +461,7 @@ class BaseDiagramHandler(ABC):
                 )
 
             try:
-                _llm_semaphore.acquire()
-                try:
-                    response = self.llm.predict(effective_prompt)
-                finally:
-                    _llm_semaphore.release()
+                response = self.llm.predict(effective_prompt)
 
                 # Track tokens from the last API call if available
                 try:
@@ -623,17 +608,13 @@ class BaseDiagramHandler(ABC):
                 time.sleep(backoff)
 
             try:
-                _llm_semaphore.acquire()
-                try:
-                    completion = client.beta.chat.completions.parse(
-                        model=self.llm.name if hasattr(self.llm, 'name') else "gpt-4.1-mini",
-                        messages=messages,
-                        response_format=response_schema,
-                        temperature=temperature,
-                        max_completion_tokens=8192,
-                    )
-                finally:
-                    _llm_semaphore.release()
+                completion = client.beta.chat.completions.parse(
+                    model=self.llm.name if hasattr(self.llm, 'name') else "gpt-4.1-mini",
+                    messages=messages,
+                    response_format=response_schema,
+                    temperature=temperature,
+                    max_completion_tokens=8192,
+                )
 
                 # Track tokens
                 if hasattr(completion, 'usage') and completion.usage:
@@ -750,18 +731,13 @@ class BaseDiagramHandler(ABC):
         """Two-pass generation with structured output for pass 2.
 
         Pass 1 (reasoning): Free-text design analysis via ``predict_with_retry``
-        (handles semaphore, retry, and caching internally).
+        (handles retry and caching internally).
         Pass 2 (structured): Converts reasoning into a validated Pydantic model
         via ``predict_structured``, guaranteeing schema conformance.
 
         Falls back to single-pass structured if reasoning fails.
-
-        Thread-safety: Each pass acquires ``_llm_semaphore`` independently
-        through the helper methods, avoiding nested acquisition that could
-        deadlock under high concurrency.
         """
-        # Pass 1: Design reasoning (free-text) — uses predict_with_retry which
-        # handles semaphore acquire/release internally, avoiding nested locks.
+        # Pass 1: Design reasoning (free-text)
         logger.info(f"[{self.get_diagram_type()}] Two-pass structured: reasoning pass")
         try:
             reasoning = self.predict_with_retry(reasoning_prompt, max_retries=1, use_cache=False)
@@ -944,7 +920,7 @@ class BaseDiagramHandler(ABC):
         Returns the raw JSON string from pass 2.
         """
         # Pass 1: Design reasoning (free-text) — delegates to predict_with_retry
-        # which handles semaphore, retry and backoff internally.
+        # which handles retry and backoff internally.
         logger.info(f"[{self.get_diagram_type()}] Two-pass: starting reasoning pass")
         try:
             reasoning = self.predict_with_retry(reasoning_prompt, max_retries=1, use_cache=False)
@@ -1057,11 +1033,7 @@ If the diagram looks good, return: {{"has_issues": false}}
 Return ONLY the JSON, no explanations."""
 
         try:
-            _llm_semaphore.acquire()
-            try:
-                response = self.llm.predict(critique_prompt)
-            finally:
-                _llm_semaphore.release()
+            response = self.llm.predict(critique_prompt)
 
             if not response or not response.strip():
                 return spec
@@ -1167,11 +1139,7 @@ Return ONLY the JSON, no explanations."""
                 f"[{self.get_diagram_type()}] Self-correcting: "
                 f"{len(validation_errors)} error(s) to fix"
             )
-            _llm_semaphore.acquire()
-            try:
-                corrected = self.llm.predict(correction_prompt)
-            finally:
-                _llm_semaphore.release()
+            corrected = self.llm.predict(correction_prompt)
 
             if corrected and corrected.strip():
                 cleaned = self.clean_json_response(corrected)
@@ -1257,11 +1225,7 @@ Return ONLY the JSON, no explanations."""
             f"Malformed JSON:\n{malformed_json[:3000]}"
         )
         try:
-            _llm_semaphore.acquire()
-            try:
-                response = self.llm.predict(repair_prompt)
-            finally:
-                _llm_semaphore.release()
+            response = self.llm.predict(repair_prompt)
             if response and response.strip():
                 cleaned = self.clean_json_response(response)
                 # Verify it actually parses

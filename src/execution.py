@@ -19,7 +19,7 @@ from besser.agent.core.session import Session
 import agent_context as ctx
 from protocol.adapters import parse_assistant_request
 from protocol.types import AssistantRequest
-from session_helpers import reply_message, reply_payload
+from session_helpers import reply_message, reply_payload, reply_progress
 from confirmation import model_has_elements
 from diagram_handlers.factory import get_diagram_type_info
 from handlers.generation_handler import handle_generation_request
@@ -531,22 +531,24 @@ def _classify_error(error: Exception) -> str:
 # ------------------------------------------------------------------
 
 def _report_progress(session: Session, current_idx: int, total: int, operation: dict):
-    """Send a progress update to the user for multi-step plans."""
+    """Send a lightweight progress indicator for multi-step plans.
+
+    Uses ``reply_progress`` so the frontend receives a transient status
+    event (not a permanent chat message) that resets its response timer.
+    """
     op_type = operation.get("type", "unknown")
     diagram_type = operation.get("diagramType", "")
 
-    if total > 1:
-        progress_msg = f"Step {current_idx + 1}/{total}: "
-        if op_type == "model":
-            progress_msg += f"Creating {diagram_type}..." if diagram_type else "Processing model..."
-        elif op_type == "generation":
-            gen_type = operation.get("generatorType", "code")
-            progress_msg += f"Generating {gen_type}..."
-        else:
-            progress_msg += "Processing..."
+    progress_msg = f"Step {current_idx + 1}/{total}: "
+    if op_type == "model":
+        progress_msg += f"Creating {diagram_type}\u2026" if diagram_type else "Processing model\u2026"
+    elif op_type == "generation":
+        gen_type = operation.get("generatorType", "code")
+        progress_msg += f"Generating {gen_type}\u2026"
+    else:
+        progress_msg += "Processing\u2026"
 
-        # Send as a lightweight status message
-        reply_message(session, progress_msg)
+    reply_progress(session, progress_msg, step=current_idx + 1, total=total)
 
 
 # ------------------------------------------------------------------
@@ -615,6 +617,10 @@ def execute_planned_operations(
     - Progress messages keep the user informed during multi-step plans
     - Suggestion attachments are enriched with model summaries
     """
+    # Lightweight progress indicator so the frontend resets its response
+    # timer while we plan (the planner may invoke an LLM call).
+    reply_progress(session, "Analyzing your request\u2026")
+
     operations = plan_assistant_operations(
         request=request,
         default_mode=default_mode,

@@ -219,11 +219,31 @@ def _build_target_requests(message: str, targets: List[str]) -> Dict[str, str]:
     return target_requests
 
 
-def _should_use_llm_planner(message: str, inferred_target_count: int, has_generation_request: bool) -> bool:
+def _should_use_llm_planner(
+    message: str,
+    inferred_target_count: int,
+    has_generation_request: bool,
+    matched_intent: Optional[str] = None,
+) -> bool:
     lower = (message or "").lower()
     has_connector = any(connector in lower for connector in PLANNER_CONNECTORS)
     has_multi_clause = has_connector or lower.count(",") >= 2
     has_explicit_diagram_tokens = any(token in lower for token, _ in KEYWORD_TARGETS)
+
+    # Fast path: when the intent classifier already resolved a single-
+    # diagram intent and keyword inference agrees (exactly 1 target, no
+    # generation request), the fallback operations are sufficient.
+    _SINGLE_TARGET_INTENTS = {
+        "create_single_element_intent",
+        "create_complete_system_intent",
+        "modify_model_intent",
+    }
+    if (
+        matched_intent in _SINGLE_TARGET_INTENTS
+        and inferred_target_count == 1
+        and not has_generation_request
+    ):
+        return False
 
     if has_multi_clause and (inferred_target_count > 1 or has_generation_request):
         return True
@@ -395,6 +415,72 @@ _HEURISTIC_GENERATE_ONLY = re.compile(
     re.IGNORECASE,
 )
 
+# Single-diagram creation patterns  ──────────────────────────────────
+# These catch the most common request shapes so the LLM planner is
+# never invoked for straightforward single-diagram creation.
+
+_HEURISTIC_GUI = re.compile(
+    r"^(?:create|build|design|make|generate|add)\s+(?:a\s+|the\s+)?"
+    r"(?:gui|graphical\s*ui|frontend|web\s*ui|user\s*interface|ui)"
+    r"(?:\s+(?:diagram|page|screen|layout))?"
+    r"(?:\s+(?:for|of|from)\s+(?:this\s+(?:system|project|model)|my\s+(?:system|project|model|classes)|(?P<domain>.+)))?"
+    r"\s*$",
+    re.IGNORECASE,
+)
+
+_HEURISTIC_STATE_MACHINE = re.compile(
+    r"^(?:create|build|design|make|add)\s+(?:a\s+|the\s+)?"
+    r"(?:state\s*machine|state\s*diagram|workflow|lifecycle)"
+    r"(?:\s+(?:diagram))?"
+    r"(?:\s+(?:for|of)\s+(?P<domain>.+))?"
+    r"\s*$",
+    re.IGNORECASE,
+)
+
+_HEURISTIC_AGENT = re.compile(
+    r"^(?:create|build|design|make|add)\s+(?:a\s+|an\s+|the\s+)?"
+    r"(?:agent|chatbot|conversational\s*agent|agent\s*diagram)"
+    r"(?:\s+(?:diagram))?"
+    r"(?:\s+(?:for|of|about|that)\s+(?P<domain>.+))?"
+    r"\s*$",
+    re.IGNORECASE,
+)
+
+_HEURISTIC_QUANTUM = re.compile(
+    r"^(?:create|build|design|make|add|implement)\s+(?:a\s+|the\s+)?"
+    r"(?:quantum\s*circuit|quantum\s*diagram|quantum\s*algorithm)"
+    r"(?:\s+(?:diagram))?"
+    r"(?:\s+(?:for|of|with)\s+(?P<domain>.+))?"
+    r"\s*$",
+    re.IGNORECASE,
+)
+
+_HEURISTIC_OBJECT = re.compile(
+    r"^(?:create|build|design|make|add)\s+(?:a\s+|an\s+|the\s+)?"
+    r"(?:object\s*diagram|object\s*model|object\s*instances?)"
+    r"(?:\s+(?:for|of|from)\s+(?P<domain>.+))?"
+    r"\s*$",
+    re.IGNORECASE,
+)
+
+_HEURISTIC_CLASS = re.compile(
+    r"^(?:create|build|design|make)\s+(?:a\s+|an\s+|the\s+)?"
+    r"(?:class\s*diagram|class\s*model|domain\s*model)"
+    r"(?:\s+(?:for|of|with)\s+(?P<domain>.+))?"
+    r"\s*$",
+    re.IGNORECASE,
+)
+
+# Map of (pattern, diagramType) for the single-diagram heuristics
+_SINGLE_DIAGRAM_HEURISTICS = [
+    (_HEURISTIC_GUI, "GUINoCodeDiagram"),
+    (_HEURISTIC_STATE_MACHINE, "StateMachineDiagram"),
+    (_HEURISTIC_AGENT, "AgentDiagram"),
+    (_HEURISTIC_QUANTUM, "QuantumCircuitDiagram"),
+    (_HEURISTIC_OBJECT, "ObjectDiagram"),
+    (_HEURISTIC_CLASS, "ClassDiagram"),
+]
+
 
 def _try_heuristic_decomposition(
     message: str,
@@ -452,6 +538,22 @@ def _try_heuristic_decomposition(
         gen_type = detect_generator_type(stripped)
         if gen_type:
             return [{"type": "generation", "generatorType": gen_type, "config": {}}]
+
+    # Pattern 4: Single-diagram creation ("create a gui for X", "add a
+    # state machine for X", "create an agent for X", etc.)
+    for pattern, diagram_type in _SINGLE_DIAGRAM_HEURISTICS:
+        match = pattern.match(stripped)
+        if match:
+            domain = ""
+            try:
+                domain = (match.group("domain") or "").strip().rstrip(".")
+            except (IndexError, AttributeError):
+                pass
+            req_text = stripped if domain else stripped
+            return [
+                {"type": "model", "diagramType": diagram_type, "mode": default_mode,
+                 "request": req_text},
+            ]
 
     return None
 
@@ -601,7 +703,7 @@ def plan_assistant_operations(
     detected_gen = detect_generator_type(request.message)
     has_generation_request = detected_gen is not None
 
-    if not _should_use_llm_planner(request.message, len(inferred_targets), has_generation_request):
+    if not _should_use_llm_planner(request.message, len(inferred_targets), has_generation_request, matched_intent=matched_intent):
         return _validate_and_fix_plan(fallback, request)
 
     # ----- Phase 2: LLM planner -----
