@@ -132,12 +132,9 @@ Health Monitoring
 Scaling Considerations
 ----------------------
 
-- **LLM concurrency:** The global semaphore (4 concurrent calls) prevents API
-  rate limiting. Increase for higher throughput.
-- **Cache:** Prompt/response cache (50 entries, 5-min TTL) reduces duplicate
-  calls across concurrent sessions.
-- **Stateless design:** Each WebSocket session is independent. Multiple agent
-  instances can run behind a load balancer with sticky sessions.
+- **Rate limiting:** Handled by OpenAI's API directly. The retry loop (exponential backoff with jitter, 3 attempts) catches 429 responses and surfaces them to users.
+- **Request parsing:** Parsed requests are cached per-event via ``id(session.event)`` to avoid redundant JSON parsing within a single message cycle.
+- **Session persistence:** BESSER sessions persist across WebSocket reconnects (``delete_session`` is not called on disconnect). The frontend persists the session ID in ``sessionStorage`` for continuity across drawer open/close.
 
 Security
 --------

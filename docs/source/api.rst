@@ -98,7 +98,7 @@ Orchestration Layer
   Multi-operation planning:
 
   - ``plan_assistant_operations(session, request, default_mode, matched_intent)``
-  - ``_should_use_llm_planner(message)`` — Complexity check
+  - ``_should_use_llm_planner(message, matched_intent, inferred_target_count)`` — Complexity check with fast-path (returns ``False`` for single-target intents)
   - ``_fallback_operations(request, default_mode)`` — Heuristic operations
   - ``_normalize_operations(operations)`` — Deduplicate and validate
 
@@ -259,6 +259,38 @@ Routing
   Intent name constants:
 
   - ``GENERATION_INTENT_NAME`` — The string name for the generation intent
+
+LLM Provider
+------------
+
+``src/llm/``
+  LLM provider abstraction (structured outputs, streaming).
+
+Conversation Memory
+-------------------
+
+``src/memory/``
+  Per-session conversation memory with sliding window and LLM summarization.
+
+Schemas
+-------
+
+``src/schemas/``
+  Pydantic schemas for structured LLM output (one per diagram type:
+  ``agent_diagram``, ``class_diagram``, ``gui_diagram``, ``object_diagram``,
+  ``quantum_circuit``, ``state_machine``).
+
+Token Tracking
+--------------
+
+``src/tracking/``
+  Token usage and cost tracking per session and globally.
+
+Suggestions
+-----------
+
+``src/suggestions.py``
+  Context-aware next-step suggestions after operations.
 
 Test Infrastructure
 -------------------

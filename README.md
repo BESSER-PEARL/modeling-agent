@@ -36,6 +36,11 @@ modeling-agent/
     agent_setup.py                 # LLM/RAG/factory bootstrapping
     execution.py                   # Operation execution engine
     state_bodies.py                # Intent state logic
+    suggestions.py                 # Context-aware suggestion engine
+    llm/                           # LLM provider abstraction
+    memory/                        # Conversation memory with sliding window
+    schemas/                       # Pydantic schemas for structured LLM output
+    tracking/                      # Token usage and cost tracking
     protocol/                      # Request parsing and protocol types
     orchestrator/                  # Multi-operation planning and routing
     handlers/                      # Generation and file-conversion handlers

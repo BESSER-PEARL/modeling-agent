@@ -62,7 +62,7 @@ Shared Concrete Methods
    * - ``generate_modification()``
      - Default modification handler using LLM
    * - ``predict_with_retry()``
-     - LLM call with cache lookup, semaphore, and exponential backoff
+     - LLM call with exponential backoff and jitter
    * - ``predict_two_pass()``
      - Two-pass generation: free-text reasoning then structured JSON
    * - ``validate_and_refine()``
@@ -76,12 +76,12 @@ Shared Concrete Methods
    * - ``_error_response()``
      - Standard error format with ``retryable`` flag
 
-Concurrency and Caching
-~~~~~~~~~~~~~~~~~~~~~~~~
+Retry Strategy
+~~~~~~~~~~~~~~
 
-- **Semaphore:** ``threading.Semaphore(4)`` limits concurrent LLM calls
-- **Cache:** SHA-256 keyed prompt/response cache (50 entries, 5-min TTL)
 - **Retry:** Exponential backoff with jitter (3 attempts)
+- **Rate limiting:** Handled by OpenAI's API directly (429 responses caught by retry logic)
+- **Fallback:** Graceful degradation through multiple levels (primary LLM → JSON repair → type-specific fallback → error response)
 
 ClassDiagramHandler
 -------------------
@@ -362,5 +362,5 @@ Adding a New Diagram Type
 4. Add to ``SUPPORTED_DIAGRAM_TYPES`` in ``src/protocol/types.py``
 5. Add display metadata in ``src/diagram_handlers/registry/metadata.py``
 
-Layout, retry, caching, quality review, and concurrency are inherited
+Layout, retry, two-pass generation, and validation are inherited
 automatically from ``BaseDiagramHandler``.

@@ -86,9 +86,31 @@ modeling-agent/
 │   ├── execution.py                  # Core execution engine
 │   ├── confirmation.py               # Pending confirmation flow handlers
 │   ├── session_helpers.py            # Protocol-agnostic reply utilities
+│   ├── suggestions.py                # Contextual suggestion engine
 │   ├── domain_patterns.py            # 10-domain expert pattern library
 │   ├── state_patterns.py             # 8 behavioral lifecycle patterns
 │   ├── quality_review.py             # Post-generation quality checks
+│   │
+│   ├── llm/
+│   │   ├── __init__.py
+│   │   └── provider.py               # LLM provider abstraction
+│   │
+│   ├── memory/
+│   │   ├── __init__.py
+│   │   └── conversation_memory.py    # Sliding window conversation memory
+│   │
+│   ├── schemas/
+│   │   ├── __init__.py
+│   │   ├── agent_diagram.py          # Agent diagram Pydantic schema
+│   │   ├── class_diagram.py          # Class diagram Pydantic schema
+│   │   ├── gui_diagram.py            # GUI diagram Pydantic schema
+│   │   ├── object_diagram.py         # Object diagram Pydantic schema
+│   │   ├── quantum_circuit.py        # Quantum circuit Pydantic schema
+│   │   └── state_machine.py          # State machine Pydantic schema
+│   │
+│   ├── tracking/
+│   │   ├── __init__.py
+│   │   └── token_tracker.py          # Token usage tracking
 │   │
 │   ├── protocol/
 │   │   ├── __init__.py
@@ -149,7 +171,13 @@ modeling-agent/
 │   ├── test_model_helpers.py
 │   ├── test_orchestrator.py
 │   ├── test_protocol.py
-│   └── test_request_planner.py
+│   ├── test_request_planner.py
+│   ├── test_suggestions.py           # Contextual suggestion engine tests
+│   ├── test_schemas.py               # Pydantic schema validation tests
+│   ├── test_conversation_memory.py   # Sliding window memory tests
+│   ├── test_token_tracker.py         # Token usage tracking tests
+│   ├── test_llm_provider.py          # LLM provider abstraction tests
+│   └── test_base_handler.py          # Base handler utilities tests
 │
 └── docs/
     ├── Makefile
@@ -203,7 +231,7 @@ modeling-agent/
 │  │                    │    │                                              │  │
 │  │  request_planner   │    │  ┌──────────────────────────────────────┐   │  │
 │  │  (LLM or           │    │  │       BaseDiagramHandler             │   │  │
-│  │   heuristic)       │    │  │  predict_with_retry() + cache        │   │  │
+│  │   heuristic)       │    │  │  predict_with_retry()                │   │  │
 │  │                    │    │  │  predict_two_pass()                   │   │  │
 │  │  workspace_        │    │  │  validate_and_refine()                │   │  │
 │  │  orchestrator      │    │  │  apply_*_layout()                    │   │  │
@@ -333,6 +361,8 @@ BESSER WebSocket Event
     ▼
 AssistantRequest (canonical)
 ```
+
+Parsed requests are cached on the session keyed by event identity (`id(session.event)`), so multiple calls to `parse_assistant_request()` within the same message processing cycle avoid redundant JSON parsing. The cache is automatically invalidated when a new WebSocket message arrives.
 
 ---
 
@@ -529,8 +559,9 @@ Level 3: Context fallback
 Plans multi-step execution from a single user message.
 
 **Decision flow:**
-1. Build heuristic `_fallback_operations()` (always computed as safety net)
-2. Check `_should_use_llm_planner()` — true for complex messages (multi-sentence, connectors, >200 chars)
+0. Fast heuristic pre-decomposition via regex patterns. Catches common shapes: "create a web app for X", "create/build X and generate Y", "generate X", "create a gui/state machine/agent/quantum circuit/object diagram/class diagram for X". If matched, skips the LLM planner entirely.
+1. Build keyword fallback `_fallback_operations()` (always computed as safety net)
+2. Check `_should_use_llm_planner()` — true for multi-clause messages with multiple diagram targets or generation requests; skipped when intent classifier already resolved a single target
 3. If LLM: send planning prompt, get JSON `operations` array
 4. `_normalize_operations()` — deduplicate, validate, enforce ClassDiagram-first ordering
 5. Fall back to heuristic if LLM returns nothing valid
@@ -573,7 +604,9 @@ BaseDiagramHandler (abstract)
 │
 │  Shared concrete methods:
 │  ├── generate_modification()     # Default modification with LLM
-│  ├── predict_with_retry()        # LLM call + cache + semaphore + exponential backoff
+│  ├── predict_with_retry()        # LLM call + exponential backoff + jitter
+│  ├── predict_structured()        # OpenAI structured outputs with Pydantic validation
+│  ├── predict_two_pass_structured() # Reasoning pass + structured pass (skipped for simple requests <80 chars)
 │  ├── predict_two_pass()          # Free-text reasoning → JSON output
 │  ├── validate_and_refine()       # LLM self-critique loop
 │  ├── repair_json_response()      # Last-resort JSON repair
@@ -1148,7 +1181,7 @@ LLMs never emit positions. The layout engine runs after every LLM call, ensuring
 
 ### Graceful Degradation
 For every operation:
-1. Primary LLM call (with cache + retry)
+1. Primary LLM call (with retry)
 2. JSON repair via LLM
 3. Type-specific fallback generator
 4. Error response with `retryable: true`
@@ -1160,13 +1193,10 @@ No exceptions propagate to the caller.
 ## 19. Concurrency and Caching
 
 ### LLM Concurrency Control
-`threading.Semaphore(4)` in `base_handler.py` prevents concurrent sessions from flooding the OpenAI API.
+Rate limiting is handled by OpenAI's API (429 responses). The retry loop in `predict_with_retry()` catches rate-limit errors and surfaces them to the user. No local semaphore is used — concurrent sessions call the API directly.
 
-### Prompt/Response Cache
-- Key: SHA-256 hash of (system_prompt + user_prompt)
-- Max entries: 50
-- TTL: 5 minutes
-- Reduces duplicate LLM calls for identical requests
+### Prompt Caching
+Prompt caching was removed because every prompt includes workspace context (model data) that changes on each interaction, yielding ~0% cache hit rate. The API-level caching provided by OpenAI (prompt caching for repeated prefixes) provides the actual speedup.
 
 ### Retry Strategy
 Exponential backoff with jitter:
@@ -1208,6 +1238,12 @@ Exponential backoff with jitter:
 | `test_model_helpers.py` | Utility function correctness |
 | `test_orchestrator.py` | Diagram type resolution and scoring |
 | `test_request_planner.py` | Multi-step operation planning |
+| `test_suggestions.py` | Contextual suggestion engine |
+| `test_schemas.py` | Pydantic schema validation |
+| `test_conversation_memory.py` | Sliding window memory |
+| `test_token_tracker.py` | Token usage tracking |
+| `test_llm_provider.py` | LLM provider abstraction |
+| `test_base_handler.py` | Base handler utilities |
 
 ---
 

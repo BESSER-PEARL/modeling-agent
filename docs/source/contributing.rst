@@ -59,6 +59,18 @@ Test Suites
      - Diagram type resolution and scoring
    * - ``test_request_planner.py``
      - Multi-step operation planning
+   * - ``test_base_handler.py``
+     - Base handler utilities (cache stubs, JSON parsing, error classification)
+   * - ``test_conversation_memory.py``
+     - Conversation memory (sliding window, summarization, thread safety)
+   * - ``test_llm_provider.py``
+     - LLM provider abstraction
+   * - ``test_schemas.py``
+     - Pydantic schema validation for all diagram types
+   * - ``test_suggestions.py``
+     - Suggestion engine (context-aware, per-diagram-type)
+   * - ``test_token_tracker.py``
+     - Token counting and cost tracking
 
 Test Infrastructure
 ~~~~~~~~~~~~~~~~~~~

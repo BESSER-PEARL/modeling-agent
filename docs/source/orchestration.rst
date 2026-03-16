@@ -20,22 +20,32 @@ depending on request complexity.
 Decision Flow
 ~~~~~~~~~~~~~
 
-1. **Heuristic fallback** is always computed as a safety net.
-2. **Complexity check** (``_should_use_llm_planner()``) — returns ``True`` for:
+The request planner uses a 3-tier approach to minimize LLM calls:
 
-   - Multi-sentence messages
-   - Messages containing connectors ("and then", "then", "also", etc.)
-   - Messages exceeding 200 characters
+- **Tier 0 -- Fast heuristic regex patterns:** A bank of compiled regular
+  expressions matches common request shapes (e.g., "create a web app for X",
+  "generate Django", "create a GUI for this system", "add a state machine").
+  Handles ~90% of simple requests with zero LLM calls.
+- **Tier 1 -- Keyword-based fallback with intent-aware fast path:** Keyword
+  detection determines diagram type + mode. Skips the LLM planner when the
+  intent classifier already resolved a single target with no generation request.
+- **Tier 2 -- LLM planner:** Only genuinely complex multi-step requests
+  (multiple diagram types + generation in one message) invoke the LLM for
+  decomposition.
 
-3. If complex → **LLM planner**: sends a planning prompt, receives a JSON
-   ``operations`` array.
-4. **Normalize operations** (``_normalize_operations()``):
+``_should_use_llm_planner()`` now includes a fast-path that returns ``False``
+when ``matched_intent`` is a single-target intent and ``inferred_target_count``
+is 1, allowing Tier 0 and Tier 1 to handle the request without invoking the
+LLM.
 
-   - Deduplicate identical operations
-   - Validate operation shapes
-   - Enforce ClassDiagram-first ordering (required by other handlers)
+After planning, the result passes through **normalize operations**
+(``_normalize_operations()``):
 
-5. If the LLM returns nothing valid → fall back to heuristic.
+- Deduplicate identical operations
+- Validate operation shapes
+- Enforce ClassDiagram-first ordering (required by other handlers)
+
+If neither tier produces valid operations, the heuristic fallback is used.
 
 Operation Format
 ~~~~~~~~~~~~~~~~

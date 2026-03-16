@@ -8,6 +8,11 @@ Top-level modules under `src/` are organized by responsibility:
 - `protocol/`: request/context protocol models and adapters.
 - `routing/`: intent names and routing helpers.
 - `utilities/`: shared helper utilities.
+- `llm/`: LLM provider abstraction (structured outputs, streaming).
+- `memory/`: Conversation memory with sliding-window and LLM summarization.
+- `schemas/`: Pydantic schemas for OpenAI structured outputs per diagram type.
+- `tracking/`: Token usage and cost tracking.
+- `suggestions.py`: context-aware follow-up suggestion engine.
 - `agent_setup.py`, `agent_context.py`, `execution.py`, `state_bodies.py`: runtime wiring.
 
 ## Diagram Handler Internals

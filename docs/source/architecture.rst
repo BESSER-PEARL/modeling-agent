@@ -90,6 +90,21 @@ The system is organized into these layers, processed in order for each request:
 7. **Knowledge Layer** (``src/domain_patterns.py``, ``src/state_patterns.py``):
    Expert domain patterns injected into LLM prompts.
 
+8. **LLM Abstraction** (``src/llm/``): Provider abstraction over
+   OpenAI, encapsulating model selection and call conventions.
+
+9. **Conversation Memory** (``src/memory/``): Per-session conversation
+   history with summarization support.
+
+10. **Schemas** (``src/schemas/``): Pydantic models for each diagram type,
+    used by the structured-output pass of diagram handlers.
+
+11. **Token Tracking** (``src/tracking/``): Per-session and global token
+    usage and cost accounting.
+
+12. **Suggestion Engine** (``src/suggestions.py``): Contextual next-step
+    action suggestions returned to the frontend after each operation.
+
 Entry Point
 -----------
 
@@ -222,18 +237,53 @@ Two confirmation flows pause execution and resume on the next user message:
 
 Both store pending state in the session and resume via ``_common_preamble()``.
 
-Concurrency and Caching
-------------------------
+Progress Events
+~~~~~~~~~~~~~~~
 
-**LLM Semaphore:** ``threading.Semaphore(4)`` in ``base_handler.py`` limits
-concurrent OpenAI API calls across all sessions.
+For multi-step plans (2+ operations), progress events are sent to the frontend
+via ``reply_progress()`` so that the user sees real-time step indicators (e.g.,
+"Step 1 of 3: Creating class diagram...").
 
-**Prompt/Response Cache:**
+Request Planner
+----------------
 
-- Key: SHA-256 hash of (system_prompt + user_prompt)
-- Max entries: 50
-- TTL: 5 minutes
-- Reduces duplicate LLM calls for identical requests
+``src/orchestrator/request_planner.py`` decomposes a user message into an
+ordered list of operations using a 3-tier approach:
+
+- **Tier 0 -- Fast heuristic regex patterns:** A bank of compiled regular
+  expressions matches common request shapes (e.g., "create a web app", "generate
+  Python code", "design a state machine"). This tier handles ~90% of simple
+  requests with zero LLM calls.
+- **Tier 1 -- Keyword-based fallback with intent-aware fast path:** When no
+  regex matches, a keyword-based classifier determines the operation type and
+  target diagram without calling the LLM.
+- **Tier 2 -- LLM planner:** Only genuinely complex multi-step requests that
+  escape both fast paths are sent to the LLM for decomposition.
+
+Two-Pass Generation
+-------------------
+
+Diagram handlers use a two-pass strategy for complex requests: a reasoning pass
+(free-text LLM call to plan the design) followed by a structured pass (JSON
+mode with Pydantic schema validation). For simple requests (under 80 characters)
+the reasoning pass is skipped entirely, saving one full LLM round-trip.
+
+Session Identity
+-----------------
+
+Session IDs use BESSER's stable ``session.id`` attribute (with a fallback to
+``id(session)`` for older framework versions). This replaces the earlier
+approach of using the fragile ``id(session)`` object identity directly.
+
+Rate Limiting and Caching
+--------------------------
+
+**Rate Limiting:** Handled by OpenAI's API directly. HTTP 429 responses are
+caught by the retry logic (exponential backoff with jitter, 3 attempts).
+
+**Parsed-Request Cache:** ``parse_assistant_request()`` caches its result
+per-event using ``id(session.event)`` as the key, avoiding redundant JSON
+parsing within a single message cycle.
 
 **Retry Strategy:** Exponential backoff with jitter (3 attempts), then fallback
 generator.
@@ -243,7 +293,7 @@ Graceful Degradation
 
 Every modeling operation follows a 4-level degradation chain:
 
-1. Primary LLM call (with cache + retry)
+1. Primary LLM call (with retry)
 2. JSON repair via LLM
 3. Type-specific fallback generator
 4. Error response with ``retryable: true``
@@ -260,8 +310,8 @@ Design Patterns
 execution. Downstream code works only with typed Python objects.
 
 **Handler Extensibility:** Adding a new diagram type requires implementing 4
-abstract methods and registering in the factory. Layout, retry, caching, and
-concurrency are inherited.
+abstract methods and registering in the factory. Layout, retry, and
+two-pass generation are inherited.
 
 **Deterministic Layout:** LLMs never emit positions. The layout engine runs
 after every generation, ensuring collision-free visual presentation.
