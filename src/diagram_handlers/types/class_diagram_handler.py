@@ -51,7 +51,7 @@ IMPORTANT RULES:
 4. If the user just says "create X class", generate relevant attributes and typically NO methods
 5. Use proper programming conventions (camelCase for attributes/methods, PascalCase for classes)
 6. visibility options: "public", "private", "protected", or "package" (default to "public")
-7. Common types: String, int, boolean, double, Date, or custom class names
+7. ONLY use these types: String, int, boolean, float, Date, or custom class names. Do NOT use UUID, long, decimal, BigDecimal, LocalDate, LocalDateTime, List, Set, or any other types. For IDs, always use int.
 8. Method parameters are optional - empty array [] if no parameters needed
 9. Do NOT include any "position" field - positioning is handled automatically
 10. Return ONLY the JSON, no explanations or markdown
@@ -155,7 +155,7 @@ IMPORTANT RULES:
 10. Relationship properties: "name", "sourceMultiplicity", "targetMultiplicity"
 11. Use proper naming: PascalCase for classes, camelCase for attributes/methods
 12. visibility: "public", "private", "protected", or "package"
-13. Common types: String, int, boolean, double, Date, or custom class names
+13. ONLY use these types: String, int, boolean, float, Date, or custom class names. Do NOT use UUID, long, decimal, BigDecimal, LocalDate, LocalDateTime, List, Set, or any other types. For IDs, always use int.
 14. Do NOT include any "position" field - positioning is handled automatically
 15. Return ONLY the JSON, no explanations or markdown
 

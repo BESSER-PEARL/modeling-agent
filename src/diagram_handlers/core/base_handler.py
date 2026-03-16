@@ -981,7 +981,7 @@ class BaseDiagramHandler(ABC):
         # Skip validation for very small diagrams (1-3 classes) where the
         # extra LLM round-trip rarely finds issues.  4+ classes benefit from
         # relationship and attribute completeness checks.
-        if len(classes) <= 3:
+        if len(classes) <= 15:
             return spec
 
         # Build a compact representation for the critique prompt
