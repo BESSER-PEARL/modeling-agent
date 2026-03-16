@@ -100,7 +100,10 @@ Return ONLY the JSON, no explanations."""
             )
         except Exception as exc:
             logger.error(f"[ClassDiagram] generate_single_element FAILED: {exc}", exc_info=True)
-            return self.generate_fallback_element(user_request)
+            return self._error_response(
+                "I had trouble generating that class. Could you try rephrasing?",
+                code="generation_error",
+            )
 
     def _get_system_generation_prompt(self) -> str:
         """Return the system prompt for complete class diagram generation."""
@@ -172,7 +175,7 @@ Return ONLY the JSON, no explanations."""
         # Inject domain pattern reference if the request matches a known domain
         pattern_hint = get_pattern_hint(user_request)
         if pattern_hint:
-            system_prompt += pattern_hint
+            system_prompt += "\n\n" + pattern_hint
 
         logger.info(f"[ClassDiagram] generate_complete_system called with: {user_request!r}")
 

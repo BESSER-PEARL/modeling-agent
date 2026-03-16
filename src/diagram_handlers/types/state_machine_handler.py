@@ -165,7 +165,7 @@ Return ONLY the JSON, no explanations."""
         # Inject behavioral pattern reference if the request matches a known domain
         pattern_hint = get_state_pattern_hint(user_request)
         if pattern_hint:
-            system_prompt += pattern_hint
+            system_prompt += "\n\n" + pattern_hint
 
         logger.info(f"[StateMachine] generate_complete_system called with: {user_request!r}")
 
@@ -238,7 +238,7 @@ Return ONLY the JSON, no explanations."""
         states = spec.get("states", [])
         transitions = spec.get("transitions", [])
 
-        if len(states) <= 2:
+        if not states:
             return spec
 
         # Check for orphan states (no transitions connecting them)
@@ -252,10 +252,8 @@ Return ONLY the JSON, no explanations."""
             name = s.get("stateName", "")
             stype = s.get("stateType", "regular")
             if stype == "initial" and name not in sources:
-                # Initial state should be a source of at least one transition
                 orphans.append(name)
             elif stype == "final" and name not in targets:
-                # Final state should be a target of at least one transition
                 orphans.append(name)
             elif stype == "regular" and name not in connected:
                 orphans.append(name)
@@ -265,21 +263,24 @@ Return ONLY the JSON, no explanations."""
         has_final = any(s.get("stateType") == "final" for s in states)
 
         if not has_initial:
+            # Pick a name that doesn't collide with existing states
+            initial_name = "Initial"
+            if initial_name in state_names:
+                initial_name = "InitialNode"
             states.insert(0, {
-                "stateName": "Initial",
+                "stateName": initial_name,
                 "stateType": "initial",
                 "entryAction": "",
                 "exitAction": "",
                 "doActivity": "",
             })
-            # Connect initial to first regular state
             first_regular = next(
                 (s.get("stateName") for s in states if s.get("stateType") == "regular"),
                 None,
             )
             if first_regular:
                 transitions.insert(0, {
-                    "source": "Initial",
+                    "source": initial_name,
                     "target": first_regular,
                     "trigger": "start",
                     "guard": "",
@@ -288,14 +289,16 @@ Return ONLY the JSON, no explanations."""
             logger.info("[StateMachine] Validation: added missing initial state")
 
         if not has_final:
+            final_name = "Final"
+            if final_name in state_names:
+                final_name = "FinalNode"
             states.append({
-                "stateName": "Final",
+                "stateName": final_name,
                 "stateType": "final",
                 "entryAction": "",
                 "exitAction": "",
                 "doActivity": "",
             })
-            # Connect last regular state to final
             last_regular = None
             for s in reversed(states):
                 if s.get("stateType") == "regular":
@@ -304,7 +307,7 @@ Return ONLY the JSON, no explanations."""
             if last_regular:
                 transitions.append({
                     "source": last_regular,
-                    "target": "Final",
+                    "target": final_name,
                     "trigger": "complete",
                     "guard": "",
                     "effect": "",

@@ -978,10 +978,10 @@ class BaseDiagramHandler(ABC):
         classes = spec.get("classes", [])
         relationships = spec.get("relationships", [])
 
-        # Skip validation for small diagrams — the extra LLM round-trip
-        # (~400 tokens) rarely finds issues when there are fewer than 4
-        # classes.  This saves ~30% latency on simple requests.
-        if len(classes) <= 6:
+        # Skip validation for very small diagrams (1-3 classes) where the
+        # extra LLM round-trip rarely finds issues.  4+ classes benefit from
+        # relationship and attribute completeness checks.
+        if len(classes) <= 3:
             return spec
 
         # Build a compact representation for the critique prompt
