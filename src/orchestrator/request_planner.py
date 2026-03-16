@@ -660,16 +660,16 @@ def _validate_and_fix_plan(
 
 _FEW_SHOT_EXAMPLES = """
 EXAMPLES:
-User: "create a library system with books and authors" → [{"type":"model","diagramType":"ClassDiagram","mode":"complete_system","subRequest":"create a library system with books and authors"}]
-User: "create a User class" → [{"type":"model","diagramType":"ClassDiagram","mode":"create_single_element","subRequest":"create a User class"}]
-User: "create a library system and generate django" → [{"type":"model","diagramType":"ClassDiagram","mode":"complete_system","subRequest":"create a library system"},{"type":"generation","generatorType":"django","subRequest":"generate django code"}]
-User: "create a web app for a hotel booking" → [{"type":"model","diagramType":"ClassDiagram","mode":"complete_system","subRequest":"create hotel booking system"},{"type":"model","diagramType":"GUINoCodeDiagram","mode":"complete_system","subRequest":"create GUI for hotel booking"},{"type":"generation","generatorType":"web_app","subRequest":"generate web app"}]
-User: "add an email attribute to the User class" → [{"type":"model","diagramType":"ClassDiagram","mode":"modify_model","subRequest":"add email attribute to User class"}]
-User: "create a state machine for order processing" → [{"type":"model","diagramType":"StateMachineDiagram","mode":"complete_system","subRequest":"create order processing state machine"}]
-User: "generate python code" → [{"type":"generation","generatorType":"python","subRequest":"generate python code"}]
-User: "create a pizza ordering chatbot agent" → [{"type":"model","diagramType":"AgentDiagram","mode":"complete_system","subRequest":"create pizza ordering chatbot agent"}]
-User: "design an e-commerce system, create a gui for it, and generate a web app" → [{"type":"model","diagramType":"ClassDiagram","mode":"complete_system","subRequest":"design e-commerce system"},{"type":"model","diagramType":"GUINoCodeDiagram","mode":"complete_system","subRequest":"create GUI for e-commerce"},{"type":"generation","generatorType":"web_app","subRequest":"generate web app"}]
-User: "create a quantum circuit with 3 qubits and hadamard gates" → [{"type":"model","diagramType":"QuantumCircuitDiagram","mode":"complete_system","subRequest":"create quantum circuit with 3 qubits and hadamard gates"}]
+User: "create a library system with books and authors" → [{"type":"model","diagramType":"ClassDiagram","mode":"complete_system","request":"create a library system with books and authors"}]
+User: "create a User class" → [{"type":"model","diagramType":"ClassDiagram","mode":"single_element","request":"create a User class"}]
+User: "create a library system and generate django" → [{"type":"model","diagramType":"ClassDiagram","mode":"complete_system","request":"create a library system"},{"type":"generation","generatorType":"django"}]
+User: "create a web app for a hotel booking" → [{"type":"model","diagramType":"ClassDiagram","mode":"complete_system","request":"create hotel booking system"},{"type":"model","diagramType":"GUINoCodeDiagram","mode":"complete_system","request":"create GUI for hotel booking"},{"type":"generation","generatorType":"web_app"}]
+User: "add an email attribute to the User class" → [{"type":"model","diagramType":"ClassDiagram","mode":"modify_model","request":"add email attribute to User class"}]
+User: "create a state machine for order processing" → [{"type":"model","diagramType":"StateMachineDiagram","mode":"complete_system","request":"create order processing state machine"}]
+User: "generate python code" → [{"type":"generation","generatorType":"python"}]
+User: "create a pizza ordering chatbot agent" → [{"type":"model","diagramType":"AgentDiagram","mode":"complete_system","request":"create pizza ordering chatbot agent"}]
+User: "design an e-commerce system, create a gui for it, and generate a web app" → [{"type":"model","diagramType":"ClassDiagram","mode":"complete_system","request":"design e-commerce system"},{"type":"model","diagramType":"GUINoCodeDiagram","mode":"complete_system","request":"create GUI for e-commerce"},{"type":"generation","generatorType":"web_app"}]
+User: "create a quantum circuit with 3 qubits and hadamard gates" → [{"type":"model","diagramType":"QuantumCircuitDiagram","mode":"complete_system","request":"create quantum circuit with 3 qubits and hadamard gates"}]
 """.strip()
 
 

@@ -40,7 +40,6 @@ from utilities.model_helpers import (
 )
 from utilities.model_resolution import resolve_class_diagram
 from utilities.workspace_context import record_session_action
-from quality_review import review_generated_model  # noqa: F401 – kept for explicit quality-check intent
 from suggestions import get_suggested_actions
 
 logger = logging.getLogger(__name__)

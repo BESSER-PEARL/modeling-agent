@@ -106,6 +106,9 @@ class LLMProvider:
         if hasattr(completion, 'usage') and completion.usage:
             self.tracker.record_from_usage(completion.usage, model=self._model)
 
+        if not completion.choices:
+            raise ValueError("LLM returned no choices (possible content filter)")
+
         parsed = completion.choices[0].message.parsed
         if parsed is None:
             refusal = getattr(completion.choices[0].message, 'refusal', None)
