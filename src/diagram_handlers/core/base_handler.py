@@ -501,6 +501,18 @@ class BaseDiagramHandler(ABC):
     # Structured output via OpenAI .parse() — eliminates JSON repair
     # ------------------------------------------------------------------
 
+    # Schema names that produce small outputs (single element or modification).
+    # These get a lower max_completion_tokens to speed up the API call.
+    _SMALL_OUTPUT_SCHEMAS = {
+        "SingleClassSpec", "SingleObjectSpec", "SingleStateSpec",
+        "SingleGUIElementSpec", "SingleQuantumGateSpec", "AgentSingleElementSpec",
+        "ClassModificationResponse", "ObjectModificationResponse",
+        "StateMachineModificationResponse", "GUIModificationSpec",
+        "QuantumModificationSpec", "AgentModificationResponse",
+    }
+    _SMALL_OUTPUT_MAX_TOKENS = 2048
+    _LARGE_OUTPUT_MAX_TOKENS = 8192
+
     def predict_structured(
         self,
         prompt: str,
@@ -589,17 +601,23 @@ class BaseDiagramHandler(ABC):
                 time.sleep(backoff)
 
             try:
+                max_tokens = (
+                    self._SMALL_OUTPUT_MAX_TOKENS
+                    if response_schema.__name__ in self._SMALL_OUTPUT_SCHEMAS
+                    else self._LARGE_OUTPUT_MAX_TOKENS
+                )
                 logger.info(
                     f"[{self.get_diagram_type()}] Structured LLM call started "
                     f"(attempt {attempt + 1}/{total_attempts}, "
-                    f"schema={response_schema.__name__})"
+                    f"schema={response_schema.__name__}, "
+                    f"max_tokens={max_tokens})"
                 )
                 completion = client.beta.chat.completions.parse(
                     model=self.llm.name if hasattr(self.llm, 'name') else "gpt-4.1-mini",
                     messages=messages,
                     response_format=response_schema,
                     temperature=temperature,
-                    max_completion_tokens=8192,
+                    max_completion_tokens=max_tokens,
                 )
 
                 # Track tokens
