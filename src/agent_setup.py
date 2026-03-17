@@ -15,6 +15,7 @@ from besser.agent import nlp
 from besser.agent.core.agent import Agent
 from besser.agent.nlp.intent_classifier.intent_classifier_configuration import LLMIntentClassifierConfiguration
 from besser.agent.nlp.llm.llm_openai_api import LLMOpenAI
+from besser.agent.nlp.speech2text.openai_speech2text import OpenAISpeech2Text
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,17 @@ def init_rag(agent: Agent):
     except Exception as exc:
         logger.warning(f"Failed to initialize UML RAG: {exc}. RAG features will be disabled.")
         return None
+
+
+def init_stt(agent: Agent) -> OpenAISpeech2Text:
+    """Initialize and return OpenAI speech-to-text for voice messages."""
+    stt = OpenAISpeech2Text(
+        agent=agent,
+        model_name='whisper-1',
+        language='en',
+    )
+    logger.info("Speech-to-text initialized: whisper-1 (language=en)")
+    return stt
 
 
 def init_diagram_factory(gpt: LLMOpenAI):

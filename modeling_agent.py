@@ -26,6 +26,7 @@ from besser.agent.exceptions.logger import logger
 import agent_context as ctx
 from agent_setup import (
     init_llm,
+    init_stt,
     init_rag,
     init_diagram_factory,
     init_intent_classifier_config,
@@ -50,6 +51,7 @@ websocket_platform = agent.use_websocket_platform(use_ui=False)
 
 # ── LLMs / RAG / Handlers ───────────────────────────────────────────────
 gpt, gpt_text, gpt_predict_json = init_llm(agent)
+stt = init_stt(agent)
 uml_rag = init_rag(agent)
 diagram_factory = init_diagram_factory(gpt)
 
