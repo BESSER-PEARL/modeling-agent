@@ -51,11 +51,16 @@ class AgentTransitionSpec(BaseModel):
     targetDirection: Optional[str] = None
 
 
+class AgentInitialNodeSpec(BaseModel):
+    """Schema for the initial node in an agent diagram."""
+    description: Optional[str] = None
+
+
 class SystemAgentSpec(BaseModel):
     """Schema for a complete agent diagram system."""
     systemName: str = ""
     hasInitialNode: bool = True
-    initialNode: Optional[Dict[str, Any]] = None
+    initialNode: Optional[AgentInitialNodeSpec] = None
     intents: List[AgentIntentSpec] = Field(default_factory=list)
     states: List[AgentStateSpec] = Field(min_length=1)
     transitions: List[AgentTransitionSpec] = Field(default_factory=list)
