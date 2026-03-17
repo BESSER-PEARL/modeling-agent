@@ -378,8 +378,8 @@ class BaseDiagramHandler(ABC):
     # ------------------------------------------------------------------
     # LLM call with retry
     # ------------------------------------------------------------------
-
-    def predict_with_retry(self, prompt: str, max_retries: int = 2, *, use_cache: bool = True) -> str:
+ # TODO: Disabled for now — the extra LLM round-trip adds 2-4s latency
+    def predict_with_retry(self, prompt: str, max_retries: int = 1, *, use_cache: bool = True) -> str:
         """Call the LLM with automatic retry, cache check, and jittered exponential backoff.
 
         Rate-limit handling is delegated to OpenAI's API (429 responses)
@@ -501,7 +501,7 @@ class BaseDiagramHandler(ABC):
         prompt: str,
         response_schema: Type[BaseModel],
         *,
-        max_retries: int = 2,
+        max_retries: int = 1,
         use_cache: bool = True,
         system_prompt: str = "",
         temperature: float = 0.2,
@@ -697,7 +697,7 @@ class BaseDiagramHandler(ABC):
 
     # Threshold: requests shorter than this are "simple" and skip the
     # reasoning pass, saving one full LLM round-trip (~1-3 s).
-    _TWO_PASS_MIN_LENGTH = 80
+    _TWO_PASS_MIN_LENGTH = 250
 
     def predict_two_pass_structured(
         self,
@@ -952,7 +952,6 @@ class BaseDiagramHandler(ABC):
     # ------------------------------------------------------------------
     # Validation-feedback loop (critique → fix)
     # ------------------------------------------------------------------
-
     def validate_and_refine(
         self,
         spec: Dict[str, Any],
@@ -981,7 +980,7 @@ class BaseDiagramHandler(ABC):
         # Skip validation for very small diagrams (1-3 classes) where the
         # extra LLM round-trip rarely finds issues.  4+ classes benefit from
         # relationship and attribute completeness checks.
-        if len(classes) <= 15:
+        if len(classes) <= 20:
             return spec
 
         # Build a compact representation for the critique prompt
