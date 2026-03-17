@@ -437,6 +437,11 @@ class BaseDiagramHandler(ABC):
                 )
 
             try:
+                logger.info(
+                    f"[{self.get_diagram_type()}] LLM call started "
+                    f"(attempt {attempt + 1}/{total_attempts}, "
+                    f"prompt_len={len(effective_prompt)})"
+                )
                 response = self.llm.predict(effective_prompt)
 
                 # Track tokens from the last API call if available
@@ -584,6 +589,11 @@ class BaseDiagramHandler(ABC):
                 time.sleep(backoff)
 
             try:
+                logger.info(
+                    f"[{self.get_diagram_type()}] Structured LLM call started "
+                    f"(attempt {attempt + 1}/{total_attempts}, "
+                    f"schema={response_schema.__name__})"
+                )
                 completion = client.beta.chat.completions.parse(
                     model=self.llm.name if hasattr(self.llm, 'name') else "gpt-4.1-mini",
                     messages=messages,
