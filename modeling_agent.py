@@ -50,8 +50,8 @@ os.environ.setdefault("CHROMA_TELEMETRY_ENABLED", "False")
 
 # ── Agent ────────────────────────────────────────────────────────────────
 agent = Agent("uml_modeling_agent")
-agent.load_properties("config.ini")
-logger.info(f"Agent properties loaded from config.ini (name={agent.name})")
+agent.load_properties("config.yaml")
+logger.info(f"Agent properties loaded from config.yaml (name={agent.name})")
 
 websocket_platform = agent.use_websocket_platform(use_ui=False)
 

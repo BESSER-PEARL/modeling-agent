@@ -1,6 +1,6 @@
 # Sphinx documentation
 docs/_build/
-config.ini
+config.yaml
 .env
 venv/
 .venv/
@@ -14,5 +14,5 @@ uml_vector_store/
 .coverage
 htmlcov/
 *.pyc
-!config.ini.example
+!config_example.yaml
 docs/build/

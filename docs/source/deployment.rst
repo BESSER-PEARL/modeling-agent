@@ -34,8 +34,8 @@ Local Development
    pip install -r requirements.txt
 
    # Configure
-   cp config.ini.example config.ini
-   # Edit config.ini with your OpenAI API key
+   cp config.yaml.example config.yaml
+   # Edit config.yaml with your OpenAI API key
 
    # Run
    python modeling_agent.py
@@ -124,7 +124,7 @@ Health Monitoring
 -----------------
 
 - **WebSocket ping:** The BESSER framework handles WebSocket keep-alive.
-- **Database monitoring:** Optional PostgreSQL monitoring via ``config.ini``
+- **Database monitoring:** Optional PostgreSQL monitoring via ``config.yaml``
   (``db.monitoring = True``).
 - **Logs:** The agent logs to stdout. Use ``journalctl`` with systemd or Docker
   log drivers for persistence.
