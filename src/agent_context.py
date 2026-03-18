@@ -27,3 +27,4 @@ gpt_predict_json = None          # callable(str) -> str
 uml_rag: "RAG | None" = None
 diagram_factory: "DiagramHandlerFactory | None" = None
 openai_api_key: str | None = None
+stt = None                           # OpenAISpeech2Text | None

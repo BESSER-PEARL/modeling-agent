@@ -66,6 +66,7 @@ ctx.gpt_predict_json = gpt_predict_json
 ctx.uml_rag = uml_rag
 ctx.diagram_factory = diagram_factory
 ctx.openai_api_key = agent.get_property(nlp.OPENAI_API_KEY)
+ctx.stt = stt
 
 # ── States ───────────────────────────────────────────────────────────────
 greetings_state = agent.new_state("greetings_state", initial=True)

@@ -378,7 +378,7 @@ class BaseDiagramHandler(ABC):
     # ------------------------------------------------------------------
     # LLM call with retry
     # ------------------------------------------------------------------
- # TODO: Disabled for now — the extra LLM round-trip adds 2-4s latency
+    # NOTE: This adds an extra LLM round-trip (2–4s latency).
     def predict_with_retry(self, prompt: str, max_retries: int = 1, *, use_cache: bool = True) -> str:
         """Call the LLM with automatic retry, cache check, and jittered exponential backoff.
 
@@ -392,7 +392,7 @@ class BaseDiagramHandler(ABC):
 
         Args:
             prompt: Full prompt to send.
-            max_retries: Number of additional attempts after the first (default 2).
+            max_retries: Number of additional attempts after the first (default 1).
             use_cache: Check/populate the prompt cache (default True).
 
         Returns:
@@ -535,7 +535,7 @@ class BaseDiagramHandler(ABC):
         Args:
             prompt: The user/request prompt.
             response_schema: Pydantic model class defining the expected output.
-            max_retries: Number of retry attempts (default 2).
+            max_retries: Number of retry attempts (default 1).
             use_cache: Check/populate prompt cache (default True).
             system_prompt: Optional system instruction prepended to messages.
             temperature: LLM temperature (default 0.2).
