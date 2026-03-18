@@ -78,7 +78,7 @@ class ClassModificationChanges(BaseModel):
 class ClassModification(BaseModel):
     action: str = Field(description="Modification action: modify_class, add_attribute, modify_attribute, add_method, modify_method, add_relationship, modify_relationship, remove_element")
     target: ClassModificationTarget
-    changes: Optional[ClassModificationChanges] = Field(default=None, description="The changes to apply. Required for modify/add actions.")
+    changes: Optional[ClassModificationChanges] = Field(default=None, description="The changes to apply. REQUIRED for all actions except remove_element. For modify_relationship, put the NEW values here (e.g. new sourceMultiplicity), not in target.")
 
 
 class ClassModificationResponse(BaseModel):

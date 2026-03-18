@@ -371,34 +371,35 @@ Examples:
         # Build impact context for modifications that affect relationships
         impact_context = self._build_impact_context(current_model)
 
-        system_prompt = """You are a UML modeling expert. The user wants to modify an existing class diagram.
+        system_prompt = """You are a UML modeling expert. Modify an existing class diagram.
 
-RULES:
-1. Actions available: modify_class, add_attribute, modify_attribute, add_method, modify_method, add_relationship, modify_relationship, remove_element, extract_class, split_class, merge_classes, promote_attribute, add_enum.
-2. Always specify exact target names that exist in the current model.
-3. Relationship types (case-sensitive): Association, Inheritance, Composition, Aggregation, Realization.
-4. Multiplicities: 1, 0..1, *, 1..*, 0..*, or specific numbers.
-5. When modifying, only include the fields that should change in "changes".
-6. For remove_element, only specify the target — no "changes" needed.
-7. Use modify_relationship (NOT add_relationship) to update an EXISTING relationship. Use add_relationship only for brand-new connections.
-8. For MULTIPLE changes at once, use the "modifications" array with ALL changes in a single response.
+COMMON ACTIONS:
+- modify_class — rename a class or change its properties
+- add_attribute / modify_attribute — add or change an attribute on a class
+- add_method / modify_method — add or change a method on a class
+- add_relationship — create a NEW connection between two classes
+- modify_relationship — change an EXISTING relationship (multiplicity, type, name)
+- remove_element — delete a class, attribute, method, or relationship
 
-CASCADING: When renaming or removing a class, batch the rename AND all affected relationship updates together.
+ADVANCED ACTIONS (for structural refactoring):
+- extract_class, split_class, merge_classes, promote_attribute, add_enum
 
-REFACTORING ACTIONS (for complex structural changes):
-- extract_class: Pull attributes into a new class with relationship
-- split_class: Divide a class into two
-- merge_classes: Combine two classes
-- promote_attribute: Turn a primitive into its own class
-- add_enum: Create an enumeration type
+KEY RULES:
+1. Use exact names from the current model in "target".
+2. Put what should change in "changes". Only include fields that differ.
+3. remove_element needs only "target" — no "changes".
+4. Multiple changes → use "modifications" array.
+5. RENAME a class: single modify_class only. Relationships use internal IDs and update automatically — do NOT generate modify_relationship for renames.
+6. DELETE a class: also remove its relationships. Batch all removals together.
+7. modify_relationship = update existing. add_relationship = brand new connection.
 
 Examples:
-- "rename User to Customer" → modify_class
+- "rename User to Customer" → ONE modify_class (no relationship changes needed)
 - "add email to User" → add_attribute
+- "add name, age, email to Person" → modifications array with 3 add_attribute entries
 - "connect Order to Customer" → add_relationship (Association)
 - "change multiplicity to many" → modify_relationship
-- "add name, age, email to Person" → modifications array with 3 add_attribute entries
-- "extract address from User" → extract_class"""
+- "delete the Address class" → modifications: [remove_element for Address, remove_element for each relationship involving Address]"""
 
         # Build context from current model using centralized helper
         context_block = ''
@@ -421,6 +422,22 @@ Examples:
         try:
             parsed = self.predict_structured(full_prompt, ClassModificationResponse, system_prompt="")
             mod_list = parsed.model_dump()["modifications"]
+
+            # Strip modify_relationship entries that accompany a modify_class
+            # rename — relationships are linked by ID and update automatically.
+            has_class_rename = any(
+                m.get("action") == "modify_class" and m.get("changes", {}).get("name")
+                for m in mod_list
+            )
+            if has_class_rename:
+                before = len(mod_list)
+                mod_list = [m for m in mod_list if m.get("action") != "modify_relationship"]
+                if len(mod_list) < before:
+                    logger.info(
+                        f"[ClassDiagram] Stripped {before - len(mod_list)} "
+                        "spurious modify_relationship entries from class rename"
+                    )
+
             if len(mod_list) == 1:
                 modification_spec = {"action": "modify_model", "modification": mod_list[0]}
             else:
@@ -927,7 +944,7 @@ Examples:
         """Build a relationship dependency map for modification impact analysis.
 
         For each class, lists all relationships it participates in so the LLM
-        knows to cascade changes when renaming or removing a class.
+        knows which relationships to remove when deleting a class.
         """
         if not isinstance(model, dict):
             return ""
@@ -971,7 +988,7 @@ Examples:
                 )
 
         # Format as context block
-        lines = ["Relationship dependencies (cascade changes if renaming/removing):"]
+        lines = ["Relationship dependencies (only relevant when REMOVING a class — renames cascade automatically):"]
         for class_name, dep_list in deps.items():
             if dep_list:
                 lines.append(f"  {class_name}: {', '.join(dep_list)}")
