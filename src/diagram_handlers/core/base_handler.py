@@ -392,7 +392,7 @@ class BaseDiagramHandler(ABC):
 
         Args:
             prompt: Full prompt to send.
-            max_retries: Number of additional attempts after the first (default 2).
+            max_retries: Number of additional attempts after the first (default 1).
             use_cache: Check/populate the prompt cache (default True).
 
         Returns:
