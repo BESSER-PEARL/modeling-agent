@@ -378,7 +378,7 @@ class BaseDiagramHandler(ABC):
     # ------------------------------------------------------------------
     # LLM call with retry
     # ------------------------------------------------------------------
- # TODO: Disabled for now — the extra LLM round-trip adds 2-4s latency
+    # NOTE: This adds an extra LLM round-trip (2–4s latency).
     def predict_with_retry(self, prompt: str, max_retries: int = 1, *, use_cache: bool = True) -> str:
         """Call the LLM with automatic retry, cache check, and jittered exponential backoff.
 
