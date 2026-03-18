@@ -377,16 +377,6 @@ class ObjectDiagramHandler(BaseDiagramHandler):
     def get_system_prompt(self) -> str:
         return """You are a UML modeling expert. Create an object instance specification based on the user's request.
 
-Return ONLY a JSON object with this structure:
-{
-  "objectName": "objectName",
-  "className": "ClassName",
-  "classId": "class_id_from_reference",
-  "attributes": [
-    {"name": "attributeName", "attributeId": "attr_id_from_reference", "value": "actualValue"}
-  ]
-}
-
 CRITICAL RULES:
 1. If a REFERENCE CLASS DIAGRAM is provided below, you MUST use ONLY the attributes from that diagram
 2. DO NOT invent new attributes - use exactly what's defined in the reference class
@@ -398,14 +388,7 @@ CRITICAL RULES:
    - value: an ACTUAL example value (not a type)
 6. Include ALL attributes from the referenced class with realistic example values
 7. Keep values realistic and coherent
-8. Do NOT include any "position" field - positioning is handled automatically
-9. Return ONLY the JSON, no explanations
-
-Examples:
-- "create user object" -> {"objectName": "user1", "className": "User", "classId": "class_abc123", "attributes": [{"name": "id", "attributeId": "attr_xyz", "value": "001"}, {"name": "name", "attributeId": "attr_def", "value": "John Doe"}]}
-- "create order object" -> {"objectName": "order1", "className": "Order", "classId": "class_ord456", "attributes": [{"name": "id", "attributeId": "attr_oid", "value": "ORD-001"}, {"name": "total", "attributeId": "attr_tot", "value": "99.99"}]}
-
-Return ONLY the JSON, no explanations."""
+8. Do NOT include any "position" field - positioning is handled automatically"""
     
     def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
                                 reference_diagram: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
@@ -449,26 +432,11 @@ Return ONLY the JSON, no explanations."""
         classes, class_relationships = self._extract_reference_catalog(reference_diagram)
         system_prompt = """You are a UML modeling expert. Create a COMPLETE object diagram with multiple related object instances.
 
-Return ONLY a JSON object with this structure:
-{
-  "systemName": "SystemName",
-  "objects": [
-    {
-      "objectName": "object1",
-      "className": "ClassName",
-      "attributes": [
-        {"name": "attr", "value": "actualValue"}
-      ]
-    }
-  ],
-  "links": [
-    {
-      "source": "object1",
-      "target": "object2",
-      "relationshipType": "association"
-    }
-  ]
-}
+Before generating, think through:
+- What object instances best illustrate this scenario?
+- What realistic attribute values make the example coherent?
+- What links between objects reflect the class diagram relationships?
+- If a reference class diagram is provided, which classes should be instantiated?
 
 IMPORTANT RULES:
 1. Create 3-6 related object instances
@@ -483,9 +451,7 @@ IMPORTANT RULES:
    - Every object MUST include className + classId from reference.
    - Every object attribute MUST include name + attributeId from reference.
    - Do NOT invent classes such as User/Order/Product unless they exist in the reference.
-9. If the user asks "according to structural/class diagram", prioritise the reference model over generic examples.
-
-Return ONLY the JSON, no explanations."""
+9. If the user asks "according to structural/class diagram", prioritise the reference model over generic examples."""
 
         user_prompt = user_request
         if classes:
@@ -654,73 +620,12 @@ Return ONLY the JSON, no explanations."""
 
         system_prompt = """You are a UML modeling expert. The user wants to modify an existing object diagram.
 
-Return ONLY a JSON object with one of these structures:
-
-MODIFY OBJECT (rename or change class)
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "modify_object",
-    "target": {
-      "objectName": "currentObjectName"
-    },
-    "changes": {
-      "objectName": "newObjectName"
-    }
-  }
-}
-
-ADD ATTRIBUTE VALUE (set or add attribute value on existing object)
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "modify_attribute_value",
-    "target": {
-      "objectName": "objectName",
-      "attributeName": "attributeName"
-    },
-    "changes": {
-      "value": "newValue"
-    }
-  }
-}
-
-ADD LINK (connect two objects)
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "add_link",
-    "target": {
-      "sourceObject": "object1",
-      "targetObject": "object2"
-    },
-    "changes": {
-      "relationshipType": "association"
-    }
-  }
-}
-
-REMOVE ELEMENT (delete object or link)
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "remove_element",
-    "target": {
-      "objectName": "objectToRemove"
-    }
-  }
-}
-
 IMPORTANT RULES:
 1. Actions available: "modify_object", "modify_attribute_value", "add_link", "remove_element"
 2. Always specify exact target names that exist in the current model
 3. For remove_element, only specify the target — no "changes" needed
-4. When the user asks for MULTIPLE changes at once (e.g., "set name and age on obj1"), use the "modifications" array format:
-   { "action": "modify_model", "modifications": [ { "action": "...", "target": {...}, "changes": {...} }, ... ] }
-5. Use "modification" (singular) for a single change, "modifications" (plural array) for multiple changes
-6. Return ONLY the JSON object — no explanations or markdown
-
-Return ONLY the JSON object — no explanations"""
+4. When the user asks for MULTIPLE changes at once (e.g., "set name and age on obj1"), return multiple entries in the modifications array
+5. If a reference class diagram is provided, use its class/attribute names and ids when creating or modifying objects"""
 
         # Build context from current model using centralized helper
         context_block = ''

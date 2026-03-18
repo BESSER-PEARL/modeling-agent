@@ -26,7 +26,7 @@ from tests.conftest import MINIMAL_CLASS_MODEL, EMPTY_CLASS_MODEL
 class TestCompactModelSummary:
     def test_class_diagram(self):
         summary = compact_model_summary(MINIMAL_CLASS_MODEL, "ClassDiagram")
-        assert "1 element" in summary
+        assert "1 class(es)" in summary
         assert "0 relationship" in summary
 
     def test_empty_model(self):
@@ -611,35 +611,35 @@ class TestDetailedModelSummaryQuantum:
     def test_qubit_and_column_counts(self):
         result = detailed_model_summary(QUANTUM_MODEL, "QuantumCircuitDiagram")
         assert "Qubits: 2" in result
-        assert "Columns: 3" in result
+        assert "Columns (time steps): 3" in result
 
     def test_hadamard_gate(self):
         result = detailed_model_summary(QUANTUM_MODEL, "QuantumCircuitDiagram")
-        assert "q0:H" in result
+        assert "q0: H (Hadamard)" in result
 
     def test_cnot_gate(self):
         result = detailed_model_summary(QUANTUM_MODEL, "QuantumCircuitDiagram")
-        # Control dot maps to ● and target to X
-        assert "q0:●" in result
-        assert "q1:X" in result
+        # Control dot maps to ● (control) and target to X (Pauli-X/NOT)
+        assert "q0: \u25cf (control)" in result
+        assert "q1: X (Pauli-X/NOT)" in result
 
     def test_measure_gate(self):
         result = detailed_model_summary(QUANTUM_MODEL, "QuantumCircuitDiagram")
-        assert "q1:MEASURE" in result
+        assert "q1: MEASURE" in result
 
     def test_empty_circuit(self):
         model = {"qubitCount": 3, "cols": []}
         result = detailed_model_summary(model, "QuantumCircuitDiagram")
         # Even with no columns the header line is produced
         assert "Qubits: 3" in result
-        assert "Columns: 0" in result
+        assert "Columns (time steps): 0" in result
 
     def test_identity_wires_omitted(self):
         """Wires with value 1 (identity) should not appear in output."""
         model = {"qubitCount": 2, "cols": [[1, "X"]]}
         result = detailed_model_summary(model, "QuantumCircuitDiagram")
         assert "q0:" not in result  # q0 is identity
-        assert "q1:X" in result
+        assert "q1: X (Pauli-X/NOT)" in result
 
     def test_qubit_count_inferred_from_cols(self):
         """When qubitCount is missing/0, infer from max column length."""
@@ -648,8 +648,8 @@ class TestDetailedModelSummaryQuantum:
         assert "Qubits: 3" in result
 
     def test_truncation_of_large_circuits(self):
-        """Circuits with >20 columns should be truncated."""
-        model = {"qubitCount": 1, "cols": [["H"]] * 25}
+        """Circuits with >30 columns should be truncated."""
+        model = {"qubitCount": 1, "cols": [["H"]] * 35}
         result = detailed_model_summary(model, "QuantumCircuitDiagram")
         assert "5 more column(s)" in result
 

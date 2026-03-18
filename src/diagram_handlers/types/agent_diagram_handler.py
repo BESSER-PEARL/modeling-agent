@@ -23,42 +23,13 @@ class AgentDiagramHandler(BaseDiagramHandler):
     def get_system_prompt(self) -> str:
         return """You are a conversational agent modeling expert. Create a SINGLE agent diagram element specification.
 
-Return ONLY a JSON object that follows ONE of these schemas:
-
-STATE NODE
-{
-  "type": "state",
-  "stateName": "state_name",
-  "replies": [
-    {"text": "reply text", "replyType": "text"},
-    {"text": "fallback handled by LLM", "replyType": "llm"}
-  ],
-  "fallbackBodies": [
-    {"text": "fallback reply", "replyType": "text"}
-  ]
-}
-
-INTENT NODE
-{
-  "type": "intent",
-  "intentName": "IntentName",
-  "trainingPhrases": ["example phrase 1", "example phrase 2", "example phrase 3"]
-}
-
-INITIAL NODE
-{
-  "type": "initial",
-  "description": "optional note"
-}
-
 IMPORTANT RULES:
 1. Provide the "type" field (state, intent, or initial) based on the user request.
-2. For states include 1-3 "replies" with both "text" and "replyType" (text, llm).
+2. For states include 1-3 "replies" with both "text" and "replyType" (text or llm).
 3. Add "fallbackBodies" only when the request mentions fallbacks or error handling.
 4. For intents include 3-4 "trainingPhrases" that reflect how a user would trigger the intent.
 5. Keep names concise (camelCase for states, TitleCase for intents).
-6. Do NOT include any "position" field - positioning is handled automatically.
-7. Return ONLY the JSON object - no explanations."""
+6. Do NOT include any "position" field - positioning is handled automatically."""
 
     def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a single agent diagram element with deterministic positioning."""
@@ -97,39 +68,12 @@ IMPORTANT RULES:
 
         system_prompt = """You are a conversational agent modeling expert. Create a COMPLETE agent diagram specification.
 
-Return ONLY a JSON object with this structure:
-{
-  "systemName": "CustomerSupportAgent",
-  "hasInitialNode": true,
-  "initialNode": {},
-  "intents": [
-    {
-      "intentName": "Greeting",
-      "trainingPhrases": ["hi", "hello there", "hey assistant", "good morning"]
-    }
-  ],
-  "states": [
-    {
-      "type": "state",
-      "stateName": "welcome",
-      "replies": [
-        {"text": "Hello! Welcome to our support system.", "replyType": "text"}
-      ],
-      "fallbackBodies": []
-    }
-  ],
-  "transitions": [
-    {
-      "source": "initial",
-      "target": "welcome",
-      "condition": "when_intent_matched",
-      "conditionValue": "Greeting",
-      "label": "",
-      "sourceDirection": "Right",
-      "targetDirection": "Left"
-    }
-  ]
-}
+Before generating, think through:
+- What conversation states does this agent need?
+- What user intents trigger transitions between states?
+- What does the agent reply in each state?
+- Are there fallback paths for unrecognized input?
+- Is every state reachable and does every state have an exit?
 
 IMPORTANT RULES:
 1. Create AS MANY states and intents as needed for the conversation.
@@ -146,8 +90,7 @@ IMPORTANT RULES:
 7. Keep names consistent (camelCase for states, TitleCase for intents).
 8. Include "sourceDirection" and "targetDirection" for visual flow.
 9. FallbackBodies are optional.
-10. Do NOT include any "position" field - positioning is handled automatically.
-11. Return ONLY the JSON object - no explanations."""
+10. Do NOT include any "position" field - positioning is handled automatically."""
 
         user_request_prompt = f"{user_request}"
 
@@ -560,118 +503,17 @@ IMPORTANT RULES:
         
         system_prompt = """You are a conversational agent modeling expert. The user wants to modify an existing agent diagram.
 
-Return ONLY a JSON object with this structure:
-
-MODIFY STATE
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "modify_state",
-    "target": {
-      "stateName": "currentStateName"
-    },
-    "changes": {
-      "name": "newStateName"
-    }
-  }
-}
-
-MODIFY INTENT
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "modify_intent",
-    "target": {
-      "intentName": "CurrentIntentName"
-    },
-    "changes": {
-      "name": "NewIntentName"
-    }
-  }
-}
-
-ADD TRANSITION
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "add_transition",
-    "target": {
-      "sourceStateName": "sourceState",
-      "targetStateName": "targetState"
-    },
-    "changes": {
-      "intentName": "TriggerIntent",
-      "condition": "when_intent_matched"
-    }
-  }
-}
-
-REMOVE TRANSITION
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "remove_transition",
-    "target": {
-      "transitionId": "optional_id",
-      "sourceStateName": "sourceState",
-      "targetStateName": "targetState"
-    }
-  }
-}
-
-ADD STATE BODY (REPLY)
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "add_state_body",
-    "target": {
-      "stateName": "existingState"
-    },
-    "changes": {
-      "text": "Reply text to add",
-      "replyType": "text"
-    }
-  }
-}
-
-ADD INTENT TRAINING PHRASE
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "add_intent_training_phrase",
-    "target": {
-      "intentName": "ExistingIntent"
-    },
-    "changes": {
-      "trainingPhrase": "new example phrase"
-    }
-  }
-}
-
-REMOVE ELEMENT
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "remove_element",
-    "target": {
-      "stateName": "stateToRemove"
-    }
-  }
-}
-
 IMPORTANT RULES:
-1. Use "modify_state" or "modify_intent" to rename elements
-2. Use "add_transition" to connect states (source -> target)
-3. Use "remove_transition" to disconnect states
-4. Use "add_state_body" to add reply text to states
-5. Use "add_intent_training_phrase" to add examples to intents
-6. Use "remove_element" to delete states or intents
-7. For transitions, "condition" is usually "when_intent_matched" with an "intentName"
-8. Only reference elements that exist in the current model
-9. When the user asks for MULTIPLE changes at once (e.g., "add replies to state1 and state2"), use the "modifications" array format:
-   { "action": "modify_model", "modifications": [ { "action": "...", "target": {...}, "changes": {...} }, ... ] }
-10. Use "modification" (singular) for a single change, "modifications" (plural array) for multiple changes
-11. Return ONLY the JSON object – no explanations"""
+1. Use "modify_state" or "modify_intent" to rename elements.
+2. Use "add_transition" to connect states (source -> target).
+3. Use "remove_transition" to disconnect states.
+4. Use "add_state_body" to add reply text to states.
+5. Use "add_intent_training_phrase" to add examples to intents.
+6. Use "remove_element" to delete states or intents.
+7. For transitions, "condition" is usually "when_intent_matched" with an "intentName".
+8. Only reference elements that exist in the current model.
+9. When the user asks for MULTIPLE changes at once (e.g., "add replies to state1 and state2"), return multiple modification objects in the list.
+10. Each modification needs an "action", a "target" identifying the element, and "changes" with new values (except for remove operations)."""
 
         # Build context from current model using centralized summariser
         context_block = ''

@@ -30,38 +30,18 @@ class ClassDiagramHandler(BaseDiagramHandler):
     def get_system_prompt(self) -> str:
         return """You are a UML modeling expert. Create a focused class specification based on the user's request.
 
-Return ONLY a JSON object with this structure:
-{
-  "className": "ExactClassName",
-  "attributes": [
-    {"name": "attributeName", "type": "String", "visibility": "public"},
-    {"name": "anotherAttr", "type": "int", "visibility": "private"}
-  ],
-  "methods": [
-    {"name": "methodName", "returnType": "void", "visibility": "public", "parameters": [
-      {"name": "paramName", "type": "String"}
-    ]}
-  ]
-}
+RULES:
+1. Include everything the user asks for, then add relevant domain attributes to make the class thorough.
+2. Create AS MANY attributes as needed based on what makes sense for the class.
+3. Methods: Generally SKIP methods unless the user asks for them. Only include core domain methods (e.g., BankAccount.withdraw(), Order.calculateTotal()). Never include getters/setters.
+4. If the user just says "create X class", generate relevant attributes and typically NO methods.
+5. Use proper naming: PascalCase for classes, camelCase for attributes/methods.
+6. Do NOT include any "position" field — positioning is handled automatically.
 
-IMPORTANT RULES:
-1. FOLLOW THE USER'S REQUEST STRICTLY - include exactly the attributes, methods, or details they specify
-2. Create AS MANY attributes as needed (no fixed limits) based on what makes sense for the class
-3. Methods: Generally SKIP methods unless the user asks for them. Only include a method if it's core to the domain logic (e.g., BankAccount.withdraw(), Order.calculateTotal()). Never include getters/setters.
-4. If the user just says "create X class", generate relevant attributes and typically NO methods
-5. Use proper programming conventions (camelCase for attributes/methods, PascalCase for classes)
-6. visibility options: "public", "private", "protected", or "package" (default to "public")
-7. ONLY use these types: String, int, boolean, float, Date, or custom class names. Do NOT use UUID, long, decimal, BigDecimal, LocalDate, LocalDateTime, List, Set, or any other types. For IDs, always use int.
-8. Method parameters are optional - empty array [] if no parameters needed
-9. Do NOT include any "position" field - positioning is handled automatically
-10. Return ONLY the JSON, no explanations or markdown
-
-Examples:
-- "create User class" -> attributes: id, username, email, password (4 attributes, 0-1 method)
-- "create Product with inventory" -> attributes: id, name, price, stockQuantity, supplier (5+ attributes)
-- "create BankAccount with deposit method" -> attributes: accountNumber, balance, owner + methods: deposit, withdraw
-
-Return ONLY the JSON, no explanations."""
+Examples of expected richness:
+- "create User class" → id, username, email, password (4 attributes, 0-1 method)
+- "create Product with inventory" → id, name, price, stockQuantity, supplier (5+ attributes)
+- "create BankAccount with deposit method" → accountNumber, balance, owner + methods: deposit, withdraw"""
 
     def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a single class element with structured outputs and deterministic positioning."""
@@ -109,62 +89,28 @@ Return ONLY the JSON, no explanations."""
         """Return the system prompt for complete class diagram generation."""
         return """You are a UML modeling expert. Create a COMPLETE, well-structured class diagram system.
 
-Return ONLY a JSON object with this structure:
-{
-  "systemName": "SystemName",
-  "classes": [
-    {
-      "className": "ClassName",
-      "attributes": [
-        {"name": "attr", "type": "String", "visibility": "public"}
-      ],
-      "methods": [
-        {"name": "method", "returnType": "void", "visibility": "public", "parameters": [
-          {"name": "param", "type": "String"}
-        ]}
-      ]
-    }
-  ],
-  "relationships": [
-    {
-      "type": "Association",
-      "source": "ClassName1",
-      "target": "ClassName2",
-      "sourceMultiplicity": "1",
-      "targetMultiplicity": "*",
-      "name": "relationshipName"
-    }
-  ]
-}
+Before generating, think through:
+- What are the core domain entities (classes) needed?
+- What attributes does each class need? Be thorough — include IDs, timestamps, status fields.
+- What relationships connect them? What type and what multiplicities?
+- Is there an inheritance hierarchy that makes sense?
+- Are relationships complete? They are the most commonly missed element.
 
-IMPORTANT RULES:
-1. FOLLOW THE USER'S REQUEST STRICTLY - include exactly the classes, attributes, methods, or relationships they specify
-2. Create AS MANY classes as needed for a complete system (no fixed limits)
-3. Each class should have AS MANY attributes as needed - don't artificially limit essential properties
-4. Include at least 3-5 attributes per class. Don't just create stub classes.
-5. Always consider the following for each class: an ID attribute, creation/modification timestamps where appropriate, and status fields for entities with lifecycles.
-6. Methods: Generally SKIP methods unless the user asks for them. Only include 1-2 methods per class MAX if they represent core domain behavior. Never include getters/setters.
-7. Relationships are CRITICAL - always include meaningful connections:
-   - "Association" - general relationship (most common)
-   - "Inheritance" / "Generalization" - parent-child "is-a" (use sparingly)
-   - "Composition" - strong "has-a" (part cannot exist without whole)
-   - "Aggregation" - weak "has-a" (part can exist independently)
-   - "Realization" - interface implementation
-8. When generating relationships, ALWAYS include multiplicity values (min and max). Use standard UML multiplicities: 1, 0..1, 0..*, 1..*
-9. Generate both associations AND inheritance where appropriate. If there are clearly related types (e.g., SavingsAccount/CheckingAccount), use inheritance.
-10. Relationship properties: "name", "sourceMultiplicity", "targetMultiplicity"
-11. Use proper naming: PascalCase for classes, camelCase for attributes/methods
-12. visibility: "public", "private", "protected", or "package"
-13. ONLY use these types: String, int, boolean, float, Date, or custom class names. Do NOT use UUID, long, decimal, BigDecimal, LocalDate, LocalDateTime, List, Set, or any other types. For IDs, always use int.
-14. Do NOT include any "position" field - positioning is handled automatically
-15. Return ONLY the JSON, no explanations or markdown
+RULES:
+1. Include all the classes, relationships, and concepts the user asks for. Then flesh out each class with thorough attributes (IDs, timestamps, status fields where appropriate).
+2. Create AS MANY classes as needed for a complete system.
+3. Each class should have 3-5+ attributes. Don't create stub classes.
+4. Methods: Generally SKIP methods unless the user asks. Only include 1-2 core domain methods per class MAX. Never include getters/setters.
+5. Relationships are CRITICAL — always include meaningful connections. Use Association (general), Inheritance (is-a, sparingly), Composition (strong has-a), Aggregation (weak has-a), Realization (interface).
+6. ALWAYS include multiplicities on relationships (1, 0..1, 0..*, 1..*).
+7. Generate both associations AND inheritance where appropriate (e.g., SavingsAccount/CheckingAccount → inherit from Account).
+8. Use proper naming: PascalCase for classes, camelCase for attributes/methods.
+9. Do NOT include any "position" field — positioning is handled automatically.
 
 Examples:
-- E-commerce system: User, Product, Order, Payment, ShoppingCart with appropriate associations
-- Library system: Book, Author, Member, Loan with inheritance (DigitalBook extends Book) and compositions
-- Banking system: Account, Customer, Transaction, Branch with aggregations and multiplicities
-
-Return ONLY the JSON, no explanations."""
+- E-commerce: User, Product, Order, Payment, ShoppingCart with associations and multiplicities
+- Library: Book, Author, Member, Loan with inheritance (DigitalBook extends Book) and compositions
+- Banking: Account, Customer, Transaction, Branch with aggregations and multiplicities"""
 
     def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a complete class diagram with two-pass structured outputs, domain patterns,
@@ -427,226 +373,32 @@ Return ONLY the JSON, no explanations."""
 
         system_prompt = """You are a UML modeling expert. The user wants to modify an existing class diagram.
 
-Return ONLY a JSON object with one of these structures:
+RULES:
+1. Actions available: modify_class, add_attribute, modify_attribute, add_method, modify_method, add_relationship, modify_relationship, remove_element, extract_class, split_class, merge_classes, promote_attribute, add_enum.
+2. Always specify exact target names that exist in the current model.
+3. Relationship types (case-sensitive): Association, Inheritance, Composition, Aggregation, Realization.
+4. Multiplicities: 1, 0..1, *, 1..*, 0..*, or specific numbers.
+5. When modifying, only include the fields that should change in "changes".
+6. For remove_element, only specify the target — no "changes" needed.
+7. Use modify_relationship (NOT add_relationship) to update an EXISTING relationship. Use add_relationship only for brand-new connections.
+8. For MULTIPLE changes at once, use the "modifications" array with ALL changes in a single response.
 
-MODIFY CLASS (rename or change properties)
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "modify_class",
-    "target": {
-      "className": "CurrentClassName"
-    },
-    "changes": {
-      "name": "NewClassName"
-    }
-  }
-}
+CASCADING: When renaming or removing a class, batch the rename AND all affected relationship updates together.
 
-ADD ATTRIBUTE (to existing class)
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "add_attribute",
-    "target": {
-      "className": "ClassName"
-    },
-    "changes": {
-      "name": "newAttribute",
-      "type": "String",
-      "visibility": "public"
-    }
-  }
-}
-
-MODIFY ATTRIBUTE (change existing attribute)
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "modify_attribute",
-    "target": {
-      "className": "ClassName",
-      "attributeName": "oldAttributeName"
-    },
-    "changes": {
-      "name": "newAttributeName",
-      "type": "int",
-      "visibility": "public"
-    }
-  }
-}
-
-ADD METHOD (to existing class)
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "add_method",
-    "target": {
-      "className": "ClassName"
-    },
-    "changes": {
-      "name": "newMethod",
-      "returnType": "void",
-      "visibility": "public",
-      "parameters": [{"name": "param", "type": "String"}]
-    }
-  }
-}
-
-MODIFY METHOD (change existing method)
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "modify_method",
-    "target": {
-      "className": "ClassName",
-      "methodName": "oldMethodName"
-    },
-    "changes": {
-      "name": "newMethodName",
-      "returnType": "boolean",
-      "visibility": "public",
-      "parameters": [{"name": "id", "type": "int"}]
-    }
-  }
-}
-
-ADD RELATIONSHIP (connect two classes)
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "add_relationship",
-    "target": {
-      "sourceClass": "SourceClass",
-      "targetClass": "TargetClass"
-    },
-    "changes": {
-      "relationshipType": "Association",
-      "sourceMultiplicity": "1",
-      "targetMultiplicity": "*",
-      "name": "relationshipName"
-    }
-  }
-}
-
-MODIFY RELATIONSHIP (change multiplicity, type, or name of an existing relationship)
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "modify_relationship",
-    "target": {
-      "sourceClass": "SourceClass",
-      "targetClass": "TargetClass"
-    },
-    "changes": {
-      "sourceMultiplicity": "1",
-      "targetMultiplicity": "1..*"
-    }
-  }
-}
-
-REMOVE ELEMENT (delete class, attribute, method, or relationship)
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "remove_element",
-    "target": {
-      "className": "ClassToRemove"
-    }
-  }
-}
-
-OR for removing attribute:
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "remove_element",
-    "target": {
-      "className": "ClassName",
-      "attributeName": "attributeToRemove"
-    }
-  }
-}
-
-MULTIPLE MODIFICATIONS (batch – use when the request needs more than one change)
-{
-  "action": "modify_model",
-  "modifications": [
-    {
-      "action": "add_attribute",
-      "target": { "className": "ClassName" },
-      "changes": { "name": "attr1", "type": "String", "visibility": "public" }
-    },
-    {
-      "action": "add_attribute",
-      "target": { "className": "ClassName" },
-      "changes": { "name": "attr2", "type": "int", "visibility": "private" }
-    }
-  ]
-}
-
-REFACTORING ACTIONS (use these for complex structural changes):
-- "extract_class": Pull attributes from an existing class into a new class with a relationship
-  Example: Extract "street", "city", "zip" from User into a new Address class
-  Format: {"action": "extract_class", "sourceClass": "User", "newClass": "Address", "attributes": ["street", "city", "zip"], "relationshipType": "ClassComposition"}
-
-- "split_class": Divide a class into two separate classes
-  Example: Split User into Customer and AdminUser
-  Format: {"action": "split_class", "sourceClass": "User", "newClasses": [{"className": "Customer", "attributes": ["name", "email"]}, {"className": "AdminUser", "attributes": ["role", "permissions"]}], "inheritFrom": "User"}
-
-- "merge_classes": Combine two classes into one
-  Example: Merge Address and Location into Address
-  Format: {"action": "merge_classes", "classes": ["Address", "Location"], "targetName": "Address"}
-
-- "promote_attribute": Turn a primitive attribute into its own class with a relationship
-  Example: Promote "address: String" on User to an Address class
-  Format: {"action": "promote_attribute", "sourceClass": "User", "attribute": "address", "newClass": "Address", "newAttributes": [{"name": "street", "type": "String"}, {"name": "city", "type": "String"}, {"name": "zipCode", "type": "String"}]}
-
-- "add_enum": Create an enumeration type and use it as an attribute type
-  Example: Add OrderStatus enum with PENDING, CONFIRMED, SHIPPED, DELIVERED
-  Format: {"action": "add_enum", "enumName": "OrderStatus", "values": ["PENDING", "CONFIRMED", "SHIPPED", "DELIVERED"], "usedBy": [{"className": "Order", "attributeName": "status"}]}
-
-CASCADING CHANGES:
-When renaming or removing a class, you MUST also update or remove any relationships
-that reference that class. Use the "modifications" array to batch the class rename
-AND all affected relationship updates in a single response.
-
-IMPORTANT RULES:
-1. Actions available: "modify_class", "add_attribute", "modify_attribute", "add_method", "modify_method", "add_relationship", "modify_relationship", "remove_element", "extract_class", "split_class", "merge_classes", "promote_attribute", "add_enum"
-2. Always specify exact target names that exist in the current model
-3. visibility options: "public", "private", "protected", "package"
-4. Relationship types (case-sensitive): "Association", "Inheritance" (also called Generalization), "Composition", "Aggregation", "Realization"
-5. Multiplicities: "1", "0..1", "*", "1..*", "0..*", or specific numbers like "5"
-6. When adding methods, include empty parameters array [] if no parameters needed
-7. When modifying, only include the fields that should change in "changes" object
-8. For remove_element, only specify the target - no "changes" needed
-9. Use "modify_relationship" (NOT "add_relationship") when the user wants to update/change an EXISTING relationship (e.g., change multiplicity, change type, rename)
-10. Use "add_relationship" only when creating a brand-new connection between classes
-11. When the user asks for MULTIPLE changes at once (e.g., "add several attributes", "add name and age to Person"), use the "modifications" array format with ALL changes in a single response
-12. Use "modification" (singular) for a single change, "modifications" (plural array) for multiple changes
-13. Return ONLY the JSON object – no explanations or markdown
+REFACTORING ACTIONS (for complex structural changes):
+- extract_class: Pull attributes into a new class with relationship
+- split_class: Divide a class into two
+- merge_classes: Combine two classes
+- promote_attribute: Turn a primitive into its own class
+- add_enum: Create an enumeration type
 
 Examples:
-- "rename User class to Customer" -> modify_class with name change
-- "add email attribute to User" -> add_attribute with type String, visibility private
-- "make password private" -> modify_attribute changing visibility
-- "add login method to User" -> add_method with appropriate returnType and parameters
-- "connect Order to Customer" -> add_relationship with Association type
-- "add generalization between Member and Author" -> add_relationship with Inheritance type (Member inherits from Author)
-- "create inheritance from Student to Person" -> add_relationship with Inheritance type (Student is child, Person is parent)
-- "change multiplicity to many" -> modify_relationship changing targetMultiplicity to "*"
-- "Author should have several Childs, update the relation" -> modify_relationship with sourceClass Author, targetClass Childs, targetMultiplicity "1..*"
-- "make the relation between Order and Product a composition" -> modify_relationship changing relationshipType to "Composition"
-- "delete the temp attribute" -> remove_element with attributeName
-- "add name, age, and email attributes to Person" -> use "modifications" array with 3 add_attribute entries
-- "add several attributes to Book" -> use "modifications" array with multiple add_attribute entries (infer sensible attributes for the domain)
-- "extract address fields from User into a separate Address class" -> extract_class with sourceClass "User", newClass "Address", attributes list, and relationshipType
-- "split User into Customer and AdminUser" -> split_class with sourceClass, newClasses array, and optional inheritFrom
-- "merge Address and Location into one class" -> merge_classes with classes array and targetName
-- "promote address attribute on User to its own class" -> promote_attribute with sourceClass, attribute, newClass, and newAttributes
-- "add an OrderStatus enum with PENDING, CONFIRMED, SHIPPED" -> add_enum with enumName, values, and usedBy
-
-Return ONLY the JSON object – no explanations"""
+- "rename User to Customer" → modify_class
+- "add email to User" → add_attribute
+- "connect Order to Customer" → add_relationship (Association)
+- "change multiplicity to many" → modify_relationship
+- "add name, age, email to Person" → modifications array with 3 add_attribute entries
+- "extract address from User" → extract_class"""
 
         # Build context from current model using centralized helper
         context_block = ''

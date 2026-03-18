@@ -575,18 +575,14 @@ Rules:
 
         prompt = f"""You are an expert quantum computing assistant that designs quantum circuits.
 
-Return ONLY JSON with this shape:
-{{
-  "qubitCount": 3,
-  "algorithmName": "short name of the algorithm",
-  "operations": [
-    {{"column": 0, "row": 0, "gate": "H"}},
-    {{"column": 1, "gate": "CNOT", "controlRow": 0, "targetRow": 1}},
-    {{"column": 2, "row": 0, "gate": "MEASURE"}}
-  ]
-}}
+Before generating, think through:
+- What algorithm does the user want?
+- How many qubits are needed?
+- What is the correct gate sequence for this algorithm?
+- Are controlled gates (CNOT, CZ, TOFFOLI) placed correctly with control/target qubits?
+- Does the circuit end with measurements where appropriate?
 
-AVAILABLE GATES (organised by category):
+AVAILABLE GATES (by category):
   Probes: MEASURE, MEASURE_X, MEASURE_Y, CONTROL, ANTI_CONTROL
   Half Turns: H (Hadamard), X (NOT/bit-flip), Y, Z (phase-flip), SWAP
   Quarter Turns: S, S_DAG, V, V_DAG, SQRT_Y, SQRT_Y_DAG
@@ -613,8 +609,7 @@ Rules:
 1. Choose the correct algorithm based on the user's request.
 2. If the user asks for a specific algorithm, implement it faithfully.
 3. If the user is vague, create a Bell state or Grover's search as a demo.
-4. Keep qubit count minimal but sufficient.
-5. Return JSON only."""
+4. Keep qubit count minimal but sufficient."""
 
         system_prompt = prompt
         user_prompt = f"User Request: {user_request}"

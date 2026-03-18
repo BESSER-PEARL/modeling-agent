@@ -443,8 +443,13 @@ class TestBuildSectionComponentDispatch:
     def test_table_dispatch(self, section_type, metadata):
         spec = {"type": section_type, "title": "Test Table", "className": "Book"}
         result = _build_section_component(spec, metadata)
-        assert result["type"] == "table"
-        assert result["attributes"]["data-source"] == "cls-book-1"
+        # _build_section_component wraps data components in a card (tagName=section)
+        assert result["tagName"] == "section"
+        assert "assistant-card" in result["attributes"]["class"]
+        # The actual table component is inside components (after the h2 title)
+        inner = result["components"][-1]
+        assert inner["type"] == "table"
+        assert inner["attributes"]["data-source"] == "cls-book-1"
 
     @pytest.mark.parametrize("section_type,expected_chart_type", [
         ("bar_chart", "bar-chart"),
@@ -459,7 +464,12 @@ class TestBuildSectionComponentDispatch:
     def test_chart_dispatch(self, section_type, expected_chart_type, metadata):
         spec = {"type": section_type, "title": "Test", "className": "Book"}
         result = _build_section_component(spec, metadata)
-        assert result["type"] == expected_chart_type
+        # _build_section_component wraps chart components in a card (tagName=section)
+        assert result["tagName"] == "section"
+        assert "assistant-card" in result["attributes"]["class"]
+        # The actual chart component is inside components (after the h2 title)
+        inner = result["components"][-1]
+        assert inner["type"] == expected_chart_type
 
     def test_dashboard_dispatch(self, metadata):
         spec = {"type": "dashboard", "title": "Overview", "className": "Book"}
@@ -488,8 +498,13 @@ class TestBuildSectionComponentDispatch:
     def test_without_metadata_falls_back(self):
         """Chart sections should work even without class metadata."""
         result = _build_section_component({"type": "bar_chart", "title": "Test"})
-        assert result["type"] == "bar-chart"
-        attrs = result["attributes"]
+        # _build_section_component wraps chart components in a card (tagName=section)
+        assert result["tagName"] == "section"
+        assert "assistant-card" in result["attributes"]["class"]
+        # The actual chart component is inside components (after the h2 title)
+        inner = result["components"][-1]
+        assert inner["type"] == "bar-chart"
+        attrs = inner["attributes"]
         # Without metadata, charts still get generic dummy data for preview
         series = json.loads(attrs["series"])
         assert isinstance(series, list)

@@ -35,33 +35,16 @@ class StateMachineHandler(BaseDiagramHandler):
     def get_system_prompt(self) -> str:
         return """You are a UML modeling expert. Create a state specification based on the user's request.
 
-Return ONLY a JSON object with this structure:
-{
-  "stateName": "StateName",
-  "stateType": "regular",
-  "entryAction": "action on entry",
-  "exitAction": "action on exit",
-  "doActivity": "ongoing activity"
-}
+DESIGN RULES:
+1. State names must be descriptive and represent real lifecycle stages (e.g., PendingPayment, Shipped, Authenticated — NOT generic names like State1, Active)
+2. Use PascalCase for state names (e.g., PaymentProcessing, not payment_processing)
+3. Keep it SIMPLE and focused
+4. Do NOT include any "position" field — positioning is handled automatically
 
-State Types: "initial", "final", "regular"
-
-IMPORTANT RULES:
-1. State names should be descriptive and represent real lifecycle stages (e.g., PendingPayment, Shipped, Authenticated — NOT generic names like State1, Active)
-2. entryAction: one-time action when entering the state (e.g., "send confirmation email", "lock account")
-3. exitAction: one-time action when leaving the state (e.g., "save progress", "release lock")
-4. doActivity: ongoing activity while in the state (e.g., "await payment", "monitor session", "process data")
-5. Use PascalCase for state names (e.g., PaymentProcessing, not payment_processing)
-6. Keep it SIMPLE and focused
-7. Do NOT include any "position" field - positioning is handled automatically
-8. Return ONLY the JSON, no explanations
-
-Examples:
-- "create idle state" -> {"stateName": "Idle", "stateType": "regular", "entryAction": "", "exitAction": "", "doActivity": "await user input"}
-- "create processing state" -> {"stateName": "Processing", "stateType": "regular", "entryAction": "start timer", "exitAction": "stop timer", "doActivity": "process data"}
-- "create payment pending state" -> {"stateName": "PendingPayment", "stateType": "regular", "entryAction": "display payment form", "exitAction": "", "doActivity": "await payment confirmation"}
-
-Return ONLY the JSON, no explanations."""
+Examples of good states:
+- "create idle state" -> Idle with doActivity "await user input"
+- "create processing state" -> Processing with entryAction "start timer", exitAction "stop timer", doActivity "process data"
+- "create payment pending state" -> PendingPayment with entryAction "display payment form", doActivity "await payment confirmation" """
 
     def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a single state with structured outputs and deterministic positioning."""
@@ -102,59 +85,37 @@ Return ONLY the JSON, no explanations."""
         """Return the enhanced system prompt for complete state machine generation."""
         return """You are a UML modeling expert. Create a COMPLETE, well-structured state machine diagram.
 
-Return ONLY a JSON object with this structure:
-{
-  "systemName": "StateMachineName",
-  "states": [
-    {
-      "stateName": "StateName",
-      "stateType": "regular",
-      "entryAction": "action",
-      "exitAction": "action",
-      "doActivity": "activity"
-    }
-  ],
-  "transitions": [
-    {
-      "source": "StateA",
-      "target": "StateB",
-      "trigger": "event",
-      "guard": "condition",
-      "effect": "action"
-    }
-  ]
-}
+Before generating, think through:
+- What are the key lifecycle stages (states) of this process?
+- What events (triggers) cause transitions between states?
+- What conditions (guards) determine which path to take?
+- What side effects (effects) happen on transitions?
+- What error/exception paths exist beyond the happy path?
+- Are there retry or loop-back scenarios?
 
-State Types: "initial", "final", "regular"
-
-IMPORTANT RULES:
-1. Always start with exactly ONE "initial" state
+DESIGN RULES:
+1. Always start with exactly ONE "initial" state and end with ONE "final" state
 2. Include 4-8 regular states that represent REAL lifecycle stages
-3. End with ONE "final" state
-4. EVERY regular state MUST have at least one incoming and one outgoing transition (no orphan states)
-5. State names should be domain-specific and descriptive:
+3. EVERY regular state MUST have at least one incoming and one outgoing transition (no orphan states)
+4. State names should be domain-specific and descriptive:
    - GOOD: PendingPayment, Shipped, UnderReview, Authenticated, InProgress
    - BAD: State1, Active, Process, Step2
-6. Transitions MUST have meaningful triggers (events that cause the transition):
+5. Transitions MUST have meaningful triggers (events that cause the transition):
    - GOOD: submitPayment, approveRequest, sessionTimeout, deliveryConfirmed
    - BAD: go, next, transition1, move
-7. Use guards to express conditions: [guard: "payment valid"], [guard: "attempts < max"]
-8. Use effects for side-effects: [effect: "send notification"], [effect: "update inventory"]
-9. Include error/exception paths — not just the happy path:
+6. Use guards to express conditions: "payment valid", "attempts < max"
+7. Use effects for side-effects: "send notification", "update inventory"
+8. Include error/exception paths — not just the happy path:
    - Payment failures, validation errors, timeouts, cancellations
    - Loop-back transitions for retry scenarios
-10. entryAction: one-time action on state entry (e.g., "send email", "start timer")
-11. doActivity: ongoing activity during the state (e.g., "await response", "monitor progress")
-12. Do NOT include any "position" field - positioning is handled automatically
+9. Do NOT include any "position" field — positioning is handled automatically
 
 TRANSITION DESIGN GUIDELINES:
 - Every state (except initial/final) should have both incoming AND outgoing transitions
 - Include at least one alternative/error path (not just the happy flow)
 - Self-transitions are valid for retry/refresh scenarios
 - Guard conditions should be specific and testable
-- Trigger names should be verbs or verb phrases in camelCase
-
-Return ONLY the JSON, no explanations."""
+- Trigger names should be verbs or verb phrases in camelCase"""
 
     def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a complete state machine with two-pass structured outputs, pattern injection,
@@ -438,94 +399,13 @@ Return ONLY the JSON, no explanations."""
 
         system_prompt = """You are a UML modeling expert. The user wants to modify an existing state machine diagram.
 
-Return ONLY a JSON object with one of these structures:
-
-MODIFY STATE (rename or change properties)
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "modify_state",
-    "target": {
-      "stateName": "CurrentStateName"
-    },
-    "changes": {
-      "name": "NewStateName",
-      "entryAction": "new entry action",
-      "exitAction": "new exit action",
-      "doActivity": "new activity"
-    }
-  }
-}
-
-ADD TRANSITION (connect two states)
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "add_transition",
-    "target": {
-      "sourceState": "SourceState",
-      "targetState": "TargetState"
-    },
-    "changes": {
-      "trigger": "event",
-      "guard": "condition",
-      "effect": "action"
-    }
-  }
-}
-
-MODIFY TRANSITION (change existing transition properties)
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "modify_transition",
-    "target": {
-      "sourceState": "SourceState",
-      "targetState": "TargetState"
-    },
-    "changes": {
-      "trigger": "newTrigger",
-      "guard": "newGuard",
-      "effect": "newEffect"
-    }
-  }
-}
-
-REMOVE ELEMENT (delete a state or transition)
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "remove_element",
-    "target": {
-      "stateName": "StateToRemove"
-    }
-  }
-}
-
-OR for removing a transition:
-{
-  "action": "modify_model",
-  "modification": {
-    "action": "remove_element",
-    "target": {
-      "sourceState": "SourceState",
-      "targetState": "TargetState"
-    }
-  }
-}
-
-IMPORTANT RULES:
+MODIFICATION RULES:
 1. Actions available: "modify_state", "add_transition", "modify_transition", "remove_element"
 2. Always specify exact target names that exist in the current model
-3. guard and effect are optional (can be empty strings)
+3. guard and effect are optional
 4. For remove_element, only specify the target — no "changes" needed
-5. When modifying, only include the fields that should change in "changes" object
-6. When the user asks for MULTIPLE changes at once (e.g., "add states Idle, Running, and Done"), use the "modifications" array format:
-   { "action": "modify_model", "modifications": [ { "action": "...", "target": {...}, "changes": {...} }, ... ] }
-7. Use "modification" (singular) for a single change, "modifications" (plural array) for multiple changes
-8. Return ONLY the JSON object — no explanations or markdown
-
-Return ONLY the JSON object — no explanations"""
+5. When modifying, only include the fields that should change in the "changes" object
+6. Use PascalCase for new state names and camelCase for triggers"""
 
         # Build context from current model using centralized helper
         context_block = ''

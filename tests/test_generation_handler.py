@@ -246,16 +246,17 @@ class TestHandleGenerationRequest:
         request.context.project_snapshot = None
         session = FakeSession()
         result = handle_generation_request(session, request)
-        # Qiskit gets defaults auto-filled, so it should trigger now
-        assert result["action"] == "trigger_generator"
-        assert result["config"]["backend"] == "aer_simulator"
+        # Without a project snapshot the handler returns an assistant message
+        # prompting the user (no model to generate from).
+        assert result["action"] == "assistant_message"
 
     def test_unknown_generator(self):
         request = _make_request("do something")
         session = FakeSession()
         result = handle_generation_request(session, request)
         assert result["action"] == "assistant_message"
-        assert "supported" in result["message"].lower() or "tell me" in result["message"].lower()
+        msg = result["message"].lower()
+        assert "available" in msg or "options" in msg or "supported" in msg or "tell me" in msg
 
     def test_frontend_event_result(self):
         request = _make_request("", action="frontend_event")

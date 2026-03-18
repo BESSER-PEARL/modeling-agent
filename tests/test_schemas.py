@@ -48,6 +48,7 @@ from schemas.object_diagram import (
 
 # -- Agent Diagram imports --
 from schemas.agent_diagram import (
+    AgentInitialNodeSpec,
     AgentReplySpec,
     AgentStateSpec,
     AgentIntentSpec,
@@ -726,7 +727,8 @@ class TestSystemAgentSpec:
             states=[AgentStateSpec(stateName="S1")],
             initialNode={"x": 100, "y": 200, "description": "Start"},
         )
-        assert s.initialNode == {"x": 100, "y": 200, "description": "Start"}
+        assert isinstance(s.initialNode, AgentInitialNodeSpec)
+        assert s.initialNode.description == "Start"
 
     def test_full_agent_system(self):
         s = SystemAgentSpec(
