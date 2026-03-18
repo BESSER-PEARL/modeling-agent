@@ -37,6 +37,8 @@ from memory.conversation_memory import cleanup_stale_memories
 
 # ── Logging ──────────────────────────────────────────────────────────────
 logger.setLevel(logging.INFO)
+# Also configure our src/ modules' loggers so their info/debug output appears
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # ── Disable Chroma telemetry ─────────────────────────────────────────────
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")

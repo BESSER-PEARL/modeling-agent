@@ -750,10 +750,14 @@ class BaseDiagramHandler(ABC):
 
         Falls back to single-pass structured if reasoning fails.
         """
-        # Fast path: simple requests don't need a reasoning pass
-        if len(user_request) < self._TWO_PASS_MIN_LENGTH:
+        # Fast path: simple requests don't need a reasoning pass.
+        # Use the raw user message length, not the enriched prompt which
+        # includes workspace context and conversation history.
+        # Look for the raw request before any context blocks.
+        raw_request = user_request.split("\n\nWorkspace context:")[0].split("\n\nRecent conversation context")[0].strip()
+        if len(raw_request) < self._TWO_PASS_MIN_LENGTH:
             logger.info(
-                f"[{self.get_diagram_type()}] Simple request ({len(user_request)} chars) "
+                f"[{self.get_diagram_type()}] Simple request ({len(raw_request)} chars) "
                 "— skipping reasoning pass, using single-pass structured"
             )
             return self.predict_structured(

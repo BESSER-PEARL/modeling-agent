@@ -353,14 +353,16 @@ def _nearest_free_cell_below(
 ) -> Tuple[int, int]:
     """Find the nearest free grid cell *below* *(parent_row, parent_col)*.
 
-    Scans successive rows below the parent, preferring the same column,
-    then adjacent columns.  This guarantees inheritance children are
-    always placed below their parent in the diagram.
+    Scans rows below the parent, preferring the same column and limiting
+    horizontal spread to ±2 columns per row.  For wide inheritance trees
+    (5+ children), this creates a compact 2-row block instead of a long
+    single row.
     """
-    for row in range(parent_row + 1, parent_row + 20):
+    max_col_spread = 2  # allow up to ±2 columns before moving to next row
+    for row in range(parent_row + 1, parent_row + 10):
         if (row, parent_col) not in grid:
             return (row, parent_col)
-        for dc in range(1, 15):
+        for dc in range(1, max_col_spread + 1):
             if (row, parent_col + dc) not in grid:
                 return (row, parent_col + dc)
             if (row, parent_col - dc) not in grid:
@@ -400,8 +402,19 @@ def _best_neighbor_grid_cell(
                 candidates.add(cell)
 
     if not candidates:
-        max_col = max(c for _, c in grid.keys()) if grid else 0
-        return _nearest_free_grid_cell(grid, 0, max_col + 1)
+        # Widen search to radius-2 neighbours before falling back
+        for _, (nr, nc) in placed_neighbors:
+            for dr in range(-2, 3):
+                for dc in range(-2, 3):
+                    if dr == 0 and dc == 0:
+                        continue
+                    cell = (nr + dr, nc + dc)
+                    if cell not in grid:
+                        candidates.add(cell)
+
+    if not candidates:
+        # Last resort: find nearest free cell to the neighbour centroid
+        return _nearest_free_grid_cell(grid, round(n_avg_row), round(n_avg_col))
 
     def _score(cell: Tuple[int, int]):
         r, c = cell
@@ -412,6 +425,36 @@ def _best_neighbor_grid_cell(
         return (neighbour_dist, global_dist, neg_row, neg_col, r, c)
 
     return min(candidates, key=_score)
+
+
+def _compact_grid(
+    grid: Dict[Tuple[int, int], str],
+) -> Tuple[Dict[Tuple[int, int], str], Dict[str, Tuple[int, int]]]:
+    """Remove empty rows and columns from the grid.
+
+    Returns a new grid and name_to_grid with consecutive row/col indices.
+    This eliminates gaps that cause unnecessary spread in the pixel layout.
+    """
+    if not grid:
+        return grid, {}
+
+    # Collect used rows and columns in sorted order
+    used_rows = sorted({r for r, _ in grid})
+    used_cols = sorted({c for _, c in grid})
+
+    # Build remapping: old index → new consecutive index
+    row_map = {old: new for new, old in enumerate(used_rows)}
+    col_map = {old: new for new, old in enumerate(used_cols)}
+
+    new_grid: Dict[Tuple[int, int], str] = {}
+    new_name_to_grid: Dict[str, Tuple[int, int]] = {}
+
+    for (r, c), name in grid.items():
+        new_cell = (row_map[r], col_map[c])
+        new_grid[new_cell] = name
+        new_name_to_grid[name] = new_cell
+
+    return new_grid, new_name_to_grid
 
 
 # ---------------------------------------------------------------------------
@@ -659,6 +702,7 @@ def layout_class_system(
         c.get("className", ""): c for c in classes
     }
     parent_of: Dict[str, str] = {}          # child -> parent (Inheritance)
+    owner_of: Dict[str, str] = {}           # part -> whole (Composition/Aggregation)
     adjacency: Dict[str, Set[str]] = {name: set() for name in class_names}
 
     for rel in relationships:
@@ -670,6 +714,9 @@ def layout_class_system(
             adjacency[tgt].add(src)
         if rtype in ("inheritance", "generalization"):
             parent_of[src] = tgt
+        elif rtype in ("composition", "aggregation"):
+            # source is the whole, target is the part
+            owner_of[tgt] = src
 
     # --- Compute element sizes ---
     sizes: Dict[str, Tuple[int, int]] = {}
@@ -694,6 +741,7 @@ def layout_class_system(
                  if n not in bfs_seen and n in remaining],
                 key=lambda n: (
                     0 if parent_of.get(n) == current else 1,  # inheritance children first
+                    0 if owner_of.get(n) == current else 1,   # composition parts second
                     -len(adjacency.get(n, set())),            # then by degree descending
                     n,                                        # then alphabetical
                 ),
@@ -701,6 +749,33 @@ def layout_class_system(
             for n in neighbors:
                 bfs_seen.add(n)
                 queue.append(n)
+
+    # --- Ensure owners are placed before dependents ---
+    # The BFS may place inheritance children or composition parts before
+    # their parent/owner when the parent has fewer connections.  Reorder
+    # so the adjacency-aware placement logic always fires correctly.
+    if parent_of or owner_of:
+        ordered_set = set(placement_order)
+        reordered: List[str] = []
+        placed_set: Set[str] = set()
+
+        def _ensure_placed(name: str) -> None:
+            if name in placed_set or name not in ordered_set:
+                return
+            # Ensure inheritance parent is placed first
+            p = parent_of.get(name)
+            if p and p in ordered_set:
+                _ensure_placed(p)
+            # Ensure composition owner is placed first
+            o = owner_of.get(name)
+            if o and o in ordered_set:
+                _ensure_placed(o)
+            placed_set.add(name)
+            reordered.append(name)
+
+        for name in placement_order:
+            _ensure_placed(name)
+        placement_order = reordered
 
     # --- Assign logical grid cells ---
     # For large diagrams, limit the number of columns to keep the grid readable
@@ -713,6 +788,7 @@ def layout_class_system(
             cell = (0, 0)
         else:
             p_name = parent_of.get(name)
+            o_name = owner_of.get(name)
             placed_neighbors = [
                 (n, name_to_grid[n])
                 for n in adjacency.get(name, set())
@@ -722,28 +798,43 @@ def layout_class_system(
                 # Inheritance: child directly below parent
                 pr, pc = name_to_grid[p_name]
                 cell = _nearest_free_cell_below(grid, pr, pc)
+            elif o_name and o_name in name_to_grid:
+                # Composition/Aggregation: part adjacent to owner
+                # Prioritise the owner as the primary neighbour
+                owner_pos = name_to_grid[o_name]
+                owner_neighbors = [(o_name, owner_pos)]
+                cell = _best_neighbor_grid_cell(grid, owner_neighbors)
             elif placed_neighbors:
                 cell = _best_neighbor_grid_cell(grid, placed_neighbors)
             else:
-                # Isolated class — wrap to next row if current row is full
-                used_cols_in_row_0 = sum(1 for (r, _) in grid if r == 0)
-                if used_cols_in_row_0 >= ideal_cols:
-                    # Find the first row with space
-                    for try_row in range(ideal_rows):
-                        used_in_row = sum(1 for (r, _) in grid if r == try_row)
-                        if used_in_row < ideal_cols:
-                            max_c = max((c for r, c in grid if r == try_row), default=-1)
-                            cell = _nearest_free_grid_cell(grid, try_row, max_c + 1)
-                            break
+                # Isolated class — look ahead: if any of this class's
+                # unplaced neighbours connect to already-placed nodes,
+                # place near those placed nodes to keep future edges short.
+                anchor_cells: List[Tuple[int, int]] = []
+                for nb in adjacency.get(name, set()):
+                    if nb in name_to_grid:
+                        anchor_cells.append(name_to_grid[nb])
                     else:
-                        max_col = max(c for _, c in grid.keys()) if grid else -1
-                        cell = _nearest_free_grid_cell(grid, 0, max_col + 1)
+                        # Check if *nb*'s neighbours are placed
+                        for nb2 in adjacency.get(nb, set()):
+                            if nb2 in name_to_grid:
+                                anchor_cells.append(name_to_grid[nb2])
+
+                if anchor_cells:
+                    avg_r = sum(r for r, _ in anchor_cells) / len(anchor_cells)
+                    avg_c = sum(c for _, c in anchor_cells) / len(anchor_cells)
+                    cell = _nearest_free_grid_cell(grid, round(avg_r), round(avg_c))
                 else:
-                    max_col = max(c for _, c in grid.keys()) if grid else -1
-                    cell = _nearest_free_grid_cell(grid, 0, max_col + 1)
+                    # Truly isolated — place near the grid centroid
+                    avg_r = sum(r for r, _ in grid.keys()) / len(grid)
+                    avg_c = sum(c for _, c in grid.keys()) / len(grid)
+                    cell = _nearest_free_grid_cell(grid, round(avg_r), round(avg_c))
 
         grid[cell] = name
         name_to_grid[name] = cell
+
+    # --- Compact the grid: remove empty rows and columns ---
+    grid, name_to_grid = _compact_grid(grid)
 
     # --- Convert grid → pixel coordinates (shared helper) ---
     edge_pairs = _build_edge_pairs(relationships, class_names)
@@ -860,6 +951,9 @@ def layout_object_system(
 
     if not grid:
         return system_spec
+
+    # --- Compact the grid: remove empty rows and columns ---
+    grid, name_to_grid = _compact_grid(grid)
 
     # --- Convert grid → pixel coordinates (shared helper) ---
     edge_pairs = _build_edge_pairs(links, obj_names)
@@ -1022,6 +1116,9 @@ def layout_state_system(
 
     if not grid:
         return system_spec
+
+    # --- Compact the grid: remove empty rows and columns ---
+    grid, name_to_grid = _compact_grid(grid)
 
     # --- Convert grid → pixel coordinates (shared helper) ---
     edge_pairs = _build_edge_pairs(transitions, state_names)

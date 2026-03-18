@@ -139,19 +139,31 @@ def execute_model_operation(
             })
 
             if can_add_tab:
-                reply_message(
-                    session,
+                confirmation_msg = (
                     f"You already have a {target_diagram_type} model ({summary}). "
                     "Would you like me to **replace** it, **keep** it and add alongside, "
-                    f"or create in a **new tab**? (You have {tab_count}/{max_tabs} tabs used)",
+                    f"or create in a **new tab**? (You have {tab_count}/{max_tabs} tabs used)"
                 )
+                confirmation_actions = [
+                    {"label": "Replace existing", "prompt": "replace"},
+                    {"label": "Keep and add alongside", "prompt": "keep"},
+                    {"label": "Create in new tab", "prompt": "new tab"},
+                ]
             else:
-                reply_message(
-                    session,
+                confirmation_msg = (
                     f"You already have a {target_diagram_type} model ({summary}). "
                     "Would you like me to **replace** it, or **keep** it and add alongside? "
-                    f"(All {max_tabs} tabs are in use)",
+                    f"(All {max_tabs} tabs are in use)"
                 )
+                confirmation_actions = [
+                    {"label": "Replace existing", "prompt": "replace"},
+                    {"label": "Keep and add alongside", "prompt": "keep"},
+                ]
+            reply_payload(session, {
+                "action": "assistant_message",
+                "message": confirmation_msg,
+                "suggestedActions": confirmation_actions,
+            })
             logger.info(
                 f"[ModelOp] Asked user to confirm replace/keep"
                 f"{'/new-tab' if can_add_tab else ''} for existing {target_diagram_type} "
@@ -200,16 +212,20 @@ def execute_model_operation(
                 'diagram_type': target_diagram_type,
                 '_replace_existing': _replace_existing,
             })
-            reply_message(
-                session,
-                "How would you like me to generate the GUI?\n\n"
-                "1️⃣ **Auto-generate** — Fast & deterministic. Creates one page per class "
-                "with data tables and method buttons.\n"
-                "2️⃣ **LLM-generated** *(experimental)* — AI-designed layout with "
-                "personalized pages, navigation, and styling.\n\n"
-                "Reply **auto** or **1** for the auto-generated GUI, "
-                "or **llm** / **2** / **personalized** for the AI-designed version.",
-            )
+            reply_payload(session, {
+                "action": "assistant_message",
+                "message": (
+                    "How would you like me to generate the GUI?\n\n"
+                    "1️⃣ **Auto-generate** — Fast & deterministic. Creates one page per class "
+                    "with data tables and method buttons.\n"
+                    "2️⃣ **LLM-generated** *(experimental)* — AI-designed layout with "
+                    "personalized pages, navigation, and styling."
+                ),
+                "suggestedActions": [
+                    {"label": "Auto-generate", "prompt": "auto"},
+                    {"label": "LLM-generated (experimental)", "prompt": "llm"},
+                ],
+            })
             logger.info("[ModelOp] Asked user to choose GUI generation mode")
             return None
 
