@@ -81,7 +81,22 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     except Exception as exc:
         logger.warning(f"LLM provider init failed (non-critical): {exc}")
 
-    logger.info("LLMs initialized: gpt-4.1-mini (json, t=0.2), gpt-4.1-mini (text, t=0.4), conversation memory=20")
+    # Lightweight LLM for intent classification — nano is sufficient for
+    # routing user messages into ~9 intents and is significantly cheaper/faster.
+    gpt_nano = LLMOpenAI(
+        agent=agent,
+        name='gpt-4.1-nano',
+        parameters={
+            'temperature': 0.0,
+            'max_completion_tokens': 256,
+        },
+        num_previous_messages=1,
+    )
+
+    logger.info(
+        "LLMs initialized: gpt-4.1-mini (json, t=0.2), "
+        "gpt-4.1-mini (text, t=0.4), gpt-4.1-nano (intent classifier)"
+    )
     return gpt, gpt_text, gpt_predict_json
 
 
@@ -158,9 +173,14 @@ def init_diagram_factory(gpt: LLMOpenAI):
 
 
 def init_intent_classifier_config() -> LLMIntentClassifierConfiguration:
-    """Return the default intent-classifier configuration."""
+    """Return the default intent-classifier configuration.
+
+    Uses gpt-4.1-nano — intent classification (picking one of ~9 intents
+    from descriptions) is a trivial routing task that doesn't need a
+    larger model, and nano is significantly cheaper and faster.
+    """
     return LLMIntentClassifierConfiguration(
-        llm_name='gpt-4.1-mini',
+        llm_name='gpt-4.1-nano',
         parameters={},
         use_intent_descriptions=True,
         use_training_sentences=False,
