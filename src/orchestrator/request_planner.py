@@ -439,8 +439,8 @@ _HEURISTIC_STATE_MACHINE = re.compile(
 
 _HEURISTIC_AGENT = re.compile(
     r"^(?:create|build|design|make|add)\s+(?:a\s+|an\s+|the\s+)?"
-    r"(?:agent|chatbot|conversational\s*agent|agent\s*diagram)"
-    r"(?:\s+(?:diagram))?"
+    r"(?:agent|chatbot|conversational\s*agent|agent\s*diagram|agent\s*model)"
+    r"(?:\s+(?:diagram|model))?"
     r"(?:\s+(?:for|of|about|that)\s+(?P<domain>.+))?"
     r"\s*$",
     re.IGNORECASE,

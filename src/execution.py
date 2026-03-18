@@ -305,17 +305,16 @@ def execute_model_operation(
         steps = []
         if operation_mode == "complete_system":
             steps = [
-                (0, "Generating classes and relationships..."),
-                (12, "Building attributes and methods..."),
-                (24, "Finalizing relationships and layout..."),
+                (8, "Generating classes and relationships..."),
+                (20, "Building attributes and methods..."),
+                (35, "Almost there..."),
             ]
         elif operation_mode == "modify_model":
             steps = [
-                (0, "Applying changes..."),
-                (5, "Updating model..."),
+                (4, "Updating model..."),
             ]
         for delay, msg in steps:
-            if _progress_stop.wait(timeout=delay if delay > 0 else 0.01):
+            if _progress_stop.wait(timeout=delay):
                 return
             reply_progress(session, msg)
 
