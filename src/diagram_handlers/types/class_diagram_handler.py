@@ -211,12 +211,15 @@ Return ONLY the JSON, no explanations."""
                 f"{len(system_spec.get('relationships', []))} relationships"
             )
 
-            # --- Validation-feedback loop: self-critique and refine ---
-            system_spec = self.validate_and_refine(
-                system_spec,
-                user_request=user_request,
-                diagram_type="ClassDiagram",
-            )
+            # TODO: Disabled for now — the extra LLM round-trip adds 2-4s latency
+            # and the structured output schema already enforces correctness.
+            # Re-enable once we have a faster validation strategy (e.g. rule-based
+            # checks instead of an LLM call).
+            # system_spec = self.validate_and_refine(
+            #     system_spec,
+            #     user_request=user_request,
+            #     diagram_type="ClassDiagram",
+            # )
 
             # Strip any LLM-hallucinated positions, then apply deterministic layout
             for cls in system_spec.get("classes", []):

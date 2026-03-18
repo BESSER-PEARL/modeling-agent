@@ -378,8 +378,8 @@ class BaseDiagramHandler(ABC):
     # ------------------------------------------------------------------
     # LLM call with retry
     # ------------------------------------------------------------------
-
-    def predict_with_retry(self, prompt: str, max_retries: int = 2, *, use_cache: bool = True) -> str:
+    # NOTE: This adds an extra LLM round-trip (2–4s latency).
+    def predict_with_retry(self, prompt: str, max_retries: int = 1, *, use_cache: bool = True) -> str:
         """Call the LLM with automatic retry, cache check, and jittered exponential backoff.
 
         Rate-limit handling is delegated to OpenAI's API (429 responses)
@@ -392,7 +392,7 @@ class BaseDiagramHandler(ABC):
 
         Args:
             prompt: Full prompt to send.
-            max_retries: Number of additional attempts after the first (default 2).
+            max_retries: Number of additional attempts after the first (default 1).
             use_cache: Check/populate the prompt cache (default True).
 
         Returns:
@@ -437,6 +437,11 @@ class BaseDiagramHandler(ABC):
                 )
 
             try:
+                logger.info(
+                    f"[{self.get_diagram_type()}] LLM call started "
+                    f"(attempt {attempt + 1}/{total_attempts}, "
+                    f"prompt_len={len(effective_prompt)})"
+                )
                 response = self.llm.predict(effective_prompt)
 
                 # Track tokens from the last API call if available
@@ -496,12 +501,24 @@ class BaseDiagramHandler(ABC):
     # Structured output via OpenAI .parse() — eliminates JSON repair
     # ------------------------------------------------------------------
 
+    # Schema names that produce small outputs (single element or modification).
+    # These get a lower max_completion_tokens to speed up the API call.
+    _SMALL_OUTPUT_SCHEMAS = {
+        "SingleClassSpec", "SingleObjectSpec", "SingleStateSpec",
+        "SingleGUIElementSpec", "SingleQuantumGateSpec", "AgentSingleElementSpec",
+        "ClassModificationResponse", "ObjectModificationResponse",
+        "StateMachineModificationResponse", "GUIModificationSpec",
+        "QuantumModificationSpec", "AgentModificationResponse",
+    }
+    _SMALL_OUTPUT_MAX_TOKENS = 2048
+    _LARGE_OUTPUT_MAX_TOKENS = 8192
+
     def predict_structured(
         self,
         prompt: str,
         response_schema: Type[BaseModel],
         *,
-        max_retries: int = 2,
+        max_retries: int = 1,
         use_cache: bool = True,
         system_prompt: str = "",
         temperature: float = 0.2,
@@ -518,7 +535,7 @@ class BaseDiagramHandler(ABC):
         Args:
             prompt: The user/request prompt.
             response_schema: Pydantic model class defining the expected output.
-            max_retries: Number of retry attempts (default 2).
+            max_retries: Number of retry attempts (default 1).
             use_cache: Check/populate prompt cache (default True).
             system_prompt: Optional system instruction prepended to messages.
             temperature: LLM temperature (default 0.2).
@@ -584,12 +601,23 @@ class BaseDiagramHandler(ABC):
                 time.sleep(backoff)
 
             try:
+                max_tokens = (
+                    self._SMALL_OUTPUT_MAX_TOKENS
+                    if response_schema.__name__ in self._SMALL_OUTPUT_SCHEMAS
+                    else self._LARGE_OUTPUT_MAX_TOKENS
+                )
+                logger.info(
+                    f"[{self.get_diagram_type()}] Structured LLM call started "
+                    f"(attempt {attempt + 1}/{total_attempts}, "
+                    f"schema={response_schema.__name__}, "
+                    f"max_tokens={max_tokens})"
+                )
                 completion = client.beta.chat.completions.parse(
                     model=self.llm.name if hasattr(self.llm, 'name') else "gpt-4.1-mini",
                     messages=messages,
                     response_format=response_schema,
                     temperature=temperature,
-                    max_completion_tokens=8192,
+                    max_completion_tokens=max_tokens,
                 )
 
                 # Track tokens
@@ -697,7 +725,7 @@ class BaseDiagramHandler(ABC):
 
     # Threshold: requests shorter than this are "simple" and skip the
     # reasoning pass, saving one full LLM round-trip (~1-3 s).
-    _TWO_PASS_MIN_LENGTH = 80
+    _TWO_PASS_MIN_LENGTH = 250
 
     def predict_two_pass_structured(
         self,
@@ -952,7 +980,6 @@ class BaseDiagramHandler(ABC):
     # ------------------------------------------------------------------
     # Validation-feedback loop (critique → fix)
     # ------------------------------------------------------------------
-
     def validate_and_refine(
         self,
         spec: Dict[str, Any],
@@ -981,7 +1008,7 @@ class BaseDiagramHandler(ABC):
         # Skip validation for very small diagrams (1-3 classes) where the
         # extra LLM round-trip rarely finds issues.  4+ classes benefit from
         # relationship and attribute completeness checks.
-        if len(classes) <= 15:
+        if len(classes) <= 20:
             return spec
 
         # Build a compact representation for the critique prompt
