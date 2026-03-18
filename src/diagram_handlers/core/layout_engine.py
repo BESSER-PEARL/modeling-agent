@@ -16,6 +16,7 @@ Design principles:
 
 from __future__ import annotations
 
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -179,20 +180,41 @@ def estimate_state_size(spec: Dict[str, Any]) -> Tuple[int, int]:
     return STATE_WIDTH, max(height, STATE_MIN_HEIGHT)
 
 
+def _estimate_text_width(texts: List[Any], base_width: int, char_px: int = 11, padding: int = 40) -> int:
+    """Estimate rendered width from the longest text line.
+
+    The frontend auto-sizes elements based on content.  This heuristic
+    uses ~char_px pixels per character + padding to approximate the
+    rendered width so the layout engine can avoid overlaps.
+    """
+    max_w = base_width
+    for text in texts:
+        if isinstance(text, str) and text:
+            estimated = len(text) * char_px + padding
+            max_w = max(max_w, estimated)
+    return max_w
+
+
 def estimate_agent_element_size(spec: Dict[str, Any]) -> Tuple[int, int]:
     """Return (width, height) for an agent diagram element spec."""
     elem_type = spec.get("type", "state")
     if elem_type == "initial":
         return INITIAL_NODE_SIZE, INITIAL_NODE_SIZE
     if elem_type == "intent":
-        n_phrases = len(spec.get("trainingPhrases", []))
+        phrases = spec.get("trainingPhrases", [])
+        n_phrases = len(phrases)
         height = AGENT_NODE_MIN_HEIGHT + n_phrases * AGENT_PHRASE_ROW
-        return AGENT_INTENT_WIDTH, max(height, AGENT_NODE_MIN_HEIGHT)
+        # Estimate width from longest training phrase
+        width = _estimate_text_width(phrases, AGENT_INTENT_WIDTH)
+        return width, max(height, AGENT_NODE_MIN_HEIGHT)
     # state (default)
     n_replies = len(spec.get("replies", []))
     n_fallback = len(spec.get("fallbackBodies", []))
     height = AGENT_NODE_MIN_HEIGHT + (n_replies + n_fallback) * AGENT_REPLY_ROW
-    return AGENT_STATE_WIDTH, max(height, AGENT_NODE_MIN_HEIGHT)
+    # Estimate width from longest reply or fallback text
+    all_texts = list(spec.get("replies", [])) + list(spec.get("fallbackBodies", []))
+    width = _estimate_text_width(all_texts, AGENT_STATE_WIDTH)
+    return width, max(height, AGENT_NODE_MIN_HEIGHT)
 
 
 # ---------------------------------------------------------------------------
@@ -669,54 +691,688 @@ def layout_class_single(
     return spec
 
 
+# ---------------------------------------------------------------------------
+# Sugiyama hierarchical layout helpers (used by layout_class_system)
+# ---------------------------------------------------------------------------
+
+
+def _sugiyama_build_graph(
+    class_names: Dict[str, Dict[str, Any]],
+    relationships: List[Dict[str, Any]],
+) -> Tuple[
+    Dict[str, Set[str]],   # successors
+    Dict[str, Set[str]],   # predecessors
+    Dict[str, str],        # parent_of  (child -> parent for inheritance)
+    Dict[str, str],        # owner_of   (part -> whole for composition)
+    Dict[str, Set[str]],   # adjacency  (undirected)
+    List[Tuple[str, str, int]],  # directed edges with priority
+]:
+    """Phase 0 – Build a directed graph from UML relationships.
+
+    Returns successors, predecessors, parent_of, owner_of, undirected
+    adjacency, and a list of directed edges (src, tgt, priority) where
+    lower priority numbers mean the edge direction is more important
+    to preserve (inheritance=0, composition=1, other=2).
+    """
+    successors: Dict[str, Set[str]] = defaultdict(set)
+    predecessors: Dict[str, Set[str]] = defaultdict(set)
+    parent_of: Dict[str, str] = {}
+    owner_of: Dict[str, str] = {}
+    adjacency: Dict[str, Set[str]] = {name: set() for name in class_names}
+    directed_edges: List[Tuple[str, str, int]] = []
+
+    # Compute degree for heuristic direction of association edges
+    degree: Dict[str, int] = defaultdict(int)
+    for rel in relationships:
+        src = rel.get("source", "")
+        tgt = rel.get("target", "")
+        if src in class_names and tgt in class_names:
+            degree[src] += 1
+            degree[tgt] += 1
+
+    for rel in relationships:
+        src = rel.get("source", "")
+        tgt = rel.get("target", "")
+        rtype = (rel.get("type") or "").lower()
+        if src not in class_names or tgt not in class_names:
+            continue
+        if src == tgt:
+            continue
+
+        adjacency[src].add(tgt)
+        adjacency[tgt].add(src)
+
+        if rtype in ("inheritance", "generalization"):
+            # source = child, target = parent  => edge: parent -> child
+            parent_of[src] = tgt
+            successors[tgt].add(src)
+            predecessors[src].add(tgt)
+            directed_edges.append((tgt, src, 0))
+        elif rtype in ("composition", "aggregation"):
+            # source = whole, target = part  => edge: whole -> part
+            owner_of[tgt] = src
+            successors[src].add(tgt)
+            predecessors[tgt].add(src)
+            directed_edges.append((src, tgt, 1))
+        else:
+            # Association / other: higher-degree node above lower-degree node
+            if degree[src] >= degree[tgt]:
+                successors[src].add(tgt)
+                predecessors[tgt].add(src)
+                directed_edges.append((src, tgt, 2))
+            else:
+                successors[tgt].add(src)
+                predecessors[src].add(tgt)
+                directed_edges.append((tgt, src, 2))
+
+    return successors, predecessors, parent_of, owner_of, adjacency, directed_edges
+
+
+def _sugiyama_remove_cycles(
+    nodes: List[str],
+    successors: Dict[str, Set[str]],
+    predecessors: Dict[str, Set[str]],
+    directed_edges: List[Tuple[str, str, int]],
+) -> None:
+    """Phase 1 – Remove cycles via iterative DFS, reversing back-edges.
+
+    High-priority edges (inheritance/composition) are preferred to keep
+    in their original direction.  Mutates *successors* and *predecessors*
+    in place.
+    """
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: Dict[str, int] = {n: WHITE for n in nodes}
+    back_edges: List[Tuple[str, str]] = []
+
+    # Sort starting nodes: prefer nodes with no predecessors (roots)
+    start_order = sorted(nodes, key=lambda n: (len(predecessors.get(n, set())), n))
+
+    for start in start_order:
+        if color[start] != WHITE:
+            continue
+        # Iterative DFS using explicit stack of (node, iterator)
+        stack: List[Tuple[str, List[str], int]] = []
+        color[start] = GRAY
+        neighbors = sorted(successors.get(start, set()))
+        stack.append((start, neighbors, 0))
+
+        while stack:
+            node, nbrs, idx = stack[-1]
+            if idx < len(nbrs):
+                stack[-1] = (node, nbrs, idx + 1)
+                nxt = nbrs[idx]
+                if color.get(nxt, WHITE) == GRAY:
+                    # Back edge found
+                    back_edges.append((node, nxt))
+                elif color.get(nxt, WHITE) == WHITE:
+                    color[nxt] = GRAY
+                    nxt_nbrs = sorted(successors.get(nxt, set()))
+                    stack.append((nxt, nxt_nbrs, 0))
+            else:
+                color[node] = BLACK
+                stack.pop()
+
+    # Reverse back edges (remove cycle)
+    for u, v in back_edges:
+        if v in successors.get(u, set()):
+            successors[u].discard(v)
+            predecessors[v].discard(u)
+            successors[v].add(u)
+            predecessors[u].add(v)
+
+
+def _sugiyama_assign_layers(
+    nodes: List[str],
+    successors: Dict[str, Set[str]],
+    predecessors: Dict[str, Set[str]],
+) -> Dict[str, int]:
+    """Phase 2 – Assign layers using longest-path + Kahn's topological sort.
+
+    Sources (no predecessors) get layer 0.  Each node's layer is
+    max(predecessor layers) + 1.  Isolated nodes go to the middle layer.
+    """
+    # Kahn's algorithm for topological sort
+    in_degree: Dict[str, int] = {n: 0 for n in nodes}
+    for n in nodes:
+        for s in successors.get(n, set()):
+            if s in in_degree:
+                in_degree[s] += 1
+
+    queue: deque = deque()
+    for n in sorted(nodes):  # sorted for determinism
+        if in_degree[n] == 0:
+            queue.append(n)
+
+    topo_order: List[str] = []
+    layer: Dict[str, int] = {}
+
+    while queue:
+        n = queue.popleft()
+        topo_order.append(n)
+        # Layer = max of predecessor layers + 1, or 0 if no predecessors
+        pred_layers = [layer[p] for p in predecessors.get(n, set())
+                       if p in layer]
+        layer[n] = (max(pred_layers) + 1) if pred_layers else 0
+
+        for s in sorted(successors.get(n, set())):
+            if s in in_degree:
+                in_degree[s] -= 1
+                if in_degree[s] == 0:
+                    queue.append(s)
+
+    # Handle nodes not reached by topo sort (remaining cycles, shouldn't happen
+    # after cycle removal but just in case)
+    for n in nodes:
+        if n not in layer:
+            layer[n] = 0
+
+    # Compact layers: pull nodes up to min_allowed = max(pred layers) + 1
+    for n in topo_order:
+        if n not in layer:
+            continue
+        pred_layers = [layer[p] for p in predecessors.get(n, set())
+                       if p in layer]
+        min_allowed = (max(pred_layers) + 1) if pred_layers else 0
+        layer[n] = min_allowed
+
+    # Isolated nodes (no edges at all) go to the middle layer
+    max_layer = max(layer.values()) if layer else 0
+    mid_layer = max_layer // 2
+    for n in nodes:
+        has_edges = bool(successors.get(n, set())) or bool(predecessors.get(n, set()))
+        if not has_edges:
+            layer[n] = mid_layer
+
+    # --- Layer balancing: split overly wide layers ---
+    # If a layer has more than max_per_layer nodes AND some can be pushed
+    # down without violating constraints, redistribute to reduce width.
+    import math as _math
+    max_per_layer = max(3, int(_math.ceil(_math.sqrt(len(nodes)))))
+
+    # Build layers dict temporarily
+    _layers_tmp: Dict[int, List[str]] = defaultdict(list)
+    for n, li in layer.items():
+        _layers_tmp[li].append(n)
+
+    changed = True
+    iterations = 0
+    while changed and iterations < 10:
+        changed = False
+        iterations += 1
+        for li in sorted(_layers_tmp.keys()):
+            if len(_layers_tmp[li]) <= max_per_layer:
+                continue
+            # Try to push some nodes down to a new sub-layer
+            # Candidates: nodes that have NO successors in layer li+1
+            # that depend on them being in layer li
+            movable = []
+            for n in _layers_tmp[li]:
+                # Can move n to li+1 if none of its successors are in li+1
+                # AND all its predecessors are in layers < li+1
+                succs_in_next = [s for s in successors.get(n, set())
+                                 if layer.get(s) == li + 1]
+                # Don't move nodes that have inheritance children expecting
+                # them to stay in this layer
+                if not succs_in_next:
+                    movable.append(n)
+            if not movable:
+                continue
+            # Move excess nodes (prefer those with fewer predecessors in this layer)
+            n_to_move = len(_layers_tmp[li]) - max_per_layer
+            movable.sort(key=lambda n: (
+                len([p for p in predecessors.get(n, set()) if layer.get(p, -1) == li]),
+                n
+            ))
+            moved = movable[:n_to_move]
+            if not moved:
+                continue
+            # Shift all layers >= li+1 down by 1 to make room
+            for n2 in list(layer.keys()):
+                if layer[n2] > li:
+                    layer[n2] += 1
+            # Rebuild temp layers
+            for m in moved:
+                layer[m] = li + 1
+            _layers_tmp = defaultdict(list)
+            for n2, l2 in layer.items():
+                _layers_tmp[l2].append(n2)
+            changed = True
+            break
+
+    return layer
+
+
+def _sugiyama_minimize_crossings(
+    layers: Dict[int, List[str]],
+    successors: Dict[str, Set[str]],
+    predecessors: Dict[str, Set[str]],
+    parent_of: Dict[str, str],
+    num_sweeps: int = 4,
+) -> Dict[int, List[str]]:
+    """Phase 3 – Barycenter crossing minimization with sibling grouping.
+
+    Performs *num_sweeps* alternating top-down / bottom-up sweeps.
+    After sweeps, groups inheritance siblings contiguously and centers
+    them under their parent.
+    """
+    if not layers:
+        return layers
+
+    layer_indices = sorted(layers.keys())
+
+    # Build position lookup
+    def _pos_map(layers_dict: Dict[int, List[str]]) -> Dict[str, int]:
+        pm: Dict[str, int] = {}
+        for _li, nodes_in_layer in layers_dict.items():
+            for idx, nd in enumerate(nodes_in_layer):
+                pm[nd] = idx
+        return pm
+
+    for sweep in range(num_sweeps):
+        if sweep % 2 == 0:
+            # Top-down sweep
+            for li_idx in range(1, len(layer_indices)):
+                li = layer_indices[li_idx]
+                prev_li = layer_indices[li_idx - 1]
+                pos = _pos_map(layers)
+                barycenters: Dict[str, float] = {}
+                for node in layers[li]:
+                    # Neighbors in the previous (upper) layer
+                    upper_neighbors = [
+                        p for p in predecessors.get(node, set())
+                        if p in pos and p in set(layers.get(prev_li, []))
+                    ]
+                    if upper_neighbors:
+                        barycenters[node] = sum(pos[p] for p in upper_neighbors) / len(upper_neighbors)
+                    else:
+                        barycenters[node] = float(pos.get(node, 0))
+                layers[li] = sorted(layers[li], key=lambda nd: barycenters.get(nd, 0.0))
+        else:
+            # Bottom-up sweep
+            for li_idx in range(len(layer_indices) - 2, -1, -1):
+                li = layer_indices[li_idx]
+                next_li = layer_indices[li_idx + 1]
+                pos = _pos_map(layers)
+                barycenters: Dict[str, float] = {}
+                for node in layers[li]:
+                    lower_neighbors = [
+                        s for s in successors.get(node, set())
+                        if s in pos and s in set(layers.get(next_li, []))
+                    ]
+                    if lower_neighbors:
+                        barycenters[node] = sum(pos[s] for s in lower_neighbors) / len(lower_neighbors)
+                    else:
+                        barycenters[node] = float(pos.get(node, 0))
+                layers[li] = sorted(layers[li], key=lambda nd: barycenters.get(nd, 0.0))
+
+    # Group inheritance siblings contiguously under their parent
+    # Build parent -> children mapping per layer
+    children_of: Dict[str, List[str]] = defaultdict(list)
+    for child, parent in parent_of.items():
+        children_of[parent].append(child)
+
+    for li in layer_indices:
+        current = layers[li]
+        # Find siblings in this layer
+        sibling_groups: Dict[str, List[str]] = defaultdict(list)
+        for node in current:
+            p = parent_of.get(node)
+            if p and p in children_of:
+                sibling_groups[p].append(node)
+
+        if not sibling_groups:
+            continue
+
+        # For each parent, ensure its children appear contiguously
+        pos = _pos_map(layers)
+        for parent, children in sibling_groups.items():
+            if len(children) < 2:
+                continue
+            # Find the parent's position in its layer to compute ideal center
+            parent_pos = pos.get(parent, 0)
+            # Remove children from current layer, reinsert contiguously
+            others = [n for n in current if n not in children]
+            # Determine insertion point: closest to parent_pos
+            best_insert = 0
+            if others:
+                # Insert near the position that centers children under parent
+                for i in range(len(others) + 1):
+                    best_insert = i
+                    # Heuristic: insert where avg position would be closest to parent_pos
+                    if i < len(others) and pos.get(others[i], 0) > parent_pos:
+                        break
+            # Sort children deterministically
+            children_sorted = sorted(children, key=lambda c: pos.get(c, 0))
+            new_layer = others[:best_insert] + children_sorted + others[best_insert:]
+            layers[li] = new_layer
+
+    return layers
+
+
+def _sugiyama_assign_coordinates(
+    layers: Dict[int, List[str]],
+    sizes: Dict[str, Tuple[int, int]],
+    parent_of: Dict[str, str],
+    owner_of: Dict[str, str],
+    default_size: Tuple[int, int],
+    successors: Optional[Dict[str, Set[str]]] = None,
+    predecessors: Optional[Dict[str, Set[str]]] = None,
+) -> Dict[str, Tuple[int, int]]:
+    """Phase 4 – Convert layer assignments to pixel coordinates.
+
+    Y is computed from cumulative layer heights + v_gap (50px).
+    X is sequential within each layer with h_gap (60px), then each
+    layer is centered.  Inheritance children are shifted to center
+    under their parent.  The entire layout is centered on origin (0, 0).
+    All coordinates are snapped to the grid.
+    """
+    if successors is None:
+        successors = {}
+    if predecessors is None:
+        predecessors = {}
+    if not layers:
+        return {}
+
+    h_gap = 60
+    v_gap = 50
+
+    layer_indices = sorted(layers.keys())
+
+    # Compute per-layer max height and cumulative Y offsets
+    layer_heights: Dict[int, int] = {}
+    for li in layer_indices:
+        max_h = 0
+        for node in layers[li]:
+            _, h = sizes.get(node, default_size)
+            max_h = max(max_h, h)
+        layer_heights[li] = max_h
+
+    # Y offset for each layer (cumulative)
+    layer_y: Dict[int, int] = {}
+    cum_y = 0
+    for li in layer_indices:
+        layer_y[li] = cum_y
+        cum_y += layer_heights[li] + v_gap
+
+    # Compute per-node X positions within each layer, then center the layer
+    positions: Dict[str, Tuple[int, int]] = {}
+    layer_widths: Dict[int, int] = {}
+
+    # Adaptive h_gap: reduce gap for wide layers (>4 nodes)
+    max_layer_size = max(len(layers[li]) for li in layer_indices) if layer_indices else 1
+
+    for li in layer_indices:
+        nodes = layers[li]
+        if not nodes:
+            continue
+        # Use smaller gap for wider layers
+        layer_h_gap = h_gap if len(nodes) <= 3 else max(30, h_gap - (len(nodes) - 3) * 8)
+        # Sequential X placement
+        x_positions: List[int] = []
+        cur_x = 0
+        for node in nodes:
+            w, _ = sizes.get(node, default_size)
+            x_positions.append(cur_x)
+            cur_x += w + layer_h_gap
+        # Total layer width
+        last_node = nodes[-1]
+        last_w, _ = sizes.get(last_node, default_size)
+        total_layer_width = x_positions[-1] + last_w if x_positions else 0
+        layer_widths[li] = total_layer_width
+
+        # Store raw x positions (before centering)
+        for idx, node in enumerate(nodes):
+            _, h = sizes.get(node, default_size)
+            # Center vertically within the layer row
+            y_offset = (layer_heights[li] - h) // 2
+            positions[node] = (x_positions[idx], layer_y[li] + y_offset)
+
+    # Center each layer horizontally: shift so each layer is centered at x=0
+    max_width = max(layer_widths.values()) if layer_widths else 0
+    for li in layer_indices:
+        lw = layer_widths.get(li, 0)
+        offset = (max_width - lw) // 2
+        for node in layers[li]:
+            old_x, old_y = positions[node]
+            positions[node] = (old_x + offset, old_y)
+
+    # Post-adjustment: shift inheritance children to center under parent
+    children_of: Dict[str, List[str]] = defaultdict(list)
+    for child, parent in parent_of.items():
+        if child in positions and parent in positions:
+            children_of[parent].append(child)
+
+    for parent, children in children_of.items():
+        if not children:
+            continue
+        parent_x, _ = positions[parent]
+        parent_w, _ = sizes.get(parent, default_size)
+        parent_center = parent_x + parent_w // 2
+
+        # Compute children span center
+        child_xs = [positions[c][0] for c in children]
+        child_ws = [sizes.get(c, default_size)[0] for c in children]
+        children_min_x = min(child_xs)
+        children_max_x = max(child_xs[i] + child_ws[i] for i in range(len(children)))
+        children_center = (children_min_x + children_max_x) // 2
+
+        shift = parent_center - children_center
+        if abs(shift) > 5:  # Only shift if meaningful
+            # Check that shifting won't cause overlap with other nodes in the same layer
+            # Get the layer for the children
+            child_layer = None
+            for li, nodes in layers.items():
+                if children[0] in nodes:
+                    child_layer = li
+                    break
+            if child_layer is not None:
+                layer_nodes = layers[child_layer]
+                child_set = set(children)
+                # Check boundaries: find non-child neighbors
+                can_shift = True
+                for c in children:
+                    new_cx = positions[c][0] + shift
+                    cw, _ = sizes.get(c, default_size)
+                    for other in layer_nodes:
+                        if other in child_set:
+                            continue
+                        other_x, _ = positions[other]
+                        other_w, _ = sizes.get(other, default_size)
+                        # Check overlap
+                        if new_cx < other_x + other_w + h_gap and new_cx + cw + h_gap > other_x:
+                            can_shift = False
+                            break
+                    if not can_shift:
+                        break
+                if can_shift:
+                    for c in children:
+                        old_x, old_y = positions[c]
+                        positions[c] = (old_x + shift, old_y)
+
+    # Similarly shift composition parts near their owner
+    parts_of: Dict[str, List[str]] = defaultdict(list)
+    for part, whole in owner_of.items():
+        if part in positions and whole in positions:
+            parts_of[whole].append(part)
+
+    for whole, parts in parts_of.items():
+        if not parts:
+            continue
+        whole_x, _ = positions[whole]
+        whole_w, _ = sizes.get(whole, default_size)
+        whole_center = whole_x + whole_w // 2
+
+        part_xs = [positions[p][0] for p in parts]
+        part_ws = [sizes.get(p, default_size)[0] for p in parts]
+        parts_min_x = min(part_xs)
+        parts_max_x = max(part_xs[i] + part_ws[i] for i in range(len(parts)))
+        parts_center = (parts_min_x + parts_max_x) // 2
+
+        shift = whole_center - parts_center
+        if abs(shift) > 5:
+            # Similar overlap check
+            part_layer = None
+            for li, nodes in layers.items():
+                if parts[0] in nodes:
+                    part_layer = li
+                    break
+            if part_layer is not None:
+                layer_nodes = layers[part_layer]
+                part_set = set(parts)
+                can_shift = True
+                for p in parts:
+                    new_px = positions[p][0] + shift
+                    pw, _ = sizes.get(p, default_size)
+                    for other in layer_nodes:
+                        if other in part_set:
+                            continue
+                        other_x, _ = positions[other]
+                        other_w, _ = sizes.get(other, default_size)
+                        if new_px < other_x + other_w + h_gap and new_px + pw + h_gap > other_x:
+                            can_shift = False
+                            break
+                    if not can_shift:
+                        break
+                if can_shift:
+                    for p in parts:
+                        old_x, old_y = positions[p]
+                        positions[p] = (old_x + shift, old_y)
+
+    # --- Post-processing: swap nodes within layers to reduce long edges ---
+    # Build adjacency from successors/predecessors for edge-distance check
+    import math as _math
+    all_edges: List[Tuple[str, str]] = []
+    all_adj: Dict[str, Set[str]] = defaultdict(set)
+    for n in positions:
+        for s in successors.get(n, set()):
+            if s in positions:
+                all_edges.append((n, s))
+                all_adj[n].add(s)
+                all_adj[s].add(n)
+        for p in predecessors.get(n, set()):
+            if p in positions:
+                all_adj[n].add(p)
+
+    def _edge_dist(a: str, b: str) -> float:
+        ax, ay = positions[a]
+        aw, ah = sizes.get(a, default_size)
+        bx, by = positions[b]
+        bw, bh = sizes.get(b, default_size)
+        return _math.sqrt((ax + aw/2 - bx - bw/2)**2 + (ay + ah/2 - by - bh/2)**2)
+
+    def _total_edge_cost() -> float:
+        return sum(_edge_dist(a, b) for a, b in all_edges)
+
+    # Try swapping pairs within the same layer to reduce total edge cost
+    for _iteration in range(3):
+        improved = False
+        for li in layer_indices:
+            nodes = layers[li]
+            if len(nodes) < 2:
+                continue
+            for i in range(len(nodes)):
+                for j in range(i + 1, len(nodes)):
+                    a, b = nodes[i], nodes[j]
+                    # Only consider swapping if at least one has a long edge
+                    a_max = max((_edge_dist(a, nb) for nb in all_adj.get(a, set()) if nb in positions), default=0)
+                    b_max = max((_edge_dist(b, nb) for nb in all_adj.get(b, set()) if nb in positions), default=0)
+                    if a_max < 350 and b_max < 350:
+                        continue
+                    # Swap positions
+                    old_a, old_b = positions[a], positions[b]
+                    # Swap X coordinates but keep Y (same layer)
+                    positions[a] = (old_b[0], old_a[1])
+                    positions[b] = (old_a[0], old_b[1])
+                    new_a_max = max((_edge_dist(a, nb) for nb in all_adj.get(a, set()) if nb in positions), default=0)
+                    new_b_max = max((_edge_dist(b, nb) for nb in all_adj.get(b, set()) if nb in positions), default=0)
+                    if max(new_a_max, new_b_max) < max(a_max, b_max):
+                        improved = True
+                        # Keep the swap - update layer order too
+                        nodes[i], nodes[j] = nodes[j], nodes[i]
+                    else:
+                        # Revert
+                        positions[a] = old_a
+                        positions[b] = old_b
+        if not improved:
+            break
+
+    # --- Final overlap resolution: ensure no two nodes in the same layer
+    #     overlap after all centering and swap post-processing. ---
+    for li in layer_indices:
+        layer_nodes = [n for n in layers[li] if n in positions]
+        if len(layer_nodes) < 2:
+            continue
+        layer_nodes.sort(key=lambda n: positions[n][0])
+        for idx in range(1, len(layer_nodes)):
+            prev_name = layer_nodes[idx - 1]
+            curr_name = layer_nodes[idx]
+            prev_x, prev_y = positions[prev_name]
+            curr_x, curr_y = positions[curr_name]
+            prev_w = sizes.get(prev_name, default_size)[0]
+            needed_x = prev_x + prev_w + h_gap
+            if curr_x < needed_x:
+                positions[curr_name] = (needed_x, curr_y)
+
+    # Center entire layout on origin (0, 0)
+    if positions:
+        all_xs = [x for x, _ in positions.values()]
+        all_ys = [y for _, y in positions.values()]
+        all_ws = [sizes.get(n, default_size)[0] for n in positions]
+        all_hs = [sizes.get(n, default_size)[1] for n in positions]
+
+        min_x = min(all_xs)
+        max_x = max(all_xs[i] + all_ws[i] for i in range(len(all_xs)))
+        min_y = min(all_ys)
+        max_y = max(all_ys[i] + all_hs[i] for i in range(len(all_ys)))
+
+        center_x = (min_x + max_x) // 2
+        center_y = (min_y + max_y) // 2
+
+        for node in list(positions.keys()):
+            old_x, old_y = positions[node]
+            positions[node] = (_snap(old_x - center_x), _snap(old_y - center_y))
+
+    return positions
+
+
 def layout_class_system(
     system_spec: Dict[str, Any],
     existing_model: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Assign positions to all classes in a complete class-diagram system spec.
 
-    Uses a **relationship-aware grid layout**: classes are assigned to
-    logical grid cells via BFS from the most-connected hub, so that
-    associated / composed / aggregated classes always occupy adjacent cells.
-    Inheritance hierarchies flow top-to-bottom (child below parent).
+    Uses a **Sugiyama-based hierarchical layout** algorithm with four phases:
 
-    The grid is then converted to pixel coordinates with per-column widths
-    and per-row heights, producing a clean, compact diagram with short edges.
+    0. **Graph construction** – directed edges from UML relationships
+       (inheritance parent→child, composition whole→part, association by
+       degree heuristic).
+    1. **Cycle removal** – iterative DFS reverses back-edges while
+       preferring high-priority edge directions.
+    2. **Layer assignment** – longest-path via Kahn's topological sort;
+       isolated nodes placed in the middle layer.
+    3. **Crossing minimization** – barycenter heuristic with alternating
+       sweeps; inheritance siblings grouped contiguously.
+    4. **Coordinate assignment** – per-layer heights/widths → pixel
+       positions, children centered under parents, layout centered on
+       origin, snapped to grid, overlaps resolved.
 
-    For large diagrams (>6 classes), the canvas bounds expand dynamically
-    and the layout is centered on the origin.
+    Inheritance parents are guaranteed to appear above their children
+    (smaller Y).  Composition owners appear above/beside their parts.
     """
     classes: List[Dict[str, Any]] = system_spec.get("classes", [])
     relationships: List[Dict[str, Any]] = system_spec.get("relationships", [])
     if not classes:
         return system_spec
 
-    # Dynamic canvas bounds for large diagrams
     n_classes = len(classes)
     canvas_bounds = _dynamic_canvas_bounds(n_classes)
-
     occupied = extract_occupied_rects(existing_model, "ClassDiagram")
 
-    # --- Build graph structure ---
+    # --- Build lookup ---
     class_names: Dict[str, Dict[str, Any]] = {
         c.get("className", ""): c for c in classes
     }
-    parent_of: Dict[str, str] = {}          # child -> parent (Inheritance)
-    owner_of: Dict[str, str] = {}           # part -> whole (Composition/Aggregation)
-    adjacency: Dict[str, Set[str]] = {name: set() for name in class_names}
-
-    for rel in relationships:
-        src = rel.get("source", "")
-        tgt = rel.get("target", "")
-        rtype = (rel.get("type") or "").lower()
-        if src in adjacency and tgt in adjacency:
-            adjacency[src].add(tgt)
-            adjacency[tgt].add(src)
-        if rtype in ("inheritance", "generalization"):
-            parent_of[src] = tgt
-        elif rtype in ("composition", "aggregation"):
-            # source is the whole, target is the part
-            owner_of[tgt] = src
+    all_nodes = list(class_names.keys())
 
     # --- Compute element sizes ---
     sizes: Dict[str, Tuple[int, int]] = {}
@@ -724,125 +1380,60 @@ def layout_class_system(
         name = c.get("className", "")
         sizes[name] = estimate_class_size(c)
 
-    # --- BFS placement order (most-connected node first) ---
-    placement_order: List[str] = []
-    remaining = set(class_names.keys())
-    while remaining:
-        root = max(remaining,
-                   key=lambda n: (len(adjacency.get(n, set())), n))
-        queue = [root]
-        bfs_seen: Set[str] = {root}
-        while queue:
-            current = queue.pop(0)
-            placement_order.append(current)
-            remaining.discard(current)
-            neighbors = sorted(
-                [n for n in adjacency.get(current, set())
-                 if n not in bfs_seen and n in remaining],
-                key=lambda n: (
-                    0 if parent_of.get(n) == current else 1,  # inheritance children first
-                    0 if owner_of.get(n) == current else 1,   # composition parts second
-                    -len(adjacency.get(n, set())),            # then by degree descending
-                    n,                                        # then alphabetical
-                ),
-            )
-            for n in neighbors:
-                bfs_seen.add(n)
-                queue.append(n)
+    # ================================================================
+    # Phase 0: Graph Construction
+    # ================================================================
+    (successors, predecessors, parent_of, owner_of,
+     adjacency, directed_edges) = _sugiyama_build_graph(class_names, relationships)
 
-    # --- Ensure owners are placed before dependents ---
-    # The BFS may place inheritance children or composition parts before
-    # their parent/owner when the parent has fewer connections.  Reorder
-    # so the adjacency-aware placement logic always fires correctly.
-    if parent_of or owner_of:
-        ordered_set = set(placement_order)
-        reordered: List[str] = []
-        placed_set: Set[str] = set()
+    # ================================================================
+    # Phase 1: Cycle Removal
+    # ================================================================
+    _sugiyama_remove_cycles(all_nodes, successors, predecessors, directed_edges)
 
-        def _ensure_placed(name: str) -> None:
-            if name in placed_set or name not in ordered_set:
-                return
-            # Ensure inheritance parent is placed first
-            p = parent_of.get(name)
-            if p and p in ordered_set:
-                _ensure_placed(p)
-            # Ensure composition owner is placed first
-            o = owner_of.get(name)
-            if o and o in ordered_set:
-                _ensure_placed(o)
-            placed_set.add(name)
-            reordered.append(name)
+    # ================================================================
+    # Phase 2: Layer Assignment
+    # ================================================================
+    node_layer = _sugiyama_assign_layers(all_nodes, successors, predecessors)
 
-        for name in placement_order:
-            _ensure_placed(name)
-        placement_order = reordered
+    # Build layers dict: layer_index -> [nodes]
+    layers: Dict[int, List[str]] = defaultdict(list)
+    for node, li in node_layer.items():
+        layers[li].append(node)
+    # Sort each layer for determinism
+    for li in layers:
+        layers[li] = sorted(layers[li])
 
-    # --- Assign logical grid cells ---
-    # For large diagrams, limit the number of columns to keep the grid readable
-    ideal_rows, ideal_cols = _ideal_grid_shape(n_classes)
-    grid: Dict[Tuple[int, int], str] = {}
-    name_to_grid: Dict[str, Tuple[int, int]] = {}
-
-    for name in placement_order:
-        if not grid:
-            cell = (0, 0)
-        else:
-            p_name = parent_of.get(name)
-            o_name = owner_of.get(name)
-            placed_neighbors = [
-                (n, name_to_grid[n])
-                for n in adjacency.get(name, set())
-                if n in name_to_grid
-            ]
-            if p_name and p_name in name_to_grid:
-                # Inheritance: child directly below parent
-                pr, pc = name_to_grid[p_name]
-                cell = _nearest_free_cell_below(grid, pr, pc)
-            elif o_name and o_name in name_to_grid:
-                # Composition/Aggregation: part adjacent to owner
-                # Prioritise the owner as the primary neighbour
-                owner_pos = name_to_grid[o_name]
-                owner_neighbors = [(o_name, owner_pos)]
-                cell = _best_neighbor_grid_cell(grid, owner_neighbors)
-            elif placed_neighbors:
-                cell = _best_neighbor_grid_cell(grid, placed_neighbors)
-            else:
-                # Isolated class — look ahead: if any of this class's
-                # unplaced neighbours connect to already-placed nodes,
-                # place near those placed nodes to keep future edges short.
-                anchor_cells: List[Tuple[int, int]] = []
-                for nb in adjacency.get(name, set()):
-                    if nb in name_to_grid:
-                        anchor_cells.append(name_to_grid[nb])
-                    else:
-                        # Check if *nb*'s neighbours are placed
-                        for nb2 in adjacency.get(nb, set()):
-                            if nb2 in name_to_grid:
-                                anchor_cells.append(name_to_grid[nb2])
-
-                if anchor_cells:
-                    avg_r = sum(r for r, _ in anchor_cells) / len(anchor_cells)
-                    avg_c = sum(c for _, c in anchor_cells) / len(anchor_cells)
-                    cell = _nearest_free_grid_cell(grid, round(avg_r), round(avg_c))
-                else:
-                    # Truly isolated — place near the grid centroid
-                    avg_r = sum(r for r, _ in grid.keys()) / len(grid)
-                    avg_c = sum(c for _, c in grid.keys()) / len(grid)
-                    cell = _nearest_free_grid_cell(grid, round(avg_r), round(avg_c))
-
-        grid[cell] = name
-        name_to_grid[name] = cell
-
-    # --- Compact the grid: remove empty rows and columns ---
-    grid, name_to_grid = _compact_grid(grid)
-
-    # --- Convert grid → pixel coordinates (shared helper) ---
-    edge_pairs = _build_edge_pairs(relationships, class_names)
-    _grid_to_pixel_positions(
-        grid, sizes, class_names, occupied, canvas_bounds,
-        default_size=(CLASS_WIDTH, CLASS_MIN_HEIGHT),
-        edge_pairs=edge_pairs, n_elements=n_classes,
+    # ================================================================
+    # Phase 3: Crossing Minimization
+    # ================================================================
+    layers = _sugiyama_minimize_crossings(
+        layers, successors, predecessors, parent_of, num_sweeps=8,
     )
+
+    # ================================================================
+    # Phase 4: Coordinate Assignment
+    # ================================================================
+    positions = _sugiyama_assign_coordinates(
+        layers, sizes, parent_of, owner_of,
+        default_size=(CLASS_WIDTH, CLASS_MIN_HEIGHT),
+        successors=successors,
+        predecessors=predecessors,
+    )
+
+    # --- Place elements, resolving overlaps with existing canvas elements ---
+    for name, (px, py) in positions.items():
+        spec = class_names.get(name)
+        if not spec:
+            continue
+        w, h = sizes.get(name, (CLASS_WIDTH, CLASS_MIN_HEIGHT))
+        x, y = _find_free_position(
+            w, h, occupied,
+            preferred_x=px, preferred_y=py,
+            canvas_bounds=canvas_bounds,
+        )
+        spec["position"] = {"x": x, "y": y}
+        occupied.append(Rect(x, y, w, h))
 
     # --- Compute relationship connection directions ---
     _compute_edge_directions(
@@ -875,8 +1466,19 @@ def layout_object_system(
 ) -> Dict[str, Any]:
     """Assign positions to all objects in a complete object diagram.
 
-    Uses link-aware grid placement with dynamic canvas expansion and
-    centering for large diagrams.
+    Uses a **Sugiyama-based hierarchical layout** algorithm with four phases:
+
+    0. **Graph construction** – directed edges from object links
+       (higher-degree node above lower-degree node, like associations
+       in class diagrams).
+    1. **Cycle removal** – iterative DFS reverses back-edges.
+    2. **Layer assignment** – longest-path via Kahn's topological sort;
+       isolated nodes placed in the middle layer.
+    3. **Crossing minimization** – barycenter heuristic with alternating
+       sweeps.
+    4. **Coordinate assignment** – per-layer heights/widths to pixel
+       positions, layout centered on origin, snapped to grid, overlaps
+       resolved.
     """
     objects: List[Dict[str, Any]] = system_spec.get("objects", [])
     if not objects:
@@ -885,83 +1487,111 @@ def layout_object_system(
     links: List[Dict[str, Any]] = system_spec.get("links", [])
     n_objects = len(objects)
     canvas_bounds = _dynamic_canvas_bounds(n_objects)
-
     occupied = extract_occupied_rects(existing_model, "ObjectDiagram")
 
-    # --- Build adjacency graph from links ---
+    # --- Build lookup ---
     obj_names: Dict[str, Dict[str, Any]] = {
         o.get("objectName", ""): o for o in objects
     }
-    adjacency: Dict[str, Set[str]] = {name: set() for name in obj_names}
-    for link in links:
-        src = link.get("source", "")
-        tgt = link.get("target", "")
-        if src in adjacency and tgt in adjacency:
-            adjacency[src].add(tgt)
-            adjacency[tgt].add(src)
+    all_nodes = list(obj_names.keys())
 
-    # --- Compute sizes ---
+    # --- Compute element sizes ---
     sizes: Dict[str, Tuple[int, int]] = {}
     for obj in objects:
         name = obj.get("objectName", "")
         sizes[name] = estimate_object_size(obj)
 
-    # --- BFS placement order (most-connected first) ---
-    placement_order: List[str] = []
-    remaining = set(obj_names.keys())
-    while remaining:
-        root = max(remaining, key=lambda n: (len(adjacency.get(n, set())), n))
-        queue = [root]
-        bfs_seen: Set[str] = {root}
-        while queue:
-            current = queue.pop(0)
-            placement_order.append(current)
-            remaining.discard(current)
-            for n in sorted(adjacency.get(current, set())):
-                if n not in bfs_seen and n in remaining:
-                    bfs_seen.add(n)
-                    queue.append(n)
+    # ================================================================
+    # Phase 0: Graph Construction (manual — all links are associations)
+    # ================================================================
+    successors: Dict[str, Set[str]] = defaultdict(set)
+    predecessors: Dict[str, Set[str]] = defaultdict(set)
+    adjacency: Dict[str, Set[str]] = {name: set() for name in obj_names}
+    directed_edges: List[Tuple[str, str, int]] = []
 
-    # --- Assign grid cells ---
-    ideal_rows, ideal_cols = _ideal_grid_shape(n_objects)
-    grid: Dict[Tuple[int, int], str] = {}
-    name_to_grid: Dict[str, Tuple[int, int]] = {}
+    # Compute degree for heuristic direction (higher-degree node on top)
+    degree: Dict[str, int] = defaultdict(int)
+    for link in links:
+        src = link.get("source", "")
+        tgt = link.get("target", "")
+        if src in obj_names and tgt in obj_names:
+            degree[src] += 1
+            degree[tgt] += 1
 
-    for name in placement_order:
-        if not grid:
-            cell = (0, 0)
+    for link in links:
+        src = link.get("source", "")
+        tgt = link.get("target", "")
+        if src not in obj_names or tgt not in obj_names:
+            continue
+        if src == tgt:
+            continue
+
+        adjacency[src].add(tgt)
+        adjacency[tgt].add(src)
+
+        # Higher-degree node above lower-degree node (priority 2 = association)
+        if degree[src] >= degree[tgt]:
+            successors[src].add(tgt)
+            predecessors[tgt].add(src)
+            directed_edges.append((src, tgt, 2))
         else:
-            placed_neighbors = [
-                (n, name_to_grid[n])
-                for n in adjacency.get(name, set())
-                if n in name_to_grid
-            ]
-            if placed_neighbors:
-                cell = _best_neighbor_grid_cell(grid, placed_neighbors)
-            else:
-                max_col = max(c for _, c in grid.keys()) if grid else -1
-                if max_col + 1 >= ideal_cols:
-                    max_row = max(r for r, _ in grid.keys()) if grid else 0
-                    cell = _nearest_free_grid_cell(grid, max_row + 1, 0)
-                else:
-                    cell = _nearest_free_grid_cell(grid, 0, max_col + 1)
+            successors[tgt].add(src)
+            predecessors[src].add(tgt)
+            directed_edges.append((tgt, src, 2))
 
-        grid[cell] = name
-        name_to_grid[name] = cell
+    # ================================================================
+    # Phase 1: Cycle Removal
+    # ================================================================
+    _sugiyama_remove_cycles(all_nodes, successors, predecessors, directed_edges)
 
-    if not grid:
-        return system_spec
+    # ================================================================
+    # Phase 2: Layer Assignment
+    # ================================================================
+    node_layer = _sugiyama_assign_layers(all_nodes, successors, predecessors)
 
-    # --- Compact the grid: remove empty rows and columns ---
-    grid, name_to_grid = _compact_grid(grid)
+    # Build layers dict: layer_index -> [nodes]
+    layers: Dict[int, List[str]] = defaultdict(list)
+    for node, li in node_layer.items():
+        layers[li].append(node)
+    # Sort each layer for determinism
+    for li in layers:
+        layers[li] = sorted(layers[li])
 
-    # --- Convert grid → pixel coordinates (shared helper) ---
-    edge_pairs = _build_edge_pairs(links, obj_names)
-    _grid_to_pixel_positions(
-        grid, sizes, obj_names, occupied, canvas_bounds,
-        default_size=(OBJECT_WIDTH, OBJECT_MIN_HEIGHT),
-        edge_pairs=edge_pairs, n_elements=n_objects,
+    # ================================================================
+    # Phase 3: Crossing Minimization
+    # ================================================================
+    # Object diagrams have no inheritance, so parent_of is empty
+    parent_of: Dict[str, str] = {}
+    layers = _sugiyama_minimize_crossings(
+        layers, successors, predecessors, parent_of, num_sweeps=8,
     )
+
+    # ================================================================
+    # Phase 4: Coordinate Assignment
+    # ================================================================
+    # Object diagrams have no inheritance or composition, so both
+    # parent_of and owner_of are empty dicts.
+    owner_of: Dict[str, str] = {}
+    positions = _sugiyama_assign_coordinates(
+        layers, sizes, parent_of, owner_of,
+        default_size=(OBJECT_WIDTH, OBJECT_MIN_HEIGHT),
+        successors=successors,
+        predecessors=predecessors,
+    )
+
+    # --- Place elements, resolving overlaps with existing canvas elements ---
+    for name, (px, py) in positions.items():
+        spec = obj_names.get(name)
+        if not spec:
+            continue
+        w, h = sizes.get(name, (OBJECT_WIDTH, OBJECT_MIN_HEIGHT))
+        x, y = _find_free_position(
+            w, h, occupied,
+            preferred_x=px, preferred_y=py,
+            canvas_bounds=canvas_bounds,
+        )
+        spec["position"] = {"x": x, "y": y}
+        occupied.append(Rect(x, y, w, h))
 
     # --- Compute link directions ---
     _compute_edge_directions(
@@ -992,44 +1622,43 @@ def layout_state_system(
     system_spec: Dict[str, Any],
     existing_model: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Assign positions to a complete state machine using transition-aware layout.
+    """Assign positions to a complete state machine using Sugiyama hierarchical layout.
 
-    Layout strategy:
-    - BFS from initial state following transitions to determine flow order
-    - Transition-aware grid: connected states placed in adjacent cells
-    - Initial state anchored at left, final state(s) at right
-    - Dynamic canvas expansion for large state machines
-    - Layout centered on origin for clean presentation
+    Uses the same four-phase Sugiyama algorithm as ``layout_class_system``,
+    adapted for state-machine semantics:
+
+    0. **Graph construction** -- directed edges follow transition direction
+       (source -> target).  Built manually from transitions (no UML
+       relationship heuristics needed).
+    1. **Cycle removal** -- iterative DFS reverses back-edges.
+    2. **Layer assignment** -- longest-path via Kahn's topological sort.
+       Initial states are forced to layer 0; final states are forced to
+       the maximum layer so the diagram flows top-to-bottom.
+    3. **Crossing minimization** -- barycenter heuristic with alternating
+       sweeps.
+    4. **Coordinate assignment** -- per-layer heights/widths to pixel
+       positions, layout centered on origin, snapped to grid, overlaps
+       resolved against existing canvas elements.
     """
     states: List[Dict[str, Any]] = system_spec.get("states", [])
     if not states:
         return system_spec
 
-    transitions = system_spec.get("transitions", [])
+    transitions: List[Dict[str, Any]] = system_spec.get("transitions", [])
     n_states = len(states)
     canvas_bounds = _dynamic_canvas_bounds(n_states)
 
     occupied = extract_occupied_rects(existing_model, "StateMachineDiagram")
 
-    # --- Build state lookup and adjacency graph ---
+    # --- Build state lookup ---
     state_names: Dict[str, Dict[str, Any]] = {
         s.get("stateName", ""): s for s in states
     }
-    adjacency: Dict[str, Set[str]] = {name: set() for name in state_names}
-    outgoing: Dict[str, List[str]] = {name: [] for name in state_names}
-
-    for t in transitions:
-        src = t.get("source", "")
-        tgt = t.get("target", "")
-        if src in adjacency and tgt in adjacency:
-            adjacency[src].add(tgt)
-            adjacency[tgt].add(src)
-            outgoing[src].append(tgt)
+    all_nodes = list(state_names.keys())
 
     # --- Categorize states ---
     initial_states: List[str] = []
     final_states: List[str] = []
-    regular_states: List[str] = []
     for s in states:
         name = s.get("stateName", "")
         stype = s.get("stateType", "regular")
@@ -1037,40 +1666,6 @@ def layout_state_system(
             initial_states.append(name)
         elif stype == "final":
             final_states.append(name)
-        else:
-            regular_states.append(name)
-
-    # --- BFS from initial state(s) to determine flow order ---
-    visited: List[str] = []
-    visited_set: Set[str] = set()
-    queue: List[str] = []
-
-    for name in initial_states:
-        if name and name not in visited_set:
-            queue.append(name)
-            visited.append(name)
-            visited_set.add(name)
-
-    while queue:
-        current = queue.pop(0)
-        # Sort outgoing targets: regular states before final, then alphabetical
-        targets = sorted(
-            [tgt for tgt in outgoing.get(current, []) if tgt not in visited_set],
-            key=lambda n: (
-                0 if state_names.get(n, {}).get("stateType", "regular") == "regular" else 1,
-                n,
-            ),
-        )
-        for tgt in targets:
-            visited.append(tgt)
-            visited_set.add(tgt)
-            queue.append(tgt)
-
-    # Add unreachable states
-    for name in regular_states + final_states:
-        if name and name not in visited_set:
-            visited.append(name)
-            visited_set.add(name)
 
     # --- Compute element sizes ---
     sizes: Dict[str, Tuple[int, int]] = {}
@@ -1078,55 +1673,89 @@ def layout_state_system(
         name = s.get("stateName", "")
         sizes[name] = estimate_state_size(s)
 
-    # --- Assign grid cells using transition-aware placement ---
-    ideal_rows, ideal_cols = _ideal_grid_shape(n_states)
-    grid: Dict[Tuple[int, int], str] = {}
-    name_to_grid: Dict[str, Tuple[int, int]] = {}
+    # ================================================================
+    # Phase 0: Graph Construction (from transitions)
+    # ================================================================
+    successors: Dict[str, Set[str]] = defaultdict(set)
+    predecessors: Dict[str, Set[str]] = defaultdict(set)
+    directed_edges: List[Tuple[str, str, int]] = []
 
-    for name in visited:
-        if not grid:
-            cell = (0, 0)
-        else:
-            stype = state_names.get(name, {}).get("stateType", "regular")
-            placed_neighbors = [
-                (n, name_to_grid[n])
-                for n in adjacency.get(name, set())
-                if n in name_to_grid
-            ]
+    for t in transitions:
+        src = t.get("source", "")
+        tgt = t.get("target", "")
+        if src in state_names and tgt in state_names and src != tgt:
+            successors[src].add(tgt)
+            predecessors[tgt].add(src)
+            directed_edges.append((src, tgt, 0))
 
-            if stype == "final" and placed_neighbors:
-                # Final states go to the right of their last connected state
-                last_neighbor = placed_neighbors[-1]
-                nr, nc = last_neighbor[1]
-                cell = _nearest_free_grid_cell(grid, nr, nc + 1)
-            elif placed_neighbors:
-                cell = _best_neighbor_grid_cell(grid, placed_neighbors)
-            else:
-                # Isolated state — append in next available slot
-                max_col = max(c for _, c in grid.keys()) if grid else -1
-                if max_col + 1 >= ideal_cols:
-                    # Wrap to next row
-                    max_row = max(r for r, _ in grid.keys()) if grid else 0
-                    cell = _nearest_free_grid_cell(grid, max_row + 1, 0)
-                else:
-                    cell = _nearest_free_grid_cell(grid, 0, max_col + 1)
+    # ================================================================
+    # Phase 1: Cycle Removal
+    # ================================================================
+    _sugiyama_remove_cycles(all_nodes, successors, predecessors, directed_edges)
 
-        grid[cell] = name
-        name_to_grid[name] = cell
+    # ================================================================
+    # Phase 2: Layer Assignment
+    # ================================================================
+    node_layer = _sugiyama_assign_layers(all_nodes, successors, predecessors)
 
-    if not grid:
-        return system_spec
+    # Force initial states to layer 0
+    for name in initial_states:
+        if name in node_layer:
+            node_layer[name] = 0
 
-    # --- Compact the grid: remove empty rows and columns ---
-    grid, name_to_grid = _compact_grid(grid)
+    # Force final states to the maximum layer
+    if final_states:
+        # Ensure final states are at least one layer below everything else
+        non_final_max = max(
+            (layer for n, layer in node_layer.items() if n not in final_states),
+            default=0,
+        )
+        final_layer = max(max(node_layer.values()) if node_layer else 0,
+                          non_final_max + 1)
+        for name in final_states:
+            if name in node_layer:
+                node_layer[name] = final_layer
 
-    # --- Convert grid → pixel coordinates (shared helper) ---
-    edge_pairs = _build_edge_pairs(transitions, state_names)
-    _grid_to_pixel_positions(
-        grid, sizes, state_names, occupied, canvas_bounds,
-        default_size=(STATE_WIDTH, STATE_MIN_HEIGHT),
-        edge_pairs=edge_pairs, n_elements=n_states,
+    # Build layers dict: layer_index -> [nodes]
+    layers: Dict[int, List[str]] = defaultdict(list)
+    for node, li in node_layer.items():
+        layers[li].append(node)
+    # Sort each layer for determinism
+    for li in layers:
+        layers[li] = sorted(layers[li])
+
+    # ================================================================
+    # Phase 3: Crossing Minimization
+    # ================================================================
+    # parent_of is empty for state machines (no inheritance hierarchy)
+    layers = _sugiyama_minimize_crossings(
+        layers, successors, predecessors, parent_of={}, num_sweeps=8,
     )
+
+    # ================================================================
+    # Phase 4: Coordinate Assignment
+    # ================================================================
+    # parent_of and owner_of are empty for state machines
+    positions = _sugiyama_assign_coordinates(
+        layers, sizes, parent_of={}, owner_of={},
+        default_size=(STATE_WIDTH, STATE_MIN_HEIGHT),
+        successors=successors,
+        predecessors=predecessors,
+    )
+
+    # --- Place elements, resolving overlaps with existing canvas elements ---
+    for name, (px, py) in positions.items():
+        spec = state_names.get(name)
+        if not spec:
+            continue
+        w, h = sizes.get(name, (STATE_WIDTH, STATE_MIN_HEIGHT))
+        x, y = _find_free_position(
+            w, h, occupied,
+            preferred_x=px, preferred_y=py,
+            canvas_bounds=canvas_bounds,
+        )
+        spec["position"] = {"x": x, "y": y}
+        occupied.append(Rect(x, y, w, h))
 
     # --- Compute transition directions ---
     _compute_edge_directions(
@@ -1166,168 +1795,287 @@ def layout_agent_system(
 ) -> Dict[str, Any]:
     """Assign positions to a complete agent diagram.
 
-    Layout strategy:
-    - Two-lane layout: intents in upper lane, states in lower lane
-    - Initial node anchored at left, centered vertically between lanes
-    - Dynamic canvas expansion for large agent diagrams
-    - Grid-based placement within each lane with centering
-    - Transition-aware: connected intents/states placed near each other
+    Uses a **two-band hybrid layout** designed specifically for agent
+    diagrams (cyclic state machines with a separate intent concept):
+
+    **Band 1 (top)** -- Initial node + all intents in a horizontal row.
+    **Band 2 (bottom)** -- States laid out with Sugiyama on the
+    state-to-state transition subgraph only.
+
+    This avoids the problems of pure Sugiyama on cyclic agent graphs
+    where intents get scattered among state layers.
     """
     states_list: List[Dict[str, Any]] = system_spec.get("states", [])
     intents_list: List[Dict[str, Any]] = system_spec.get("intents", [])
     initial_nodes: List[Dict[str, Any]] = system_spec.get("initialNodes", [])
+    agent_transitions: List[Dict[str, Any]] = system_spec.get("transitions", [])
+    has_initial = bool(system_spec.get("hasInitialNode", False))
 
     n_total = len(states_list) + len(intents_list) + len(initial_nodes)
-    canvas_bounds = _dynamic_canvas_bounds(n_total)
-    c_min_x, c_max_x, c_min_y, c_max_y = canvas_bounds
+    if has_initial:
+        n_total += 1
+    if n_total == 0:
+        return system_spec
 
+    canvas_bounds = _dynamic_canvas_bounds(n_total)
     occupied = extract_occupied_rects(existing_model, "AgentDiagram")
 
-    # --- Compute sizes for all elements ---
-    intent_sizes: List[Tuple[int, int]] = []
-    for intent in intents_list:
-        intent_sizes.append(estimate_agent_element_size({"type": "intent", **intent}))
-
-    state_sizes: List[Tuple[int, int]] = []
-    for state in states_list:
-        state_sizes.append(estimate_agent_element_size({"type": "state", **state}))
-
-    # --- Calculate lane dimensions ---
-    # Determine how many columns per lane
-    n_intents = len(intents_list)
-    n_states = len(states_list)
-    _, intent_cols = _ideal_grid_shape(max(n_intents, 1))
-    _, state_cols = _ideal_grid_shape(max(n_states, 1))
-
-    h_gap = 60   # compact horizontal gap
-    v_gap = 50   # compact vertical gap
-    lane_gap = 60  # vertical gap between intent lane and state lane
-
-    # --- Calculate intent lane dimensions ---
-    intent_row_heights: List[int] = []
-    intent_col_widths: List[int] = []
-    if n_intents > 0:
-        intent_rows_count = max(1, (n_intents + intent_cols - 1) // intent_cols)
-        for row_idx in range(intent_rows_count):
-            row_start = row_idx * intent_cols
-            row_end = min(row_start + intent_cols, n_intents)
-            row_max_h = max((intent_sizes[i][1] for i in range(row_start, row_end)), default=AGENT_NODE_MIN_HEIGHT)
-            intent_row_heights.append(row_max_h)
-        for col_idx in range(min(intent_cols, n_intents)):
-            col_max_w = max(
-                (intent_sizes[row_idx * intent_cols + col_idx][0]
-                 for row_idx in range((n_intents + intent_cols - 1) // intent_cols)
-                 if row_idx * intent_cols + col_idx < n_intents),
-                default=AGENT_INTENT_WIDTH,
-            )
-            intent_col_widths.append(col_max_w)
-
-    intent_lane_width = sum(intent_col_widths) + h_gap * max(0, len(intent_col_widths) - 1) if intent_col_widths else 0
-    intent_lane_height = sum(intent_row_heights) + v_gap * max(0, len(intent_row_heights) - 1) if intent_row_heights else 0
-
-    # --- Calculate state lane dimensions ---
-    state_row_heights: List[int] = []
-    state_col_widths: List[int] = []
-    if n_states > 0:
-        state_rows_count = max(1, (n_states + state_cols - 1) // state_cols)
-        for row_idx in range(state_rows_count):
-            row_start = row_idx * state_cols
-            row_end = min(row_start + state_cols, n_states)
-            row_max_h = max((state_sizes[i][1] for i in range(row_start, row_end)), default=AGENT_NODE_MIN_HEIGHT)
-            state_row_heights.append(row_max_h)
-        for col_idx in range(min(state_cols, n_states)):
-            col_max_w = max(
-                (state_sizes[row_idx * state_cols + col_idx][0]
-                 for row_idx in range((n_states + state_cols - 1) // state_cols)
-                 if row_idx * state_cols + col_idx < n_states),
-                default=AGENT_STATE_WIDTH,
-            )
-            state_col_widths.append(col_max_w)
-
-    state_lane_width = sum(state_col_widths) + h_gap * max(0, len(state_col_widths) - 1) if state_col_widths else 0
-    state_lane_height = sum(state_row_heights) + v_gap * max(0, len(state_row_heights) - 1) if state_row_heights else 0
-
-    # --- Compute total layout size and center ---
-    initial_col_width = INITIAL_NODE_SIZE + h_gap if initial_nodes else 0
-    total_width = max(intent_lane_width, state_lane_width) + initial_col_width
-    total_height = intent_lane_height + lane_gap + state_lane_height
-
-    origin_x = _snap(-total_width // 2)
-    origin_y = _snap(-total_height // 2)
-
-    # --- Place initial node(s) ---
-    initial_x = origin_x
-    initial_center_y = _snap(origin_y + total_height // 2 - INITIAL_NODE_SIZE // 2)
-    for node in initial_nodes:
-        w, h = INITIAL_NODE_SIZE, INITIAL_NODE_SIZE
-        x, y = _find_free_position(w, h, occupied,
-                                    preferred_x=initial_x,
-                                    preferred_y=initial_center_y,
-                                    canvas_bounds=canvas_bounds)
-        node["position"] = {"x": x, "y": y}
-        occupied.append(Rect(x, y, w, h))
-
-    content_start_x = origin_x + initial_col_width
-
-    # --- Place intents in upper lane (grid) ---
-    intent_start_y = origin_y
-    for idx, intent in enumerate(intents_list):
-        row_idx = idx // intent_cols
-        col_idx = idx % intent_cols
-        w, h = intent_sizes[idx]
-
-        px = content_start_x + sum(intent_col_widths[c] + h_gap for c in range(col_idx) if c < len(intent_col_widths))
-        py = intent_start_y + sum(intent_row_heights[r] + v_gap for r in range(row_idx) if r < len(intent_row_heights))
-        # Center horizontally within cell
-        if col_idx < len(intent_col_widths):
-            px += (intent_col_widths[col_idx] - w) // 2
-
-        x, y = _find_free_position(w, h, occupied,
-                                    preferred_x=_snap(px),
-                                    preferred_y=_snap(py),
-                                    canvas_bounds=canvas_bounds)
-        intent["position"] = {"x": x, "y": y}
-        occupied.append(Rect(x, y, w, h))
-
-    # --- Place states in lower lane (grid) ---
-    state_start_y = origin_y + intent_lane_height + lane_gap
-    for idx, state in enumerate(states_list):
-        row_idx = idx // state_cols
-        col_idx = idx % state_cols
-        w, h = state_sizes[idx]
-
-        px = content_start_x + sum(state_col_widths[c] + h_gap for c in range(col_idx) if c < len(state_col_widths))
-        py = state_start_y + sum(state_row_heights[r] + v_gap for r in range(row_idx) if r < len(state_row_heights))
-        if col_idx < len(state_col_widths):
-            px += (state_col_widths[col_idx] - w) // 2
-
-        x, y = _find_free_position(w, h, occupied,
-                                    preferred_x=_snap(px),
-                                    preferred_y=_snap(py),
-                                    canvas_bounds=canvas_bounds)
-        state["position"] = {"x": x, "y": y}
-        occupied.append(Rect(x, y, w, h))
-
-    # --- Compute transition directions ---
-    agent_transitions: List[Dict[str, Any]] = system_spec.get("transitions", [])
-    all_agent_elements: Dict[str, Dict[str, Any]] = {}
+    # --- Build unified lookup: name -> spec dict for every element ---
+    element_lookup: Dict[str, Dict[str, Any]] = {}
     for node in initial_nodes:
         name = node.get("name", node.get("stateName", ""))
         if name:
-            all_agent_elements[name] = node
+            element_lookup[name] = node
     for intent in intents_list:
         name = intent.get("intentName", intent.get("name", ""))
         if name:
-            all_agent_elements[name] = intent
+            element_lookup[name] = intent
     for state in states_list:
         name = state.get("stateName", state.get("name", ""))
         if name:
-            all_agent_elements[name] = state
+            element_lookup[name] = state
 
+    # If hasInitialNode is set and "initial" is referenced in transitions
+    # but not in the element lookup, create a synthetic initial node.
+    # Store it in system_spec so the position propagates to the response.
+    if has_initial and "initial" not in element_lookup:
+        if not isinstance(system_spec.get("initialNode"), dict):
+            system_spec["initialNode"] = {}
+        system_spec["initialNode"]["type"] = "initial"
+        element_lookup["initial"] = system_spec["initialNode"]
+
+    all_nodes = list(element_lookup.keys())
+    if not all_nodes:
+        return system_spec
+
+    # --- Compute sizes for all elements ---
+    sizes: Dict[str, Tuple[int, int]] = {}
+    intent_name_set: Set[str] = set()
+    for intent in intents_list:
+        iname = intent.get("intentName", intent.get("name", ""))
+        if iname:
+            intent_name_set.add(iname)
+
+    for name, spec in element_lookup.items():
+        etype = spec.get("type", "")
+        if etype == "initial" or name == "initial":
+            sizes[name] = (INITIAL_NODE_SIZE, INITIAL_NODE_SIZE)
+        elif name in intent_name_set:
+            sizes[name] = estimate_agent_element_size({"type": "intent", **spec})
+        else:
+            sizes[name] = estimate_agent_element_size({"type": "state", **spec})
+
+    # --- Separate elements into bands ---
+    initial_name: Optional[str] = None
+    if has_initial and "initial" in element_lookup:
+        initial_name = "initial"
+
+    intent_names_ordered: List[str] = []
+    for intent in intents_list:
+        iname = intent.get("intentName", intent.get("name", ""))
+        if iname and iname in element_lookup:
+            intent_names_ordered.append(iname)
+
+    state_names: List[str] = []
+    for state in states_list:
+        sname = state.get("stateName", state.get("name", ""))
+        if sname and sname in element_lookup:
+            state_names.append(sname)
+
+    # ================================================================
+    # Band 1: Intent band — initial node + intents in a horizontal row
+    # ================================================================
+    intent_h_gap = 60
+    band1_positions: Dict[str, Tuple[int, int]] = {}
+    band1_max_h = 0
+
+    # Place initial node at (0, 0) — it will be on its own row or
+    # at the start of the first intent row if there are few intents.
+    intent_v_gap = 50
+    max_intents_per_row = 4
+    cur_x = 0
+    cur_y = 0
+    row_max_h = 0
+    col_in_row = 0
+
+    if initial_name is not None:
+        iw, ih = sizes[initial_name]
+        band1_positions[initial_name] = (cur_x, cur_y)
+        row_max_h = max(row_max_h, ih)
+        cur_x += iw + intent_h_gap
+        col_in_row += 1
+
+    # Place intents in rows of max_intents_per_row
+    for iname in intent_names_ordered:
+        if col_in_row >= max_intents_per_row:
+            # Wrap to next row
+            cur_y += row_max_h + intent_v_gap
+            cur_x = 0
+            row_max_h = 0
+            col_in_row = 0
+        iw, ih = sizes[iname]
+        band1_positions[iname] = (cur_x, cur_y)
+        row_max_h = max(row_max_h, ih)
+        cur_x += iw + intent_h_gap
+        col_in_row += 1
+
+    band1_max_h = cur_y + row_max_h
+
+    # ================================================================
+    # Band 2: State band — Sugiyama on state-to-state transitions only
+    # ================================================================
+    band2_v_gap = 80  # gap between intent band and state band
+
+    # Find the initial state (target of the initial -> state transition)
+    initial_state_name: Optional[str] = None
+    for t in agent_transitions:
+        src = t.get("source", "")
+        tgt = t.get("target", "")
+        if src == "initial" and tgt in element_lookup and tgt not in intent_name_set:
+            initial_state_name = tgt
+            break
+
+    band2_positions: Dict[str, Tuple[int, int]] = {}
+    if state_names:
+        # Build state-only subgraph (skip transitions involving "initial",
+        # skip self-loops, skip intents)
+        state_set = set(state_names)
+        state_successors: Dict[str, Set[str]] = defaultdict(set)
+        state_predecessors: Dict[str, Set[str]] = defaultdict(set)
+        state_edges: List[Tuple[str, str, int]] = []
+
+        for t in agent_transitions:
+            src = t.get("source", "")
+            tgt = t.get("target", "")
+            if src == tgt:
+                continue  # skip self-loops
+            if src == "initial" or tgt == "initial":
+                continue  # skip initial transitions
+            if src not in state_set or tgt not in state_set:
+                continue  # skip edges involving intents
+            state_successors[src].add(tgt)
+            state_predecessors[tgt].add(src)
+            state_edges.append((src, tgt, 1))
+
+        # Run Sugiyama phases on the state subgraph
+        _sugiyama_remove_cycles(
+            state_names, state_successors, state_predecessors, state_edges,
+        )
+
+        state_layer = _sugiyama_assign_layers(
+            state_names, state_successors, state_predecessors,
+        )
+
+        # If there is an initial state, force it to layer 0
+        if initial_state_name and initial_state_name in state_layer:
+            init_layer = state_layer[initial_state_name]
+            if init_layer != 0:
+                # Shift all layers so the initial state is at layer 0
+                for sn in state_layer:
+                    state_layer[sn] -= init_layer
+
+        # Build layers dict
+        state_layers: Dict[int, List[str]] = defaultdict(list)
+        for sname, li in state_layer.items():
+            state_layers[li].append(sname)
+        for li in state_layers:
+            state_layers[li] = sorted(state_layers[li])
+
+        # Crossing minimization
+        state_layers = _sugiyama_minimize_crossings(
+            state_layers, state_successors, state_predecessors,
+            parent_of={}, num_sweeps=8,
+        )
+
+        # Coordinate assignment
+        default_state_size = (AGENT_STATE_WIDTH, AGENT_NODE_MIN_HEIGHT)
+        band2_positions = _sugiyama_assign_coordinates(
+            state_layers, sizes, parent_of={}, owner_of={},
+            default_size=default_state_size,
+            successors=state_successors,
+            predecessors=state_predecessors,
+        )
+
+        # Resolve within-layer overlaps caused by swap optimization or
+        # centering.  Push overlapping nodes apart horizontally.
+        min_gap = 60
+        for li in sorted(state_layers.keys()):
+            layer_nodes = [n for n in state_layers[li] if n in band2_positions]
+            if len(layer_nodes) < 2:
+                continue
+            # Sort by x position
+            layer_nodes.sort(key=lambda n: band2_positions[n][0])
+            for idx in range(1, len(layer_nodes)):
+                prev = layer_nodes[idx - 1]
+                curr = layer_nodes[idx]
+                prev_x, prev_y = band2_positions[prev]
+                curr_x, curr_y = band2_positions[curr]
+                prev_w = sizes.get(prev, default_state_size)[0]
+                needed_x = prev_x + prev_w + min_gap
+                if curr_x < needed_x:
+                    band2_positions[curr] = (needed_x, curr_y)
+
+    # ================================================================
+    # Combine bands: place band 2 below band 1 with absolute offsets
+    # ================================================================
+    all_positions: Dict[str, Tuple[int, int]] = {}
+
+    # Band 1 is already positioned starting at y=0.
+    all_positions.update(band1_positions)
+
+    # Band 2: normalize to start at y = band1_max_h + band2_v_gap
+    if band2_positions:
+        b2_min_x = min(x for x, _ in band2_positions.values())
+        b2_min_y = min(y for _, y in band2_positions.values())
+        state_y_start = band1_max_h + band2_v_gap
+        for sname in band2_positions:
+            sx, sy = band2_positions[sname]
+            # Shift so band 2 top-left starts at (0, state_y_start)
+            all_positions[sname] = (sx - b2_min_x, sy - b2_min_y + state_y_start)
+
+    # Center horizontally only — preserve vertical band separation.
+    # Vertical centering would pull states up into the intent band.
+    if all_positions:
+        pos_names = list(all_positions.keys())
+        ds = (AGENT_STATE_WIDTH, AGENT_NODE_MIN_HEIGHT)
+        all_xs = [all_positions[n][0] for n in pos_names]
+        all_ws = [sizes.get(n, ds)[0] for n in pos_names]
+
+        min_x = min(all_xs)
+        max_x = max(all_xs[i] + all_ws[i] for i in range(len(all_xs)))
+        cx = (min_x + max_x) // 2
+
+        for name in pos_names:
+            ox, oy = all_positions[name]
+            all_positions[name] = (_snap(ox - cx), _snap(oy))
+
+    # --- Place elements ---
+    # Use computed positions directly (they're already non-overlapping).
+    # Only fall back to _find_free_position if there are pre-existing
+    # canvas elements that might collide.
+    default_size = (AGENT_STATE_WIDTH, AGENT_NODE_MIN_HEIGHT)
+    has_preexisting = len(occupied) > 0
+    for name, (px, py) in all_positions.items():
+        spec = element_lookup.get(name)
+        if not spec:
+            continue
+        w, h = sizes.get(name, default_size)
+        if has_preexisting:
+            x, y = _find_free_position(
+                w, h, occupied,
+                preferred_x=px, preferred_y=py,
+                canvas_bounds=canvas_bounds,
+            )
+        else:
+            x, y = px, py
+        spec["position"] = {"x": x, "y": y}
+        occupied.append(Rect(x, y, w, h))
+
+    # --- Compute transition directions ---
     _compute_edge_directions(
         agent_transitions,
-        {name: (spec.get("position", {}), estimate_agent_element_size(spec))
-         for name, spec in all_agent_elements.items()},
+        {name: (spec.get("position", {}), sizes.get(name, default_size))
+         for name, spec in element_lookup.items()},
     )
 
     return system_spec
