@@ -535,7 +535,7 @@ class BaseDiagramHandler(ABC):
         Args:
             prompt: The user/request prompt.
             response_schema: Pydantic model class defining the expected output.
-            max_retries: Number of retry attempts (default 2).
+            max_retries: Number of retry attempts (default 1).
             use_cache: Check/populate prompt cache (default True).
             system_prompt: Optional system instruction prepended to messages.
             temperature: LLM temperature (default 0.2).
