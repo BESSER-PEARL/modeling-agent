@@ -1,14 +1,14 @@
 Configuration
 =============
 
-The Modeling Agent is configured via ``config.ini`` at the repository root.
-Copy ``config.ini.example`` to ``config.ini`` and edit the values.
+The Modeling Agent is configured via ``config.yaml`` at the repository root.
+Copy ``config.yaml.example`` to ``config.yaml`` and edit the values.
 
 .. contents:: On this page
    :local:
    :depth: 2
 
-config.ini Reference
+config.yaml Reference
 --------------------
 
 WebSocket Platform
@@ -201,6 +201,6 @@ Security Notes
 --------------
 
 - **Never** commit real API keys to the repository.
-- Use ``config.ini.example`` and ``.env.example`` as templates.
-- The ``config.ini`` file is listed in ``.gitignore``.
+- Use ``config.yaml.example`` and ``.env.example`` as templates.
+- The ``config.yaml`` file is listed in ``.gitignore``.
 - In production, use environment variables or secrets management.

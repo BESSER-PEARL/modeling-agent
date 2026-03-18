@@ -69,13 +69,13 @@ Install
 Configuration
 -------------
 
-1. Copy ``config.ini.example`` to ``config.ini``.
+1. Copy ``config.yaml.example`` to ``config.yaml``.
 2. Set ``nlp.openai.api_key`` with your OpenAI key.
 
 .. code-block:: bash
 
-   copy config.ini.example config.ini   # Windows
-   cp config.ini.example config.ini     # Linux/macOS
+   copy config.yaml.example config.yaml   # Windows
+   cp config.yaml.example config.yaml     # Linux/macOS
 
 See :doc:`configuration` for all available settings.
 
@@ -86,7 +86,7 @@ Run
 
    python modeling_agent.py
 
-Default host/port are configured in ``config.ini`` under ``[websocket_platform]``.
+Default host/port are configured in ``config.yaml`` under ``[websocket_platform]``.
 The agent listens on ``ws://0.0.0.0:8765`` by default.
 
 Validation

@@ -26,12 +26,12 @@ EXPOSE 8765
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app/src:/app
 
-# Create entrypoint script that generates config.ini from environment variables
+# Create entrypoint script that generates config.yaml from environment variables
 RUN echo '#!/bin/bash\n\
 set -e\n\
 \n\
-# Generate config.ini from environment variables\n\
-cat > /app/config.ini << EOF\n\
+# Generate config.yaml from environment variables\n\
+cat > /app/config.yaml << EOF\n\
 [agent]\n\
 name = uml_modeling_agent\n\
 \n\
@@ -43,8 +43,8 @@ host = 0.0.0.0\n\
 port = 8765\n\
 EOF\n\
 \n\
-echo "✅ config.ini created successfully"\n\
-cat /app/config.ini\n\
+echo "✅ config.yaml created successfully"\n\
+cat /app/config.yaml\n\
 \n\
 # CRITICAL FIX: Patch BESSER framework to use 0.0.0.0 instead of localhost default\n\
 echo "🔧 Patching BESSER framework WebSocket host default..."\n\

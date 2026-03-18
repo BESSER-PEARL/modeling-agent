@@ -34,4 +34,4 @@ tests/
 *.test.py
 
 # Config (will be created at runtime)
-config.ini
+config.yaml

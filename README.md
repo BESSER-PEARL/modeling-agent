@@ -90,12 +90,12 @@ pip install -r requirements.txt
 
 ### Configure
 
-1. Copy `config.ini.example` to `config.ini`.
-2. Set `nlp.openai.api_key` in `config.ini`.
+1. Copy `config.yaml.example` to `config.yaml`.
+2. Set `nlp.openai.api_key` in `config.yaml`.
 3. Optional: copy `.env.example` to `.env` for local tooling.
 
 ```bash
-copy config.ini.example config.ini
+copy config.yaml.example config.yaml
 ```
 
 ### Run
@@ -104,7 +104,7 @@ copy config.ini.example config.ini
 python modeling_agent.py
 ```
 
-Default WebSocket host/port are configured in `config.ini` (`websocket_platform`).
+Default WebSocket host/port are configured in `config.yaml` (`websocket_platform`).
 
 ## Testing
 
@@ -138,4 +138,4 @@ make html
 ## Security
 
 - Never commit real API keys.
-- Use `config.ini.example` and `.env.example` as templates.
+- Use `config.yaml.example` and `.env.example` as templates.

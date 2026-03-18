@@ -65,7 +65,7 @@ The modeling agent is a **WebSocket-based conversational AI agent** that enables
 ```
 modeling-agent/
 ├── modeling_agent.py                 # Main entry point
-├── config.ini                        # Runtime configuration
+├── config.yaml                        # Runtime configuration
 ├── requirements.txt                  # Python dependencies
 ├── .readthedocs.yaml                 # Read the Docs build config
 ├── .dockerignore                     # Docker ignore rules
@@ -269,7 +269,7 @@ modeling-agent/
 
 ## 4. Configuration and Entry Point
 
-### `config.ini`
+### `config.yaml`
 
 ```ini
 [websocket_platform]
@@ -1259,8 +1259,8 @@ Exponential backoff with jitter:
 python3.11 -m venv venv
 source venv/bin/activate  # Linux/Mac
 pip install -r requirements.txt
-cp config.ini.example config.ini
-# Edit config.ini with your OpenAI API key
+cp config.yaml.example config.yaml
+# Edit config.yaml with your OpenAI API key
 python modeling_agent.py
 ```
 

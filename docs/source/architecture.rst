@@ -151,7 +151,7 @@ Shared Runtime Context
      - Factory for all 6 diagram handlers
    * - ``openai_api_key``
      - ``str``
-     - API key from config.ini
+     - API key from config.yaml
 
 All modules import these at call-time (not import-time) to ensure they are
 populated when user messages arrive.
