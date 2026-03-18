@@ -222,6 +222,16 @@ def execute_model_operation(
         )
         return None
 
+    # Send progress feedback so the user isn't staring at a blank screen
+    diagram_info = get_diagram_type_info(target_diagram_type)
+    diagram_label = diagram_info.get("name", target_diagram_type)
+    if operation_mode == "complete_system":
+        reply_progress(session, f"Thinking about your {diagram_label} design...")
+    elif operation_mode == "modify_model":
+        reply_progress(session, f"Analyzing changes...")
+    elif operation_mode == "single_element":
+        reply_progress(session, f"Creating element...")
+
     target_model = resolve_target_model(request, target_diagram_type)
 
     # Inject conversation context for multi-turn awareness
@@ -267,6 +277,37 @@ def execute_model_operation(
 
     logger.debug(f"[ModelOp] Modeling prompt ({len(modeling_prompt)} chars): {modeling_prompt[:300]!r}")
     logger.debug(f"[ModelOp] Target model present: {target_model is not None}, type: {type(target_model).__name__}")
+
+    # Timed progress updates while the handler runs (the slow part).
+    # A background thread sends messages at intervals so the user sees
+    # activity instead of staring at a frozen screen.
+    import threading
+
+    _progress_stop = threading.Event()
+
+    def _timed_progress():
+        steps = []
+        if operation_mode == "complete_system":
+            steps = [
+                (0, "Generating classes and relationships..."),
+                (12, "Building attributes and methods..."),
+                (24, "Finalizing relationships and layout..."),
+            ]
+        elif operation_mode == "modify_model":
+            steps = [
+                (0, "Applying changes..."),
+                (5, "Updating model..."),
+            ]
+        for delay, msg in steps:
+            if _progress_stop.wait(timeout=delay if delay > 0 else 0.01):
+                return
+            reply_progress(session, msg)
+
+    if operation_mode in ("complete_system", "modify_model"):
+        progress_thread = threading.Thread(target=_timed_progress, daemon=True)
+        progress_thread.start()
+    else:
+        progress_thread = None
 
     if operation_mode == "single_element":
         if target_diagram_type == "ObjectDiagram":
@@ -345,6 +386,11 @@ def execute_model_operation(
                 existing_model=target_model,
                 class_metadata=gui_class_metadata,
             )
+
+    # Stop the progress thread now that the handler is done
+    _progress_stop.set()
+    if progress_thread is not None:
+        progress_thread.join(timeout=1)
 
     logger.info(
         f"[ModelOp] Handler result: action={result.get('action') if isinstance(result, dict) else 'N/A'}, "
