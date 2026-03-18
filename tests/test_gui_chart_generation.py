@@ -12,8 +12,8 @@ import json
 import pytest
 from typing import Any, Dict, List
 
-from utilities.model_helpers import extract_class_metadata, format_class_metadata_for_prompt
-from diagram_handlers.gui_nocode_diagram_handler import (
+from utilities.class_metadata import extract_class_metadata, format_class_metadata_for_prompt
+from diagram_handlers.types.gui_nocode_diagram_handler import (
     _build_section_component,
     _chart_component,
     _table_component,

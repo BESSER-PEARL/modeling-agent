@@ -241,11 +241,6 @@ register_all(
 )
 
 
-# ── Backward-compatible re-export for tests ──────────────────────────────
-# ``test_model_helpers.py`` imports ``_resolve_class_diagram`` from here.
-from utilities.model_resolution import resolve_class_diagram as _resolve_class_diagram  # noqa: E402, F401
-
-
 # ── Session memory cleanup ───────────────────────────────────────────────
 def _start_memory_cleanup_timer():
     def _cleanup_loop():

@@ -20,7 +20,7 @@ from ..core.base_handler import (
     SYSTEM_STATE_OPTIONAL,
 )
 from schemas import SingleStateSpec as SingleStateSchema, SystemStateMachineSpec, StateMachineModificationResponse
-from utilities.model_helpers import detailed_model_summary
+from utilities.model_context import detailed_model_summary
 from state_patterns import get_state_pattern_hint
 
 logger = logging.getLogger(__name__)

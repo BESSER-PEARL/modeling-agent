@@ -165,7 +165,7 @@ def init_stt(agent: Agent) -> OpenAISpeech2Text:
 
 def init_diagram_factory(gpt: LLMOpenAI):
     """Create and return the :class:`DiagramHandlerFactory`."""
-    from diagram_handlers.factory import DiagramHandlerFactory
+    from diagram_handlers.registry.factory import DiagramHandlerFactory
 
     factory = DiagramHandlerFactory(gpt)
     logger.info(f"Diagram handlers initialized: {', '.join(factory.get_supported_types())}")

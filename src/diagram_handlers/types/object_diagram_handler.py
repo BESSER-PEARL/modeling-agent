@@ -15,7 +15,7 @@ from ..core.base_handler import (
     SYSTEM_OBJECT_OPTIONAL,
 )
 from schemas import SingleObjectSpec, SystemObjectSpec, ObjectModificationResponse
-from utilities.model_helpers import detailed_model_summary
+from utilities.model_context import detailed_model_summary
 
 logger = logging.getLogger(__name__)
 

@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
 from schemas import SingleGUIElementSpec, GUIModificationSpec
-from utilities.model_helpers import format_class_metadata_for_prompt
+from utilities.class_metadata import format_class_metadata_for_prompt
 
 logger = logging.getLogger(__name__)
 

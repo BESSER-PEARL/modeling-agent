@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from besser.agent.core.agent import Agent
     from besser.agent.nlp.llm.llm_openai_api import LLMOpenAI
     from besser.agent.nlp.rag.rag import RAG
-    from src.diagram_handlers.factory import DiagramHandlerFactory
+    from src.diagram_handlers.registry.factory import DiagramHandlerFactory
 
 # Populated by modeling_agent.py during agent bootstrap.
 agent: "Agent | None" = None

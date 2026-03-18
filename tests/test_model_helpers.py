@@ -1,18 +1,19 @@
-"""Tests for model helper utilities (utilities/model_helpers.py)."""
+"""Tests for model helper utilities."""
 
 import pytest
-from utilities.model_helpers import (
-    compact_model_summary,
-    detailed_model_summary,
+from utilities.model_context import compact_model_summary, detailed_model_summary
+from utilities.layout_helpers import (
     to_int,
     extract_element_position,
     is_primary_layout_element,
     build_layout_anchor_lines,
+)
+from utilities.model_resolution import (
     resolve_target_model,
     resolve_object_reference_diagram,
     count_reference_classes,
 )
-from modeling_agent import _resolve_class_diagram
+from utilities.model_resolution import resolve_class_diagram as _resolve_class_diagram
 from protocol.types import AssistantRequest, WorkspaceContext
 
 from tests.conftest import MINIMAL_CLASS_MODEL, EMPTY_CLASS_MODEL

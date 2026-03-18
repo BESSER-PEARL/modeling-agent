@@ -34,7 +34,7 @@ from execution import (
     handle_file_attachments,
 )
 from suggestions import get_suggested_actions, format_suggestions_as_text
-from diagram_handlers.factory import get_diagram_type_info
+from diagram_handlers.registry.metadata import get_diagram_type_info
 from handlers.generation_handler import (
     handle_generation_request,
     _looks_like_mixed_modeling_and_generation,
@@ -696,7 +696,7 @@ def workflow_body(session: Session):
     )
 
     # ── Step 3: Trigger code generation ──────────────────────────────
-    from utilities.model_helpers import build_generation_request
+    from utilities.request_builders import build_generation_request
 
     generation_request = build_generation_request(
         request,

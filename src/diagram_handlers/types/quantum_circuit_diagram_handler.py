@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
 from schemas import SingleQuantumGateSpec, SystemQuantumCircuitSpec, QuantumModificationSpec
-from utilities.model_helpers import detailed_model_summary
+from utilities.model_context import detailed_model_summary
 
 logger = logging.getLogger(__name__)
 

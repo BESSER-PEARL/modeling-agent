@@ -21,7 +21,7 @@ from protocol.adapters import parse_assistant_request
 from protocol.types import AssistantRequest
 from session_helpers import reply_message, reply_payload, reply_progress
 from confirmation import model_has_elements
-from diagram_handlers.factory import get_diagram_type_info
+from diagram_handlers.registry.metadata import get_diagram_type_info
 from handlers.generation_handler import handle_generation_request
 from handlers.file_conversion_handler import convert_file_to_diagram_spec
 from orchestrator import (
@@ -29,17 +29,15 @@ from orchestrator import (
     determine_target_diagram_type,
     resolve_diagram_id,
 )
-from utilities.model_helpers import (
+from utilities.model_resolution import (
     resolve_target_model,
     resolve_object_reference_diagram,
     count_reference_classes,
-    build_workspace_context_block,
-    build_request_for_target,
-    build_generation_request,
-    extract_class_metadata,
+    resolve_class_diagram,
 )
-from utilities.model_resolution import resolve_class_diagram
-from utilities.workspace_context import record_session_action
+from utilities.workspace_context import build_workspace_context_block, record_session_action
+from utilities.request_builders import build_request_for_target, build_generation_request
+from utilities.class_metadata import extract_class_metadata
 from suggestions import get_suggested_actions
 
 logger = logging.getLogger(__name__)

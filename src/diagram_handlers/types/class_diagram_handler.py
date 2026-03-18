@@ -15,7 +15,7 @@ from ..core.base_handler import (
     SYSTEM_CLASS_OPTIONAL,
 )
 from schemas import SingleClassSpec, SystemClassSpec, ClassModificationResponse
-from utilities.model_helpers import detailed_model_summary
+from utilities.model_context import detailed_model_summary
 from domain_patterns import get_pattern_hint
 
 logger = logging.getLogger(__name__)

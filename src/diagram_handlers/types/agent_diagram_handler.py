@@ -8,7 +8,7 @@ import logging
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
 from schemas import AgentSingleElementSpec, SystemAgentSpec, AgentModificationResponse
-from utilities.model_helpers import detailed_model_summary
+from utilities.model_context import detailed_model_summary
 
 # Get logger
 logger = logging.getLogger(__name__)

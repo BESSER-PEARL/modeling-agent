@@ -2,8 +2,9 @@
 
 import json
 import pytest
-from diagram_handlers.factory import DiagramHandlerFactory, get_diagram_type_info, DIAGRAM_TYPE_METADATA
-from diagram_handlers.base_handler import (
+from diagram_handlers.registry.factory import DiagramHandlerFactory
+from diagram_handlers.registry.metadata import get_diagram_type_info, DIAGRAM_TYPE_METADATA
+from diagram_handlers.core.base_handler import (
     validate_spec,
     BaseDiagramHandler,
     LLMPredictionError,

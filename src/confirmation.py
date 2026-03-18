@@ -321,7 +321,7 @@ def _resume_remaining_ops(
 ) -> None:
     """Execute remaining operations that were queued behind a pending confirmation."""
     from execution import execute_model_operation
-    from utilities.model_helpers import build_request_for_target
+    from utilities.request_builders import build_request_for_target
 
     # Rebuild the working request so subsequent operations see the
     # just-created diagram in context.
@@ -376,7 +376,7 @@ def _resume_remaining_ops(
                 )
         elif op_type == 'generation':
             from handlers.generation_handler import handle_generation_request
-            from utilities.model_helpers import build_generation_request
+            from utilities.request_builders import build_generation_request
             from session_helpers import reply_payload
 
             gen_type = remaining_op.get('generatorType')
