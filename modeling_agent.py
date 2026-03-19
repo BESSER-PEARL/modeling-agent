@@ -122,18 +122,27 @@ create_complete_system_intent = agent.new_intent(
         '"build a variational circuit", "create an entanglement circuit". '
         "This is for creating MULTIPLE elements, a complete model, a "
         "GUI / frontend diagram, a web application system, or a quantum "
-        "algorithm — NOT for generating source code artifacts or "
-        "describing/explaining existing models."
+        "algorithm FROM SCRATCH — NOT for adding to or extending an "
+        "existing model, NOT for generating source code artifacts, and "
+        "NOT for describing/explaining existing models. "
+        'If the user says "I also want", "also store", "also include", '
+        '"extend with", or similar phrases implying additions to an '
+        "existing model, use modify_model_intent instead."
     ),
 )
 modify_model_intent = agent.new_intent(
     name="modify_model_intent",
     description=(
-        "The user wants to modify, change, update, edit, add to, remove from, "
-        "or connect elements in an EXISTING model or diagram. "
+        "The user wants to modify, change, update, edit, add to, extend, "
+        "remove from, or connect elements in an EXISTING model or diagram. "
+        "This includes adding NEW classes or entities to an existing model. "
         'Keywords: "add relationship", "connect", "add inheritance", '
         '"modify class", "change attribute", "update method", "delete", '
         '"remove", "rename", "add association", "link classes". '
+        'Natural language extensions: "I also want to store", '
+        '"I also want to include", "add information about", '
+        '"I also need", "extend with", "include data about", '
+        '"also store", "also track", "also manage". '
         'Quantum modifications: "add a gate to the circuit", '
         '"remove the measurement", "change gate on qubit 2", '
         '"add more qubits", "extend the circuit", '

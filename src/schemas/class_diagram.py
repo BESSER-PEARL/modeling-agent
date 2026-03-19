@@ -73,10 +73,13 @@ class ClassModificationChanges(BaseModel):
     relationshipType: Optional[str] = None
     sourceMultiplicity: Optional[str] = None
     targetMultiplicity: Optional[str] = None
+    className: Optional[str] = Field(default=None, description="Class name for add_class action")
+    attributes: Optional[List[AttributeSpec]] = Field(default=None, description="Attributes for add_class action")
+    methods: Optional[List[MethodSpec]] = Field(default=None, description="Methods for add_class action")
 
 
 class ClassModification(BaseModel):
-    action: str = Field(description="Modification action: modify_class, add_attribute, modify_attribute, add_method, modify_method, add_relationship, modify_relationship, remove_element")
+    action: str = Field(description="Modification action: add_class, modify_class, add_attribute, modify_attribute, add_method, modify_method, add_relationship, modify_relationship, remove_element")
     target: ClassModificationTarget
     changes: Optional[ClassModificationChanges] = Field(default=None, description="The changes to apply. REQUIRED for all actions except remove_element. For modify_relationship, put the NEW values here (e.g. new sourceMultiplicity), not in target.")
 

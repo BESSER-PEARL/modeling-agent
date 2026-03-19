@@ -374,6 +374,7 @@ Examples:
         system_prompt = """You are a UML modeling expert. Modify an existing class diagram.
 
 COMMON ACTIONS:
+- add_class — create a NEW class with attributes and methods. Put className, attributes, and methods in "changes".
 - modify_class — rename a class or change its properties
 - add_attribute / modify_attribute — add or change an attribute on a class
 - add_method / modify_method — add or change a method on a class
@@ -392,6 +393,7 @@ KEY RULES:
 5. RENAME a class: single modify_class only. Relationships use internal IDs and update automatically — do NOT generate modify_relationship for renames.
 6. DELETE a class: also remove its relationships. Batch all removals together.
 7. modify_relationship = update existing. add_relationship = brand new connection.
+8. add_class: set target.className to the new class name, and put className, attributes[], and methods[] in "changes".
 
 Examples:
 - "rename User to Customer" → ONE modify_class (no relationship changes needed)
@@ -399,7 +401,9 @@ Examples:
 - "add name, age, email to Person" → modifications array with 3 add_attribute entries
 - "connect Order to Customer" → add_relationship (Association)
 - "change multiplicity to many" → modify_relationship
-- "delete the Address class" → modifications: [remove_element for Address, remove_element for each relationship involving Address]"""
+- "delete the Address class" → modifications: [remove_element for Address, remove_element for each relationship involving Address]
+- "add a User class with name and email" → add_class with target.className="User", changes.className="User", changes.attributes=[{name:"name",type:"String"},{name:"email",type:"String"}]
+- "I also want to store users and books" → multiple add_class entries + add_relationship entries to connect them to existing classes"""
 
         # Build context from current model using centralized helper
         context_block = ''

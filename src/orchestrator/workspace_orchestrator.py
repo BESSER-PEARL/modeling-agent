@@ -1,3 +1,4 @@
+import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from protocol.types import AssistantRequest, SUPPORTED_DIAGRAM_TYPES
@@ -164,10 +165,10 @@ def _rank_implicit_targets(message_lower: str) -> List[str]:
         score = 0
         first_index = 10**9
         for token, weight in rules:
-            index = message_lower.find(token)
-            if index >= 0:
+            match = re.search(r'\b' + re.escape(token) + r'\b', message_lower)
+            if match:
                 score += weight
-                first_index = min(first_index, index)
+                first_index = min(first_index, match.start())
 
         if score > 0:
             ranked.append((score, first_index, diagram_type))
