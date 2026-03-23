@@ -8,6 +8,7 @@ Supported file types:
   - PlantUML (.puml, .plantuml, .pu, .txt containing @startuml)
   - Knowledge Graph (.ttl, .rdf, .owl, .json with KG structure)
   - Images (.png, .jpg, .jpeg, .gif, .webp — UML diagram photos/screenshots)
+  - PDF (.pdf — text-based or scanned/diagram PDFs)
   - Generic text files — analyzed by the LLM to extract any diagram
 
 Supported target diagram types:
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 PLANTUML_EXTENSIONS = {".puml", ".plantuml", ".pu"}
 KG_EXTENSIONS = {".ttl", ".rdf", ".owl", ".n3", ".nt", ".nq", ".trig", ".jsonld"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+PDF_EXTENSIONS = {".pdf"}
 IMAGE_MIME_MAP = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -178,6 +180,8 @@ def detect_file_type(filename: str, content_text: Optional[str] = None) -> str:
         return "knowledge_graph"
     if ext in IMAGE_EXTENSIONS:
         return "image"
+    if ext in PDF_EXTENSIONS:
+        return "pdf"
 
     # Content-based detection for .txt or extensionless files
     if content_text:
@@ -393,6 +397,8 @@ def convert_file_to_diagram_spec(
         return _convert_knowledge_graph(content_text, filename, llm_predict)
     elif file_type == "image":
         return _convert_image(file_content_b64, filename, llm_predict, openai_api_key)
+    elif file_type == "pdf":
+        return _convert_pdf(raw_bytes, filename, llm_predict, openai_api_key)
     else:
         # Try to convert as text if we have text content
         if content_text:
@@ -400,7 +406,7 @@ def convert_file_to_diagram_spec(
         return _error_response(
             f"Could not determine the file type for '{filename}'. "
             "Supported formats: PlantUML (.puml), Knowledge Graphs (.ttl, .rdf, .owl, .json), "
-            "or images of UML diagrams (.png, .jpg)."
+            "PDF documents (.pdf), or images of UML diagrams (.png, .jpg)."
         )
 
 
@@ -442,6 +448,129 @@ def _convert_generic_text(
     prompt = _build_auto_detect_prompt(f"text file ('{filename}')")
     prompt += f"\n\nFile Content:\n```\n{content}\n```"
     return _run_llm_conversion(prompt, filename, "text file", None, llm_predict)
+
+
+def _convert_pdf(
+    pdf_bytes: bytes,
+    filename: str,
+    llm_predict: callable,
+    openai_api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Convert a PDF document to the best-fit diagram spec.
+
+    Strategy:
+      1. Extract text from all pages using PyMuPDF.
+      2. If enough text is found (>50 chars), treat it as a text-based PDF
+         and run LLM auto-detect conversion on the extracted text.
+      3. If the PDF is mostly images/diagrams (little text), render the first
+         pages to images and run vision-based conversion.
+    """
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        return _error_response(
+            "PDF processing is not available. The PyMuPDF library is missing. "
+            "Please install it with: pip install PyMuPDF"
+        )
+
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception as e:
+        logger.error(f"[FileConversion] Failed to open PDF '{filename}': {e}")
+        return _error_response(
+            f"Could not open the PDF file '{filename}'. It may be corrupted or password-protected."
+        )
+
+    page_count = len(doc)
+    if page_count == 0:
+        doc.close()
+        return _error_response(f"The PDF file '{filename}' has no pages.")
+
+    # Extract text from all pages (cap at 20 pages to stay within LLM limits)
+    text_parts = []
+    max_pages = min(page_count, 20)
+    for i in range(max_pages):
+        page_text = doc[i].get_text("text").strip()
+        if page_text:
+            text_parts.append(f"--- Page {i + 1} ---\n{page_text}")
+
+    full_text = "\n\n".join(text_parts)
+
+    # If we got meaningful text, use text-based conversion
+    if len(full_text) > 50:
+        doc.close()
+        if len(full_text) > 30_000:
+            full_text = full_text[:30_000] + "\n\n... [truncated — showing first 30KB]"
+        prompt = _build_auto_detect_prompt(f"PDF document ('{filename}', {page_count} page(s))")
+        prompt += f"\n\nExtracted PDF Content:\n```\n{full_text}\n```"
+        return _run_llm_conversion(prompt, filename, "PDF", None, llm_predict)
+
+    # Low text content — PDF likely contains diagrams/images.
+    # Render pages to images and use the vision API.
+    if not openai_api_key:
+        doc.close()
+        return _error_response(
+            f"The PDF '{filename}' appears to contain diagrams/images rather than text. "
+            "Image-based PDF conversion requires an OpenAI API key with vision capabilities."
+        )
+
+    # Render up to 3 pages as images for vision analysis
+    images_b64 = []
+    render_pages = min(page_count, 3)
+    for i in range(render_pages):
+        try:
+            pix = doc[i].get_pixmap(dpi=200)
+            img_bytes = pix.tobytes("png")
+            images_b64.append(base64.b64encode(img_bytes).decode("ascii"))
+        except Exception as e:
+            logger.warning(f"[FileConversion] Failed to render PDF page {i + 1}: {e}")
+
+    doc.close()
+
+    if not images_b64:
+        return _error_response(
+            f"Could not extract content from the PDF '{filename}'. "
+            "The file may be empty or in an unsupported format."
+        )
+
+    # Send page images to the vision API
+    vision_prompt = _build_image_prompt()  # auto-detect from image
+    content_blocks: List[Dict[str, Any]] = [{"type": "text", "text": vision_prompt}]
+    for img_b64 in images_b64:
+        content_blocks.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{img_b64}"},
+        })
+
+    try:
+        import requests as http_requests
+
+        response = http_requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {openai_api_key}",
+            },
+            json={
+                "model": "gpt-4.1",
+                "messages": [{"role": "user", "content": content_blocks}],
+                "max_tokens": 8192,
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=90,
+        )
+        response.raise_for_status()
+        data = response.json()
+        raw_text = data["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.error(f"[FileConversion] Vision API call failed for PDF: {e}")
+        return _error_response(
+            f"Failed to process the diagram images from PDF '{filename}'. "
+            "Please make sure the PDF contains clear UML diagrams."
+        )
+
+    return _parse_llm_response(raw_text, filename, "PDF (image)", expected_type=None)
 
 
 def _convert_image(

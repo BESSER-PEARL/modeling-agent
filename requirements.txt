@@ -5,3 +5,4 @@ langchain-text-splitters
 langchain-openai
 langchain-chroma
 chromadb
+PyMuPDF

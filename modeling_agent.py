@@ -256,20 +256,75 @@ register_all(
 )
 
 
-# ── Session memory cleanup ───────────────────────────────────────────────
-def _start_memory_cleanup_timer():
+# ── Session & thread cleanup ─────────────────────────────────────────────
+def _start_cleanup_timer():
+    """Periodically reap disconnected sessions and stale conversation memories.
+
+    The BESSER framework keeps sessions (and their event-loop threads) alive
+    after WebSocket disconnect to allow reconnects.  Over days of uptime,
+    orphaned threads accumulate and eventually hit the OS thread limit
+    (``RuntimeError: can't start new thread``).
+
+    This reaper runs every 10 minutes and closes any session whose WebSocket
+    connection is no longer tracked by the platform, provided it has been
+    disconnected for at least 5 minutes (grace period for brief reconnects).
+    """
+    import time as _time
+
+    # Track when we first notice a session has no active connection
+    _disconnected_since: dict[str, float] = {}
+    _GRACE_PERIOD = 300  # 5 minutes before reaping a disconnected session
+
     def _cleanup_loop():
-        import time
         while True:
-            time.sleep(3600)  # Every hour
+            _time.sleep(600)  # Every 10 minutes
             try:
-                cleanup_stale_memories(max_age_seconds=86400)
+                # --- Reap orphaned agent sessions (stops their event-loop threads) ---
+                active_conn_ids = set(websocket_platform._connections.keys())
+                all_session_ids = list(agent._sessions.keys())
+                now = _time.time()
+
+                for sid in all_session_ids:
+                    if sid in active_conn_ids:
+                        # Still connected — reset tracker
+                        _disconnected_since.pop(sid, None)
+                        continue
+
+                    # First time we see this session disconnected
+                    if sid not in _disconnected_since:
+                        _disconnected_since[sid] = now
+                        continue
+
+                    # Check grace period
+                    if now - _disconnected_since[sid] < _GRACE_PERIOD:
+                        continue
+
+                    # Grace period expired — close the session
+                    try:
+                        agent.close_session(sid)
+                        logger.info(f"[Reaper] Closed orphaned session {sid}")
+                    except Exception as exc:
+                        logger.warning(f"[Reaper] Failed to close session {sid}: {exc}")
+                    _disconnected_since.pop(sid, None)
+
+                # Clean up tracker for sessions that no longer exist
+                for sid in list(_disconnected_since):
+                    if sid not in agent._sessions:
+                        del _disconnected_since[sid]
+
+            except Exception as exc:
+                logger.warning(f"[Reaper] Session cleanup error: {exc}")
+
+            try:
+                # --- Reap stale conversation memories ---
+                cleanup_stale_memories(max_age_seconds=3600)
             except Exception:
                 pass
-    t = threading.Thread(target=_cleanup_loop, daemon=True)
+
+    t = threading.Thread(target=_cleanup_loop, daemon=True, name="session-reaper")
     t.start()
 
-_start_memory_cleanup_timer()
+_start_cleanup_timer()
 
 
 # ── Run ──────────────────────────────────────────────────────────────────
