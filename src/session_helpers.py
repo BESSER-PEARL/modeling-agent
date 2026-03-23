@@ -144,6 +144,11 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
     logger.debug(f"[Reply] Full payload keys: {list(payload.keys())}")
     session.reply(json.dumps(payload))
 
+    # Record in conversation memory so follow-up messages have context
+    message = payload.get('message', '')
+    if message:
+        _record_assistant_response(session, message)
+
 
 def _send_to_session(session: Session, payload: Dict[str, Any]):
     """Low-level helper: serialize *payload* as JSON and send it via the session.

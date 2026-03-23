@@ -100,12 +100,14 @@ RULES:
 1. Include all the classes, relationships, and concepts the user asks for. Then flesh out each class with thorough attributes (IDs, timestamps, status fields where appropriate).
 2. Create AS MANY classes as needed for a complete system.
 3. Each class should have 3-5+ attributes. Don't create stub classes.
-4. Methods: Generally SKIP methods unless the user asks. Only include 1-2 core domain methods per class MAX. Never include getters/setters.
-5. Relationships are CRITICAL — always include meaningful connections. Use Association (general), Inheritance (is-a, sparingly), Composition (strong has-a), Aggregation (weak has-a), Realization (interface).
-6. ALWAYS include multiplicities on relationships (1, 0..1, 0..*, 1..*).
-7. Generate both associations AND inheritance where appropriate (e.g., SavingsAccount/CheckingAccount → inherit from Account).
-8. Use proper naming: PascalCase for classes, camelCase for attributes/methods.
-9. Do NOT include any "position" field — positioning is handled automatically.
+4. When creating Enumerations (isEnumeration=true), list enum values as attributes (name only, no type needed). When another class has an attribute whose type is that enumeration, set the attribute's type to the enum's PascalCase name (e.g., type="OrderStatus", NOT "str" or "String").
+5. Methods: Generally SKIP methods unless the user asks. Only include 1-2 core domain methods per class MAX. Never include getters/setters.
+6. Relationships are CRITICAL — always include meaningful connections. Use Association (general), Inheritance (is-a, sparingly), Composition (strong has-a), Aggregation (weak has-a), Realization (interface).
+7. ALWAYS include multiplicities on relationships (1, 0..1, 0..*, 1..*).
+8. Generate both associations AND inheritance where appropriate (e.g., SavingsAccount/CheckingAccount → inherit from Account).
+9. Use proper naming: PascalCase for classes, camelCase for attributes/methods.
+10. Do NOT include any "position" field — positioning is handled automatically.
+11. Methods default to implementationType "none" (UML signature only, no code). ONLY generate code in the 'code' field when the user explicitly asks for it. Supported types: 'code' for Python (e.g., "implement in Python", "add Python code"), 'bal' for BESSER Action Language (e.g., "implement in BAL", "use action language"). BAL syntax: def method_name(param: type) -> return_type { statements; }. Python syntax: standard def with self parameter.
 
 Examples:
 - E-commerce: User, Product, Order, Payment, ShoppingCart with associations and multiplicities
@@ -385,24 +387,43 @@ COMMON ACTIONS:
 ADVANCED ACTIONS (for structural refactoring):
 - extract_class, split_class, merge_classes, promote_attribute, add_enum
 
+CRITICAL — READ CAREFULLY:
+- The CURRENT MODEL is provided below. NEVER re-create anything that already exists.
+- The conversation history is also provided. If it says you JUST created something (e.g., an enum), that element EXISTS even if not shown in the model summary. Do NOT re-create it.
+- ONLY output modifications for what the user asks RIGHT NOW. Never repeat past operations.
+- If the user's message is short/ambiguous (e.g., "ok and X?", "also Y"), interpret it as ADDING to the most recently discussed element.
+- Use simple, clean PascalCase names for classes (e.g., "Sex", "OrderStatus", "PaymentMethod"). Never use long descriptive names.
+
 KEY RULES:
 1. Use exact names from the current model in "target".
 2. Put what should change in "changes". Only include fields that differ.
 3. remove_element needs only "target" — no "changes".
 4. Multiple changes → use "modifications" array.
-5. RENAME a class: single modify_class only. Relationships use internal IDs and update automatically — do NOT generate modify_relationship for renames.
-6. DELETE a class: also remove its relationships. Batch all removals together.
-7. modify_relationship = update existing. add_relationship = brand new connection.
-8. add_class: set target.className to the new class name, and put className, attributes[], and methods[] in "changes".
+5. RENAME: single modify_class only. Relationships update automatically.
+6. DELETE: also remove its relationships. Batch all removals.
+7. modify_relationship = update existing. add_relationship = brand new.
+8. add_class: set target.className and put className, attributes[], methods[] in "changes".
+
+ENUMERATION RULES:
+- Create enum: add_class with isEnumeration=true. Enum values are attributes with name only (NO type field).
+- Add value to EXISTING enum: add_attribute with target.className set to THE ENUM NAME (not another class).
+  Example: if "Priority" enum exists and user says "add Critical" → add_attribute with target.className="Priority", changes.name="Critical" (NO type).
+- Use enum as attribute type: add_attribute with changes.type set to the enum's PascalCase name.
+  Example: add_attribute with target.className="Task", changes.name="priority", changes.type="Priority".
 
 Examples:
 - "rename User to Customer" → ONE modify_class (no relationship changes needed)
-- "add email to User" → add_attribute
+- "add email to User" → add_attribute target.className="User", changes.name="email", changes.type="String"
 - "add name, age, email to Person" → modifications array with 3 add_attribute entries
 - "connect Order to Customer" → add_relationship (Association)
 - "change multiplicity to many" → modify_relationship
 - "delete the Address class" → modifications: [remove_element for Address, remove_element for each relationship involving Address]
 - "add a User class with name and email" → add_class with target.className="User", changes.className="User", changes.attributes=[{name:"name",type:"String"},{name:"email",type:"String"}]
+- "create an OrderStatus enum with PENDING, SHIPPED, DELIVERED" → add_class with isEnumeration=true, changes.attributes=[{name:"PENDING"},{name:"SHIPPED"},{name:"DELIVERED"}]
+- "add status attribute of type OrderStatus to Order" → add_attribute with target.className="Order", changes.name="status", changes.type="OrderStatus"
+- "create a Priority enum with Low, Medium, High" → add_class isEnumeration=true, className="Priority", attributes=[{name:"Low"},{name:"Medium"},{name:"High"}]
+- "add Critical to the Priority enum" → add_attribute target.className="Priority", changes.name="Critical" (NO type)
+- "add priority attribute to Task" → add_attribute target.className="Task", changes.name="priority", changes.type="Priority"
 - "I also want to store users and books" → multiple add_class entries + add_relationship entries to connect them to existing classes"""
 
         # Build context from current model using centralized helper
@@ -467,6 +488,7 @@ Examples:
                     act = mod.get('action', 'modification')
                     target = mod.get('target', {})
                     name = target.get('className') or target.get('attributeName') or target.get('methodName') or 'element'
+                    name = self._sanitize_target_name(name)
                     modification_spec['message'] = self._friendly_mod_message(act, name)
 
             logger.info(

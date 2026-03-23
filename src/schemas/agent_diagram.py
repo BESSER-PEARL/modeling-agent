@@ -9,11 +9,21 @@ from pydantic import BaseModel, Field
 
 class AgentReplySpec(BaseModel):
     text: str = Field(
-        description="The reply text displayed to the user or used as an LLM prompt.",
+        description="The reply text displayed to the user, used as an LLM prompt, or Python code to execute.",
     )
-    replyType: Literal["text", "llm"] = Field(
+    replyType: Literal["text", "llm", "rag", "db_reply", "code"] = Field(
         default="text",
-        description="'text' for a scripted reply, 'llm' for a dynamically generated AI response.",
+        description=(
+            "'text' for a scripted reply, "
+            "'llm' for a dynamically generated AI response, "
+            "'rag' for a RAG-based reply (retrieval-augmented generation from a knowledge base), "
+            "'db_reply' for a database query action, "
+            "'code' for executing Python code."
+        ),
+    )
+    ragDatabaseName: Optional[str] = Field(
+        default=None,
+        description="Name of the RAG knowledge base to query (required when replyType='rag').",
     )
 
 
@@ -128,6 +138,10 @@ class AgentInitialNodeSpec(BaseModel):
     )
 
 
+class AgentRagSpec(BaseModel):
+    name: str = Field(description="Name of the RAG knowledge base (e.g., 'CustomerKB', 'ProductDocs')")
+
+
 class SystemAgentSpec(BaseModel):
     """Schema for a complete agent diagram system."""
     systemName: str = Field(
@@ -157,6 +171,7 @@ class SystemAgentSpec(BaseModel):
             "Every state must have at least one exit path to avoid dead-ends."
         ),
     )
+    ragElements: List[AgentRagSpec] = Field(default_factory=list, description="RAG knowledge bases used by agent states with replyType='rag'")
 
 
 # -- Modification schemas --
@@ -188,6 +203,14 @@ class AgentModificationChanges(BaseModel):
         default=None,
         description="New name when renaming a state or intent.",
     )
+    replies: Optional[List[AgentReplySpec]] = Field(
+        default=None,
+        description="Replies for add_state. Each reply has text and replyType ('text' or 'llm').",
+    )
+    trainingPhrases: Optional[List[str]] = Field(
+        default=None,
+        description="Training phrases for add_intent (3-5 example phrases).",
+    )
     intentName: Optional[str] = Field(
         default=None,
         description="Intent name to associate with a transition (used with add_transition).",
@@ -206,14 +229,15 @@ class AgentModificationChanges(BaseModel):
     )
     trainingPhrase: Optional[str] = Field(
         default=None,
-        description="New training phrase to add to an intent (used with add_intent_training_phrase).",
+        description="Single training phrase to add to an existing intent (used with add_intent_training_phrase).",
     )
 
 class AgentModification(BaseModel):
     action: str = Field(
         description=(
-            "The modification operation: 'modify_state', 'modify_intent', 'add_transition', "
-            "'remove_transition', 'add_state_body', 'add_intent_training_phrase', or 'remove_element'."
+            "The modification operation: 'add_state', 'add_intent', 'modify_state', 'modify_intent', "
+            "'add_transition', 'remove_transition', 'add_state_body', 'add_intent_training_phrase', "
+            "'add_rag_element', or 'remove_element'."
         ),
     )
     target: AgentModificationTarget = Field(

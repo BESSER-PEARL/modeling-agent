@@ -308,8 +308,6 @@ def execute_model_operation(
         reply_progress(session, f"Thinking about your {diagram_label} design...")
     elif operation_mode == "modify_model":
         reply_progress(session, f"Analyzing changes...")
-    elif operation_mode == "single_element":
-        reply_progress(session, f"Creating element...")
 
     target_model = resolve_target_model(request, target_diagram_type)
 
@@ -388,36 +386,7 @@ def execute_model_operation(
         progress_thread = None
 
     try:
-        if operation_mode == "single_element":
-            if target_diagram_type == "ObjectDiagram":
-                reference_diagram = resolve_object_reference_diagram(request, target_model)
-                reference_class_count = count_reference_classes(reference_diagram)
-                if reference_class_count > 0:
-                    logger.info(
-                        f"[ModelOp] ObjectDiagram reference resolved with {reference_class_count} class(es)."
-                    )
-                else:
-                    logger.warning(
-                        "[ModelOp] ObjectDiagram reference is missing or empty."
-                    )
-                    reply_message(
-                        session,
-                        "Please create a **Class Diagram** first — Object Diagrams "
-                        "need class definitions to instantiate from.",
-                    )
-                    return None
-                result = handler.generate_single_element(
-                    modeling_prompt,
-                    reference_diagram=reference_diagram,
-                    existing_model=target_model,
-                )
-            else:
-                result = handler.generate_single_element(
-                    modeling_prompt,
-                    existing_model=target_model,
-                    class_metadata=gui_class_metadata,
-                )
-        elif operation_mode == "modify_model":
+        if operation_mode == "modify_model":
             extra_kwargs: Dict[str, Any] = {"class_metadata": gui_class_metadata}
             if target_diagram_type == "ObjectDiagram":
                 reference_diagram = resolve_object_reference_diagram(request, target_model)

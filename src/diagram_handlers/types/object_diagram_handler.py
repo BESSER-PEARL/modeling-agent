@@ -618,14 +618,16 @@ IMPORTANT RULES:
                         "when creating or modifying objects):\n" + ref_classes
                     )
 
-        system_prompt = """You are a UML modeling expert. The user wants to modify an existing object diagram.
+        system_prompt = """You are a UML modeling expert. The user wants to modify an object diagram.
 
 IMPORTANT RULES:
-1. Actions available: "modify_object", "modify_attribute_value", "add_link", "remove_element"
-2. Always specify exact target names that exist in the current model
-3. For remove_element, only specify the target — no "changes" needed
-4. When the user asks for MULTIPLE changes at once (e.g., "set name and age on obj1"), return multiple entries in the modifications array
-5. If a reference class diagram is provided, use its class/attribute names and ids when creating or modifying objects"""
+1. Actions available: "add_object", "modify_object", "modify_attribute_value", "add_link", "remove_element"
+2. add_object: set target.objectName to the new object name (lowerCamelCase, e.g. "user2"). Put className and attributes (with concrete values) in "changes".
+3. For existing elements, always specify exact target names from the current model
+4. For remove_element, only specify the target — no "changes" needed
+5. When the user asks for MULTIPLE changes at once, return multiple entries in the modifications array
+6. If a reference class diagram is provided, use its class/attribute names and ids
+7. Example: "add an object user2 of class User" → add_object with target.objectName="user2", changes.className="User", changes.attributes=[{name:"id",value:"USR002"},{name:"name",value:"Bob"}]"""
 
         # Build context from current model using centralized helper
         context_block = ''

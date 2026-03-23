@@ -27,6 +27,7 @@ from schemas.state_machine import (
     StateSpec,
     TransitionSpec,
     SingleStateSpec,
+    StateCodeBlockSpec,
     SystemStateMachineSpec,
     StateMachineModificationTarget,
     StateMachineModificationChanges,
@@ -49,6 +50,7 @@ from schemas.object_diagram import (
 # -- Agent Diagram imports --
 from schemas.agent_diagram import (
     AgentInitialNodeSpec,
+    AgentRagSpec,
     AgentReplySpec,
     AgentStateSpec,
     AgentIntentSpec,
@@ -1110,3 +1112,503 @@ class TestQuantumModificationSpec:
             operations=[QuantumOperationSpec(gate="X")],
         )
         assert m.mode == "append"
+
+
+# =============================================================================
+# Class Diagram — new field tests
+# =============================================================================
+
+
+class TestAttributeSpecNewFields:
+    """Tests for isDerived, defaultValue, isOptional on AttributeSpec."""
+
+    def test_defaults_for_new_fields(self):
+        a = AttributeSpec(name="title")
+        assert a.isDerived is False
+        assert a.defaultValue is None
+        assert a.isOptional is False
+
+    def test_isDerived_true(self):
+        a = AttributeSpec(name="fullName", isDerived=True)
+        assert a.isDerived is True
+
+    def test_defaultValue_string(self):
+        a = AttributeSpec(name="status", defaultValue="active")
+        assert a.defaultValue == "active"
+
+    def test_isOptional_true(self):
+        a = AttributeSpec(name="nickname", isOptional=True)
+        assert a.isOptional is True
+
+    def test_all_new_fields_together(self):
+        a = AttributeSpec(
+            name="score",
+            type="float",
+            isDerived=True,
+            defaultValue="0.0",
+            isOptional=True,
+        )
+        assert a.isDerived is True
+        assert a.defaultValue == "0.0"
+        assert a.isOptional is True
+
+
+class TestMethodSpecNewFields:
+    """Tests for isAbstract, implementationType, code on MethodSpec."""
+
+    def test_defaults_for_new_fields(self):
+        m = MethodSpec(name="doWork")
+        assert m.isAbstract is False
+        assert m.implementationType == "none"
+        assert m.code is None
+
+    def test_isAbstract_true(self):
+        m = MethodSpec(name="execute", isAbstract=True)
+        assert m.isAbstract is True
+
+    def test_implementationType_code_with_body(self):
+        m = MethodSpec(
+            name="calc",
+            implementationType="code",
+            code="def calc(self): return 1",
+        )
+        assert m.implementationType == "code"
+        assert m.code == "def calc(self): return 1"
+
+    def test_implementationType_bal(self):
+        m = MethodSpec(name="process", implementationType="bal")
+        assert m.implementationType == "bal"
+        assert m.code is None
+
+    @pytest.mark.parametrize("impl", ["none", "code", "bal", "state_machine", "quantum_circuit"])
+    def test_valid_implementationTypes(self, impl):
+        m = MethodSpec(name="m", implementationType=impl)
+        assert m.implementationType == impl
+
+    def test_rejects_invalid_implementationType(self):
+        with pytest.raises(ValidationError):
+            MethodSpec(name="m", implementationType="javascript")
+
+
+class TestSingleClassSpecNewFields:
+    """Tests for isAbstract and isEnumeration on SingleClassSpec."""
+
+    def test_defaults_for_new_fields(self):
+        c = SingleClassSpec(className="Foo")
+        assert c.isAbstract is False
+        assert c.isEnumeration is False
+
+    def test_isAbstract_true(self):
+        c = SingleClassSpec(className="Shape", isAbstract=True)
+        assert c.isAbstract is True
+
+    def test_isEnumeration_true(self):
+        c = SingleClassSpec(className="Color", isEnumeration=True)
+        assert c.isEnumeration is True
+
+    def test_abstract_class_with_methods(self):
+        c = SingleClassSpec(
+            className="Vehicle",
+            isAbstract=True,
+            methods=[MethodSpec(name="move", isAbstract=True)],
+        )
+        assert c.isAbstract is True
+        assert c.methods[0].isAbstract is True
+
+    def test_enumeration_with_attributes_as_values(self):
+        c = SingleClassSpec(
+            className="Priority",
+            isEnumeration=True,
+            attributes=[
+                AttributeSpec(name="LOW"),
+                AttributeSpec(name="MEDIUM"),
+                AttributeSpec(name="HIGH"),
+            ],
+        )
+        assert c.isEnumeration is True
+        assert len(c.attributes) == 3
+
+
+class TestClassModificationChangesNewFields:
+    """Tests for isDerived, defaultValue, isOptional, isAbstract, isEnumeration, implementationType, code."""
+
+    def test_new_fields_default_none(self):
+        c = ClassModificationChanges()
+        assert c.isDerived is None
+        assert c.defaultValue is None
+        assert c.isOptional is None
+        assert c.isAbstract is None
+        assert c.isEnumeration is None
+        assert c.implementationType is None
+        assert c.code is None
+
+    def test_isDerived_set(self):
+        c = ClassModificationChanges(isDerived=True)
+        assert c.isDerived is True
+
+    def test_defaultValue_set(self):
+        c = ClassModificationChanges(defaultValue="pending")
+        assert c.defaultValue == "pending"
+
+    def test_isOptional_set(self):
+        c = ClassModificationChanges(isOptional=True)
+        assert c.isOptional is True
+
+    def test_isAbstract_set(self):
+        c = ClassModificationChanges(isAbstract=True)
+        assert c.isAbstract is True
+
+    def test_isEnumeration_set(self):
+        c = ClassModificationChanges(isEnumeration=True)
+        assert c.isEnumeration is True
+
+    def test_implementationType_and_code(self):
+        c = ClassModificationChanges(
+            implementationType="code",
+            code="def run(self): pass",
+        )
+        assert c.implementationType == "code"
+        assert c.code == "def run(self): pass"
+
+    def test_all_new_fields_together(self):
+        c = ClassModificationChanges(
+            isDerived=True,
+            defaultValue="0",
+            isOptional=False,
+            isAbstract=True,
+            isEnumeration=False,
+            implementationType="bal",
+            code=None,
+        )
+        assert c.isDerived is True
+        assert c.defaultValue == "0"
+        assert c.isOptional is False
+        assert c.isAbstract is True
+        assert c.isEnumeration is False
+        assert c.implementationType == "bal"
+        assert c.code is None
+
+
+# =============================================================================
+# State Machine — new field tests
+# =============================================================================
+
+
+class TestStateMachineModificationChangesNewFields:
+    """Tests for stateType, code, language on StateMachineModificationChanges."""
+
+    def test_new_fields_default_none(self):
+        c = StateMachineModificationChanges()
+        assert c.stateType is None
+        assert c.code is None
+        assert c.language is None
+
+    def test_stateType_set(self):
+        c = StateMachineModificationChanges(stateType="initial")
+        assert c.stateType == "initial"
+
+    def test_code_and_language(self):
+        c = StateMachineModificationChanges(
+            code="print('hello')",
+            language="python",
+        )
+        assert c.code == "print('hello')"
+        assert c.language == "python"
+
+
+class TestStateMachineModificationAddState:
+    """Tests for StateMachineModification with action='add_state'."""
+
+    def test_add_state_with_changes(self):
+        m = StateMachineModification(
+            action="add_state",
+            target=StateMachineModificationTarget(stateName="Processing"),
+            changes=StateMachineModificationChanges(
+                stateType="regular",
+                entryAction="log('entered')",
+            ),
+        )
+        assert m.action == "add_state"
+        assert m.target.stateName == "Processing"
+        assert m.changes.stateType == "regular"
+        assert m.changes.entryAction == "log('entered')"
+
+
+class TestStateMachineModificationAddCodeBlock:
+    """Tests for StateMachineModification with action='add_code_block'."""
+
+    def test_add_code_block(self):
+        m = StateMachineModification(
+            action="add_code_block",
+            target=StateMachineModificationTarget(stateName="Handler"),
+            changes=StateMachineModificationChanges(
+                name="process_data",
+                code="def process_data(ctx):\n    return ctx['data']",
+                language="python",
+            ),
+        )
+        assert m.action == "add_code_block"
+        assert m.changes.name == "process_data"
+        assert m.changes.code.startswith("def process_data")
+        assert m.changes.language == "python"
+
+
+class TestStateCodeBlockSpec:
+    """Tests for StateCodeBlockSpec schema."""
+
+    def test_valid_creation(self):
+        cb = StateCodeBlockSpec(name="setup", code="x = 1")
+        assert cb.name == "setup"
+        assert cb.code == "x = 1"
+        assert cb.language == "python"
+
+    def test_custom_language(self):
+        cb = StateCodeBlockSpec(name="init", code="val x = 1", language="kotlin")
+        assert cb.language == "kotlin"
+
+    def test_multiline_code(self):
+        code = "def run():\n    print('hello')\n    return True"
+        cb = StateCodeBlockSpec(name="runner", code=code)
+        assert cb.code == code
+
+
+class TestSystemStateMachineSpecCodeBlocks:
+    """Tests for codeBlocks field on SystemStateMachineSpec."""
+
+    def test_default_empty_codeBlocks(self):
+        s = SystemStateMachineSpec(
+            states=[StateSpec(stateName="Idle")],
+        )
+        assert s.codeBlocks == []
+
+    def test_with_codeBlocks(self):
+        s = SystemStateMachineSpec(
+            states=[StateSpec(stateName="Active")],
+            codeBlocks=[
+                StateCodeBlockSpec(name="setup", code="x = 0"),
+                StateCodeBlockSpec(name="teardown", code="cleanup()"),
+            ],
+        )
+        assert len(s.codeBlocks) == 2
+        assert s.codeBlocks[0].name == "setup"
+        assert s.codeBlocks[1].name == "teardown"
+
+
+# =============================================================================
+# Object Diagram — new field tests
+# =============================================================================
+
+
+class TestObjectModificationAddObject:
+    """Tests for ObjectModification with action='add_object'."""
+
+    def test_add_object(self):
+        m = ObjectModification(
+            action="add_object",
+            target=ObjectModificationTarget(objectName="book1"),
+            changes=ObjectModificationChanges(
+                className="Book",
+                attributes=[
+                    ObjectAttributeSpec(name="title", value="Dune"),
+                    ObjectAttributeSpec(name="year", value="1965"),
+                ],
+            ),
+        )
+        assert m.action == "add_object"
+        assert m.changes.className == "Book"
+        assert len(m.changes.attributes) == 2
+        assert m.changes.attributes[0].name == "title"
+        assert m.changes.attributes[0].value == "Dune"
+
+
+class TestObjectModificationChangesNewFields:
+    """Tests for className and attributes on ObjectModificationChanges."""
+
+    def test_className_default_none(self):
+        c = ObjectModificationChanges()
+        assert c.className is None
+        assert c.attributes is None
+
+    def test_className_set(self):
+        c = ObjectModificationChanges(className="User")
+        assert c.className == "User"
+
+    def test_attributes_list(self):
+        c = ObjectModificationChanges(
+            attributes=[
+                ObjectAttributeSpec(name="name", value="Alice"),
+            ],
+        )
+        assert len(c.attributes) == 1
+        assert c.attributes[0].value == "Alice"
+
+
+# =============================================================================
+# Agent Diagram — new field tests
+# =============================================================================
+
+
+class TestAgentReplySpecNewFields:
+    """Tests for new replyType values (rag, db_reply, code) and ragDatabaseName."""
+
+    def test_replyType_rag(self):
+        r = AgentReplySpec(text="Searching knowledge base...", replyType="rag", ragDatabaseName="MyKB")
+        assert r.replyType == "rag"
+        assert r.ragDatabaseName == "MyKB"
+
+    def test_replyType_db_reply(self):
+        r = AgentReplySpec(text="SELECT * FROM users", replyType="db_reply")
+        assert r.replyType == "db_reply"
+        assert r.ragDatabaseName is None
+
+    def test_replyType_code(self):
+        r = AgentReplySpec(text="print('hello')", replyType="code")
+        assert r.replyType == "code"
+
+    @pytest.mark.parametrize("rtype", ["text", "llm", "rag", "db_reply", "code"])
+    def test_all_valid_replyTypes(self, rtype):
+        r = AgentReplySpec(text="t", replyType=rtype)
+        assert r.replyType == rtype
+
+    def test_ragDatabaseName_default_none(self):
+        r = AgentReplySpec(text="hi")
+        assert r.ragDatabaseName is None
+
+
+class TestAgentRagSpec:
+    """Tests for AgentRagSpec schema."""
+
+    def test_valid_creation(self):
+        rag = AgentRagSpec(name="CustomerKB")
+        assert rag.name == "CustomerKB"
+
+    def test_another_name(self):
+        rag = AgentRagSpec(name="ProductDocs")
+        assert rag.name == "ProductDocs"
+
+
+class TestAgentModificationAddState:
+    """Tests for AgentModification with action='add_state'."""
+
+    def test_add_state_with_replies(self):
+        m = AgentModification(
+            action="add_state",
+            target=AgentModificationTarget(stateName="greeting"),
+            changes=AgentModificationChanges(
+                replies=[
+                    AgentReplySpec(text="Hello!", replyType="text"),
+                    AgentReplySpec(text="How can I help?", replyType="llm"),
+                ],
+            ),
+        )
+        assert m.action == "add_state"
+        assert len(m.changes.replies) == 2
+        assert m.changes.replies[0].text == "Hello!"
+        assert m.changes.replies[1].replyType == "llm"
+
+
+class TestAgentModificationAddIntent:
+    """Tests for AgentModification with action='add_intent'."""
+
+    def test_add_intent_with_training_phrases(self):
+        m = AgentModification(
+            action="add_intent",
+            target=AgentModificationTarget(intentName="OrderFood"),
+            changes=AgentModificationChanges(
+                trainingPhrases=["I want to order", "get me food", "order pizza"],
+            ),
+        )
+        assert m.action == "add_intent"
+        assert len(m.changes.trainingPhrases) == 3
+
+    def test_add_intent_minimal(self):
+        m = AgentModification(
+            action="add_intent",
+            target=AgentModificationTarget(intentName="Greet"),
+        )
+        assert m.action == "add_intent"
+        assert m.changes is None
+
+
+class TestAgentModificationAddRagElement:
+    """Tests for AgentModification with action='add_rag_element'."""
+
+    def test_add_rag_element(self):
+        m = AgentModification(
+            action="add_rag_element",
+            target=AgentModificationTarget(stateName="queryState"),
+            changes=AgentModificationChanges(name="CustomerKB"),
+        )
+        assert m.action == "add_rag_element"
+        assert m.changes.name == "CustomerKB"
+
+
+class TestAgentModificationChangesNewFields:
+    """Tests for replies and trainingPhrases on AgentModificationChanges."""
+
+    def test_replies_default_none(self):
+        c = AgentModificationChanges()
+        assert c.replies is None
+
+    def test_trainingPhrases_default_none(self):
+        c = AgentModificationChanges()
+        assert c.trainingPhrases is None
+
+    def test_replies_set(self):
+        c = AgentModificationChanges(
+            replies=[AgentReplySpec(text="Welcome!", replyType="text")],
+        )
+        assert len(c.replies) == 1
+        assert c.replies[0].text == "Welcome!"
+
+    def test_trainingPhrases_set(self):
+        c = AgentModificationChanges(
+            trainingPhrases=["hi", "hello", "hey"],
+        )
+        assert len(c.trainingPhrases) == 3
+
+    def test_replies_and_trainingPhrases_together(self):
+        c = AgentModificationChanges(
+            replies=[AgentReplySpec(text="Sure!", replyType="text")],
+            trainingPhrases=["help me", "I need help"],
+        )
+        assert len(c.replies) == 1
+        assert len(c.trainingPhrases) == 2
+
+
+class TestSystemAgentSpecRagElements:
+    """Tests for ragElements field on SystemAgentSpec."""
+
+    def test_default_empty_ragElements(self):
+        s = SystemAgentSpec(
+            states=[AgentStateSpec(stateName="welcome")],
+        )
+        assert s.ragElements == []
+
+    def test_with_ragElements(self):
+        s = SystemAgentSpec(
+            states=[AgentStateSpec(stateName="queryState")],
+            ragElements=[
+                AgentRagSpec(name="CustomerKB"),
+                AgentRagSpec(name="ProductDocs"),
+            ],
+        )
+        assert len(s.ragElements) == 2
+        assert s.ragElements[0].name == "CustomerKB"
+        assert s.ragElements[1].name == "ProductDocs"
+
+    def test_full_agent_with_rag(self):
+        s = SystemAgentSpec(
+            systemName="SupportBot",
+            states=[
+                AgentStateSpec(
+                    stateName="ragQuery",
+                    replies=[AgentReplySpec(text="Looking it up...", replyType="rag", ragDatabaseName="KB")],
+                ),
+            ],
+            ragElements=[AgentRagSpec(name="KB")],
+        )
+        assert s.systemName == "SupportBot"
+        assert s.ragElements[0].name == "KB"
+        assert s.states[0].replies[0].replyType == "rag"
+        assert s.states[0].replies[0].ragDatabaseName == "KB"

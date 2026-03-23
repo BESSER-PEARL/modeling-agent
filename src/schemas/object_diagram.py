@@ -92,7 +92,15 @@ class ObjectModificationTarget(BaseModel):
 class ObjectModificationChanges(BaseModel):
     objectName: Optional[str] = Field(
         default=None,
-        description="New objectName when renaming an object. Must be lowerCamelCase, e.g. 'user2'."
+        description="New or renamed objectName. Must be lowerCamelCase, e.g. 'user2'."
+    )
+    className: Optional[str] = Field(
+        default=None,
+        description="Class name for add_object (e.g. 'User'). Must match a class from the reference diagram."
+    )
+    attributes: Optional[List[ObjectAttributeSpec]] = Field(
+        default=None,
+        description="Attributes with concrete values for add_object (e.g. [{name: 'id', value: 'USR001'}])."
     )
     value: Optional[str] = Field(
         default=None,
@@ -105,7 +113,7 @@ class ObjectModificationChanges(BaseModel):
 
 class ObjectModification(BaseModel):
     action: str = Field(
-        description="The modification action: 'modify_object', 'modify_attribute_value', 'add_link', or 'remove_element'."
+        description="The modification action: 'add_object', 'modify_object', 'modify_attribute_value', 'add_link', or 'remove_element'."
     )
     target: ObjectModificationTarget = Field(
         description="Identifies the element to modify. Use objectName for object operations, sourceObject/targetObject for link operations."

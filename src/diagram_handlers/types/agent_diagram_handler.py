@@ -501,19 +501,26 @@ IMPORTANT RULES:
     def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate modifications for existing agent diagram elements"""
         
-        system_prompt = """You are a conversational agent modeling expert. The user wants to modify an existing agent diagram.
+        system_prompt = """You are a conversational agent modeling expert. The user wants to modify an agent diagram.
 
-IMPORTANT RULES:
-1. Use "modify_state" or "modify_intent" to rename elements.
-2. Use "add_transition" to connect states (source -> target).
-3. Use "remove_transition" to disconnect states.
-4. Use "add_state_body" to add reply text to states.
-5. Use "add_intent_training_phrase" to add examples to intents.
-6. Use "remove_element" to delete states or intents.
-7. For transitions, "condition" is usually "when_intent_matched" with an "intentName".
-8. Only reference elements that exist in the current model.
-9. When the user asks for MULTIPLE changes at once (e.g., "add replies to state1 and state2"), return multiple modification objects in the list.
-10. Each modification needs an "action", a "target" identifying the element, and "changes" with new values (except for remove operations)."""
+AVAILABLE ACTIONS:
+- add_state: Create a new state. Set target.stateName, put replies [{text, replyType}] in changes.
+- add_intent: Create a new intent. Set target.intentName, put trainingPhrases ["phrase1","phrase2","phrase3"] in changes.
+- modify_state / modify_intent: Rename elements (set changes.name).
+- add_transition: Connect states (set target.sourceStateName, target.targetStateName, changes.condition, changes.intentName).
+- remove_transition: Disconnect states.
+- add_state_body: Add reply text to a state (changes.text, changes.replyType).
+- add_intent_training_phrase: Add example phrase to intent (changes.trainingPhrase).
+- remove_element: Delete a state or intent.
+- add_rag_element: Create a RAG knowledge base element. Set target.name to the KB name.
+
+RULES:
+1. For transitions, "condition" is usually "when_intent_matched" with an "intentName".
+2. For existing elements, use exact names from the current model.
+3. Multiple changes → return multiple modification objects in the list.
+4. replyType is "text" for scripted replies, "llm" for AI-generated.
+5. Example: "add a welcome state" → add_state with target.stateName="welcomeState", changes.replies=[{text:"Welcome!", replyType:"text"}]
+6. Example: "add a greeting intent" → add_intent with target.intentName="GreetingIntent", changes.trainingPhrases=["hello","hi","hey there"]"""
 
         # Build context from current model using centralized summariser
         context_block = ''

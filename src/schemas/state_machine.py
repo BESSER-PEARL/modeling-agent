@@ -122,6 +122,12 @@ class SingleStateSpec(BaseModel):
     )
 
 
+class StateCodeBlockSpec(BaseModel):
+    name: str = Field(description="Name/label for the code block")
+    code: str = Field(description="Python code content")
+    language: str = Field(default="python", description="Code language (always 'python')")
+
+
 class SystemStateMachineSpec(BaseModel):
     """Schema for a complete state machine system."""
     systemName: str = Field(
@@ -144,6 +150,7 @@ class SystemStateMachineSpec(BaseModel):
             "Self-transitions are valid for retry/refresh scenarios."
         ),
     )
+    codeBlocks: List[StateCodeBlockSpec] = Field(default_factory=list, description="Python code blocks that can be referenced by state bodies")
 
 
 # -- Modification schemas --
@@ -168,35 +175,41 @@ class StateMachineModificationChanges(BaseModel):
         default=None,
         description="New name for rename operations (PascalCase).",
     )
+    stateType: Optional[str] = Field(
+        default=None,
+        description="State type for add_state: 'regular', 'initial', or 'final'.",
+    )
     entryAction: Optional[str] = Field(
         default=None,
-        description="New entry action for the state.",
+        description="Entry action for the state.",
     )
     exitAction: Optional[str] = Field(
         default=None,
-        description="New exit action for the state.",
+        description="Exit action for the state.",
     )
     doActivity: Optional[str] = Field(
         default=None,
-        description="New ongoing activity for the state.",
+        description="Ongoing activity for the state.",
     )
     trigger: Optional[str] = Field(
         default=None,
-        description="New trigger event for a transition (camelCase verb phrase).",
+        description="Trigger event for a transition (camelCase verb phrase).",
     )
     guard: Optional[str] = Field(
         default=None,
-        description="New guard condition for a transition.",
+        description="Guard condition for a transition.",
     )
     effect: Optional[str] = Field(
         default=None,
-        description="New side-effect action for a transition.",
+        description="Side-effect action for a transition.",
     )
+    code: Optional[str] = Field(default=None, description="Python code content for add_code_block")
+    language: Optional[str] = Field(default=None, description="Code language (default: python)")
 
 
 class StateMachineModification(BaseModel):
     action: str = Field(
-        description="Modification action: 'modify_state', 'add_transition', 'modify_transition', or 'remove_element'.",
+        description="Modification action: 'add_state', 'modify_state', 'add_transition', 'modify_transition', 'add_code_block', or 'remove_element'.",
     )
     target: StateMachineModificationTarget = Field(
         description="Identifies the element to modify. Use stateName for states, sourceState/targetState for transitions.",

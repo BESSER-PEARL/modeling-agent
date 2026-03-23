@@ -397,15 +397,19 @@ TRANSITION DESIGN GUIDELINES:
     def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate modifications for existing state machine elements."""
 
-        system_prompt = """You are a UML modeling expert. The user wants to modify an existing state machine diagram.
+        system_prompt = """You are a UML modeling expert. The user wants to modify a state machine diagram.
 
 MODIFICATION RULES:
-1. Actions available: "modify_state", "add_transition", "modify_transition", "remove_element"
-2. Always specify exact target names that exist in the current model
-3. guard and effect are optional
-4. For remove_element, only specify the target — no "changes" needed
-5. When modifying, only include the fields that should change in the "changes" object
-6. Use PascalCase for new state names and camelCase for triggers"""
+1. Actions available: "add_state", "modify_state", "add_transition", "modify_transition", "add_code_block", "remove_element"
+2. add_state: set target.stateName to the new state name. Put stateType ("regular", "initial", or "final"), entryAction, exitAction, doActivity in "changes".
+3. modify_state: use exact target names from the current model
+4. add_transition: set target.sourceState and target.targetState. Put trigger, guard, effect in "changes".
+5. For remove_element, only specify the target — no "changes" needed
+6. When modifying, only include the fields that should change in the "changes" object
+7. Use PascalCase for state names and camelCase for triggers
+8. Example: "add a Processing state" → add_state with target.stateName="Processing", changes.stateType="regular"
+9. Example: "add a state with entry action validate" → add_state with changes.stateType="regular", changes.entryAction="validate()"
+10. add_code_block: create a Python code block. Set target.stateName to a label, put code and language in changes. """
 
         # Build context from current model using centralized helper
         context_block = ''

@@ -76,7 +76,6 @@ ctx.stt = stt
 
 # ── States ───────────────────────────────────────────────────────────────
 greetings_state = agent.new_state("greetings_state", initial=True)
-create_single_element_state = agent.new_state("create_single_element_state")
 create_complete_system_state = agent.new_state("create_complete_system_state")
 modify_model_state = agent.new_state("modify_model_state")
 modeling_help_state = agent.new_state("modeling_help_state")
@@ -89,18 +88,6 @@ workflow_state = agent.new_state("workflow_state")
 hello_intent = agent.new_intent(
     name="hello_intent",
     description="The user greets you or wants to start a conversation",
-)
-create_single_element_intent = agent.new_intent(
-    name="create_single_element_intent",
-    description=(
-        "The user wants to create exactly ONE single element in a diagram. "
-        'Examples: "create a class called User", "add a Person class", '
-        '"make one state", "create an object instance", '
-        '"add a Hadamard gate to qubit 0", "put an X gate on qubit 2", '
-        '"add a CNOT gate". '
-        "This is for creating ONE element only, NOT multiple elements, "
-        "systems, or complete algorithms."
-    ),
 )
 create_complete_system_intent = agent.new_intent(
     name="create_complete_system_intent",
@@ -133,10 +120,18 @@ create_complete_system_intent = agent.new_intent(
 modify_model_intent = agent.new_intent(
     name="modify_model_intent",
     description=(
-        "The user wants to modify, change, update, edit, add to, extend, "
-        "remove from, or connect elements in an EXISTING model or diagram. "
-        "This includes adding NEW classes or entities to an existing model. "
-        'Keywords: "add relationship", "connect", "add inheritance", '
+        "The user wants to modify, change, update, edit, ADD to, extend, "
+        "remove from, connect elements in, or CREATE a single element in "
+        "a model or diagram. "
+        "This includes adding NEW classes, states, or entities, as well as "
+        "creating a single element from scratch. "
+        'Single-element creation: "create a class", "create a class called User", '
+        '"make a class Person", "create a state", "make a state", '
+        '"make one state", "create an object instance". '
+        "ANY request starting with 'add' should use this intent: "
+        '"add a class", "add a Person class", "add a state", '
+        '"add a Hadamard gate", "add a CNOT gate". '
+        'Other keywords: "add relationship", "connect", "add inheritance", '
         '"modify class", "change attribute", "update method", "delete", '
         '"remove", "rename", "add association", "link classes". '
         'Natural language extensions: "I also want to store", '
@@ -233,7 +228,6 @@ register_all(
     agent=agent,
     states={
         "greetings": greetings_state,
-        "create_single_element": create_single_element_state,
         "create_complete_system": create_complete_system_state,
         "modify_model": modify_model_state,
         "modeling_help": modeling_help_state,
@@ -244,7 +238,6 @@ register_all(
     },
     intents={
         "hello": hello_intent,
-        "create_single_element": create_single_element_intent,
         "create_complete_system": create_complete_system_intent,
         "modify_model": modify_model_intent,
         "modeling_help": modeling_help_intent,

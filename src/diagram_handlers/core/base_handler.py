@@ -315,9 +315,18 @@ class BaseDiagramHandler(ABC):
         'add_link': 'Added link to',
     }
 
+    @staticmethod
+    def _sanitize_target_name(name: str) -> str:
+        """Strip JSON artifacts the LLM may leak into names."""
+        import re
+        # Remove trailing/leading JSON punctuation like },. or {
+        cleaned = re.sub(r'[{}\[\],;]+', '', name).strip()
+        return cleaned or 'element'
+
     @classmethod
     def _friendly_mod_message(cls, action: str, target_name: str) -> str:
         """Turn a raw action + target into a user-friendly message."""
+        target_name = cls._sanitize_target_name(target_name)
         label = cls._ACTION_LABELS.get(action)
         if label:
             return f"{label} **{target_name}**."

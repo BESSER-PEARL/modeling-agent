@@ -14,7 +14,6 @@ logger = logging.getLogger(__name__)
 ALLOWED_DIAGRAM_TYPES: Set[str] = SUPPORTED_DIAGRAM_TYPES
 
 ALLOWED_MODEL_MODES: Set[str] = {
-    "single_element",
     "complete_system",
     "modify_model",
 }
@@ -234,7 +233,6 @@ def _should_use_llm_planner(
     # diagram intent and keyword inference agrees (exactly 1 target, no
     # generation request), the fallback operations are sufficient.
     _SINGLE_TARGET_INTENTS = {
-        "create_single_element_intent",
         "create_complete_system_intent",
         "modify_model_intent",
     }
@@ -262,7 +260,6 @@ def _should_use_llm_planner(
 
 # Modeling intents that should never trigger an automatic generation operation.
 _MODELING_INTENTS = {
-    "create_single_element_intent",
     "create_complete_system_intent",
     "modify_model_intent",
     "modeling_help_intent",
@@ -661,7 +658,7 @@ def _validate_and_fix_plan(
 _FEW_SHOT_EXAMPLES = """
 EXAMPLES:
 User: "create a library system with books and authors" → [{"type":"model","diagramType":"ClassDiagram","mode":"complete_system","request":"create a library system with books and authors"}]
-User: "create a User class" → [{"type":"model","diagramType":"ClassDiagram","mode":"single_element","request":"create a User class"}]
+User: "create a User class" → [{"type":"model","diagramType":"ClassDiagram","mode":"modify_model","request":"create a User class"}]
 User: "create a library system and generate django" → [{"type":"model","diagramType":"ClassDiagram","mode":"complete_system","request":"create a library system"},{"type":"generation","generatorType":"django"}]
 User: "create a web app for a hotel booking" → [{"type":"model","diagramType":"ClassDiagram","mode":"complete_system","request":"create hotel booking system"},{"type":"model","diagramType":"GUINoCodeDiagram","mode":"complete_system","request":"create GUI for hotel booking"},{"type":"generation","generatorType":"web_app"}]
 User: "add an email attribute to the User class" → [{"type":"model","diagramType":"ClassDiagram","mode":"modify_model","request":"add email attribute to User class"}]
@@ -683,7 +680,7 @@ def plan_assistant_operations(
     Build an ordered operation plan for the assistant.
 
     Returns operations shaped as:
-    - {"type":"model","diagramType":"...","mode":"single_element|complete_system|modify_model","request":"..."}
+    - {"type":"model","diagramType":"...","mode":"complete_system|modify_model","request":"..."}
     - {"type":"generation","generatorType":"...","config":{...}}
     """
 
@@ -739,7 +736,7 @@ Operation types:
 {{
   "type": "model",
   "diagramType": "ClassDiagram|ObjectDiagram|StateMachineDiagram|AgentDiagram|GUINoCodeDiagram|QuantumCircuitDiagram",
-  "mode": "single_element|complete_system|modify_model",
+  "mode": "complete_system|modify_model",
   "request": "sub-request focused ONLY on this specific diagram type"
 }}
 2) generation:
@@ -753,7 +750,9 @@ Generator prerequisites (the planner must ensure these diagrams are created BEFO
 {json.dumps(GENERATOR_PREREQUISITES, indent=2)}
 
 Rules:
-- Emit one model operation for EACH detected diagram target, in dependency order.
+- ONLY emit operations for diagram types the user EXPLICITLY asks for. Do NOT infer extra diagram types.
+  For example, "Add a Payment class with status" → ONLY one ClassDiagram modify_model operation.
+- Emit one model operation for EACH explicitly requested diagram target, in dependency order.
 - ClassDiagram always comes first — other diagrams depend on it.
 - Each model operation's "request" should be a focused sub-request for that specific diagram only.
   IMPORTANT: Each sub-request MUST contain enough detail from the original request so the

@@ -251,7 +251,7 @@ def greetings_body(session: Session):
 # ------------------------------------------------------------------
 
 def _modeling_state_body(session: Session, intent_name: str, default_mode: str, empty_msg: str):
-    """Unified handler for all modeling operations (single element, system, modification)."""
+    """Unified handler for all modeling operations (system creation, modification)."""
     request = _common_preamble(session)
     if request is None:
         return
@@ -276,16 +276,6 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
     except Exception as e:
         logger.error(f"Error in {intent_name}: {e}", exc_info=True)
         reply_message(session, "Something went wrong while processing your request. Could you try rephrasing it?")
-
-
-def create_single_element_body(session: Session):
-    """Generate a single UML element based on the user's request."""
-    _modeling_state_body(
-        session,
-        intent_name='create_single_element_intent',
-        default_mode='single_element',
-        empty_msg="What element would you like me to create? For example: 'Create a User class'",
-    )
 
 
 def create_complete_system_body(session: Session):
@@ -827,7 +817,6 @@ def register_all(*, agent, states, intents):
     # -- Assign bodies --
     agent.set_global_fallback_body(global_fallback_body)
     states['greetings'].set_body(greetings_body)
-    states['create_single_element'].set_body(create_single_element_body)
     states['create_complete_system'].set_body(create_complete_system_body)
     states['modify_model'].set_body(modify_modeling_body)
     states['modeling_help'].set_body(modeling_help_body)
@@ -838,7 +827,6 @@ def register_all(*, agent, states, intents):
 
     # -- Wire transitions --
     intent_map = {
-        intents['create_single_element']: states['create_single_element'],
         intents['create_complete_system']: states['create_complete_system'],
         intents['modify_model']: states['modify_model'],
         intents['modeling_help']: states['modeling_help'],
@@ -853,7 +841,6 @@ def register_all(*, agent, states, intents):
 
     for state_name, fallback_name in [
         ('greetings', 'modeling_help'),
-        ('create_single_element', 'create_single_element'),
         ('create_complete_system', 'create_complete_system'),
         ('modify_model', 'modify_model'),
         ('modeling_help', 'modeling_help'),
