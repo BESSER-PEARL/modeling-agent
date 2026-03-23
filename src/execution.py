@@ -52,6 +52,9 @@ def handle_file_attachments(session: Session, request: AssistantRequest) -> bool
     if not request.has_attachments:
         return False
 
+    from utilities.model_resolution import resolve_target_model
+    from utilities.model_context import compact_model_summary
+
     openai_key = ctx.openai_api_key
 
     for attachment in request.attachments:
@@ -65,7 +68,67 @@ def handle_file_attachments(session: Session, request: AssistantRequest) -> bool
             llm_predict=ctx.gpt_predict_json,
             openai_api_key=openai_key,
         )
-        reply_payload(session, result)
+
+        # Errors are sent directly
+        if result.get("action") != "inject_complete_system":
+            reply_payload(session, result)
+            continue
+
+        # Check if the target diagram already has elements
+        target_diagram_type = result.get("diagramType", "ClassDiagram")
+        existing_model = resolve_target_model(request, target_diagram_type)
+
+        if model_has_elements(existing_model):
+            summary = compact_model_summary(existing_model, target_diagram_type)
+
+            all_tabs = request.context.get_all_diagrams_of_type(target_diagram_type)
+            tab_count = len(all_tabs) if all_tabs else 1
+            max_tabs = 5
+            can_add_tab = tab_count < max_tabs
+
+            # Store the pre-computed payload for the confirmation handler
+            session.set('pending_complete_system', {
+                'message': attachment.filename,
+                'diagram_type': target_diagram_type,
+                'precomputed_payload': result,
+                'can_add_tab': can_add_tab,
+            })
+
+            if can_add_tab:
+                confirmation_msg = (
+                    f"I extracted a {target_diagram_type} from '{attachment.filename}', "
+                    f"but you already have a model ({summary}). "
+                    "Would you like me to **replace** it, **keep** it and add alongside, "
+                    f"or create in a **new tab**? ({tab_count}/{max_tabs} tabs used)"
+                )
+                confirmation_actions = [
+                    {"label": "Replace existing", "prompt": "replace"},
+                    {"label": "Keep and add alongside", "prompt": "keep"},
+                    {"label": "Create in new tab", "prompt": "new tab"},
+                ]
+            else:
+                confirmation_msg = (
+                    f"I extracted a {target_diagram_type} from '{attachment.filename}', "
+                    f"but you already have a model ({summary}). "
+                    "Would you like me to **replace** it, or **keep** it and add alongside? "
+                    f"(All {max_tabs} tabs are in use)"
+                )
+                confirmation_actions = [
+                    {"label": "Replace existing", "prompt": "replace"},
+                    {"label": "Keep and add alongside", "prompt": "keep"},
+                ]
+
+            reply_payload(session, {
+                "action": "assistant_message",
+                "message": confirmation_msg,
+                "suggestedActions": confirmation_actions,
+            })
+            # Stop processing further attachments — the user must confirm first.
+            # Additional files in this message are dropped (rare edge case).
+            break
+        else:
+            # No existing model — inject directly
+            reply_payload(session, result)
 
     return True
 
@@ -324,88 +387,89 @@ def execute_model_operation(
     else:
         progress_thread = None
 
-    if operation_mode == "single_element":
-        if target_diagram_type == "ObjectDiagram":
-            reference_diagram = resolve_object_reference_diagram(request, target_model)
-            reference_class_count = count_reference_classes(reference_diagram)
-            if reference_class_count > 0:
-                logger.info(
-                    f"[ModelOp] ObjectDiagram reference resolved with {reference_class_count} class(es)."
+    try:
+        if operation_mode == "single_element":
+            if target_diagram_type == "ObjectDiagram":
+                reference_diagram = resolve_object_reference_diagram(request, target_model)
+                reference_class_count = count_reference_classes(reference_diagram)
+                if reference_class_count > 0:
+                    logger.info(
+                        f"[ModelOp] ObjectDiagram reference resolved with {reference_class_count} class(es)."
+                    )
+                else:
+                    logger.warning(
+                        "[ModelOp] ObjectDiagram reference is missing or empty."
+                    )
+                    reply_message(
+                        session,
+                        "Please create a **Class Diagram** first — Object Diagrams "
+                        "need class definitions to instantiate from.",
+                    )
+                    return None
+                result = handler.generate_single_element(
+                    modeling_prompt,
+                    reference_diagram=reference_diagram,
+                    existing_model=target_model,
                 )
             else:
-                logger.warning(
-                    "[ModelOp] ObjectDiagram reference is missing or empty."
+                result = handler.generate_single_element(
+                    modeling_prompt,
+                    existing_model=target_model,
+                    class_metadata=gui_class_metadata,
                 )
-                reply_message(
-                    session,
-                    "Please create a **Class Diagram** first — Object Diagrams "
-                    "need class definitions to instantiate from.",
-                )
-                return None
-            result = handler.generate_single_element(
+        elif operation_mode == "modify_model":
+            extra_kwargs: Dict[str, Any] = {"class_metadata": gui_class_metadata}
+            if target_diagram_type == "ObjectDiagram":
+                reference_diagram = resolve_object_reference_diagram(request, target_model)
+                reference_class_count = count_reference_classes(reference_diagram)
+                if reference_class_count > 0:
+                    logger.info(
+                        f"[ModelOp] ObjectDiagram modify reference resolved with {reference_class_count} class(es)."
+                    )
+                else:
+                    logger.warning(
+                        "[ModelOp] ObjectDiagram modify reference is missing or empty; output may drift."
+                    )
+                extra_kwargs["reference_diagram"] = reference_diagram
+            result = handler.generate_modification(
                 modeling_prompt,
-                reference_diagram=reference_diagram,
-                existing_model=target_model,
+                target_model,
+                **extra_kwargs,
             )
         else:
-            result = handler.generate_single_element(
-                modeling_prompt,
-                existing_model=target_model,
-                class_metadata=gui_class_metadata,
-            )
-    elif operation_mode == "modify_model":
-        extra_kwargs: Dict[str, Any] = {"class_metadata": gui_class_metadata}
-        if target_diagram_type == "ObjectDiagram":
-            reference_diagram = resolve_object_reference_diagram(request, target_model)
-            reference_class_count = count_reference_classes(reference_diagram)
-            if reference_class_count > 0:
-                logger.info(
-                    f"[ModelOp] ObjectDiagram modify reference resolved with {reference_class_count} class(es)."
+            if target_diagram_type == "ObjectDiagram":
+                reference_diagram = resolve_object_reference_diagram(request, target_model)
+                reference_class_count = count_reference_classes(reference_diagram)
+                if reference_class_count > 0:
+                    logger.info(
+                        f"[ModelOp] ObjectDiagram reference resolved with {reference_class_count} class(es)."
+                    )
+                else:
+                    logger.warning(
+                        "[ModelOp] ObjectDiagram reference is missing or empty."
+                    )
+                    reply_message(
+                        session,
+                        "Please create a **Class Diagram** first — Object Diagrams "
+                        "need class definitions to instantiate from.",
+                    )
+                    return None
+                result = handler.generate_complete_system(
+                    modeling_prompt,
+                    reference_diagram=reference_diagram,
+                    existing_model=target_model,
                 )
             else:
-                logger.warning(
-                    "[ModelOp] ObjectDiagram modify reference is missing or empty; output may drift."
+                result = handler.generate_complete_system(
+                    modeling_prompt,
+                    existing_model=target_model,
+                    class_metadata=gui_class_metadata,
                 )
-            extra_kwargs["reference_diagram"] = reference_diagram
-        result = handler.generate_modification(
-            modeling_prompt,
-            target_model,
-            **extra_kwargs,
-        )
-    else:
-        if target_diagram_type == "ObjectDiagram":
-            reference_diagram = resolve_object_reference_diagram(request, target_model)
-            reference_class_count = count_reference_classes(reference_diagram)
-            if reference_class_count > 0:
-                logger.info(
-                    f"[ModelOp] ObjectDiagram reference resolved with {reference_class_count} class(es)."
-                )
-            else:
-                logger.warning(
-                    "[ModelOp] ObjectDiagram reference is missing or empty."
-                )
-                reply_message(
-                    session,
-                    "Please create a **Class Diagram** first — Object Diagrams "
-                    "need class definitions to instantiate from.",
-                )
-                return None
-            result = handler.generate_complete_system(
-                modeling_prompt,
-                reference_diagram=reference_diagram,
-                existing_model=target_model,
-            )
-        else:
-            result = handler.generate_complete_system(
-                modeling_prompt,
-                existing_model=target_model,
-                class_metadata=gui_class_metadata,
-            )
-
-    # Stop the progress thread now that the handler is done
-    _progress_stop.set()
-    if progress_thread is not None:
-        progress_thread.join(timeout=1)
+    finally:
+        # Always stop the progress thread, even if the handler raised an exception
+        _progress_stop.set()
+        if progress_thread is not None:
+            progress_thread.join(timeout=1)
 
     logger.info(
         f"[ModelOp] Handler result: action={result.get('action') if isinstance(result, dict) else 'N/A'}, "
@@ -432,12 +496,6 @@ def execute_model_operation(
     if _replace_existing is not None:
         result["replaceExisting"] = bool(_replace_existing)
         logger.info(f"[ModelOp] replaceExisting={_replace_existing} (from direct parameter)")
-    else:
-        replace_flag = session.get('_replace_existing_model')
-        if replace_flag is not None:
-            result["replaceExisting"] = bool(replace_flag)
-            session.set('_replace_existing_model', None)
-            logger.info(f"[ModelOp] replaceExisting={replace_flag} (from session variable)")
 
     # Signal the frontend to create a new tab before injecting
     if _create_new_tab:
@@ -805,6 +863,10 @@ def execute_planned_operations(
                 error_code = _classify_error(error)
                 error_payload = _build_error_payload(operation, error, error_code)
                 reply_payload(session, error_payload)
+                # Clear any stale pending state left by the failed operation
+                for key in ('pending_complete_system', 'pending_gui_choice'):
+                    if session.get(key):
+                        session.set(key, None)
                 logger.error(f"[PlannedOps] Model op error ({error_code}): {error}")
             continue
 

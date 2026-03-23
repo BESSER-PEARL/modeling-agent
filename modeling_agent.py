@@ -279,30 +279,38 @@ def _start_cleanup_timer():
         while True:
             _time.sleep(600)  # Every 10 minutes
             try:
-                # --- Reap orphaned agent sessions (stops their event-loop threads) ---
-                active_conn_ids = set(websocket_platform._connections.keys())
-                all_session_ids = list(agent._sessions.keys())
+                # Snapshot dict keys to avoid RuntimeError from concurrent modification.
+                # These are O(n) copies but sessions are few (tens, not thousands).
+                try:
+                    active_conn_ids = set(list(websocket_platform._connections.keys()))
+                    all_session_ids = list(agent._sessions.keys())
+                except RuntimeError:
+                    # Dict changed during iteration — skip this cycle
+                    continue
                 now = _time.time()
 
                 for sid in all_session_ids:
                     if sid in active_conn_ids:
-                        # Still connected — reset tracker
                         _disconnected_since.pop(sid, None)
                         continue
 
-                    # First time we see this session disconnected
                     if sid not in _disconnected_since:
                         _disconnected_since[sid] = now
                         continue
 
-                    # Check grace period
                     if now - _disconnected_since[sid] < _GRACE_PERIOD:
                         continue
 
-                    # Grace period expired — close the session
+                    # Grace period expired — verify session still exists before closing
+                    if sid not in agent._sessions:
+                        _disconnected_since.pop(sid, None)
+                        continue
+
                     try:
                         agent.close_session(sid)
                         logger.info(f"[Reaper] Closed orphaned session {sid}")
+                    except (KeyError, RuntimeError):
+                        pass  # Session was already removed by another thread
                     except Exception as exc:
                         logger.warning(f"[Reaper] Failed to close session {sid}: {exc}")
                     _disconnected_since.pop(sid, None)
@@ -310,7 +318,7 @@ def _start_cleanup_timer():
                 # Clean up tracker for sessions that no longer exist
                 for sid in list(_disconnected_since):
                     if sid not in agent._sessions:
-                        del _disconnected_since[sid]
+                        _disconnected_since.pop(sid, None)
 
             except Exception as exc:
                 logger.warning(f"[Reaper] Session cleanup error: {exc}")

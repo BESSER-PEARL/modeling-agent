@@ -270,6 +270,30 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
         event_message = getattr(session.event, "message", "")
         cleaned_message, prefixed_diagram = strip_diagram_prefix(event_message if isinstance(event_message, str) else "")
         diagram_type = normalize_diagram_type(prefixed_diagram or default_diagram_type, default=default_diagram_type)
+
+        # Voice messages arrive as plain text (after STT) with no JSON context.
+        # The frontend sends the workspace context as a session variable
+        # '_voice_context' right before the audio payload.
+        voice_ctx = session.get("_voice_context")
+        if isinstance(voice_ctx, dict):
+            # Consume the context so it's not reused for the next message
+            session.set("_voice_context", None)
+            # Re-parse as if it were a v2 payload with the transcribed message
+            synthetic_payload = {
+                "action": "user_message",
+                "protocolVersion": "2.0",
+                "clientMode": "workspace",
+                "message": cleaned_message,
+                "context": voice_ctx,
+            }
+            request = parse_v2_payload(synthetic_payload, default_diagram_type=default_diagram_type)
+            try:
+                session.set(cache_key, request)
+                session.set(event_id_key, current_event_id)
+            except Exception:
+                pass
+            return request
+
         context = WorkspaceContext(active_diagram_type=diagram_type)
         request = AssistantRequest(
             action="user_message",

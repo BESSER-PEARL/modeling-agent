@@ -220,6 +220,31 @@ def handle_pending_system_confirmation(session: Session) -> bool:
 
     # --- User answered: execute the stored creation -----------------------
 
+    # ── Pre-computed payload path (file uploads) ──────────────────────
+    # File conversions (PDF, PlantUML, images) produce a ready-to-send
+    # payload.  We just need to stamp replaceExisting / create_new_tab.
+    precomputed = pending.get('precomputed_payload')
+    if precomputed is not None:
+        precomputed = dict(precomputed)  # Shallow copy to avoid mutating stored state
+        stored_diagram_type = pending.get('diagram_type', 'ClassDiagram')
+        if wants_new_tab:
+            logger.info(f"[PendingConfirm] File upload: user chose NEW TAB for {stored_diagram_type}")
+            reply_payload(session, {
+                "action": "create_diagram_tab",
+                "diagramType": stored_diagram_type,
+            })
+            precomputed["replaceExisting"] = True
+        elif wants_replace:
+            logger.info(f"[PendingConfirm] File upload: user chose REPLACE for {stored_diagram_type}")
+            precomputed["replaceExisting"] = True
+        else:
+            logger.info(f"[PendingConfirm] File upload: user chose KEEP for {stored_diagram_type}")
+            precomputed["replaceExisting"] = False
+
+        reply_payload(session, precomputed)
+        session.set('pending_complete_system', None)
+        return True
+
     # Re-execute the stored operation with the original parameters.
     stored_message = pending.get('message', '')
     stored_diagram_type = pending.get('diagram_type', 'ClassDiagram')

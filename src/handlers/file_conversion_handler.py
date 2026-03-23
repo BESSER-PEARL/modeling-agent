@@ -491,19 +491,35 @@ def _convert_pdf(
         doc.close()
         return _error_response(f"The PDF file '{filename}' has no pages.")
 
-    # Extract text from all pages (cap at 20 pages to stay within LLM limits)
-    text_parts = []
-    max_pages = min(page_count, 20)
-    for i in range(max_pages):
-        page_text = doc[i].get_text("text").strip()
-        if page_text:
-            text_parts.append(f"--- Page {i + 1} ---\n{page_text}")
+    # Extract all content from the PDF upfront, then close the doc.
+    # Using try/finally ensures the doc is always closed even on unexpected errors.
+    full_text = ""
+    images_b64 = []
+    try:
+        # Extract text from all pages (cap at 20 pages to stay within LLM limits)
+        text_parts = []
+        max_pages = min(page_count, 20)
+        for i in range(max_pages):
+            page_text = doc[i].get_text("text").strip()
+            if page_text:
+                text_parts.append(f"--- Page {i + 1} ---\n{page_text}")
+        full_text = "\n\n".join(text_parts)
 
-    full_text = "\n\n".join(text_parts)
+        # If low text, render pages to images for vision analysis
+        if len(full_text) <= 50 and openai_api_key:
+            render_pages = min(page_count, 3)
+            for i in range(render_pages):
+                try:
+                    pix = doc[i].get_pixmap(dpi=200)
+                    img_bytes = pix.tobytes("png")
+                    images_b64.append(base64.b64encode(img_bytes).decode("ascii"))
+                except Exception as e:
+                    logger.warning(f"[FileConversion] Failed to render PDF page {i + 1}: {e}")
+    finally:
+        doc.close()
 
     # If we got meaningful text, use text-based conversion
     if len(full_text) > 50:
-        doc.close()
         if len(full_text) > 30_000:
             full_text = full_text[:30_000] + "\n\n... [truncated — showing first 30KB]"
         prompt = _build_auto_detect_prompt(f"PDF document ('{filename}', {page_count} page(s))")
@@ -511,26 +527,11 @@ def _convert_pdf(
         return _run_llm_conversion(prompt, filename, "PDF", None, llm_predict)
 
     # Low text content — PDF likely contains diagrams/images.
-    # Render pages to images and use the vision API.
     if not openai_api_key:
-        doc.close()
         return _error_response(
             f"The PDF '{filename}' appears to contain diagrams/images rather than text. "
             "Image-based PDF conversion requires an OpenAI API key with vision capabilities."
         )
-
-    # Render up to 3 pages as images for vision analysis
-    images_b64 = []
-    render_pages = min(page_count, 3)
-    for i in range(render_pages):
-        try:
-            pix = doc[i].get_pixmap(dpi=200)
-            img_bytes = pix.tobytes("png")
-            images_b64.append(base64.b64encode(img_bytes).decode("ascii"))
-        except Exception as e:
-            logger.warning(f"[FileConversion] Failed to render PDF page {i + 1}: {e}")
-
-    doc.close()
 
     if not images_b64:
         return _error_response(
