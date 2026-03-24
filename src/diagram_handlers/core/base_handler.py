@@ -515,7 +515,7 @@ class BaseDiagramHandler(ABC):
     _SMALL_OUTPUT_SCHEMAS = {
         "SingleClassSpec", "SingleObjectSpec", "SingleStateSpec",
         "SingleGUIElementSpec", "SingleQuantumGateSpec", "AgentSingleElementSpec",
-        "ClassModificationResponse", "ObjectModificationResponse",
+        "ObjectModificationResponse",
         "StateMachineModificationResponse", "GUIModificationSpec",
         "QuantumModificationSpec", "AgentModificationResponse",
     }

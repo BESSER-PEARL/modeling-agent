@@ -16,3 +16,4 @@ htmlcov/
 *.pyc
 !config_example.yaml
 docs/build/
+scripts/*

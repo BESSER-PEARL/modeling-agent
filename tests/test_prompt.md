@@ -5,6 +5,7 @@
 | # | Prompt | Expected Result |
 |---|--------|-----------------|
 | 1 | "Create a library management system" | 4-6 classes with attributes, relationships, multiplicities. No code on methods (`implementationType=none`) |
+I also want to store information about the users of the library and the books they read
 | 2 | "Add a Payment class with amount, date, and status" | Payment class added. Then "link it to Library" adds a relationship |
 | 3 | "Create an abstract class Vehicle with speed and color" | `type: AbstractClass`, italic name, `<<abstract>>` stereotype |
 | 4 | "Create an enumeration OrderStatus with PENDING, PROCESSING, SHIPPED, DELIVERED and add it as an attribute of the book too" | `type: Enumeration` with values (no `: str`). Book gets `orderStatus: OrderStatus` |

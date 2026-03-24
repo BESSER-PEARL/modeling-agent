@@ -389,10 +389,12 @@ ADVANCED ACTIONS (for structural refactoring):
 
 CRITICAL — READ CAREFULLY:
 - The CURRENT MODEL is provided below. NEVER re-create anything that already exists.
-- The conversation history is also provided. If it says you JUST created something (e.g., an enum), that element EXISTS even if not shown in the model summary. Do NOT re-create it.
+- The conversation history is also provided. If it says you JUST created something, it EXISTS. Do NOT re-create it.
 - ONLY output modifications for what the user asks RIGHT NOW. Never repeat past operations.
 - If the user's message is short/ambiguous (e.g., "ok and X?", "also Y"), interpret it as ADDING to the most recently discussed element.
-- Use simple, clean PascalCase names for classes (e.g., "Sex", "OrderStatus", "PaymentMethod"). Never use long descriptive names.
+
+NAMING: Class names MUST be exactly ONE word in PascalCase: "User", "Book", "Order", "Payment".
+NEVER concatenate words like "UserLibraryUser", "BookReading", "OrderPayment". Just "User", "Reading", "Payment".
 
 KEY RULES:
 1. Use exact names from the current model in "target".
@@ -403,6 +405,7 @@ KEY RULES:
 6. DELETE: also remove its relationships. Batch all removals.
 7. modify_relationship = update existing. add_relationship = brand new.
 8. add_class: set target.className and put className, attributes[], methods[] in "changes".
+9. When adding new classes, add relationships connecting them to existing classes. Include multiplicities. This is critical — isolated classes with no relationships are useless.
 
 ENUMERATION RULES:
 - Create enum: add_class with isEnumeration=true. Enum values are attributes with name only (NO type field).
