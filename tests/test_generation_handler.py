@@ -416,3 +416,85 @@ class TestHandleGenerationRequestSafetyNet:
         result = handle_generation_request(session, request)
         assert result["action"] == "trigger_generator"
         assert result["generatorType"] == "python"
+
+
+# ---------------------------------------------------------------------------
+# _is_modeling_request — pattern-based detection (no hardcoded domain list)
+# ---------------------------------------------------------------------------
+
+class TestIsModelingRequestPatternBased:
+    """Tests for the improved pattern-based _is_modeling_request()."""
+
+    def test_any_domain_with_for(self):
+        """'create a web app for <anything>' should be modeling."""
+        assert _is_modeling_request("create a web app for insurance claims") is True
+
+    def test_novel_domain(self):
+        """Domains not in any hardcoded list should still work."""
+        assert _is_modeling_request("design a platform for cryptocurrency trading") is True
+
+    def test_build_system_for_anything(self):
+        assert _is_modeling_request("build a system for managing wildlife reserves") is True
+
+    def test_model_application_for_domain(self):
+        assert _is_modeling_request("model an application for tracking marine biology data") is True
+
+    def test_create_noun_phrase_3_words(self):
+        """3+ word noun phrases after modeling verb are modeling."""
+        assert _is_modeling_request("create a hotel booking system") is True
+
+    def test_create_noun_phrase_2_words(self):
+        """2-word noun phrases that aren't generator keywords are modeling."""
+        assert _is_modeling_request("create a booking platform") is True
+
+    def test_bare_generator_not_modeling(self):
+        """'generate django' must NOT be caught as modeling."""
+        assert _is_modeling_request("generate django") is False
+
+    def test_bare_python_not_modeling(self):
+        assert _is_modeling_request("generate python") is False
+
+    def test_explicit_code_generation_not_modeling(self):
+        """Explicit 'generate code' phrases override modeling detection."""
+        assert _is_modeling_request("create a system and generate code") is False
+
+    def test_export_not_modeling(self):
+        assert _is_modeling_request("export my model to json") is False
+
+    def test_deploy_not_modeling(self):
+        assert _is_modeling_request("deploy my app to render") is False
+
+    def test_build_me_a_web_app(self):
+        """'build me a web app' with no 'for X' but clear modeling intent."""
+        assert _is_modeling_request("build me a reservation system") is True
+
+    def test_short_generator_only_not_modeling(self):
+        """Two generator-only words should not be modeling."""
+        assert _is_modeling_request("generate sql backend") is False
+
+
+# ---------------------------------------------------------------------------
+# _is_diagram_creation_request — mid-sentence verb detection
+# ---------------------------------------------------------------------------
+
+class TestIsDiagramCreationRequestMidSentence:
+    """Tests for improved diagram creation detection with mid-sentence verbs."""
+
+    def test_id_like_you_to_generate(self):
+        assert _is_diagram_creation_request("i'd like you to generate a class diagram") is True
+
+    def test_can_we_build(self):
+        assert _is_diagram_creation_request("can we build a state machine for orders") is True
+
+    def test_could_you_create_mid_sentence(self):
+        assert _is_diagram_creation_request("hey could you create an agent diagram") is True
+
+    def test_lets_design(self):
+        assert _is_diagram_creation_request("let's design a class diagram for a library") is True
+
+    def test_generate_django_still_false(self):
+        assert _is_diagram_creation_request("generate django code for me") is False
+
+    def test_i_want_to_generate_sql(self):
+        """No diagram type token → False."""
+        assert _is_diagram_creation_request("i want to generate sql") is False

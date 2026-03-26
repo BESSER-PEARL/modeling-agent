@@ -15,7 +15,12 @@ from typing import Any, Dict, Optional
 from besser.agent.core.session import Session
 
 from protocol.adapters import parse_assistant_request
-from handlers.generation_handler import should_route_to_generation
+from handlers.generation_handler import (
+    should_route_to_generation,
+    detect_generator_type,
+    _is_modeling_request,
+    _is_diagram_creation_request,
+)
 from memory import get_memory
 
 logger = logging.getLogger(__name__)
@@ -95,6 +100,28 @@ def json_intent_matches(session: Session, params: Dict[str, Any]) -> bool:
 
     if hasattr(session.event, 'predicted_intent') and session.event.predicted_intent:
         matched_intent = session.event.predicted_intent.intent
+
+        # Cross-validation: when the LLM says generation_intent but
+        # deterministic checks disagree, override the classification.
+        # This catches cases where the LLM is fooled by generator keywords
+        # embedded in modeling requests (e.g. "create a web app for X").
+        if matched_intent.name == 'generation_intent' and target_intent_name == 'generation_intent':
+            request = parse_assistant_request(session)
+            message = request.message
+            if message:
+                lower = message.lower()
+                has_generator = detect_generator_type(message) is not None
+                is_modeling = _is_modeling_request(message)
+                is_diagram = _is_diagram_creation_request(lower)
+                # If it's a modeling/diagram request, don't match generation
+                if is_modeling or is_diagram:
+                    return False
+                # If the LLM says generation but no generator keyword found,
+                # don't match — let it fall through to fallback which will
+                # stream a helpful response.
+                if not has_generator:
+                    return False
+
         return matched_intent.name == target_intent_name
 
     return False
