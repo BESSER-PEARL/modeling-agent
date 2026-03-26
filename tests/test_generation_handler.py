@@ -8,6 +8,8 @@ from handlers.generation_handler import (
     _normalize_defaults,
     _build_config_prompt,
     _looks_like_mixed_modeling_and_generation,
+    _is_modeling_request,
+    _is_diagram_creation_request,
     handle_generation_request,
     should_route_to_generation,
     GENERATOR_KEYWORDS,
@@ -285,3 +287,132 @@ class TestHandleGenerationRequest:
         assert result["action"] == "trigger_generator"
         assert result["generatorType"] == "smartdata"
         assert result["config"]["output_format"] == "json"
+
+
+# ---------------------------------------------------------------------------
+# _is_diagram_creation_request — prevents "generate a class diagram" from
+# being treated as code generation
+# ---------------------------------------------------------------------------
+
+class TestIsDiagramCreationRequest:
+    def test_generate_class_diagram(self):
+        assert _is_diagram_creation_request("generate a class diagram") is True
+
+    def test_generate_class_diagram_for_library(self):
+        assert _is_diagram_creation_request("generate a class diagram for a library system") is True
+
+    def test_create_state_machine(self):
+        assert _is_diagram_creation_request("create a state machine for order processing") is True
+
+    def test_generate_django_not_diagram(self):
+        assert _is_diagram_creation_request("generate django") is False
+
+    def test_generate_python_code_not_diagram(self):
+        assert _is_diagram_creation_request("generate python code") is False
+
+    def test_generate_sql_not_diagram(self):
+        assert _is_diagram_creation_request("generate sql from my model") is False
+
+    def test_please_generate_class_diagram(self):
+        assert _is_diagram_creation_request("please generate a class diagram") is True
+
+    def test_i_need_a_class_diagram(self):
+        assert _is_diagram_creation_request("i need a class diagram") is True
+
+    def test_build_quantum_circuit(self):
+        assert _is_diagram_creation_request("build a quantum circuit") is True
+
+
+# ---------------------------------------------------------------------------
+# _is_modeling_request — now includes diagram creation fast path
+# ---------------------------------------------------------------------------
+
+class TestIsModelingRequest:
+    def test_generate_class_diagram_is_modeling(self):
+        """'generate a class diagram' must be caught as modeling, not code gen."""
+        assert _is_modeling_request("generate a class diagram") is True
+
+    def test_generate_class_diagram_for_library_is_modeling(self):
+        assert _is_modeling_request("generate a class diagram for a library") is True
+
+    def test_create_web_app_for_hotel_is_modeling(self):
+        assert _is_modeling_request("create a web app for hotel booking") is True
+
+    def test_generate_django_is_not_modeling(self):
+        assert _is_modeling_request("generate django") is False
+
+    def test_generate_python_code_is_not_modeling(self):
+        assert _is_modeling_request("generate python code") is False
+
+
+# ---------------------------------------------------------------------------
+# detect_generator_type — word boundary fixes
+# ---------------------------------------------------------------------------
+
+class TestDetectGeneratorTypeBoundary:
+    def test_sql_does_not_match_sqlalchemy(self):
+        """'sql' keyword with boundary check must not match inside 'sqlalchemy'."""
+        # sqlalchemy should be detected as sqlalchemy, not sql
+        assert detect_generator_type("generate sqlalchemy") == "sqlalchemy"
+
+    def test_sql_standalone(self):
+        assert detect_generator_type("generate sql") == "sql"
+
+    def test_backend_standalone(self):
+        assert detect_generator_type("generate backend code") == "backend"
+
+    def test_full_backend(self):
+        assert detect_generator_type("generate a full backend") == "backend"
+
+
+# ---------------------------------------------------------------------------
+# should_route_to_generation — diagram creation guard
+# ---------------------------------------------------------------------------
+
+class TestShouldRouteToGenerationDiagramGuard:
+    def test_generate_class_diagram_not_routed(self):
+        """'generate a class diagram' must NOT route to generation."""
+        request = _make_request("generate a class diagram")
+        session = FakeSession()
+        assert should_route_to_generation(session, request) is False
+
+    def test_generate_state_machine_not_routed(self):
+        request = _make_request("generate a state machine for orders")
+        session = FakeSession()
+        assert should_route_to_generation(session, request) is False
+
+    def test_generate_django_still_routed(self):
+        request = _make_request("generate django code")
+        session = FakeSession()
+        assert should_route_to_generation(session, request) is True
+
+
+# ---------------------------------------------------------------------------
+# handle_generation_request — safety net for misrouted modeling requests
+# ---------------------------------------------------------------------------
+
+class TestHandleGenerationRequestSafetyNet:
+    def test_modeling_request_redirected(self):
+        """If LLM misclassifies 'create a web app for hotel' as generation,
+        the handler should redirect instead of triggering web_app generator."""
+        request = _make_request("create a web app for hotel booking")
+        session = FakeSession()
+        result = handle_generation_request(session, request)
+        assert result["action"] == "assistant_message"
+        assert "design" in result["message"].lower() or "create" in result["message"].lower()
+
+    def test_diagram_creation_redirected(self):
+        """'generate a class diagram' landing in generation handler should redirect."""
+        request = _make_request("generate a class diagram for a library")
+        session = FakeSession()
+        result = handle_generation_request(session, request)
+        assert result["action"] == "assistant_message"
+        assert "diagram" in result["message"].lower() or "create" in result["message"].lower()
+
+    def test_genuine_generation_not_blocked(self):
+        """Genuine 'generate python classes' should still trigger the generator."""
+        request = _make_request("generate python classes")
+        session = FakeSession()
+        result = handle_generation_request(session, request)
+        assert result["action"] == "trigger_generator"
+        assert result["generatorType"] == "python"
