@@ -26,9 +26,12 @@ The request planner uses a 3-tier approach to minimize LLM calls:
   expressions matches common request shapes (e.g., "create a web app for X",
   "generate Django", "create a GUI for this system", "add a state machine").
   Handles ~90% of simple requests with zero LLM calls.
-- **Tier 1 -- Keyword-based fallback with intent-aware fast path:** Keyword
-  detection determines diagram type + mode. Skips the LLM planner when the
+- **Tier 1 -- Keyword-based fallback with discriminating patterns:** Diagram
+  type is resolved via explicit keywords (``KEYWORD_TARGETS``) or discriminating
+  regex patterns (``_IMPLICIT_PATTERNS``). Skips the LLM planner when the
   intent classifier already resolved a single target with no generation request.
+  When no pattern matches a creation intent, escalates to Tier 2 instead of
+  defaulting blindly.
 - **Tier 2 -- LLM planner:** Only genuinely complex multi-step requests
   (multiple diagram types + generation in one message) invoke the LLM for
   decomposition.
@@ -146,10 +149,11 @@ Three-Level Resolution
      "quantum circuit" → QuantumCircuitDiagram
             │
             ▼ (no keyword match)
-   Level 2: Implicit semantic scoring
-     Weighted token matching per diagram type
+   Level 2: Discriminating pattern rules
+     AND-based regex patterns requiring
+     strong, unambiguous vocabulary
             │
-            ▼ (no clear winner)
+            ▼ (no pattern match)
    Level 3: Context fallback
      Active diagram type from WorkspaceContext
      Default priority: ClassDiagram > ObjectDiagram >
@@ -158,7 +162,7 @@ Three-Level Resolution
 Level 1: Keyword Matching
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Direct string matching against the user message:
+Direct string matching against the user message (``KEYWORD_TARGETS``):
 
 .. list-table::
    :header-rows: 1
@@ -166,34 +170,84 @@ Direct string matching against the user message:
 
    * - Keyword Pattern
      - Resolved Type
-   * - ``"class diagram"``
+   * - ``"class diagram"``, ``"domain model"``, ``"structural model"``
      - ``ClassDiagram``
    * - ``"object diagram"``
      - ``ObjectDiagram``
    * - ``"state machine"``, ``"state diagram"``
      - ``StateMachineDiagram``
-   * - ``"agent diagram"``, ``"multi agent"``
+   * - ``"agent diagram"``, ``"an agent"``, ``"chatbot"``
      - ``AgentDiagram``
-   * - ``"gui"``, ``"user interface"``, ``"no code"``
+   * - ``"gui diagram"``, ``"a gui"``, ``"web ui"``
      - ``GUINoCodeDiagram``
-   * - ``"quantum circuit"``, ``"quantum"``
+   * - ``"quantum circuit"``, ``"quantum"``, ``"qubit"``, ``"grover"``, etc.
      - ``QuantumCircuitDiagram``
 
-Level 2: Semantic Scoring
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+Level 2: Discriminating Pattern Rules
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Each diagram type has a set of token/weight pairs. The type with the highest
-cumulative score wins. For example, ``ClassDiagram`` scores highly on tokens like
-"class", "attribute", "method", "inheritance", while ``StateMachineDiagram``
-scores on "state", "transition", "event", "guard".
+When no explicit keyword matches, the system uses **discriminating regex
+patterns** (``_IMPLICIT_PATTERNS``) that require strong, unambiguous signals
+using AND-based logic.
+
+.. note::
+
+   This replaced an older **additive weight scoring** system where generic words
+   like "model" (weight=1) + "system" (weight=1) + "application" (weight=1) could
+   accumulate to score 3 for ClassDiagram — three vague words confidently picking
+   a diagram type. The new system requires at least one domain-specific term or a
+   co-occurrence of two related terms.
+
+How patterns work:
+
+- **Single strong signal**: ``"lifecycle"`` alone → StateMachineDiagram. No
+  supporting evidence needed — the word is unambiguous.
+- **Co-occurrence**: ``"state"`` + ``"transition"`` (within 40 characters) →
+  StateMachineDiagram. Neither word alone is sufficient.
+- **No match on generic words**: ``"system"``, ``"model"``, ``"application"``
+  alone produce NO match. The request falls through to Level 3.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Diagram Type
+     - Discriminating Signals
+   * - ``QuantumCircuitDiagram``
+     - Any of: ``quantum``, ``qubit``, ``qiskit``, ``grover``, ``shor``,
+       ``hadamard``, ``cnot``, ``superposition``, ``entangle``, ``qft``
+   * - ``ObjectDiagram``
+     - ``object instance``, ``instance of``, ``runtime object``
+   * - ``StateMachineDiagram``
+     - ``lifecycle``, ``workflow state``, or ``state`` co-occurring with
+       ``transition``/``flow``/``event``/``process``
+   * - ``AgentDiagram``
+     - ``multi-agent``, ``conversational agent``, ``chatbot``, or ``agent``
+       co-occurring with ``intent``/``training``/``reply``
+   * - ``GUINoCodeDiagram``
+     - ``gui``, ``user interface``, ``wireframe``, or ``frontend``/``screen``/
+       ``page``/``layout`` co-occurring with ``design``/``create``/``build``
+   * - ``ClassDiagram``
+     - ``structural``, ``domain model``, ``business model``, or ``class``/
+       ``entity`` co-occurring with ``attribute``/``method``/``relationship``
 
 Level 3: Context Fallback
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-If no scoring threshold is met:
+If no discriminating pattern matches:
 
 1. Use ``active_diagram_type`` from the ``WorkspaceContext``
-2. Fall back to default priority order
+2. Check ``project_snapshot`` for existing diagram types in priority order
+3. Use ``diagram_type`` from the request header
+4. Last resort: default to ``ClassDiagram``
+
+.. note::
+
+   When Level 2 produces no match and the matched intent is
+   ``create_complete_system_intent``, the system now escalates to the **LLM
+   planner** (Tier 2) rather than defaulting blindly to ClassDiagram. This
+   ensures ambiguous creation requests like "build a system with states and
+   processes" get LLM-resolved diagram types.
 
 Execution Flow
 --------------

@@ -29,7 +29,9 @@ Contents
    :caption: Architecture
 
    architecture
+   intent_recognition
    schema
+   websocket_protocol
    diagram_handlers
    orchestration
 
