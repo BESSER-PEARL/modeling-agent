@@ -95,11 +95,18 @@ create_complete_system_intent = agent.new_intent(
         "The user wants to CREATE or BUILD a complete system, diagram, "
         "algorithm, or multiple elements from scratch. "
         'Keywords: "create a library system", "create a class diagram for", '
+        '"generate a class diagram", "generate a class diagram for", '
+        '"generate a state machine", "generate a diagram for", '
         '"design an e-commerce", "build a system", "create a diagram for", '
         '"model a", "create classes for", "generate the gui", "create the gui", '
         '"generate the frontend", "build the frontend", '
         '"create a web app for", "model a web application for", '
         '"design a web app for", "build a web app for". '
+        "IMPORTANT: When 'generate' is followed by a diagram type (class "
+        "diagram, state machine, object diagram, agent diagram, GUI diagram, "
+        "quantum circuit), it means CREATE a diagram, NOT generate code. "
+        '"generate a class diagram" = create_complete_system_intent. '
+        '"generate django" or "generate python code" = generation_intent. '
         "Quantum keywords: \"create Grover's algorithm\", "
         '"build a quantum circuit", "implement Shor algorithm", '
         '"make a Bell state", "create QFT circuit", '
@@ -203,6 +210,10 @@ generation_intent = agent.new_intent(
         "This is strictly for CODE GENERATION from existing models, EXPORT, "
         "or DEPLOYMENT — NOT for creating, modeling, designing, or building "
         "new diagrams, systems, models, GUIs, or frontends. "
+        "IMPORTANT: 'generate a class diagram', 'generate a state machine', "
+        "'generate a diagram for X', 'generate an object diagram' are NOT "
+        "generation — those are create_complete_system_intent because the "
+        "user wants to CREATE a diagram, not generate source code. "
         "If the user says 'create a web app for X' or 'model a web "
         "application for Y', that is a creation/modeling intent, NOT "
         "generation."

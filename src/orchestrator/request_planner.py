@@ -255,6 +255,18 @@ def _should_use_llm_planner(
     if has_multi_clause and not has_explicit_diagram_tokens and len(lower) > 120:
         return True
 
+    # When neither explicit keywords nor discriminating patterns produced a
+    # target (inferred_target_count == 0 from context fallback), and the
+    # message is a creation intent with enough content to be meaningful,
+    # let the LLM resolve the diagram type rather than defaulting blindly.
+    if (
+        matched_intent == "create_complete_system_intent"
+        and inferred_target_count <= 1
+        and not has_explicit_diagram_tokens
+        and len(lower) > 40
+    ):
+        return True
+
     return False
 
 

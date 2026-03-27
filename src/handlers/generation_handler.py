@@ -90,17 +90,94 @@ _FUZZY_PATTERNS: List[Tuple[str, re.Pattern]] = [
 
 
 def detect_generator_type(message: str) -> Optional[str]:
+    """Detect a code-generator keyword in *message*.
+
+    This is a **pure detection** function — it returns the first matching
+    generator type without judging whether the overall request is really a
+    code-generation request.  Higher-level callers (``should_route_to_generation``,
+    ``handle_generation_request``) apply contextual guards such as
+    ``_is_modeling_request`` and ``_is_diagram_creation_request``.
+    """
     lower = (message or "").lower()
-    # 1. Exact keyword matching (fast path)
+
+    # 1. Exact keyword matching (fast path) — use word-boundary-aware check
+    #    for short/ambiguous keywords to avoid substring false positives
+    #    (e.g. "sql" matching inside "sqlalchemy").
+    _BOUNDARY_KEYWORDS = {"sql", "backend"}
     for generator_type, keywords in GENERATOR_KEYWORDS.items():
         for keyword in keywords:
-            if keyword in lower:
-                return generator_type
+            if keyword in _BOUNDARY_KEYWORDS:
+                # Word-boundary match to avoid substring collisions
+                if re.search(r'\b' + re.escape(keyword) + r'\b', lower):
+                    return generator_type
+            else:
+                if keyword in lower:
+                    return generator_type
     # 2. Regex fallback for flexible phrasing
     for generator_type, pattern in _FUZZY_PATTERNS:
         if pattern.search(lower):
             return generator_type
     return None
+
+
+# Diagram-type tokens used to detect "generate a <diagram>" requests that
+# should be treated as modeling (creation), not code generation.
+_DIAGRAM_TYPE_TOKENS = [
+    "class diagram", "object diagram", "state machine", "state diagram",
+    "agent diagram", "gui diagram", "quantum circuit", "quantum diagram",
+    "structural diagram", "domain model", "structural model",
+]
+
+# Pre-compiled patterns for _is_diagram_creation_request (avoid recompiling).
+_CREATION_VERB_START = re.compile(
+    r'^(?:please\s+|can you\s+|could you\s+|i want to\s+|i\'d like to\s+)?'
+    r'(?:generate|create|build|design|make|model|draft|develop)\b'
+)
+_CREATION_VERB_ANYWHERE = re.compile(
+    r'\b(?:generate|create|build|design|make|model|draft|develop)\b'
+    r'.{0,30}'  # up to 30 chars between verb and diagram token
+    r'\b(?:class diagram|object diagram|state (?:machine|diagram)|agent diagram'
+    r'|gui diagram|quantum (?:circuit|diagram)|structural (?:diagram|model)|domain model)\b'
+)
+_NEED_PATTERN = re.compile(
+    r'\b(?:need|want|give me|show me|produce|draw)\b.*\b(?:diagram|model|machine|circuit)\b'
+)
+
+
+def _is_diagram_creation_request(lower: str) -> bool:
+    """Return True when the message asks to generate/create a *diagram* rather
+    than generate source code from an existing model.
+
+    Examples that should return True:
+      - "generate a class diagram"
+      - "generate the state machine for an order"
+      - "i'd like you to generate a class diagram for a library system"
+      - "can we build a state machine"
+
+    Examples that should return False:
+      - "generate django"
+      - "generate python code"
+      - "generate sql from my model"
+    """
+    # Must mention a diagram type
+    if not any(token in lower for token in _DIAGRAM_TYPE_TOKENS):
+        return False
+
+    # Check 1: message starts with a creation verb (possibly with filler).
+    if _CREATION_VERB_START.search(lower):
+        return True
+
+    # Check 2: creation verb appears anywhere NEAR a diagram type token.
+    # Catches "I'd like you to generate a class diagram" and
+    # "can we create a state machine for the order process".
+    if _CREATION_VERB_ANYWHERE.search(lower):
+        return True
+
+    # Check 3: "I need a class diagram", "give me a state diagram", etc.
+    if _NEED_PATTERN.search(lower):
+        return True
+
+    return False
 
 
 def _extract_project_name_from_context(request: AssistantRequest) -> str:
@@ -335,48 +412,83 @@ def _looks_like_mixed_modeling_and_generation(message: str) -> bool:
     return has_modeling_language and has_multi_step_connector
 
 
-def _is_modeling_request(message: str) -> bool:
-    """Return True when the message is primarily asking to model/create/design a system.
+# Pattern: "create/build/design … for <anything>" — the "for" signals a domain
+# context, making this a modeling request regardless of generator keywords.
+_MODELING_VERB_FOR_PATTERN = re.compile(
+    r'\b(?:create|build|design|model|make|develop|architect|plan|draft)\b'
+    r'.{1,60}'       # up to 60 chars between verb and "for"
+    r'\bfor\b'
+    r'.{3,}',        # at least 3 chars after "for" (a real domain phrase)
+    re.I,
+)
 
-    This catches phrases like "create a web app for hotel booking" or
-    "model the web application for a library" which should be handled by
-    the modeling states, NOT the code-generation pipeline, even though
-    they contain generator keywords like "web app".
+# Pattern: "create/build/design a <noun-phrase>" where the noun phrase is NOT
+# a bare generator keyword.  Catches "build me a web app", "create a booking
+# platform", etc.  The negative lookahead excludes bare generator targets like
+# "generate django" or "generate sql".
+_MODELING_VERB_OBJECT_PATTERN = re.compile(
+    r'\b(?:create|build|design|model|make|develop|architect|plan|draft)\b'
+    r'\s+(?:me\s+|us\s+)?'               # optional "me"/"us"
+    r'(?:a|an|the|my|our|this)?\s*'       # optional article
+    r'(?!django\b|sql\b|python\b|java\b|pydantic\b|qiskit\b|backend\b)'  # NOT a bare generator
+    r'(\w+(?:\s+\w+){1,4})',              # 2-5 word noun phrase
+    re.I,
+)
+
+# Explicit generation phrases that override modeling detection.
+_EXPLICIT_GENERATION_PHRASES = [
+    "generate code", "generate the code", "generate source",
+    "run generator", "trigger generator", "code generation",
+    "source code", "export", "deploy",
+]
+
+
+def _is_modeling_request(message: str) -> bool:
+    """Return True when the message is primarily asking to model/create/design
+    a system, NOT to generate source code from an existing model.
+
+    Uses pattern-based detection instead of a hardcoded domain list, so
+    "create a web app for insurance claims" works just as well as
+    "create a web app for hotel booking".
     """
     lower = (message or "").lower()
 
-    # Verbs that indicate the user wants to BUILD a model, not generate code
-    modeling_verbs = [
-        "model ", "create ", "design ", "build ", "make ",
-        "develop ", "architect ", "plan ", "draft ",
-    ]
-    has_modeling_verb = any(lower.startswith(v) or f" {v}" in lower for v in modeling_verbs)
-    if not has_modeling_verb:
+    # Fast path: diagram creation requests are always modeling.
+    if _is_diagram_creation_request(lower):
+        return True
+
+    # Veto: explicit generation phrases always win.
+    if any(g in lower for g in _EXPLICIT_GENERATION_PHRASES):
         return False
 
-    # Domain qualifiers that signal a business system to be modeled
-    domain_qualifiers = [
-        " for ", " system", " management", " booking", " tracking",
-        " platform", " portal", " store", " shop", " service",
-        " inventory", " order", " customer", " library", " school",
-        " hospital", " restaurant", " hotel", " e-commerce", " ecommerce",
-        " marketplace", " dashboard", " reservation", " rental",
-        " banking", " clinic", " university", " employee",
-    ]
-    has_domain = any(q in lower for q in domain_qualifiers)
-    if not has_domain:
-        return False
+    # Pattern 1: "verb … for <domain>" — strongest signal.
+    # "create a web app for hotel booking" ✓
+    # "build a platform for managing inventory" ✓
+    # "design a system for insurance claims" ✓
+    if _MODELING_VERB_FOR_PATTERN.search(lower):
+        return True
 
-    # If the user explicitly asks for code/source generation, honour that
-    explicit_generation_phrases = [
-        "generate code", "generate the code", "generate source",
-        "run generator", "trigger generator", "code generation",
-        "source code", "export", "deploy",
-    ]
-    if any(g in lower for g in explicit_generation_phrases):
-        return False
+    # Pattern 2: "verb [article] <noun-phrase>" with 2+ words after article.
+    # "create a booking platform" ✓  "build me a reservation system" ✓
+    # "generate django" ✗ (bare generator keyword, excluded by lookahead)
+    m = _MODELING_VERB_OBJECT_PATTERN.search(lower)
+    if m:
+        noun_phrase = m.group(1).strip()
+        # The noun phrase must contain a domain/system word, not just a
+        # generator keyword.  A noun phrase of 3+ words is strong enough
+        # on its own ("hotel booking system").  For 2-word phrases, check
+        # that at least one word isn't a pure generator keyword.
+        words = noun_phrase.split()
+        _GENERATOR_ONLY_WORDS = {
+            "django", "sql", "python", "java", "pydantic", "qiskit",
+            "sqlalchemy", "backend", "jsonschema", "smartdata", "agent",
+        }
+        if len(words) >= 3:
+            return True
+        if len(words) == 2 and not all(w in _GENERATOR_ONLY_WORDS for w in words):
+            return True
 
-    return True
+    return False
 
 
 def should_route_to_generation(session: Session, request: AssistantRequest) -> bool:
@@ -388,6 +500,11 @@ def should_route_to_generation(session: Session, request: AssistantRequest) -> b
     if _looks_like_mixed_modeling_and_generation(request.message):
         return False
     if _is_modeling_request(request.message):
+        return False
+    # Pure diagram-creation requests ("generate a class diagram") should NOT
+    # be routed to generation even if no domain qualifier is present (which
+    # _is_modeling_request requires).
+    if _is_diagram_creation_request((request.message or "").lower()):
         return False
     return detect_generator_type(request.message) is not None
 
@@ -441,6 +558,26 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     pending_generator, pending_config = _get_pending_state(session)
     detected_generator = detect_generator_type(request.message)
 
+    # Safety net: if the intent classifier misrouted a modeling request here
+    # (e.g. "create a web app for hotel booking" contains "web app" which
+    # matches the web_app generator keyword), redirect the user instead of
+    # silently triggering code generation on a possibly empty canvas.
+    _lower_msg_check = (request.message or "").lower()
+    if not pending_generator and (
+        _is_modeling_request(request.message)
+        or _is_diagram_creation_request(_lower_msg_check)
+    ):
+        _clear_pending_state(session)
+        return {
+            "action": "assistant_message",
+            "message": (
+                "It looks like you want to **create a diagram or design a system**, "
+                "not generate code from an existing model. Try rephrasing as: "
+                '**"create a class diagram for …"** or **"design a system for …"** '
+                "so I can build the model first."
+            ),
+        }
+
     # If we were awaiting a generator selection, use the detected type only.
     # The sentinel "_awaiting_selection" is not a real generator.
     if pending_generator == _AWAITING_SELECTION:
@@ -450,12 +587,33 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         generator_type = detected_generator or pending_generator
 
     if not generator_type:
-        # Check if the user actually wants a diagram (GUI/frontend), not code
+        _lower_msg = (request.message or "").lower()
+
+        # If the message is really about creating a diagram (class diagram,
+        # state diagram, etc.) rather than generating code, redirect the user
+        # back to the modeling intent instead of showing the generator menu.
+        _non_gui_diagram_tokens = [
+            "class diagram", "object diagram", "state machine",
+            "state diagram", "structural diagram", "domain model",
+            "quantum circuit", "quantum diagram", "agent diagram",
+        ]
+        if any(token in _lower_msg for token in _non_gui_diagram_tokens):
+            _clear_pending_state(session)
+            return {
+                "action": "assistant_message",
+                "message": (
+                    "It sounds like you want to **create a diagram**, not "
+                    "generate source code. Try rephrasing as: "
+                    '**"create a class diagram for a library system"** or '
+                    '**"design a state machine for order processing"**.'
+                ),
+            }
+
+        # Check if the user actually wants a GUI/frontend diagram, not code
         _gui_hints = [
             "gui", "frontend", "no-code", "nocode", "grapesjs",
-            "diagram", "ui diagram", "gui diagram", "create the gui",
+            "ui diagram", "gui diagram", "create the gui",
         ]
-        _lower_msg = (request.message or "").lower()
         if any(hint in _lower_msg for hint in _gui_hints):
             _clear_pending_state(session)
             return {

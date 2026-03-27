@@ -52,88 +52,74 @@ KEYWORD_TARGETS = [
     ("teleportation circuit", "QuantumCircuitDiagram"),
 ]
 
+
+# ---------------------------------------------------------------------------
+# Discriminating pattern rules — replacement for the old additive-weight
+# IMPLICIT_TARGET_RULES.
+#
+# Each rule is a (diagram_type, compiled_regex) pair.  Patterns use
+# AND-based logic: they require at least one *strong, discriminating*
+# signal that unambiguously points to a diagram type.  Generic words
+# like "system", "model", "application" are intentionally excluded —
+# if none of the patterns match, we fall through to the context fallback
+# (active diagram) rather than guessing wrong.
+#
+# Rules are checked in order; the FIRST match wins (most specific first).
+# ---------------------------------------------------------------------------
+
+_IMPLICIT_PATTERNS: List[Tuple[str, re.Pattern]] = [
+    # ── Quantum (very specific vocabulary — match first) ──
+    # Any single quantum-specific term is sufficient.
+    ("QuantumCircuitDiagram", re.compile(
+        r"\b(?:quantum|qubits?|qiskit|grover|shor|hadamard|cnot|superposition"
+        r"|entangl\w*|qft|teleportation|bell\s*state"
+        r"|bernstein|deutsch|gates?)\b", re.I)),
+
+    # ── Object Diagram ──
+    ("ObjectDiagram", re.compile(
+        r"\b(?:object\s*instances?|instances?\s+of|runtime\s+objects?|instances)\b", re.I)),
+
+    # ── State Machine (requires state-specific vocabulary) ──
+    # Either a strong standalone signal (lifecycle, workflow state, transition)
+    # or "state(s)" co-occurring with transition/flow/event/process.
+    ("StateMachineDiagram", re.compile(
+        r"\b(?:lifecycle|workflow\s*states?"
+        r"|transitions?\b.{0,40}\b(?:states?|status)"
+        r"|(?:states?|status)\b.{0,40}\b(?:transitions?|flows?|events?|process))\b", re.I)),
+
+    # ── Agent Diagram ──
+    ("AgentDiagram", re.compile(
+        r"\b(?:multi[- ]?agents?|conversational\s+agents?|chatbots?"
+        r"|agents?\b.{0,30}\b(?:intents?|training|reply|response)"
+        r"|(?:intents?|training\s+phrases?)\b.{0,30}\b(?:agents?))\b", re.I)),
+
+    # ── GUI / Frontend (must have explicit GUI vocabulary) ──
+    ("GUINoCodeDiagram", re.compile(
+        r"\b(?:gui|user\s*interface|wireframes?|no[- ]?code|grapesjs"
+        r"|(?:frontend|screens?|pages?|layouts?|dashboards?)\b.{0,30}\b(?:design|create|build|diagram)"
+        r"|(?:create|build|design)\b.{0,30}\b(?:frontend|screens?|pages?|layouts?))\b", re.I)),
+
+    # ── Class Diagram (structural vocabulary — checked last among specifics) ──
+    # Either a strong standalone signal (structural, domain model) or
+    # class/entity co-occurring with attribute/method/relationship.
+    ("ClassDiagram", re.compile(
+        r"\b(?:structural|domain\s+model|business\s+model|system\s+model"
+        r"|(?:class(?:es)?|entit(?:y|ies))\b.{0,40}\b(?:attributes?|methods?|relationships?|associations?|inheritance)"
+        r"|(?:attributes?|methods?|relationships?|associations?|inheritance)\b.{0,40}\b(?:class(?:es)?|entit(?:y|ies)))\b",
+        re.I)),
+]
+
+# Backward-compatible alias — some imports reference this name.
+# Keep the old dict shape so nothing breaks at import time, but mark
+# deprecated.  The actual scoring function `_rank_implicit_targets` now
+# uses `_IMPLICIT_PATTERNS` instead.
 IMPLICIT_TARGET_RULES: Dict[str, List[Tuple[str, int]]] = {
-    "ClassDiagram": [
-        ("structural", 5),
-        ("domain model", 5),
-        ("web application", 5),
-        ("web app", 5),
-        ("entity", 4),
-        ("entities", 4),
-        ("class", 4),
-        ("attribute", 3),
-        ("method", 3),
-        ("relationship", 3),
-        ("association", 3),
-        ("inheritance", 3),
-        ("business model", 3),
-        ("system model", 3),
-        ("model", 1),
-        ("system", 1),
-        ("application", 1),
-        ("platform", 1),
-    ],
-    "ObjectDiagram": [
-        ("object instance", 5),
-        ("instances", 4),
-        ("instance of", 4),
-        ("runtime object", 4),
-        ("snapshot", 3),
-    ],
-    "StateMachineDiagram": [
-        ("lifecycle", 5),
-        ("workflow state", 5),
-        ("transition", 4),
-        ("event", 3),
-        ("state", 3),
-        ("status", 3),
-        ("flow", 3),
-        ("process", 3),
-        ("journey", 2),
-    ],
-    "AgentDiagram": [
-        ("multi-agent", 5),
-        ("conversational agent", 5),
-        ("agent", 4),
-        ("intent", 4),
-        ("training phrase", 3),
-        ("reply", 3),
-        ("assistant", 2),
-        ("chatbot", 2),
-    ],
-    "GUINoCodeDiagram": [
-        ("gui", 4),
-        ("ui", 4),
-        ("user interface", 5),
-        ("web application", 4),
-        ("web app", 4),
-        ("screen", 4),
-        ("page", 4),
-        ("dashboard", 4),
-        ("form", 3),
-        ("layout", 3),
-        ("frontend", 3),
-        ("wireframe", 3),
-    ],
-    "QuantumCircuitDiagram": [
-        ("quantum", 6),
-        ("qiskit", 6),
-        ("qubit", 5),
-        ("quantum circuit", 5),
-        ("grover", 5),
-        ("shor", 5),
-        ("bell state", 5),
-        ("hadamard", 5),
-        ("cnot", 5),
-        ("superposition", 5),
-        ("entanglement", 4),
-        ("entangle", 4),
-        ("qft", 4),
-        ("teleportation", 4),
-        ("gate", 3),
-        ("bernstein", 3),
-        ("deutsch", 3),
-    ],
+    "ClassDiagram": [("structural", 5), ("domain model", 5), ("class", 4)],
+    "ObjectDiagram": [("object instance", 5), ("instances", 4)],
+    "StateMachineDiagram": [("lifecycle", 5), ("transition", 4), ("state", 3)],
+    "AgentDiagram": [("multi-agent", 5), ("agent", 4), ("intent", 4)],
+    "GUINoCodeDiagram": [("gui", 4), ("user interface", 5), ("frontend", 3)],
+    "QuantumCircuitDiagram": [("quantum", 6), ("qubit", 5), ("grover", 5)],
 }
 
 FALLBACK_PRIORITY: Tuple[str, ...] = (
@@ -159,22 +145,27 @@ def _collect_explicit_targets(message_lower: str) -> List[str]:
 
 
 def _rank_implicit_targets(message_lower: str) -> List[str]:
-    ranked: List[Tuple[int, int, str]] = []
+    """Match the message against discriminating patterns.
 
-    for diagram_type, rules in IMPLICIT_TARGET_RULES.items():
-        score = 0
-        first_index = 10**9
-        for token, weight in rules:
-            match = re.search(r'\b' + re.escape(token) + r'\b', message_lower)
-            if match:
-                score += weight
-                first_index = min(first_index, match.start())
+    Unlike the old additive-weight system, each pattern uses AND-based
+    logic — it requires a *strong, unambiguous* signal (e.g. "lifecycle"
+    alone, or "state" + "transition" together).  Generic words like
+    "system" or "model" alone will NOT produce a match; the caller will
+    fall through to the context-based fallback instead of guessing.
 
-        if score > 0:
-            ranked.append((score, first_index, diagram_type))
-
-    ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
-    return [diagram_type for _, _, diagram_type in ranked]
+    Returns matched diagram types in pattern-priority order (most specific
+    first).  Typically returns 0 or 1 results; multiple results are
+    possible when the message mentions vocabulary from several diagram types.
+    """
+    matched: List[str] = []
+    seen: Set[str] = set()
+    for diagram_type, pattern in _IMPLICIT_PATTERNS:
+        if diagram_type in seen:
+            continue
+        if pattern.search(message_lower):
+            matched.append(diagram_type)
+            seen.add(diagram_type)
+    return matched
 
 
 def _normalize_context_type(diagram_type: Optional[str]) -> Optional[str]:
