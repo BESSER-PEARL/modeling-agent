@@ -1,24 +1,19 @@
-"""Tests for BaseDiagramHandler utilities -- caching, JSON cleaning, validation, error classification."""
+"""Tests for BaseDiagramHandler utilities -- JSON cleaning, validation, error classification."""
 import pytest
 import sys
 import os
 import json
-import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from diagram_handlers.core.base_handler import (
-    _cache_key, _cache_get, _cache_put, _normalize_cache_key,
     validate_spec, LLMPredictionError,
     SINGLE_CLASS_REQUIRED, SINGLE_CLASS_OPTIONAL,
     SYSTEM_CLASS_REQUIRED, SYSTEM_CLASS_OPTIONAL,
     MODIFICATION_REQUIRED, MODIFICATION_INNER_REQUIRED,
     BaseDiagramHandler,
-    _prompt_cache, _PROMPT_CACHE_TTL,
 )
-
-# Re-import the module so we can patch module-level globals
-import diagram_handlers.core.base_handler as _bh_module
+from errors import classify_error
 
 
 # ---------------------------------------------------------------------------
@@ -51,108 +46,13 @@ class _FakeLLM:
         return self.response
 
 
-@pytest.fixture(autouse=True)
-def _clear_cache():
-    """Ensure each test starts with a clean prompt cache."""
-    _prompt_cache.clear()
-    yield
-    _prompt_cache.clear()
-
-
 @pytest.fixture
 def handler():
     return _TestHandler(_FakeLLM())
 
 
 # =========================================================================
-# 1. _normalize_cache_key
-# =========================================================================
-
-class TestNormalizeCacheKey:
-    def test_collapses_whitespace(self):
-        assert _normalize_cache_key("  hello   world  ") == "hello world"
-
-    def test_strips_newlines_and_tabs(self):
-        assert _normalize_cache_key("\thello\n\nworld\t") == "hello world"
-
-    def test_empty_string(self):
-        assert _normalize_cache_key("") == ""
-
-    def test_single_word(self):
-        assert _normalize_cache_key("  hello  ") == "hello"
-
-
-# =========================================================================
-# 2. _cache_key  (cache disabled — returns constant)
-# =========================================================================
-
-class TestCacheKey:
-    def test_same_prompt_same_key(self):
-        assert _cache_key("hello world") == _cache_key("hello world")
-
-    def test_different_prompts_different_keys(self):
-        # Cache is disabled — key is always the same empty string
-        assert _cache_key("hello world") == _cache_key("goodbye world")
-
-    def test_whitespace_variants_same_key(self):
-        assert _cache_key("hello  world") == _cache_key("hello world")
-
-    def test_returns_string_of_expected_length(self):
-        key = _cache_key("anything")
-        assert isinstance(key, str)
-
-
-# =========================================================================
-# 3. _cache_put / _cache_get  (cache disabled — always returns None)
-# =========================================================================
-
-class TestCachePutGet:
-    def test_put_then_get(self):
-        _cache_put("prompt A", "response A")
-        # Cache disabled: always returns None
-        assert _cache_get("prompt A") is None
-
-    def test_get_missing_returns_none(self):
-        assert _cache_get("nonexistent prompt") is None
-
-    def test_overwrite_existing(self):
-        _cache_put("p", "v1")
-        _cache_put("p", "v2")
-        assert _cache_get("p") is None
-
-
-# =========================================================================
-# 4. Cache TTL  (cache disabled — no-op)
-# =========================================================================
-
-class TestCacheTTL:
-    def test_expired_entry_returns_none(self, monkeypatch):
-        _cache_put("ttl-prompt", "ttl-response")
-        assert _cache_get("ttl-prompt") is None
-
-    def test_fresh_entry_survives(self, monkeypatch):
-        _cache_put("fresh-prompt", "fresh-response")
-        # Cache disabled — even fresh entries return None
-        assert _cache_get("fresh-prompt") is None
-
-
-# =========================================================================
-# 5. Cache LRU eviction  (cache disabled — no-op)
-# =========================================================================
-
-class TestCacheLRUEviction:
-    def test_oldest_evicted_when_full(self, monkeypatch):
-        _cache_put("p1", "r1")
-        _cache_put("p2", "r2")
-        _cache_put("p3", "r3")
-        _cache_put("p4", "r4")
-        assert _cache_get("p1") is None
-        assert _cache_get("p2") is None
-        assert _cache_get("p4") is None
-
-
-# =========================================================================
-# 6-10. validate_spec
+# 1-5. validate_spec
 # =========================================================================
 
 class TestValidateSpec:
@@ -284,29 +184,35 @@ class TestErrorResponse:
 # =========================================================================
 
 class TestClassifyError:
+    """Tests for the unified classify_error() from the errors module.
+
+    The classification logic was previously on BaseDiagramHandler._classify_error
+    and is now in errors.classify_error.
+    """
+
     def test_timeout(self, handler):
-        assert handler._classify_error(Exception("request timed out")) == "timeout"
+        assert classify_error(Exception("request timed out")).value == "timeout"
 
     def test_timeout_keyword(self, handler):
-        assert handler._classify_error(Exception("timeout exceeded")) == "timeout"
+        assert classify_error(Exception("timeout exceeded")).value == "timeout"
 
     def test_json_parse(self, handler):
-        assert handler._classify_error(Exception("json decode error")) == "parse_error"
+        assert classify_error(Exception("json decode error")).value == "parse_error"
 
     def test_parse_keyword(self, handler):
-        assert handler._classify_error(Exception("could not parse response")) == "parse_error"
+        assert classify_error(Exception("could not parse response")).value == "parse_error"
 
     def test_validation_error(self, handler):
-        assert handler._classify_error(Exception("validation failed")) == "validation_error"
+        assert classify_error(Exception("validation failed")).value == "validation_error"
 
     def test_schema_keyword(self, handler):
-        assert handler._classify_error(Exception("schema mismatch")) == "validation_error"
+        assert classify_error(Exception("schema mismatch")).value == "validation_error"
 
     def test_llm_prediction_error(self, handler):
-        assert handler._classify_error(LLMPredictionError("boom")) == "llm_failure"
+        assert classify_error(LLMPredictionError("boom")).value == "llm_failure"
 
     def test_generic_exception(self, handler):
-        assert handler._classify_error(Exception("something else")) == "generation_error"
+        assert classify_error(Exception("something else")).value == "unknown"
 
 
 # =========================================================================

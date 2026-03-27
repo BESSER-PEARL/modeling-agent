@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional
 import logging
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
+from ..core.prompt_fragments import POSITION_DISCLAIMER
 from schemas import AgentSingleElementSpec, SystemAgentSpec, AgentModificationResponse
 from utilities.model_context import detailed_model_summary
 
@@ -21,7 +22,7 @@ class AgentDiagramHandler(BaseDiagramHandler):
         return "AgentDiagram"
 
     def get_system_prompt(self) -> str:
-        return """You are a conversational agent modeling expert. Create a SINGLE agent diagram element specification.
+        return f"""You are a conversational agent modeling expert. Create a SINGLE agent diagram element specification.
 
 IMPORTANT RULES:
 1. Provide the "type" field (state, intent, or initial) based on the user request.
@@ -29,7 +30,7 @@ IMPORTANT RULES:
 3. Add "fallbackBodies" only when the request mentions fallbacks or error handling.
 4. For intents include 3-4 "trainingPhrases" that reflect how a user would trigger the intent.
 5. Keep names concise (camelCase for states, TitleCase for intents).
-6. Do NOT include any "position" field - positioning is handled automatically."""
+6. {POSITION_DISCLAIMER}"""
 
     def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a single agent diagram element with deterministic positioning."""
@@ -66,7 +67,7 @@ IMPORTANT RULES:
     def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a complete agent conversation flow with deterministic positioning."""
 
-        system_prompt = """You are a conversational agent modeling expert. Create a COMPLETE agent diagram specification.
+        system_prompt = f"""You are a conversational agent modeling expert. Create a COMPLETE agent diagram specification.
 
 Before generating, think through:
 - What conversation states does this agent need?
@@ -90,7 +91,7 @@ IMPORTANT RULES:
 7. Keep names consistent (camelCase for states, TitleCase for intents).
 8. Include "sourceDirection" and "targetDirection" for visual flow.
 9. FallbackBodies are optional.
-10. Do NOT include any "position" field - positioning is handled automatically."""
+10. {POSITION_DISCLAIMER}"""
 
         user_request_prompt = f"{user_request}"
 
@@ -532,33 +533,10 @@ RULES:
         user_prompt = f"Modify the agent diagram: {user_request}{context_block}"
         
         try:
-            parsed = self.predict_structured(user_prompt, AgentModificationResponse, system_prompt=system_prompt)
-            mod_list = parsed.model_dump()["modifications"]
-            if len(mod_list) == 1:
-                modification_spec = {"action": "modify_model", "modification": mod_list[0]}
-            else:
-                modification_spec = {"action": "modify_model", "modifications": mod_list}
+            return self._execute_modification(
+                user_prompt, system_prompt, AgentModificationResponse,
+            )
 
-            # Validate (supports both single and batch)
-            self.validate_modification_spec(modification_spec)
-
-            # Ensure proper structure
-            modification_spec.setdefault('action', 'modify_model')
-            modification_spec.setdefault('diagramType', self.get_diagram_type())
-            
-            # Generate message if not provided
-            if 'message' not in modification_spec:
-                if 'modifications' in modification_spec and isinstance(modification_spec['modifications'], list):
-                    modification_spec['message'] = self._friendly_batch_message(modification_spec['modifications'])
-                elif 'modification' in modification_spec and isinstance(modification_spec['modification'], dict):
-                    mod = modification_spec['modification']
-                    act = mod.get('action', 'modification')
-                    target = mod.get('target', {})
-                    name = target.get('stateName') or target.get('intentName') or 'element'
-                    modification_spec['message'] = self._friendly_mod_message(act, name)
-            
-            return modification_spec
-            
         except LLMPredictionError as e:
             logger.error(f"[AgentDiagram] generate_modification LLM FAILED: {e}")
             return self._error_response("I couldn't process that modification. Please try again or rephrase your request.")

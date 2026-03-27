@@ -14,6 +14,7 @@ from ..core.base_handler import (
     SYSTEM_CLASS_REQUIRED,
     SYSTEM_CLASS_OPTIONAL,
 )
+from ..core.prompt_fragments import POSITION_DISCLAIMER, REMOVE_ELEMENT_RULE
 from schemas import SingleClassSpec, SystemClassSpec, ClassModificationResponse
 from utilities.model_context import detailed_model_summary
 
@@ -27,7 +28,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         return "ClassDiagram"
 
     def get_system_prompt(self) -> str:
-        return """You are a UML modeling expert. Create a focused class specification based on the user's request.
+        return f"""You are a UML modeling expert. Create a focused class specification based on the user's request.
 
 RULES:
 1. Include everything the user asks for, then add relevant domain attributes to make the class thorough.
@@ -35,7 +36,7 @@ RULES:
 3. Methods: Generally SKIP methods unless the user asks for them. Only include core domain methods (e.g., BankAccount.withdraw(), Order.calculateTotal()). Never include getters/setters.
 4. If the user just says "create X class", generate relevant attributes and typically NO methods.
 5. Use proper naming: PascalCase for classes, camelCase for attributes/methods.
-6. Do NOT include any "position" field — positioning is handled automatically.
+6. {POSITION_DISCLAIMER}
 
 Examples of expected richness:
 - "create User class" → id, username, email, password (4 attributes, 0-1 method)
@@ -86,7 +87,7 @@ Examples of expected richness:
 
     def _get_system_generation_prompt(self) -> str:
         """Return the system prompt for complete class diagram generation."""
-        return """You are a UML modeling expert. Create a COMPLETE, well-structured class diagram system.
+        return f"""You are a UML modeling expert. Create a COMPLETE, well-structured class diagram system.
 
 Before generating, think through:
 - What are the core domain entities (classes) needed?
@@ -105,8 +106,8 @@ RULES:
 7. ALWAYS include multiplicities on relationships (1, 0..1, 0..*, 1..*).
 8. Generate both associations AND inheritance where appropriate (e.g., SavingsAccount/CheckingAccount → inherit from Account).
 9. Use proper naming: PascalCase for classes, camelCase for attributes/methods.
-10. Do NOT include any "position" field — positioning is handled automatically.
-11. Methods default to implementationType "none" (UML signature only, no code). ONLY generate code in the 'code' field when the user explicitly asks for it. Supported types: 'code' for Python (e.g., "implement in Python", "add Python code"), 'bal' for BESSER Action Language (e.g., "implement in BAL", "use action language"). BAL syntax: def method_name(param: type) -> return_type { statements; }. Python syntax: standard def with self parameter.
+10. {POSITION_DISCLAIMER}
+11. Methods default to implementationType "none" (UML signature only, no code). ONLY generate code in the 'code' field when the user explicitly asks for it. Supported types: 'code' for Python (e.g., "implement in Python", "add Python code"), 'bal' for BESSER Action Language (e.g., "implement in BAL", "use action language"). BAL syntax: def method_name(param: type) -> return_type {{ statements; }}. Python syntax: standard def with self parameter.
 
 Examples:
 - E-commerce: User, Product, Order, Payment, ShoppingCart with associations and multiplicities
@@ -367,7 +368,8 @@ Examples:
         # Build impact context for modifications that affect relationships
         impact_context = self._build_impact_context(current_model)
 
-        system_prompt = """You are a UML modeling expert. Modify an existing class diagram.
+        system_prompt = (
+            """You are a UML modeling expert. Modify an existing class diagram.
 
 COMMON ACTIONS:
 - add_class — create a NEW class with attributes and methods. Put className, attributes, and methods in "changes".
@@ -393,7 +395,9 @@ NEVER concatenate words like "UserLibraryUser", "BookReading", "OrderPayment". J
 KEY RULES:
 1. Use exact names from the current model in "target".
 2. Put what should change in "changes". Only include fields that differ.
-3. remove_element needs only "target" — no "changes".
+3. """
+            + REMOVE_ELEMENT_RULE
+            + """
 4. Multiple changes → use "modifications" array.
 5. RENAME: single modify_class only. Relationships update automatically.
 6. DELETE: also remove its relationships. Batch all removals.
@@ -422,6 +426,7 @@ Examples:
 - "add Critical to the Priority enum" → add_attribute target.className="Priority", changes.name="Critical" (NO type)
 - "add priority attribute to Task" → add_attribute target.className="Task", changes.name="priority", changes.type="Priority"
 - "I also want to store users and books" → multiple add_class entries + add_relationship entries to connect them to existing classes"""
+        )
 
         # Build context from current model using centralized helper
         context_block = ''
@@ -442,60 +447,44 @@ Examples:
         logger.debug(f"[ClassDiagram] Full modification prompt length: {len(full_prompt)} chars")
 
         try:
-            parsed = self.predict_structured(full_prompt, ClassModificationResponse, system_prompt="")
-            mod_list = parsed.model_dump()["modifications"]
+            def _strip_spurious_relationship_mods(mod_list):
+                """Strip modify_relationship entries that accompany a modify_class
+                rename -- relationships are linked by ID and update automatically."""
+                has_class_rename = any(
+                    m.get("action") == "modify_class" and m.get("changes", {}).get("name")
+                    for m in mod_list
+                )
+                if has_class_rename:
+                    before = len(mod_list)
+                    mod_list = [m for m in mod_list if m.get("action") != "modify_relationship"]
+                    if len(mod_list) < before:
+                        logger.info(
+                            f"[ClassDiagram] Stripped {before - len(mod_list)} "
+                            "spurious modify_relationship entries from class rename"
+                        )
+                return mod_list
 
-            # Strip modify_relationship entries that accompany a modify_class
-            # rename — relationships are linked by ID and update automatically.
-            has_class_rename = any(
-                m.get("action") == "modify_class" and m.get("changes", {}).get("name")
-                for m in mod_list
+            def _expand_refactoring(handler, spec):
+                """Expand refactoring actions into primitive modifications."""
+                if handler._is_refactoring_action(spec):
+                    logger.info("[ClassDiagram] Detected refactoring action, expanding into primitives")
+                    spec = handler._expand_refactoring_actions(spec, current_model)
+                return spec
+
+            modification_spec = self._execute_modification(
+                full_prompt, "", ClassModificationResponse,
+                post_processor=_strip_spurious_relationship_mods,
+                spec_processor=_expand_refactoring,
             )
-            if has_class_rename:
-                before = len(mod_list)
-                mod_list = [m for m in mod_list if m.get("action") != "modify_relationship"]
-                if len(mod_list) < before:
-                    logger.info(
-                        f"[ClassDiagram] Stripped {before - len(mod_list)} "
-                        "spurious modify_relationship entries from class rename"
-                    )
-
-            if len(mod_list) == 1:
-                modification_spec = {"action": "modify_model", "modification": mod_list[0]}
-            else:
-                modification_spec = {"action": "modify_model", "modifications": mod_list}
-
-            logger.info(f"[ClassDiagram] Structured modification: {len(mod_list)} item(s)")
-
-            # Expand refactoring actions into primitive modifications before validation
-            if self._is_refactoring_action(modification_spec):
-                logger.info("[ClassDiagram] Detected refactoring action, expanding into primitives")
-                modification_spec = self._expand_refactoring_actions(modification_spec, current_model)
-
-            self.validate_modification_spec(modification_spec)
-
-            modification_spec.setdefault('action', 'modify_model')
-            modification_spec.setdefault('diagramType', self.get_diagram_type())
-
-            if 'message' not in modification_spec:
-                if 'modifications' in modification_spec and isinstance(modification_spec['modifications'], list):
-                    modification_spec['message'] = self._friendly_batch_message(modification_spec['modifications'])
-                elif 'modification' in modification_spec and isinstance(modification_spec['modification'], dict):
-                    mod = modification_spec['modification']
-                    act = mod.get('action', 'modification')
-                    target = mod.get('target', {})
-                    name = self._build_mod_target_name(act, target)
-                    name = self._sanitize_target_name(name)
-                    modification_spec['message'] = self._friendly_mod_message(act, name)
 
             logger.info(
                 f"[ClassDiagram] Modification spec: "
                 f"batch={'modifications' in modification_spec}, "
                 f"keys={list(modification_spec.keys())}"
             )
-            
+
             return modification_spec
-            
+
         except LLMPredictionError as exc:
             logger.error(f"❌ [ClassDiagram] generate_modification LLM FAILED: {exc}")
             return self._error_response(

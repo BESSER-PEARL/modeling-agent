@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from typing import Any, Dict, Optional, Tuple
 
@@ -6,6 +7,9 @@ from besser.agent.core.session import Session
 from besser.agent.library.transition.events.base_events import ReceiveJSONEvent
 
 from .types import AssistantRequest, FileAttachment, WorkspaceContext, SUPPORTED_DIAGRAM_TYPES
+from session_keys import PARSED_ASSISTANT_REQUEST, PARSED_REQUEST_EVENT_ID, VOICE_CONTEXT
+
+logger = logging.getLogger(__name__)
 
 DIAGRAM_PREFIX_PATTERN = re.compile(r"^\[DIAGRAM_TYPE:(\w+)\]\s*(.+)$", re.DOTALL)
 
@@ -179,16 +183,45 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         payload_diagram_type,
         default=default_diagram_type,
     )
-    current_model = context_payload.get("activeModel") or message_envelope.get("activeModel")
-    if not isinstance(current_model, dict):
-        fallback_model = raw_payload.get("currentModel")
-        current_model = fallback_model if isinstance(fallback_model, dict) else None
+    # NOTE: ``activeModel`` used to be read from the payload here, but as of
+    # PR 6.2 the frontend no longer sends it separately.  The model is now
+    # always resolved from ``projectSnapshot``.  We intentionally ignore the
+    # field if it still arrives from older frontends.
 
     project_snapshot = (
         context_payload.get("projectSnapshot")
         if isinstance(context_payload.get("projectSnapshot"), dict)
         else None
     )
+
+    # Resolve the current model from the project snapshot using the active
+    # diagram type and tab index, instead of the deprecated ``activeModel``.
+    current_model: Optional[Dict[str, Any]] = None
+    if isinstance(project_snapshot, dict):
+        diagrams = project_snapshot.get("diagrams")
+        if isinstance(diagrams, dict):
+            target = diagrams.get(active_diagram_type)
+            if isinstance(target, list):
+                # Multi-tab format: use currentDiagramIndices to pick the right tab.
+                raw_indices = context_payload.get("currentDiagramIndices")
+                idx = (
+                    raw_indices.get(active_diagram_type, 0)
+                    if isinstance(raw_indices, dict)
+                    else 0
+                )
+                if 0 <= idx < len(target) and isinstance(target[idx], dict):
+                    model_candidate = target[idx].get("model")
+                    if isinstance(model_candidate, dict):
+                        current_model = model_candidate
+                # Fallback: first tab with a model
+                if current_model is None:
+                    for tab in target:
+                        if isinstance(tab, dict) and isinstance(tab.get("model"), dict):
+                            current_model = tab["model"]
+                            break
+            elif isinstance(target, dict) and isinstance(target.get("model"), dict):
+                # Legacy single-dict format
+                current_model = target["model"]
     diagram_summaries = (
         context_payload.get("diagramSummaries")
         if isinstance(context_payload.get("diagramSummaries"), list)
@@ -249,8 +282,8 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
     # IMPORTANT: The cache is keyed on the *identity* of ``session.event``
     # so that a new incoming WebSocket message (which assigns a fresh event
     # object) automatically invalidates the stale cached request.
-    cache_key = "_parsed_assistant_request"
-    event_id_key = "_parsed_request_event_id"
+    cache_key = PARSED_ASSISTANT_REQUEST
+    event_id_key = PARSED_REQUEST_EVENT_ID
 
     current_event_id = id(session.event) if session and session.event else None
 
@@ -261,8 +294,8 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
                 cached = session.get(cache_key)
                 if isinstance(cached, AssistantRequest):
                     return cached
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"Session cache read failed (best-effort): {exc}")
 
     raw_payload = extract_event_payload(session)
 
@@ -274,10 +307,10 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
         # Voice messages arrive as plain text (after STT) with no JSON context.
         # The frontend sends the workspace context as a session variable
         # '_voice_context' right before the audio payload.
-        voice_ctx = session.get("_voice_context")
+        voice_ctx = session.get(VOICE_CONTEXT)
         if isinstance(voice_ctx, dict):
             # Consume the context so it's not reused for the next message
-            session.set("_voice_context", None)
+            session.set(VOICE_CONTEXT, None)
             # Re-parse as if it were a v2 payload with the transcribed message
             synthetic_payload = {
                 "action": "user_message",
@@ -290,8 +323,8 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
             try:
                 session.set(cache_key, request)
                 session.set(event_id_key, current_event_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"Session cache write failed (best-effort): {exc}")
             return request
 
         context = WorkspaceContext(active_diagram_type=diagram_type)
@@ -307,8 +340,8 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
         try:
             session.set(cache_key, request)
             session.set(event_id_key, current_event_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"Session cache write failed (best-effort): {exc}")
         return request
 
     request = parse_v2_payload(raw_payload, default_diagram_type=default_diagram_type)
@@ -321,6 +354,6 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
     try:
         session.set(cache_key, request)
         session.set(event_id_key, current_event_id)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(f"Session cache write failed (best-effort): {exc}")
     return request

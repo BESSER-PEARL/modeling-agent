@@ -21,15 +21,20 @@ from handlers.generation_handler import (
     _is_modeling_request,
     _is_diagram_creation_request,
 )
+from agent_config import (
+    MAX_USER_MESSAGE_CHARS,
+    STREAM_BUFFER_THRESHOLD,
+    LLM_TEXT_TEMPERATURE,
+    LLM_MAX_TOKENS_TEXT,
+)
 from memory import get_memory
+from session_keys import (
+    PENDING_COMPLETE_SYSTEM,
+    PENDING_GUI_CHOICE,
+    PENDING_GENERATOR_TYPE,
+)
 
 logger = logging.getLogger(__name__)
-
-# Maximum user message length (characters).  Messages beyond this are
-# truncated to avoid blowing the LLM context window.  ~12 000 chars ≈
-# ~3 000 tokens, leaving plenty of headroom inside the 1M context of
-# gpt-4.1-mini while still fitting any realistic request.
-MAX_USER_MESSAGE_CHARS = 12_000
 
 
 # ------------------------------------------------------------------
@@ -81,7 +86,7 @@ def json_intent_matches(session: Session, params: Dict[str, Any]) -> bool:
     """
     # If awaiting generator selection, suppress intent matching so the
     # route_to_generation condition (next priority) can capture the reply.
-    pending = session.get("pending_generator_type")
+    pending = session.get(PENDING_GENERATOR_TYPE)
     if pending == "_awaiting_selection":
         return False
 
@@ -89,9 +94,9 @@ def json_intent_matches(session: Session, params: Dict[str, Any]) -> bool:
     # matching so the message stays in the current state and _common_preamble
     # handles it.  This prevents "replace"/"keep"/"auto"/"llm" from being
     # misclassified as modify_model_intent or fallback_intent.
-    if session.get("pending_complete_system"):
+    if session.get(PENDING_COMPLETE_SYSTEM):
         return False
-    if session.get("pending_gui_choice"):
+    if session.get(PENDING_GUI_CHOICE):
         return False
 
     target_intent_name = params.get('intent_name')
@@ -133,7 +138,7 @@ def json_no_intent_matched(session: Session) -> bool:
     Also returns True when a pending confirmation suppressed intent matching,
     so the message stays in the current state for _common_preamble to handle.
     """
-    if session.get("pending_complete_system") or session.get("pending_gui_choice"):
+    if session.get(PENDING_COMPLETE_SYSTEM) or session.get(PENDING_GUI_CHOICE):
         return True
     if hasattr(session.event, 'predicted_intent') and session.event.predicted_intent:
         matched_intent = session.event.predicted_intent.intent
@@ -147,14 +152,18 @@ def json_no_intent_matched(session: Session) -> bool:
 
 def reply_message(session: Session, message: str):
     """Send assistant message, wrapped for v2 protocol clients."""
-    request = parse_assistant_request(session)
-    if request.is_v2:
-        session.reply(json.dumps({
-            "action": "assistant_message",
-            "message": message,
-        }))
-    else:
-        session.reply(message)
+    try:
+        request = parse_assistant_request(session)
+        if request.is_v2:
+            session.reply(json.dumps({
+                "action": "assistant_message",
+                "message": message,
+            }))
+        else:
+            session.reply(message)
+    except Exception as exc:
+        logger.error(f"❌ [Reply] Failed to send message: {exc}", exc_info=True)
+        return
 
     # Record in conversation memory
     _record_assistant_response(session, message)
@@ -169,7 +178,11 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
         f"message={str(payload.get('message', ''))[:100]!r}"
     )
     logger.debug(f"[Reply] Full payload keys: {list(payload.keys())}")
-    session.reply(json.dumps(payload))
+    try:
+        session.reply(json.dumps(payload))
+    except Exception as exc:
+        logger.error(f"❌ [Reply] Failed to send payload: {exc}", exc_info=True)
+        return
 
     # Record in conversation memory so follow-up messages have context
     message = payload.get('message', '')
@@ -195,8 +208,8 @@ def _record_assistant_response(session: Session, content: str) -> None:
             session_id = getattr(session, 'id', None) or str(id(session))
             mem = get_memory(session_id)
             mem.add_assistant(content[:500])  # cap to avoid bloating memory
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(f"Recording assistant response failed (best-effort): {exc}")
 
 
 # ------------------------------------------------------------------
@@ -319,13 +332,13 @@ def _stream_openai(
     # Buffer threshold — balance between WebSocket flood (too small) and
     # perceived latency (too large).  ~200 chars ≈ 1-2 sentences, giving
     # fluid streaming without overwhelming the connection.
-    _BUFFER_THRESHOLD = 200
+    _BUFFER_THRESHOLD = STREAM_BUFFER_THRESHOLD
 
     stream = client.chat.completions.create(
         model=model,
         messages=messages,
-        temperature=0.4,
-        max_completion_tokens=4096,
+        temperature=LLM_TEXT_TEMPERATURE,
+        max_completion_tokens=LLM_MAX_TOKENS_TEXT,
         stream=True,
         stream_options={"include_usage": True},
     )

@@ -17,40 +17,40 @@ class MethodParameterSpec(BaseModel):
 
 class AttributeSpec(BaseModel):
     name: str = Field(min_length=1, description="Attribute name in camelCase")
-    type: Optional[str] = Field(default=None, description="Attribute type: String, int, boolean, float, Date, a custom class name, or an enumeration name (e.g., 'OrderStatus'). For ENUMERATION VALUES, leave this null/empty — enum literals have no type. When referencing an enum as an attribute type in a regular class, use the enum's exact PascalCase name. Never use UUID, long, decimal, BigDecimal, LocalDate, List, or Set.")
+    type: Optional[str] = Field(default=None, description="Data type (e.g. String, int, bool, float, Date, or PascalCase class/enum name). Null for enum literals.")
     visibility: Literal["public", "private", "protected", "package"] = Field(default="public", description="UML visibility")
-    isDerived: bool = Field(default=False, description="Whether this is a derived/computed attribute. Rendered with '/' prefix in UML notation.")
-    defaultValue: Optional[str] = Field(default=None, description="Default value for the attribute. Rendered as '= value' suffix.")
-    isOptional: bool = Field(default=False, description="Whether this attribute is optional/nullable. Rendered with '?' suffix.")
+    isDerived: bool = Field(default=False, description="Whether this is a derived/computed attribute.")
+    defaultValue: Optional[str] = Field(default=None, description="Default value for the attribute.")
+    isOptional: bool = Field(default=False, description="Whether this attribute is optional/nullable.")
 
 
 class MethodSpec(BaseModel):
-    name: str = Field(min_length=1, description="Method name in camelCase. Only include core domain methods, never getters/setters.")
-    returnType: str = Field(default="void", description="Return type")
+    name: str = Field(min_length=1, max_length=50, description="Method name in camelCase only (e.g. getName, calculateTotal). No parameters or return type here.")
+    returnType: str = Field(default="void", description="Return type only (e.g. str, int, void). No colon prefix.")
     visibility: Literal["public", "private", "protected", "package"] = Field(default="public", description="UML visibility")
     parameters: List[MethodParameterSpec] = Field(default_factory=list, description="Method parameters, empty if none")
-    isAbstract: bool = Field(default=False, description="Whether this is an abstract method (no implementation).")
+    isAbstract: bool = Field(default=False, description="Whether this is an abstract method.")
     implementationType: Literal["none", "code", "bal", "state_machine", "quantum_circuit"] = Field(
         default="none",
-        description="Implementation type: 'none' for UML-only, 'code' for Python code, 'bal' for BESSER Action Language, 'state_machine' to link a state machine, 'quantum_circuit' to link a quantum circuit."
+        description="Implementation type (e.g. none, code, bal, state_machine, quantum_circuit)."
     )
-    code: Optional[str] = Field(default=None, description="Python implementation code for the method. Include the full def statement. Example: 'def calculate_total(self):\\n    return sum(item.price for item in self.items)'")
+    code: Optional[str] = Field(default=None, description="Python implementation code for the method, including the full def statement.")
 
 
 class SingleClassSpec(BaseModel):
     """A single UML class with attributes and optional methods."""
-    className: str = Field(min_length=1, description="Class name in PascalCase")
-    attributes: List[AttributeSpec] = Field(default_factory=list, description="Class attributes. Include all relevant domain attributes (IDs, timestamps, status fields).")
-    methods: List[MethodSpec] = Field(default_factory=list, description="Class methods. Only include if explicitly requested or core domain behavior (e.g. withdraw, calculateTotal). Never include getters/setters.")
-    isAbstract: bool = Field(default=False, description="Whether this is an abstract class. Rendered with italic name and <<abstract>> stereotype.")
-    isEnumeration: bool = Field(default=False, description="Whether this is an enumeration. Attributes become enum values (no types needed).")
+    className: str = Field(min_length=1, max_length=30, description="Class name in PascalCase, ONE word only (e.g. User, Order, Payment)")
+    attributes: List[AttributeSpec] = Field(default_factory=list, description="Class attributes.")
+    methods: List[MethodSpec] = Field(default_factory=list, description="Class methods for core domain behavior.")
+    isAbstract: bool = Field(default=False, description="Whether this is an abstract class.")
+    isEnumeration: bool = Field(default=False, description="Whether this is an enumeration.")
 
 
 class RelationshipSpec(BaseModel):
     type: Literal[
         "Association", "Inheritance", "Composition", "Aggregation",
         "Realization", "Dependency",
-    ] = Field(default="Association", description="Relationship type: Association (general), Inheritance (is-a), Composition (strong has-a, part dies with whole), Aggregation (weak has-a), Realization (interface), Dependency")
+    ] = Field(default="Association", description="Relationship type (e.g. Association, Inheritance, Composition, Aggregation).")
     source: str = Field(description="Source class name")
     target: str = Field(description="Target class name")
     sourceMultiplicity: str = Field(default="1", description="Source multiplicity: 1, 0..1, 0..*, or 1..*")
@@ -61,8 +61,8 @@ class RelationshipSpec(BaseModel):
 class SystemClassSpec(BaseModel):
     """A complete class diagram with multiple classes and relationships."""
     systemName: str = Field(default="", description="Descriptive system name")
-    classes: List[SingleClassSpec] = Field(min_length=1, description="All classes in the system. Each should have 3-5+ attributes.")
-    relationships: List[RelationshipSpec] = Field(default_factory=list, description="Relationships between classes. Always include multiplicities.")
+    classes: List[SingleClassSpec] = Field(min_length=1, description="All classes in the system.")
+    relationships: List[RelationshipSpec] = Field(default_factory=list, description="Relationships between classes.")
 
 
 # -- Modification schemas --
@@ -91,15 +91,15 @@ class ClassModificationChanges(BaseModel):
     defaultValue: Optional[str] = Field(default=None, description="Set default value for attribute")
     isOptional: Optional[bool] = Field(default=None, description="Set optional status for attribute")
     isAbstract: Optional[bool] = Field(default=None, description="Set abstract status for class")
-    implementationType: Optional[str] = Field(default=None, description="Implementation type for method: none, code, bal, state_machine, quantum_circuit")
+    implementationType: Optional[str] = Field(default=None, description="Implementation type for method.")
     code: Optional[str] = Field(default=None, description="Python code for method implementation")
     isEnumeration: Optional[bool] = Field(default=None, description="Set enumeration status for class")
 
 
 class ClassModification(BaseModel):
-    action: str = Field(description="Modification action: add_class, modify_class, add_attribute, modify_attribute, add_method, modify_method, add_relationship, modify_relationship, remove_element")
+    action: str = Field(description="Action to perform (e.g. add_class, modify_attribute, add_relationship, remove_element).")
     target: ClassModificationTarget
-    changes: Optional[ClassModificationChanges] = Field(default=None, description="The changes to apply. REQUIRED for all actions except remove_element. For modify_relationship, put the NEW values here (e.g. new sourceMultiplicity), not in target.")
+    changes: Optional[ClassModificationChanges] = Field(default=None, description="Changes to apply. Required for all actions except remove_element.")
 
 
 class ClassModificationResponse(BaseModel):

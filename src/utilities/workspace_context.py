@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from besser.agent.core.session import Session
 
 from protocol.types import AssistantRequest
+from session_keys import SESSION_ACTION_HISTORY
 from .model_context import compact_model_summary, detailed_model_summary
 
 logger = logging.getLogger(__name__)
@@ -140,17 +141,16 @@ def _build_cross_diagram_reference(
 # Session history tracking
 # ---------------------------------------------------------------------------
 
-_SESSION_HISTORY_KEY = "_session_action_history"
 _MAX_HISTORY_ENTRIES = 15
 
 
 def record_session_action(session: Session, action_summary: str) -> None:
     """Record a completed action in session history for LLM context."""
-    history: List[str] = session.get(_SESSION_HISTORY_KEY) or []
+    history: List[str] = session.get(SESSION_ACTION_HISTORY) or []
     history.append(action_summary)
     if len(history) > _MAX_HISTORY_ENTRIES:
         history = history[-_MAX_HISTORY_ENTRIES:]
-    session.set(_SESSION_HISTORY_KEY, history)
+    session.set(SESSION_ACTION_HISTORY, history)
 
 
 def build_session_summary(session: Session) -> str:
@@ -158,7 +158,7 @@ def build_session_summary(session: Session) -> str:
 
     Returns an empty string if no actions have been recorded yet.
     """
-    history: List[str] = session.get(_SESSION_HISTORY_KEY) or []
+    history: List[str] = session.get(SESSION_ACTION_HISTORY) or []
     if not history:
         return ""
     lines = ["Session history (what you've done so far):"]

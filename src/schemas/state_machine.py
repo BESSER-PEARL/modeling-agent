@@ -13,72 +13,44 @@ from pydantic import BaseModel, Field
 class StateSpec(BaseModel):
     stateName: str = Field(
         min_length=1,
-        description=(
-            "State name in PascalCase representing a real lifecycle stage. "
-            "GOOD: PendingPayment, Shipped, UnderReview, Authenticated, InProgress. "
-            "BAD: State1, Active, Process, Step2."
-        ),
+        description="State name in PascalCase representing a lifecycle stage.",
     )
     stateType: Literal["initial", "final", "regular"] = Field(
         default="regular",
-        description="State type: 'initial' (exactly one per diagram), 'final' (exactly one per diagram), or 'regular'.",
+        description="State type: initial, final, or regular.",
     )
     entryAction: Optional[str] = Field(
         default=None,
-        description=(
-            "One-time action executed when entering the state. "
-            "Examples: 'send confirmation email', 'lock account', 'start timer'. "
-            "Leave null if none."
-        ),
+        description="Action executed once when entering this state.",
     )
     exitAction: Optional[str] = Field(
         default=None,
-        description=(
-            "One-time action executed when leaving the state. "
-            "Examples: 'save progress', 'release lock', 'stop timer'. "
-            "Leave null if none."
-        ),
+        description="Action executed once when leaving this state.",
     )
     doActivity: Optional[str] = Field(
         default=None,
-        description=(
-            "Ongoing activity that continues while the state is active. "
-            "Examples: 'await payment', 'monitor session', 'process data'. "
-            "Leave null if none."
-        ),
+        description="Ongoing activity while the state is active.",
     )
 
 
 class TransitionSpec(BaseModel):
     source: str = Field(
-        description="Source state name. Must match an existing stateName exactly.",
+        description="Source state name.",
     )
     target: str = Field(
-        description="Target state name. Must match an existing stateName exactly.",
+        description="Target state name.",
     )
     trigger: Optional[str] = Field(
         default=None,
-        description=(
-            "Event that causes this transition, as a camelCase verb or verb phrase. "
-            "GOOD: submitPayment, approveRequest, sessionTimeout, deliveryConfirmed. "
-            "BAD: go, next, transition1, move."
-        ),
+        description="Event that causes this transition, as a camelCase verb phrase.",
     )
     guard: Optional[str] = Field(
         default=None,
-        description=(
-            "Boolean condition that must be true for the transition to fire. "
-            "Examples: 'payment valid', 'attempts < max', 'user authenticated'. "
-            "Leave null if unconditional."
-        ),
+        description="Boolean condition that must be true for the transition to fire.",
     )
     effect: Optional[str] = Field(
         default=None,
-        description=(
-            "Side-effect action executed when the transition fires. "
-            "Examples: 'send notification', 'update inventory', 'log event'. "
-            "Leave null if none."
-        ),
+        description="Side-effect action executed when the transition fires.",
     )
 
 
@@ -86,39 +58,23 @@ class SingleStateSpec(BaseModel):
     """Schema for a single state element."""
     stateName: str = Field(
         min_length=1,
-        description=(
-            "State name in PascalCase representing a real lifecycle stage. "
-            "GOOD: PendingPayment, Shipped, UnderReview, Authenticated, InProgress. "
-            "BAD: State1, Active, Process, Step2."
-        ),
+        description="State name in PascalCase representing a lifecycle stage.",
     )
     stateType: Literal["initial", "final", "regular"] = Field(
         default="regular",
-        description="State type: 'initial', 'final', or 'regular'.",
+        description="State type: initial, final, or regular.",
     )
     entryAction: Optional[str] = Field(
         default=None,
-        description=(
-            "One-time action executed when entering the state. "
-            "Examples: 'send confirmation email', 'lock account', 'start timer'. "
-            "Leave null if none."
-        ),
+        description="Action executed once when entering this state.",
     )
     exitAction: Optional[str] = Field(
         default=None,
-        description=(
-            "One-time action executed when leaving the state. "
-            "Examples: 'save progress', 'release lock', 'stop timer'. "
-            "Leave null if none."
-        ),
+        description="Action executed once when leaving this state.",
     )
     doActivity: Optional[str] = Field(
         default=None,
-        description=(
-            "Ongoing activity that continues while the state is active. "
-            "Examples: 'await payment', 'monitor session', 'process data'. "
-            "Leave null if none."
-        ),
+        description="Ongoing activity while the state is active.",
     )
 
 
@@ -132,25 +88,17 @@ class SystemStateMachineSpec(BaseModel):
     """Schema for a complete state machine system."""
     systemName: str = Field(
         default="",
-        description="Descriptive name for the state machine (e.g., 'OrderProcessing', 'UserAuthentication').",
+        description="Descriptive name for the state machine.",
     )
     states: List[StateSpec] = Field(
         min_length=1,
-        description=(
-            "All states in the machine. Include exactly one 'initial' state, "
-            "one 'final' state, and 4-8 'regular' states representing real lifecycle stages. "
-            "Every regular state must have at least one incoming and one outgoing transition."
-        ),
+        description="All states in the machine, including one initial and one final state.",
     )
     transitions: List[TransitionSpec] = Field(
         default_factory=list,
-        description=(
-            "Transitions connecting the states. Every state (except initial/final) should have "
-            "both incoming and outgoing transitions. Include error/exception paths, not just the happy path. "
-            "Self-transitions are valid for retry/refresh scenarios."
-        ),
+        description="Transitions connecting the states.",
     )
-    codeBlocks: List[StateCodeBlockSpec] = Field(default_factory=list, description="Python code blocks that can be referenced by state bodies")
+    codeBlocks: List[StateCodeBlockSpec] = Field(default_factory=list, description="Python code blocks for state bodies.")
 
 
 # -- Modification schemas --
@@ -209,14 +157,14 @@ class StateMachineModificationChanges(BaseModel):
 
 class StateMachineModification(BaseModel):
     action: str = Field(
-        description="Modification action: 'add_state', 'modify_state', 'add_transition', 'modify_transition', 'add_code_block', or 'remove_element'.",
+        description="Action to perform (e.g. add_state, modify_state, add_transition, remove_element).",
     )
     target: StateMachineModificationTarget = Field(
-        description="Identifies the element to modify. Use stateName for states, sourceState/targetState for transitions.",
+        description="Identifies the element to modify.",
     )
     changes: Optional[StateMachineModificationChanges] = Field(
         default=None,
-        description="The changes to apply. Required for modify/add actions, omit for remove_element.",
+        description="Changes to apply. Required for all actions except remove_element.",
     )
 
 

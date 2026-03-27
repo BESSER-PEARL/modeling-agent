@@ -11,7 +11,7 @@ Usage::
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Any, Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from besser.agent.core.agent import Agent
@@ -23,8 +23,8 @@ if TYPE_CHECKING:
 agent: "Agent | None" = None
 gpt: "LLMOpenAI | None" = None
 gpt_text: "LLMOpenAI | None" = None
-gpt_predict_json = None          # callable(str) -> str
+gpt_predict_json: Optional[Callable[[str], str]] = None
 uml_rag: "RAG | None" = None
 diagram_factory: "DiagramHandlerFactory | None" = None
-openai_api_key: str | None = None
-stt = None                           # OpenAISpeech2Text | None
+openai_api_key: Optional[str] = None
+stt = None  # OpenAISpeech2Text | None

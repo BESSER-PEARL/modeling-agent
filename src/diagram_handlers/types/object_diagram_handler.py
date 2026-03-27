@@ -14,6 +14,7 @@ from ..core.base_handler import (
     SYSTEM_OBJECT_REQUIRED,
     SYSTEM_OBJECT_OPTIONAL,
 )
+from ..core.prompt_fragments import POSITION_DISCLAIMER, REMOVE_ELEMENT_RULE
 from schemas import SingleObjectSpec, SystemObjectSpec, ObjectModificationResponse
 from utilities.model_context import detailed_model_summary
 
@@ -375,7 +376,7 @@ class ObjectDiagramHandler(BaseDiagramHandler):
         }
     
     def get_system_prompt(self) -> str:
-        return """You are a UML modeling expert. Create an object instance specification based on the user's request.
+        return f"""You are a UML modeling expert. Create an object instance specification based on the user's request.
 
 CRITICAL RULES:
 1. If a REFERENCE CLASS DIAGRAM is provided below, you MUST use ONLY the attributes from that diagram
@@ -388,7 +389,7 @@ CRITICAL RULES:
    - value: an ACTUAL example value (not a type)
 6. Include ALL attributes from the referenced class with realistic example values
 7. Keep values realistic and coherent
-8. Do NOT include any "position" field - positioning is handled automatically"""
+8. {POSITION_DISCLAIMER}"""
     
     def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
                                 reference_diagram: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
@@ -430,7 +431,7 @@ CRITICAL RULES:
         """Generate a complete object diagram with deterministic positioning."""
 
         classes, class_relationships = self._extract_reference_catalog(reference_diagram)
-        system_prompt = """You are a UML modeling expert. Create a COMPLETE object diagram with multiple related object instances.
+        system_prompt = f"""You are a UML modeling expert. Create a COMPLETE object diagram with multiple related object instances.
 
 Before generating, think through:
 - What object instances best illustrate this scenario?
@@ -444,7 +445,7 @@ IMPORTANT RULES:
 3. Object names: lowercase (user1, order1, product2)
 4. Include meaningful links between objects
 5. Values should be realistic and coherent
-6. Do NOT include any "position" field - positioning is handled automatically
+6. {POSITION_DISCLAIMER}
 7. Keep the scenario focused
 8. If a REFERENCE CLASS DIAGRAM is provided, STRICTLY derive objects from it:
    - Use ONLY class names from the reference classes.
@@ -618,16 +619,20 @@ IMPORTANT RULES:
                         "when creating or modifying objects):\n" + ref_classes
                     )
 
-        system_prompt = """You are a UML modeling expert. The user wants to modify an object diagram.
+        system_prompt = (
+            """You are a UML modeling expert. The user wants to modify an object diagram.
 
 IMPORTANT RULES:
 1. Actions available: "add_object", "modify_object", "modify_attribute_value", "add_link", "remove_element"
 2. add_object: set target.objectName to the new object name (lowerCamelCase, e.g. "user2"). Put className and attributes (with concrete values) in "changes".
 3. For existing elements, always specify exact target names from the current model
-4. For remove_element, only specify the target — no "changes" needed
+4. """
+            + REMOVE_ELEMENT_RULE
+            + """
 5. When the user asks for MULTIPLE changes at once, return multiple entries in the modifications array
 6. If a reference class diagram is provided, use its class/attribute names and ids
 7. Example: "add an object user2 of class User" → add_object with target.objectName="user2", changes.className="User", changes.attributes=[{name:"id",value:"USR002"},{name:"name",value:"Bob"}]"""
+        )
 
         # Build context from current model using centralized helper
         context_block = ''
@@ -641,29 +646,9 @@ IMPORTANT RULES:
         logger.info(f"[ObjectDiagram] generate_modification called with: {user_request!r}")
 
         try:
-            parsed = self.predict_structured(user_prompt, ObjectModificationResponse, system_prompt=system_prompt)
-            mod_list = parsed.model_dump()["modifications"]
-            if len(mod_list) == 1:
-                modification_spec = {"action": "modify_model", "modification": mod_list[0]}
-            else:
-                modification_spec = {"action": "modify_model", "modifications": mod_list}
-
-            self.validate_modification_spec(modification_spec)
-
-            modification_spec.setdefault('action', 'modify_model')
-            modification_spec.setdefault('diagramType', self.get_diagram_type())
-
-            if 'message' not in modification_spec:
-                if 'modifications' in modification_spec and isinstance(modification_spec['modifications'], list):
-                    modification_spec['message'] = self._friendly_batch_message(modification_spec['modifications'])
-                elif 'modification' in modification_spec and isinstance(modification_spec['modification'], dict):
-                    mod = modification_spec['modification']
-                    act = mod.get('action', 'modification')
-                    target = mod.get('target', {})
-                    name = target.get('objectName') or target.get('sourceObject') or 'element'
-                    modification_spec['message'] = self._friendly_mod_message(act, name)
-
-            return modification_spec
+            return self._execute_modification(
+                user_prompt, system_prompt, ObjectModificationResponse,
+            )
 
         except LLMPredictionError as exc:
             logger.error(f"[ObjectDiagram] generate_modification LLM FAILED: {exc}")

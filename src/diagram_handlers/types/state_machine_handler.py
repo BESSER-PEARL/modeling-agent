@@ -19,6 +19,7 @@ from ..core.base_handler import (
     SYSTEM_STATE_REQUIRED,
     SYSTEM_STATE_OPTIONAL,
 )
+from ..core.prompt_fragments import POSITION_DISCLAIMER, REMOVE_ELEMENT_RULE
 from schemas import SingleStateSpec as SingleStateSchema, SystemStateMachineSpec, StateMachineModificationResponse
 from utilities.model_context import detailed_model_summary
 
@@ -32,13 +33,13 @@ class StateMachineHandler(BaseDiagramHandler):
         return "StateMachineDiagram"
 
     def get_system_prompt(self) -> str:
-        return """You are a UML modeling expert. Create a state specification based on the user's request.
+        return f"""You are a UML modeling expert. Create a state specification based on the user's request.
 
 DESIGN RULES:
 1. State names must be descriptive and represent real lifecycle stages (e.g., PendingPayment, Shipped, Authenticated — NOT generic names like State1, Active)
 2. Use PascalCase for state names (e.g., PaymentProcessing, not payment_processing)
 3. Keep it SIMPLE and focused
-4. Do NOT include any "position" field — positioning is handled automatically
+4. {POSITION_DISCLAIMER}
 
 Examples of good states:
 - "create idle state" -> Idle with doActivity "await user input"
@@ -82,7 +83,7 @@ Examples of good states:
 
     def _get_system_generation_prompt(self) -> str:
         """Return the enhanced system prompt for complete state machine generation."""
-        return """You are a UML modeling expert. Create a COMPLETE, well-structured state machine diagram.
+        return f"""You are a UML modeling expert. Create a COMPLETE, well-structured state machine diagram.
 
 Before generating, think through:
 - What are the key lifecycle stages (states) of this process?
@@ -107,7 +108,7 @@ DESIGN RULES:
 8. Include error/exception paths — not just the happy path:
    - Payment failures, validation errors, timeouts, cancellations
    - Loop-back transitions for retry scenarios
-9. Do NOT include any "position" field — positioning is handled automatically
+9. {POSITION_DISCLAIMER}
 
 TRANSITION DESIGN GUIDELINES:
 - Every state (except initial/final) should have both incoming AND outgoing transitions
@@ -392,19 +393,23 @@ TRANSITION DESIGN GUIDELINES:
     def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate modifications for existing state machine elements."""
 
-        system_prompt = """You are a UML modeling expert. The user wants to modify a state machine diagram.
+        system_prompt = (
+            """You are a UML modeling expert. The user wants to modify a state machine diagram.
 
 MODIFICATION RULES:
 1. Actions available: "add_state", "modify_state", "add_transition", "modify_transition", "add_code_block", "remove_element"
 2. add_state: set target.stateName to the new state name. Put stateType ("regular", "initial", or "final"), entryAction, exitAction, doActivity in "changes".
 3. modify_state: use exact target names from the current model
 4. add_transition: set target.sourceState and target.targetState. Put trigger, guard, effect in "changes".
-5. For remove_element, only specify the target — no "changes" needed
+5. """
+            + REMOVE_ELEMENT_RULE
+            + """
 6. When modifying, only include the fields that should change in the "changes" object
 7. Use PascalCase for state names and camelCase for triggers
 8. Example: "add a Processing state" → add_state with target.stateName="Processing", changes.stateType="regular"
 9. Example: "add a state with entry action validate" → add_state with changes.stateType="regular", changes.entryAction="validate()"
 10. add_code_block: create a Python code block. Set target.stateName to a label, put code and language in changes. """
+        )
 
         # Build context from current model using centralized helper
         context_block = ''
@@ -418,32 +423,9 @@ MODIFICATION RULES:
         logger.info(f"[StateMachine] generate_modification called with: {user_request!r}")
 
         try:
-            parsed = self.predict_structured(user_prompt, StateMachineModificationResponse, system_prompt=system_prompt)
-            mod_list = parsed.model_dump()["modifications"]
-            if len(mod_list) == 1:
-                modification_spec = {"action": "modify_model", "modification": mod_list[0]}
-            else:
-                modification_spec = {"action": "modify_model", "modifications": mod_list}
-
-            self.validate_modification_spec(modification_spec)
-
-            modification_spec.setdefault('action', 'modify_model')
-            modification_spec.setdefault('diagramType', self.get_diagram_type())
-
-            if 'message' not in modification_spec:
-                if 'modifications' in modification_spec and isinstance(modification_spec['modifications'], list):
-                    modification_spec['message'] = self._friendly_batch_message(modification_spec['modifications'])
-                elif 'modification' in modification_spec and isinstance(modification_spec['modification'], dict):
-                    mod = modification_spec['modification']
-                    act = mod.get('action', 'modification')
-                    target = mod.get('target', {})
-                    name = (
-                        target.get('stateName')
-                        or f"{target.get('sourceState', '?')} \u2192 {target.get('targetState', '?')}"
-                    )
-                    modification_spec['message'] = self._friendly_mod_message(act, name)
-
-            return modification_spec
+            return self._execute_modification(
+                user_prompt, system_prompt, StateMachineModificationResponse,
+            )
 
         except LLMPredictionError as exc:
             logger.error(f"[StateMachine] generate_modification LLM FAILED: {exc}")

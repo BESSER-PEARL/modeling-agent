@@ -9,55 +9,49 @@ from pydantic import BaseModel, Field
 
 class AgentReplySpec(BaseModel):
     text: str = Field(
-        description="The reply text displayed to the user, used as an LLM prompt, or Python code to execute.",
+        description="Reply text, LLM prompt, or Python code depending on replyType.",
     )
     replyType: Literal["text", "llm", "rag", "db_reply", "code"] = Field(
         default="text",
-        description=(
-            "'text' for a scripted reply, "
-            "'llm' for a dynamically generated AI response, "
-            "'rag' for a RAG-based reply (retrieval-augmented generation from a knowledge base), "
-            "'db_reply' for a database query action, "
-            "'code' for executing Python code."
-        ),
+        description="Reply type: text, llm, rag, db_reply, or code.",
     )
     ragDatabaseName: Optional[str] = Field(
         default=None,
-        description="Name of the RAG knowledge base to query (required when replyType='rag').",
+        description="RAG knowledge base name (required when replyType is rag).",
     )
 
 
 class AgentStateSpec(BaseModel):
     type: Literal["state"] = Field(
         default="state",
-        description="Node type discriminator; always 'state' for state nodes.",
+        description="Node type discriminator; always 'state'.",
     )
     stateName: str = Field(
         min_length=1,
-        description="Unique name for this state in camelCase (e.g. 'welcomeGreeting').",
+        description="Unique camelCase name for this state.",
     )
     replies: List[AgentReplySpec] = Field(
         default_factory=list,
-        description="Ordered list of 1-3 replies the agent sends when entering this state.",
+        description="Replies the agent sends when entering this state.",
     )
     fallbackBodies: List[AgentReplySpec] = Field(
         default_factory=list,
-        description="Optional replies sent when no intent matches in this state (fallback / error handling).",
+        description="Fallback replies when no intent matches in this state.",
     )
 
 
 class AgentIntentSpec(BaseModel):
     type: Literal["intent"] = Field(
         default="intent",
-        description="Node type discriminator; always 'intent' for intent nodes.",
+        description="Node type discriminator; always 'intent'.",
     )
     intentName: str = Field(
         min_length=1,
-        description="Unique name for this intent in TitleCase (e.g. 'OrderPizza').",
+        description="Unique TitleCase name for this intent.",
     )
     trainingPhrases: List[str] = Field(
         default_factory=list,
-        description="3-4 example user utterances that should trigger this intent.",
+        description="Example user utterances that trigger this intent.",
     )
 
 
@@ -65,34 +59,34 @@ class AgentSingleElementSpec(BaseModel):
     """Schema for a single agent diagram element (state, intent, or initial node)."""
     type: Literal["state", "intent", "initial"] = Field(
         default="state",
-        description="Element kind: 'state' for a conversation state, 'intent' for a user intent, 'initial' for the entry point node.",
+        description="Element kind: state, intent, or initial.",
     )
     # State fields
     stateName: Optional[str] = Field(
         default=None,
-        description="Required when type='state'. Unique camelCase name for the state.",
+        description="Unique camelCase state name (required when type is state).",
     )
     replies: List[AgentReplySpec] = Field(
         default_factory=list,
-        description="Replies the agent sends in this state (1-3 items). Each has 'text' and 'replyType'.",
+        description="Replies the agent sends in this state.",
     )
     fallbackBodies: List[AgentReplySpec] = Field(
         default_factory=list,
-        description="Fallback replies when no intent is matched. Include only for error-handling scenarios.",
+        description="Fallback replies when no intent matches.",
     )
     # Intent fields
     intentName: Optional[str] = Field(
         default=None,
-        description="Required when type='intent'. Unique TitleCase name for the intent.",
+        description="Unique TitleCase intent name (required when type is intent).",
     )
     trainingPhrases: List[str] = Field(
         default_factory=list,
-        description="3-4 example phrases a user would say to trigger this intent.",
+        description="Example phrases that trigger this intent.",
     )
     # Initial node fields
     description: Optional[str] = Field(
         default=None,
-        description="Optional note or label for the initial entry-point node.",
+        description="Optional label for the initial entry-point node.",
     )
 
 
@@ -107,14 +101,11 @@ class AgentTransitionSpec(BaseModel):
         "when_intent_matched", "when_no_intent_matched", "auto",
     ] = Field(
         default="when_intent_matched",
-        description=(
-            "Transition trigger: 'when_intent_matched' fires when conditionValue intent is recognised, "
-            "'when_no_intent_matched' is the fallback, 'auto' fires immediately without user input."
-        ),
+        description="Transition trigger: when_intent_matched, when_no_intent_matched, or auto.",
     )
     conditionValue: Optional[str] = Field(
         default=None,
-        description="The intent name that triggers this transition (required when condition='when_intent_matched', empty otherwise).",
+        description="Intent name that triggers this transition (for when_intent_matched).",
     )
     label: Optional[str] = Field(
         default=None,
@@ -122,11 +113,11 @@ class AgentTransitionSpec(BaseModel):
     )
     sourceDirection: Optional[str] = Field(
         default=None,
-        description="Visual anchor direction on the source node (e.g. 'Right', 'Left', 'Top', 'Bottom').",
+        description="Visual anchor direction on the source node (Right, Left, Top, Bottom).",
     )
     targetDirection: Optional[str] = Field(
         default=None,
-        description="Visual anchor direction on the target node (e.g. 'Right', 'Left', 'Top', 'Bottom').",
+        description="Visual anchor direction on the target node (Right, Left, Top, Bottom).",
     )
 
 
@@ -139,18 +130,18 @@ class AgentInitialNodeSpec(BaseModel):
 
 
 class AgentRagSpec(BaseModel):
-    name: str = Field(description="Name of the RAG knowledge base (e.g., 'CustomerKB', 'ProductDocs')")
+    name: str = Field(description="Name of the RAG knowledge base.")
 
 
 class SystemAgentSpec(BaseModel):
     """Schema for a complete agent diagram system."""
     systemName: str = Field(
         default="",
-        description="Display name for the overall agent system (e.g. 'CustomerSupportAgent').",
+        description="Display name for the agent system.",
     )
     hasInitialNode: bool = Field(
         default=True,
-        description="Whether the diagram includes an initial entry-point node. Almost always True.",
+        description="Whether the diagram includes an initial entry-point node.",
     )
     initialNode: Optional[AgentInitialNodeSpec] = Field(
         default=None,
@@ -158,20 +149,17 @@ class SystemAgentSpec(BaseModel):
     )
     intents: List[AgentIntentSpec] = Field(
         default_factory=list,
-        description="All intent nodes in the agent diagram. Each has a TitleCase name and 3-4 training phrases.",
+        description="All intent nodes in the agent diagram.",
     )
     states: List[AgentStateSpec] = Field(
         min_length=1,
-        description="All state nodes (at least one). Each has a camelCase name and 1-3 replies.",
+        description="All state nodes in the agent diagram.",
     )
     transitions: List[AgentTransitionSpec] = Field(
         default_factory=list,
-        description=(
-            "Edges connecting states and intents. Always include an initial transition from 'initial' to the first state. "
-            "Every state must have at least one exit path to avoid dead-ends."
-        ),
+        description="Edges connecting states and intents.",
     )
-    ragElements: List[AgentRagSpec] = Field(default_factory=list, description="RAG knowledge bases used by agent states with replyType='rag'")
+    ragElements: List[AgentRagSpec] = Field(default_factory=list, description="RAG knowledge bases used by agent states.")
 
 
 # -- Modification schemas --
@@ -205,47 +193,43 @@ class AgentModificationChanges(BaseModel):
     )
     replies: Optional[List[AgentReplySpec]] = Field(
         default=None,
-        description="Replies for add_state. Each reply has text and replyType ('text' or 'llm').",
+        description="Replies for add_state.",
     )
     trainingPhrases: Optional[List[str]] = Field(
         default=None,
-        description="Training phrases for add_intent (3-5 example phrases).",
+        description="Training phrases for add_intent.",
     )
     intentName: Optional[str] = Field(
         default=None,
-        description="Intent name to associate with a transition (used with add_transition).",
+        description="Intent name for a transition.",
     )
     condition: Optional[str] = Field(
         default=None,
-        description="Transition condition: 'when_intent_matched', 'when_no_intent_matched', or 'auto'.",
+        description="Transition condition: when_intent_matched, when_no_intent_matched, or auto.",
     )
     text: Optional[str] = Field(
         default=None,
-        description="Reply text to add to a state (used with add_state_body).",
+        description="Reply text to add to a state.",
     )
     replyType: Optional[str] = Field(
         default=None,
-        description="Type of reply: 'text' for scripted, 'llm' for AI-generated (used with add_state_body).",
+        description="Reply type: text or llm.",
     )
     trainingPhrase: Optional[str] = Field(
         default=None,
-        description="Single training phrase to add to an existing intent (used with add_intent_training_phrase).",
+        description="Single training phrase to add to an existing intent.",
     )
 
 class AgentModification(BaseModel):
     action: str = Field(
-        description=(
-            "The modification operation: 'add_state', 'add_intent', 'modify_state', 'modify_intent', "
-            "'add_transition', 'remove_transition', 'add_state_body', 'add_intent_training_phrase', "
-            "'add_rag_element', or 'remove_element'."
-        ),
+        description="Action to perform (e.g. add_state, modify_intent, add_transition, remove_element).",
     )
     target: AgentModificationTarget = Field(
-        description="Identifies the element(s) to modify. Populate the relevant fields based on the action.",
+        description="Identifies the element to modify.",
     )
     changes: Optional[AgentModificationChanges] = Field(
         default=None,
-        description="The new values to apply. Required for all actions except 'remove_element' and 'remove_transition'.",
+        description="Changes to apply. Required except for remove_element and remove_transition.",
     )
 
 class AgentModificationResponse(BaseModel):

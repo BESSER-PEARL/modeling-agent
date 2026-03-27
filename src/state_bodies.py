@@ -44,6 +44,14 @@ from handlers.validation_handler import validate_diagram
 from orchestrator import determine_target_diagram_type
 from utilities.model_context import detailed_model_summary
 from routing.intents import GENERATION_INTENT_NAME
+from session_keys import (
+    HAS_GREETED,
+    LAST_EXECUTED_DIAGRAM_TYPE,
+    LAST_MATCHED_INTENT,
+    PENDING_COMPLETE_SYSTEM,
+    PENDING_GUI_CHOICE,
+    WORKFLOW_PENDING_GENERATOR,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +85,8 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
             summarize_fn = summarizer.predict if summarizer else None
             mem = get_memory(session_id, summarizer=summarize_fn)
             mem.add_user(request.message)
-        except Exception:
-            pass  # memory is best-effort
+        except Exception as exc:
+            logger.debug(f"Recording user message in memory failed (best-effort): {exc}")
 
     return request
 
@@ -236,12 +244,12 @@ def greetings_body(session: Session):
     if hasattr(session.event, 'predicted_intent') and session.event.predicted_intent:
         is_hello_intent = session.event.predicted_intent.intent.name == 'hello_intent'
 
-    if is_hello_intent and not session.get('has_greeted'):
+    if is_hello_intent and not session.get(HAS_GREETED):
         reply_message(session, greeting_message)
-        session.set('has_greeted', True)
+        session.set(HAS_GREETED, True)
         return
 
-    if is_hello_intent and session.get('has_greeted'):
+    if is_hello_intent and session.get(HAS_GREETED):
         reply_message(session, "Welcome back! What would you like to work on?")
         return
 
@@ -256,7 +264,7 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
     if request is None:
         return
 
-    session.set('last_matched_intent', intent_name)
+    session.set(LAST_MATCHED_INTENT, intent_name)
 
     if not request.message:
         reply_message(session, empty_msg)
@@ -272,7 +280,7 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
         # "What's next?" suggestions are delivered as interactive QuickAction
         # buttons via suggestedActions in the result payload (execution.py).
         # No need for a separate text message.
-        session.set('_last_executed_diagram_type', None)
+        session.set(LAST_EXECUTED_DIAGRAM_TYPE, None)
     except Exception as e:
         logger.error(f"❌ Error in {intent_name}: {e}", exc_info=True)
         reply_message(session, "Something went wrong while processing your request. Could you try rephrasing it?")
@@ -308,7 +316,7 @@ def modeling_help_body(session: Session):
     if request is None:
         return
 
-    session.set('last_matched_intent', 'modeling_help_intent')
+    session.set(LAST_MATCHED_INTENT, 'modeling_help_intent')
 
     if not request.message:
         reply_message(
@@ -443,7 +451,7 @@ def describe_model_body(session: Session):
     if request is None:
         return
 
-    session.set('last_matched_intent', 'describe_model_intent')
+    session.set(LAST_MATCHED_INTENT, 'describe_model_intent')
 
     if not request.message:
         reply_message(
@@ -509,7 +517,7 @@ def generation_body(session: Session):
     if request is None:
         return
 
-    session.set('last_matched_intent', GENERATION_INTENT_NAME)
+    session.set(LAST_MATCHED_INTENT, GENERATION_INTENT_NAME)
 
     # If the request mixes modeling + generation ("create a class diagram and generate Django"),
     # route through the modeling pipeline first — it will handle both steps via the orchestrator.
@@ -580,7 +588,7 @@ def workflow_body(session: Session):
     if request is None:
         return
 
-    session.set('last_matched_intent', 'workflow_intent')
+    session.set(LAST_MATCHED_INTENT, 'workflow_intent')
 
     if not request.message:
         reply_message(
@@ -624,10 +632,10 @@ def workflow_body(session: Session):
 
     # If there's a pending confirmation (e.g. replace existing model),
     # we have to stop here — the user needs to respond first.
-    if session.get('pending_complete_system') or session.get('pending_gui_choice'):
+    if session.get(PENDING_COMPLETE_SYSTEM) or session.get(PENDING_GUI_CHOICE):
         logger.info("[Workflow] Paused — waiting for user confirmation before continuing")
         # Store workflow continuation state so we could resume later
-        session.set('_workflow_pending_generator', target_generator)
+        session.set(WORKFLOW_PENDING_GENERATOR, target_generator)
         return
 
     # ── Step 2: Validate the model ───────────────────────────────────
@@ -733,7 +741,7 @@ def uml_rag_body(session: Session):
     if request is None:
         return
 
-    session.set('last_matched_intent', 'uml_spec_intent')
+    session.set(LAST_MATCHED_INTENT, 'uml_spec_intent')
 
     user_message = request.message or get_user_message(session)
 

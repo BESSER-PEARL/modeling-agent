@@ -1,4 +1,4 @@
-besser-agentic-framework[extras,llms,tensorflow] == 4.3.0
+besser-agentic-framework[extras,llms,tensorflow] == 4.3.1
 python-dotenv
 langchain-community
 langchain-text-splitters

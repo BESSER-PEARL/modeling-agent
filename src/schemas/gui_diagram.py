@@ -17,7 +17,7 @@ class GUISampleDataPoint(BaseModel):
     )
     color: Optional[str] = Field(
         default=None,
-        description="Optional CSS color for rendering this data point (e.g. '#FF5733', 'red')",
+        description="Optional CSS color for this data point.",
     )
 
 
@@ -29,23 +29,7 @@ class GUISectionSpec(BaseModel):
         "two_column",
     ] = Field(
         default="content",
-        description=(
-            "Section layout type. "
-            "'hero': prominent banner with title, body, and CTA. "
-            "'feature_list': bulleted list of features using items. "
-            "'content': generic text section with title and body. "
-            "'form': input form whose field names come from fields. "
-            "'table': data table whose column headers come from fields and row data from sampleData. "
-            "'bar_chart': vertical bar chart rendered from sampleData. "
-            "'pie_chart': pie/donut chart rendered from sampleData. "
-            "'line_chart': line chart rendered from sampleData. "
-            "'radar_chart': radar/spider chart rendered from sampleData. "
-            "'dashboard': composite overview combining metric cards and charts. "
-            "'metric_card': single KPI card showing a value and label. "
-            "'stats_grid': grid of metric cards rendered from sampleData. "
-            "'footer': page footer with links and text. "
-            "'two_column': side-by-side two-column layout."
-        ),
+        description="Section layout type (e.g. hero, content, form, table, bar_chart, dashboard, footer).",
     )
     title: str = Field(
         default="",
@@ -57,11 +41,11 @@ class GUISectionSpec(BaseModel):
     )
     items: List[str] = Field(
         default_factory=list,
-        description="List of display strings used by feature_list (bullet items), dashboard (widget labels), or similar list-oriented sections",
+        description="Display strings for list-oriented sections (e.g. feature_list, dashboard).",
     )
     fields: List[str] = Field(
         default_factory=list,
-        description="List of field/column names used by form (input labels) and table (column headers) sections",
+        description="Field or column names for form and table sections.",
     )
     ctaLabel: Optional[str] = Field(
         default=None,
@@ -73,7 +57,7 @@ class GUISectionSpec(BaseModel):
     )
     sampleData: List[GUISampleDataPoint] = Field(
         default_factory=list,
-        description="Sample data points for chart and stats sections (bar_chart, pie_chart, line_chart, radar_chart, stats_grid, table)",
+        description="Sample data points for chart, stats, and table sections.",
     )
 
 
@@ -117,7 +101,7 @@ class GUIModificationSpec(BaseModel):
     """Schema for GUI diagram modification operations."""
     operation: Literal["append_section", "rename_page", "remove_page"] = Field(
         default="append_section",
-        description="Modification operation: 'append_section' adds a new section to a page, 'rename_page' changes a page name, 'remove_page' deletes a page",
+        description="Operation: append_section, rename_page, or remove_page.",
     )
     pageName: str = Field(
         min_length=1,

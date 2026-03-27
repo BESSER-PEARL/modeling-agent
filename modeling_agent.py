@@ -31,6 +31,7 @@ from agent_setup import (
     init_diagram_factory,
     init_intent_classifier_config,
 )
+from agent_config import GRACE_PERIOD_SECONDS
 from routing.intents import GENERATION_INTENT_NAME
 from state_bodies import register_all
 from memory.conversation_memory import cleanup_stale_memories
@@ -277,7 +278,7 @@ def _start_cleanup_timer():
 
     # Track when we first notice a session has no active connection
     _disconnected_since: dict[str, float] = {}
-    _GRACE_PERIOD = 300  # 5 minutes before reaping a disconnected session
+    _GRACE_PERIOD = GRACE_PERIOD_SECONDS  # Grace period before reaping a disconnected session
 
     def _cleanup_loop():
         while True:

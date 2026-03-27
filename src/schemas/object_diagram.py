@@ -9,14 +9,14 @@ from pydantic import BaseModel, Field
 
 class ObjectAttributeSpec(BaseModel):
     name: str = Field(
-        description="Exact attribute name from the reference class definition (without visibility or type suffix)."
+        description="Attribute name matching the reference class definition."
     )
     value: str = Field(
-        description="A realistic, concrete example value for this attribute (not a type name). E.g. 'John Doe', '99.99', 'true'."
+        description="Concrete example value for this attribute (e.g. 'John Doe', '99.99')."
     )
     attributeId: Optional[str] = Field(
         default=None,
-        description="The exact element id of this attribute in the reference class diagram. Must match the reference if one is provided."
+        description="Element id of this attribute in the reference class diagram."
     )
 
 
@@ -24,32 +24,32 @@ class SingleObjectSpec(BaseModel):
     """Schema for a single object instance."""
     objectName: str = Field(
         min_length=1,
-        description="Instance name in lowerCamelCase, e.g. 'user1', 'orderA'. Must start with a lowercase letter."
+        description="Instance name in lowerCamelCase (e.g. 'user1', 'orderA')."
     )
     className: str = Field(
         min_length=1,
-        description="The class this object instantiates. Must exactly match a class name from the reference class diagram when one is provided."
+        description="Class this object instantiates, matching the reference class diagram."
     )
     classId: Optional[str] = Field(
         default=None,
-        description="The exact element id of the class in the reference class diagram. Required when a reference diagram is provided."
+        description="Element id of the class in the reference class diagram."
     )
     attributes: List[ObjectAttributeSpec] = Field(
         default_factory=list,
-        description="List of attribute name/value pairs. Must include ALL attributes defined in the reference class, using exact names and ids from the reference."
+        description="Attribute name/value pairs for this object instance."
     )
 
 
 class ObjectLinkSpec(BaseModel):
     source: str = Field(
-        description="The objectName of the source object in this link. Must match an existing object's objectName."
+        description="Source object name."
     )
     target: str = Field(
-        description="The objectName of the target object in this link. Must match an existing object's objectName."
+        description="Target object name."
     )
     relationshipType: Optional[str] = Field(
         default=None,
-        description="Name or type of the relationship, e.g. 'association', 'placedBy'. Should match a relationship from the reference class diagram when available."
+        description="Relationship type or name (e.g. 'association', 'placedBy')."
     )
 
 
@@ -57,15 +57,15 @@ class SystemObjectSpec(BaseModel):
     """Schema for a complete object diagram system."""
     systemName: str = Field(
         default="",
-        description="A short descriptive name for the object diagram, e.g. 'LibraryScenario'."
+        description="Descriptive name for the object diagram."
     )
     objects: List[SingleObjectSpec] = Field(
         min_length=1,
-        description="List of 3-6 related object instances. Each must reference a class from the reference class diagram when one is provided."
+        description="Object instances in the diagram."
     )
     links: List[ObjectLinkSpec] = Field(
         default_factory=list,
-        description="Links between objects representing relationships. Source and target must reference objectNames from the objects list."
+        description="Links between objects representing relationships."
     )
 
 
@@ -74,57 +74,57 @@ class SystemObjectSpec(BaseModel):
 class ObjectModificationTarget(BaseModel):
     objectName: Optional[str] = Field(
         default=None,
-        description="The objectName of the object to modify or remove. Must match an existing object in the current diagram."
+        description="Object name to modify or remove."
     )
     attributeName: Optional[str] = Field(
         default=None,
-        description="The attribute name to modify on the target object. Must match an attribute defined on that object."
+        description="Attribute name to modify on the target object."
     )
     sourceObject: Optional[str] = Field(
         default=None,
-        description="For link operations: the objectName of the source object."
+        description="Source object name for link operations."
     )
     targetObject: Optional[str] = Field(
         default=None,
-        description="For link operations: the objectName of the target object."
+        description="Target object name for link operations."
     )
 
 class ObjectModificationChanges(BaseModel):
     objectName: Optional[str] = Field(
         default=None,
-        description="New or renamed objectName. Must be lowerCamelCase, e.g. 'user2'."
+        description="New or renamed object name in lowerCamelCase."
     )
     className: Optional[str] = Field(
         default=None,
-        description="Class name for add_object (e.g. 'User'). Must match a class from the reference diagram."
+        description="Class name for add_object."
     )
     attributes: Optional[List[ObjectAttributeSpec]] = Field(
         default=None,
-        description="Attributes with concrete values for add_object (e.g. [{name: 'id', value: 'USR001'}])."
+        description="Attributes with concrete values for add_object."
     )
     value: Optional[str] = Field(
         default=None,
-        description="New attribute value to set. Must be a concrete value, not a type."
+        description="New attribute value to set."
     )
     relationshipType: Optional[str] = Field(
         default=None,
-        description="Relationship type for a new or modified link, e.g. 'association', 'owns'."
+        description="Relationship type for a new or modified link."
     )
 
 class ObjectModification(BaseModel):
     action: str = Field(
-        description="The modification action: 'add_object', 'modify_object', 'modify_attribute_value', 'add_link', or 'remove_element'."
+        description="Action to perform (e.g. add_object, modify_attribute_value, add_link, remove_element)."
     )
     target: ObjectModificationTarget = Field(
-        description="Identifies the element to modify. Use objectName for object operations, sourceObject/targetObject for link operations."
+        description="Identifies the element to modify."
     )
     changes: Optional[ObjectModificationChanges] = Field(
         default=None,
-        description="The new values to apply. Not needed for 'remove_element' action."
+        description="Changes to apply. Not needed for remove_element."
     )
 
 class ObjectModificationResponse(BaseModel):
     modifications: List[ObjectModification] = Field(
         min_length=1,
-        description="One or more modifications to apply to the object diagram. Use a single entry for one change, multiple entries for batch changes."
+        description="List of modifications to apply to the object diagram."
     )

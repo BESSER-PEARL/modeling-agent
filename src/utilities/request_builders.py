@@ -40,11 +40,12 @@ def build_request_for_target(
         {
             "activeDiagramType": target_diagram_type,
             "activeDiagramId": resolved_diagram_id,
-            "activeModel": resolved_model,
             "projectSnapshot": base_request.context.project_snapshot,
             "diagramSummaries": base_request.context.diagram_summaries,
         }
     )
+    # Remove legacy activeModel if it was present in the original payload.
+    raw_context.pop("activeModel", None)
     raw_payload["context"] = raw_context
     raw_payload["diagramType"] = target_diagram_type
 
@@ -82,7 +83,8 @@ def build_generation_request(
         inline = " ".join(inline_config).strip()
         message = f"generate {generator_type}" + (f" {inline}" if inline else "")
 
-    active_model = base_request.context.active_model if isinstance(base_request.context.active_model, dict) else base_request.current_model
+    # Derive the model from current_model (already resolved from snapshot by the adapter).
+    resolved_model = base_request.current_model if isinstance(base_request.current_model, dict) else None
 
     raw_payload = {
         "action": "user_message",
@@ -93,7 +95,6 @@ def build_generation_request(
         "context": {
             "activeDiagramType": base_request.context.active_diagram_type,
             "activeDiagramId": base_request.context.active_diagram_id,
-            "activeModel": active_model,
             "projectSnapshot": base_request.context.project_snapshot,
             "diagramSummaries": base_request.context.diagram_summaries,
         },
@@ -107,11 +108,11 @@ def build_generation_request(
         message=message,
         diagram_type=base_request.context.active_diagram_type or base_request.diagram_type,
         diagram_id=base_request.context.active_diagram_id or base_request.diagram_id,
-        current_model=active_model,
+        current_model=resolved_model,
         context=WorkspaceContext(
             active_diagram_type=base_request.context.active_diagram_type or base_request.diagram_type,
             active_diagram_id=base_request.context.active_diagram_id or base_request.diagram_id,
-            active_model=active_model,
+            active_model=resolved_model,
             project_snapshot=base_request.context.project_snapshot,
             diagram_summaries=base_request.context.diagram_summaries,
             current_diagram_indices=base_request.context.current_diagram_indices,

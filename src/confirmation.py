@@ -13,19 +13,18 @@ state body.
 
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any
 
 from besser.agent.core.session import Session
 
 from protocol.adapters import parse_assistant_request
 from session_helpers import reply_message, reply_payload
+from model_utils import model_has_elements  # noqa: F401  (re-export for backward compat)
+from session_keys import PENDING_COMPLETE_SYSTEM, PENDING_GUI_CHOICE
+from execution import execute_model_operation
 
 logger = logging.getLogger(__name__)
 
-
-def _flush_pending_suggestions(session: Session) -> None:
-    """No-op — quality review is now opt-in only (user must ask explicitly)."""
-    pass
 
 # ------------------------------------------------------------------
 # Keyword lists
@@ -57,14 +56,6 @@ def keyword_matches(keyword: str, text: str) -> bool:
     return keyword in text
 
 
-def model_has_elements(model: Optional[Dict[str, Any]]) -> bool:
-    """Return True when *model* contains at least one user-visible element."""
-    if not isinstance(model, dict):
-        return False
-    elements = model.get('elements')
-    return isinstance(elements, dict) and len(elements) > 0
-
-
 # ------------------------------------------------------------------
 # GUI generation-mode choice
 # ------------------------------------------------------------------
@@ -79,9 +70,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
     Returns ``True`` when a pending choice was found **and** handled
     (caller should ``return``).  Returns ``False`` otherwise.
     """
-    from execution import execute_model_operation
-
-    pending = session.get('pending_gui_choice')
+    pending = session.get(PENDING_GUI_CHOICE)
     if not pending:
         return False
 
@@ -90,7 +79,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
 
     wants_cancel = any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
     if wants_cancel:
-        session.set('pending_gui_choice', None)
+        session.set(PENDING_GUI_CHOICE, None)
         reply_message(session, "Cancelled. No GUI was generated.")
         return True
 
@@ -105,12 +94,12 @@ def handle_pending_gui_choice(session: Session) -> bool:
             "[GUIChoice] Message doesn't match auto/llm/cancel — "
             "treating as new request, clearing pending state"
         )
-        session.set('pending_gui_choice', None)
+        session.set(PENDING_GUI_CHOICE, None)
         return False  # Let normal state body handle the new request
 
     if wants_auto:
         remaining_ops = pending.get('remaining_operations')
-        session.set('pending_gui_choice', None)
+        session.set(PENDING_GUI_CHOICE, None)
         logger.info("🔄 [GUIChoice] User chose AUTO-GENERATE (deterministic)")
         reply_payload(session, {
             "action": "auto_generate_gui",
@@ -152,14 +141,14 @@ def handle_pending_gui_choice(session: Session) -> bool:
             _replace_existing=stored_replace,
             _skip_gui_choice=True,
         )
-        session.set('pending_gui_choice', None)  # Clear only on success
-        _flush_pending_suggestions(session)
+        session.set(PENDING_GUI_CHOICE, None)  # Clear only on success
     except Exception as exc:
         logger.error(f"❌ [GUIChoice] Error executing LLM GUI generation: {exc}", exc_info=True)
         reply_message(
             session,
             "Something went wrong. You can try again by saying **auto** or **llm**, or **cancel** to abort.",
         )
+        session.set(PENDING_GUI_CHOICE, None)
         return True
 
     # Resume any remaining operations from the original plan
@@ -186,11 +175,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
     (the caller should ``return`` immediately).  Returns ``False`` otherwise
     so the normal body logic can proceed.
     """
-    # Import here to break the circular dependency:
-    # confirmation → execution → (no dependency back to confirmation)
-    from execution import execute_model_operation
-
-    pending = session.get('pending_complete_system')
+    pending = session.get(PENDING_COMPLETE_SYSTEM)
     if not pending:
         return False
 
@@ -199,7 +184,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
 
     wants_cancel = any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
     if wants_cancel:
-        session.set('pending_complete_system', None)
+        session.set(PENDING_COMPLETE_SYSTEM, None)
         reply_message(session, "Cancelled. Your existing model is unchanged.")
         return True
 
@@ -215,7 +200,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
             "[PendingConfirm] Message doesn't match replace/keep/new-tab/cancel — "
             "treating as new request, clearing pending state"
         )
-        session.set('pending_complete_system', None)
+        session.set(PENDING_COMPLETE_SYSTEM, None)
         return False  # Let normal state body handle the new request
 
     # --- User answered: execute the stored creation -----------------------
@@ -242,7 +227,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
             precomputed["replaceExisting"] = False
 
         reply_payload(session, precomputed)
-        session.set('pending_complete_system', None)
+        session.set(PENDING_COMPLETE_SYSTEM, None)
         return True
 
     # Re-execute the stored operation with the original parameters.
@@ -268,10 +253,11 @@ def handle_pending_system_confirmation(session: Session) -> bool:
                 _replace_existing=True,  # New tab is empty, replace is fine
                 _create_new_tab=True,
             )
-            session.set('pending_complete_system', None)
+            session.set(PENDING_COMPLETE_SYSTEM, None)
         except Exception as exc:
             logger.error(f"❌ [PendingConfirm] Error after new tab creation: {exc}", exc_info=True)
             reply_message(session, "Something went wrong creating the new tab. Please try again.")
+            session.set(PENDING_COMPLETE_SYSTEM, None)
             return True
 
         # Resume remaining operations same as replace/keep path
@@ -286,7 +272,6 @@ def handle_pending_system_confirmation(session: Session) -> bool:
                 stored_diagram_type, stored_default_mode, stored_message, pending,
             )
 
-        _flush_pending_suggestions(session)
         return True
 
     # ── Replace / Keep path ───────────────────────────────────────────
@@ -306,13 +291,14 @@ def handle_pending_system_confirmation(session: Session) -> bool:
             _skip_existing_check=True,
             _replace_existing=replace_existing,
         )
-        session.set('pending_complete_system', None)  # Clear only on success
+        session.set(PENDING_COMPLETE_SYSTEM, None)  # Clear only on success
     except Exception as exc:
         logger.error(f"❌ [PendingConfirm] Error executing stored operation: {exc}", exc_info=True)
         reply_message(
             session,
             "Something went wrong. You can try again by saying **replace**, **keep**, or **new tab**, or **cancel** to abort.",
         )
+        session.set(PENDING_COMPLETE_SYSTEM, None)
         return True
 
     # ── Resume remaining operations from the original plan ───────────
@@ -327,9 +313,6 @@ def handle_pending_system_confirmation(session: Session) -> bool:
             stored_diagram_type, stored_default_mode, stored_message, pending,
         )
 
-    # Flush any pending quality suggestions stored by execute_model_operation
-    _flush_pending_suggestions(session)
-
     return True
 
 
@@ -343,7 +326,6 @@ def _resume_remaining_ops(
     pending: dict,
 ) -> None:
     """Execute remaining operations that were queued behind a pending confirmation."""
-    from execution import execute_model_operation
     from utilities.request_builders import build_request_for_target
 
     # Rebuild the working request so subsequent operations see the
@@ -375,7 +357,7 @@ def _resume_remaining_ops(
                     if leftover:
                         # Check both pending types — the operation may have
                         # stored either a system confirmation or a GUI choice.
-                        for key in ('pending_complete_system', 'pending_gui_choice'):
+                        for key in (PENDING_COMPLETE_SYSTEM, PENDING_GUI_CHOICE):
                             new_pending = session.get(key)
                             if isinstance(new_pending, dict):
                                 new_pending['remaining_operations'] = leftover
@@ -397,6 +379,11 @@ def _resume_remaining_ops(
                     f"{remaining_op}: {exc}",
                     exc_info=True,
                 )
+                reply_message(
+                    session,
+                    "Something went wrong while processing a follow-up operation. "
+                    "Please try again.",
+                )
         elif op_type == 'generation':
             from handlers.generation_handler import handle_generation_request
             from utilities.request_builders import build_generation_request
@@ -417,4 +404,9 @@ def _resume_remaining_ops(
                     logger.error(
                         f"[PendingConfirm] Error executing remaining generation: {exc}",
                         exc_info=True,
+                    )
+                    reply_message(
+                        session,
+                        "Something went wrong while running code generation. "
+                        "Please try again.",
                     )

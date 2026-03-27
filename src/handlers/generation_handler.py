@@ -1,9 +1,17 @@
+import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from besser.agent.core.session import Session
 
 from protocol.types import AssistantRequest
+from session_keys import (
+    CONFIG_PROMPT_ATTEMPTS,
+    PENDING_GENERATOR_CONFIG,
+    PENDING_GENERATOR_TYPE,
+)
+
+logger = logging.getLogger(__name__)
 
 # Sentinel value for pending_generator when the user has been shown the
 # generator selection menu and we're waiting for their choice.
@@ -364,24 +372,25 @@ def _build_config_prompt(
 
 
 def _get_pending_state(session: Session) -> Tuple[Optional[str], Dict[str, Any]]:
-    pending_generator = session.get("pending_generator_type")
-    pending_config = session.get("pending_generator_config") or {}
+    pending_generator = session.get(PENDING_GENERATOR_TYPE)
+    pending_config = session.get(PENDING_GENERATOR_CONFIG) or {}
     return pending_generator, pending_config if isinstance(pending_config, dict) else {}
 
 
 def _set_pending_state(session: Session, generator_type: str, config: Dict[str, Any]) -> None:
-    session.set("pending_generator_type", generator_type)
-    session.set("pending_generator_config", config)
+    session.set(PENDING_GENERATOR_TYPE, generator_type)
+    session.set(PENDING_GENERATOR_CONFIG, config)
 
 
 def _clear_pending_state(session: Session) -> None:
     """Clear pending generation state without triggering noisy missing-key errors."""
     try:
         session_data = session.get_dictionary()
-    except Exception:
+    except Exception as exc:
+        logger.debug(f"Session dictionary access failed (best-effort): {exc}")
         session_data = {}
 
-    for key in ("pending_generator_type", "pending_generator_config"):
+    for key in (PENDING_GENERATOR_TYPE, PENDING_GENERATOR_CONFIG):
         if isinstance(session_data, dict) and key in session_data:
             session.delete(key)
 
@@ -665,13 +674,13 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     missing_fields = _required_missing(generator_type, config)
     if missing_fields:
         # Track how many times we've prompted for config to avoid infinite loops
-        config_attempts = (session.get("_config_prompt_attempts") or 0) + 1
-        session.set("_config_prompt_attempts", config_attempts)
+        config_attempts = (session.get(CONFIG_PROMPT_ATTEMPTS) or 0) + 1
+        session.set(CONFIG_PROMPT_ATTEMPTS, config_attempts)
 
         if config_attempts >= 3:
             # After 2 failed attempts, auto-fill with defaults and proceed
             config = _normalize_defaults(generator_type, request, config)
-            session.set("_config_prompt_attempts", 0)
+            session.set(CONFIG_PROMPT_ATTEMPTS, 0)
         else:
             _set_pending_state(session, generator_type, config)
             prompt = _build_config_prompt(generator_type, missing_fields, request=request)
@@ -687,7 +696,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     config = _normalize_defaults(generator_type, request, config)
 
     _clear_pending_state(session)
-    session.set("_config_prompt_attempts", 0)
+    session.set(CONFIG_PROMPT_ATTEMPTS, 0)
     # ------------------------------------------------------------------
     # Special actions: export & deploy
     # ------------------------------------------------------------------

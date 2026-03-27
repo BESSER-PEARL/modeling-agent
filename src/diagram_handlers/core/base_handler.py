@@ -7,51 +7,26 @@ deterministic :pymod:`layout_engine` – the LLM is never asked to produce
 pixel coordinates.
 """
 
+import copy
 import json
 import logging
 import os
 import random
 import time
 import uuid
-from typing import Dict, Any, List, Optional, Tuple, Type
+from typing import Callable, Dict, Any, List, Optional, Tuple, Type
 from abc import ABC, abstractmethod
 
 from pydantic import BaseModel
 
+from agent_config import LLM_MAX_TOKENS_SMALL, LLM_MAX_TOKENS_LARGE, LLM_TEMPERATURE
 from .layout_engine import apply_layout
+from errors import ErrorCode, classify_error, build_error_response, _RECOVERY_HINTS
 
 logger = logging.getLogger(__name__)
 
 class LLMPredictionError(Exception):
     """Raised when the LLM fails to produce a usable response after retries."""
-    pass
-
-
-# ---------------------------------------------------------------------------
-# Prompt-response cache stubs
-# ---------------------------------------------------------------------------
-# Prompt caching was removed because every prompt includes the current
-# workspace context (model data) which changes on every interaction,
-# yielding a ~0% cache hit rate.  These stubs remain so that callers
-# (predict_with_retry, predict_structured) and tests don't need changes.
-
-_PROMPT_CACHE_MAX_SIZE = 0
-_PROMPT_CACHE_TTL = 3600
-_prompt_cache: Dict[str, Any] = {}
-
-
-def _normalize_cache_key(key: str) -> str:
-    """Normalize whitespace (kept for backward compat / tests)."""
-    return ' '.join(key.split())
-
-def _cache_key(_prompt: str) -> str:
-    """Return a constant — caching is disabled."""
-    return ""
-
-def _cache_get(_prompt: str) -> Optional[str]:
-    return None
-
-def _cache_put(_prompt: str, _response: str) -> None:
     pass
 
 
@@ -122,50 +97,11 @@ MODIFICATION_REQUIRED = {"modification": dict}
 MODIFICATION_INNER_REQUIRED = {"action": str, "target": dict}
 
 # ---------------------------------------------------------------------------
-# Error taxonomy with user-facing recovery hints
+# Error taxonomy — now delegated to the unified ``errors`` module.
+# The module-level alias is kept so that existing references within this
+# file (e.g. _error_response) continue to resolve.
 # ---------------------------------------------------------------------------
-_ERROR_RECOVERY: Dict[str, Dict[str, Any]] = {
-    "llm_failure": {
-        "message": "The AI service is temporarily unavailable.",
-        "recovery": "try again",
-        "retryable": True,
-    },
-    "parse_error": {
-        "message": "I had trouble structuring that response.",
-        "recovery": "try rephrasing your request more specifically",
-        "retryable": True,
-    },
-    "validation_error": {
-        "message": "The generated model had structural issues.",
-        "recovery": "try simplifying your request",
-        "retryable": True,
-    },
-    "timeout": {
-        "message": "That request was too complex to process in time.",
-        "recovery": "try breaking it into smaller steps",
-        "retryable": True,
-    },
-    "schema_error": {
-        "message": "The response format was unexpected.",
-        "recovery": "try again with a simpler description",
-        "retryable": True,
-    },
-    "context_error": {
-        "message": "I couldn't find the diagram or element you're referring to.",
-        "recovery": "make sure you have an active diagram open",
-        "retryable": False,
-    },
-    "generation_error": {
-        "message": "Something went wrong during generation.",
-        "recovery": "try rephrasing your request",
-        "retryable": True,
-    },
-    "unsupported": {
-        "message": "This operation is not supported for this diagram type.",
-        "recovery": "check the documentation for supported operations",
-        "retryable": False,
-    },
-}
+_ERROR_RECOVERY = _RECOVERY_HINTS
 
 
 class BaseDiagramHandler(ABC):
@@ -211,26 +147,16 @@ class BaseDiagramHandler(ABC):
     ) -> Dict[str, Any]:
         """Return a structured error payload with recovery hints.
 
-        Uses the module-level ``_ERROR_RECOVERY`` taxonomy to produce
-        user-friendly messages and actionable recovery suggestions.
+        Delegates to :func:`errors.build_error_response` for the actual
+        payload construction.
 
         **Backward compatible**: existing callers that pass a human-readable
         message as the first positional argument (with an optional ``code=``
         keyword) continue to work.  The method detects whether the first arg
         is a known error code or a legacy message string.
 
-        Supported error codes (see ``_ERROR_RECOVERY``):
-        - ``llm_failure``: LLM call failed after retries
-        - ``parse_error``: JSON parsing failed
-        - ``validation_error``: Schema validation failed
-        - ``generation_error``: General generation failure (default)
-        - ``timeout``: Request timed out
-        - ``schema_error``: Unexpected response format
-        - ``context_error``: Missing diagram/element context
-        - ``unsupported``: Unsupported diagram type or operation
-
         Args:
-            error_code_or_message: Either a key from ``_ERROR_RECOVERY`` **or**
+            error_code_or_message: Either a known error code string **or**
                 a legacy human-readable message string.  When a known error
                 code is given the taxonomy message is used; otherwise the
                 value is treated as the display message.
@@ -246,43 +172,41 @@ class BaseDiagramHandler(ABC):
         is_known_code = first_arg in _ERROR_RECOVERY
 
         if code is not None:
-            # Explicit code= keyword — first arg is a legacy message
             effective_code = code
             legacy_message = first_arg if not is_known_code else None
         elif is_known_code:
             effective_code = first_arg
             legacy_message = None
         else:
-            # First arg looks like a legacy message string (contains spaces, etc.)
             effective_code = "generation_error"
             legacy_message = first_arg
 
-        recovery = _ERROR_RECOVERY.get(effective_code, {
-            "message": "Something went wrong.",
-            "recovery": "try rephrasing your request",
-            "retryable": True,
-        })
-        effective_retryable = retryable if retryable is not None else recovery["retryable"]
+        # Resolve the ErrorCode enum value (fall back to UNKNOWN for
+        # unrecognised strings so the enum constructor never raises).
+        try:
+            error_code_enum = ErrorCode(effective_code)
+        except ValueError:
+            error_code_enum = ErrorCode.UNKNOWN
 
-        # Priority: explicit message= > legacy positional message > taxonomy + details
+        # Priority: explicit message= > legacy positional message > empty
+        # (build_error_response will fill from the taxonomy if empty)
         if message is not None:
             effective_message = message
         elif legacy_message is not None:
             effective_message = legacy_message
         else:
-            effective_message = f"{recovery['message']} {details}".strip()
+            effective_message = ""
 
-        return {
-            "action": "assistant_message",
-            "error": True,
-            "errorCode": effective_code,
-            "message": effective_message,
-            "suggestedRecovery": recovery["recovery"],
-            "retryable": effective_retryable,
-            # Keep legacy key for backward compat
-            "error_code": effective_code,
-            "diagramType": self.get_diagram_type(),
-        }
+        payload = build_error_response(
+            error_code_enum,
+            effective_message,
+            diagram_type=self.get_diagram_type(),
+            details=details,
+            retryable=retryable,
+        )
+        # Keep legacy key for backward compat
+        payload["error_code"] = effective_code
+        return payload
 
     # ------------------------------------------------------------------
     # Friendly modification message helpers
@@ -391,6 +315,82 @@ class BaseDiagramHandler(ABC):
         }
 
     # ------------------------------------------------------------------
+    # Shared modification response handling
+    # ------------------------------------------------------------------
+
+    def _execute_modification(
+        self,
+        user_prompt: str,
+        system_prompt: str,
+        response_schema: Type[BaseModel],
+        *,
+        post_processor: Optional[Callable[[list], list]] = None,
+        spec_processor: Optional[Callable[["BaseDiagramHandler", Dict[str, Any]], Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Execute a structured modification LLM call and build the response spec.
+
+        This is the shared implementation for all diagram handlers'
+        ``generate_modification()`` success path.  Each handler builds its
+        own prompts, wraps this call in its own try/except block, and
+        optionally passes ``post_processor`` / ``spec_processor`` callbacks
+        for handler-specific logic.
+
+        Args:
+            user_prompt: The full prompt including model context.
+            system_prompt: System-level instructions (can be empty string).
+            response_schema: Pydantic model for structured output.
+            post_processor: Optional callable to clean up *mod_list* before
+                wrapping (e.g., strip spurious rename-related relationship
+                mods).  Signature: ``(mod_list) -> mod_list``.
+            spec_processor: Optional callable to transform the wrapped
+                *modification_spec* dict before validation (e.g., expand
+                refactoring actions).
+                Signature: ``(handler, spec) -> spec``.
+
+        Returns:
+            Modification spec dict ready to send to the frontend.
+        """
+        parsed = self.predict_structured(
+            user_prompt, response_schema, system_prompt=system_prompt,
+        )
+        mod_list = parsed.model_dump()["modifications"]
+
+        # Handler-specific cleanup of the raw modification list
+        if post_processor is not None:
+            mod_list = post_processor(mod_list)
+
+        if len(mod_list) == 1:
+            modification_spec: Dict[str, Any] = {
+                "action": "modify_model", "modification": mod_list[0],
+            }
+        else:
+            modification_spec = {
+                "action": "modify_model", "modifications": mod_list,
+            }
+
+        # Handler-specific spec-level transformation (e.g. refactoring expansion)
+        if spec_processor is not None:
+            modification_spec = spec_processor(self, modification_spec)
+
+        self.validate_modification_spec(modification_spec)
+
+        modification_spec.setdefault('action', 'modify_model')
+        modification_spec.setdefault('diagramType', self.get_diagram_type())
+
+        if 'message' not in modification_spec:
+            if 'modifications' in modification_spec and isinstance(modification_spec['modifications'], list):
+                modification_spec['message'] = self._friendly_batch_message(modification_spec['modifications'])
+            elif 'modification' in modification_spec and isinstance(modification_spec['modification'], dict):
+                mod = modification_spec['modification']
+                act = mod.get('action', 'modification')
+                target = mod.get('target', {})
+                name = self._build_mod_target_name(act, target)
+                name = self._sanitize_target_name(name)
+                modification_spec['message'] = self._friendly_mod_message(act, name)
+
+        return modification_spec
+
+    # ------------------------------------------------------------------
     # Layout helpers – deterministic positioning after LLM generation
     # ------------------------------------------------------------------
 
@@ -412,8 +412,8 @@ class BaseDiagramHandler(ABC):
     # LLM call with retry
     # ------------------------------------------------------------------
     # NOTE: This adds an extra LLM round-trip (2–4s latency).
-    def predict_with_retry(self, prompt: str, max_retries: int = 1, *, use_cache: bool = True) -> str:
-        """Call the LLM with automatic retry, cache check, and jittered exponential backoff.
+    def predict_with_retry(self, prompt: str, max_retries: int = 1) -> str:
+        """Call the LLM with automatic retry and jittered exponential backoff.
 
         Rate-limit handling is delegated to OpenAI's API (429 responses)
         and the retry loop below — no local semaphore is used.
@@ -426,7 +426,6 @@ class BaseDiagramHandler(ABC):
         Args:
             prompt: Full prompt to send.
             max_retries: Number of additional attempts after the first (default 1).
-            use_cache: Check/populate the prompt cache (default True).
 
         Returns:
             Non-empty string response.
@@ -434,13 +433,6 @@ class BaseDiagramHandler(ABC):
         Raises:
             LLMPredictionError: If all attempts return empty or fail.
         """
-        # --- Cache check ---
-        if use_cache:
-            cached = _cache_get(prompt)
-            if cached:
-                logger.info(f"[{self.get_diagram_type()}] Cache hit — returning cached response")
-                return cached
-
         last_error: Optional[Exception] = None
         last_error_type: str = "unknown"
         total_attempts = 1 + max_retries
@@ -492,12 +484,10 @@ class BaseDiagramHandler(ABC):
                             completion_tokens=est_completion,
                             model=getattr(self.llm, 'name', 'gpt-4.1-mini'),
                         )
-                except Exception:
-                    pass  # tracking is best-effort
+                except Exception as exc:
+                    logger.debug(f"Token tracking failed (best-effort): {exc}")
 
                 if response and response.strip():
-                    if use_cache:
-                        _cache_put(prompt, response)
                     return response
                 last_error = LLMPredictionError("LLM returned empty response")
                 last_error_type = "llm_failure"
@@ -543,8 +533,8 @@ class BaseDiagramHandler(ABC):
         "StateMachineModificationResponse", "GUIModificationSpec",
         "QuantumModificationSpec", "AgentModificationResponse",
     }
-    _SMALL_OUTPUT_MAX_TOKENS = 2048
-    _LARGE_OUTPUT_MAX_TOKENS = 8192
+    _SMALL_OUTPUT_MAX_TOKENS = LLM_MAX_TOKENS_SMALL
+    _LARGE_OUTPUT_MAX_TOKENS = LLM_MAX_TOKENS_LARGE
 
     def predict_structured(
         self,
@@ -552,9 +542,8 @@ class BaseDiagramHandler(ABC):
         response_schema: Type[BaseModel],
         *,
         max_retries: int = 1,
-        use_cache: bool = True,
         system_prompt: str = "",
-        temperature: float = 0.2,
+        temperature: float = LLM_TEMPERATURE,
     ) -> BaseModel:
         """Call the LLM with OpenAI Structured Outputs, returning a validated Pydantic model.
 
@@ -569,7 +558,6 @@ class BaseDiagramHandler(ABC):
             prompt: The user/request prompt.
             response_schema: Pydantic model class defining the expected output.
             max_retries: Number of retry attempts (default 1).
-            use_cache: Check/populate prompt cache (default True).
             system_prompt: Optional system instruction prepended to messages.
             temperature: LLM temperature (default 0.2).
 
@@ -579,21 +567,6 @@ class BaseDiagramHandler(ABC):
         Raises:
             LLMPredictionError: If all attempts fail.
         """
-        # --- Cache check (keyed on prompt + schema name) ---
-        cache_prompt = f"{prompt}||schema={response_schema.__name__}"
-        if use_cache:
-            cached = _cache_get(cache_prompt)
-            if cached:
-                try:
-                    parsed = response_schema.model_validate_json(cached)
-                    logger.info(
-                        f"[{self.get_diagram_type()}] Structured cache hit "
-                        f"(schema={response_schema.__name__})"
-                    )
-                    return parsed
-                except Exception:
-                    pass  # Cache entry invalid for this schema, re-generate
-
         # --- Check if client supports .parse() ---
         client = getattr(self.llm, 'client', None)
         has_parse = (
@@ -609,7 +582,7 @@ class BaseDiagramHandler(ABC):
                 "falling back to predict_with_retry"
             )
             return self._structured_fallback(
-                prompt, response_schema, system_prompt, max_retries, use_cache,
+                prompt, response_schema, system_prompt, max_retries,
             )
 
         # --- Structured parse with retry ---
@@ -624,6 +597,7 @@ class BaseDiagramHandler(ABC):
         last_error: Optional[Exception] = None
         raw_content: Optional[str] = None
         total_attempts = 1 + max_retries
+        truncated = False
 
         for attempt in range(total_attempts):
             if attempt > 0:
@@ -633,6 +607,24 @@ class BaseDiagramHandler(ABC):
                     f"(attempt {attempt + 1}/{total_attempts})"
                 )
                 time.sleep(backoff)
+
+                # If previous attempt was truncated, use a modified messages
+                # list with a conciseness instruction appended to the last
+                # user message (without mutating the original list).
+                if truncated:
+                    logger.info(
+                        f"[{self.get_diagram_type()}] Previous attempt was truncated — "
+                        "appending conciseness instruction for retry"
+                    )
+                    messages = copy.deepcopy(messages)
+                    for msg in reversed(messages):
+                        if msg.get("role") == "user":
+                            msg["content"] += (
+                                "\n\nIMPORTANT: Your previous response was too long and was "
+                                "truncated. Be CONCISE. Output ONLY the minimal JSON matching "
+                                "the schema — no extra fields, no elaboration, no unnecessary data."
+                            )
+                            break
 
             try:
                 max_tokens = (
@@ -688,6 +680,7 @@ class BaseDiagramHandler(ABC):
                         f"Raw content preview ({len(raw_content) if raw_content else 0} chars): "
                         f"{raw_content[:2000] if raw_content else 'N/A'}...TRUNCATED"
                     )
+                    truncated = True
 
                 parsed = completion.choices[0].message.parsed
                 if parsed is None:
@@ -702,10 +695,6 @@ class BaseDiagramHandler(ABC):
                     f"📤 [{self.get_diagram_type()}] Parsed response: "
                     f"{parsed.model_dump_json()[:3000]}"
                 )
-
-                # Cache the JSON representation
-                if use_cache:
-                    _cache_put(cache_prompt, parsed.model_dump_json())
 
                 logger.info(
                     f"✅ [{self.get_diagram_type()}] Structured output success "
@@ -736,31 +725,18 @@ class BaseDiagramHandler(ABC):
         response_schema: Type[BaseModel],
         system_prompt: str,
         max_retries: int,
-        use_cache: bool,
     ) -> BaseModel:
         """Fallback path when structured outputs API is unavailable.
 
         Uses predict_with_retry + JSON mode, then validates against the schema.
-        Cache key is schema-qualified to match ``predict_structured``.
         """
-        # Use the same schema-qualified cache key as predict_structured
-        # so hits/puts are consistent across both code paths.
-        cache_prompt = f"{prompt}||schema={response_schema.__name__}"
-        if use_cache:
-            cached = _cache_get(cache_prompt)
-            if cached:
-                try:
-                    return response_schema.model_validate_json(cached)
-                except Exception:
-                    pass  # stale entry — regenerate
-
         # Build the schema description for the prompt so the LLM knows the shape
         schema_desc = ""
         try:
             schema_json = json.dumps(response_schema.model_json_schema(), indent=2)
             schema_desc = f"\n\nExpected JSON schema:\n{schema_json}\n"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"Could not serialize schema for prompt (best-effort): {exc}")
 
         full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
         full_prompt += schema_desc
@@ -769,9 +745,7 @@ class BaseDiagramHandler(ABC):
             "No markdown, no explanation."
         )
 
-        # predict_with_retry uses its own cache (sha256 of full_prompt) — disable
-        # it to avoid double-caching with mismatched keys.
-        response = self.predict_with_retry(full_prompt, max_retries=max_retries, use_cache=False)
+        response = self.predict_with_retry(full_prompt, max_retries=max_retries)
         json_text = self.clean_json_response(response)
 
         try:
@@ -786,10 +760,6 @@ class BaseDiagramHandler(ABC):
                     f"Failed to validate LLM response against "
                     f"{response_schema.__name__}: {exc}"
                 )
-
-        # Cache the validated result with the schema-qualified key
-        if use_cache:
-            _cache_put(cache_prompt, parsed.model_dump_json())
 
         return parsed
 
@@ -840,7 +810,7 @@ class BaseDiagramHandler(ABC):
         # Pass 1: Design reasoning (free-text)
         logger.info(f"🧠 [{self.get_diagram_type()}] Two-pass structured: reasoning pass")
         try:
-            reasoning = self.predict_with_retry(reasoning_prompt, max_retries=1, use_cache=False)
+            reasoning = self.predict_with_retry(reasoning_prompt, max_retries=1)
         except Exception as exc:
             logger.warning(
                 f"[{self.get_diagram_type()}] Reasoning pass failed ({exc}), "
@@ -880,19 +850,6 @@ class BaseDiagramHandler(ABC):
             system_prompt=system_prompt,
             temperature=temperature,
         )
-
-    def _classify_error(self, exc: Exception) -> str:
-        """Classify an exception into an error code from the recovery taxonomy."""
-        exc_str = str(exc).lower()
-        if "timeout" in exc_str or "timed out" in exc_str:
-            return "timeout"
-        if "json" in exc_str or "parse" in exc_str:
-            return "parse_error"
-        if "validation" in exc_str or "schema" in exc_str:
-            return "validation_error"
-        if isinstance(exc, LLMPredictionError):
-            return "llm_failure"
-        return "generation_error"
 
     # ------------------------------------------------------------------
     # JSON / text utilities
@@ -1023,7 +980,7 @@ class BaseDiagramHandler(ABC):
         # which handles retry and backoff internally.
         logger.info(f"[{self.get_diagram_type()}] Two-pass: starting reasoning pass")
         try:
-            reasoning = self.predict_with_retry(reasoning_prompt, max_retries=1, use_cache=False)
+            reasoning = self.predict_with_retry(reasoning_prompt, max_retries=1)
         except Exception as exc:
             logger.warning(
                 f"[{self.get_diagram_type()}] Reasoning pass failed ({exc}), "

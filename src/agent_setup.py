@@ -17,6 +17,14 @@ from besser.agent.nlp.intent_classifier.intent_classifier_configuration import L
 from besser.agent.nlp.llm.llm_openai_api import LLMOpenAI
 from besser.agent.nlp.speech2text.openai_speech2text import OpenAISpeech2Text
 
+from agent_config import (
+    LLM_TEMPERATURE,
+    LLM_TEXT_TEMPERATURE,
+    LLM_MAX_TOKENS_LARGE,
+    LLM_MAX_TOKENS_TEXT,
+    CONVERSATION_HISTORY_DEPTH,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,16 +43,16 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
         agent=agent,
         name='gpt-4.1-mini',
         parameters={
-            'temperature': 0.2,
-            'max_completion_tokens': 8192,
+            'temperature': LLM_TEMPERATURE,
+            'max_completion_tokens': LLM_MAX_TOKENS_LARGE,
         },
-        num_previous_messages=5,
+        num_previous_messages=CONVERSATION_HISTORY_DEPTH,
     )
 
     # Thin wrapper that enforces JSON mode for predict() calls only.
     _gpt_json_params: Dict[str, Any] = {
-        'temperature': 0.2,
-        'max_completion_tokens': 8192,
+        'temperature': LLM_TEMPERATURE,
+        'max_completion_tokens': LLM_MAX_TOKENS_LARGE,
         'response_format': {'type': 'json_object'},
     }
 
@@ -62,8 +70,8 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
         agent=agent,
         name='gpt-4.1-mini-text',
         parameters={
-            'temperature': 0.4,
-            'max_completion_tokens': 4096,
+            'temperature': LLM_TEXT_TEMPERATURE,
+            'max_completion_tokens': LLM_MAX_TOKENS_TEXT,
         },
         num_previous_messages=20,
     )
@@ -81,7 +89,10 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     except Exception as exc:
         logger.warning(f"LLM provider init failed (non-critical): {exc}")
 
-    logger.info("LLMs initialized: gpt-4.1-mini (json, t=0.2), gpt-4.1-mini (text, t=0.4)")
+    logger.info(
+        f"LLMs initialized: gpt-4.1-mini (json, t={LLM_TEMPERATURE}), "
+        f"gpt-4.1-mini (text, t={LLM_TEXT_TEMPERATURE})"
+    )
     return gpt, gpt_text, gpt_predict_json
 
 

@@ -14,10 +14,12 @@ from protocol.types import AssistantRequest
 def resolve_target_model(
     request: AssistantRequest, target_diagram_type: str,
 ) -> Optional[Dict[str, Any]]:
-    """Find the best available model for *target_diagram_type* in the request context."""
-    if target_diagram_type == request.context.active_diagram_type and isinstance(request.current_model, dict):
-        return request.current_model
+    """Find the best available model for *target_diagram_type* in the request context.
 
+    The model is always resolved from ``projectSnapshot``.  The legacy
+    ``activeModel`` / ``current_model`` fields are no longer consulted as a
+    primary source (see PR 6.2).
+    """
     # Primary path: use get_diagram_from_snapshot which handles both arrays and dicts.
     if hasattr(request.context, "get_diagram_from_snapshot"):
         diagram = request.context.get_diagram_from_snapshot(target_diagram_type)
@@ -47,10 +49,10 @@ def resolve_target_model(
                 elif isinstance(target, dict) and isinstance(target.get("model"), dict):
                     return target["model"]
 
+    # Last resort: current_model may still be populated by adapters.py from
+    # the snapshot resolution, so honour it as a final fallback.
     if isinstance(request.current_model, dict):
         return request.current_model
-    if isinstance(request.context.active_model, dict):
-        return request.context.active_model
     return None
 
 
@@ -72,11 +74,9 @@ def resolve_object_reference_diagram(
             return reference_diagram
 
     active_diagram_type = request.context.active_diagram_type or request.diagram_type
-    active_model = request.context.active_model if isinstance(request.context.active_model, dict) else None
-    if active_diagram_type == "ClassDiagram" and isinstance(active_model, dict):
-        if isinstance(active_model.get("elements"), dict):
-            return active_model
 
+    # Use current_model (resolved from snapshot by the adapter) when
+    # the active diagram is a ClassDiagram.
     if active_diagram_type == "ClassDiagram" and isinstance(request.current_model, dict):
         if isinstance(request.current_model.get("elements"), dict):
             return request.current_model
