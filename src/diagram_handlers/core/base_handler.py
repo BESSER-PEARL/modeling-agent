@@ -334,6 +334,32 @@ class BaseDiagramHandler(ABC):
         human = action.replace('_', ' ').capitalize()
         return f"{human} **{target_name}**."
 
+    @staticmethod
+    def _build_mod_target_name(action: str, target: dict) -> str:
+        """Build a descriptive target name that includes sub-element context.
+
+        For remove_element / modify_attribute / etc., if both a class name and
+        an attribute/method name are present, return something like
+        ``"attribute gender from Shoe"`` instead of just ``"Shoe"``.
+        """
+        class_name = target.get('className') or target.get('stateName') or target.get('objectName')
+        attr_name = target.get('attributeName')
+        method_name = target.get('methodName')
+        rel_source = target.get('sourceClass')
+        rel_target = target.get('targetClass')
+
+        # Relationship target
+        if rel_source and rel_target:
+            return f"{rel_source} → {rel_target}"
+
+        # Sub-element (attribute or method) on a class
+        if class_name and attr_name and action in ('remove_element', 'modify_attribute', 'remove_attribute'):
+            return f"attribute {attr_name} from {class_name}"
+        if class_name and method_name and action in ('remove_element', 'modify_method', 'remove_method'):
+            return f"method {method_name} from {class_name}"
+
+        return class_name or attr_name or method_name or 'element'
+
     @classmethod
     def _friendly_batch_message(cls, mods: list) -> str:
         """Produce a friendly summary for a batch of modifications."""
@@ -341,9 +367,7 @@ class BaseDiagramHandler(ABC):
         for m in mods:
             act = m.get('action', 'modification')
             t = m.get('target', {})
-            name = (t.get('className') or t.get('stateName') or t.get('intentName')
-                    or t.get('objectName') or t.get('attributeName') or t.get('methodName')
-                    or 'element')
+            name = cls._build_mod_target_name(act, t)
             parts.append(cls._friendly_mod_message(act, name))
         if len(parts) == 1:
             return parts[0]
@@ -598,6 +622,7 @@ class BaseDiagramHandler(ABC):
         messages.append({"role": "user", "content": prompt})
 
         last_error: Optional[Exception] = None
+        raw_content: Optional[str] = None
         total_attempts = 1 + max_retries
 
         for attempt in range(total_attempts):
@@ -621,6 +646,14 @@ class BaseDiagramHandler(ABC):
                     f"schema={response_schema.__name__}, "
                     f"max_tokens={max_tokens})"
                 )
+                # Log prompt content for diagnostics
+                for i, msg in enumerate(messages):
+                    role = msg.get("role", "?")
+                    content = msg.get("content", "")
+                    logger.info(
+                        f"📝 [{self.get_diagram_type()}] Prompt msg[{i}] role={role} "
+                        f"len={len(content)} chars:\n{content}"
+                    )
                 completion = client.beta.chat.completions.parse(
                     model=self.llm.name if hasattr(self.llm, 'name') else "gpt-4.1-mini",
                     messages=messages,
@@ -629,11 +662,31 @@ class BaseDiagramHandler(ABC):
                     max_completion_tokens=max_tokens,
                 )
 
-                # Track tokens
-                if hasattr(completion, 'usage') and completion.usage:
+                # Track tokens & detect truncation
+                finish_reason = completion.choices[0].finish_reason if completion.choices else None
+                usage = completion.usage if hasattr(completion, 'usage') else None
+                raw_content = getattr(completion.choices[0].message, 'content', None) if completion.choices else None
+
+                if usage:
                     tracker.record_from_usage(
-                        completion.usage,
+                        usage,
                         model=self.llm.name if hasattr(self.llm, 'name') else "gpt-4.1-mini",
+                    )
+                    logger.info(
+                        f"📊 [{self.get_diagram_type()}] Token usage: "
+                        f"prompt={usage.prompt_tokens}, "
+                        f"completion={usage.completion_tokens}, "
+                        f"total={usage.total_tokens}, "
+                        f"finish_reason={finish_reason}"
+                    )
+
+                if finish_reason == "length":
+                    logger.warning(
+                        f"⚠️ [{self.get_diagram_type()}] Response TRUNCATED "
+                        f"(finish_reason=length, completion_tokens={usage.completion_tokens if usage else '?'}, "
+                        f"max_tokens={max_tokens}). "
+                        f"Raw content preview ({len(raw_content) if raw_content else 0} chars): "
+                        f"{raw_content[:2000] if raw_content else 'N/A'}...TRUNCATED"
                     )
 
                 parsed = completion.choices[0].message.parsed
@@ -643,6 +696,12 @@ class BaseDiagramHandler(ABC):
                     if refusal:
                         raise LLMPredictionError(f"LLM refused: {refusal}")
                     raise LLMPredictionError("LLM returned empty structured output")
+
+                # Log successful response content
+                logger.info(
+                    f"📤 [{self.get_diagram_type()}] Parsed response: "
+                    f"{parsed.model_dump_json()[:3000]}"
+                )
 
                 # Cache the JSON representation
                 if use_cache:
@@ -664,7 +723,9 @@ class BaseDiagramHandler(ABC):
                 last_error = LLMPredictionError(f"Structured parse failed: {exc}")
                 logger.warning(
                     f"[{self.get_diagram_type()}] Structured parse attempt "
-                    f"{attempt + 1}/{total_attempts} failed: {exc}"
+                    f"{attempt + 1}/{total_attempts} failed: {exc}\n"
+                    f"  Raw response content (if available): "
+                    f"{raw_content[:2000] if raw_content else 'N/A'}"
                 )
 
         raise last_error or LLMPredictionError("Structured prediction failed after all retries")

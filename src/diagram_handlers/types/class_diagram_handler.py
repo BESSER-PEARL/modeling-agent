@@ -484,7 +484,7 @@ Examples:
                     mod = modification_spec['modification']
                     act = mod.get('action', 'modification')
                     target = mod.get('target', {})
-                    name = target.get('className') or target.get('attributeName') or target.get('methodName') or 'element'
+                    name = self._build_mod_target_name(act, target)
                     name = self._sanitize_target_name(name)
                     modification_spec['message'] = self._friendly_mod_message(act, name)
 

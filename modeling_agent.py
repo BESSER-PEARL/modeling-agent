@@ -312,7 +312,7 @@ def _start_cleanup_timer():
 
                     try:
                         agent.close_session(sid)
-                        logger.info(f"[Reaper] Closed orphaned session {sid}")
+                        # logger.info(f"[Reaper] Closed orphaned session {sid}")
                     except (KeyError, RuntimeError):
                         pass  # Session was already removed by another thread
                     except Exception as exc:

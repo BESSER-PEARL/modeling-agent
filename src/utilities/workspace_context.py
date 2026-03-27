@@ -16,8 +16,6 @@ if TYPE_CHECKING:
 
 from protocol.types import AssistantRequest
 from .model_context import compact_model_summary, detailed_model_summary
-from .model_resolution import resolve_target_model
-from .layout_helpers import build_layout_anchor_lines
 
 logger = logging.getLogger(__name__)
 
@@ -25,102 +23,52 @@ logger = logging.getLogger(__name__)
 def build_workspace_context_block(
     request: AssistantRequest,
     target_diagram_type: str,
-    target_model: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Build a multi-line workspace context string to append to LLM prompts.
+    """Build a compact workspace context string to append to LLM prompts.
 
-    Enhanced with cross-diagram awareness: when generating a StateMachine,
-    GUI, or ObjectDiagram, the ClassDiagram summary is included as reference
-    so the LLM can produce consistent models.
+    Only includes information the LLM can actually act on:
+    - Target diagram type
+    - Detailed model summary (for modify — so the LLM knows what exists)
+    - Cross-diagram reference (for StateMachine/Object/GUI — consistency)
+    - Non-empty diagram types in the project (so the LLM knows what's available)
     """
     lines: List[str] = []
     lines.append(f"Target diagram type: {target_diagram_type}")
-    lines.append(f"Active diagram type: {request.context.active_diagram_type or request.diagram_type}")
 
-    if request.context.active_diagram_id:
-        lines.append(f"Active diagram id: {request.context.active_diagram_id}")
-
+    # Detailed model summary — the LLM needs this to know what's on the canvas
     active_model = request.context.active_model or request.current_model
     if active_model is not None:
         active_dt = request.context.active_diagram_type or request.diagram_type
-        # Provide full structural detail for the model the LLM will modify
         lines.append(detailed_model_summary(active_model, active_dt))
 
-    if target_model is None:
-        target_model = resolve_target_model(request, target_diagram_type)
-    layout_anchors = build_layout_anchor_lines(target_model, target_diagram_type)
-    if layout_anchors:
-        lines.append("Existing layout anchors (avoid overlap with these):")
-        lines.extend(layout_anchors)
-
+    # Cross-diagram reference for non-ClassDiagram targets
     snapshot = request.context.project_snapshot
     if isinstance(snapshot, dict):
-        project_name = snapshot.get("name")
-        project_description = snapshot.get("description")
-        if isinstance(project_name, str) and project_name.strip():
-            lines.append(f"Project name: {project_name.strip()}")
-        if isinstance(project_description, str) and project_description.strip():
-            lines.append(f"Project description: {project_description.strip()}")
-
         diagrams = snapshot.get("diagrams")
         if isinstance(diagrams, dict):
-            diagram_lines: List[str] = []
-            for dt, payload in diagrams.items():
-                if isinstance(payload, list):
-                    # New format: array of tabs
-                    tab_count = len(payload)
-                    if tab_count == 0:
-                        continue
-                    active_idx = request.context.get_active_index(dt)
-                    active_tab = payload[active_idx] if 0 <= active_idx < tab_count else payload[0]
-                    active_title = (
-                        active_tab.get("title")
-                        if isinstance(active_tab, dict) and isinstance(active_tab.get("title"), str)
-                        else None
-                    )
-                    active_model = active_tab.get("model") if isinstance(active_tab, dict) else None
-                    if tab_count == 1:
-                        title_part = f" ({active_title})" if active_title and active_title.strip() else ""
-                        diagram_lines.append(f"- {dt}{title_part}: {compact_model_summary(active_model, dt)}")
-                    else:
-                        active_label = f"active: '{active_title.strip()}'" if active_title and active_title.strip() else f"active tab {active_idx}"
-                        diagram_lines.append(
-                            f"- {dt} ({tab_count} tabs, {active_label}): {compact_model_summary(active_model, dt)}"
-                        )
-                elif isinstance(payload, dict):
-                    # Legacy format: single dict
-                    title = payload.get("title")
-                    model = payload.get("model")
-                    title_part = f" ({title})" if isinstance(title, str) and title.strip() else ""
-                    diagram_lines.append(f"- {dt}{title_part}: {compact_model_summary(model, dt)}")
-            if diagram_lines:
-                lines.append("Project diagrams overview:")
-                lines.extend(diagram_lines[:10])
-
-            # --- Cross-diagram context ---
-            # When the target is NOT a ClassDiagram, include the ClassDiagram
-            # summary as reference so the LLM can produce consistent models.
             cross_ref = _build_cross_diagram_reference(
                 target_diagram_type, diagrams, request.context,
             )
             if cross_ref:
                 lines.append(cross_ref)
 
-    summaries = request.context.diagram_summaries or []
-    if summaries:
-        compact_summaries: List[str] = []
-        for item in summaries:
-            if not isinstance(item, dict):
-                continue
-            dt = item.get("diagramType")
-            title = item.get("title")
-            if isinstance(dt, str):
-                if isinstance(title, str) and title.strip():
-                    compact_summaries.append(f"{dt} ({title.strip()})")
-                else:
-                    compact_summaries.append(dt)
-        if compact_summaries:
-            lines.append("Diagram summaries: " + ", ".join(compact_summaries[:10]))
+            # Only list non-empty diagrams (empty ones are noise)
+            non_empty: List[str] = []
+            for dt, payload in diagrams.items():
+                summary = ""
+                if isinstance(payload, list) and payload:
+                    active_idx = request.context.get_active_index(dt)
+                    tab = payload[active_idx] if 0 <= active_idx < len(payload) else payload[0]
+                    model = tab.get("model") if isinstance(tab, dict) else None
+                    summary = compact_model_summary(model, dt)
+                elif isinstance(payload, dict):
+                    summary = compact_model_summary(payload.get("model"), dt)
+                # Skip empty diagrams
+                if summary and "0 element" not in summary and "0 circuit" not in summary:
+                    non_empty.append(f"- {dt}: {summary}")
+            if non_empty:
+                lines.append("Other diagrams in project:")
+                lines.extend(non_empty[:6])
 
     return "Workspace context:\n" + "\n".join(lines)
 

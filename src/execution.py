@@ -338,16 +338,10 @@ def execute_model_operation(
         except Exception:
             pass  # memory is best-effort
 
-    # Skip layout anchors when replacing — the existing diagram will be
-    # discarded, so telling the LLM about current positions is misleading.
-    ws_target_model = target_model
-    if _replace_existing:
-        ws_target_model = None
-
     modeling_prompt = (
         f"{conversation_context}"
         f"{operation_request}\n\n"
-        f"{build_workspace_context_block(request, target_diagram_type, ws_target_model)}"
+        f"{build_workspace_context_block(request, target_diagram_type)}"
     )
 
     # ── Resolve class metadata for GUI diagram (charts/tables need it) ──
