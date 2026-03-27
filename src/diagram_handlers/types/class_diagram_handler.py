@@ -16,7 +16,6 @@ from ..core.base_handler import (
 )
 from schemas import SingleClassSpec, SystemClassSpec, ClassModificationResponse
 from utilities.model_context import detailed_model_summary
-from domain_patterns import get_pattern_hint
 
 logger = logging.getLogger(__name__)
 
@@ -73,13 +72,13 @@ Examples of expected richness:
             }
 
         except LLMPredictionError as exc:
-            logger.error(f"[ClassDiagram] generate_single_element LLM FAILED: {exc}")
+            logger.error(f"❌ [ClassDiagram] generate_single_element LLM FAILED: {exc}")
             return self._error_response(
                 "I couldn't generate that class. Please try again or rephrase your request.",
                 code="llm_failure",
             )
         except Exception as exc:
-            logger.error(f"[ClassDiagram] generate_single_element FAILED: {exc}", exc_info=True)
+            logger.error(f"❌ [ClassDiagram] generate_single_element FAILED: {exc}", exc_info=True)
             return self._error_response(
                 "I had trouble generating that class. Could you try rephrasing?",
                 code="generation_error",
@@ -119,11 +118,6 @@ Examples:
         validation-feedback loop, and deterministic layout."""
 
         system_prompt = self._get_system_generation_prompt()
-
-        # Inject domain pattern reference if the request matches a known domain
-        pattern_hint = get_pattern_hint(user_request)
-        if pattern_hint:
-            system_prompt += "\n\n" + pattern_hint
 
         logger.info(f"[ClassDiagram] generate_complete_system called with: {user_request!r}")
 
@@ -184,10 +178,10 @@ Examples:
             }
 
         except LLMPredictionError as exc:
-            logger.error(f"[ClassDiagram] generate_complete_system LLM FAILED: {exc}")
+            logger.error(f"❌ [ClassDiagram] generate_complete_system LLM FAILED: {exc}")
             return self._incremental_system_fallback(user_request, existing_model)
         except Exception as exc:
-            logger.error(f"[ClassDiagram] generate_complete_system FAILED: {exc}", exc_info=True)
+            logger.error(f"❌ [ClassDiagram] generate_complete_system FAILED: {exc}", exc_info=True)
             return self._incremental_system_fallback(user_request, existing_model)
 
     def _incremental_system_fallback(
@@ -503,13 +497,13 @@ Examples:
             return modification_spec
             
         except LLMPredictionError as exc:
-            logger.error(f"[ClassDiagram] generate_modification LLM FAILED: {exc}")
+            logger.error(f"❌ [ClassDiagram] generate_modification LLM FAILED: {exc}")
             return self._error_response(
                 "I couldn't process that modification. Please try again or rephrase your request.",
                 code="llm_failure",
             )
         except Exception as exc:
-            logger.error(f"[ClassDiagram] generate_modification FAILED: {exc}", exc_info=True)
+            logger.error(f"❌ [ClassDiagram] generate_modification FAILED: {exc}", exc_info=True)
             return self.generate_fallback_modification(user_request)
     
     def generate_fallback_modification(self, request: str) -> Dict[str, Any]:

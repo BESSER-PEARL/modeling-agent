@@ -195,7 +195,7 @@ def global_fallback_body(session: Session):
         )
         stream_llm_response(session, ctx.gpt_text, prompt)
     except Exception as e:
-        logger.error(f"Error in global_fallback_body: {e}")
+        logger.error(f"❌ Error in global_fallback_body: {e}")
         reply_message(
             session,
             "I'm not sure how to help with that. Try asking me to create a class, "
@@ -274,7 +274,7 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
         # No need for a separate text message.
         session.set('_last_executed_diagram_type', None)
     except Exception as e:
-        logger.error(f"Error in {intent_name}: {e}", exc_info=True)
+        logger.error(f"❌ Error in {intent_name}: {e}", exc_info=True)
         reply_message(session, "Something went wrong while processing your request. Could you try rephrasing it?")
 
 
@@ -358,7 +358,7 @@ def modeling_help_body(session: Session):
     try:
         stream_llm_response(session, ctx.gpt_text, help_prompt)
     except Exception as e:
-        logger.error(f"Error in modeling_help_body: {e}", exc_info=True)
+        logger.error(f"❌ Error in modeling_help_body: {e}", exc_info=True)
         reply_message(session, "I had trouble preparing guidance. Could you try rephrasing your question?")
 
 
@@ -492,7 +492,7 @@ def describe_model_body(session: Session):
     try:
         stream_llm_response(session, ctx.gpt_text, qa_prompt)
     except Exception as e:
-        logger.error(f"Error in describe_model_body: {e}", exc_info=True)
+        logger.error(f"❌ Error in describe_model_body: {e}", exc_info=True)
         reply_message(
             session,
             "I had trouble analysing your project. Could you try rephrasing your question?",
@@ -527,14 +527,14 @@ def generation_body(session: Session):
                 matched_intent=GENERATION_INTENT_NAME,
             )
         except Exception as error:
-            logger.error(f"Error in mixed request routing: {error}", exc_info=True)
+            logger.error(f"❌ Error in mixed request routing: {error}", exc_info=True)
             reply_message(session, "Something went wrong while processing your multi-step request.")
         return
 
     try:
         response_payload = handle_generation_request(session, request)
     except Exception as error:
-        logger.error(f"Error in generation_body: {error}")
+        logger.error(f"❌ Error in generation_body: {error}")
         response_payload = {
             "action": "agent_error",
             "code": "generation_handler_error",
@@ -614,7 +614,7 @@ def workflow_body(session: Session):
             matched_intent="workflow_intent",
         )
     except Exception as e:
-        logger.error(f"[Workflow] Model creation failed: {e}", exc_info=True)
+        logger.error(f"❌ [Workflow] Model creation failed: {e}", exc_info=True)
         reply_message(
             session,
             "Something went wrong while creating the model. "
@@ -698,7 +698,7 @@ def workflow_body(session: Session):
     try:
         response_payload = handle_generation_request(session, generation_request)
     except Exception as error:
-        logger.error(f"[Workflow] Generation failed: {error}", exc_info=True)
+        logger.error(f"❌ [Workflow] Generation failed: {error}", exc_info=True)
         response_payload = {
             "action": "agent_error",
             "code": "generation_handler_error",
@@ -759,7 +759,7 @@ def uml_rag_body(session: Session):
             rag_message: RAGMessage = session.run_rag(user_message)
             reply_message(session, rag_message.answer)
         except Exception as e:
-            logger.error(f"Error in uml_rag_body: {e}")
+            logger.error(f"❌ Error in uml_rag_body: {e}")
             fallback_response = ctx.gpt_text.predict(
                 f"You are a UML specification expert. Answer the following question about UML:\n\n"
                 f"{user_message}\n\n"

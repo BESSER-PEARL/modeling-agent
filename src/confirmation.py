@@ -111,7 +111,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
     if wants_auto:
         remaining_ops = pending.get('remaining_operations')
         session.set('pending_gui_choice', None)
-        logger.info("[GUIChoice] User chose AUTO-GENERATE (deterministic)")
+        logger.info("🔄 [GUIChoice] User chose AUTO-GENERATE (deterministic)")
         reply_payload(session, {
             "action": "auto_generate_gui",
             "diagramType": "GUINoCodeDiagram",
@@ -132,7 +132,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
         return True
 
     # LLM-driven path
-    logger.info("[GUIChoice] User chose LLM-GENERATED (experimental)")
+    logger.info("🔄 [GUIChoice] User chose LLM-GENERATED (experimental)")
     stored_operation = pending.get('operation', {})
     stored_default_mode = pending.get('default_mode', 'complete_system')
     stored_replace = pending.get('_replace_existing')
@@ -155,7 +155,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
         session.set('pending_gui_choice', None)  # Clear only on success
         _flush_pending_suggestions(session)
     except Exception as exc:
-        logger.error(f"[GUIChoice] Error executing LLM GUI generation: {exc}", exc_info=True)
+        logger.error(f"❌ [GUIChoice] Error executing LLM GUI generation: {exc}", exc_info=True)
         reply_message(
             session,
             "Something went wrong. You can try again by saying **auto** or **llm**, or **cancel** to abort.",
@@ -228,17 +228,17 @@ def handle_pending_system_confirmation(session: Session) -> bool:
         precomputed = dict(precomputed)  # Shallow copy to avoid mutating stored state
         stored_diagram_type = pending.get('diagram_type', 'ClassDiagram')
         if wants_new_tab:
-            logger.info(f"[PendingConfirm] File upload: user chose NEW TAB for {stored_diagram_type}")
+            logger.info(f"🔄 [PendingConfirm] File upload: user chose NEW TAB for {stored_diagram_type}")
             reply_payload(session, {
                 "action": "create_diagram_tab",
                 "diagramType": stored_diagram_type,
             })
             precomputed["replaceExisting"] = True
         elif wants_replace:
-            logger.info(f"[PendingConfirm] File upload: user chose REPLACE for {stored_diagram_type}")
+            logger.info(f"🔄 [PendingConfirm] File upload: user chose REPLACE for {stored_diagram_type}")
             precomputed["replaceExisting"] = True
         else:
-            logger.info(f"[PendingConfirm] File upload: user chose KEEP for {stored_diagram_type}")
+            logger.info(f"🔄 [PendingConfirm] File upload: user chose KEEP for {stored_diagram_type}")
             precomputed["replaceExisting"] = False
 
         reply_payload(session, precomputed)
@@ -257,9 +257,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
 
     # ── New tab path ──────────────────────────────────────────────────
     if wants_new_tab:
-        logger.info(f"[PendingConfirm] User chose NEW TAB for {stored_diagram_type}")
-        # Execute the creation with _create_new_tab=True so the frontend
-        # creates a new tab before injecting the model (all in one payload).
+        logger.info(f"🔄 [PendingConfirm] User chose NEW TAB for {stored_diagram_type}")
         try:
             execute_model_operation(
                 session=session,
@@ -272,7 +270,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
             )
             session.set('pending_complete_system', None)
         except Exception as exc:
-            logger.error(f"[PendingConfirm] Error after new tab creation: {exc}", exc_info=True)
+            logger.error(f"❌ [PendingConfirm] Error after new tab creation: {exc}", exc_info=True)
             reply_message(session, "Something went wrong creating the new tab. Please try again.")
             return True
 
@@ -295,9 +293,9 @@ def handle_pending_system_confirmation(session: Session) -> bool:
     replace_existing = wants_replace
 
     if replace_existing:
-        logger.info(f"[PendingConfirm] User chose REPLACE for {stored_diagram_type}")
+        logger.info(f"🔄 [PendingConfirm] User chose REPLACE for {stored_diagram_type}")
     else:
-        logger.info(f"[PendingConfirm] User chose KEEP for {stored_diagram_type}")
+        logger.info(f"🔄 [PendingConfirm] User chose KEEP for {stored_diagram_type}")
 
     try:
         execute_model_operation(
@@ -310,7 +308,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
         )
         session.set('pending_complete_system', None)  # Clear only on success
     except Exception as exc:
-        logger.error(f"[PendingConfirm] Error executing stored operation: {exc}", exc_info=True)
+        logger.error(f"❌ [PendingConfirm] Error executing stored operation: {exc}", exc_info=True)
         reply_message(
             session,
             "Something went wrong. You can try again by saying **replace**, **keep**, or **new tab**, or **cancel** to abort.",

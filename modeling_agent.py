@@ -37,8 +37,8 @@ from memory.conversation_memory import cleanup_stale_memories
 
 # ── Logging ──────────────────────────────────────────────────────────────
 logger.setLevel(logging.INFO)
+logger.propagate = False
 # Configure root logger so our src/ modules' info/debug output appears.
-# Only add a handler if the root logger doesn't have one yet (avoids duplicates).
 if not logging.root.handlers:
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 else:

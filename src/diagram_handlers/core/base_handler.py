@@ -616,7 +616,7 @@ class BaseDiagramHandler(ABC):
                     else self._LARGE_OUTPUT_MAX_TOKENS
                 )
                 logger.info(
-                    f"[{self.get_diagram_type()}] Structured LLM call started "
+                    f"🤖 [{self.get_diagram_type()}] Structured LLM call started "
                     f"(attempt {attempt + 1}/{total_attempts}, "
                     f"schema={response_schema.__name__}, "
                     f"max_tokens={max_tokens})"
@@ -649,7 +649,7 @@ class BaseDiagramHandler(ABC):
                     _cache_put(cache_prompt, parsed.model_dump_json())
 
                 logger.info(
-                    f"[{self.get_diagram_type()}] Structured output success "
+                    f"✅ [{self.get_diagram_type()}] Structured output success "
                     f"(schema={response_schema.__name__}, attempt={attempt + 1})"
                 )
                 return parsed
@@ -766,7 +766,7 @@ class BaseDiagramHandler(ABC):
         raw_request = user_request.split("\n\nWorkspace context:")[0].split("\n\nRecent conversation context")[0].strip()
         if len(raw_request) < self._TWO_PASS_MIN_LENGTH:
             logger.info(
-                f"[{self.get_diagram_type()}] Simple request ({len(raw_request)} chars) "
+                f"⚡ [{self.get_diagram_type()}] Simple request ({len(raw_request)} chars) "
                 "— skipping reasoning pass, using single-pass structured"
             )
             return self.predict_structured(
@@ -777,7 +777,7 @@ class BaseDiagramHandler(ABC):
             )
 
         # Pass 1: Design reasoning (free-text)
-        logger.info(f"[{self.get_diagram_type()}] Two-pass structured: reasoning pass")
+        logger.info(f"🧠 [{self.get_diagram_type()}] Two-pass structured: reasoning pass")
         try:
             reasoning = self.predict_with_retry(reasoning_prompt, max_retries=1, use_cache=False)
         except Exception as exc:
@@ -802,7 +802,7 @@ class BaseDiagramHandler(ABC):
             )
 
         logger.info(
-            f"[{self.get_diagram_type()}] Two-pass structured: reasoning complete "
+            f"🧠 [{self.get_diagram_type()}] Two-pass structured: reasoning complete "
             f"({len(reasoning)} chars), starting structured pass"
         )
 
@@ -866,7 +866,7 @@ class BaseDiagramHandler(ABC):
             logger.debug(f"[BaseHandler] JSON parsed successfully, keys: {list(result.keys()) if isinstance(result, dict) else type(result).__name__}")
             return result
         except json.JSONDecodeError as e:
-            logger.error(f"[BaseHandler] JSON parse failed: {e}. Text (first 300 chars): {json_text[:300]!r}")
+            logger.error(f"❌ [BaseHandler] JSON parse failed: {e}. Text (first 300 chars): {json_text[:300]!r}")
             return None
 
     def parse_and_validate(

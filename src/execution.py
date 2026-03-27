@@ -168,7 +168,7 @@ def execute_model_operation(
     operation_request = operation_request.strip()
 
     logger.info(
-        f"[ModelOp] Executing: diagram={target_diagram_type}, mode={operation_mode}, "
+        f"⚙️ [ModelOp] Executing: diagram={target_diagram_type}, mode={operation_mode}, "
         f"request={operation_request[:120]!r}"
     )
 
@@ -294,7 +294,7 @@ def execute_model_operation(
 
     handler = ctx.diagram_factory.get_handler(target_diagram_type)
     if not handler:
-        logger.warning(f"[ModelOp] No handler for diagram type: {target_diagram_type}")
+        logger.warning(f"⚠️ [ModelOp] No handler for diagram type: {target_diagram_type}")
         reply_message(
             session,
             f"{target_diagram_type} is not supported by the modeling handler yet.",
@@ -311,32 +311,43 @@ def execute_model_operation(
 
     target_model = resolve_target_model(request, target_diagram_type)
 
-    # Inject conversation context for multi-turn awareness
+    # Inject conversation context for multi-turn awareness.
+    # Skip conversation history on re-execution after confirmation — the
+    # stored operation_request already contains the full original intent,
+    # and injecting the confirmation exchange ("replace"/"keep") just
+    # confuses the LLM and inflates the prompt unnecessarily.
     conversation_context = ""
-    try:
-        from memory import get_memory
-        session_id = getattr(session, 'id', None) or str(id(session))
-        mem = get_memory(session_id)
-        recent = mem.get_last_n(5)  # Last 5 messages for context
-        if recent and len(recent) > 1:  # Only if there's actual history
-            history_lines = []
-            for msg in recent[:-1]:  # Exclude current message (already in operation_request)
-                role = msg.get("role", "user")
-                content = msg.get("content", "")[:200]  # Cap each message
-                history_lines.append(f"  {role}: {content}")
-            if history_lines:
-                conversation_context = (
-                    "Recent conversation context (use this to understand what the user has been working on):\n"
-                    + "\n".join(history_lines)
-                    + "\n\n"
-                )
-    except Exception:
-        pass  # memory is best-effort
+    if not _skip_existing_check:
+        try:
+            from memory import get_memory
+            session_id = getattr(session, 'id', None) or str(id(session))
+            mem = get_memory(session_id)
+            recent = mem.get_last_n(5)  # Last 5 messages for context
+            if recent and len(recent) > 1:  # Only if there's actual history
+                history_lines = []
+                for msg in recent[:-1]:  # Exclude current message (already in operation_request)
+                    role = msg.get("role", "user")
+                    content = msg.get("content", "")[:200]  # Cap each message
+                    history_lines.append(f"  {role}: {content}")
+                if history_lines:
+                    conversation_context = (
+                        "Recent conversation context (use this to understand what the user has been working on):\n"
+                        + "\n".join(history_lines)
+                        + "\n\n"
+                    )
+        except Exception:
+            pass  # memory is best-effort
+
+    # Skip layout anchors when replacing — the existing diagram will be
+    # discarded, so telling the LLM about current positions is misleading.
+    ws_target_model = target_model
+    if _replace_existing:
+        ws_target_model = None
 
     modeling_prompt = (
         f"{conversation_context}"
         f"{operation_request}\n\n"
-        f"{build_workspace_context_block(request, target_diagram_type, target_model)}"
+        f"{build_workspace_context_block(request, target_diagram_type, ws_target_model)}"
     )
 
     # ── Resolve class metadata for GUI diagram (charts/tables need it) ──
@@ -441,7 +452,7 @@ def execute_model_operation(
             progress_thread.join(timeout=1)
 
     logger.info(
-        f"[ModelOp] Handler result: action={result.get('action') if isinstance(result, dict) else 'N/A'}, "
+        f"✅ [ModelOp] Handler result: action={result.get('action') if isinstance(result, dict) else 'N/A'}, "
         f"has_message={bool(result.get('message')) if isinstance(result, dict) else False}"
     )
     logger.debug(f"[ModelOp] Full result keys: {list(result.keys()) if isinstance(result, dict) else 'not a dict'}")
@@ -483,7 +494,7 @@ def execute_model_operation(
         result["suggestedActions"] = suggestions
 
     logger.info(
-        f"[ModelOp] Sending result: action={result.get('action')}, "
+        f"📤 [ModelOp] Sending result: action={result.get('action')}, "
         f"replaceExisting={result.get('replaceExisting', 'NOT SET')}, "
         f"keys={list(result.keys())}"
     )
@@ -773,7 +784,7 @@ def execute_planned_operations(
                         error_code = _classify_error(exc)
                         error_payload = _build_error_payload(op, exc, error_code)
                         reply_payload(session, error_payload)
-                        logger.error(f"[PlannedOps] Parallel group error: {exc}")
+                        logger.error(f"❌ [PlannedOps] Parallel group error: {exc}")
                     continue
 
                 for op, executed_target, error in group_results:
@@ -784,7 +795,7 @@ def execute_planned_operations(
                         error_code = _classify_error(error)
                         error_payload = _build_error_payload(op, error, error_code)
                         reply_payload(session, error_payload)
-                        logger.error(f"[PlannedOps] Model op error: {error}")
+                        logger.error(f"❌ [PlannedOps] Model op error: {error}")
                         continue
 
                     if executed_target is None:
@@ -800,7 +811,7 @@ def execute_planned_operations(
                         )
 
         if confirmation_triggered:
-            logger.info("[PlannedOps] Pending confirmation stored — halting remaining operations")
+            logger.info("⏸️ [PlannedOps] Pending confirmation stored — halting remaining operations")
             return
 
     else:
@@ -824,7 +835,7 @@ def execute_planned_operations(
                         + gen_ops
                     )
                     _store_remaining_ops(session, remaining, request)
-                    logger.info("[PlannedOps] Pending confirmation stored — halting remaining operations")
+                    logger.info("⏸️ [PlannedOps] Pending confirmation stored — halting remaining operations")
                     return
                 if isinstance(executed_target, str) and executed_target:
                     working_request = build_request_for_target(working_request, executed_target)
@@ -836,7 +847,7 @@ def execute_planned_operations(
                 for key in ('pending_complete_system', 'pending_gui_choice'):
                     if session.get(key):
                         session.set(key, None)
-                logger.error(f"[PlannedOps] Model op error ({error_code}): {error}")
+                logger.error(f"❌ [PlannedOps] Model op error ({error_code}): {error}")
             continue
 
     # ── Phase 2: Generation operations (always sequential) ───────────
@@ -860,7 +871,7 @@ def execute_planned_operations(
         except Exception as error:
             error_code = _classify_error(error)
             response_payload = _build_error_payload(operation, error, error_code)
-            logger.error(f"[PlannedOps] Generation error ({error_code}): {error}")
+            logger.error(f"❌ [PlannedOps] Generation error ({error_code}): {error}")
 
         if isinstance(response_payload, dict):
             # Attach suggestions after code generation

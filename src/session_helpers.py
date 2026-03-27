@@ -163,7 +163,7 @@ def reply_message(session: Session, message: str):
 def reply_payload(session: Session, payload: Dict[str, Any]):
     """Send JSON payload response for both protocol versions."""
     logger.info(
-        f"[Reply] Sending payload: action={payload.get('action')}, "
+        f"📤 [Reply] Sending payload: action={payload.get('action')}, "
         f"diagramType={payload.get('diagramType')}, "
         f"replaceExisting={payload.get('replaceExisting', 'NOT SET')}, "
         f"message={str(payload.get('message', ''))[:100]!r}"
@@ -283,7 +283,7 @@ def stream_llm_response(
             reply_stream_chunk(session, full_text, stream_id)
 
     except Exception as e:
-        logger.error(f"[Streaming] Error: {e}")
+        logger.error(f"❌ [Streaming] Error: {e}")
         if not full_text:
             full_text = f"I encountered an issue: {str(e)}"
             reply_stream_chunk(session, full_text, stream_id)
@@ -354,7 +354,7 @@ def _stream_openai(
                     reply_stream_chunk(session, chunk_buffer, stream_id)
                     chunk_buffer = ""
     except Exception as exc:
-        logger.error(f"[Streaming] Mid-stream error: {exc}")
+        logger.error(f"❌ [Streaming] Mid-stream error: {exc}")
         # Partial text already captured in full_text; fall through to flush
     finally:
         # Always flush remaining buffer so no text is silently lost

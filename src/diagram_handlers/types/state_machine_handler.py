@@ -21,7 +21,6 @@ from ..core.base_handler import (
 )
 from schemas import SingleStateSpec as SingleStateSchema, SystemStateMachineSpec, StateMachineModificationResponse
 from utilities.model_context import detailed_model_summary
-from state_patterns import get_state_pattern_hint
 
 logger = logging.getLogger(__name__)
 
@@ -123,10 +122,6 @@ TRANSITION DESIGN GUIDELINES:
 
         system_prompt = self._get_system_generation_prompt()
 
-        # Inject behavioral pattern reference if the request matches a known domain
-        pattern_hint = get_state_pattern_hint(user_request)
-        if pattern_hint:
-            system_prompt += "\n\n" + pattern_hint
 
         logger.info(f"[StateMachine] generate_complete_system called with: {user_request!r}")
 
