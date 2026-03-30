@@ -2,7 +2,7 @@
 
 # -- Project information
 
-project = 'BESSER Modeling Agent'
+project = 'Modeling Agent'
 copyright = '2026, BESSER-PEARL'
 author = 'BESSER-PEARL'
 
@@ -42,9 +42,9 @@ html_logo = '_static/besser_logo.png'
 html_theme_options = {
     'logo_only': False,
     'display_version': True,
-    'style_nav_header_background': '#ffffff',
+    'style_nav_header_background': '#1a1a2e',
 }
-html_favicon = '_static/besser_logo.png'
+html_favicon = '_static/besser_ico.ico'
 
 html_context = {
     'display_github': True,

@@ -1,9 +1,10 @@
 End-to-End Flow
 ===============
 
-This page explains the full request lifecycle — from user message through
-the backend, LLM, frontend converter, Redux store, and finally the Apollon
-editor rendering.
+This page explains the full request lifecycle in the
+`BESSER Web Modeling Editor <https://editor.besser-pearl.org>`_ — from user
+message through the BESSER Modeling Agent backend, LLM, frontend converter,
+Redux store, and finally the Apollon editor rendering.
 
 .. contents:: On this page
    :local:

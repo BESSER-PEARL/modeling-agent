@@ -4,14 +4,17 @@ Glossary
 .. glossary::
    :sorted:
 
-   Apollon
-      The open-source UML diagram editor library used by the BESSER Web Modeling
-      Editor frontend. Apollon renders elements, relationships, and handles visual
-      interactions. The Modeling Agent generates JSON in Apollon's format.
+
+   BESSER
+      An open-source low-code platform for smart software modeling — *better
+      software faster*. The Modeling Agent is part of the BESSER ecosystem.
+      See `BESSER on GitHub <https://github.com/BESSER-PEARL>`_ and the
+      `BESSER documentation <https://besser-pearl.github.io/BESSER/>`_.
 
    BESSER Agentic Framework
       The Python framework that provides the state machine, WebSocket platform,
-      and intent classification infrastructure used by the Modeling Agent. See
+      and intent classification infrastructure used by the Modeling Agent. Part
+      of the BESSER platform. See
       `BESSER documentation <https://besser-pearl.github.io/BESSER/>`_.
 
    BUML

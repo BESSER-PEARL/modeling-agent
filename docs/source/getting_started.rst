@@ -4,9 +4,12 @@ Getting Started
 Overview
 --------
 
-The Modeling Agent receives user requests over WebSocket, normalizes them into a
-unified protocol, plans one or more operations, and returns structured responses
-for model updates or code-generation triggers.
+The BESSER Modeling Agent is the conversational AI backend for the
+`BESSER Web Modeling Editor <https://editor.besser-pearl.org>`_. It receives
+user requests over WebSocket, normalizes them into a unified protocol, plans one
+or more operations, and returns structured responses for model updates or
+code-generation triggers via
+`BESSER generators <https://besser-pearl.github.io/BESSER/generators.html>`_.
 
 Key capabilities:
 

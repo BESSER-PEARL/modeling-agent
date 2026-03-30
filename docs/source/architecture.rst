@@ -7,9 +7,12 @@ full reference including all schemas, see :doc:`schema`.
 System Overview
 ---------------
 
-The modeling agent is a WebSocket-based conversational AI system built on the
-BESSER Agentic Framework. It connects the BESSER Web Modeling Editor (a
-React/TypeScript SPA) with an OpenAI GPT-4.1-mini LLM backend.
+The BESSER Modeling Agent is a WebSocket-based conversational AI system built on
+the `BESSER Agentic Framework <https://besser-pearl.github.io/BESSER/>`_. It
+connects the `BESSER Web Modeling Editor <https://editor.besser-pearl.org>`_ (a
+React/TypeScript SPA) with an OpenAI GPT-4.1-mini LLM backend. Code generation
+is powered by `BESSER generators <https://besser-pearl.github.io/BESSER/generators.html>`_
+(Django, Python, Java, SQL, SQLAlchemy, and more).
 
 .. mermaid::
 
