@@ -90,7 +90,13 @@ Run
    python modeling_agent.py
 
 Default host/port are configured in ``config.yaml`` under ``platforms.websocket``.
-The agent listens on ``ws://0.0.0.0:8765`` by default.
+The agent listens on ``ws://localhost:8765`` by default. You should see output
+like::
+
+   WebSocket server started on ws://localhost:8765
+
+If you see an ``OPENAI_API_KEY`` error, check your ``config.yaml`` or ``.env``
+file. See :doc:`configuration` for details.
 
 Validation
 ----------

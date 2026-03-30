@@ -254,40 +254,28 @@ Execution Flow
 
 The orchestration and execution layers work together:
 
-.. code-block:: text
+.. mermaid::
 
-   User Message
-       │
-       ▼
-   parse_assistant_request()
-       │
-       ▼
-   Intent Classifier → State Body
-       │
-       ▼
-   execute_planned_operations()
-       │
-       ▼
-   plan_assistant_operations()
-       ├── Heuristic operations (always computed)
-       ├── LLM planner (if complex request)
-       └── Normalize + deduplicate
-       │
-       ▼
-   For each operation:
-       ├── type == "model" → execute_model_operation()
-       │   ├── Resolve diagram type (workspace_orchestrator)
-       │   ├── Resolve target model
-       │   ├── Build workspace context
-       │   ├── Dispatch to handler
-       │   ├── Apply layout
-       │   ├── Send reply
-       │   └── Quality review
-       │
-       └── type == "generation" → handle_generation_request()
-           ├── Match generator type
-           ├── Parse inline config
-           └── Return trigger payload
+   flowchart TD
+       UM["User Message"] --> PARSE["parse_assistant_request()"]
+       PARSE --> IC["Intent Classifier → State Body"]
+       IC --> EPO["execute_planned_operations()"]
+       EPO --> PLAN["plan_assistant_operations()"]
+       PLAN --> H["Heuristic operations"]
+       PLAN --> LLM["LLM planner (if complex)"]
+       PLAN --> NORM["Normalize + deduplicate"]
+       NORM --> LOOP{"For each operation"}
+       LOOP -->|"type == model"| EMO["execute_model_operation()"]
+       EMO --> R1["Resolve diagram type"]
+       R1 --> R2["Resolve target model"]
+       R2 --> R3["Build workspace context"]
+       R3 --> R4["Dispatch to handler"]
+       R4 --> R5["Apply layout"]
+       R5 --> R6["Send reply"]
+       LOOP -->|"type == generation"| HGR["handle_generation_request()"]
+       HGR --> G1["Match generator type"]
+       G1 --> G2["Parse inline config"]
+       G2 --> G3["Return trigger payload"]
 
 Common Preamble
 ---------------

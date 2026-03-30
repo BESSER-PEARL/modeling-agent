@@ -14,23 +14,23 @@ The Big Picture
 
 The system has three parts:
 
-.. code-block:: text
+.. mermaid::
 
-   ┌──────────────┐     WebSocket      ┌──────────────┐
-   │   FRONTEND   │ <================> │   BACKEND    │
-   │  (browser)   │   JSON messages    │  (Python)    │
-   │              │                    │              │
-   │  - Chat UI   │                    │  - LLM calls │
-   │  - Editor    │                    │  - Prompts   │
-   │  - Redux     │                    │  - Schemas   │
-   └──────────────┘                    └──────────────┘
-                                             |
-                                             | API calls
-                                             v
-                                       ┌──────────────┐
-                                       │   OpenAI     │
-                                       │  (gpt-4.1)   │
-                                       └──────────────┘
+   graph LR
+       subgraph FE["FRONTEND (browser)"]
+           ChatUI["Chat UI"]
+           Editor["Editor (Apollon)"]
+           Redux["Redux Store"]
+       end
+
+       subgraph BE["BACKEND (Python)"]
+           LLMCalls["LLM calls"]
+           Prompts["Prompts"]
+           Schemas["Schemas"]
+       end
+
+       FE <-->|"WebSocket<br/>JSON messages"| BE
+       BE -->|"API calls"| OpenAI["OpenAI (GPT-4.1)"]
 
 Frontend (browser)
 ~~~~~~~~~~~~~~~~~~
@@ -343,44 +343,37 @@ Frontend Processing
 
 When the frontend receives an injection payload, it processes it as follows:
 
-.. code-block:: text
+.. mermaid::
 
-   WebSocket message arrives
-       |
-       v
-   AssistantClient.handleMessage()
-       |-- Parses JSON
-       |-- Detects injection action type
-       |-- Calls onInjectionHandler(command)
-       |
-       v
-   useModelInjection.handleInjection(command)
-       |-- 1. Determine target diagram type
-       |-- 2. Switch to target diagram tab if needed
-       |-- 3. Push undo snapshot
-       |-- 4. Convert or modify:
-       |       inject_complete_system -> ConverterFactory.convert(systemSpec)
-       |       modify_model           -> ModifierFactory.applyModification(model, mod)
-       |       inject_element         -> ConverterFactory (single element)
-       |-- 5. Write to Redux: dispatch(updateDiagramModelThunk)
-       |-- 6. Bump editor: dispatch(bumpEditorRevision)
-       |-- 7. Show success message in chat
-       |
-       v
-   Apollon editor detects revision change -> re-renders from Redux
+   flowchart TD
+       WS["WebSocket message arrives"] --> AC["AssistantClient.handleMessage()"]
+       AC -->|"Parse JSON, detect action type"| MI["useModelInjection.handleInjection()"]
+       MI --> S1["1. Determine target diagram type"]
+       S1 --> S2["2. Switch diagram tab if needed"]
+       S2 --> S3["3. Push undo snapshot"]
+       S3 --> S4{"4. Action type?"}
+       S4 -->|inject_complete_system| CONV["ConverterFactory.convert(systemSpec)"]
+       S4 -->|modify_model| MOD["ModifierFactory.applyModification(model, mod)"]
+       S4 -->|inject_element| CONV2["ConverterFactory (single element)"]
+       CONV --> S5["5. dispatch(updateDiagramModelThunk)"]
+       MOD --> S5
+       CONV2 --> S5
+       S5 --> S6["6. dispatch(bumpEditorRevision)"]
+       S6 --> S7["7. Show success message in chat"]
+       S7 --> RENDER["Apollon editor re-renders from Redux"]
 
 Key Architecture Insight
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 Redux is the model owner. The agent writes, the editor reads:
 
-.. code-block:: text
+.. mermaid::
 
-                       Redux Store (source of truth)
-                       /           |              \
-                      /            |               \
-              Agent writes    Editor reads    Other components read
-              (converter)     (renderer)      (export, preview, etc.)
+   graph TD
+       Redux["Redux Store<br/>(source of truth)"]
+       Redux --> AgentW["Agent writes<br/>(converter)"]
+       Redux --> EditorR["Editor reads<br/>(renderer)"]
+       Redux --> OtherR["Other components read<br/>(export, preview)"]
 
 This means:
 

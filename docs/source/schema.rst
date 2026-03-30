@@ -190,8 +190,8 @@ Returned when a full diagram is generated (e.g., complete class model).
      "replaceExisting": true,
      "systemSpec": {
        "elements": {
-         "class-1": { "id": "class-1", "name": "User", "type": "Class", "..." : "..." },
-         "class-2": { "id": "class-2", "name": "Order", "type": "Class", "..." : "..." }
+         "class-1": { "id": "class-1", "name": "User", "type": "Class", "bounds": {}, "attributes": [], "methods": [] },
+         "class-2": { "id": "class-2", "name": "Order", "type": "Class", "bounds": {}, "attributes": [], "methods": [] }
        },
        "relationships": {
          "rel-1": {
@@ -562,8 +562,8 @@ Class Metadata (extracted from ClassDiagram)
      ]
    }
 
-Domain Pattern
-~~~~~~~~~~~~~~
+Domain Pattern (currently disabled)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: json
 
@@ -592,8 +592,8 @@ Domain Pattern
      "notes": "Include cart management and payment processing"
    }
 
-State Pattern
-~~~~~~~~~~~~~
+State Pattern (currently disabled)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: json
 

@@ -11,32 +11,25 @@ The modeling agent is a WebSocket-based conversational AI system built on the
 BESSER Agentic Framework. It connects the BESSER Web Modeling Editor (a
 React/TypeScript SPA) with an OpenAI GPT-4.1-mini LLM backend.
 
-.. code-block:: text
+.. mermaid::
 
-   ┌───────────────────────────────────────────────────────┐
-   │            BESSER Web Modeling Editor                  │
-   │             (React/TypeScript SPA)                     │
-   └──────────────────────┬────────────────────────────────┘
-                          │ WebSocket (JSON v2 protocol)
-                          ▼
-   ┌───────────────────────────────────────────────────────┐
-   │                    MODELING AGENT                      │
-   │                                                       │
-   │  Protocol     → State Machine  → Execution Engine     │
-   │  Adapters       (9 states)       (plan + dispatch)    │
-   │                                        │              │
-   │  Orchestrator ←────────────────────────┘              │
-   │  (planner +                                           │
-   │   type resolver)  → Diagram Handlers → Layout Engine  │
-   │                                                       │
-   │  Quality Review   File Conversion   Generation Handler│
-   └───────────────────────────────────────────────────────┘
-                          │
-              ┌───────────┼───────────┐
-              ▼           ▼           ▼
-        OpenAI GPT   ChromaDB     UML Specs
-        (JSON/Text/  (RAG store)  (PDF source)
-         Vision)
+   graph TD
+       FE["BESSER Web Modeling Editor<br/>(React/TypeScript SPA)"]
+       FE -->|"WebSocket (JSON v2 protocol)"| PA
+
+       subgraph AGENT["MODELING AGENT"]
+           PA["Protocol Adapters"] --> SM["State Machine<br/>(9 states)"]
+           SM --> EE["Execution Engine<br/>(plan + dispatch)"]
+           EE --> ORCH["Orchestrator<br/>(planner + type resolver)"]
+           ORCH --> DH["Diagram Handlers"]
+           DH --> LE["Layout Engine"]
+           EE --> FC["File Conversion"]
+           EE --> GH["Generation Handler"]
+       end
+
+       DH --> LLM["OpenAI GPT<br/>(JSON / Text / Vision)"]
+       SM --> RAG["ChromaDB<br/>(RAG store)"]
+       RAG --> UML["UML Specs<br/>(PDF source)"]
 
 Technology Stack
 ----------------

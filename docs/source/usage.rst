@@ -10,11 +10,38 @@ For the technical details of how requests are processed, see
    :local:
    :depth: 2
 
+How Operation Mode is Selected
+------------------------------
+
+The agent infers the operation mode from your phrasing:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 40 35
+
+   * - Mode
+     - Triggered by
+     - Example
+   * - **Single element**
+     - Creating one specific item
+     - "create a User class", "add a Cancelled state"
+   * - **Complete system**
+     - Describing a whole domain or system
+     - "create a class diagram for an e-commerce system"
+   * - **Modification**
+     - Referring to something that already exists
+     - "rename Order to PurchaseOrder", "add email to User"
+
+.. note::
+
+   **ObjectDiagram** requires a **ClassDiagram** to exist first — the agent
+   uses class definitions to generate object instances with realistic values.
+
 Common Modeling Requests
 ------------------------
 
 The agent interprets natural language and determines both the diagram type and
-the operation mode (single element, complete system, or modification).
+the operation mode automatically.
 
 Class Diagram Examples
 ~~~~~~~~~~~~~~~~~~~~~~

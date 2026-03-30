@@ -17,7 +17,11 @@ extensions = [
     'sphinx.ext.autodoc',
     'sphinx.ext.autosummary',
     'sphinx.ext.intersphinx',
+    'sphinxcontrib.mermaid',
 ]
+
+# -- Mermaid configuration
+mermaid_d3_zoom = False
 
 intersphinx_mapping = {
     'python': ('https://docs.python.org/3/', None),

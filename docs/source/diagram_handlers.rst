@@ -109,8 +109,13 @@ Features
 - **Enum Type Safety:** The LLM prompt requires every referenced enum type
   (e.g. ``OrderStatus``) to be created as an Enumeration in the same response.
 
-Domain Patterns
-~~~~~~~~~~~~~~~
+Domain Patterns (currently disabled)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Domain and state pattern hints are defined in ``src/domain_patterns.py`` and
+``src/state_patterns.py`` but are **not currently injected** into the LLM prompt.
+They were disabled because GPT-4.1 produces good diagrams without them, and the
+pattern injection biased the LLM toward hardcoded templates.
 
 .. list-table::
    :header-rows: 1
@@ -149,6 +154,11 @@ Domain Patterns
    * - ``project_management``
      - project, task, sprint, team
      - Project, Task, Team, Sprint, User
+
+To re-enable pattern injection, import ``get_pattern_hint`` /
+``get_state_pattern_hint`` in ``src/execution/model_operations.py``, compute the
+hint from the clean ``operation_request`` text, and pass it to the handler as
+``domain_hint=...``. See the source files for the full pattern data.
 
 StateMachineHandler
 -------------------
