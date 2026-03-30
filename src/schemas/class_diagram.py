@@ -81,7 +81,10 @@ class ClassModificationChanges(BaseModel):
     visibility: Optional[Literal["public", "private", "protected", "package"]] = None
     returnType: Optional[str] = None
     parameters: Optional[List[MethodParameterSpec]] = None
-    relationshipType: Optional[str] = None
+    relationshipType: Optional[Literal[
+        "Association", "Inheritance", "Composition", "Aggregation",
+        "Realization", "Dependency",
+    ]] = None
     sourceMultiplicity: Optional[str] = None
     targetMultiplicity: Optional[str] = None
     className: Optional[str] = Field(default=None, max_length=30, description="Class name in PascalCase for add_class action (ONE word only, e.g. User, Order)")
@@ -91,13 +94,21 @@ class ClassModificationChanges(BaseModel):
     defaultValue: Optional[str] = Field(default=None, description="Set default value for attribute")
     isOptional: Optional[bool] = Field(default=None, description="Set optional status for attribute")
     isAbstract: Optional[bool] = Field(default=None, description="Set abstract status for class")
-    implementationType: Optional[str] = Field(default=None, description="Implementation type for method.")
+    implementationType: Optional[Literal["none", "code", "bal", "state_machine", "quantum_circuit"]] = Field(default=None, description="Implementation type for method.")
     code: Optional[str] = Field(default=None, description="Python code for method implementation")
     isEnumeration: Optional[bool] = Field(default=None, description="Set enumeration status for class")
 
 
 class ClassModification(BaseModel):
-    action: str = Field(description="Action to perform (e.g. add_class, modify_attribute, add_relationship, remove_element).")
+    action: Literal[
+        "add_class", "modify_class",
+        "add_attribute", "modify_attribute",
+        "add_method", "modify_method",
+        "add_relationship", "modify_relationship",
+        "remove_element",
+        "extract_class", "split_class", "merge_classes",
+        "promote_attribute", "add_enum",
+    ] = Field(description="Action to perform.")
     target: ClassModificationTarget
     changes: Optional[ClassModificationChanges] = Field(default=None, description="Changes to apply. Required for all actions except remove_element.")
 

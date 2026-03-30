@@ -208,7 +208,7 @@ class AgentModificationChanges(BaseModel):
         default=None,
         description="Intent name for a transition.",
     )
-    condition: Optional[str] = Field(
+    condition: Optional[Literal["when_intent_matched", "when_no_intent_matched", "auto"]] = Field(
         default=None,
         description="Transition condition: when_intent_matched, when_no_intent_matched, or auto.",
     )
@@ -216,9 +216,9 @@ class AgentModificationChanges(BaseModel):
         default=None,
         description="Reply text to add to a state.",
     )
-    replyType: Optional[str] = Field(
+    replyType: Optional[Literal["text", "llm", "rag", "db_reply", "code"]] = Field(
         default=None,
-        description="Reply type: text or llm.",
+        description="Reply type: text, llm, rag, db_reply, or code.",
     )
     trainingPhrase: Optional[str] = Field(
         default=None,
@@ -226,8 +226,15 @@ class AgentModificationChanges(BaseModel):
     )
 
 class AgentModification(BaseModel):
-    action: str = Field(
-        description="Action to perform (e.g. add_state, modify_intent, add_transition, remove_element).",
+    action: Literal[
+        "add_state", "modify_state",
+        "add_intent", "modify_intent",
+        "add_transition", "remove_transition",
+        "add_state_body", "add_intent_training_phrase",
+        "add_rag_element",
+        "remove_element",
+    ] = Field(
+        description="Action to perform.",
     )
     target: AgentModificationTarget = Field(
         description="Identifies the element to modify.",

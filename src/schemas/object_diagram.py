@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -116,8 +116,13 @@ class ObjectModificationChanges(BaseModel):
     )
 
 class ObjectModification(BaseModel):
-    action: str = Field(
-        description="Action to perform (e.g. add_object, modify_attribute_value, add_link, remove_element)."
+    action: Literal[
+        "add_object", "modify_object",
+        "modify_attribute_value",
+        "add_link",
+        "remove_element",
+    ] = Field(
+        description="Action to perform."
     )
     target: ObjectModificationTarget = Field(
         description="Identifies the element to modify."

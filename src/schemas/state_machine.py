@@ -126,7 +126,7 @@ class StateMachineModificationChanges(BaseModel):
         max_length=30,
         description="New name for rename operations (PascalCase, ONE word only).",
     )
-    stateType: Optional[str] = Field(
+    stateType: Optional[Literal["initial", "final", "regular"]] = Field(
         default=None,
         description="State type for add_state: 'regular', 'initial', or 'final'.",
     )
@@ -159,8 +159,13 @@ class StateMachineModificationChanges(BaseModel):
 
 
 class StateMachineModification(BaseModel):
-    action: str = Field(
-        description="Action to perform (e.g. add_state, modify_state, add_transition, remove_element).",
+    action: Literal[
+        "add_state", "modify_state",
+        "add_transition", "modify_transition",
+        "add_code_block",
+        "remove_element",
+    ] = Field(
+        description="Action to perform.",
     )
     target: StateMachineModificationTarget = Field(
         description="Identifies the element to modify.",

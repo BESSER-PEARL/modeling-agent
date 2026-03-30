@@ -252,17 +252,17 @@ class TestClassModificationChanges:
 class TestClassModification:
     def test_valid(self):
         m = ClassModification(
-            action="rename_class",
+            action="modify_class",
             target=ClassModificationTarget(className="OldName"),
             changes=ClassModificationChanges(name="NewName"),
         )
-        assert m.action == "rename_class"
+        assert m.action == "modify_class"
         assert m.target.className == "OldName"
         assert m.changes.name == "NewName"
 
     def test_changes_optional(self):
         m = ClassModification(
-            action="delete_class",
+            action="remove_element",
             target=ClassModificationTarget(className="Foo"),
         )
         assert m.changes is None
@@ -288,7 +288,7 @@ class TestClassModificationResponse:
                     target=ClassModificationTarget(className="A"),
                 ),
                 ClassModification(
-                    action="delete_class",
+                    action="remove_element",
                     target=ClassModificationTarget(className="B"),
                 ),
             ]
@@ -296,12 +296,8 @@ class TestClassModificationResponse:
         assert len(r.modifications) == 2
 
     def test_rejects_empty_modifications(self):
-        # ClassModificationResponse.modifications has no min_length in schema,
-        # but we still verify it accepts empty (it does not enforce min_length).
-        # The requirement says it should reject empty, so test what the schema
-        # actually does: if no min_length, empty is accepted.
-        r = ClassModificationResponse(modifications=[])
-        assert len(r.modifications) == 0
+        with pytest.raises(ValidationError):
+            ClassModificationResponse(modifications=[])
 
 
 # =============================================================================
@@ -428,15 +424,15 @@ class TestStateMachineModificationChanges:
 class TestStateMachineModification:
     def test_valid(self):
         m = StateMachineModification(
-            action="rename_state",
+            action="modify_state",
             target=StateMachineModificationTarget(stateName="Old"),
             changes=StateMachineModificationChanges(name="New"),
         )
-        assert m.action == "rename_state"
+        assert m.action == "modify_state"
 
     def test_changes_optional(self):
         m = StateMachineModification(
-            action="delete_state",
+            action="remove_element",
             target=StateMachineModificationTarget(stateName="X"),
         )
         assert m.changes is None
@@ -555,15 +551,15 @@ class TestObjectModificationChanges:
 class TestObjectModification:
     def test_valid(self):
         m = ObjectModification(
-            action="update_attribute",
+            action="modify_attribute_value",
             target=ObjectModificationTarget(objectName="o1", attributeName="title"),
             changes=ObjectModificationChanges(value="NewTitle"),
         )
-        assert m.action == "update_attribute"
+        assert m.action == "modify_attribute_value"
 
     def test_changes_optional(self):
         m = ObjectModification(
-            action="delete_object",
+            action="remove_element",
             target=ObjectModificationTarget(objectName="o1"),
         )
         assert m.changes is None
@@ -775,15 +771,15 @@ class TestAgentModificationChanges:
 class TestAgentModification:
     def test_valid(self):
         m = AgentModification(
-            action="rename_state",
+            action="modify_state",
             target=AgentModificationTarget(stateName="Old"),
             changes=AgentModificationChanges(name="New"),
         )
-        assert m.action == "rename_state"
+        assert m.action == "modify_state"
 
     def test_changes_optional(self):
         m = AgentModification(
-            action="delete_intent",
+            action="remove_element",
             target=AgentModificationTarget(intentName="greet"),
         )
         assert m.changes is None
