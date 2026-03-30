@@ -24,10 +24,12 @@ class SingleObjectSpec(BaseModel):
     """Schema for a single object instance."""
     objectName: str = Field(
         min_length=1,
+        max_length=30,
         description="Instance name in lowerCamelCase (e.g. 'user1', 'orderA')."
     )
     className: str = Field(
         min_length=1,
+        max_length=30,
         description="Class this object instantiates, matching the reference class diagram."
     )
     classId: Optional[str] = Field(
@@ -92,10 +94,12 @@ class ObjectModificationTarget(BaseModel):
 class ObjectModificationChanges(BaseModel):
     objectName: Optional[str] = Field(
         default=None,
+        max_length=30,
         description="New or renamed object name in lowerCamelCase."
     )
     className: Optional[str] = Field(
         default=None,
+        max_length=30,
         description="Class name for add_object."
     )
     attributes: Optional[List[ObjectAttributeSpec]] = Field(

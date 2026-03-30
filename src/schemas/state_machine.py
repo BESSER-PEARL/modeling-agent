@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 class StateSpec(BaseModel):
     stateName: str = Field(
         min_length=1,
+        max_length=30,
         description="State name in PascalCase representing a lifecycle stage.",
     )
     stateType: Literal["initial", "final", "regular"] = Field(
@@ -58,6 +59,7 @@ class SingleStateSpec(BaseModel):
     """Schema for a single state element."""
     stateName: str = Field(
         min_length=1,
+        max_length=30,
         description="State name in PascalCase representing a lifecycle stage.",
     )
     stateType: Literal["initial", "final", "regular"] = Field(
@@ -121,7 +123,8 @@ class StateMachineModificationTarget(BaseModel):
 class StateMachineModificationChanges(BaseModel):
     name: Optional[str] = Field(
         default=None,
-        description="New name for rename operations (PascalCase).",
+        max_length=30,
+        description="New name for rename operations (PascalCase, ONE word only).",
     )
     stateType: Optional[str] = Field(
         default=None,

@@ -109,6 +109,7 @@ class GUIModificationSpec(BaseModel):
     )
     newPageName: Optional[str] = Field(
         default=None,
+        max_length=50,
         description="New page name (only used with 'rename_page' operation)",
     )
     section: Optional[GUISectionSpec] = Field(

@@ -28,6 +28,7 @@ class AgentStateSpec(BaseModel):
     )
     stateName: str = Field(
         min_length=1,
+        max_length=30,
         description="Unique camelCase name for this state.",
     )
     replies: List[AgentReplySpec] = Field(
@@ -47,6 +48,7 @@ class AgentIntentSpec(BaseModel):
     )
     intentName: str = Field(
         min_length=1,
+        max_length=30,
         description="Unique TitleCase name for this intent.",
     )
     trainingPhrases: List[str] = Field(
@@ -64,6 +66,7 @@ class AgentSingleElementSpec(BaseModel):
     # State fields
     stateName: Optional[str] = Field(
         default=None,
+        max_length=30,
         description="Unique camelCase state name (required when type is state).",
     )
     replies: List[AgentReplySpec] = Field(
@@ -77,6 +80,7 @@ class AgentSingleElementSpec(BaseModel):
     # Intent fields
     intentName: Optional[str] = Field(
         default=None,
+        max_length=30,
         description="Unique TitleCase intent name (required when type is intent).",
     )
     trainingPhrases: List[str] = Field(
@@ -189,6 +193,7 @@ class AgentModificationTarget(BaseModel):
 class AgentModificationChanges(BaseModel):
     name: Optional[str] = Field(
         default=None,
+        max_length=30,
         description="New name when renaming a state or intent.",
     )
     replies: Optional[List[AgentReplySpec]] = Field(

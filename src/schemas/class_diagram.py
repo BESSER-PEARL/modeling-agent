@@ -11,12 +11,12 @@ from pydantic import BaseModel, Field
 
 
 class MethodParameterSpec(BaseModel):
-    name: str = Field(description="Parameter name in camelCase")
+    name: str = Field(min_length=1, max_length=50, description="Parameter name in camelCase")
     type: str = Field(default="String", description="Parameter type: String, int, boolean, float, Date, or a custom class name")
 
 
 class AttributeSpec(BaseModel):
-    name: str = Field(min_length=1, description="Attribute name in camelCase")
+    name: str = Field(min_length=1, max_length=50, description="Attribute name in camelCase")
     type: Optional[str] = Field(default=None, description="Data type (e.g. String, int, bool, float, Date, or PascalCase class/enum name). Null for enum literals.")
     visibility: Literal["public", "private", "protected", "package"] = Field(default="public", description="UML visibility")
     isDerived: bool = Field(default=False, description="Whether this is a derived/computed attribute.")
@@ -76,7 +76,7 @@ class ClassModificationTarget(BaseModel):
 
 
 class ClassModificationChanges(BaseModel):
-    name: Optional[str] = Field(default=None, description="New name for rename operations")
+    name: Optional[str] = Field(default=None, max_length=30, description="New name for rename operations (PascalCase, ONE word only)")
     type: Optional[str] = Field(default=None, description="New type for attribute/parameter changes")
     visibility: Optional[Literal["public", "private", "protected", "package"]] = None
     returnType: Optional[str] = None
@@ -84,7 +84,7 @@ class ClassModificationChanges(BaseModel):
     relationshipType: Optional[str] = None
     sourceMultiplicity: Optional[str] = None
     targetMultiplicity: Optional[str] = None
-    className: Optional[str] = Field(default=None, description="Class name for add_class action")
+    className: Optional[str] = Field(default=None, max_length=30, description="Class name in PascalCase for add_class action (ONE word only, e.g. User, Order)")
     attributes: Optional[List[AttributeSpec]] = Field(default=None, description="Attributes for add_class action")
     methods: Optional[List[MethodSpec]] = Field(default=None, description="Methods for add_class action")
     isDerived: Optional[bool] = Field(default=None, description="Set derived status for attribute")
