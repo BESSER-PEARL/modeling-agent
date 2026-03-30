@@ -3,7 +3,9 @@ Diagram Handlers
 
 The diagram handler system is the core of the Modeling Agent. Each supported
 diagram type has a specialized handler that inherits from ``BaseDiagramHandler``
-and implements type-specific generation logic.
+and implements type-specific generation logic. For the Pydantic schemas each
+handler uses, see :doc:`schema`. To add a new handler, see
+:doc:`contributing/howto_guides`.
 
 .. contents:: On this page
    :local:
@@ -100,6 +102,12 @@ Features
 - **Validation Loop:** LLM self-critique to catch structural issues.
 - **Impact Analysis:** For modifications, analyzes which elements are affected.
 - **Incremental Fallback:** If full generation fails, generates class-by-class.
+- **Schema-Enforced Naming:** Class names capped at 30 chars, attribute/method names
+  at 50 chars via Pydantic ``max_length``. Prevents runaway LLM names.
+- **Literal Action Types:** Modification actions (``add_class``, ``modify_attribute``,
+  etc.) are ``Literal`` types — the LLM cannot hallucinate invalid actions.
+- **Enum Type Safety:** The LLM prompt requires every referenced enum type
+  (e.g. ``OrderStatus``) to be created as an Enumeration in the same response.
 
 Domain Patterns
 ~~~~~~~~~~~~~~~
@@ -337,7 +345,7 @@ Registry that maps diagram type strings to handler instances.
            self._handlers = {
                "ClassDiagram":          ClassDiagramHandler(llm),
                "ObjectDiagram":         ObjectDiagramHandler(llm),
-               "StateMachine":          StateMachineHandler(llm),
+               "StateMachineDiagram":   StateMachineHandler(llm),
                "AgentDiagram":          AgentDiagramHandler(llm),
                "GUINoCodeDiagram":      GUINoCodeDiagramHandler(llm),
                "QuantumCircuitDiagram": QuantumCircuitDiagramHandler(llm),

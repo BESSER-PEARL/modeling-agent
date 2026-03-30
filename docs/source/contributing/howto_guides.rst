@@ -25,12 +25,12 @@ Adding a new diagram type touches 8 places. Follow this checklist in order:
           def get_system_prompt(self) -> str:
               return "You are a MyDiagram expert..."
 
-          def generate_single_element(self, request, model) -> dict: ...
-          def generate_complete_system(self, request, model) -> dict: ...
-          def generate_fallback_element(self, request) -> dict: ...
+          def generate_single_element(self, user_request: str, existing_model=None, **kwargs) -> dict: ...
+          def generate_complete_system(self, user_request: str, existing_model=None) -> dict: ...
+          def generate_fallback_element(self, request: str) -> dict: ...
 
-2. **Register** in ``src/diagram_handlers/registry/factory.py`` →
-   ``DiagramHandlerFactory.__init__``
+2. **Register** in ``src/diagram_handlers/registry/factory.py`` — add your
+   handler class to the ``HANDLER_CLASSES`` tuple at module level.
 
 3. **Add type** to ``SUPPORTED_DIAGRAM_TYPES`` in ``src/protocol/types.py``
 
@@ -41,10 +41,11 @@ Adding a new diagram type touches 8 places. Follow this checklist in order:
 
    .. code-block:: python
 
-      KEYWORD_TARGETS = {
+      KEYWORD_TARGETS = [
           ...
-          "MyDiagram": ["my diagram", "my model"],
-      }
+          ("my diagram", "MyDiagram"),
+          ("my model", "MyDiagram"),
+      ]
 
 6. **Add discriminating pattern** to ``_IMPLICIT_PATTERNS`` in the same file:
 

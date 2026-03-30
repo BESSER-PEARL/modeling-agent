@@ -34,7 +34,7 @@ Local Development
    pip install -r requirements.txt
 
    # Configure
-   cp config.yaml.example config.yaml
+   cp config_example.yaml config.yaml
    # Edit config.yaml with your OpenAI API key
 
    # Run
@@ -115,7 +115,7 @@ Systemd Service
    ExecStart=/opt/modeling-agent/venv/bin/python modeling_agent.py
    Restart=on-failure
    RestartSec=5
-   Environment=OPENAI_API_KEY=sk-proj-...
+   EnvironmentFile=/etc/modeling-agent/env
 
    [Install]
    WantedBy=multi-user.target
@@ -124,10 +124,9 @@ Health Monitoring
 -----------------
 
 - **WebSocket ping:** The BESSER framework handles WebSocket keep-alive.
-- **Database monitoring:** Optional PostgreSQL monitoring via ``config.yaml``
-  (``db.monitoring = True``).
 - **Logs:** The agent logs to stdout. Use ``journalctl`` with systemd or Docker
   log drivers for persistence.
+- **Docker logs:** ``docker logs modeling-agent`` for troubleshooting.
 
 Scaling Considerations
 ----------------------

@@ -2,6 +2,9 @@ Usage
 =====
 
 This guide covers common interaction patterns with the Modeling Agent.
+For the technical details of how requests are processed, see
+:doc:`end_to_end_flow`. For the JSON schemas behind each response, see
+:doc:`schema`.
 
 .. contents:: On this page
    :local:

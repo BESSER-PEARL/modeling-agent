@@ -72,10 +72,13 @@ Project Structure
    │   ├── routing/               # Intent constants and routing helpers
    │   ├── state_bodies.py        # State body functions + transition wiring
    │   ├── session_helpers.py     # Reply helpers, streaming, intent matching conditions
-   │   ├── execution.py           # Operation execution engine
+   │   ├── execution/             # Operation execution engine (package)
+   │   │   ├── planning.py        #   Multi-operation planning
+   │   │   ├── model_operations.py #  Single operation dispatch
+   │   │   └── file_handling.py   #   File attachment processing
    │   ├── agent_setup.py         # LLM initialization, classifier configuration
-   │   ├── memory.py              # Conversation memory (sliding window + summarization)
-   │   ├── tracking.py            # Token counting and cost tracking
+   │   ├── memory/                # Conversation memory (sliding window + summarization)
+   │   ├── tracking/              # Token counting and cost tracking
    │   └── suggestions.py         # Context-aware "What's next?" suggestions
    │
    ├── tests/                     # Test suite
@@ -85,7 +88,7 @@ Project Structure
    │   ├── test_request_planner.py
    │   ├── test_diagram_handlers.py
    │   ├── test_protocol.py
-   │   └── ...                    #   14 test files total
+   │   └── ...                    #   15 test files total
    │
    └── docs/                      # Sphinx documentation
        └── source/                #   RST files → ReadTheDocs

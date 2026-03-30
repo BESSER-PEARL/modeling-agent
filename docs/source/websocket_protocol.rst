@@ -2,7 +2,9 @@ WebSocket Protocol Reference
 ============================
 
 This document is the complete reference for the WebSocket protocol between the
-Modeling Agent (backend) and the BESSER Web Modeling Editor (frontend).
+Modeling Agent (backend) and the BESSER Web Modeling Editor (frontend). For JSON
+schema details, see :doc:`schema`. For the end-to-end flow including frontend
+processing, see :doc:`end_to_end_flow`.
 
 .. contents:: On this page
    :local:
@@ -74,7 +76,7 @@ V2 Payload Structure
      "attachments": [
        {
          "filename": "model.puml",
-         "content_b64": "QGN0YXJ0dW1s...",
+         "content": "QGN0YXJ0dW1s...",
          "mimeType": "text/plain"
        }
      ]

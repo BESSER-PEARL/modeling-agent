@@ -39,7 +39,7 @@ modeling-agent/
     suggestions.py                 # Context-aware suggestion engine
     llm/                           # LLM provider abstraction
     memory/                        # Conversation memory with sliding window
-    schemas/                       # Pydantic schemas for structured LLM output
+    schemas/                       # Pydantic schemas for structured LLM output (enforced name lengths, Literal actions)
     tracking/                      # Token usage and cost tracking
     protocol/                      # Request parsing and protocol types
     orchestrator/                  # Multi-operation planning and routing
@@ -90,12 +90,12 @@ pip install -r requirements.txt
 
 ### Configure
 
-1. Copy `config.yaml.example` to `config.yaml`.
+1. Copy `config_example.yaml` to `config.yaml`.
 2. Set `nlp.openai.api_key` in `config.yaml`.
 3. Optional: copy `.env.example` to `.env` for local tooling.
 
 ```bash
-copy config.yaml.example config.yaml
+cp config_example.yaml config.yaml
 ```
 
 ### Run
@@ -138,4 +138,4 @@ make html
 ## Security
 
 - Never commit real API keys.
-- Use `config.yaml.example` and `.env.example` as templates.
+- Use `config_example.yaml` and `.env.example` as templates.

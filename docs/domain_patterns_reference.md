@@ -16,7 +16,7 @@ The pattern data files are still in the codebase and can be re-enabled if needed
 
 ## How to re-enable
 
-### In `src/execution.py`
+### In `src/execution/model_operations.py`
 
 Import the pattern functions:
 
@@ -55,4 +55,4 @@ if pattern_hint:
     system_prompt += "\n\n" + pattern_hint
 ```
 
-**Important**: Always compute the hint from the clean `operation_request` in `execution.py`, not inside the handler where `user_request` contains the full prompt with conversation history.
+**Important**: Always compute the hint from the clean `operation_request` in `execution/model_operations.py`, not inside the handler where `user_request` contains the full prompt with conversation history.

@@ -23,7 +23,7 @@ React/TypeScript SPA) with an OpenAI GPT-4.1-mini LLM backend.
    │                    MODELING AGENT                      │
    │                                                       │
    │  Protocol     → State Machine  → Execution Engine     │
-   │  Adapters       (8 states)       (plan + dispatch)    │
+   │  Adapters       (9 states)       (plan + dispatch)    │
    │                                        │              │
    │  Orchestrator ←────────────────────────┘              │
    │  (planner +                                           │
@@ -49,7 +49,7 @@ Technology Stack
      - Technology
      - Notes
    * - Agent Framework
-     - BESSER Agentic Framework v4.2.3
+     - BESSER Agentic Framework v4.3.1
      - State machine, WebSocket platform, intent classification
    * - LLM
      - OpenAI GPT-4.1-mini
@@ -78,7 +78,7 @@ The system is organized into these layers, processed in order for each request:
 3. **Orchestration Layer** (``src/orchestrator/``): Plans multi-step operations
    and resolves target diagram types.
 
-4. **Execution Engine** (``src/execution.py``): Dispatches operations to diagram
+4. **Execution Engine** (``src/execution/``): Dispatches operations to diagram
    handlers and manages confirmation flows.
 
 5. **Diagram Handler System** (``src/diagram_handlers/``): Six specialized
@@ -114,7 +114,7 @@ Entry Point
 2. Creates the BESSER ``Agent`` object
 3. Calls four ``init_*`` functions from ``agent_setup``
 4. Populates ``agent_context`` module-level globals
-5. Defines all 8 states and 8 intents
+5. Defines all 9 states and 9 intents
 6. Calls ``state_bodies.register_all()`` to wire state bodies and transitions
 7. Starts WebSocket platform (``use_ui=False``)
 8. Calls ``agent.run()``
@@ -159,7 +159,7 @@ populated when user messages arrive.
 State Machine and Intent Classification
 ----------------------------------------
 
-The agent uses 8 states with corresponding intents. Intent classification is
+The agent uses 9 states with corresponding intents. Intent classification is
 performed by the BESSER framework using LLM-based description matching.
 
 .. list-table::
@@ -172,15 +172,12 @@ performed by the BESSER framework using LLM-based description matching.
    * - ``hello_intent``
      - ``greetings_state``
      - Welcome message, quick patterns
-   * - ``create_single_element_intent``
-     - ``create_single_element_state``
-     - Single class/state/object creation
    * - ``create_complete_system_intent``
      - ``create_complete_system_state``
      - Multi-element system design
    * - ``modify_model_intent``
      - ``modify_model_state``
-     - Edit existing diagram elements
+     - Single element creation and editing existing elements
    * - ``modeling_help_intent``
      - ``modeling_help_state``
      - Conceptual Q&A with LLM
@@ -193,15 +190,19 @@ performed by the BESSER framework using LLM-based description matching.
    * - ``generation_intent``
      - ``generation_state``
      - Code generation routing
+   * - ``workflow_intent``
+     - ``workflow_state``
+     - Multi-step workflow orchestration (model + generate)
 
-All three modeling states (``create_single_element``, ``create_complete_system``,
-``modify_model``) share the same body function ``_modeling_state_body()`` with
-different ``default_mode`` parameters.
+Both modeling states (``create_complete_system``, ``modify_model``) share the
+same body function ``_modeling_state_body()`` with different ``default_mode``
+parameters.
 
 Execution Engine
 ----------------
 
-``src/execution.py`` is the core dispatch layer.
+``src/execution/`` is the core dispatch layer (package with ``planning.py``,
+``model_operations.py``, ``file_handling.py``).
 
 **execute_planned_operations():**
 

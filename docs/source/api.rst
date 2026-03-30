@@ -35,20 +35,20 @@ Core Runtime Modules
 
   - ``register_all(states, intents)`` — Wires state bodies and transitions
   - ``greetings_body(session)`` — Welcome message handler
-  - ``create_single_element_body(session)``
   - ``create_complete_system_body(session)``
   - ``modify_modeling_body(session)``
   - ``modeling_help_body(session)`` — Conceptual Q&A
   - ``describe_model_body(session)`` — Model summarization
   - ``uml_rag_body(session)`` — RAG query handler
   - ``generation_body(session)`` — Code generation routing
+  - ``workflow_body(session)`` — Multi-step workflow orchestration
 
-``src/execution.py``
+``src/execution/`` (package)
   Operation execution engine:
 
-  - ``execute_planned_operations(session, request, default_mode, matched_intent)``
-  - ``execute_model_operation(session, request, operation, default_mode, ...)``
-  - ``handle_file_attachments(session, request)``
+  - ``execute_planned_operations(session, request, default_mode, matched_intent)`` — ``planning.py``
+  - ``execute_model_operation(session, request, operation, default_mode, ...)`` — ``model_operations.py``
+  - ``handle_file_attachments(session, request)`` — ``file_handling.py``
 
 ``src/confirmation.py``
   Pending confirmation flow handlers:
@@ -60,13 +60,13 @@ Core Runtime Modules
   Protocol-agnostic reply utilities:
 
   - ``reply_payload(session, result)``
-  - ``reply_text(session, text)``
+  - ``reply_message(session, text)``
 
-``src/quality_review.py``
-  Post-generation quality analysis:
+``src/suggestions.py``
+  Context-aware suggestion engine:
 
-  - ``review_generated_model(session, request, diagram_type, result)``
-  - ``consolidate_suggestions(session)``
+  - ``get_suggested_actions(session, request, diagram_type, result)``
+  - ``format_suggestions_as_text(suggestions)``
 
 Protocol Layer
 --------------
@@ -105,10 +105,8 @@ Orchestration Layer
 ``src/orchestrator/workspace_orchestrator.py``
   Diagram type targeting:
 
-  - ``resolve_diagram_type(message, context)`` — Three-level resolution
-  - ``score_implicit_type(message)`` — Semantic token scoring
+  - ``determine_target_diagram_type(request, last_intent)`` — Three-level resolution
   - ``KEYWORD_TARGETS`` — Explicit keyword-to-type mappings
-  - ``IMPLICIT_WEIGHTS`` — Token/weight scoring tables
 
 Diagram Handlers
 ----------------
@@ -180,7 +178,7 @@ Auxiliary Handlers
   - ``match_generator_type(message)``
   - ``parse_inline_config(message, generator_type)``
   - ``GENERATOR_KEYWORDS`` — Keyword-to-generator mappings
-  - ``GENERATOR_PREREQUISITES`` — Required diagram types per generator
+  - ``GENERATOR_REQUIRED_FIELDS`` — Required configuration fields per generator
 
 ``src/handlers/file_conversion_handler.py``
   File upload conversion:
@@ -208,32 +206,23 @@ Utilities
   - ``compact_model_summary(model, diagram_type)``
   - ``detailed_model_summary(request)``
 
-``src/utilities/workspace_context.py``
-  LLM context block builder:
-
-  - ``build_workspace_context_block(request, target_diagram_type, target_model)``
-  - ``record_session_action(session, action_label)``
-
 ``src/utilities/class_metadata.py``
   Class attribute/method extraction for GUI binding:
 
   - ``extract_class_metadata(model)``
 
-``src/utilities/layout_helpers.py``
-  Position extraction and anchor lines:
+``src/utilities/workspace_context.py``
+  Cross-diagram reference and workspace helpers:
 
-  - ``extract_element_position(element)``
-  - ``build_layout_anchor_lines(model, diagram_type)``
-  - ``is_primary_layout_element(element, diagram_type)``
+  - ``build_workspace_context_block(request)``
+  - ``record_session_action(session, action_summary)``
+  - ``build_session_summary(session)``
 
 ``src/utilities/request_builders.py``
   Derived request factories:
 
   - ``build_request_for_target(request, target_type)``
   - ``build_generation_request(request, generator_type, config, message_override)``
-
-``src/utilities/model_helpers.py``
-  Backward-compatibility re-exporter for moved functions.
 
 Knowledge Libraries
 -------------------

@@ -13,12 +13,12 @@ All actions used in the WebSocket protocol between the backend (modeling agent) 
 | `inject_element` | Add a single element to the diagram canvas | All diagram handlers |
 | `inject_complete_system` | Inject a full diagram (all elements + relationships) | All diagram handlers, `file_conversion_handler.py` |
 | `modify_model` | Apply modifications to existing diagram elements | All diagram handlers, `base_handler.py` |
-| `assistant_message` | Text-only message displayed in the chat panel | `session_helpers.py`, `execution.py`, `generation_handler.py` |
+| `assistant_message` | Text-only message displayed in the chat panel | `session_helpers.py`, `execution/`, `generation_handler.py` |
 | `stream_start` | Begin a streaming text response | `session_helpers.py` |
 | `stream_chunk` | One token/chunk of a streaming text response | `session_helpers.py` |
 | `stream_done` | End of a streaming text response | `session_helpers.py` |
 | `progress` | Loading/progress indicator update | `session_helpers.py` |
-| `agent_error` | Error payload sent when something goes wrong | `execution.py`, `state_bodies.py`, `file_conversion_handler.py` |
+| `agent_error` | Error payload sent when something goes wrong | `execution/`, `state_bodies.py`, `file_conversion_handler.py` |
 | `switch_diagram` | Switch the active diagram tab in the editor | `workspace_orchestrator.py` |
 | `trigger_generator` | Trigger code generation from the current model | `generation_handler.py` |
 | `trigger_export` | Trigger model export (e.g., to file) | `generation_handler.py` |
@@ -269,7 +269,7 @@ These actions appear **inside** the `modification` or `modifications` array with
 ```json
 {
   "action": "auto_generate_gui",
-  "sourceDigramType": "ClassDiagram",
+  "diagramType": "GUINoCodeDiagram",
   "message": "Auto-generating GUI from the class diagram..."
 }
 ```

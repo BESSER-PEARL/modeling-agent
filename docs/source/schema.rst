@@ -2,7 +2,9 @@ Schema Reference
 ================
 
 This document describes all JSON schemas used by the Modeling Agent for request
-parsing, response generation, and inter-component communication.
+parsing, response generation, and inter-component communication. For the
+WebSocket transport layer, see :doc:`websocket_protocol`. For user-facing
+examples, see :doc:`usage`.
 
 .. contents:: On this page
    :local:
@@ -42,7 +44,7 @@ normalized into this structure by ``src/protocol/adapters.py``.
      "attachments": [
        {
          "filename": "model.puml",
-         "contentBase64": "QGN0YXJ0dW1s...",
+         "content": "QGN0YXJ0dW1s...",
          "mimeType": "text/plain"
        }
      ]
@@ -135,7 +137,7 @@ FileAttachment
 
    {
      "filename": "model.puml",
-     "contentBase64": "QGN0YXJ0dW1s...",
+     "content": "QGN0YXJ0dW1s...",
      "mimeType": "text/plain"
    }
 
@@ -613,6 +615,139 @@ State Pattern
        { "source": "PendingPayment", "target": "PaymentProcessing", "trigger": "submit_payment" }
      ]
    }
+
+Structured Output Schemas (Pydantic)
+-------------------------------------
+
+The Modeling Agent uses `OpenAI Structured Outputs <https://platform.openai.com/docs/guides/structured-outputs>`_
+backed by Pydantic models to guarantee valid JSON from the LLM. All schemas
+live in ``src/schemas/`` and enforce naming constraints, valid action types,
+and enum-safe field values at the schema level.
+
+ClassDiagram Schemas
+~~~~~~~~~~~~~~~~~~~~
+
+**Location:** ``src/schemas/class_diagram.py``
+
+**Generation schemas:**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Schema
+     - Purpose
+   * - ``SingleClassSpec``
+     - One UML class (``className`` max 30 chars, PascalCase)
+   * - ``SystemClassSpec``
+     - Complete class diagram (list of ``SingleClassSpec`` + ``RelationshipSpec``)
+   * - ``AttributeSpec``
+     - Attribute with name (max 50), type, visibility, isDerived, defaultValue, isOptional
+   * - ``MethodSpec``
+     - Method with name (max 50), returnType, parameters, visibility, implementationType, code
+   * - ``RelationshipSpec``
+     - Relationship with Literal type (Association, Inheritance, Composition, Aggregation, Realization, Dependency)
+
+**Modification schemas:**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Schema
+     - Purpose
+   * - ``ClassModificationResponse``
+     - Wraps a list of ``ClassModification`` items
+   * - ``ClassModification``
+     - Single modification with a Literal ``action`` and ``ClassModificationChanges``
+
+**Valid modification actions (enforced by Literal type):**
+
+``add_class``, ``modify_class``, ``add_attribute``, ``modify_attribute``,
+``add_method``, ``modify_method``, ``add_relationship``, ``modify_relationship``,
+``remove_element``, ``extract_class``, ``split_class``, ``merge_classes``,
+``promote_attribute``, ``add_enum``
+
+StateMachine Schemas
+~~~~~~~~~~~~~~~~~~~~
+
+**Location:** ``src/schemas/state_machine.py``
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Schema
+     - Purpose
+   * - ``SingleStateSpec``
+     - One state (``stateName`` max 30 chars)
+   * - ``SystemStateMachineSpec``
+     - Complete state machine (states + transitions + codeBlocks)
+   * - ``StateMachineModification``
+     - Literal actions: ``add_state``, ``modify_state``, ``add_transition``, ``modify_transition``, ``add_code_block``, ``remove_element``
+
+ObjectDiagram Schemas
+~~~~~~~~~~~~~~~~~~~~~
+
+**Location:** ``src/schemas/object_diagram.py``
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Schema
+     - Purpose
+   * - ``SingleObjectSpec``
+     - One object instance (``objectName`` max 30, ``className`` max 30)
+   * - ``SystemObjectSpec``
+     - Complete object diagram (objects + links)
+   * - ``ObjectModification``
+     - Literal actions: ``add_object``, ``modify_object``, ``modify_attribute_value``, ``add_link``, ``remove_element``
+
+AgentDiagram Schemas
+~~~~~~~~~~~~~~~~~~~~
+
+**Location:** ``src/schemas/agent_diagram.py``
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Schema
+     - Purpose
+   * - ``AgentStateSpec``
+     - Agent state (``stateName`` max 30) with replies and fallbacks
+   * - ``AgentIntentSpec``
+     - Intent (``intentName`` max 30) with training phrases
+   * - ``SystemAgentSpec``
+     - Complete agent diagram (states + intents + transitions + RAG elements)
+   * - ``AgentModification``
+     - Literal actions: ``add_state``, ``modify_state``, ``add_intent``, ``modify_intent``, ``add_transition``, ``remove_transition``, ``add_state_body``, ``add_intent_training_phrase``, ``add_rag_element``, ``remove_element``
+
+GUINoCode & QuantumCircuit Schemas
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Location:** ``src/schemas/gui_diagram.py``, ``src/schemas/quantum_circuit.py``
+
+These schemas follow the same pattern. GUI pages have ``pageName`` (max 50).
+Quantum circuits define ``qubitCount`` and a list of ``QuantumOperationSpec``.
+
+Schema Validation Guarantees
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+All schemas enforce:
+
+- **Name length limits** — ``max_length=30`` on element names (classes, states, objects,
+  intents), ``max_length=50`` on member names (attributes, methods, parameters, page names).
+  Prevents the LLM from generating absurdly long names.
+
+- **Literal action types** — Modification ``action`` fields use ``Literal`` instead of
+  bare ``str``, so the LLM cannot hallucinate invalid actions. If it tries, OpenAI
+  Structured Outputs rejects the response and triggers a retry.
+
+- **Literal enum fields** — Fields like ``relationshipType``, ``implementationType``,
+  ``stateType``, ``condition``, and ``replyType`` in modification schemas use ``Literal``
+  types matching their generation-schema counterparts.
 
 Supported Type Constants
 ------------------------

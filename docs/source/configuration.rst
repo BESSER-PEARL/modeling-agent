@@ -2,25 +2,56 @@ Configuration
 =============
 
 The Modeling Agent is configured via ``config.yaml`` at the repository root.
-Copy ``config.yaml.example`` to ``config.yaml`` and edit the values.
+Copy ``config_example.yaml`` to ``config.yaml`` and edit the values.
 
 .. contents:: On this page
    :local:
    :depth: 2
 
 config.yaml Reference
---------------------
+---------------------
+
+The configuration file uses YAML format. Below is the full structure with
+all supported keys.
+
+.. code-block:: yaml
+
+   agent:
+     check_transitions_delay: 5
+
+   nlp:
+     language: en
+     region: US
+     timezone: Europe/Madrid
+     pre_processing: True
+     intent_threshold: 0.55
+     openai:
+       api_key: your-api-key
+
+   platforms:
+     websocket:
+       host: localhost
+       port: 8765
+       streamlit:
+         host: localhost
+         port: 5000
+
+Agent
+~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 15 50
+
+   * - Key
+     - Default
+     - Description
+   * - ``agent.check_transitions_delay``
+     - ``5``
+     - Delay (seconds) before checking state transitions
 
 WebSocket Platform
 ~~~~~~~~~~~~~~~~~~
-
-.. code-block:: ini
-
-   [websocket_platform]
-   websocket.host = 0.0.0.0
-   websocket.port = 8765
-   streamlit.host = localhost
-   streamlit.port = 5001
 
 .. list-table::
    :header-rows: 1
@@ -29,52 +60,21 @@ WebSocket Platform
    * - Key
      - Default
      - Description
-   * - ``websocket.host``
-     - ``0.0.0.0``
+   * - ``platforms.websocket.host``
+     - ``localhost``
      - Bind address for the WebSocket server
-   * - ``websocket.port``
+   * - ``platforms.websocket.port``
      - ``8765``
      - Port for the WebSocket server
-   * - ``streamlit.host``
+   * - ``platforms.websocket.streamlit.host``
      - ``localhost``
      - Streamlit UI host (if enabled)
-   * - ``streamlit.port``
-     - ``5001``
+   * - ``platforms.websocket.streamlit.port``
+     - ``5000``
      - Streamlit UI port (if enabled)
-
-API
-~~~
-
-.. code-block:: ini
-
-   [api]
-   api.server.url = http://localhost:3001
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 30 40
-
-   * - Key
-     - Default
-     - Description
-   * - ``api.server.url``
-     - ``http://localhost:3001``
-     - Backend API server URL
 
 NLP / LLM
 ~~~~~~~~~~
-
-.. code-block:: ini
-
-   [nlp]
-   nlp.language = en
-   nlp.region = US
-   nlp.timezone = Europe/Madrid
-   nlp.pre_processing = True
-   nlp.intent_threshold = 0.4
-
-   nlp.openai.api_key = YOUR-API-KEY
-   nlp.intent.openai.model_name = gpt-4o-mini
 
 .. list-table::
    :header-rows: 1
@@ -96,57 +96,11 @@ NLP / LLM
      - ``True``
      - Enable input pre-processing
    * - ``nlp.intent_threshold``
-     - ``0.4``
+     - ``0.55``
      - Minimum confidence for intent classification
    * - ``nlp.openai.api_key``
      - (required)
-     - OpenAI API key
-   * - ``nlp.intent.openai.model_name``
-     - ``gpt-4o-mini``
-     - Model for intent classification
-
-Database Monitoring
-~~~~~~~~~~~~~~~~~~~
-
-.. code-block:: ini
-
-   [db]
-   db.monitoring = False
-   db.monitoring.dialect = postgresql
-   db.monitoring.host = localhost
-   db.monitoring.port = 5432
-   db.monitoring.database = DB-NAME
-   db.monitoring.username = DB-USERNAME
-   db.monitoring.password = DB-PASSWORD
-
-.. list-table::
-   :header-rows: 1
-   :widths: 35 15 50
-
-   * - Key
-     - Default
-     - Description
-   * - ``db.monitoring``
-     - ``False``
-     - Enable session monitoring to database
-   * - ``db.monitoring.dialect``
-     - ``postgresql``
-     - Database dialect
-   * - ``db.monitoring.host``
-     - ``localhost``
-     - Database host
-   * - ``db.monitoring.port``
-     - ``5432``
-     - Database port
-   * - ``db.monitoring.database``
-     - (required if enabled)
-     - Database name
-   * - ``db.monitoring.username``
-     - (required if enabled)
-     - Database username
-   * - ``db.monitoring.password``
-     - (required if enabled)
-     - Database password
+     - OpenAI API key (can also be set via ``OPENAI_API_KEY`` env var)
 
 Environment Variables
 ---------------------
@@ -184,6 +138,9 @@ The agent uses two LLM instances, both GPT-4.1-mini:
      - 0.4
      - Free-text reasoning and Q&A
 
+Intent classification uses a separate GPT-4.1-mini instance configured in
+``agent_setup.py``.
+
 RAG Configuration
 -----------------
 
@@ -201,6 +158,6 @@ Security Notes
 --------------
 
 - **Never** commit real API keys to the repository.
-- Use ``config.yaml.example`` and ``.env.example`` as templates.
+- Use ``config_example.yaml`` and ``.env.example`` as templates.
 - The ``config.yaml`` file is listed in ``.gitignore``.
 - In production, use environment variables or secrets management.

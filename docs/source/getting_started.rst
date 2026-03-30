@@ -12,8 +12,11 @@ Key capabilities:
 
 - UML diagram creation and modification via natural language.
 - Multi-operation orchestration (modeling + generation in a single request).
-- UML specification Q&A with RAG over the OMG UML 2.5.1 specification.
+- UML specification Q&A with RAG (Retrieval-Augmented Generation) over the OMG
+  UML 2.5.1 specification. See :doc:`configuration` for RAG setup.
 - File conversion from PlantUML, knowledge-graph files, images, and plain text.
+
+For a detailed walkthrough of the request lifecycle, see :doc:`end_to_end_flow`.
 
 Supported Diagram Types
 -----------------------
@@ -27,7 +30,7 @@ Supported Diagram Types
      - Output Format
    * - ``ClassDiagram``
      - UML class diagrams
-     - Apollon-compatible JSON
+     - `Apollon <https://apollon-library.readthedocs.io/>`_-compatible JSON
    * - ``ObjectDiagram``
      - UML object/instance diagrams
      - Apollon-compatible JSON
@@ -47,7 +50,7 @@ Supported Diagram Types
 Prerequisites
 -------------
 
-- Python 3.10 or newer (3.11+ recommended).
+- Python 3.11+ (3.10 minimum).
 - OpenAI API key with GPT-4.1-mini access.
 
 Install
@@ -69,13 +72,13 @@ Install
 Configuration
 -------------
 
-1. Copy ``config.yaml.example`` to ``config.yaml``.
+1. Copy ``config_example.yaml`` to ``config.yaml``.
 2. Set ``nlp.openai.api_key`` with your OpenAI key.
 
 .. code-block:: bash
 
-   copy config.yaml.example config.yaml   # Windows
-   cp config.yaml.example config.yaml     # Linux/macOS
+   copy config_example.yaml config.yaml   # Windows
+   cp config_example.yaml config.yaml     # Linux/macOS
 
 See :doc:`configuration` for all available settings.
 
@@ -86,7 +89,7 @@ Run
 
    python modeling_agent.py
 
-Default host/port are configured in ``config.yaml`` under ``[websocket_platform]``.
+Default host/port are configured in ``config.yaml`` under ``platforms.websocket``.
 The agent listens on ``ws://0.0.0.0:8765`` by default.
 
 Validation
