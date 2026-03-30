@@ -2,9 +2,9 @@
 
 # -- Project information
 
-project = 'Modeling Agent'
-copyright = '2023, Luxembourg Institute of Science and Technology (LIST)'
-author = 'list-of-authors'
+project = 'BESSER Modeling Agent'
+copyright = '2026, BESSER-PEARL'
+author = 'BESSER-PEARL'
 
 release = '0.3'
 version = '0.3.0'
@@ -37,8 +37,21 @@ html_theme = 'sphinx_rtd_theme'
 
 html_static_path = ['_static']
 
+# -- Logo and branding
+html_logo = '_static/besser_logo.png'
+html_theme_options = {
+    'logo_only': False,
+    'display_version': True,
+    'style_nav_header_background': '#ffffff',
+}
+html_favicon = '_static/besser_logo.png'
+
 html_context = {
     'display_github': True,
+    'github_user': 'BESSER-PEARL',
+    'github_repo': 'modeling-agent',
+    'github_version': 'main',
+    'conf_py_path': '/docs/source/',
 }
 
 # -- Options for EPUB output
