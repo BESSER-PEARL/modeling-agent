@@ -1,0 +1,192 @@
+Version 2.0.0
+=============
+
+Major upgrade of the BESSER Modeling Agent with 2 new diagram types, a complete architecture
+overhaul, and numerous new capabilities including voice input, file conversion, code generation
+triggering, multi-step orchestration, and a deterministic layout engine.
+
+Highlights
+----------
+
+- **6 diagram types** (up from 4): added GUI No-Code and Quantum Circuit.
+- **Voice input** via OpenAI Whisper speech-to-text.
+- **File conversion** from PlantUML, RDF/OWL/TTL, images, and PDFs into diagrams.
+- **Code generation** triggering for 15+ BESSER generators directly from conversation.
+- **Multi-step orchestration** decomposes compound requests across diagram types and generators.
+- **Deterministic layout engine** with collision avoidance replaces random positioning.
+- **Model modification** expanded from Class-only to all 6 diagram types.
+- **Complete architecture restructure** into modular ``src/`` package.
+
+New Diagram Types
+-----------------
+
+**GUI No-Code Diagram**
+- Create screens with metric cards, action buttons, charts, and navigation headers.
+- Dashboard widgets: BarChart, LineChart, PieChart, RadarChart, RadialBarChart, Map, MetricCard, Table.
+- Sample data generation for chart components.
+- Full creation and modification support.
+
+**Quantum Circuit Diagram**
+- Create quantum circuits with gates and qubits.
+- Support for common gate types (H, X, Y, Z, CNOT, etc.).
+- Qubit management and circuit layout.
+- Full creation and modification support.
+
+New Capabilities
+----------------
+
+**Voice Input**
+- OpenAI Whisper (``whisper-1``) speech-to-text integration.
+- Users can send voice messages in the web editor chat; the agent transcribes and processes them.
+
+**File Conversion**
+- File conversion handler supporting multiple input formats.
+- **PlantUML**: ``.puml`` files converted to Class Diagram JSON.
+- **Knowledge Graphs**: RDF, OWL, and TTL files converted to Class Diagram JSON.
+- **Images**: Uploaded images analyzed and converted to diagram specifications.
+- **PDFs**: Text extracted (via PyMuPDF) and interpreted as modeling requests.
+- **Generic text**: Plain text files processed as natural-language diagram descriptions.
+
+**Code Generation Triggering**
+- Trigger any of 15+ BESSER generators from the conversation.
+- Supported generators: Django, FastAPI (Backend), WebApp, SQL, SQLAlchemy, Python, Java, Pydantic, JSON Schema, SmartData, Agent (BAF), Qiskit, JSON Object, and more.
+- Keyword-based generator detection from natural-language requests.
+- Automatic prerequisite checking (e.g., WebApp requires both ClassDiagram and GUINoCodeDiagram).
+- Also supports: export to JSON/BUML and deploy to Render.
+
+**Multi-Step Orchestration**
+- Workspace orchestrator dispatches operations across diagram types.
+- Request planner segments compound requests into sequential operation groups.
+- Example: "create a library system and then generate Django code" becomes two operations -- model creation followed by code generation.
+- Parallel-safe grouping for independent operations.
+
+**Deterministic Layout Engine**
+- Replaces the original random offset positioning from v1.0.0.
+- Collision avoidance against existing canvas elements.
+- Relationship-aware grouping places connected elements nearby.
+- Per-diagram-type sizing constants for optimal spacing.
+- Canvas expansion for large diagrams.
+
+**Conversation Memory**
+- Sliding-window memory retains recent conversation turns per session.
+- Optional LLM summarization compresses older context to stay within token budgets.
+- Per-session isolation.
+
+**Context-Aware Suggestions**
+- After each action, the agent suggests relevant next steps.
+- Suggestions based on current project state (which diagrams exist, what was just done).
+- Examples: "Generate Python code", "Add a relationship", "Create a State Machine".
+
+**Confirmation Flows**
+- When creating a system on a diagram that already has elements, the agent prompts the user.
+- Options: replace existing elements, keep alongside, or create in a new tab (up to 5 tabs per type).
+
+**Describe Diagram**
+- New intent to explain what's currently on the canvas.
+- Provides a natural-language summary of the diagram's contents.
+
+**Token and Cost Tracking**
+- Thread-safe per-session and global tracking of LLM token usage.
+- Cost estimation based on model pricing.
+
+Enhanced Existing Capabilities
+------------------------------
+
+**Model Modification**
+- Expanded from Class Diagram only (v1.0.0) to all 6 diagram types.
+- Base handler now provides full modification support (1,434 lines, up from 92).
+
+**Intent Recognition**
+- Overhauled from basic LLM classification to pattern-based cross-validation.
+- 9 intents (up from 6): added ``generation_intent``, ``describe_model_intent``, ``workflow_intent``.
+
+**Diagram Handlers**
+- All existing handlers (Class, Object, State Machine, Agent) significantly expanded with richer prompts, better normalization, and full modification support.
+- Pydantic-enforced structured outputs for all diagram types eliminate manual JSON parsing.
+- Domain pattern library with pre-built templates for common system types (e-commerce, library, etc.).
+
+Architecture
+------------
+
+**Complete restructure** from flat files into modular ``src/`` package:
+
+- ``src/diagram_handlers/``: Per-diagram-type handlers with factory/registry pattern.
+
+  - ``core/base_handler.py``: Abstract base handler (1,434 lines, up from 92 in v1.0.0).
+  - ``core/layout_engine.py``: Deterministic positioning engine.
+  - ``types/``: 6 concrete diagram handlers.
+
+- ``src/execution/``: Operation execution (planning, model operations, file handling, progress feedback).
+- ``src/handlers/``: Generation handler, file conversion handler, validation handler.
+- ``src/orchestrator/``: Workspace orchestrator and request planner.
+- ``src/memory/``: Sliding-window conversation memory.
+- ``src/tracking/``: Token usage and cost tracking.
+- ``src/protocol/``: WebSocket protocol v2.0 request parsing.
+- ``src/routing/``: Intent definitions and classification.
+- ``src/schemas/``: Pydantic models with ``max_length`` constraints and ``Literal`` types for all 6 diagram types.
+- ``src/llm/``: LLM provider abstraction (predict, structured parse, streaming).
+- ``src/utilities/``: Shared utility functions.
+
+**Agent State Machine** (built on BAF v4.3.1, up from v4.2.0):
+
+- ``greetings_state`` (initial)
+- ``create_complete_system_state``
+- ``modify_model_state``
+- ``modeling_help_state``
+- ``describe_model_state`` (new)
+- ``uml_rag_state``
+- ``generation_state`` (new)
+- ``workflow_state`` (new -- end-to-end: model + validate + generate)
+
+Tech Stack Changes
+------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 35 35
+
+   * - Component
+     - v1.0.0
+     - v2.0.0
+   * - Python
+     - 3.11+
+     - 3.10+
+   * - BAF
+     - v4.2.0
+     - v4.3.1
+   * - LLM
+     - GPT-4o-mini (temp 0.4, 3K tokens)
+     - gpt-4.1-mini (temp 0.2, 8K tokens)
+   * - Structured output
+     - Manual JSON prompting
+     - Pydantic via ``beta.chat.completions.parse``
+   * - Speech
+     - --
+     - OpenAI Whisper (``whisper-1``)
+   * - Layout
+     - Random offset positioning
+     - Deterministic engine with collision avoidance
+
+Testing
+-------
+
+16 test files (up from 3 in v1.0.0) covering:
+
+- Diagram handlers (all 6 types) and base handler
+- Pydantic schemas for all diagram types
+- Conversation memory and LLM provider
+- Token tracking and cost estimation
+- File conversion and generation handler
+- Protocol parsing and request planner
+- Workspace orchestrator
+- Suggestions engine and confirmation flows
+- GUI chart generation and model helpers
+
+Breaking Changes
+----------------
+
+- **Architecture**: Flat file structure replaced by ``src/`` package. All imports changed.
+- **Protocol**: WebSocket protocol upgraded to v2.0 with ``AssistantRequest`` dataclass. Clients must support ``workspace`` and ``widget`` modes.
+- **LLM model**: Changed from GPT-4o-mini to gpt-4.1-mini with different temperature and token settings.
+- **BAF version**: Upgraded from v4.2.0 to v4.3.1.
+- **Configuration**: ``config.ini`` replaced by ``config.yaml``.

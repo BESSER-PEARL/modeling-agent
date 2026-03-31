@@ -74,6 +74,12 @@ Contents
    deployment
    contributing
 
+.. toctree::
+   :maxdepth: 1
+   :caption: Release Notes
+
+   releases
+
 Indices and tables
 ==================
 
