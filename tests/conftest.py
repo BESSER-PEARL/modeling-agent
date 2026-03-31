@@ -1,218 +1,175 @@
+"""Shared test fixtures for the modeling-agent test suite."""
+
+import json
+import os
 import sys
-import types
-from pathlib import Path
+import pytest
+from typing import Any, Dict, Optional
+
+# ── Ensure src/ is importable for bare-style imports ─────────────────────
+_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
+
+# ---------------------------------------------------------------------------
+# Minimal stub for besser.agent.core.session.Session
+# ---------------------------------------------------------------------------
+
+class _FakeEvent:
+    """Minimal event stub carrying the JSON payload."""
+
+    def __init__(self, payload: Dict[str, Any]):
+        self.json = payload
+        self.data = payload
+        self.message = payload.get("message", "")
+        self.predicted_intent = None
 
 
-def pytest_configure():
-    """Ensure the ModelingAgent package and Besser stubs are available before tests import modules."""
-    project_root = Path(__file__).resolve().parents[2]
-    modeling_agent_dir = project_root / "ModelingAgent"
+class FakeSession:
+    """Lightweight stand-in for ``besser.agent.core.session.Session``.
 
-    for path in (str(project_root), str(modeling_agent_dir)):
-        if path not in sys.path:
-            sys.path.insert(0, path)
+    Stores key-value pairs in ``_store`` and provides the same
+    ``get / set / delete / get_dictionary`` interface that the real
+    session exposes.
+    """
 
-    _install_besser_stubs()
+    def __init__(self, payload: Optional[Dict[str, Any]] = None):
+        self._store: Dict[str, Any] = {}
+        self._replies: list = []
+        self.event = _FakeEvent(payload or {})
+
+    # -- Session data API --------------------------------------------------
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._store.get(key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        self._store[key] = value
+
+    def delete(self, key: str) -> None:
+        self._store.pop(key, None)
+
+    def get_dictionary(self) -> Dict[str, Any]:
+        return dict(self._store)
+
+    # -- Reply capture -----------------------------------------------------
+
+    def reply(self, message: str) -> None:  # type: ignore[override]
+        self._replies.append(message)
+
+    @property
+    def replies(self) -> list:
+        return list(self._replies)
+
+    def last_reply_json(self) -> Optional[Dict[str, Any]]:
+        if not self._replies:
+            return None
+        try:
+            return json.loads(self._replies[-1])
+        except (json.JSONDecodeError, TypeError):
+            return None
 
 
-def _install_besser_stubs():
-    """Provide lightweight stand-ins for the Besser agent framework so the bot module can import cleanly."""
-    if "besser.agent.core.agent" in sys.modules:
-        return
+# ---------------------------------------------------------------------------
+# Fake LLM that returns canned responses
+# ---------------------------------------------------------------------------
 
-    def ensure_module(name: str, is_package: bool = True) -> types.ModuleType:
-        module = sys.modules.get(name)
-        if module:
-            return module
-        module = types.ModuleType(name)
-        if is_package:
-            module.__path__ = []
-        sys.modules[name] = module
-        return module
+class FakeLLM:
+    """Minimal LLM stub.
 
-    # Base package hierarchy
-    besser_pkg = ensure_module("besser")
-    agent_pkg = ensure_module("besser.agent")
-    core_pkg = ensure_module("besser.agent.core")
-    library_pkg = ensure_module("besser.agent.library")
-    transition_pkg = ensure_module("besser.agent.library.transition")
-    events_pkg = ensure_module("besser.agent.library.transition.events")
-    exceptions_pkg = ensure_module("besser.agent.exceptions")
-    nlp_pkg = ensure_module("besser.agent.nlp")
-    intent_pkg = ensure_module("besser.agent.nlp.intent_classifier")
-    llm_pkg = ensure_module("besser.agent.nlp.llm")
+    Set ``response`` (or ``responses`` for round-robin) before calling ``predict()``.
+    """
 
-    core_agent_pkg = ensure_module("besser.agent.core.agent", is_package=False)
-    core_session_pkg = ensure_module("besser.agent.core.session", is_package=False)
-    base_events_pkg = ensure_module("besser.agent.library.transition.events.base_events", is_package=False)
-    logger_pkg = ensure_module("besser.agent.exceptions.logger", is_package=False)
-    intent_config_pkg = ensure_module(
-        "besser.agent.nlp.intent_classifier.intent_classifier_configuration", is_package=False
+    def __init__(self, response: str = '{}'):
+        self.responses: list[str] = [response]
+        self._call_index = 0
+        self.call_log: list[str] = []
+
+    def predict(self, prompt: str) -> str:
+        self.call_log.append(prompt)
+        result = self.responses[self._call_index % len(self.responses)]
+        self._call_index += 1
+        return result
+
+
+# ---------------------------------------------------------------------------
+# Protocol / workspace context helpers
+# ---------------------------------------------------------------------------
+
+def make_v2_payload(
+    message: str,
+    diagram_type: str = "ClassDiagram",
+    *,
+    active_model: Optional[Dict[str, Any]] = None,
+    project_snapshot: Optional[Dict[str, Any]] = None,
+    action: str = "user_message",
+) -> Dict[str, Any]:
+    """Build a wrapped v2 assistant protocol payload (as the frontend sends it)."""
+    inner = {
+        "action": action,
+        "protocolVersion": "2.0",
+        "clientMode": "workspace",
+        "message": message,
+        "context": {
+            "activeDiagramType": diagram_type,
+            **({"activeModel": active_model} if active_model else {}),
+            **({"projectSnapshot": project_snapshot} if project_snapshot else {}),
+        },
+    }
+    # BESSER websocket wraps the v2 payload inside `message` as a JSON string.
+    return {
+        "action": "user_message",
+        "user_id": "test_session",
+        "message": json.dumps(inner),
+    }
+
+
+def make_session(
+    message: str,
+    diagram_type: str = "ClassDiagram",
+    *,
+    active_model: Optional[Dict[str, Any]] = None,
+    project_snapshot: Optional[Dict[str, Any]] = None,
+) -> FakeSession:
+    """Return a ``FakeSession`` pre-loaded with a v2 protocol payload."""
+    payload = make_v2_payload(
+        message, diagram_type,
+        active_model=active_model,
+        project_snapshot=project_snapshot,
     )
-    llm_openai_pkg = ensure_module("besser.agent.nlp.llm.llm_openai_api", is_package=False)
+    return FakeSession(payload)
 
-    # Wire attributes so dotted imports resolve
-    besser_pkg.agent = agent_pkg
-    agent_pkg.core = core_pkg
-    agent_pkg.library = library_pkg
-    agent_pkg.exceptions = exceptions_pkg
-    agent_pkg.nlp = nlp_pkg
 
-    core_pkg.agent = core_agent_pkg
-    core_pkg.session = core_session_pkg
-    library_pkg.transition = transition_pkg
-    transition_pkg.events = events_pkg
-    events_pkg.base_events = base_events_pkg
-    exceptions_pkg.logger = logger_pkg
-    nlp_pkg.intent_classifier = intent_pkg
-    nlp_pkg.llm = llm_pkg
-    intent_pkg.intent_classifier_configuration = intent_config_pkg
-    llm_pkg.llm_openai_api = llm_openai_pkg
+# ---------------------------------------------------------------------------
+# Common model fixtures
+# ---------------------------------------------------------------------------
 
-    # Stub implementations -------------------------------------------------
-    class FakeLogger:
-        def __init__(self):
-            self.records = []
-            self.level = None
+MINIMAL_CLASS_MODEL: Dict[str, Any] = {
+    "version": "3.0.0",
+    "type": "ClassDiagram",
+    "size": {"width": 1200, "height": 800},
+    "interactive": {"elements": {}, "relationships": {}},
+    "elements": {
+        "cls-user-1": {
+            "id": "cls-user-1",
+            "name": "User",
+            "type": "Class",
+            "owner": None,
+            "bounds": {"x": 100, "y": 100, "width": 200, "height": 150},
+            "attributes": {},
+            "methods": {},
+        }
+    },
+    "relationships": {},
+    "assessments": {},
+}
 
-        def info(self, message):
-            self.records.append(("info", message))
-
-        def error(self, message):
-            self.records.append(("error", message))
-
-        def warning(self, message):
-            self.records.append(("warning", message))
-
-        def setLevel(self, level):
-            self.level = level
-
-    class FakeTransitionBuilder:
-        def __init__(self, state, trigger):
-            self.state = state
-            self.trigger = trigger
-            self.conditions = []
-
-        def with_condition(self, func, params):
-            self.conditions.append(("with_condition", func, params))
-            return self
-
-        def go_to(self, target_state):
-            self.state.transitions.append((self.trigger, self.conditions, target_state))
-            return target_state
-
-    class FakeIntent:
-        def __init__(self, name, description=""):
-            self.name = name
-            self.description = description
-
-    class FakeState:
-        def __init__(self, name, initial=False):
-            self.name = name
-            self.initial = initial
-            self.body = None
-            self.transitions = []
-
-        def set_body(self, func):
-            self.body = func
-            return func
-
-        def when_intent_matched(self, intent):
-            return FakeTransitionBuilder(self, ("intent", intent))
-
-        def when_event(self, event):
-            return FakeTransitionBuilder(self, ("event", event))
-
-        def when_no_intent_matched(self):
-            return FakeTransitionBuilder(self, ("no_intent", None))
-
-        def when_condition(self, func, params):
-            return FakeTransitionBuilder(self, ("condition", func, params))
-
-    class FakeWebsocketPlatform:
-        def __init__(self, use_ui=False):
-            self.use_ui = use_ui
-
-    class FakeAgent:
-        def __init__(self, name):
-            self.name = name
-            self.states = {}
-            self.intents = {}
-            self.loaded_properties = None
-            self.default_ic_config = None
-            self.ran = False
-
-        def load_properties(self, path):
-            self.loaded_properties = path
-
-        def use_websocket_platform(self, use_ui=False):
-            return FakeWebsocketPlatform(use_ui=use_ui)
-
-        def set_default_ic_config(self, config):
-            self.default_ic_config = config
-
-        def set_global_fallback_body(self, func):
-            self.global_fallback = func
-
-        def new_state(self, name, initial=False):
-            state = FakeState(name, initial=initial)
-            self.states[name] = state
-            return state
-
-        def new_intent(self, name, description=""):
-            intent = FakeIntent(name, description)
-            self.intents[name] = intent
-            return intent
-
-        def run(self):
-            self.ran = True
-
-    class Session:
-        def __init__(self):
-            self._store = {}
-            self.event = None
-            self.replies = []
-
-        def get(self, key, default=None):
-            return self._store.get(key, default)
-
-        def set(self, key, value):
-            self._store[key] = value
-
-        def delete(self, key):
-            self._store.pop(key, None)
-
-        def reply(self, message):
-            self.replies.append(message)
-
-    class ReceiveJSONEvent:
-        def __init__(self, message="", data=None):
-            self.message = message
-            self.data = data or {}
-
-    class LLMIntentClassifierConfiguration:
-        def __init__(self, **kwargs):
-            self.options = kwargs
-
-    class FakeLLM:
-        def __init__(self, *args, **kwargs):
-            self.args = args
-            self.kwargs = kwargs
-            self.responses = []
-            self.default_response = "{}"
-
-        def queue_response(self, response_text):
-            self.responses.append(response_text)
-
-        def predict(self, prompt):
-            if self.responses:
-                return self.responses.pop(0)
-            return self.default_response
-
-    # Export stubs through modules
-    core_agent_pkg.Agent = FakeAgent
-    core_session_pkg.Session = Session
-    base_events_pkg.ReceiveJSONEvent = ReceiveJSONEvent
-    logger_pkg.logger = FakeLogger()
-    intent_config_pkg.LLMIntentClassifierConfiguration = LLMIntentClassifierConfiguration
-    llm_openai_pkg.LLMOpenAI = FakeLLM
+EMPTY_CLASS_MODEL: Dict[str, Any] = {
+    "version": "3.0.0",
+    "type": "ClassDiagram",
+    "size": {"width": 1200, "height": 800},
+    "interactive": {"elements": {}, "relationships": {}},
+    "elements": {},
+    "relationships": {},
+    "assessments": {},
+}

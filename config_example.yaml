@@ -1,0 +1,19 @@
+agent:
+  check_transitions_delay: 5
+
+nlp:
+  language: en
+  region: US
+  timezone: Europe/Madrid
+  pre_processing: True
+  intent_threshold: 0.55
+  openai:
+    api_key: your-api-key
+
+platforms:
+  websocket:
+    host: localhost
+    port: 8765
+    streamlit:
+      host: localhost
+      port: 5000

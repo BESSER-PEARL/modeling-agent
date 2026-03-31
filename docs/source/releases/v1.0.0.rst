@@ -1,0 +1,117 @@
+Version 1.0.0
+=============
+
+Initial release of the BESSER Modeling Agent -- the conversational AI backend for the
+`BESSER Web Modeling Editor <https://editor.besser-pearl.org>`_.
+
+The agent interprets natural-language requests over WebSocket and returns structured
+diagram JSON payloads that the frontend renders as visual diagrams.
+
+Highlights
+----------
+
+- **4 diagram types**: Class, Object, State Machine, and Agent.
+- **Natural-language diagram creation**: single elements or complete systems from a description.
+- **Model modification** for Class diagrams.
+- **UML specification Q&A** via retrieval-augmented generation (RAG).
+- **Built on BESSER Agentic Framework (BAF)** v4.2.0.
+
+Diagram Types
+-------------
+
+**Class Diagram**
+- Create single classes with attributes, methods, and visibility modifiers (``+``, ``-``, ``#``, ``~``).
+- Generate complete multi-class systems with relationships (Association, Composition, Aggregation, Inheritance, Realization).
+- Modify existing diagrams: rename classes, add attributes, add relationships.
+- Multiplicity and method parameter support.
+- Deterministic fallback generation when LLM fails.
+
+**Object Diagram**
+- Create object instances with slot values.
+- Reference existing class diagrams to use exact class and attribute IDs.
+- Populate objects with realistic example values.
+
+**State Machine Diagram**
+- Create individual states or full state machines.
+- Support for simple, initial, final, and choice states.
+- Transitions with triggers, guards, and effects.
+
+**Agent Diagram**
+- Create agent states, intents, transitions, and configurations.
+- Extensive normalization of agent specifications (states, intents, replies, transitions).
+- Modify existing agent models.
+
+Capabilities
+------------
+
+**Natural-Language Diagram Creation**
+- Single element creation: create one class, one state, one object, etc.
+- Complete system generation: describe a system (e.g., "library management system") and get a full multi-element diagram.
+- Diagram type detection from keywords when not explicitly specified.
+
+**UML Specification Q&A (RAG)**
+- Retrieval-augmented generation over the official UML 2.5 specification (``formal-17-12-05.pdf``).
+- ChromaDB vector store with OpenAI embeddings, persisted to ``uml_vector_store/``.
+- Recursive character text splitting (chunk size 1000, overlap 100), retrieves top 4 chunks per query.
+- Falls back to direct LLM response if RAG is uninitialized.
+
+**Modeling Help**
+- General UML modeling advice via LLM.
+- Separate from RAG -- provides conceptual guidance rather than spec-based answers.
+
+Architecture
+------------
+
+**Agent State Machine** (7 states):
+
+- ``greetings_state`` (initial) -- greets user, tracks ``has_greeted`` to avoid re-greeting.
+- ``create_single_element_state`` -- creates a single UML element via diagram handler.
+- ``create_complete_system_state`` -- generates complete multi-element systems.
+- ``modify_model_state`` -- modifies existing model elements.
+- ``modeling_help_state`` -- provides UML modeling advice.
+- ``clarify_diagram_type_state`` -- asks user to clarify when diagram type is ambiguous.
+- ``uml_rag_state`` -- answers UML specification questions using RAG.
+
+All states have unified transitions supporting both text and JSON events (``ReceiveJSONEvent``), with every state able to transition to any other based on intent matching.
+
+**Intent Classification** (6 intents, LLM-based):
+
+- ``hello_intent`` -- greeting/conversation start.
+- ``create_single_element_intent`` -- create exactly one UML element.
+- ``create_complete_system_intent`` -- create complete system/multiple elements.
+- ``modify_model_intent`` -- modify/update/connect existing elements.
+- ``modeling_help_intent`` -- help with UML modeling concepts.
+- ``uml_spec_intent`` -- theoretical UML specification queries.
+
+Uses ``LLMIntentClassifierConfiguration`` with ``use_intent_descriptions=True`` (description-based LLM classification, no training sentences).
+
+**Diagram Handler Architecture**:
+
+- ``BaseDiagramHandler`` (92 lines) -- abstract base class defining the handler interface.
+- ``DiagramHandlerFactory`` -- creates handlers by diagram type with metadata.
+- ``utils.py`` -- message parsing and keyword detection utilities.
+- 4 concrete handlers: ClassDiagramHandler (449 lines), AgentDiagramHandler (790 lines), ObjectDiagramHandler (200 lines), StateMachineHandler (197 lines).
+
+**Communication Protocol**:
+
+- WebSocket JSON input with ``message``, ``diagramType``, ``currentModel``, optional ``referenceDiagramData``.
+- Message prefix parsing: ``[DIAGRAM_TYPE:ClassDiagram]`` stripped and routed.
+- Output actions: ``inject_element``, ``inject_complete_system``, ``modify_model``.
+
+Tech Stack
+----------
+
+- **Runtime**: Python 3.11+, WebSocket server (port 8765)
+- **Agent Framework**: BESSER Agentic Framework (BAF) v4.2.0
+- **LLM**: OpenAI GPT-4o-mini (temperature 0.4, max_tokens 3000)
+- **RAG**: LangChain + ChromaDB + OpenAI Embeddings over UML 2.5 specification
+- **Deployment**: Docker with health check, auto-generates ``config.ini`` from environment variables
+
+Testing
+-------
+
+3 test files with full BESSER framework stubs (tests run without OpenAI keys):
+
+- ``test_class_diagram_handler.py`` -- class generation tests.
+- ``test_payload_and_routing.py`` -- integration tests for JSON/text routing.
+- ``test_workflow_scenarios.py`` -- end-to-end workflow tests.

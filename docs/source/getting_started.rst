@@ -1,156 +1,131 @@
 Getting Started
 ===============
 
-Welcome to the Modeling Agent project. This guide walks you through what
-the agent does, how to install and configure it locally, and how to run
-basic validation before contributing changes. A release notes section at
-the end captures the highlights for ``v0.1.0``.
+Overview
+--------
 
-Project overview
-----------------
+The BESSER Modeling Agent is the conversational AI backend for the
+`BESSER Web Modeling Editor <https://editor.besser-pearl.org>`_. It receives
+user requests over WebSocket, normalizes them into a unified protocol, plans one
+or more operations, and returns structured responses for model updates or
+code-generation triggers via
+`BESSER generators <https://besser-pearl.github.io/BESSER/generators.html>`_.
 
-The Modeling Agent is a conversational backend built on the BESSER
-Agentic framework. It interprets natural language requests and generates
-UML diagram elements that can be rendered inside
-``editor.besser-pearl.org`` or other compatible tooling.
+Key capabilities:
 
-Core capabilities
-~~~~~~~~~~~~~~~~~
+- UML diagram creation and modification via natural language.
+- Multi-operation orchestration (modeling + generation in a single request).
+- UML specification Q&A with RAG (Retrieval-Augmented Generation) over the OMG
+  UML 2.5.1 specification. See :doc:`configuration` for RAG setup.
+- File conversion from PlantUML, knowledge-graph files, images, and plain text.
 
-- Generate class, object, state machine, and agent diagrams on demand.
-- Modify existing diagrams by adding or updating nodes, attributes, and
-  relationships.
-- Use GPT-based large language models to understand domain-specific
-  terminology and context.
-- Stream diagram updates to clients over WebSocket connections for
-  real-time feedback.
+For a detailed walkthrough of the request lifecycle, see :doc:`end_to_end_flow`.
 
-Repository layout
------------------
+Supported Diagram Types
+-----------------------
 
-The top-level directories you will likely interact with are:
+.. list-table::
+   :header-rows: 1
+   :widths: 30 40 30
 
-``diagram_handlers/``
-    Specialized logic for each supported diagram type.
-
-``docs/``
-    Sphinx documentation source files (including this guide).
-
-``tests/``
-    Pytest suites covering handlers, routing, and end-to-end workflows.
-
-``modeling_agent.py``
-    The main application entry point, including the intent router and LLM
-    integration.
+   * - Diagram Type
+     - Description
+     - Output Format
+   * - ``ClassDiagram``
+     - UML class diagrams
+     - `Apollon <https://apollon-library.readthedocs.io/>`_-compatible JSON
+   * - ``ObjectDiagram``
+     - UML object/instance diagrams
+     - Apollon-compatible JSON
+   * - ``StateMachineDiagram``
+     - UML state machine diagrams
+     - Apollon-compatible JSON
+   * - ``AgentDiagram``
+     - BESSER conversational agent diagrams
+     - Custom state/intent JSON
+   * - ``GUINoCodeDiagram``
+     - No-code GUI models
+     - GrapesJS project JSON
+   * - ``QuantumCircuitDiagram``
+     - Quantum circuit diagrams
+     - Quirk-format JSON
 
 Prerequisites
 -------------
 
-- Python 3.10 or newer.
-- A virtual environment (``venv`` or similar) for isolating dependencies.
-- Access to an OpenAI API key or compatible LLM endpoint credentials.
-- Git for managing branches and syncing with the upstream repository.
+- Python 3.11+ (3.10 minimum).
+- OpenAI API key with GPT-4.1-mini access.
 
-Quick installation
-------------------
+Install
+-------
 
 .. code-block:: bash
 
-   git clone https://github.com/<your-org>/modeling-agent.git
-   cd modeling-agent
    python -m venv .venv
-   source .venv/bin/activate  # On Windows use .venv\Scripts\Activate.ps1
+
+   # Windows PowerShell
+   .\\.venv\\Scripts\\Activate.ps1
+
+   # Linux/macOS
+   source .venv/bin/activate
+
    python -m pip install --upgrade pip
    pip install -r requirements.txt
 
 Configuration
 -------------
 
-Copy the provided template and populate it with your environment
-settings:
+1. Copy ``config_example.yaml`` to ``config.yaml``.
+2. Set ``nlp.openai.api_key`` with your OpenAI key.
 
 .. code-block:: bash
 
-   cp config.ini.example config.ini
+   copy config_example.yaml config.yaml   # Windows
+   cp config_example.yaml config.yaml     # Linux/macOS
 
-Update ``config.ini`` (or ``.env`` if you prefer environment variables)
-with the following minimum values:
+See :doc:`configuration` for all available settings.
 
-``API_KEY``
-    Your OpenAI or compatible LLM provider key.
-
-``MODEL``
-    The model identifier, e.g. ``gpt-4``.
-
-``TEMPERATURE``
-    Sampling temperature. The default ``0.7`` balances creativity and
-    determinism.
-
-``PORT``
-    WebSocket port for the agent; defaults to ``8765``.
-
-Running the agent
------------------
-
-With your virtual environment active and configuration saved, start the
-service:
+Run
+---
 
 .. code-block:: bash
 
    python modeling_agent.py
 
-The agent listens on ``ws://localhost:8765`` by default. Connect a
-client (such as the BESSER web editor widget) to this endpoint to
-exchange diagram instructions in real time.
+Default host/port are configured in ``config.yaml`` under ``platforms.websocket``.
+The agent listens on ``ws://localhost:8765`` by default. You should see output
+like::
 
-Testing
--------
+   WebSocket server started on ws://localhost:8765
 
-Run the automated suites before opening pull requests:
+If you see an ``OPENAI_API_KEY`` error, check your ``config.yaml`` or ``.env``
+file. See :doc:`configuration` for details.
 
-.. code-block:: bash
-
-   pytest
-
-Add the ``-v`` flag for verbose output or filter to a specific file, for
-example ``pytest tests/test_class_diagram_handler.py``. The GitHub
-workflow mirrors this command, so keeping tests green locally reduces CI
-iterations.
-
-Documentation workflow
-----------------------
-
-The documentation uses Sphinx. After editing any ``.rst`` files, rebuild
-the HTML output to catch warnings:
+Validation
+----------
 
 .. code-block:: bash
 
-   sphinx-build -b html docs/source docs/_build/html
+   # Full test suite
+   python -m pytest
 
-Only commit source files inside ``docs/source``—the ``_build`` directory
-is a local artifact.
+   # Focused suites
+   python -m pytest tests/test_diagram_handlers.py
+   python -m pytest tests/test_protocol.py
+   python -m pytest tests/test_request_planner.py
 
-Troubleshooting tips
---------------------
+Documentation Build
+-------------------
 
-- If LLM calls fail, verify your API key and ensure outbound network
-  access is available from your environment.
-- Use the logging output in ``application.log`` to inspect the request
-  payloads sent to diagram handlers.
-- When diagram generation appears inconsistent, clear any cached diagram
-  state on the client side and resend the request.
+.. code-block:: bash
 
-Release notes
--------------
+   pip install -r docs/requirements.txt
+   cd docs
 
-``v0.1.0`` (2025-10-23)
-~~~~~~~~~~~~~~~~~~~~~~~
+   # Windows
+   make.bat html
 
-- Initial public release of the Modeling Agent project.
-- Added support for class, object, state machine, and agent diagram
-  generation backed by GPT-based reasoning.
-- Implemented WebSocket server in ``modeling_agent.py`` for real-time
-  collaboration with the BESSER editor.
-- Bundled pytest suites covering diagram handlers and routing logic.
-- Shipped Sphinx documentation scaffolding for deployment to
-  Read the Docs.
+   # Linux/macOS
+   make html
+
+The built documentation will be in ``docs/build/html/``.

@@ -24,37 +24,37 @@ EXPOSE 8765
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app/src:/app
 
-# Create entrypoint script that generates config.ini from environment variables
+# Create entrypoint script that generates config.yaml from environment variables
 RUN echo '#!/bin/bash\n\
 set -e\n\
 \n\
-# Generate config.ini from environment variables\n\
-cat > /app/config.ini << EOF\n\
-[agent]\n\
-name = uml_modeling_agent\n\
+# Generate config.yaml from environment variables\n\
+cat > /app/config.yaml << EOF\n\
+agent:\n\
+  check_transitions_delay: 5\n\
 \n\
-[nlp]\n\
-openai.api_key = ${OPENAI_API_KEY:-}\n\
+nlp:\n\
+  language: en\n\
+  region: US\n\
+  timezone: Europe/Madrid\n\
+  pre_processing: True\n\
+  intent_threshold: 0.55\n\
+  openai:\n\
+    api_key: ${OPENAI_API_KEY:-}\n\
 \n\
-[websocket]\n\
-host = 0.0.0.0\n\
-port = 8765\n\
+platforms:\n\
+  websocket:\n\
+    host: 0.0.0.0\n\
+    port: 8765\n\
+    streamlit:\n\
+      host: localhost\n\
+      port: 5000\n\
 EOF\n\
 \n\
-echo "✅ config.ini created successfully"\n\
-cat /app/config.ini\n\
-\n\
-# CRITICAL FIX: Patch BESSER framework to use 0.0.0.0 instead of localhost default\n\
-echo "🔧 Patching BESSER framework WebSocket host default..."\n\
-WEBSOCKET_INIT="/usr/local/lib/python3.11/site-packages/besser/agent/platforms/websocket/__init__.py"\n\
-if [ -f "$WEBSOCKET_INIT" ]; then\n\
-    sed -i "s/,  *str,  *. *localhost. *)/,  str,  '\''0.0.0.0'\'')/g" "$WEBSOCKET_INIT"\n\
-    echo "✅ BESSER framework patched: WebSocket will bind to 0.0.0.0"\n\
-else\n\
-    echo "⚠️  Warning: Could not find BESSER WebSocket init file to patch"\n\
-fi\n\
+echo "✅ config.yaml created successfully"\n\
+cat /app/config.yaml\n\
 \n\
 # Run the modeling agent\n\
 exec python modeling_agent.py\n\

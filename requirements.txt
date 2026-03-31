@@ -1,6 +1,8 @@
-besser-agentic-framework[extras,llms,tensorflow] == 4.2.0
+besser-agentic-framework[extras,llms,tensorflow] == 4.3.1
+python-dotenv
 langchain-community
 langchain-text-splitters
 langchain-openai
 langchain-chroma
 chromadb
+PyMuPDF
