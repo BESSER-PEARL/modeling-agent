@@ -6,6 +6,7 @@ type from the file content.
 
 Supported file types:
   - PlantUML (.puml, .plantuml, .pu, .txt containing @startuml)
+  - XMI / UML interchange (.xmi, .uml, .ecore — standard UML/EMF exchange formats)
   - Knowledge Graph (.ttl, .rdf, .owl, .json with KG structure)
   - Images (.png, .jpg, .jpeg, .gif, .webp — UML diagram photos/screenshots)
   - PDF (.pdf — text-based or scanned/diagram PDFs)
@@ -32,6 +33,7 @@ PLANTUML_EXTENSIONS = {".puml", ".plantuml", ".pu"}
 KG_EXTENSIONS = {".ttl", ".rdf", ".owl", ".n3", ".nt", ".nq", ".trig", ".jsonld"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 PDF_EXTENSIONS = {".pdf"}
+XMI_EXTENSIONS = {".xmi", ".uml", ".ecore"}
 IMAGE_MIME_MAP = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -182,6 +184,8 @@ def detect_file_type(filename: str, content_text: Optional[str] = None) -> str:
         return "image"
     if ext in PDF_EXTENSIONS:
         return "pdf"
+    if ext in XMI_EXTENSIONS:
+        return "xmi"
 
     # Content-based detection for .txt or extensionless files
     if content_text:
@@ -191,6 +195,9 @@ def detect_file_type(filename: str, content_text: Optional[str] = None) -> str:
         # Turtle/N3 detection
         if stripped.startswith("@prefix") or stripped.startswith("@base"):
             return "knowledge_graph"
+        # XMI/UML XML detection
+        if stripped.startswith("<?xml") and ("xmi:" in stripped or "uml:" in stripped or "XMI" in stripped):
+            return "xmi"
         # RDF/XML detection
         if stripped.startswith("<?xml") and ("rdf:RDF" in stripped or "owl:" in stripped):
             return "knowledge_graph"
@@ -404,13 +411,16 @@ def convert_file_to_diagram_spec(
         return _convert_image(file_content_b64, filename, llm_predict, openai_api_key)
     elif file_type == "pdf":
         return _convert_pdf(raw_bytes, filename, llm_predict, openai_api_key)
+    elif file_type == "xmi":
+        return _convert_xmi(content_text, filename, llm_predict)
     else:
         # Try to convert as text if we have text content
         if content_text:
             return _convert_generic_text(content_text, filename, llm_predict)
         return _error_response(
             f"Could not determine the file type for '{filename}'. "
-            "Supported formats: PlantUML (.puml), Knowledge Graphs (.ttl, .rdf, .owl, .json), "
+            "Supported formats: PlantUML (.puml), XMI/UML (.xmi, .uml, .ecore), "
+            "Knowledge Graphs (.ttl, .rdf, .owl, .json), "
             "PDF documents (.pdf), or images of UML diagrams (.png, .jpg)."
         )
 
@@ -453,6 +463,22 @@ def _convert_generic_text(
     prompt = _build_auto_detect_prompt(f"text file ('{filename}')")
     prompt += f"\n\nFile Content:\n```\n{content}\n```"
     return _run_llm_conversion(prompt, filename, "text file", None, llm_predict)
+
+
+def _convert_xmi(
+    content: str, filename: str, llm_predict: callable,
+) -> Dict[str, Any]:
+    """Convert an XMI/UML interchange file to the best-fit diagram spec via LLM."""
+    if len(content) > 30_000:
+        content = content[:30_000] + "\n\n... [truncated — file too large, showing first 30KB]"
+    prompt = _build_auto_detect_prompt("XMI/UML interchange file")
+    prompt += (
+        "\n\nIMPORTANT: This is an XMI (XML Metadata Interchange) file — a standard "
+        "format for exchanging UML models. Parse the XML elements and attributes "
+        "to extract classes, properties, associations, state machines, etc.\n\n"
+        f"XMI Content:\n```xml\n{content}\n```"
+    )
+    return _run_llm_conversion(prompt, filename, "XMI", None, llm_predict)
 
 
 def _convert_pdf(
