@@ -298,7 +298,10 @@ def stream_llm_response(
     except Exception as e:
         logger.error(f"❌ [Streaming] Error: {e}")
         if not full_text:
-            full_text = f"I encountered an issue: {str(e)}"
+            from errors import classify_error, get_recovery_hint
+            error_code = classify_error(e)
+            hint = get_recovery_hint(error_code)
+            full_text = f"{hint['message']} Please {hint['recovery']}."
             reply_stream_chunk(session, full_text, stream_id)
 
     reply_stream_done(session, stream_id, full_text)

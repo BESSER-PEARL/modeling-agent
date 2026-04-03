@@ -77,6 +77,16 @@ _RECOVERY_HINTS: Dict[str, Dict[str, Any]] = {
         "recovery": "check the documentation for supported operations",
         "retryable": False,
     },
+    "rate_limit": {
+        "message": "The AI service is currently busy.",
+        "recovery": "please wait a moment and try again",
+        "retryable": True,
+    },
+    "auth_error": {
+        "message": "The AI service is temporarily unavailable.",
+        "recovery": "please try again later",
+        "retryable": False,
+    },
     # --- from execution._get_recovery_hint (additions not in base_handler) ---
     "prerequisite_missing": {
         "message": "A required diagram is missing.",
@@ -99,6 +109,11 @@ _RECOVERY_HINTS: Dict[str, Dict[str, Any]] = {
         "retryable": True,
     },
 }
+
+
+def get_recovery_hint(error_code: ErrorCode) -> Dict[str, Any]:
+    """Get the recovery hint for a given error code."""
+    return _RECOVERY_HINTS.get(error_code.value, _RECOVERY_HINTS["unknown"])
 
 
 def classify_error(error: Exception) -> ErrorCode:
@@ -140,7 +155,7 @@ def classify_error(error: Exception) -> ErrorCode:
         return ErrorCode.RATE_LIMIT
 
     # Auth errors
-    if "auth" in err_name or "unauthorized" in err_msg or "forbidden" in err_msg:
+    if "auth" in err_name or "unauthorized" in err_msg or "forbidden" in err_msg or "api_key" in err_msg or "invalid_api_key" in err_msg:
         return ErrorCode.AUTH_ERROR
 
     # Default: base_handler used generation_error, execution used unknown.

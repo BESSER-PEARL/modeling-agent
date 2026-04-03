@@ -36,9 +36,9 @@ def _build_error_payload(operation: dict, error: Exception, error_code: str = "u
         code_enum = ErrorCode(error_code)
     except ValueError:
         code_enum = ErrorCode.UNKNOWN
+    logger.error(f"Operation error: {error}")
     return build_error_response(
         code_enum,
-        str(error),
         operation=operation,
     )
 
