@@ -11,9 +11,9 @@ and intents have been created.
 import logging
 from typing import Any, Dict, Optional
 
-from besser.agent.core.session import Session
-from besser.agent.library.transition.events.base_events import ReceiveJSONEvent
-from besser.agent.nlp.rag.rag import RAGMessage
+from baf.core.session import Session
+from baf.library.transition.events.base_events import ReceiveJSONEvent
+from baf.nlp.rag.rag import RAGMessage
 
 import agent_context as ctx
 from protocol.adapters import parse_assistant_request

@@ -12,7 +12,7 @@ import logging
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from besser.agent.core.session import Session
+    from baf.core.session import Session
 
 from protocol.types import AssistantRequest
 from session_keys import SESSION_ACTION_HISTORY

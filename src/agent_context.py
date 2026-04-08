@@ -14,9 +14,9 @@ from __future__ import annotations
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from besser.agent.core.agent import Agent
-    from besser.agent.nlp.llm.llm_openai_api import LLMOpenAI
-    from besser.agent.nlp.rag.rag import RAG
+    from baf.core.agent import Agent
+    from baf.nlp.llm.llm_openai_api import LLMOpenAI
+    from baf.nlp.rag.rag import RAG
     from src.diagram_handlers.registry.factory import DiagramHandlerFactory
 
 # Populated by modeling_agent.py during agent bootstrap.

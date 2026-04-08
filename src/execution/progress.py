@@ -2,7 +2,7 @@
 
 import logging
 
-from besser.agent.core.session import Session
+from baf.core.session import Session
 
 from session_helpers import reply_progress
 

@@ -3,8 +3,8 @@ import logging
 import re
 from typing import Any, Dict, Optional, Tuple
 
-from besser.agent.core.session import Session
-from besser.agent.library.transition.events.base_events import ReceiveJSONEvent
+from baf.core.session import Session
+from baf.library.transition.events.base_events import ReceiveJSONEvent
 
 from .types import AssistantRequest, FileAttachment, WorkspaceContext, SUPPORTED_DIAGRAM_TYPES
 from session_keys import PARSED_ASSISTANT_REQUEST, PARSED_REQUEST_EVENT_ID, VOICE_CONTEXT

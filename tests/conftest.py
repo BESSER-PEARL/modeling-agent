@@ -12,7 +12,7 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 # ---------------------------------------------------------------------------
-# Minimal stub for besser.agent.core.session.Session
+# Minimal stub for baf.core.session.Session
 # ---------------------------------------------------------------------------
 
 class _FakeEvent:
@@ -26,7 +26,7 @@ class _FakeEvent:
 
 
 class FakeSession:
-    """Lightweight stand-in for ``besser.agent.core.session.Session``.
+    """Lightweight stand-in for ``baf.core.session.Session``.
 
     Stores key-value pairs in ``_store`` and provides the same
     ``get / set / delete / get_dictionary`` interface that the real

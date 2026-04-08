@@ -83,7 +83,7 @@ need for a running LLM, WebSocket server, or the BESSER framework at test time.
 FakeSession
 ~~~~~~~~~~~
 
-Stand-in for ``besser.agent.core.session.Session``. Stores key-value pairs and
+Stand-in for ``baf.core.session.Session``. Stores key-value pairs and
 captures replies for assertion:
 
 .. code-block:: python

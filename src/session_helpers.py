@@ -12,7 +12,7 @@ import logging
 import uuid
 from typing import Any, Dict, Optional
 
-from besser.agent.core.session import Session
+from baf.core.session import Session
 
 from protocol.adapters import parse_assistant_request
 from handlers.generation_handler import (

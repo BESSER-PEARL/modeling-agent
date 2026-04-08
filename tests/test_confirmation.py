@@ -8,14 +8,14 @@ from unittest.mock import MagicMock
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-# Stub out the besser.agent module hierarchy so that importing confirmation
+# Stub out the baf module hierarchy so that importing confirmation
 # does not require the full BESSER framework to be installed.
 _besser = MagicMock()
 for mod_name in [
     'besser',
-    'besser.agent',
-    'besser.agent.core',
-    'besser.agent.core.session',
+    'baf',
+    'baf.core',
+    'baf.core.session',
 ]:
     sys.modules.setdefault(mod_name, _besser)
 

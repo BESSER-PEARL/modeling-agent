@@ -7,7 +7,7 @@ the user if the target diagram already has content.
 
 import logging
 
-from besser.agent.core.session import Session
+from baf.core.session import Session
 
 import agent_context as ctx
 from protocol.types import AssistantRequest

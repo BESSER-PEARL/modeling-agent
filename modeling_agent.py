@@ -19,9 +19,9 @@ _SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from besser.agent.core.agent import Agent
-from besser.agent import nlp
-from besser.agent.exceptions.logger import logger
+from baf.core.agent import Agent
+from baf import nlp
+from baf.exceptions.logger import logger
 
 import agent_context as ctx
 from agent_setup import (
