@@ -243,8 +243,10 @@ class BaseDiagramHandler(ABC):
     def _sanitize_target_name(name: str) -> str:
         """Strip JSON artifacts the LLM may leak into names."""
         import re
-        # Remove trailing/leading JSON punctuation like },. or {
-        cleaned = re.sub(r'[{}\[\],;]+', '', name).strip()
+        if not isinstance(name, str):
+            return 'element'
+        # Remove JSON punctuation like },. or { and stray quotes
+        cleaned = re.sub(r"[{}\[\],;'\"]+", '', name).strip()
         return cleaned or 'element'
 
     @classmethod

@@ -462,6 +462,37 @@ Examples:
                             f"[ClassDiagram] Stripped {before - len(mod_list)} "
                             "spurious modify_relationship entries from class rename"
                         )
+
+                # Normalize remove_element targets — some LLMs misplace the class
+                # name into other fields or leave className null. Promote any
+                # non-null string in target/changes to className when we're
+                # clearly removing a class (no relationship/attribute/method hint).
+                for mod in mod_list:
+                    if mod.get("action") != "remove_element":
+                        continue
+                    target = mod.get("target") or {}
+                    if not isinstance(target, dict):
+                        continue
+                    # Skip if already has a specific identifier
+                    if any(target.get(k) for k in ("className", "classId",
+                                                    "relationshipId", "relationshipName",
+                                                    "attributeId", "attributeName",
+                                                    "methodId", "methodName")):
+                        continue
+                    # Try to find a class name in any target or changes string field
+                    changes = mod.get("changes") or {}
+                    for source in (target, changes if isinstance(changes, dict) else {}):
+                        for value in source.values():
+                            if isinstance(value, str) and value.strip():
+                                target["className"] = value.strip()
+                                logger.info(
+                                    f"[ClassDiagram] Normalized remove_element target: "
+                                    f"promoted '{value}' to className"
+                                )
+                                break
+                        if target.get("className"):
+                            break
+                    mod["target"] = target
                 return mod_list
 
             def _expand_refactoring(handler, spec):
