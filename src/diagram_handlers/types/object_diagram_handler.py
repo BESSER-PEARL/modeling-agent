@@ -41,6 +41,12 @@ class ObjectDiagramHandler(BaseDiagramHandler):
         normalized_type = (attr_type or "").strip().lower()
         key = (attr_name or "").strip().lower()
 
+        # Check if the attribute type is an enumeration — pick a valid literal
+        enum_literals = getattr(self, '_enum_literals', {})
+        if attr_type and attr_type in enum_literals and enum_literals[attr_type]:
+            literals = enum_literals[attr_type]
+            return literals[index % len(literals)]
+
         if "id" in key:
             prefix = re.sub(r"[^A-Za-z]", "", class_name).upper()[:3] or "OBJ"
             return f"{prefix}{index:03d}"
@@ -84,13 +90,32 @@ class ObjectDiagramHandler(BaseDiagramHandler):
         if not isinstance(elements, dict):
             return {}, []
 
+        # First pass: collect enumerations and their literals
+        self._enum_literals: Dict[str, List[str]] = {}  # enum_name -> [literal_names]
+        for el_id, element in elements.items():
+            if not isinstance(element, dict):
+                continue
+            if element.get("type") != "Enumeration":
+                continue
+            enum_name = (element.get("name") or "").strip()
+            if not enum_name:
+                continue
+            literals = []
+            for attr_id in element.get("attributes", []):
+                attr = elements.get(attr_id)
+                if isinstance(attr, dict):
+                    lit_name = (attr.get("name") or "").replace("+ ", "").replace("- ", "").replace("# ", "").split(":")[0].strip()
+                    if lit_name:
+                        literals.append(lit_name)
+            self._enum_literals[enum_name] = literals
+
         classes: Dict[str, Dict[str, Any]] = {}
         by_id: Dict[str, Dict[str, Any]] = {}
 
         for class_id, element in elements.items():
             if not isinstance(element, dict):
                 continue
-            if element.get("type") != "Class":
+            if element.get("type") not in ("Class", "AbstractClass"):
                 continue
             class_name = element.get("name")
             if not isinstance(class_name, str) or not class_name.strip():
@@ -381,7 +406,7 @@ class ObjectDiagramHandler(BaseDiagramHandler):
 CRITICAL RULES:
 1. If a REFERENCE CLASS DIAGRAM is provided below, you MUST use ONLY the attributes from that diagram
 2. DO NOT invent new attributes - use exactly what's defined in the reference class
-3. Object name format: lowercase, e.g., "user1", "orderA"
+3. objectName must be a short lowercase instance identifier like "user1", "orderA", "task2". NEVER include the class name or a colon in objectName — just the instance identifier.
 4. ClassName and classId MUST match the reference diagram (if provided)
 5. Each attribute MUST have:
    - name: EXACT attribute name from the class definition (just the name, without type or visibility)
@@ -389,7 +414,8 @@ CRITICAL RULES:
    - value: an ACTUAL example value (not a type)
 6. Include ALL attributes from the referenced class with realistic example values
 7. Keep values realistic and coherent
-8. {POSITION_DISCLAIMER}"""
+8. If an attribute type is an enumeration, use ONLY one of the valid literal values listed for that enumeration — never invent new values.
+9. {POSITION_DISCLAIMER}"""
     
     def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
                                 reference_diagram: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
@@ -407,6 +433,13 @@ CRITICAL RULES:
         try:
             parsed = self.predict_structured(user_prompt, SingleObjectSpec, system_prompt=system_prompt)
             object_spec = parsed.model_dump()
+
+            # Sanitize objectName: strip any ": ClassName" suffix the LLM may have included
+            raw_name = object_spec.get("objectName", "")
+            class_name = object_spec.get("className", "")
+            if class_name and ":" in raw_name:
+                raw_name = raw_name.split(":")[0].strip()
+            object_spec["objectName"] = self._sanitize_object_name(raw_name, default_name=f"{class_name[0].lower()}{class_name[1:]}1" if class_name else "object1")
 
             # Remove any hallucinated position and apply deterministic layout
             object_spec.pop("position", None)
@@ -442,7 +475,7 @@ Before generating, think through:
 IMPORTANT RULES:
 1. Create 3-6 related object instances
 2. Each object should have 2-4 attributes with ACTUAL VALUES
-3. Object names: lowercase (user1, order1, product2)
+3. Object names: lowercase instance name + number (user1, order1, product2). NEVER use the class name as the object name — "Order: Order" is WRONG, use "order1: Order".
 4. Include meaningful links between objects
 5. Values should be realistic and coherent
 6. {POSITION_DISCLAIMER}
@@ -545,24 +578,37 @@ IMPORTANT RULES:
     def _format_reference_classes(self, elements: Dict[str, Any]) -> str:
         """Format reference diagram classes for LLM context"""
         formatted = []
-        
+        enum_literals = getattr(self, '_enum_literals', {})
+
+        # List enumerations and their valid values
+        enums = {k: v for k, v in elements.items() if v.get('type') == 'Enumeration'}
+        for enum_id, enum_data in enums.items():
+            enum_name = enum_data.get('name', 'Unknown')
+            literals = enum_literals.get(enum_name, [])
+            if literals:
+                formatted.append(f"\nEnumeration: {enum_name} — valid values: {', '.join(literals)}")
+
         # Group elements by class
-        classes = {k: v for k, v in elements.items() if v.get('type') == 'Class'}
-        
+        classes = {k: v for k, v in elements.items() if v.get('type') in ('Class', 'AbstractClass')}
+
         for class_id, class_data in classes.items():
             class_name = class_data.get('name', 'Unknown')
             formatted.append(f"\nClass: {class_name} (classId: {class_id})")
             formatted.append("Attributes:")
-            
+
             # Get all attributes for this class
             for attr_id in class_data.get('attributes', []):
                 if attr_id in elements:
                     attr = elements[attr_id]
                     attr_name = attr.get('name', '').replace('+ ', '').replace('- ', '').replace('# ', '')
-                    # Extract just the attribute name (before the colon)
                     attr_name_only = attr_name.split(':')[0].strip()
-                    formatted.append(f"  - {attr_name_only} (attributeId: {attr_id})")
-        
+                    attr_type = attr.get('attributeType', 'str')
+                    type_info = f", type: {attr_type}" if attr_type else ""
+                    # If this is an enum type, show valid values
+                    if attr_type in enum_literals:
+                        type_info += f" [valid values: {', '.join(enum_literals[attr_type])}]"
+                    formatted.append(f"  - {attr_name_only} (attributeId: {attr_id}{type_info})")
+
         return '\n'.join(formatted)
 
     # ------------------------------------------------------------------
@@ -624,7 +670,7 @@ IMPORTANT RULES:
 
 IMPORTANT RULES:
 1. Actions available: "add_object", "modify_object", "modify_attribute_value", "add_link", "remove_element"
-2. add_object: set target.objectName to the new object name (lowerCamelCase, e.g. "user2"). Put className and attributes (with concrete values) in "changes".
+2. add_object: set target.objectName to a short lowercase instance identifier (e.g. "user2", "order1"). NEVER include the class name or a colon in objectName. Put className and attributes (with concrete values) in "changes".
 3. For existing elements, always specify exact target names from the current model
 4. """
             + REMOVE_ELEMENT_RULE

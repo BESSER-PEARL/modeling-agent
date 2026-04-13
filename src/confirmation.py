@@ -15,7 +15,7 @@ import logging
 import re
 from typing import Any
 
-from besser.agent.core.session import Session
+from baf.agent.core.session import Session
 
 from protocol.adapters import parse_assistant_request
 from session_helpers import reply_message, reply_payload

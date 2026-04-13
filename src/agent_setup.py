@@ -11,11 +11,11 @@ import logging
 import os
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from besser.agent import nlp
-from besser.agent.core.agent import Agent
-from besser.agent.nlp.intent_classifier.intent_classifier_configuration import LLMIntentClassifierConfiguration
-from besser.agent.nlp.llm.llm_openai_api import LLMOpenAI
-from besser.agent.nlp.speech2text.openai_speech2text import OpenAISpeech2Text
+from baf.agent import nlp
+from baf.agent.core.agent import Agent
+from baf.agent.nlp.intent_classifier.intent_classifier_configuration import LLMIntentClassifierConfiguration
+from baf.agent.nlp.llm.llm_openai_api import LLMOpenAI
+from baf.agent.nlp.speech2text.openai_speech2text import OpenAISpeech2Text
 
 from agent_config import (
     LLM_TEMPERATURE,
@@ -106,7 +106,7 @@ def init_rag(agent: Agent):
     except Exception:
         ChromaSettings = None
 
-    from besser.agent.nlp.rag.rag import RAG
+    from baf.agent.nlp.rag.rag import RAG
 
     try:
         chroma_kwargs: Dict[str, Any] = {

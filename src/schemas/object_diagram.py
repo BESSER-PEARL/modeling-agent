@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ObjectAttributeSpec(BaseModel):
@@ -40,6 +40,13 @@ class SingleObjectSpec(BaseModel):
         default_factory=list,
         description="Attribute name/value pairs for this object instance."
     )
+
+    @model_validator(mode='after')
+    def object_name_must_differ_from_class(self) -> 'SingleObjectSpec':
+        """Auto-fix objectName if it matches className (e.g., 'Order' → 'order1')."""
+        if self.objectName.lower() == self.className.lower():
+            self.objectName = f"{self.className[0].lower()}{self.className[1:]}1"
+        return self
 
 
 class ObjectLinkSpec(BaseModel):

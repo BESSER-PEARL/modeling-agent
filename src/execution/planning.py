@@ -8,7 +8,7 @@ import concurrent.futures
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from besser.agent.core.session import Session
+from baf.agent.core.session import Session
 
 import agent_context as ctx
 from protocol.types import AssistantRequest

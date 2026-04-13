@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, Field, model_validator
 
 
 class MethodParameterSpec(BaseModel):
@@ -67,6 +69,13 @@ class SystemClassSpec(BaseModel):
 
 # -- Modification schemas --
 
+def _clean_name(value: str | None) -> str | None:
+    """Strip JSON artifacts (},  ],  etc.) that the LLM may include in names."""
+    if not value:
+        return value
+    return re.sub(r'[{}\[\],]+$', '', value).strip() or None
+
+
 class ClassModificationTarget(BaseModel):
     className: Optional[str] = Field(default=None, description="Target class name")
     attributeName: Optional[str] = Field(default=None, description="Target attribute name within the class")
@@ -74,10 +83,27 @@ class ClassModificationTarget(BaseModel):
     sourceClass: Optional[str] = Field(default=None, description="Source class for relationship modifications")
     targetClass: Optional[str] = Field(default=None, description="Target class for relationship modifications")
 
+    @model_validator(mode='after')
+    def strip_json_artifacts(self) -> 'ClassModificationTarget':
+        """Remove trailing JSON syntax artifacts from name fields."""
+        self.className = _clean_name(self.className)
+        self.attributeName = _clean_name(self.attributeName)
+        self.methodName = _clean_name(self.methodName)
+        self.sourceClass = _clean_name(self.sourceClass)
+        self.targetClass = _clean_name(self.targetClass)
+        return self
+
 
 class ClassModificationChanges(BaseModel):
     name: Optional[str] = Field(default=None, max_length=30, description="New name for rename operations (PascalCase, ONE word only)")
     type: Optional[str] = Field(default=None, description="New type for attribute/parameter changes")
+
+    @model_validator(mode='after')
+    def strip_json_artifacts(self) -> 'ClassModificationChanges':
+        self.name = _clean_name(self.name)
+        if self.className:
+            self.className = _clean_name(self.className)
+        return self
     visibility: Optional[Literal["public", "private", "protected", "package"]] = None
     returnType: Optional[str] = None
     parameters: Optional[List[MethodParameterSpec]] = None

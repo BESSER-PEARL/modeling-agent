@@ -8,7 +8,7 @@ import logging
 import threading
 from typing import Any, Dict, Optional
 
-from besser.agent.core.session import Session
+from baf.agent.core.session import Session
 
 import agent_context as ctx
 from agent_config import MAX_TABS, CONVERSATION_HISTORY_DEPTH

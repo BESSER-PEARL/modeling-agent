@@ -400,7 +400,7 @@ KEY RULES:
             + """
 4. Multiple changes → use "modifications" array.
 5. RENAME: single modify_class only. Relationships update automatically.
-6. DELETE: also remove its relationships. Batch all removals.
+6. DELETE a class: you MUST include remove_element entries for the class AND for EVERY relationship connected to it. If you only mention the removal in your message but don't include the remove_element actions, the class WILL NOT be removed. Example: to delete "Address" with 2 relationships → 3 remove_element entries (1 for the class + 2 for relationships).
 7. modify_relationship = update existing. add_relationship = brand new.
 8. add_class: set target.className and put className, attributes[], methods[] in "changes".
 9. When adding new classes, add relationships connecting them to existing classes. Include multiplicities. This is critical — isolated classes with no relationships are useless.
@@ -418,7 +418,7 @@ Examples:
 - "add name, age, email to Person" → modifications array with 3 add_attribute entries
 - "connect Order to Customer" → add_relationship (Association)
 - "change multiplicity to many" → modify_relationship
-- "delete the Address class" → modifications: [remove_element for Address, remove_element for each relationship involving Address]
+- "delete the Address class" → modifications array: [remove_element with target.className="Address", remove_element with target.relationshipName="..." for EACH relationship involving Address]. You MUST include ALL of these or the class stays on the diagram.
 - "add a User class with name and email" → add_class with target.className="User", changes.className="User", changes.attributes=[{name:"name",type:"String"},{name:"email",type:"String"}]
 - "create an OrderStatus enum with PENDING, SHIPPED, DELIVERED" → add_class with isEnumeration=true, changes.attributes=[{name:"PENDING"},{name:"SHIPPED"},{name:"DELIVERED"}]
 - "add status attribute of type OrderStatus to Order" → add_attribute with target.className="Order", changes.name="status", changes.type="OrderStatus"
