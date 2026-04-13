@@ -441,6 +441,11 @@ CRITICAL RULES:
                 raw_name = raw_name.split(":")[0].strip()
             object_spec["objectName"] = self._sanitize_object_name(raw_name, default_name=f"{class_name[0].lower()}{class_name[1:]}1" if class_name else "object1")
 
+            # Enrich each attribute with its type from the reference class diagram so the
+            # frontend ObjectAttribute element can carry the correct attributeType
+            # (otherwise it defaults to 'str' and breaks enum/int/date/float typing).
+            self._enrich_attribute_types(object_spec, reference_diagram)
+
             # Remove any hallucinated position and apply deterministic layout
             object_spec.pop("position", None)
             self.apply_single_layout(object_spec, existing_model)
@@ -575,6 +580,58 @@ IMPORTANT RULES:
             "message": "I created a starter object diagram. Describe your scenario in more detail (e.g. *'Create objects for a library with 2 books and 1 author'*) and I'll build a richer diagram!"
         }
     
+    def _enrich_attribute_types(self, object_spec: Dict[str, Any], reference_diagram: Optional[Dict[str, Any]]) -> None:
+        """Populate each attribute's 'type' field from the reference class diagram.
+
+        The LLM only returns name/value/attributeId. The frontend needs the
+        attribute type so it can render the ObjectAttribute element with the
+        correct attributeType (instead of defaulting to 'str').
+        """
+        if not isinstance(reference_diagram, dict):
+            return
+        elements = reference_diagram.get('elements')
+        if not isinstance(elements, dict):
+            return
+
+        class_name = object_spec.get('className', '')
+        class_id = object_spec.get('classId')
+
+        # Build a name -> attribute lookup for the target class as a fallback
+        # when the LLM omitted attributeId.
+        target_class = None
+        if class_id and class_id in elements:
+            target_class = elements[class_id]
+        else:
+            for el in elements.values():
+                if isinstance(el, dict) and el.get('type') in ('Class', 'AbstractClass') and el.get('name') == class_name:
+                    target_class = el
+                    break
+
+        attr_name_to_type: Dict[str, str] = {}
+        attr_name_to_id: Dict[str, str] = {}
+        if target_class:
+            for attr_id in target_class.get('attributes', []):
+                attr_el = elements.get(attr_id)
+                if isinstance(attr_el, dict):
+                    raw_name = (attr_el.get('name') or '').replace('+ ', '').replace('- ', '').replace('# ', '').split(':')[0].strip()
+                    attr_type = attr_el.get('attributeType', 'str')
+                    if raw_name:
+                        attr_name_to_type[raw_name] = attr_type
+                        attr_name_to_id[raw_name] = attr_id
+
+        for attr in object_spec.get('attributes', []) or []:
+            if not isinstance(attr, dict):
+                continue
+            attr_type = None
+            attr_id = attr.get('attributeId')
+            if attr_id and attr_id in elements and isinstance(elements[attr_id], dict):
+                attr_type = elements[attr_id].get('attributeType')
+            if not attr_type:
+                attr_type = attr_name_to_type.get(attr.get('name', ''))
+            if not attr.get('attributeId'):
+                attr['attributeId'] = attr_name_to_id.get(attr.get('name', ''))
+            attr['type'] = attr_type or 'str'
+
     def _format_reference_classes(self, elements: Dict[str, Any]) -> str:
         """Format reference diagram classes for LLM context"""
         formatted = []

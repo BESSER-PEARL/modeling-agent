@@ -18,6 +18,10 @@ class ObjectAttributeSpec(BaseModel):
         default=None,
         description="Element id of this attribute in the reference class diagram."
     )
+    type: Optional[str] = Field(
+        default=None,
+        description="Attribute type from the reference class (populated server-side)."
+    )
 
 
 class SingleObjectSpec(BaseModel):
