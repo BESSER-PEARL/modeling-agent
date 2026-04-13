@@ -493,7 +493,35 @@ Examples:
                         if target.get("className"):
                             break
                     mod["target"] = target
-                return mod_list
+
+                # Deduplicate remove_element entries that target the same class.
+                # Some LLMs emit multiple removals for the same class name (once
+                # for the class itself, once for each relationship it participates
+                # in, all with className only). The frontend applies them in
+                # sequence — the second one can't find the already-removed class
+                # and used to throw. Keep only the first occurrence.
+                seen_class_removes: set[str] = set()
+                deduped: list = []
+                for mod in mod_list:
+                    if mod.get("action") == "remove_element":
+                        target = mod.get("target") or {}
+                        cn = (target.get("className") or "").strip().lower()
+                        # Only dedupe class-level removals (no attribute/method/relationship)
+                        is_class_only = (
+                            cn
+                            and not target.get("attributeName") and not target.get("attributeId")
+                            and not target.get("methodName") and not target.get("methodId")
+                            and not target.get("relationshipName") and not target.get("relationshipId")
+                        )
+                        if is_class_only:
+                            if cn in seen_class_removes:
+                                logger.info(
+                                    f"[ClassDiagram] Dropped duplicate remove_element for class '{cn}'"
+                                )
+                                continue
+                            seen_class_removes.add(cn)
+                    deduped.append(mod)
+                return deduped
 
             def _expand_refactoring(handler, spec):
                 """Expand refactoring actions into primitive modifications."""
