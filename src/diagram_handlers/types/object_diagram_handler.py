@@ -408,13 +408,13 @@ CRITICAL RULES:
 2. DO NOT invent new attributes - use exactly what's defined in the reference class
 3. objectName must be a short lowercase instance identifier like "user1", "orderA", "task2". NEVER include the class name or a colon in objectName — just the instance identifier.
 4. ClassName and classId MUST match the reference diagram (if provided)
-5. Each attribute MUST have:
+5. ENUMERATIONS — STRICT RULE: If an attribute's type matches the name of an enumeration listed in the reference, the value MUST be one of that enumeration's valid literals (shown as "valid values: ..."). NEVER invent enum values like "Fiction" or "Active" if they are not in the listed literals. Pick the closest matching literal from the list.
+6. Each attribute MUST have:
    - name: EXACT attribute name from the class definition (just the name, without type or visibility)
    - attributeId: the EXACT id from the reference diagram
-   - value: an ACTUAL example value (not a type)
-6. Include ALL attributes from the referenced class with realistic example values
-7. Keep values realistic and coherent
-8. If an attribute type is an enumeration, use ONLY one of the valid literal values listed for that enumeration — never invent new values.
+   - value: an ACTUAL example value (not a type). For enum-typed attributes, this MUST be one of the valid literals from rule #5.
+7. Include ALL attributes from the referenced class with realistic example values
+8. Keep values realistic and coherent
 9. {POSITION_DISCLAIMER}"""
     
     def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
@@ -578,13 +578,30 @@ IMPORTANT RULES:
     def _format_reference_classes(self, elements: Dict[str, Any]) -> str:
         """Format reference diagram classes for LLM context"""
         formatted = []
-        enum_literals = getattr(self, '_enum_literals', {})
+
+        # Extract enumeration literals on the fly (don't rely on _extract_reference_catalog
+        # being called first — generate_single_element calls this method directly).
+        enum_literals: Dict[str, List[str]] = {}
+        for el in elements.values():
+            if not isinstance(el, dict) or el.get('type') != 'Enumeration':
+                continue
+            enum_name = (el.get('name') or '').strip()
+            if not enum_name:
+                continue
+            literals: List[str] = []
+            for attr_id in el.get('attributes', []):
+                attr = elements.get(attr_id)
+                if isinstance(attr, dict):
+                    lit_name = (attr.get('name') or '').replace('+ ', '').replace('- ', '').replace('# ', '').split(':')[0].strip()
+                    if lit_name:
+                        literals.append(lit_name)
+            enum_literals[enum_name] = literals
+
+        # Cache for any subsequent code path that reads self._enum_literals
+        self._enum_literals = enum_literals
 
         # List enumerations and their valid values
-        enums = {k: v for k, v in elements.items() if v.get('type') == 'Enumeration'}
-        for enum_id, enum_data in enums.items():
-            enum_name = enum_data.get('name', 'Unknown')
-            literals = enum_literals.get(enum_name, [])
+        for enum_name, literals in enum_literals.items():
             if literals:
                 formatted.append(f"\nEnumeration: {enum_name} — valid values: {', '.join(literals)}")
 
