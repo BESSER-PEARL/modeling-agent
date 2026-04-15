@@ -729,6 +729,7 @@ IMPORTANT RULES:
         # If a reference class diagram is available, include it for context
         reference_diagram = kwargs.get("reference_diagram")
         reference_context = ""
+        reference_classes: Dict[str, Dict[str, Any]] = {}
         if reference_diagram and isinstance(reference_diagram, dict):
             ref_elements = reference_diagram.get("elements")
             if isinstance(ref_elements, dict):
@@ -738,20 +739,23 @@ IMPORTANT RULES:
                         "\n\nReference class diagram (use these classes and attributes "
                         "when creating or modifying objects):\n" + ref_classes
                     )
+                # Catalog for deterministic server-side resolution of classId /
+                # attributeId — the LLM often omits them even when instructed.
+                reference_classes, _ = self._extract_reference_catalog(reference_diagram)
 
         system_prompt = (
             """You are a UML modeling expert. The user wants to modify an object diagram.
 
 IMPORTANT RULES:
 1. Actions available: "add_object", "modify_object", "modify_attribute_value", "add_link", "remove_element"
-2. add_object: set target.objectName to a short lowercase instance identifier (e.g. "user2", "order1"). NEVER include the class name or a colon in objectName. Put className and attributes (with concrete values) in "changes".
+2. add_object: set target.objectName to a short lowercase instance identifier (e.g. "user2", "order1"). NEVER include the class name or a colon in objectName. Put className, classId, and attributes (with concrete values) in "changes".
 3. For existing elements, always specify exact target names from the current model
 4. """
             + REMOVE_ELEMENT_RULE
             + """
 5. When the user asks for MULTIPLE changes at once, return multiple entries in the modifications array
-6. If a reference class diagram is provided, use its class/attribute names and ids
-7. Example: "add an object user2 of class User" → add_object with target.objectName="user2", changes.className="User", changes.attributes=[{name:"id",value:"USR002"},{name:"name",value:"Bob"}]"""
+6. If a reference class diagram is provided, you MUST copy its classId and per-attribute attributeId verbatim into the modification — these ids are what the frontend uses to link the object back to its class definition.
+7. Example: "add an object user2 of class User" → add_object with target.objectName="user2", changes.className="User", changes.classId="<id from reference>", changes.attributes=[{name:"id",attributeId:"<id>",value:"USR002"},{name:"name",attributeId:"<id>",value:"Bob"}]"""
         )
 
         # Build context from current model using centralized helper
@@ -765,9 +769,55 @@ IMPORTANT RULES:
 
         logger.info(f"[ObjectDiagram] generate_modification called with: {user_request!r}")
 
+        def _resolve_class_references(mod_list: list) -> list:
+            """Fill in classId / attributeId for add_object mods from the reference catalog.
+
+            The LLM routinely forgets these ids even when the prompt demands them.
+            Since we already loaded the reference catalog above, resolve them
+            deterministically so the frontend can link the new object to its
+            class definition without needing a round-trip.
+            """
+            if not reference_classes:
+                return mod_list
+
+            for mod in mod_list:
+                if not isinstance(mod, dict) or mod.get("action") != "add_object":
+                    continue
+                changes = mod.get("changes") or {}
+                class_name = (changes.get("className") or "").strip()
+                if not class_name:
+                    continue
+                class_info = reference_classes.get(class_name.lower())
+                if not class_info:
+                    continue
+
+                # Canonicalise the class name to the exact casing from the reference
+                changes["className"] = class_info["name"]
+                if not changes.get("classId"):
+                    changes["classId"] = class_info["id"]
+
+                # Resolve attributeId per attribute by matching name (case-insensitive).
+                attr_by_name = {
+                    a["name"].lower(): a for a in class_info.get("attributes", [])
+                }
+                for attr in changes.get("attributes") or []:
+                    if not isinstance(attr, dict):
+                        continue
+                    ref_attr = attr_by_name.get((attr.get("name") or "").strip().lower())
+                    if not ref_attr:
+                        continue
+                    if not attr.get("attributeId"):
+                        attr["attributeId"] = ref_attr["id"]
+                    if not attr.get("type"):
+                        attr["type"] = ref_attr.get("type", "str")
+
+                mod["changes"] = changes
+            return mod_list
+
         try:
             return self._execute_modification(
                 user_prompt, system_prompt, ObjectModificationResponse,
+                post_processor=_resolve_class_references,
             )
 
         except LLMPredictionError as exc:

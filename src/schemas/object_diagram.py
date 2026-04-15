@@ -113,6 +113,14 @@ class ObjectModificationChanges(BaseModel):
         max_length=30,
         description="Class name for add_object."
     )
+    classId: Optional[str] = Field(
+        default=None,
+        description=(
+            "Element id of the class this object instantiates, taken from the "
+            "reference class diagram. Required for add_object so the frontend "
+            "update panel can link the object to its class definition."
+        )
+    )
     attributes: Optional[List[ObjectAttributeSpec]] = Field(
         default=None,
         description="Attributes with concrete values for add_object."
