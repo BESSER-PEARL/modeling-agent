@@ -52,6 +52,12 @@ from session_keys import (
     PENDING_GUI_CHOICE,
     WORKFLOW_PENDING_GENERATOR,
 )
+from unified_classifier import get_or_classify
+
+try:
+    from llm.provider import get_provider as _get_llm_provider
+except ImportError:  # pragma: no cover — test env without BAF stack
+    _get_llm_provider = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +65,41 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------
 # Common preamble helper
 # ------------------------------------------------------------------
+
+def _ensure_unified_classification(session: Session) -> bool:
+    """Priority-0 transition hook: populates the per-message classifier cache.
+
+    ALWAYS returns False. The purpose is the side effect: one LLM call
+    per message that sets ``session[UNIFIED_CLASSIFICATION]``, so the
+    subsequent ``json_intent_matches`` transitions read our classifier's
+    verdict instead of BAF's description-based one.
+
+    Skips the call for pending-confirmation / pending-GUI flows — those
+    replies stay in the current state and intent classification doesn't
+    apply. Also skips when the session already has a cached
+    classification for this event id (multiple transitions re-use).
+    """
+    # Skip for confirmation replies — they stay in the current state
+    # regardless of any intent classification.
+    if session.get(PENDING_COMPLETE_SYSTEM) or session.get(PENDING_GUI_CHOICE):
+        return False
+    try:
+        request = parse_assistant_request(session)
+        if not (request.message or "").strip():
+            return False
+        provider = _get_llm_provider() if _get_llm_provider else None
+        classification = get_or_classify(session, request, provider)
+        logger.info(
+            "unified classifier: intent=%s generation_route=%s generator_type=%s reason=%s",
+            classification.intent,
+            classification.generation_route,
+            classification.generator_type,
+            classification.reason,
+        )
+    except Exception:
+        logger.exception("unified classifier hook failed; falling back to BAF")
+    return False
+
 
 def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     """Run the shared preamble checks for every state body.
@@ -792,6 +833,16 @@ def add_unified_transitions(state, intents_map, fallback_state, generation_state
     3. Text-event intent transitions (backward compatibility).
     4. Fallback transitions.
     """
+    # 0. Unified classifier hook — populates the per-message cache so
+    #    subsequent ``json_intent_matches`` conditions read from our
+    #    classifier's verdict instead of BAF's description-based one.
+    #    The hook NEVER transitions (always returns False); it's a
+    #    pure side-effect condition. One LLM call per message,
+    #    regardless of how many transitions we have.
+    state.when_event(ReceiveJSONEvent()) \
+        .with_condition(_ensure_unified_classification) \
+        .go_to(state)  # unreachable — hook always returns False
+
     # 1. Intent-matched JSON transitions (highest priority for user messages)
     for intent, dest_state in intents_map.items():
         state.when_event(ReceiveJSONEvent()) \

@@ -86,153 +86,45 @@ generation_state = agent.new_state("generation_state")
 workflow_state = agent.new_state("workflow_state")
 
 # ── Intents ──────────────────────────────────────────────────────────────
+#
+# Intent descriptions were historically 30-50 lines of keyword essays
+# that BAF's built-in classifier used as prompt context. Since
+# ``unified_classifier.py`` took over primary routing, those keyword
+# blobs are no longer driving any behavior — the real rules live in
+# ``unified_classifier._SYSTEM_PROMPT``. The one-liners below exist
+# only so BAF's classifier can still pick a sensible intent if our
+# unified call ever fails (rare safety-net path). Keep them SHORT.
 hello_intent = agent.new_intent(
     name="hello_intent",
-    description="The user greets you or wants to start a conversation",
+    description="User greets the assistant or makes small-talk.",
 )
 create_complete_system_intent = agent.new_intent(
     name="create_complete_system_intent",
-    description=(
-        "The user wants to CREATE or BUILD a complete system, diagram, "
-        "algorithm, or multiple elements from scratch. "
-        'Keywords: "create a library system", "create a class diagram for", '
-        '"generate a class diagram", "generate a class diagram for", '
-        '"generate a state machine", "generate a diagram for", '
-        '"design an e-commerce", "build a system", "create a diagram for", '
-        '"model a", "create classes for", "generate the gui", "create the gui", '
-        '"generate the frontend", "build the frontend", '
-        '"create a web app for", "model a web application for", '
-        '"design a web app for", "build a web app for". '
-        "IMPORTANT: When 'generate' is followed by a diagram type (class "
-        "diagram, state machine, object diagram, agent diagram, GUI diagram, "
-        "quantum circuit), it means CREATE a diagram, NOT generate code. "
-        '"generate a class diagram" = create_complete_system_intent. '
-        '"generate django" or "generate python code" = generation_intent. '
-        "Quantum keywords: \"create Grover's algorithm\", "
-        '"build a quantum circuit", "implement Shor algorithm", '
-        '"make a Bell state", "create QFT circuit", '
-        '"do the Deutsch-Jozsa algorithm", "build a teleportation circuit", '
-        '"implement quantum fourier transform", "create a quantum algorithm", '
-        '"do grovers search", "implement bernstein vazirani", '
-        '"build a variational circuit", "create an entanglement circuit". '
-        "This is for creating MULTIPLE elements, a complete model, a "
-        "GUI / frontend diagram, a web application system, or a quantum "
-        "algorithm FROM SCRATCH — NOT for adding to or extending an "
-        "existing model, NOT for generating source code artifacts, and "
-        "NOT for describing/explaining existing models. "
-        'If the user says "I also want", "also store", "also include", '
-        '"extend with", or similar phrases implying additions to an '
-        "existing model, use modify_model_intent instead."
-    ),
+    description="User wants to create a NEW diagram or complete system from scratch.",
 )
 modify_model_intent = agent.new_intent(
     name="modify_model_intent",
-    description=(
-        "The user wants to modify, change, update, edit, ADD to, extend, "
-        "remove from, connect elements in, or CREATE a single element in "
-        "a model or diagram. "
-        "This includes adding NEW classes, states, or entities, as well as "
-        "creating a single element from scratch. "
-        'Single-element creation: "create a class", "create a class called User", '
-        '"make a class Person", "create a state", "make a state", '
-        '"make one state", "create an object instance". '
-        "ANY request starting with 'add' should use this intent: "
-        '"add a class", "add a Person class", "add a state", '
-        '"add a Hadamard gate", "add a CNOT gate". '
-        'Other keywords: "add relationship", "connect", "add inheritance", '
-        '"modify class", "change attribute", "update method", "delete", '
-        '"remove", "rename", "add association", "link classes". '
-        'Natural language extensions: "I also want to store", '
-        '"I also want to include", "add information about", '
-        '"I also need", "extend with", "include data about", '
-        '"also store", "also track", "also manage". '
-        'Quantum modifications: "add a gate to the circuit", '
-        '"remove the measurement", "change gate on qubit 2", '
-        '"add more qubits", "extend the circuit", '
-        '"replace the X gate with a Y gate", "add a CNOT between q0 and q3".'
-    ),
+    description="User wants to add/remove/change elements in an existing diagram.",
 )
 modeling_help_intent = agent.new_intent(
     name="modeling_help_intent",
-    description=(
-        "The user asks for GENERAL HELP, explanation, or guidance about "
-        "modeling concepts, design patterns, or how things work. "
-        'Keywords: "help me", "how do I", "explain", "what is", '
-        '"tell me about", "how does X work", "what are best practices". '
-        'Quantum help: "explain quantum gates", "how does superposition work", '
-        '"what is entanglement", "explain Grover\'s algorithm concept", '
-        '"how do quantum circuits work", "what is a Hadamard gate". '
-        "This is for CONCEPTUAL help and explanations, NOT for creating, "
-        "modifying, or describing existing models."
-    ),
+    description="User asks a conceptual question about modeling (not about their own diagram).",
 )
 describe_model_intent = agent.new_intent(
     name="describe_model_intent",
-    description=(
-        "The user asks a QUESTION about their CURRENT model, diagram, or "
-        "circuit, wanting to inspect, understand, or get information about "
-        "what already EXISTS on the canvas. "
-        "Keywords: 'how many classes', 'what attributes', 'describe my diagram', "
-        "'list all classes', 'show my model', 'what relationships', "
-        "'tell me about my model', 'summarize my model', 'what states do I have', "
-        "'what is in my diagram', 'explain my model'. "
-        "Quantum: 'what gates are in my circuit', 'describe my quantum circuit', "
-        "'what algorithm does my circuit implement', 'how many qubits', "
-        "'describe the quantum algorithm', 'what does this circuit do', "
-        "'analyze my circuit'. "
-        "This is for ASKING about an existing model — NOT for creating, "
-        "building, modifying, or generating anything new."
-    ),
+    description="User asks a question about the current diagram on their canvas.",
 )
 uml_spec_intent = agent.new_intent(
     name="uml_spec_intent",
-    description=(
-        "The user asks theoretical questions about the official UML "
-        "specification document, UML standards, or formal UML definitions. "
-        'Keywords: "according to UML specification", "what does UML standard '
-        'say", "UML 2.5 specification", "OMG specification", "formal UML '
-        'definition". This is NOT for creating diagrams, only for asking '
-        "about the UML specification document itself."
-    ),
+    description="User asks about the formal UML specification document (rare).",
 )
 generation_intent = agent.new_intent(
     name=GENERATION_INTENT_NAME,
-    description=(
-        "The user wants to generate deployable source code or technical "
-        "artifacts FROM AN EXISTING model, or export/deploy their project. "
-        "This requires an existing model to already be on the canvas. "
-        "Generators include: django, backend, web_app, sql, sqlalchemy, "
-        "jsonschema, qiskit, python, java, pydantic, agent. "
-        'Keywords: "generate django", "generate sql", "generate web_app", '
-        '"generate python code", "run the web_app generator", '
-        '"generate code from my model". '
-        "Export: 'export to json', 'export buml', 'download project'. "
-        "Deploy: 'deploy to render', 'publish app', 'deploy application'. "
-        "This is strictly for CODE GENERATION from existing models, EXPORT, "
-        "or DEPLOYMENT — NOT for creating, modeling, designing, or building "
-        "new diagrams, systems, models, GUIs, or frontends. "
-        "IMPORTANT: 'generate a class diagram', 'generate a state machine', "
-        "'generate a diagram for X', 'generate an object diagram' are NOT "
-        "generation — those are create_complete_system_intent because the "
-        "user wants to CREATE a diagram, not generate source code. "
-        "If the user says 'create a web app for X' or 'model a web "
-        "application for Y', that is a creation/modeling intent, NOT "
-        "generation."
-    ),
+    description="User wants SOURCE CODE in any stack, or to export/deploy.",
 )
 workflow_intent = agent.new_intent(
     name="workflow_intent",
-    description=(
-        "The user wants a COMPLETE END-TO-END workflow: create the model, "
-        "validate it, and generate code, all in one go. "
-        'Keywords: "create a complete web app for", "build and deploy", '
-        '"create end to end", "full workflow for", "build a full system", '
-        '"create everything for", "design and generate", "model and deploy", '
-        '"create a complete application", "build from scratch and generate code". '
-        "This is for when the user explicitly wants the FULL pipeline — "
-        "modeling, validation, and code generation — handled automatically "
-        "in a single conversational flow."
-    ),
+    description="User wants the full end-to-end pipeline (model + validate + generate) in one flow.",
 )
 
 # ── Wire state bodies & transitions ─────────────────────────────────────

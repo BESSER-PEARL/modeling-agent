@@ -1,15 +1,64 @@
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple  # noqa: F401
 
 from baf.core.session import Session
 
+from handlers.smart_generation_handler import (
+    build_trigger_smart_generator_payload,
+    classify_generation_request,
+)
 from protocol.types import AssistantRequest
 from session_keys import (
     CONFIG_PROMPT_ATTEMPTS,
     PENDING_GENERATOR_CONFIG,
     PENDING_GENERATOR_TYPE,
+    UNIFIED_CLASSIFICATION,
 )
+from unified_classifier import (
+    UnifiedClassification,
+    classify_message as _unified_classify_message,
+)
+
+try:
+    from llm.provider import get_provider as _get_llm_provider
+except ImportError:  # pragma: no cover — keeps the module importable in
+    # test environments where the BAF stack isn't set up. Non-ImportError
+    # failures (real bugs in llm.provider) are NOT swallowed.
+    _get_llm_provider = None  # type: ignore[assignment]
+
+
+def _classification_to_legacy(cls_obj: UnifiedClassification):
+    """Adapt a :class:`UnifiedClassification` to the legacy
+    :class:`GenerationClassification` API the dispatch code below
+    expects. Returns an object with the same attributes
+    ``route / generator_type / refined_instructions / provider / reason``.
+    """
+    from handlers.smart_generation_handler import GenerationClassification
+    return GenerationClassification(
+        route=cls_obj.generation_route or "deterministic",
+        generator_type=cls_obj.generator_type,
+        refined_instructions=cls_obj.refined_instructions,
+        provider=cls_obj.provider,
+        reason=cls_obj.reason,
+    )
+
+
+def _get_classification_from_cache_or_classify(session, request):
+    """Read the unified classifier's cached result, or classify on the fly.
+
+    Prefers the per-message cache (populated by the priority-0 hook in
+    ``state_bodies.add_unified_transitions``). Falls back to a direct
+    LLM call only when the cache is empty — which happens in tests and
+    in code paths that bypass the state-machine transitions.
+    """
+    cached: Optional[UnifiedClassification] = session.get(UNIFIED_CLASSIFICATION)
+    if cached is not None and cached.intent == "generation_intent":
+        return _classification_to_legacy(cached)
+    # Fallback: call the legacy sub-router (one LLM call). Only reached
+    # when the unified hook didn't run — typically tests.
+    llm_provider = _get_llm_provider() if _get_llm_provider else None
+    return classify_generation_request(request, llm_provider)
 
 logger = logging.getLogger(__name__)
 
@@ -501,21 +550,40 @@ def _is_modeling_request(message: str) -> bool:
 
 
 def should_route_to_generation(session: Session, request: AssistantRequest) -> bool:
+    """State-transition gatekeeper for ``generation_state``.
+
+    Runs on every ``ReceiveJSONEvent``. We deliberately keep it cheap
+    (NO LLM call, NO text heuristics) and defer all intent
+    classification to the two places that already do that job:
+
+      1. BAF's intent classifier (one ``gpt-4.1-mini`` call per message)
+         decides whether this is a generation request. Its
+         ``json_intent_matches`` transition routes to
+         ``generation_state`` on its own.
+      2. Inside ``generation_state``, ``handle_generation_request`` calls
+         :func:`classify_generation_request` — ONE structured-output
+         LLM call — for the smart-vs-deterministic sub-routing.
+
+    The only jobs of this function are the two non-intent signals BAF's
+    classifier can't see:
+
+      * ``frontend_event`` callbacks (``generator_result``, etc.) —
+        ``raw_payload`` events, not conversational messages.
+      * ``pending_generator`` state — the user is mid-flow answering a
+        multi-turn config prompt and the next message is config input,
+        not a new intent.
+
+    Older versions of this function ran text-content heuristics
+    (``detect_generator_type``, ``_is_modeling_request``, phrase lists,
+    etc.) as a safety net for BAF misclassifications. That net is
+    removed — BAF's ``generation_intent`` description was strengthened
+    to cover non-BESSER stacks (rails, rust, kotlin, …) so it routes
+    correctly on its own.
+    """
     if request.action == "frontend_event":
         return True
     pending_generator, _ = _get_pending_state(session)
-    if pending_generator:
-        return True
-    if _looks_like_mixed_modeling_and_generation(request.message):
-        return False
-    if _is_modeling_request(request.message):
-        return False
-    # Pure diagram-creation requests ("generate a class diagram") should NOT
-    # be routed to generation even if no domain qualifier is present (which
-    # _is_modeling_request requires).
-    if _is_diagram_creation_request((request.message or "").lower()):
-        return False
-    return detect_generator_type(request.message) is not None
+    return bool(pending_generator)
 
 
 def _normalize_defaults(generator_type: str, request: AssistantRequest, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -561,39 +629,82 @@ def _handle_frontend_event(request: AssistantRequest) -> Dict[str, Any]:
 
 
 def handle_generation_request(session: Session, request: AssistantRequest) -> Dict[str, Any]:
+    """Route a generation-state request to smart-gen, deterministic, or menu.
+
+    BAF's intent classifier has already decided this is a generation
+    request. Our job here is the SUB-routing: smart generator (for any
+    custom stack / language BESSER doesn't have built-in) vs one of
+    BESSER's deterministic generators (django / pydantic / sql / …) vs
+    redirect-to-modeling (if BAF misclassified).
+
+    We make ONE LLM call via :func:`classify_generation_request` that
+    returns route + generator_type + refined_instructions all at once —
+    replacing what used to be three calls + a pile of keyword
+    heuristics.
+    """
     if request.action == "frontend_event":
         return _handle_frontend_event(request)
 
     pending_generator, pending_config = _get_pending_state(session)
-    detected_generator = detect_generator_type(request.message)
 
-    # Safety net: if the intent classifier misrouted a modeling request here
-    # (e.g. "create a web app for hotel booking" contains "web app" which
-    # matches the web_app generator keyword), redirect the user instead of
-    # silently triggering code generation on a possibly empty canvas.
-    _lower_msg_check = (request.message or "").lower()
-    if not pending_generator and (
-        _is_modeling_request(request.message)
-        or _is_diagram_creation_request(_lower_msg_check)
-    ):
-        _clear_pending_state(session)
-        return {
-            "action": "assistant_message",
-            "message": (
-                "It looks like you want to **create a diagram or design a system**, "
-                "not generate code from an existing model. Try rephrasing as: "
-                '**"create a class diagram for …"** or **"design a system for …"** '
-                "so I can build the model first."
-            ),
-        }
-
-    # If we were awaiting a generator selection, use the detected type only.
-    # The sentinel "_awaiting_selection" is not a real generator.
-    if pending_generator == _AWAITING_SELECTION:
-        _clear_pending_state(session)
-        generator_type = detected_generator
+    if pending_generator and pending_generator != _AWAITING_SELECTION:
+        # Multi-turn continuation: user is mid-flow answering a config
+        # prompt (e.g. "what's your Django project name?"). Use the
+        # already-picked generator and fall through to the config
+        # parsing / dispatch path below without calling the LLM
+        # classifier again.
+        generator_type: Optional[str] = pending_generator
     else:
-        generator_type = detected_generator or pending_generator
+        # First-time-through: read the unified classifier's verdict
+        # from the per-message cache (populated by state_bodies'
+        # priority-0 hook). Falls back to a fresh call only when the
+        # cache is empty — typically in tests that bypass the state
+        # machine. Net result in production: ZERO extra LLM calls
+        # here — the classification was already done before this
+        # state body ran.
+        classification = _get_classification_from_cache_or_classify(session, request)
+        logger.info(
+            "generation sub-route: route=%s generator_type=%s reason=%s",
+            classification.route, classification.generator_type, classification.reason,
+        )
+
+        if classification.route == "smart":
+            _clear_pending_state(session)
+            session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+            return build_trigger_smart_generator_payload(classification)
+
+        if classification.route == "modeling":
+            _clear_pending_state(session)
+            return {
+                "action": "assistant_message",
+                "message": (
+                    "It looks like you want to **create a diagram or design a system**, "
+                    "not generate code from an existing model. Try rephrasing as: "
+                    '**"create a class diagram for …"** or **"design a system for …"** '
+                    "so I can build the model first."
+                ),
+            }
+
+        if classification.route == "other":
+            _clear_pending_state(session)
+            return {
+                "action": "assistant_message",
+                "message": (
+                    "I didn't catch a clear code-generation request. If you want code, "
+                    'try something like **"generate django"** for a built-in generator '
+                    'or **"build me a rails api"** / **"generate code in rust"** for a '
+                    "custom stack. If you want a diagram, try "
+                    '**"create a class diagram for a library"**.'
+                ),
+            }
+
+        # route == "deterministic" — fall through to the config-parse
+        # / dispatch path with the classifier's picked generator type.
+        # If ``_AWAITING_SELECTION`` was set, clear it; the classifier
+        # has effectively answered which generator the user picked.
+        if pending_generator == _AWAITING_SELECTION:
+            _clear_pending_state(session)
+        generator_type = classification.generator_type
 
     if not generator_type:
         _lower_msg = (request.message or "").lower()

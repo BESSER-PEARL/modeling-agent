@@ -33,3 +33,10 @@ PARSED_REQUEST_EVENT_ID = "_parsed_request_event_id"
 
 # Session history
 SESSION_ACTION_HISTORY = "_session_action_history"
+
+# Unified classifier per-message cache (see ``unified_classifier.py``).
+# Stores a ``UnifiedClassification`` instance and the event id it was
+# computed for, so multiple transition conditions / state bodies on
+# the same message share one LLM call.
+UNIFIED_CLASSIFICATION = "_unified_classification"
+UNIFIED_CLASSIFICATION_EVENT_ID = "_unified_classification_event_id"
