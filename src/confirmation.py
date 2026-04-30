@@ -20,7 +20,12 @@ from baf.core.session import Session
 from protocol.adapters import parse_assistant_request
 from session_helpers import reply_message, reply_payload
 from model_utils import model_has_elements  # noqa: F401  (re-export for backward compat)
-from session_keys import PENDING_COMPLETE_SYSTEM, PENDING_GUI_CHOICE
+from session_keys import (
+    PENDING_COMPLETE_SYSTEM,
+    PENDING_GUI_CHOICE,
+    PENDING_SMART_GEN_INSTRUCTIONS,
+    PENDING_SMART_GEN_PROVIDER,
+)
 from execution import execute_model_operation
 
 logger = logging.getLogger(__name__)
@@ -272,6 +277,10 @@ def handle_pending_system_confirmation(session: Session) -> bool:
                 stored_diagram_type, stored_default_mode, stored_message, pending,
             )
 
+        # Resume smart-gen handoff if a mismatch chain was pending — the
+        # new tab now holds the rebuilt domain model.
+        _resume_smart_gen_after_replace(session)
+
         return True
 
     # ── Replace / Keep path ───────────────────────────────────────────
@@ -313,7 +322,65 @@ def handle_pending_system_confirmation(session: Session) -> bool:
             stored_diagram_type, stored_default_mode, stored_message, pending,
         )
 
+    # ── Resume smart-gen handoff if a mismatch chain was pending ─────
+    # When the user reached this confirmation via the "Update model +
+    # generate" mismatch quick action, the workflow stashed smart-gen
+    # instructions in the session and paused waiting for this answer.
+    # Now that the model has been replaced (the only path that makes
+    # sense to chain — keeping the old model would defeat the point of
+    # the mismatch fix), fire the Vibe-Driven Generator handoff.
+    if replace_existing:
+        _resume_smart_gen_after_replace(session)
+
     return True
+
+
+def _resume_smart_gen_after_replace(session: Session) -> None:
+    """Fire the stashed smart-gen handoff after a model replace, if any.
+
+    No-op when there are no stashed instructions (the common case — most
+    replaces happen outside the mismatch flow).
+    """
+    stashed_instructions = session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+    if not isinstance(stashed_instructions, str) or not stashed_instructions.strip():
+        return
+
+    stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic"
+
+    try:
+        from handlers.smart_generation_handler import (
+            GenerationClassification,
+            build_trigger_smart_generator_payload,
+        )
+        from handlers.generation_handler import _clear_pending_smart_gen
+    except ImportError:  # pragma: no cover — defensive in case of refactor
+        logger.exception("[PendingConfirm] Could not import smart-gen handoff helpers")
+        return
+
+    try:
+        smart_classification = GenerationClassification(
+            route="smart",
+            refined_instructions=stashed_instructions,
+            provider=stashed_provider,
+            reason="model rebuilt; resuming smart generation",
+        )
+        payload = build_trigger_smart_generator_payload(
+            smart_classification,
+            reason_prefix="model updated, now generating",
+        )
+    except Exception:
+        logger.exception("[PendingConfirm] Failed to build smart-gen handoff payload")
+        _clear_pending_smart_gen(session)
+        return
+
+    if isinstance(payload, dict):
+        original_message = payload.get("message", "")
+        payload["message"] = (
+            f"{original_message}\n\nModel rebuilt — handing off to the "
+            f"Vibe-Driven Generator now."
+        )
+        reply_payload(session, payload)
+    _clear_pending_smart_gen(session)
 
 
 def _resume_remaining_ops(
