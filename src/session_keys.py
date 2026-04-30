@@ -24,6 +24,18 @@ HAS_GREETED = "has_greeted"
 # Workflow state
 WORKFLOW_PENDING_GENERATOR = "_workflow_pending_generator"
 
+# Smart-gen domain-mismatch handoff: when the unified classifier flags
+# that a smart-generation request describes a different domain than the
+# existing class diagram, the agent stashes the smart-gen payload here
+# and asks the user to confirm. On confirmation the workflow_body picks
+# these up and runs the smart generator after rebuilding the model.
+PENDING_SMART_GEN_INSTRUCTIONS = "_pending_smart_gen_instructions"
+PENDING_SMART_GEN_PROVIDER = "_pending_smart_gen_provider"
+# When set to True, the next smart-route classification skips the
+# domain-mismatch guard. Used by the "Generate anyway" path so the same
+# request (or its resend) doesn't loop on the confirmation question.
+SKIP_MISMATCH_CHECK_ONCE = "_skip_mismatch_check_once"
+
 # Voice context
 VOICE_CONTEXT = "_voice_context"
 

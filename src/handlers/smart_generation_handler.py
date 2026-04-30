@@ -347,7 +347,7 @@ def build_trigger_smart_generator_payload(
         "provider": provider,
         "llmModel": llm_model,
         "message": (
-            "I'll hand this off to the Smart Generator so it can build a "
+            "I'll hand this off to the Vibe-Driven Generator so it can build a "
             "customised codebase from your model." + parenthetical + " "
             "If this is the first time you're using it, you'll be asked to "
             "paste your own Anthropic or OpenAI API key — it stays in your "

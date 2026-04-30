@@ -13,6 +13,9 @@ from session_keys import (
     CONFIG_PROMPT_ATTEMPTS,
     PENDING_GENERATOR_CONFIG,
     PENDING_GENERATOR_TYPE,
+    PENDING_SMART_GEN_INSTRUCTIONS,
+    PENDING_SMART_GEN_PROVIDER,
+    SKIP_MISMATCH_CHECK_ONCE,
     UNIFIED_CLASSIFICATION,
 )
 from unified_classifier import (
@@ -42,6 +45,68 @@ def _classification_to_legacy(cls_obj: UnifiedClassification):
         provider=cls_obj.provider,
         reason=cls_obj.reason,
     )
+
+
+def _read_unified_mismatch_info(session: Session) -> Tuple[bool, Optional[str]]:
+    """Read domain_mismatch / suggested_new_domain from the cached
+    unified classification. Returns ``(False, None)`` when the cache is
+    empty or the fields are not populated. Never raises.
+    """
+    cached: Optional[UnifiedClassification] = session.get(UNIFIED_CLASSIFICATION)
+    if cached is None:
+        return False, None
+    is_mismatch = bool(getattr(cached, "domain_mismatch", False))
+    suggested = getattr(cached, "suggested_new_domain", None)
+    return is_mismatch, suggested
+
+
+def _build_mismatch_confirmation(session: Session, classification, suggested: str) -> Dict[str, Any]:
+    """Stash the smart-gen instructions and ask the user how to proceed.
+
+    Triggered when the user's request describes a different domain than
+    their existing class diagram. The user picks one of three quick
+    actions and the agent reroutes accordingly:
+
+    * "Update model + generate" → workflow_body picks up the stashed
+      instructions and runs smart-gen after the new model is built.
+    * "Generate anyway"         → ``SKIP_MISMATCH_CHECK_ONCE`` is set so
+      the next pass through this handler skips this guard.
+    * "Cancel"                  → clears all stashed state and stops.
+    """
+    refined = (classification.refined_instructions or "").strip()
+    provider = classification.provider or "anthropic"
+    session.set(PENDING_SMART_GEN_INSTRUCTIONS, refined)
+    session.set(PENDING_SMART_GEN_PROVIDER, provider)
+
+    return {
+        "action": "assistant_message",
+        "message": (
+            f"Your existing class diagram doesn't match **{suggested}**. "
+            f"Pick one:\n\n"
+            f"• **Update model + generate** — I'll redesign the class "
+            f"diagram for {suggested} first, then run the Vibe-Driven "
+            f"Generator. Your current classes will be replaced.\n"
+            f"• **Generate anyway** — keep your current model; the "
+            f"generator will produce {suggested} code, but your diagram "
+            f"won't match the generated code.\n"
+            f"• **Cancel** — do nothing; you can edit the model yourself "
+            f"first."
+        ),
+        "suggestedActions": [
+            {
+                "label": "Update model + generate",
+                "prompt": f"create a complete {suggested} system and generate the code",
+            },
+            {
+                "label": "Generate anyway",
+                "prompt": "generate anyway with my current model",
+            },
+            {
+                "label": "Cancel",
+                "prompt": "cancel the generation",
+            },
+        ],
+    }
 
 
 def _get_classification_from_cache_or_classify(session, request):
@@ -444,6 +509,28 @@ def _clear_pending_state(session: Session) -> None:
             session.delete(key)
 
 
+def _clear_pending_smart_gen(session: Session) -> None:
+    """Clear stashed smart-gen instructions and the skip-mismatch flag.
+
+    Called after the user resolves a mismatch confirmation (via Generate
+    Anyway, Cancel, or after the workflow_body completes a chained run)
+    so a stale stash doesn't leak into a future unrelated request.
+    """
+    try:
+        session_data = session.get_dictionary()
+    except Exception as exc:
+        logger.debug(f"Session dictionary access failed (best-effort): {exc}")
+        session_data = {}
+
+    for key in (
+        PENDING_SMART_GEN_INSTRUCTIONS,
+        PENDING_SMART_GEN_PROVIDER,
+        SKIP_MISMATCH_CHECK_ONCE,
+    ):
+        if isinstance(session_data, dict) and key in session_data:
+            session.delete(key)
+
+
 def _looks_like_mixed_modeling_and_generation(message: str) -> bool:
     lower = (message or "").lower()
     if not detect_generator_type(lower):
@@ -645,6 +732,42 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     if request.action == "frontend_event":
         return _handle_frontend_event(request)
 
+    # Mismatch-confirmation shortcuts: when the user clicks one of the
+    # quick-action buttons emitted by ``_build_mismatch_confirmation``,
+    # short-circuit the classifier and act on the stashed smart-gen
+    # payload directly. We match on phrase substrings (case-insensitive)
+    # rather than exact equality so paraphrased messages still work.
+    msg_lower = (request.message or "").strip().lower()
+    has_pending_smart_gen = bool(session.get(PENDING_SMART_GEN_INSTRUCTIONS))
+
+    if has_pending_smart_gen and "cancel the generation" in msg_lower:
+        _clear_pending_smart_gen(session)
+        _clear_pending_state(session)
+        return {
+            "action": "assistant_message",
+            "message": "Cancelled. Your model is unchanged.",
+        }
+
+    if has_pending_smart_gen and "generate anyway" in msg_lower:
+        # Skip the mismatch guard and re-run the smart-gen handoff with
+        # the previously-stashed instructions / provider. The user has
+        # explicitly accepted the model/code divergence.
+        from handlers.smart_generation_handler import GenerationClassification
+        stashed_instructions = session.get(PENDING_SMART_GEN_INSTRUCTIONS) or ""
+        stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic"
+        _clear_pending_smart_gen(session)
+        if stashed_instructions.strip():
+            return build_trigger_smart_generator_payload(
+                GenerationClassification(
+                    route="smart",
+                    refined_instructions=stashed_instructions,
+                    provider=stashed_provider,
+                    reason="user chose to generate without updating the model",
+                ),
+                reason_prefix="generating with current model",
+            )
+        # Fall through to normal classification if the stash was empty.
+
     pending_generator, pending_config = _get_pending_state(session)
 
     if pending_generator and pending_generator != _AWAITING_SELECTION:
@@ -671,6 +794,21 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         if classification.route == "smart":
             _clear_pending_state(session)
             session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+
+            # Domain-mismatch guard: when the user's request describes a
+            # different domain than their existing class diagram, refuse
+            # to silently rewrite generated code that won't match their
+            # model. Surface the choice to the user via quick actions.
+            # Honors a one-shot ``SKIP_MISMATCH_CHECK_ONCE`` flag so the
+            # "Generate anyway" path doesn't loop on this question.
+            skip_mismatch = bool(session.get(SKIP_MISMATCH_CHECK_ONCE))
+            if skip_mismatch:
+                session.set(SKIP_MISMATCH_CHECK_ONCE, False)
+            else:
+                is_mismatch, suggested = _read_unified_mismatch_info(session)
+                if is_mismatch and suggested:
+                    return _build_mismatch_confirmation(session, classification, suggested)
+
             return build_trigger_smart_generator_payload(classification)
 
         if classification.route == "modeling":

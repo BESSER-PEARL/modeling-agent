@@ -182,6 +182,33 @@ class UnifiedClassification(BaseModel):
         ),
     )
 
+    # --- Domain-mismatch fields (populated when generation_route='smart') ---
+    # Used to refuse silent code-rewrites when the user's request describes
+    # a different domain than their existing class diagram.
+
+    domain_mismatch: Optional[bool] = Field(
+        default=None,
+        description=(
+            "ONLY when generation_route='smart' AND a class diagram with at "
+            "least one class is present in WORKSPACE CONTEXT. True if the "
+            "user's request describes a domain that DOES NOT match the "
+            "existing class diagram (e.g. classes are 'Team/Player' but the "
+            "request is 'a shoe store'). False if the request fits the "
+            "existing model OR the model is empty/absent. Be conservative: "
+            "if unsure, return False. Leave NULL when route != 'smart' or "
+            "when there's no existing class diagram to compare against."
+        ),
+    )
+    suggested_new_domain: Optional[str] = Field(
+        default=None,
+        description=(
+            "When domain_mismatch=True, a SHORT noun phrase naming the "
+            "domain the user actually wants (e.g. 'a shoe store', 'a hotel "
+            "booking system', 'a blog platform'). Used in the agent's "
+            "follow-up question. Max 80 chars. Leave NULL otherwise."
+        ),
+    )
+
     # --- Modeling-side fields (create / modify / describe) ---
 
     target_diagram_type: Optional[_TARGET_DIAGRAM_TYPES] = Field(
@@ -274,6 +301,19 @@ _SYSTEM_PROMPT = (
     "pydantic classes', 'generate sql'.\n"
     "5. User actually wants a DIAGRAM (not source code) → 'modeling'.\n"
     "6. Greetings / small-talk leaking through → 'other'.\n\n"
+    "=== domain_mismatch (populate when generation_route='smart') ===\n"
+    "If WORKSPACE CONTEXT lists CLASS NAMES from an existing class "
+    "diagram, judge whether those classes describe the SAME DOMAIN as "
+    "the user's request:\n"
+    "  * Classes 'Team', 'Player' + request 'build a shoe store webapp' "
+    "→ domain_mismatch=True, suggested_new_domain='a shoe store'.\n"
+    "  * Classes 'Book', 'Author' + request 'add JWT auth and Docker' "
+    "→ domain_mismatch=False (request is about stack, not domain).\n"
+    "  * No class names present (empty model or non-class diagram only) "
+    "→ domain_mismatch=null.\n"
+    "BE CONSERVATIVE: if the request could be applied on top of the "
+    "existing classes, return False. Only flag True when the domain "
+    "vocabulary clearly does not match.\n\n"
     "=== refined_instructions (populate when generation_route='smart') ===\n"
     "A polished, implementation-focused prompt for the smart generator:\n"
     "  * name the stack explicitly (Rails, PostgreSQL, Devise auth, ...)\n"
@@ -398,11 +438,53 @@ def _build_user_block(request: AssistantRequest) -> str:
                 bits.append(f"{element_count} elements")
             if bits:
                 summary_lines.append("- " + " · ".join(str(b) for b in bits))
+
+    # Extract class names from the active class diagram so the classifier
+    # can detect domain mismatches (e.g. user asks for a shoe store while
+    # the diagram is Team/Player). We only pass class NAMES — attributes
+    # and methods would bloat the prompt and aren't needed for the
+    # mismatch judgement.
+    class_names = _extract_class_names(ctx)
+    if class_names:
+        summary_lines.append(
+            "- existing class names: " + ", ".join(class_names[:30])
+        )
+
     if summary_lines:
         lines.append("")
         lines.append("WORKSPACE CONTEXT:")
         lines.extend(summary_lines)
     return "\n".join(lines)
+
+
+def _extract_class_names(ctx: Any) -> list[str]:
+    """Pull class names from the active ClassDiagram in the project snapshot.
+
+    Returns an empty list when there is no ClassDiagram, the diagram is
+    empty, or the snapshot shape is unexpected. Never raises.
+    """
+    try:
+        diagram = ctx.get_diagram_from_snapshot("ClassDiagram")
+    except Exception:
+        return []
+    if not isinstance(diagram, dict):
+        return []
+    model = diagram.get("model")
+    if not isinstance(model, dict):
+        return []
+    elements = model.get("elements")
+    if not isinstance(elements, dict):
+        return []
+    names: list[str] = []
+    for elem in elements.values():
+        if not isinstance(elem, dict):
+            continue
+        if elem.get("type") not in ("Class", "AbstractClass"):
+            continue
+        name = elem.get("name")
+        if isinstance(name, str) and name.strip():
+            names.append(name.strip())
+    return names
 
 
 def _post_validate(result: UnifiedClassification) -> UnifiedClassification:

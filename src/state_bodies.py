@@ -50,6 +50,8 @@ from session_keys import (
     LAST_MATCHED_INTENT,
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
+    PENDING_SMART_GEN_INSTRUCTIONS,
+    PENDING_SMART_GEN_PROVIDER,
     WORKFLOW_PENDING_GENERATOR,
 )
 from unified_classifier import get_or_classify
@@ -728,13 +730,69 @@ def workflow_body(session: Session):
         warning_list = "\n".join(f"- {w}" for w in validation_result["warnings"])
         warning_msg = f"\n\n**Warnings** (non-blocking):\n{warning_list}"
 
+    # ── Step 3: Trigger code generation ──────────────────────────────
+    # When a previous mismatch-confirmation stashed smart-gen instructions
+    # (the user clicked "Update model + generate"), Step 3 fires the
+    # Vibe-Driven Generator with those instructions instead of the
+    # deterministic generator. The model has just been rebuilt for the
+    # new domain, so the smart-gen run has a coherent starting point.
+    stashed_smartgen = session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+    stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER)
+    if isinstance(stashed_smartgen, str) and stashed_smartgen.strip():
+        reply_message(
+            session,
+            f"Validation **passed** with 0 errors.{warning_msg}\n\n"
+            f"**Step 3/3** — Running the Vibe-Driven Generator on your "
+            f"new model...",
+        )
+        try:
+            from handlers.smart_generation_handler import (
+                GenerationClassification,
+                build_trigger_smart_generator_payload,
+            )
+            from handlers.generation_handler import _clear_pending_smart_gen
+            smart_classification = GenerationClassification(
+                route="smart",
+                refined_instructions=stashed_smartgen,
+                provider=stashed_provider or "anthropic",
+                reason="model rebuilt; resuming smart generation",
+            )
+            response_payload = build_trigger_smart_generator_payload(
+                smart_classification,
+                reason_prefix="model updated, now generating",
+            )
+            _clear_pending_smart_gen(session)
+        except Exception as error:
+            logger.error(f"❌ [Workflow] Smart-gen handoff failed: {error}", exc_info=True)
+            response_payload = {
+                "action": "agent_error",
+                "code": "generation_handler_error",
+                "message": "Failed to hand off to the Vibe-Driven Generator.",
+                "retryable": True,
+            }
+
+        if isinstance(response_payload, dict):
+            original_message = response_payload.get("message", "")
+            response_payload["message"] = (
+                f"{original_message}\n\n"
+                f"**Workflow complete!** Model rebuilt, validated, and the "
+                f"Vibe-Driven Generator is now customising your codebase."
+            )
+            reply_payload(session, response_payload)
+        else:
+            reply_message(
+                session,
+                "Code generation handoff did not return a valid result. "
+                "You can retry by saying *\"generate the code\"*.",
+            )
+        return
+
     reply_message(
         session,
         f"Validation **passed** with 0 errors.{warning_msg}\n\n"
         f"**Step 3/3** — Generating **{target_generator}** code...",
     )
 
-    # ── Step 3: Trigger code generation ──────────────────────────────
     from utilities.request_builders import build_generation_request
 
     generation_request = build_generation_request(
