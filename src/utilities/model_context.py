@@ -520,6 +520,164 @@ def _summarize_quantum_circuit(model: Dict[str, Any], *, max_cols: int = 30) -> 
 
 
 # ---------------------------------------------------------------------------
+# "Is this diagram non-trivial?" — used by describe-model to skip empty
+# / seed-content diagrams so they don't drown out diagrams the user built.
+# ---------------------------------------------------------------------------
+
+
+def _quantum_circuit_is_nontrivial(model: Dict[str, Any]) -> bool:
+    """Decide whether a quantum circuit was deliberately authored by the user.
+
+    The editor often inserts ambient default content (e.g. a few qubits with a
+    handful of single-qubit gates) when a tab is created.  We treat a circuit
+    as trivial unless it has at least one of:
+
+    - more than 3 gate operations total, OR
+    - at least one entangling / multi-qubit gate (control dot + target, SWAP,
+      multi-qubit functional block, etc.), OR
+    - at least one measurement gate (suggests a real experiment), OR
+    - more than 6 occupied columns (a wide circuit is unlikely to be seed).
+
+    A circuit with 0 gates is always trivial.
+    """
+    cols = model.get("cols")
+    if not isinstance(cols, list) or not cols:
+        return False
+
+    gate_total = 0
+    occupied_cols = 0
+    has_control = False
+    has_swap = False
+    has_measurement = False
+    has_multiqubit_func = False
+
+    for col in cols:
+        if not isinstance(col, list):
+            continue
+        col_has_gate = False
+        swaps_in_col = 0
+        controls_in_col = 0
+        targets_in_col = 0
+        for cell in col:
+            if cell == 1 or cell is None:
+                continue
+            symbol = str(cell)
+            col_has_gate = True
+            gate_total += 1
+            if symbol == "•" or symbol == "*":
+                has_control = True
+                controls_in_col += 1
+            elif symbol == "◦":
+                has_control = True
+                controls_in_col += 1
+            elif symbol == "Swap":
+                swaps_in_col += 1
+                has_swap = True
+            elif symbol in {"Measure", "Measure X", "Measure Y"}:
+                has_measurement = True
+            elif symbol.startswith("__FUNC__") or symbol.startswith("<<"):
+                has_multiqubit_func = True
+            else:
+                targets_in_col += 1
+        if col_has_gate:
+            occupied_cols += 1
+        # A column with both controls and targets is an actual entangling op.
+        if controls_in_col >= 1 and targets_in_col >= 1:
+            has_control = True
+        if swaps_in_col >= 2:
+            has_swap = True
+
+    if gate_total == 0:
+        return False
+
+    if has_control or has_swap or has_measurement or has_multiqubit_func:
+        return True
+
+    if gate_total > 3:
+        return True
+
+    if occupied_cols > 6:
+        return True
+
+    return False
+
+
+def is_diagram_nontrivial(model_data: Any, diagram_type: str) -> bool:
+    """Return True if a diagram contains user-authored content worth describing.
+
+    Used by the describe-model flow so empty / seed diagrams are skipped
+    instead of being enumerated as "0 elements" noise.
+
+    Rules (conservative — when in doubt, prefer True):
+
+    - ClassDiagram: at least one user-named class.
+    - StateMachineDiagram / AgentDiagram / ObjectDiagram: at least one
+      element the user added (any element is enough).
+    - GUINoCodeDiagram: at least one page.
+    - QuantumCircuitDiagram: see :func:`_quantum_circuit_is_nontrivial` —
+      filters out the 0-gate / sparse-default circuits the editor seeds.
+    - Unknown types: True if the model dict is non-empty.
+    """
+    if not isinstance(model_data, dict) or not model_data:
+        return False
+
+    if diagram_type == "ClassDiagram":
+        elements = model_data.get("elements")
+        if not isinstance(elements, dict):
+            return False
+        for el in elements.values():
+            if (
+                isinstance(el, dict)
+                and el.get("type") == "Class"
+                and isinstance(el.get("name"), str)
+                and el["name"].strip()
+            ):
+                return True
+        return False
+
+    if diagram_type == "ObjectDiagram":
+        elements = model_data.get("elements")
+        if not isinstance(elements, dict):
+            return False
+        for el in elements.values():
+            if isinstance(el, dict) and el.get("type") == "Object":
+                return True
+        return False
+
+    if diagram_type == "StateMachineDiagram":
+        elements = model_data.get("elements")
+        if not isinstance(elements, dict):
+            return False
+        # Any State element counts; pure initial/final markers without a
+        # named state are seed content.
+        for el in elements.values():
+            if isinstance(el, dict) and el.get("type") == "State":
+                return True
+        return False
+
+    if diagram_type == "AgentDiagram":
+        elements = model_data.get("elements")
+        if not isinstance(elements, dict):
+            return False
+        for el in elements.values():
+            if isinstance(el, dict) and el.get("type") in {
+                "AgentState", "AgentIntent", "AgentBody",
+            }:
+                return True
+        return False
+
+    if diagram_type == "GUINoCodeDiagram":
+        pages = model_data.get("pages")
+        return isinstance(pages, list) and len(pages) > 0
+
+    if diagram_type == "QuantumCircuitDiagram":
+        return _quantum_circuit_is_nontrivial(model_data)
+
+    # Unknown diagram type — be permissive.
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 

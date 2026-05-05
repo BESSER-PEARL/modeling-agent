@@ -42,7 +42,7 @@ from handlers.generation_handler import (
 )
 from handlers.validation_handler import validate_diagram
 from orchestrator import determine_target_diagram_type
-from utilities.model_context import detailed_model_summary
+from utilities.model_context import detailed_model_summary, is_diagram_nontrivial
 from routing.intents import GENERATION_INTENT_NAME
 from session_keys import (
     HAS_GREETED,
@@ -418,13 +418,22 @@ def modeling_help_body(session: Session):
 # ------------------------------------------------------------------
 
 def _build_full_project_summary(request: AssistantRequest) -> str:
-    """Build a detailed summary of ALL diagrams in the project.
+    """Build a detailed summary of all *non-trivial* diagrams in the project.
 
-    Combines the active model (always included with full detail) with
-    every other diagram found in the project snapshot so the LLM can
-    answer cross-diagram questions.
+    Empty diagrams (0 elements / 0 pages / 0 gates) and diagrams that only
+    contain the editor's default seed content are skipped — listing them as
+    "X is empty" drowns out the diagrams the user actually built.  See
+    :func:`utilities.model_context.is_diagram_nontrivial` for the per-type
+    rules.
+
+    The active diagram is always included (even if empty) when the user is
+    looking at it, so questions like "what's in my current diagram?" still
+    get a meaningful answer.  A trailing note records any diagram types that
+    were skipped, so the LLM can mention them in one short sentence.
     """
     sections: list[str] = []
+    described_types: set[str] = set()
+    skipped_types: set[str] = set()
 
     # Project metadata
     snapshot = request.context.project_snapshot
@@ -436,19 +445,30 @@ def _build_full_project_summary(request: AssistantRequest) -> str:
     active_dt = request.context.active_diagram_type or request.diagram_type
     active_model = request.context.active_model or request.current_model
 
-    # Track which diagram types we've already summarised (avoid dupes)
+    # Track which diagram types we've already considered (avoid dupes)
     summarised: set[str] = set()
 
-    # 1. Active diagram — always first, always detailed
-    if isinstance(active_model, dict):
+    # 1. Active diagram — always first.  Include it even if "trivial" so the
+    #    user gets a reply when they're staring at an empty tab and ask
+    #    "what's in this?".  But still record triviality for the closing note.
+    if isinstance(active_model, dict) and active_dt:
         active_info = get_diagram_type_info(active_dt)
-        sections.append(
-            f"### Active diagram: {active_info['name']}\n"
-            + detailed_model_summary(active_model, active_dt)
-        )
+        if is_diagram_nontrivial(active_model, active_dt):
+            sections.append(
+                f"### Active diagram: {active_info['name']}\n"
+                + detailed_model_summary(active_model, active_dt)
+            )
+            described_types.add(active_dt)
+        else:
+            # Empty active diagram — still mention it so the LLM doesn't
+            # silently ignore the tab the user is looking at.
+            sections.append(
+                f"### Active diagram: {active_info['name']}\n"
+                f"(This diagram is empty.)"
+            )
         summarised.add(active_dt)
 
-    # 2. All other diagrams from project snapshot
+    # 2. All other diagrams from project snapshot — filter out trivial ones.
     if isinstance(snapshot, dict):
         diagrams = snapshot.get("diagrams")
         if isinstance(diagrams, dict):
@@ -457,12 +477,21 @@ def _build_full_project_summary(request: AssistantRequest) -> str:
                     continue
                 dt_info = get_diagram_type_info(dt)
                 if isinstance(payload, list):
-                    # Multi-tab: summarise each tab that has a model
+                    # Multi-tab: summarise each tab that has *non-trivial* content
                     tabs_with_model = [
                         d for d in payload
                         if isinstance(d, dict) and isinstance(d.get("model"), dict)
                     ]
-                    for i, tab in enumerate(tabs_with_model):
+                    nontrivial_tabs = [
+                        (i, tab) for i, tab in enumerate(tabs_with_model)
+                        if is_diagram_nontrivial(tab["model"], dt)
+                    ]
+                    if not nontrivial_tabs:
+                        if tabs_with_model:
+                            skipped_types.add(dt_info["name"])
+                        summarised.add(dt)
+                        continue
+                    for i, tab in nontrivial_tabs:
                         model = tab["model"]
                         tab_title = tab.get("title", "").strip()
                         summary = detailed_model_summary(model, dt)
@@ -473,18 +502,41 @@ def _build_full_project_summary(request: AssistantRequest) -> str:
                             elif len(tabs_with_model) > 1:
                                 label = f"{dt_info['name']} (tab {i})"
                             sections.append(f"### {label}\n{summary}")
+                            described_types.add(dt)
+                    # If some tabs were trivial and others weren't, don't
+                    # bother flagging the trivial ones — too noisy.
                     summarised.add(dt)
                 elif isinstance(payload, dict):
                     model = payload.get("model")
                     if not isinstance(model, dict):
+                        summarised.add(dt)
+                        continue
+                    if not is_diagram_nontrivial(model, dt):
+                        skipped_types.add(dt_info["name"])
+                        summarised.add(dt)
                         continue
                     summary = detailed_model_summary(model, dt)
                     if summary:
                         sections.append(f"### {dt_info['name']}\n{summary}")
+                        described_types.add(dt)
                     summarised.add(dt)
 
     if not sections:
         return ""
+
+    # Closing note for the LLM about skipped/empty diagrams.  Only emit it
+    # if at least one diagram WAS described — otherwise the regular "I don't
+    # see any diagrams" path handles the empty-project case.
+    if skipped_types and described_types:
+        skipped_list = sorted(skipped_types)
+        sections.append(
+            "_Note: the following diagram types exist in the project but are "
+            "empty or contain only default seed content, so they were not "
+            "described above: "
+            + ", ".join(skipped_list)
+            + "._"
+        )
+
     return "\n\n".join(sections)
 
 
@@ -520,14 +572,20 @@ def describe_model_body(session: Session):
         "You are an expert assistant for the BESSER Web Modeling Editor. "
         "The user has a project that may contain multiple diagrams "
         "(class, state machine, object, GUI, quantum circuit, agent).\n\n"
-        f"Here is a detailed summary of their full project:\n\n"
+        f"Here is a detailed summary of their project \u2014 note that empty or "
+        f"default-seed diagrams have already been filtered out, so describe "
+        f"ONLY the diagrams listed below:\n\n"
         f"{full_summary}\n\n"
         f"The user asks: \"{request.message}\"\n\n"
         "Answer their question accurately based ONLY on the project data above. "
         "If they ask about a specific diagram type, focus on that one. "
-        "If they ask a general question, consider all diagrams. "
-        "Be specific \u2014 reference class names, attribute names, states, pages, "
-        "gates, relationships, etc. by name.\n\n"
+        "If they ask a general question, consider all diagrams that appear "
+        "in the summary. Be specific \u2014 reference class names, attribute "
+        "names, states, pages, gates, relationships, etc. by name.\n\n"
+        "**Do NOT enumerate empty diagrams.** If the summary above ends with "
+        "a note about diagram types that were filtered out, you may close "
+        "with one short sentence such as *\"(Other diagram types are empty.)\"* "
+        "\u2014 but do not list them one by one.\n\n"
         "**For quantum circuits specifically**: when the user asks to 'describe' "
         "or 'explain' a quantum circuit, do more than just list the gates. "
         "Analyze the circuit and explain:\n"
@@ -537,6 +595,9 @@ def describe_model_body(session: Session):
         "- What the expected output/behavior would be\n"
         "- The role of key gates (e.g., 'H creates superposition', "
         "'CNOT entangles qubits')\n\n"
+        "End with the existing helper line *\"If you want, I can help you "
+        "expand any of these...\"*, but tailor it so it only refers to the "
+        "diagrams you actually described.\n\n"
         "Keep the answer concise and well-formatted with Markdown."
     )
 

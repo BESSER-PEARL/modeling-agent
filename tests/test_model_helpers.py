@@ -1,7 +1,11 @@
 """Tests for model helper utilities."""
 
 import pytest
-from utilities.model_context import compact_model_summary, detailed_model_summary
+from utilities.model_context import (
+    compact_model_summary,
+    detailed_model_summary,
+    is_diagram_nontrivial,
+)
 from utilities.layout_helpers import (
     to_int,
     extract_element_position,
@@ -677,3 +681,126 @@ class TestDetailedModelSummaryFallback:
 
     def test_string_model(self):
         assert "no model data" in detailed_model_summary("not a dict", "ClassDiagram")
+
+
+# ---------------------------------------------------------------------------
+# is_diagram_nontrivial — used by describe-model to filter empty/seed diagrams
+# ---------------------------------------------------------------------------
+
+class TestIsDiagramNontrivial:
+    # ClassDiagram
+    def test_class_diagram_with_named_class_is_nontrivial(self):
+        model = {
+            "elements": {
+                "c1": {"type": "Class", "name": "User"},
+            },
+            "relationships": {},
+        }
+        assert is_diagram_nontrivial(model, "ClassDiagram") is True
+
+    def test_class_diagram_empty_is_trivial(self):
+        assert is_diagram_nontrivial(
+            {"elements": {}, "relationships": {}}, "ClassDiagram"
+        ) is False
+
+    def test_class_diagram_unnamed_class_is_trivial(self):
+        model = {
+            "elements": {"c1": {"type": "Class", "name": "  "}},
+            "relationships": {},
+        }
+        assert is_diagram_nontrivial(model, "ClassDiagram") is False
+
+    # ObjectDiagram
+    def test_object_diagram_with_object_is_nontrivial(self):
+        model = {"elements": {"o1": {"type": "Object", "name": "alice"}}}
+        assert is_diagram_nontrivial(model, "ObjectDiagram") is True
+
+    def test_object_diagram_empty_is_trivial(self):
+        assert is_diagram_nontrivial({"elements": {}}, "ObjectDiagram") is False
+
+    # StateMachineDiagram
+    def test_state_machine_with_state_is_nontrivial(self):
+        model = {"elements": {"s1": {"type": "State", "name": "Idle"}}}
+        assert is_diagram_nontrivial(model, "StateMachineDiagram") is True
+
+    def test_state_machine_only_initial_is_trivial(self):
+        # Only an initial-node marker without a real state = seed content.
+        model = {"elements": {"i1": {"type": "StateInitialNode"}}}
+        assert is_diagram_nontrivial(model, "StateMachineDiagram") is False
+
+    def test_state_machine_empty_is_trivial(self):
+        assert is_diagram_nontrivial(
+            {"elements": {}, "relationships": {}}, "StateMachineDiagram"
+        ) is False
+
+    # AgentDiagram
+    def test_agent_diagram_with_state_is_nontrivial(self):
+        model = {"elements": {"a1": {"type": "AgentState", "name": "Greet"}}}
+        assert is_diagram_nontrivial(model, "AgentDiagram") is True
+
+    def test_agent_diagram_empty_is_trivial(self):
+        assert is_diagram_nontrivial({"elements": {}}, "AgentDiagram") is False
+
+    # GUINoCodeDiagram
+    def test_gui_with_pages_is_nontrivial(self):
+        model = {"pages": [{"name": "Home"}]}
+        assert is_diagram_nontrivial(model, "GUINoCodeDiagram") is True
+
+    def test_gui_without_pages_is_trivial(self):
+        assert is_diagram_nontrivial({"pages": []}, "GUINoCodeDiagram") is False
+        assert is_diagram_nontrivial({}, "GUINoCodeDiagram") is False
+
+    # QuantumCircuitDiagram
+    def test_quantum_circuit_no_gates_is_trivial(self):
+        model = {"qubitCount": 16, "cols": []}
+        assert is_diagram_nontrivial(model, "QuantumCircuitDiagram") is False
+
+    def test_quantum_circuit_three_random_gates_is_trivial(self):
+        # Reproduces the seed-content case described in the bug:
+        # 16 qubits, 3 single-qubit gates, no entanglement, no measurement.
+        model = {
+            "qubitCount": 16,
+            "cols": [
+                ["H"] + [1] * 15,
+                ["X"] + [1] * 15,
+                ["Y"] + [1] * 15,
+            ],
+        }
+        assert is_diagram_nontrivial(model, "QuantumCircuitDiagram") is False
+
+    def test_quantum_circuit_with_cnot_is_nontrivial(self):
+        # A control + target in the same column = real entanglement.
+        model = {
+            "qubitCount": 2,
+            "cols": [
+                ["H", 1],
+                ["•", "X"],
+            ],
+        }
+        assert is_diagram_nontrivial(model, "QuantumCircuitDiagram") is True
+
+    def test_quantum_circuit_with_measurement_is_nontrivial(self):
+        model = {
+            "qubitCount": 1,
+            "cols": [["H"], ["Measure"]],
+        }
+        assert is_diagram_nontrivial(model, "QuantumCircuitDiagram") is True
+
+    def test_quantum_circuit_dense_single_qubit_is_nontrivial(self):
+        # >3 gates total, even single-qubit only, counts as deliberate.
+        model = {
+            "qubitCount": 1,
+            "cols": [["H"], ["X"], ["Y"], ["Z"], ["S"]],
+        }
+        assert is_diagram_nontrivial(model, "QuantumCircuitDiagram") is True
+
+    # Misc
+    def test_non_dict_is_trivial(self):
+        assert is_diagram_nontrivial(None, "ClassDiagram") is False
+        assert is_diagram_nontrivial("nope", "ClassDiagram") is False
+        assert is_diagram_nontrivial({}, "ClassDiagram") is False
+
+    def test_unknown_diagram_type_is_permissive(self):
+        # Unknown types fall through to "True if non-empty dict".
+        assert is_diagram_nontrivial({"foo": "bar"}, "WeirdDiagram") is True
+        assert is_diagram_nontrivial({}, "WeirdDiagram") is False
