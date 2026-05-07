@@ -1,13 +1,15 @@
-"""Tests for model helper utilities."""
+"""Tests for model helper utilities.
+
+The ``to_int`` / ``extract_element_position`` / ``is_primary_layout_element`` /
+``build_layout_anchor_lines`` helpers used to live in
+``utilities.layout_helpers`` and were tested here. That module was removed
+during a refactor and the helpers are not in use anywhere in src/ today
+— so the tests for them are gone too. The remaining tests cover
+``model_context`` and ``model_resolution``, which are still in use.
+"""
 
 import pytest
 from utilities.model_context import compact_model_summary, detailed_model_summary
-from utilities.layout_helpers import (
-    to_int,
-    extract_element_position,
-    is_primary_layout_element,
-    build_layout_anchor_lines,
-)
 from utilities.model_resolution import (
     resolve_target_model,
     resolve_object_reference_diagram,
@@ -46,110 +48,6 @@ class TestCompactModelSummary:
         model = {"cols": [{"gates": []}, {"gates": []}]}
         summary = compact_model_summary(model, "QuantumCircuitDiagram")
         assert "2 circuit" in summary
-
-
-# ---------------------------------------------------------------------------
-# to_int
-# ---------------------------------------------------------------------------
-
-class TestToInt:
-    def test_integer(self):
-        assert to_int(42) == 42
-
-    def test_float(self):
-        assert to_int(3.7) == 4
-
-    def test_string_number(self):
-        assert to_int("100") == 100
-
-    def test_invalid(self):
-        assert to_int("abc") is None
-        assert to_int(None) is None
-
-
-# ---------------------------------------------------------------------------
-# extract_element_position
-# ---------------------------------------------------------------------------
-
-class TestExtractElementPosition:
-    def test_with_bounds(self):
-        element = {"bounds": {"x": 100, "y": 200, "width": 300, "height": 150}}
-        pos = extract_element_position(element)
-        assert pos == {"x": 100, "y": 200, "width": 300, "height": 150}
-
-    def test_with_position(self):
-        element = {"position": {"x": 50, "y": 75}}
-        pos = extract_element_position(element)
-        assert pos["x"] == 50
-        assert pos["y"] == 75
-
-    def test_no_position(self):
-        assert extract_element_position({}) is None
-
-    def test_non_dict(self):
-        assert extract_element_position("not a dict") is None  # type: ignore[arg-type]
-
-
-# ---------------------------------------------------------------------------
-# is_primary_layout_element
-# ---------------------------------------------------------------------------
-
-class TestIsPrimaryLayoutElement:
-    def test_class(self):
-        assert is_primary_layout_element("ClassDiagram", {"type": "Class", "owner": None})
-
-    def test_attribute_is_not_primary(self):
-        assert not is_primary_layout_element("ClassDiagram", {"type": "ClassAttribute", "owner": "cls-1"})
-
-    def test_state(self):
-        assert is_primary_layout_element("StateMachineDiagram", {"type": "State", "owner": None})
-
-    def test_agent_state(self):
-        assert is_primary_layout_element("AgentDiagram", {"type": "AgentState", "owner": None})
-
-    def test_unknown_type_with_owner(self):
-        assert not is_primary_layout_element("ClassDiagram", {"type": "Unknown", "owner": "some-parent"})
-
-    def test_unknown_type_without_owner(self):
-        # Unknown types with a known diagram type: primary_types set is checked first.
-        # "Unknown" is not in the ClassDiagram primary set {"Class"}, so it's filtered out.
-        assert not is_primary_layout_element("ClassDiagram", {"type": "Unknown", "owner": None})
-
-    def test_unknown_diagram_type_without_owner(self):
-        # For an unrecognized diagram type, no primary_types set exists,
-        # so fall through to owner_is_root heuristic.
-        assert is_primary_layout_element("SomeFutureDiagram", {"type": "Unknown", "owner": None})
-
-
-# ---------------------------------------------------------------------------
-# build_layout_anchor_lines
-# ---------------------------------------------------------------------------
-
-class TestBuildLayoutAnchorLines:
-    def test_with_elements(self):
-        lines = build_layout_anchor_lines(MINIMAL_CLASS_MODEL, "ClassDiagram")
-        assert len(lines) == 1
-        assert "User" in lines[0]
-
-    def test_empty_model(self):
-        lines = build_layout_anchor_lines(EMPTY_CLASS_MODEL, "ClassDiagram")
-        assert lines == []
-
-    def test_non_dict(self):
-        assert build_layout_anchor_lines(None, "ClassDiagram") == []
-
-    def test_limit(self):
-        model = {
-            "elements": {
-                f"cls-{i}": {
-                    "type": "Class", "name": f"Class{i}", "owner": None,
-                    "bounds": {"x": i * 100, "y": i * 100, "width": 200, "height": 150},
-                }
-                for i in range(30)
-            }
-        }
-        lines = build_layout_anchor_lines(model, "ClassDiagram", limit=5)
-        assert len(lines) == 5
 
 
 # ---------------------------------------------------------------------------

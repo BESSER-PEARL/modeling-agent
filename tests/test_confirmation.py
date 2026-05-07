@@ -8,24 +8,34 @@ from unittest.mock import MagicMock
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-# Stub out the besser.agent module hierarchy so that importing confirmation
-# does not require the full BESSER framework to be installed.
-_besser = MagicMock()
-for mod_name in [
-    'besser',
-    'besser.agent',
-    'besser.agent.core',
-    'besser.agent.core.session',
-]:
-    sys.modules.setdefault(mod_name, _besser)
+# Optionally stub out the besser.agent / baf module hierarchies when the
+# real packages aren't installed locally. ``setdefault`` is not enough here:
+# it leaves the (mocked) entry in sys.modules for the rest of the pytest
+# run, which poisons later test files that legitimately need the real
+# ``protocol`` / ``session_helpers`` / ``baf.core`` modules.
+#
+# Only inject a stub when the import genuinely fails — that way a developer
+# with the real packages installed gets the real packages, and a developer
+# without them still gets the test to collect.
+def _stub_if_missing(mod_name):
+    try:
+        __import__(mod_name)
+    except ImportError:
+        # Walk the dotted path so that intermediate packages (e.g. ``baf``
+        # for ``baf.core.session``) also exist as importable mock modules.
+        parts = mod_name.split('.')
+        for i in range(1, len(parts) + 1):
+            sub = '.'.join(parts[:i])
+            sys.modules.setdefault(sub, MagicMock())
 
-# Also stub transitive imports from confirmation.py
-for mod_name in [
-    'protocol',
+
+for _name in (
+    'besser.agent.core.session',
+    'baf.core.session',
     'protocol.adapters',
     'session_helpers',
-]:
-    sys.modules.setdefault(mod_name, MagicMock())
+):
+    _stub_if_missing(_name)
 
 from confirmation import (
     keyword_matches,
