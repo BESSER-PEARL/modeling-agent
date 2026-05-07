@@ -237,6 +237,7 @@ class BaseDiagramHandler(ABC):
         'modify_object': 'Updated',
         'add_object': 'Added',
         'add_link': 'Added link to',
+        'add_ocl_constraint': 'Added OCL constraint on',
     }
 
     @staticmethod

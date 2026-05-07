@@ -383,6 +383,16 @@ COMMON ACTIONS:
 ADVANCED ACTIONS (for structural refactoring):
 - extract_class, split_class, merge_classes, promote_attribute, add_enum
 
+OCL CONSTRAINTS (only when the user explicitly asks for an invariant, precondition, or postcondition):
+- add_ocl_constraint — attach an OCL constraint to a class. Set target.className to the anchor class and put the FULL BOCL block in changes.constraint. Optionally include changes.text as a plain-language description that the validator surfaces on failure.
+- Do NOT emit add_ocl_constraint unprompted — only when the user says something like "add a constraint that…", "ensure that…", "the [pre/post]condition is…", "invariant: …", or otherwise asks for OCL.
+- The full BOCL block must include the header AND the body in changes.constraint:
+  * Invariant:    "context Class inv [name]: body"          — e.g. "context Library inv at_least_one_book: self.books->size() > 0"
+  * Precondition: "context Class::method(p: Type) pre: body"  — e.g. "context Account::deposit(amount: Integer) pre: amount > 0"
+  * Postcondition:"context Class::method(p: Type) post: body" — e.g. "context Account::deposit(amount: Integer) post: self.balance >= 0"
+- Use OCL collection operations with arrows (``->``): ``->size()``, ``->isEmpty()``, ``->forAll(x | …)``, ``->exists(x | …)``, ``->select(x | …)``. Use ``self`` to refer to the contextual instance. Use ``and`` / ``or`` / ``not`` / ``implies`` for logical composition.
+- For preconditions and postconditions the operation MUST already exist on the class — if it does not, emit add_method first, then add_ocl_constraint.
+
 CRITICAL — READ CAREFULLY:
 - The CURRENT MODEL is provided below. NEVER re-create anything that already exists.
 - The conversation history is also provided. If it says you JUST created something, it EXISTS. Do NOT re-create it.
@@ -425,7 +435,14 @@ Examples:
 - "create a Priority enum with Low, Medium, High" → add_class isEnumeration=true, className="Priority", attributes=[{name:"Low"},{name:"Medium"},{name:"High"}]
 - "add Critical to the Priority enum" → add_attribute target.className="Priority", changes.name="Critical" (NO type)
 - "add priority attribute to Task" → add_attribute target.className="Task", changes.name="priority", changes.type="Priority"
-- "I also want to store users and books" → multiple add_class entries + add_relationship entries to connect them to existing classes"""
+- "I also want to store users and books" → multiple add_class entries + add_relationship entries to connect them to existing classes
+
+OCL examples (only emit when the user explicitly asks for a constraint/invariant/pre-/postcondition):
+- "add a constraint that a Library always has at least one Book" → add_ocl_constraint with target.className="Library", changes.constraint="context Library inv at_least_one_book: self.books->size() > 0", changes.text="A library always has at least one book"
+- "ensure every Order has a non-empty customer name" → add_ocl_constraint with target.className="Order", changes.constraint="context Order inv customer_name_not_empty: self.customer.name <> ''", changes.text="Order's customer name must not be empty"
+- "the precondition of Account::deposit is amount > 0" → add_ocl_constraint with target.className="Account", changes.constraint="context Account::deposit(amount: Integer) pre: amount > 0", changes.text="Deposit amount must be positive"
+- "after Account::deposit the balance must not be negative" → add_ocl_constraint with target.className="Account", changes.constraint="context Account::deposit(amount: Integer) post: self.balance >= 0", changes.text="Balance is never negative after a deposit"
+- "every Employee's salary must be at least the minimum wage of their department" → add_ocl_constraint with target.className="Employee", changes.constraint="context Employee inv salary_above_minimum: self.salary >= self.department.minimumWage", changes.text="Employee salary must respect the department's minimum wage" """
         )
 
         # Build context from current model using centralized helper

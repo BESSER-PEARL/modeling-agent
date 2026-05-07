@@ -123,6 +123,8 @@ class ClassModificationChanges(BaseModel):
     implementationType: Optional[Literal["none", "code", "bal", "state_machine", "quantum_circuit"]] = Field(default=None, description="Implementation type for method.")
     code: Optional[str] = Field(default=None, description="Python code for method implementation")
     isEnumeration: Optional[bool] = Field(default=None, description="Set enumeration status for class")
+    constraint: Optional[str] = Field(default=None, description="Full BOCL block ('context Class (inv|pre|post) [name]: body') for add_ocl_constraint")
+    text: Optional[str] = Field(default=None, description="Plain-language description surfaced when an OCL constraint fails (used by add_ocl_constraint)")
 
 
 class ClassModification(BaseModel):
@@ -134,6 +136,7 @@ class ClassModification(BaseModel):
         "remove_element",
         "extract_class", "split_class", "merge_classes",
         "promote_attribute", "add_enum",
+        "add_ocl_constraint",
     ] = Field(description="Action to perform.")
     target: ClassModificationTarget
     changes: Optional[ClassModificationChanges] = Field(default=None, description="Changes to apply. Required for all actions except remove_element.")
