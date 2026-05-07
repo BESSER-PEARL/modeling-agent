@@ -679,6 +679,8 @@ User: "generate python code" → [{"type":"generation","generatorType":"python"}
 User: "create a pizza ordering chatbot agent" → [{"type":"model","diagramType":"AgentDiagram","mode":"complete_system","request":"create pizza ordering chatbot agent"}]
 User: "design an e-commerce system, create a gui for it, and generate a web app" → [{"type":"model","diagramType":"ClassDiagram","mode":"complete_system","request":"design e-commerce system"},{"type":"model","diagramType":"GUINoCodeDiagram","mode":"complete_system","request":"create GUI for e-commerce"},{"type":"generation","generatorType":"web_app"}]
 User: "create a quantum circuit with 3 qubits and hadamard gates" → [{"type":"model","diagramType":"QuantumCircuitDiagram","mode":"complete_system","request":"create quantum circuit with 3 qubits and hadamard gates"}]
+User: "add a constraint that a Library always has at least one Book" → [{"type":"model","diagramType":"ClassDiagram","mode":"modify_model","request":"add a constraint that a Library always has at least one Book"}]
+User: "the precondition of Account::deposit is amount > 0" → [{"type":"model","diagramType":"ClassDiagram","mode":"modify_model","request":"the precondition of Account::deposit is amount > 0"}]
 """.strip()
 
 
