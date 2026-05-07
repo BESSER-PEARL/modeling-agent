@@ -391,6 +391,17 @@ class BaseDiagramHandler(ABC):
                 name = self._sanitize_target_name(name)
                 modification_spec['message'] = self._friendly_mod_message(act, name)
 
+        # Surface partial-validation skips so the user knows something was
+        # dropped (otherwise a 4-of-5 batch silently looks like a 4-of-4).
+        skipped = modification_spec.get('_skipped_modifications')
+        if skipped:
+            existing = modification_spec.get('message') or ''
+            note = (
+                f"\n\nNote: I skipped {len(skipped)} part(s) I couldn't "
+                f"parse — the rest were applied."
+            )
+            modification_spec['message'] = (existing + note).strip()
+
         return modification_spec
 
     # ------------------------------------------------------------------
@@ -919,18 +930,48 @@ class BaseDiagramHandler(ABC):
         """Validate a modification response from the LLM.
 
         Supports both single ``modification`` (dict) and batch
-        ``modifications`` (list of dicts).  Raises ``ValueError`` if the
-        shape is invalid.
+        ``modifications`` (list of dicts).
+
+        For a batch, partial failure is tolerated: invalid inner entries
+        are dropped and recorded under ``spec["_skipped_modifications"]``
+        as ``{"index": int, "reason": str}`` so the caller can surface
+        them in the user-facing message. The valid entries proceed.
+        Only when **every** inner entry is invalid does the call raise
+        ``ValueError`` — at that point there is nothing to apply and the
+        outer fallback path is the right place to land.
+
+        For a single ``modification``, any error still raises immediately
+        (there's nothing to keep).
         """
         # Batch path: "modifications" is a list of inner objects
         if 'modifications' in spec and isinstance(spec['modifications'], list):
+            kept: List[Dict[str, Any]] = []
+            skipped: List[Dict[str, Any]] = []
             for i, inner in enumerate(spec['modifications']):
                 inner_errors = validate_spec(
                     inner, MODIFICATION_INNER_REQUIRED,
                     label=f"modifications[{i}]",
                 )
                 if inner_errors:
-                    raise ValueError("; ".join(inner_errors))
+                    reason = "; ".join(inner_errors)
+                    skipped.append({"index": i, "reason": reason})
+                    logger.warning(
+                        f"[{self.get_diagram_type()}] Skipping invalid "
+                        f"modifications[{i}]: {reason}"
+                    )
+                else:
+                    kept.append(inner)
+
+            if not kept:
+                # All entries invalid — keep historical behaviour.
+                joined = " | ".join(s["reason"] for s in skipped)
+                raise ValueError(
+                    f"All {len(skipped)} modification entries were invalid: {joined}"
+                )
+
+            spec['modifications'] = kept
+            if skipped:
+                spec['_skipped_modifications'] = skipped
             return spec
 
         # Single path: "modification" is a dict
