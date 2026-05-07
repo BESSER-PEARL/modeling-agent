@@ -14,11 +14,78 @@ from ..core.base_handler import (
     SYSTEM_CLASS_REQUIRED,
     SYSTEM_CLASS_OPTIONAL,
 )
-from ..core.prompt_fragments import POSITION_DISCLAIMER, REMOVE_ELEMENT_RULE
+from ..core.prompt_fragments import (
+    CHANGES_FIELD_RULE,
+    DELETE_CLASS_CASCADE_RULE,
+    ENUM_RULES_BLOCK,
+    EXACT_NAMES_RULE,
+    MODIFY_CRITICAL_BLOCK,
+    MULTI_MOD_ARRAY_RULE,
+    NAMING_PASCAL_RULE,
+    OCL_CONSTRAINT_BLOCK,
+    OCL_EXAMPLES_BLOCK,
+    POSITION_DISCLAIMER,
+    REMOVE_ELEMENT_RULE,
+    RENAME_CASCADES_RULE,
+)
 from schemas import SingleClassSpec, SystemClassSpec, ClassModificationResponse
 from utilities.model_context import detailed_model_summary
 
 logger = logging.getLogger(__name__)
+
+
+_CLASS_ACTIONS_BLOCK = """COMMON ACTIONS:
+- add_class — create a NEW class with attributes and methods. Put className, attributes, and methods in "changes".
+- modify_class — rename a class or change its properties
+- add_attribute / modify_attribute — add or change an attribute on a class
+- add_method / modify_method — add or change a method on a class
+- add_relationship — create a NEW connection between two classes
+- modify_relationship — change an EXISTING relationship (multiplicity, type, name)
+- remove_element — delete a class, attribute, method, or relationship
+
+ADVANCED ACTIONS (for structural refactoring):
+- extract_class, split_class, merge_classes, promote_attribute, add_enum"""
+
+_CLASS_KEY_RULES_BLOCK = f"""KEY RULES:
+1. {EXACT_NAMES_RULE}
+2. {CHANGES_FIELD_RULE}
+3. {REMOVE_ELEMENT_RULE}
+4. {MULTI_MOD_ARRAY_RULE}
+5. {RENAME_CASCADES_RULE}
+6. {DELETE_CLASS_CASCADE_RULE}
+7. modify_relationship = update existing. add_relationship = brand new.
+8. add_class: set target.className and put className, attributes[], methods[] in "changes".
+9. When adding new classes, add relationships connecting them to existing classes. Include multiplicities. This is critical — isolated classes with no relationships are useless."""
+
+_CLASS_EXAMPLES_BLOCK = """Examples:
+- "rename User to Customer" → ONE modify_class (no relationship changes needed)
+- "add email to User" → add_attribute target.className="User", changes.name="email", changes.type="String"
+- "add name, age, email to Person" → modifications array with 3 add_attribute entries
+- "connect Order to Customer" → add_relationship (Association)
+- "change multiplicity to many" → modify_relationship
+- "delete the Address class" → modifications array: [remove_element with target.className="Address", remove_element with target.relationshipName="..." for EACH relationship involving Address]. You MUST include ALL of these or the class stays on the diagram.
+- "add a User class with name and email" → add_class with target.className="User", changes.className="User", changes.attributes=[{name:"name",type:"String"},{name:"email",type:"String"}]
+- "create an OrderStatus enum with PENDING, SHIPPED, DELIVERED" → add_class with isEnumeration=true, changes.attributes=[{name:"PENDING"},{name:"SHIPPED"},{name:"DELIVERED"}]
+- "add status attribute of type OrderStatus to Order" → add_attribute with target.className="Order", changes.name="status", changes.type="OrderStatus"
+- "create a Priority enum with Low, Medium, High" → add_class isEnumeration=true, className="Priority", attributes=[{name:"Low"},{name:"Medium"},{name:"High"}]
+- "add Critical to the Priority enum" → add_attribute target.className="Priority", changes.name="Critical" (NO type)
+- "add priority attribute to Task" → add_attribute target.className="Task", changes.name="priority", changes.type="Priority"
+- "I also want to store users and books" → multiple add_class entries + add_relationship entries to connect them to existing classes"""
+
+# Built once at import time so the system message is byte-stable across calls
+# — that's what lets OpenAI's prompt cache hit on every modification turn
+# after the first.
+MODIFY_SYSTEM_PROMPT_CLASS = "\n\n".join([
+    "You are a UML modeling expert. Modify an existing class diagram.",
+    _CLASS_ACTIONS_BLOCK,
+    OCL_CONSTRAINT_BLOCK,
+    MODIFY_CRITICAL_BLOCK,
+    NAMING_PASCAL_RULE,
+    _CLASS_KEY_RULES_BLOCK,
+    ENUM_RULES_BLOCK,
+    _CLASS_EXAMPLES_BLOCK,
+    OCL_EXAMPLES_BLOCK,
+])
 
 
 class ClassDiagramHandler(BaseDiagramHandler):
@@ -368,82 +435,7 @@ Examples:
         # Build impact context for modifications that affect relationships
         impact_context = self._build_impact_context(current_model)
 
-        system_prompt = (
-            """You are a UML modeling expert. Modify an existing class diagram.
-
-COMMON ACTIONS:
-- add_class — create a NEW class with attributes and methods. Put className, attributes, and methods in "changes".
-- modify_class — rename a class or change its properties
-- add_attribute / modify_attribute — add or change an attribute on a class
-- add_method / modify_method — add or change a method on a class
-- add_relationship — create a NEW connection between two classes
-- modify_relationship — change an EXISTING relationship (multiplicity, type, name)
-- remove_element — delete a class, attribute, method, or relationship
-
-ADVANCED ACTIONS (for structural refactoring):
-- extract_class, split_class, merge_classes, promote_attribute, add_enum
-
-OCL CONSTRAINTS (only when the user explicitly asks for an invariant, precondition, or postcondition):
-- add_ocl_constraint — attach an OCL constraint to a class. Set target.className to the anchor class and put the FULL BOCL block in changes.constraint. Optionally include changes.text as a plain-language description that the validator surfaces on failure.
-- Do NOT emit add_ocl_constraint unprompted — only when the user says something like "add a constraint that…", "ensure that…", "the [pre/post]condition is…", "invariant: …", or otherwise asks for OCL.
-- The full BOCL block must include the header AND the body in changes.constraint:
-  * Invariant:    "context Class inv [name]: body"          — e.g. "context Library inv at_least_one_book: self.books->size() > 0"
-  * Precondition: "context Class::method(p: Type) pre: body"  — e.g. "context Account::deposit(amount: Integer) pre: amount > 0"
-  * Postcondition:"context Class::method(p: Type) post: body" — e.g. "context Account::deposit(amount: Integer) post: self.balance >= 0"
-- Use OCL collection operations with arrows (``->``): ``->size()``, ``->isEmpty()``, ``->forAll(x | …)``, ``->exists(x | …)``, ``->select(x | …)``. Use ``self`` to refer to the contextual instance. Use ``and`` / ``or`` / ``not`` / ``implies`` for logical composition.
-- For preconditions and postconditions the operation MUST already exist on the class — if it does not, emit add_method first, then add_ocl_constraint.
-
-CRITICAL — READ CAREFULLY:
-- The CURRENT MODEL is provided below. NEVER re-create anything that already exists.
-- The conversation history is also provided. If it says you JUST created something, it EXISTS. Do NOT re-create it.
-- ONLY output modifications for what the user asks RIGHT NOW. Never repeat past operations.
-- If the user's message is short/ambiguous (e.g., "ok and X?", "also Y"), interpret it as ADDING to the most recently discussed element.
-
-NAMING: Class names MUST be exactly ONE word in PascalCase: "User", "Book", "Order", "Payment".
-NEVER concatenate words like "UserLibraryUser", "BookReading", "OrderPayment". Just "User", "Reading", "Payment".
-
-KEY RULES:
-1. Use exact names from the current model in "target".
-2. Put what should change in "changes". Only include fields that differ.
-3. """
-            + REMOVE_ELEMENT_RULE
-            + """
-4. Multiple changes → use "modifications" array.
-5. RENAME: single modify_class only. Relationships update automatically.
-6. DELETE a class: you MUST include remove_element entries for the class AND for EVERY relationship connected to it. If you only mention the removal in your message but don't include the remove_element actions, the class WILL NOT be removed. Example: to delete "Address" with 2 relationships → 3 remove_element entries (1 for the class + 2 for relationships).
-7. modify_relationship = update existing. add_relationship = brand new.
-8. add_class: set target.className and put className, attributes[], methods[] in "changes".
-9. When adding new classes, add relationships connecting them to existing classes. Include multiplicities. This is critical — isolated classes with no relationships are useless.
-
-ENUMERATION RULES:
-- Create enum: add_class with isEnumeration=true. Enum values are attributes with name only (NO type field).
-- Add value to EXISTING enum: add_attribute with target.className set to THE ENUM NAME (not another class).
-  Example: if "Priority" enum exists and user says "add Critical" → add_attribute with target.className="Priority", changes.name="Critical" (NO type).
-- Use enum as attribute type: add_attribute with changes.type set to the enum's PascalCase name.
-  Example: add_attribute with target.className="Task", changes.name="priority", changes.type="Priority".
-
-Examples:
-- "rename User to Customer" → ONE modify_class (no relationship changes needed)
-- "add email to User" → add_attribute target.className="User", changes.name="email", changes.type="String"
-- "add name, age, email to Person" → modifications array with 3 add_attribute entries
-- "connect Order to Customer" → add_relationship (Association)
-- "change multiplicity to many" → modify_relationship
-- "delete the Address class" → modifications array: [remove_element with target.className="Address", remove_element with target.relationshipName="..." for EACH relationship involving Address]. You MUST include ALL of these or the class stays on the diagram.
-- "add a User class with name and email" → add_class with target.className="User", changes.className="User", changes.attributes=[{name:"name",type:"String"},{name:"email",type:"String"}]
-- "create an OrderStatus enum with PENDING, SHIPPED, DELIVERED" → add_class with isEnumeration=true, changes.attributes=[{name:"PENDING"},{name:"SHIPPED"},{name:"DELIVERED"}]
-- "add status attribute of type OrderStatus to Order" → add_attribute with target.className="Order", changes.name="status", changes.type="OrderStatus"
-- "create a Priority enum with Low, Medium, High" → add_class isEnumeration=true, className="Priority", attributes=[{name:"Low"},{name:"Medium"},{name:"High"}]
-- "add Critical to the Priority enum" → add_attribute target.className="Priority", changes.name="Critical" (NO type)
-- "add priority attribute to Task" → add_attribute target.className="Task", changes.name="priority", changes.type="Priority"
-- "I also want to store users and books" → multiple add_class entries + add_relationship entries to connect them to existing classes
-
-OCL examples (only emit when the user explicitly asks for a constraint/invariant/pre-/postcondition):
-- "add a constraint that a Library always has at least one Book" → add_ocl_constraint with target.className="Library", changes.constraint="context Library inv at_least_one_book: self.books->size() > 0", changes.text="A library always has at least one book"
-- "ensure every Order has a non-empty customer name" → add_ocl_constraint with target.className="Order", changes.constraint="context Order inv customer_name_not_empty: self.customer.name <> ''", changes.text="Order's customer name must not be empty"
-- "the precondition of Account::deposit is amount > 0" → add_ocl_constraint with target.className="Account", changes.constraint="context Account::deposit(amount: Integer) pre: amount > 0", changes.text="Deposit amount must be positive"
-- "after Account::deposit the balance must not be negative" → add_ocl_constraint with target.className="Account", changes.constraint="context Account::deposit(amount: Integer) post: self.balance >= 0", changes.text="Balance is never negative after a deposit"
-- "every Employee's salary must be at least the minimum wage of their department" → add_ocl_constraint with target.className="Employee", changes.constraint="context Employee inv salary_above_minimum: self.salary >= self.department.minimumWage", changes.text="Employee salary must respect the department's minimum wage" """
-        )
+        system_prompt = MODIFY_SYSTEM_PROMPT_CLASS
 
         # Build context from current model using centralized helper
         context_block = ''
@@ -457,11 +449,9 @@ OCL examples (only emit when the user explicitly asks for a constraint/invariant
             context_block += f"\n\n{impact_context}"
 
         user_prompt = f"Modify the class diagram: {user_request}{context_block}"
-        full_prompt = f"{system_prompt}\n\nUser Request: {user_prompt}"
 
         logger.info(f"[ClassDiagram] generate_modification called with: {user_request!r}")
         logger.debug(f"[ClassDiagram] Modification context block length: {len(context_block)} chars")
-        logger.debug(f"[ClassDiagram] Full modification prompt length: {len(full_prompt)} chars")
 
         try:
             def _strip_spurious_relationship_mods(mod_list):
@@ -548,7 +538,7 @@ OCL examples (only emit when the user explicitly asks for a constraint/invariant
                 return spec
 
             modification_spec = self._execute_modification(
-                full_prompt, "", ClassModificationResponse,
+                user_prompt, system_prompt, ClassModificationResponse,
                 post_processor=_strip_spurious_relationship_mods,
                 spec_processor=_expand_refactoring,
             )

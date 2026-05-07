@@ -7,12 +7,42 @@ from typing import Dict, Any, List, Optional
 import logging
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
-from ..core.prompt_fragments import POSITION_DISCLAIMER
+from ..core.prompt_fragments import (
+    EXACT_NAMES_RULE,
+    MULTI_MOD_ARRAY_RULE,
+    POSITION_DISCLAIMER,
+)
 from schemas import AgentSingleElementSpec, SystemAgentSpec, AgentModificationResponse
 from utilities.model_context import detailed_model_summary
 
 # Get logger
 logger = logging.getLogger(__name__)
+
+
+_AGENT_ACTIONS_BLOCK = """AVAILABLE ACTIONS:
+- add_state: Create a new state. Set target.stateName, put replies [{text, replyType}] in changes.
+- add_intent: Create a new intent. Set target.intentName, put trainingPhrases ["phrase1","phrase2","phrase3"] in changes.
+- modify_state / modify_intent: Rename elements (set changes.name).
+- add_transition: Connect states (set target.sourceStateName, target.targetStateName, changes.condition, changes.intentName).
+- remove_transition: Disconnect states.
+- add_state_body: Add reply text to a state (changes.text, changes.replyType).
+- add_intent_training_phrase: Add example phrase to intent (changes.trainingPhrase).
+- remove_element: Delete a state or intent.
+- add_rag_element: Create a RAG knowledge base element. Set target.name to the KB name."""
+
+_AGENT_RULES_BLOCK = f"""RULES:
+1. For transitions, "condition" is usually "when_intent_matched" with an "intentName".
+2. {EXACT_NAMES_RULE}
+3. {MULTI_MOD_ARRAY_RULE}
+4. replyType is "text" for scripted replies, "llm" for AI-generated.
+5. Example: "add a welcome state" → add_state with target.stateName="welcomeState", changes.replies=[{{text:"Welcome!", replyType:"text"}}]
+6. Example: "add a greeting intent" → add_intent with target.intentName="GreetingIntent", changes.trainingPhrases=["hello","hi","hey there"]"""
+
+MODIFY_SYSTEM_PROMPT_AGENT = "\n\n".join([
+    "You are a conversational agent modeling expert. The user wants to modify an agent diagram.",
+    _AGENT_ACTIONS_BLOCK,
+    _AGENT_RULES_BLOCK,
+])
 
 
 class AgentDiagramHandler(BaseDiagramHandler):
@@ -502,26 +532,7 @@ IMPORTANT RULES:
     def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate modifications for existing agent diagram elements"""
         
-        system_prompt = """You are a conversational agent modeling expert. The user wants to modify an agent diagram.
-
-AVAILABLE ACTIONS:
-- add_state: Create a new state. Set target.stateName, put replies [{text, replyType}] in changes.
-- add_intent: Create a new intent. Set target.intentName, put trainingPhrases ["phrase1","phrase2","phrase3"] in changes.
-- modify_state / modify_intent: Rename elements (set changes.name).
-- add_transition: Connect states (set target.sourceStateName, target.targetStateName, changes.condition, changes.intentName).
-- remove_transition: Disconnect states.
-- add_state_body: Add reply text to a state (changes.text, changes.replyType).
-- add_intent_training_phrase: Add example phrase to intent (changes.trainingPhrase).
-- remove_element: Delete a state or intent.
-- add_rag_element: Create a RAG knowledge base element. Set target.name to the KB name.
-
-RULES:
-1. For transitions, "condition" is usually "when_intent_matched" with an "intentName".
-2. For existing elements, use exact names from the current model.
-3. Multiple changes → return multiple modification objects in the list.
-4. replyType is "text" for scripted replies, "llm" for AI-generated.
-5. Example: "add a welcome state" → add_state with target.stateName="welcomeState", changes.replies=[{text:"Welcome!", replyType:"text"}]
-6. Example: "add a greeting intent" → add_intent with target.intentName="GreetingIntent", changes.trainingPhrases=["hello","hi","hey there"]"""
+        system_prompt = MODIFY_SYSTEM_PROMPT_AGENT
 
         # Build context from current model using centralized summariser
         context_block = ''
