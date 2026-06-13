@@ -63,6 +63,15 @@ from .quantum_circuit import (
     SystemQuantumCircuitSpec,
     QuantumModificationSpec,
 )
+from .bpmn import (
+    BPMNNodeSpec,
+    BPMNFlowSpec,
+    SystemBPMNSpec,
+    BPMNModificationTarget,
+    BPMNModificationChanges,
+    BPMNModification,
+    BPMNModificationResponse,
+)
 
 __all__ = [
     # Class Diagram
@@ -89,4 +98,8 @@ __all__ = [
     # Quantum Circuit
     "QuantumOperationSpec", "SingleQuantumGateSpec", "SystemQuantumCircuitSpec",
     "QuantumModificationSpec",
+    # BPMN
+    "BPMNNodeSpec", "BPMNFlowSpec", "SystemBPMNSpec",
+    "BPMNModificationTarget", "BPMNModificationChanges",
+    "BPMNModification", "BPMNModificationResponse",
 ]

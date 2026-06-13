@@ -238,6 +238,12 @@ class BaseDiagramHandler(ABC):
         'add_object': 'Added',
         'add_link': 'Added link to',
         'add_ocl_constraint': 'Added OCL constraint on',
+        'add_task': 'Added',
+        'add_gateway': 'Added',
+        'add_event': 'Added',
+        'add_flow': 'Added flow to',
+        'modify_node': 'Updated',
+        'remove_flow': 'Removed flow from',
     }
 
     @staticmethod
@@ -269,7 +275,10 @@ class BaseDiagramHandler(ABC):
         an attribute/method name are present, return something like
         ``"attribute gender from Shoe"`` instead of just ``"Shoe"``.
         """
-        class_name = target.get('className') or target.get('stateName') or target.get('objectName')
+        class_name = (
+            target.get('className') or target.get('stateName')
+            or target.get('objectName') or target.get('nodeName')
+        )
         attr_name = target.get('attributeName')
         method_name = target.get('methodName')
         rel_source = target.get('sourceClass')
@@ -546,6 +555,7 @@ class BaseDiagramHandler(ABC):
         "ObjectModificationResponse",
         "StateMachineModificationResponse", "GUIModificationSpec",
         "QuantumModificationSpec", "AgentModificationResponse",
+        "BPMNModificationResponse",
     }
     _SMALL_OUTPUT_MAX_TOKENS = LLM_MAX_TOKENS_SMALL
     _LARGE_OUTPUT_MAX_TOKENS = LLM_MAX_TOKENS_LARGE

@@ -18,6 +18,12 @@ KEYWORD_TARGETS = [
     ("state machine", "StateMachineDiagram"),
     ("statemachine", "StateMachineDiagram"),
     ("state diagram", "StateMachineDiagram"),
+    # BPMN
+    ("bpmn", "BPMN"),
+    ("business process", "BPMN"),
+    ("process diagram", "BPMN"),
+    ("process model", "BPMN"),
+    ("workflow diagram", "BPMN"),
     # Agent
     ("agent diagram", "AgentDiagram"),
     ("agent model", "AgentDiagram"),
@@ -79,6 +85,14 @@ _IMPLICIT_PATTERNS: List[Tuple[str, re.Pattern]] = [
     ("ObjectDiagram", re.compile(
         r"\b(?:object\s*instances?|instances?\s+of|runtime\s+objects?|instances)\b", re.I)),
 
+    # ── BPMN (business-process vocabulary — check before State Machine since
+    #    "process" appears in both) ──
+    ("BPMN", re.compile(
+        r"\b(?:bpmn|business\s+process(?:es)?|process\s+(?:diagram|model|flow)"
+        r"|(?:gateway|sequence\s+flow|swimlane|pool)s?"
+        r"|(?:create|model|design|draw)\b.{0,30}\bprocess\b.{0,30}\b(?:for|to|that|of)\b)\b",
+        re.I)),
+
     # ── State Machine (requires state-specific vocabulary) ──
     # Either a strong standalone signal (lifecycle, workflow state, transition)
     # or "state(s)" co-occurring with transition/flow/event/process.
@@ -129,6 +143,7 @@ FALLBACK_PRIORITY: Tuple[str, ...] = (
     "AgentDiagram",
     "GUINoCodeDiagram",
     "QuantumCircuitDiagram",
+    "BPMN",
 )
 
 

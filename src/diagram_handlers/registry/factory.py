@@ -9,6 +9,7 @@ from typing import Dict, Optional
 
 from ..core.base_handler import BaseDiagramHandler
 from ..types.agent_diagram_handler import AgentDiagramHandler
+from ..types.bpmn_diagram_handler import BPMNDiagramHandler
 from ..types.class_diagram_handler import ClassDiagramHandler
 from ..types.gui_nocode_diagram_handler import GUINoCodeDiagramHandler
 from ..types.object_diagram_handler import ObjectDiagramHandler
@@ -22,6 +23,7 @@ HANDLER_CLASSES = (
     AgentDiagramHandler,
     GUINoCodeDiagramHandler,
     QuantumCircuitDiagramHandler,
+    BPMNDiagramHandler,
 )
 
 
