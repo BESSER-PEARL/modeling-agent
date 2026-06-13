@@ -43,7 +43,10 @@ modify_node action. If no entry in the listing matches the user's description (b
 - Set elementFound: false
 - Set modifications: [] (empty — do NOT substitute a different element)
 - Set message to explain what was not found, e.g.: "I couldn't find an element named 'Buy Groceries' in this diagram. Current nodes are: Document Review Started, Review by Reviewer 1, …"
-Partial matches are valid (e.g. "Reviewer 1" matching "Review by Reviewer 1"). Only set elementFound: false when there is genuinely no match."""
+Partial matches are valid (e.g. "Reviewer 1" matching "Review by Reviewer 1"). Only set elementFound: false when there is genuinely no match.
+
+If the user says 'undo', 'undo that', 'revert', or similar, do not emit any modifications. Reply with modifications: [], elementFound: false, 
+and set message to: 'To undo, use Ctrl+Z or the undo button in the editor toolbar.'"""
 
 
 class BPMNDiagramHandler(BaseDiagramHandler):
