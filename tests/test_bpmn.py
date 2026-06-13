@@ -99,6 +99,119 @@ def test_bpmn_model_summary_flow_uses_ids():
     assert "Flow:" in summary
 
 
+def test_bpmn_mod_message_add_named_task():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    h = BPMNDiagramHandler(None)
+    spec = {
+        "modification": {
+            "action": "add_task",
+            "target": {"nodeName": "Send Invoice"},
+            "changes": {"taskType": "send"},
+        }
+    }
+    msg = h._bpmn_mod_message(spec, None)
+    assert "Send Invoice" in msg
+    assert "Added" in msg
+
+
+def test_bpmn_mod_message_add_unnamed_gateway_falls_back_to_type():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    h = BPMNDiagramHandler(None)
+    spec = {
+        "modification": {
+            "action": "add_gateway",
+            "target": {"nodeName": ""},
+            "changes": {"gatewayType": "parallel"},
+        }
+    }
+    msg = h._bpmn_mod_message(spec, None)
+    assert "Parallel Gateway" in msg
+
+
+def test_bpmn_mod_message_remove_element_uses_context():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    h = BPMNDiagramHandler(None)
+    model = {
+        "elements": {
+            "uuid-gw-01": {"type": "BPMNGateway", "name": "", "gatewayType": "parallel"},
+        }
+    }
+    spec = {
+        "modification": {
+            "action": "remove_element",
+            "target": {"nodeId": "uuid-gw-01", "nodeName": None},
+            "changes": None,
+        }
+    }
+    msg = h._bpmn_mod_message(spec, model)
+    assert "Parallel Gateway" in msg
+    assert "Removed" in msg
+    assert "(unnamed)" not in msg
+
+
+def test_bpmn_mod_message_remove_two_unnamed_gateways_gets_ordinals():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    h = BPMNDiagramHandler(None)
+    model = {
+        "elements": {
+            "uuid-gw-01": {"type": "BPMNGateway", "name": "", "gatewayType": "parallel"},
+            "uuid-gw-02": {"type": "BPMNGateway", "name": "", "gatewayType": "parallel"},
+        }
+    }
+    spec = {
+        "modifications": [
+            {"action": "remove_element", "target": {"nodeId": "uuid-gw-01"}, "changes": None},
+            {"action": "remove_element", "target": {"nodeId": "uuid-gw-02"}, "changes": None},
+        ]
+    }
+    msg = h._bpmn_mod_message(spec, model)
+    assert "Parallel Gateway 1" in msg
+    assert "Parallel Gateway 2" in msg
+
+
+def test_bpmn_mod_message_add_flow_shows_arrow():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    h = BPMNDiagramHandler(None)
+    model = {
+        "elements": {
+            "task-01": {"type": "BPMNTask", "name": "Ship Order", "taskType": "default"},
+            "task-02": {"type": "BPMNTask", "name": "Send Invoice", "taskType": "send"},
+        }
+    }
+    spec = {
+        "modification": {
+            "action": "add_flow",
+            "target": {},
+            "changes": {"source": "task-01", "target": "task-02"},
+        }
+    }
+    msg = h._bpmn_mod_message(spec, model)
+    assert "Ship Order" in msg
+    assert "Send Invoice" in msg
+    assert "→" in msg
+
+
+def test_bpmn_mod_message_modify_node_rename():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    h = BPMNDiagramHandler(None)
+    model = {
+        "elements": {
+            "task-01": {"type": "BPMNTask", "name": "Check Inventory", "taskType": "default"},
+        }
+    }
+    spec = {
+        "modification": {
+            "action": "modify_node",
+            "target": {"nodeId": "task-01", "nodeName": "Check Inventory"},
+            "changes": {"name": "Verify Stock"},
+        }
+    }
+    msg = h._bpmn_mod_message(spec, model)
+    assert "Check Inventory" in msg
+    assert "Verify Stock" in msg
+    assert "Renamed" in msg
+
+
 def test_bpmn_suggestions_have_nonempty_prompts():
     from suggestions import get_suggested_actions
     actions = get_suggested_actions("BPMN", "complete_system", [])
