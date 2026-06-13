@@ -180,6 +180,20 @@ class BPMNModification(BaseModel):
 
 class BPMNModificationResponse(BaseModel):
     modifications: List[BPMNModification] = Field(
-        min_length=1,
-        description="List of modifications to apply to the process.",
+        default_factory=list,
+        description="List of modifications to apply to the process. Empty when elementFound is false.",
+    )
+    message: str = Field(
+        description=(
+            "Human-readable summary of the change. "
+            "When elementFound is false, explain which element was not found and list the current nodes."
+        ),
+    )
+    elementFound: bool = Field(
+        default=True,
+        description=(
+            "Set to false when a remove_element or modify_node action cannot be matched "
+            "to any element in the current context listing. "
+            "When false, modifications must be empty."
+        ),
     )

@@ -365,6 +365,16 @@ class BaseDiagramHandler(ABC):
         parsed = self.predict_structured(
             user_prompt, response_schema, system_prompt=system_prompt,
         )
+
+        # Element-not-found short-circuit (used by BPMN and compatible schemas).
+        # When the LLM signals the target element doesn't exist, surface its
+        # explanation as a plain text reply rather than attempting an empty update.
+        if not getattr(parsed, 'elementFound', True):
+            return {
+                "action": "assistant_message",
+                "message": getattr(parsed, 'message', 'The requested element was not found.'),
+            }
+
         mod_list = parsed.model_dump()["modifications"]
 
         # Handler-specific cleanup of the raw modification list

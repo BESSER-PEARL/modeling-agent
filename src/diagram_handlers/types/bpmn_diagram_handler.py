@@ -39,9 +39,11 @@ MODIFICATION RULES:
 9. For NAMED nodes you may use the display name. For UNNAMED nodes (no name shown before the type) you MUST use the exact id from [id].
 
 When the user asks to remove or modify an element, always verify the element exists in the current context listing before emitting any remove_element or
-modify_node action. If no entry in the listing matches the user's description (by name or id), emit "modifications": [] and set message to explain the
-element was not found — for example: "I couldn't find an element named 'Buy Property' in this diagram. The current nodes are: [list them]." Never remove
-or modify a different element as a substitute."""
+modify_node action. If no entry in the listing matches the user's description (by name or id):
+- Set elementFound: false
+- Set modifications: [] (empty — do NOT substitute a different element)
+- Set message to explain what was not found, e.g.: "I couldn't find an element named 'Buy Groceries' in this diagram. Current nodes are: Document Review Started, Review by Reviewer 1, …"
+Partial matches are valid (e.g. "Reviewer 1" matching "Review by Reviewer 1"). Only set elementFound: false when there is genuinely no match."""
 
 
 class BPMNDiagramHandler(BaseDiagramHandler):
@@ -199,7 +201,8 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows."""
             result = self._execute_modification(
                 user_prompt, system_prompt, BPMNModificationResponse,
             )
-            result["message"] = self._bpmn_mod_message(result, current_model)
+            if result.get("action") != "assistant_message":
+                result["message"] = self._bpmn_mod_message(result, current_model)
             return result
         except LLMPredictionError as exc:
             logger.error(f"[BPMN] generate_modification LLM FAILED: {exc}")
