@@ -10,6 +10,7 @@ import logging
 from baf.core.session import Session
 
 import agent_context as ctx
+from model_config import MODEL_GENERATION_SMALL
 from protocol.types import AssistantRequest
 from session_helpers import reply_payload
 from model_utils import model_has_elements
@@ -35,10 +36,13 @@ def handle_file_attachments(session: Session, request: AssistantRequest) -> bool
             f"[FileConversion] Processing attachment: {attachment.filename} "
             f"({attachment.mime_type}, {len(attachment.content_b64)} b64 chars)"
         )
+        # Text-path conversions produce a full diagram model → SMALL
+        # generation tier instead of the classifier default (model_config).
+        _predict_json = ctx.gpt_predict_json
         result = convert_file_to_diagram_spec(
             file_content_b64=attachment.content_b64,
             filename=attachment.filename,
-            llm_predict=ctx.gpt_predict_json,
+            llm_predict=lambda prompt: _predict_json(prompt, model=MODEL_GENERATION_SMALL),
             openai_api_key=openai_key,
         )
 

@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from baf import nlp
 from baf.core.agent import Agent
-from baf.nlp.intent_classifier.intent_classifier_configuration import LLMIntentClassifierConfiguration
+from baf.nlp.intent_classifier.intent_classifier_configuration import SimpleIntentClassifierConfiguration
 from baf.nlp.llm.llm_openai_api import LLMOpenAI
 from baf.nlp.speech2text.openai_speech2text import OpenAISpeech2Text
 
@@ -24,6 +24,7 @@ from agent_config import (
     LLM_MAX_TOKENS_TEXT,
     CONVERSATION_HISTORY_DEPTH,
 )
+from model_config import MODEL_CLASSIFIER, MODEL_EMBEDDINGS
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +40,13 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     # the framework validates) to avoid accidental context bloat if .chat()
     # is ever invoked.  Conversation context is injected explicitly in
     # execution.py via the ConversationMemory module.
+    #
+    # The default LLM is the CLASSIFIER tier (cheap routing/extraction);
+    # generation-quality calls override the model per call site via the
+    # ``model=`` plumbing in base_handler / llm.provider (see model_config).
     gpt = LLMOpenAI(
         agent=agent,
-        name='gpt-4.1-mini',
+        name=MODEL_CLASSIFIER,
         parameters={
             'temperature': LLM_TEMPERATURE,
             'max_completion_tokens': LLM_MAX_TOKENS_LARGE,
@@ -56,27 +61,50 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
         'response_format': {'type': 'json_object'},
     }
 
-    def gpt_predict_json(prompt: str) -> str:
-        """Call gpt.predict with JSON-object response_format."""
+    def gpt_predict_json(prompt: str, model: Optional[str] = None) -> str:
+        """Call gpt.predict with JSON-object response_format.
+
+        ``model`` optionally overrides the default classifier-tier model
+        for call sites that warrant a stronger one (e.g. the file-conversion
+        text path). BAF's ``predict`` cannot vary the model per call, so
+        the override goes through the OpenAI client directly.
+        """
+        client = getattr(gpt, 'client', None)
+        if model and client is not None and hasattr(client, 'chat'):
+            completion = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                **_gpt_json_params,
+            )
+            usage = getattr(completion, 'usage', None)
+            if usage is not None:
+                try:
+                    from tracking import get_tracker
+                    get_tracker().record_from_usage(usage, model=model)
+                except Exception as exc:
+                    logger.debug(f"Token tracking failed (best-effort): {exc}")
+            if not completion.choices:
+                return ""
+            return completion.choices[0].message.content or ""
         return gpt.predict(prompt, parameters=_gpt_json_params)
 
     # Free-text LLM (help, greetings, RAG fallback) — JSON mode would break.
     # IMPORTANT: The BESSER framework registers LLMs by name in a dict, and
     # also uses name as the OpenAI model parameter.  Two LLMs with the same
     # name would overwrite each other, leaving the first un-initialised.
-    # We register under a unique key ('gpt-4.1-mini-text') and immediately
+    # We register under a unique key ('<model>-text') and immediately
     # correct the model name back to the real API model so OpenAI calls work.
     gpt_text = LLMOpenAI(
         agent=agent,
-        name='gpt-4.1-mini-text',
+        name=f'{MODEL_CLASSIFIER}-text',
         parameters={
             'temperature': LLM_TEXT_TEMPERATURE,
             'max_completion_tokens': LLM_MAX_TOKENS_TEXT,
         },
         num_previous_messages=20,
     )
-    # Fix the model name used in API calls (registry key stays 'gpt-4.1-mini-text')
-    gpt_text.name = 'gpt-4.1-mini'
+    # Fix the model name used in API calls (registry key stays '<model>-text')
+    gpt_text.name = MODEL_CLASSIFIER
 
     if gpt is None:
         raise RuntimeError("LLM initialization returned None")
@@ -84,14 +112,14 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     # Initialize the LLM provider abstraction (for structured outputs, streaming)
     try:
         from llm import get_provider
-        get_provider(gpt, model_name='gpt-4.1-mini')
+        get_provider(gpt, model_name=MODEL_CLASSIFIER)
         logger.info("LLM provider abstraction initialized")
     except Exception as exc:
         logger.warning(f"LLM provider init failed (non-critical): {exc}")
 
     logger.info(
-        f"LLMs initialized: gpt-4.1-mini (json, t={LLM_TEMPERATURE}), "
-        f"gpt-4.1-mini (text, t={LLM_TEXT_TEMPERATURE})"
+        f"LLMs initialized: {MODEL_CLASSIFIER} (json, t={LLM_TEMPERATURE}), "
+        f"{MODEL_CLASSIFIER} (text, t={LLM_TEXT_TEMPERATURE})"
     )
     return gpt, gpt_text, gpt_predict_json
 
@@ -110,8 +138,11 @@ def init_rag(agent: Agent):
 
     try:
         chroma_kwargs: Dict[str, Any] = {
+            # Embedding model pinned explicitly — a silent langchain/OpenAI
+            # default change would invalidate the persisted vector store.
             'embedding_function': OpenAIEmbeddings(
                 openai_api_key=agent.get_property(nlp.OPENAI_API_KEY),
+                model=MODEL_EMBEDDINGS,
             ),
             'persist_directory': 'uml_vector_store',
         }
@@ -125,7 +156,9 @@ def init_rag(agent: Agent):
             agent=agent,
             vector_store=vector_store,
             splitter=splitter,
-            llm_name='gpt-4.1-mini',
+            # Context-grounded Q&A → classifier tier; must match the
+            # registry key of the ``gpt`` LLM created in init_llm.
+            llm_name=MODEL_CLASSIFIER,
             k=4,
             num_previous_messages=6,
         )
@@ -168,17 +201,17 @@ def init_diagram_factory(gpt: LLMOpenAI):
     return factory
 
 
-def init_intent_classifier_config() -> LLMIntentClassifierConfiguration:
+def init_intent_classifier_config() -> SimpleIntentClassifierConfiguration:
     """Return the default intent-classifier configuration.
 
-    Uses gpt-4.1-mini. The configuration is designed to leverage
-      intent and entity descriptions
+    Local (free) Simple classifier instead of the LLM-based one: the
+    unified classifier (``unified_classifier.py``) is the authoritative
+    router via ``json_intent_matches``, so BAF's per-message prediction
+    is only an exception-path fallback (and the voice/text-event route)
+    — it must not cost an LLM round-trip on every message.
+
+    Requires every intent declared in ``modeling_agent.py`` to carry
+    training sentences (the Simple classifier trains on them at startup).
+    The tensorflow extra is part of the pinned BAF install.
     """
-    return LLMIntentClassifierConfiguration(
-        llm_name='gpt-4.1-mini',
-        parameters={},
-        use_intent_descriptions=True,
-        use_training_sentences=False,
-        use_entity_descriptions=True,
-        use_entity_synonyms=False,
-    )
+    return SimpleIntentClassifierConfiguration(framework='tensorflow')

@@ -20,6 +20,7 @@ from ..core.base_handler import (
     SYSTEM_STATE_OPTIONAL,
 )
 from ..core.prompt_fragments import POSITION_DISCLAIMER, REMOVE_ELEMENT_RULE
+from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
 from schemas import SingleStateSpec as SingleStateSchema, SystemStateMachineSpec, StateMachineModificationResponse
 from utilities.model_context import detailed_model_summary
 
@@ -53,10 +54,12 @@ Examples of good states:
         user_prompt = f"Create a state specification for: {user_request}"
 
         try:
+            # Single element → SMALL generation tier (latency-sensitive).
             parsed = self.predict_structured(
                 user_prompt,
                 SingleStateSchema,
                 system_prompt=system_prompt,
+                model=MODEL_GENERATION_SMALL,
             )
             state_spec = parsed.model_dump()
 
@@ -117,9 +120,21 @@ TRANSITION DESIGN GUIDELINES:
 - Guard conditions should be specific and testable
 - Trigger names should be verbs or verb phrases in camelCase"""
 
-    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def generate_complete_system(
+        self,
+        user_request: str,
+        existing_model: Dict[str, Any] = None,
+        raw_request: Optional[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
         """Generate a complete state machine with two-pass structured outputs, pattern injection,
-        validation-feedback loop, and deterministic layout."""
+        validation-feedback loop, and deterministic layout.
+
+        ``raw_request`` is the original user message before context enrichment
+        (conversation history / workspace block); it drives the fast-path
+        length check and keeps the reasoning prompt lean. Falls back to the
+        full ``user_request`` when not provided.
+        """
 
         system_prompt = self._get_system_generation_prompt()
 
@@ -128,10 +143,13 @@ TRANSITION DESIGN GUIDELINES:
 
         try:
             # --- Two-pass structured: reason about behavior first, then produce validated model ---
+            # The reasoning prompt uses the raw request only; the enriched
+            # context (history + workspace block) reaches the structured pass
+            # via ``user_request`` exactly once.
             reasoning_prompt = (
                 "You are a UML behavioral modeling expert. Think step by step about "
                 "the following state machine request and plan the design.\n\n"
-                f"User Request: {user_request}\n\n"
+                f"User Request: {raw_request or user_request}\n\n"
                 "Analyze:\n"
                 "1. What are the key lifecycle stages (states) of this process?\n"
                 "2. What events (triggers) cause transitions between states?\n"
@@ -144,11 +162,16 @@ TRANSITION DESIGN GUIDELINES:
                 "the most commonly under-specified element."
             )
 
+            # Complete-system generation → LARGE tier; reasoning pass on
+            # the REASONING tier (see model_config).
             parsed = self.predict_two_pass_structured(
                 user_request=user_request,
                 system_prompt=system_prompt,
                 reasoning_prompt=reasoning_prompt,
                 response_schema=SystemStateMachineSpec,
+                raw_request=raw_request,
+                model=MODEL_GENERATION_LARGE,
+                reasoning_model=MODEL_REASONING,
             )
             system_spec = parsed.model_dump()
 

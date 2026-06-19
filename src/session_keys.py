@@ -24,13 +24,17 @@ HAS_GREETED = "has_greeted"
 # Workflow state
 WORKFLOW_PENDING_GENERATOR = "_workflow_pending_generator"
 
-# Smart-gen domain-mismatch handoff: when the unified classifier flags
-# that a smart-generation request describes a different domain than the
-# existing class diagram, the agent stashes the smart-gen payload here
-# and asks the user to confirm. On confirmation the workflow_body picks
-# these up and runs the smart generator after rebuilding the model.
+# Smart-gen confirmation gate: every path that would run the
+# Vibe-Driven Generator (which spends the USER'S OWN API key) stashes
+# the smart-gen payload here and asks for explicit confirmation first.
+# Also used by the domain-mismatch handoff: on "Update model + generate"
+# the workflow_body picks the stash up after rebuilding the model.
 PENDING_SMART_GEN_INSTRUCTIONS = "_pending_smart_gen_instructions"
 PENDING_SMART_GEN_PROVIDER = "_pending_smart_gen_provider"
+# Unix timestamp set whenever the stash is (re)created. Stashes older
+# than the TTL are rejected so an abandoned flow can never hijack a
+# later, unrelated request (B-2 stale-stash fix).
+PENDING_SMART_GEN_TIMESTAMP = "_pending_smart_gen_timestamp"
 # When set to True, the next smart-route classification skips the
 # domain-mismatch guard. Used by the "Generate anyway" path so the same
 # request (or its resend) doesn't loop on the confirmation question.

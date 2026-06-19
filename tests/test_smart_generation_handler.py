@@ -229,7 +229,10 @@ class TestHandleGenerationRequest:
         monkeypatch.setattr(gen_mod, "_get_llm_provider", lambda: fake, raising=False)
         return fake
 
-    def test_smart_route_emits_trigger_smart_generator(self, monkeypatch):
+    def test_smart_route_asks_for_confirmation_then_fires_on_confirm(self, monkeypatch):
+        """The smart route never auto-fires (it spends the user's own API
+        key — B-2): it stashes the payload and asks; the trigger is only
+        emitted after the explicit confirm phrase."""
         self._patch_provider(monkeypatch, GenerationClassification(
             route="smart",
             refined_instructions="Build a Rails 7 API for the Library domain.",
@@ -239,8 +242,21 @@ class TestHandleGenerationRequest:
         session = FakeSession()
         request = _make_request("build me a rails api")
         result = handle_generation_request(session, request)
-        assert result["action"] == "trigger_smart_generator"
-        assert "Rails" in result["instructions"]
+        # Gate: assistant_message with run/cancel quick actions, stash set.
+        assert result["action"] == "assistant_message"
+        assert "API key" in result["message"]
+        prompts = [a["prompt"] for a in result["suggestedActions"]]
+        assert "generate anyway with my current model" in prompts
+        assert "cancel the generation" in prompts
+        from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+        assert "Rails" in session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+
+        # Confirm: now (and only now) the trigger payload is emitted.
+        confirm = handle_generation_request(
+            session, _make_request("generate anyway with my current model"),
+        )
+        assert confirm["action"] == "trigger_smart_generator"
+        assert "Rails" in confirm["instructions"]
 
     def test_deterministic_with_type_falls_through_to_config_flow(self, monkeypatch):
         self._patch_provider(monkeypatch, GenerationClassification(

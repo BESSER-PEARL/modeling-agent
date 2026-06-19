@@ -39,9 +39,12 @@ class TestConstructor:
         assert provider.model_name == "gpt-4o"
 
     def test_default_model_name(self):
+        # The provider default follows the routing table's classifier tier
+        # (env-overridable) instead of a hard-coded literal.
+        from model_config import MODEL_CLASSIFIER
         mock_llm = _make_mock_llm()
         provider = LLMProvider(mock_llm)
-        assert provider.model_name == "gpt-4.1-mini"
+        assert provider.model_name == MODEL_CLASSIFIER
 
     def test_tracker_is_set(self):
         mock_llm = _make_mock_llm()

@@ -27,7 +27,8 @@ from agent_config import (
     LLM_TEXT_TEMPERATURE,
     LLM_MAX_TOKENS_TEXT,
 )
-from memory import get_memory
+from model_config import MODEL_CLASSIFIER
+from memory import get_memory, memory_session_key
 from session_keys import (
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
@@ -203,8 +204,9 @@ def _record_assistant_response(session: Session, content: str) -> None:
     """Best-effort recording of assistant response in conversation memory."""
     try:
         if content and len(content) > 5:  # skip trivial messages
-            session_id = getattr(session, 'id', None) or str(id(session))
-            mem = get_memory(session_id)
+            # Keyed on the stable payload sessionId so memory survives
+            # WebSocket reconnects (BAF session ids churn) — see B-5.
+            mem = get_memory(memory_session_key(session))
             mem.add_assistant(content[:500])  # cap to avoid bloating memory
     except Exception as exc:
         logger.debug(f"Recording assistant response failed (best-effort): {exc}")
@@ -260,7 +262,8 @@ def reply_progress(session: Session, message: str, step: int = 0, total: int = 0
 
 
 def stream_llm_response(
-    session: Session, llm_instance: Any, prompt: str, system_prompt: str = ""
+    session: Session, llm_instance: Any, prompt: str, system_prompt: str = "",
+    model: Optional[str] = None,
 ) -> str:
     """Stream an LLM response token-by-token to the frontend.
 
@@ -272,6 +275,8 @@ def stream_llm_response(
         llm_instance: The BESSER LLMOpenAI instance (has ``.client``).
         prompt: The user prompt.
         system_prompt: Optional system prompt.
+        model: Optional per-call model override (see ``model_config``);
+            defaults to the instance's configured model.
 
     Returns:
         The full completed text.
@@ -285,7 +290,7 @@ def stream_llm_response(
             # Real streaming via OpenAI SDK
             full_text = _stream_openai(
                 session, client, prompt, system_prompt, stream_id,
-                model=getattr(llm_instance, 'name', 'gpt-4.1-mini'),
+                model=model or getattr(llm_instance, 'name', MODEL_CLASSIFIER),
             )
         else:
             # Fallback: single-chunk non-streaming
@@ -313,7 +318,7 @@ def _stream_openai(
     prompt: str,
     system_prompt: str,
     stream_id: str,
-    model: str = "gpt-4.1-mini",
+    model: str = MODEL_CLASSIFIER,
 ) -> str:
     """Real token-by-token streaming using the OpenAI SDK.
 

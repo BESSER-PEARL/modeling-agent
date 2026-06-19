@@ -12,6 +12,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
+from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
 from schemas import SingleGUIElementSpec, GUIModificationSpec
 from utilities.class_metadata import format_class_metadata_for_prompt
 
@@ -1729,10 +1730,12 @@ Rules:
         prompt = self.get_system_prompt(class_info=class_info)
 
         try:
+            # Single element → SMALL generation tier (latency-sensitive).
             parsed = self.predict_structured(
                 f"User Request: {user_request}",
                 SingleGUIElementSpec,
                 system_prompt=prompt,
+                model=MODEL_GENERATION_SMALL,
             )
             spec = parsed.model_dump()
 
@@ -1850,10 +1853,14 @@ When classes are available, design pages around the data:
                 "clean typography, generous spacing, purposeful color use."
             )
 
+            # Complete-system generation → LARGE tier; reasoning pass on
+            # the REASONING tier (see model_config).
             response = self.predict_two_pass(
                 user_request=user_request,
                 system_prompt=system_prompt,
                 reasoning_prompt=reasoning_prompt,
+                model=MODEL_GENERATION_LARGE,
+                reasoning_model=MODEL_REASONING,
             )
             spec = self.parse_json_safely(self.clean_json_response(response or ""))
             if not isinstance(spec, dict):
@@ -1949,7 +1956,11 @@ Rules:
 
         try:
             user_prompt = f"Available pages: {pages_hint}\n\nUser Request: {user_request}"
-            parsed = self.predict_structured(user_prompt, GUIModificationSpec, system_prompt=prompt)
+            # Modification → SMALL generation tier (latency-sensitive).
+            parsed = self.predict_structured(
+                user_prompt, GUIModificationSpec, system_prompt=prompt,
+                model=MODEL_GENERATION_SMALL,
+            )
             spec = parsed.model_dump()
 
             operation = _clean_text(spec.get("operation"), fallback="append_section")

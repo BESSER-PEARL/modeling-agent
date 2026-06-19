@@ -25,6 +25,24 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from model_config import MODEL_VISION, reasoning_effort_for, supports_custom_temperature
+
+
+def _vision_sampling_params() -> Dict[str, Any]:
+    """Token/temperature params appropriate for the configured vision model.
+
+    gpt-5* / o-series models require ``max_completion_tokens``, reject an
+    explicit non-default ``temperature``, and get their hidden reasoning
+    capped via ``reasoning_effort``; older models (gpt-4o, gpt-4.1) use
+    ``max_tokens`` and accept temperature.
+    """
+    if supports_custom_temperature(MODEL_VISION):
+        return {"max_tokens": 8192, "temperature": 0.1}
+    return {
+        "max_completion_tokens": 8192,
+        "reasoning_effort": reasoning_effort_for(MODEL_VISION),
+    }
+
 logger = logging.getLogger(__name__)
 
 # ── File type detection ────────────────────────────────────────────────────────
@@ -584,11 +602,11 @@ def _convert_pdf(
                 "Authorization": f"Bearer {openai_api_key}",
             },
             json={
-                "model": "gpt-4.1",
+                # Vision tier — env-overridable (see model_config).
+                "model": MODEL_VISION,
                 "messages": [{"role": "user", "content": content_blocks}],
-                "max_tokens": 8192,
-                "temperature": 0.1,
                 "response_format": {"type": "json_object"},
+                **_vision_sampling_params(),
             },
             timeout=90,
         )
@@ -631,7 +649,8 @@ def _convert_image(
                 "Authorization": f"Bearer {openai_api_key}",
             },
             json={
-                "model": "gpt-4.1",
+                # Vision tier — env-overridable (see model_config).
+                "model": MODEL_VISION,
                 "messages": [
                     {
                         "role": "user",
@@ -646,9 +665,8 @@ def _convert_image(
                         ],
                     }
                 ],
-                "max_tokens": 8192,
-                "temperature": 0.1,
                 "response_format": {"type": "json_object"},
+                **_vision_sampling_params(),
             },
             timeout=60,
         )

@@ -15,6 +15,7 @@ from ..core.base_handler import (
     SYSTEM_CLASS_OPTIONAL,
 )
 from ..core.prompt_fragments import POSITION_DISCLAIMER, REMOVE_ELEMENT_RULE
+from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
 from schemas import SingleClassSpec, SystemClassSpec, ClassModificationResponse
 from utilities.model_context import detailed_model_summary
 
@@ -52,10 +53,12 @@ Examples of expected richness:
         logger.info(f"[ClassDiagram] generate_single_element called with: {user_request!r}")
 
         try:
+            # Single element → SMALL generation tier (latency-sensitive).
             parsed = self.predict_structured(
                 user_prompt,
                 SingleClassSpec,
                 system_prompt=system_prompt,
+                model=MODEL_GENERATION_SMALL,
             )
             simple_spec = parsed.model_dump()
 
@@ -98,7 +101,7 @@ Before generating, think through:
 
 RULES:
 1. Include all the classes, relationships, and concepts the user asks for. Then flesh out each class with thorough attributes (IDs, timestamps, status fields where appropriate).
-2. Create AS MANY classes as needed for a complete system.
+2. SCOPE: match the diagram size to the request. A plain request ("create a library model") gets the CORE domain only: 6-10 classes. Do NOT add peripheral subsystems (notifications, audit logs, reporting, staffing, fines, reservations, branches...) unless the user names them. Only exceed 12 classes when the user explicitly asks for a "complete", "comprehensive", "detailed" or "enterprise" system, or lists that many entities themselves. A focused diagram the user can extend beats an overwhelming one.
 3. Each class should have 3-5+ attributes. Don't create stub classes.
 4. When creating Enumerations (isEnumeration=true), list enum values as attributes (name only, no type needed). When another class has an attribute whose type is that enumeration, set the attribute's type to the enum's PascalCase name (e.g., type="OrderStatus", NOT "str" or "String").
 5. Methods: Generally SKIP methods unless the user asks. Only include 1-2 core domain methods per class MAX. Never include getters/setters.
@@ -114,9 +117,21 @@ Examples:
 - Library: Book, Author, Member, Loan with inheritance (DigitalBook extends Book) and compositions
 - Banking: Account, Customer, Transaction, Branch with aggregations and multiplicities"""
 
-    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def generate_complete_system(
+        self,
+        user_request: str,
+        existing_model: Dict[str, Any] = None,
+        raw_request: Optional[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
         """Generate a complete class diagram with two-pass structured outputs, domain patterns,
-        validation-feedback loop, and deterministic layout."""
+        validation-feedback loop, and deterministic layout.
+
+        ``raw_request`` is the original user message before context enrichment
+        (conversation history / workspace block); it drives the fast-path
+        length check and keeps the reasoning prompt lean. Falls back to the
+        full ``user_request`` when not provided.
+        """
 
         system_prompt = self._get_system_generation_prompt()
 
@@ -124,12 +139,18 @@ Examples:
 
         try:
             # --- Two-pass structured: reason first, then produce validated Pydantic model ---
+            # The reasoning prompt uses the raw request only; the enriched
+            # context (history + workspace block) reaches the structured pass
+            # via ``user_request`` exactly once.
             reasoning_prompt = (
                 "You are a UML domain modeling expert. Think step by step about "
                 "the following system request and plan the class diagram design.\n\n"
-                f"User Request: {user_request}\n\n"
+                f"User Request: {raw_request or user_request}\n\n"
                 "Analyze:\n"
-                "1. What are the core domain entities (classes) needed?\n"
+                "1. What are the core domain entities (classes) needed? Match the "
+                "scope to the request: a plain request gets the CORE domain only "
+                "(6-10 classes); only plan a bigger model when the user explicitly "
+                "asks for a comprehensive/complete system or names many entities.\n"
                 "2. What attributes does each class need? (be thorough)\n"
                 "3. What relationships connect these classes? What type (Association, "
                 "Composition, Aggregation, Inheritance)? What multiplicities?\n"
@@ -137,14 +158,20 @@ Examples:
                 "Student and Course with grade)?\n"
                 "5. Is there any inheritance hierarchy that makes sense?\n\n"
                 "Provide a clear design analysis. Be thorough about relationships — "
-                "they are the most commonly missed element."
+                "they are the most commonly missed element. Do NOT pad the design "
+                "with peripheral subsystems the user didn't ask for."
             )
 
+            # Complete-system generation is where diagram quality is the
+            # product → LARGE tier; reasoning pass on the REASONING tier.
             parsed = self.predict_two_pass_structured(
                 user_request=user_request,
                 system_prompt=system_prompt,
                 reasoning_prompt=reasoning_prompt,
                 response_schema=SystemClassSpec,
+                raw_request=raw_request,
+                model=MODEL_GENERATION_LARGE,
+                reasoning_model=MODEL_REASONING,
             )
             system_spec = parsed.model_dump()
 

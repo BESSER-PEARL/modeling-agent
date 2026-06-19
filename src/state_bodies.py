@@ -16,9 +16,10 @@ from baf.library.transition.events.base_events import ReceiveJSONEvent
 from baf.nlp.rag.rag import RAGMessage
 
 import agent_context as ctx
+from model_config import MODEL_GENERATION_SMALL
 from protocol.adapters import parse_assistant_request
 from protocol.types import AssistantRequest
-from memory import get_memory
+from memory import get_memory, memory_session_key
 from session_helpers import (
     get_user_message,
     reply_message,
@@ -52,6 +53,7 @@ from session_keys import (
     PENDING_GUI_CHOICE,
     PENDING_SMART_GEN_INSTRUCTIONS,
     PENDING_SMART_GEN_PROVIDER,
+    PENDING_SMART_GEN_TIMESTAMP,
     WORKFLOW_PENDING_GENERATOR,
 )
 from unified_classifier import get_or_classify
@@ -87,7 +89,11 @@ def _ensure_unified_classification(session: Session) -> bool:
         return False
     try:
         request = parse_assistant_request(session)
-        if not (request.message or "").strip():
+        # frontend_event callbacks may carry an empty message but must
+        # still be classified (deterministically — see get_or_classify)
+        # so the transition routes them to the generation handler.
+        is_frontend_event = getattr(request, "action", None) == "frontend_event"
+        if not is_frontend_event and not (request.message or "").strip():
             return False
         provider = _get_llm_provider() if _get_llm_provider else None
         classification = get_or_classify(session, request, provider)
@@ -120,10 +126,11 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     if handle_file_attachments(session, request):
         return None
 
-    # Record user message in conversation memory
+    # Record user message in conversation memory. Keyed on the stable
+    # payload sessionId so memory survives WebSocket reconnects (B-5).
     if request.message:
         try:
-            session_id = getattr(session, 'id', None) or str(id(session))
+            session_id = memory_session_key(session, request)
             summarizer = getattr(ctx, 'gpt_text', None)
             summarize_fn = summarizer.predict if summarizer else None
             mem = get_memory(session_id, summarizer=summarize_fn)
@@ -287,12 +294,14 @@ def greetings_body(session: Session):
     if hasattr(session.event, 'predicted_intent') and session.event.predicted_intent:
         is_hello_intent = session.event.predicted_intent.intent.name == 'hello_intent'
 
-    if is_hello_intent and not session.get(HAS_GREETED):
+    # Always send greeting on first connection, regardless of whether an intent
+    # was classified (on initial connect there is no predicted_intent yet).
+    if not session.get(HAS_GREETED):
         reply_message(session, greeting_message)
         session.set(HAS_GREETED, True)
         return
 
-    if is_hello_intent and session.get(HAS_GREETED):
+    if is_hello_intent:
         reply_message(session, "Welcome back! What would you like to work on?")
         return
 
@@ -602,7 +611,9 @@ def describe_model_body(session: Session):
     )
 
     try:
-        stream_llm_response(session, ctx.gpt_text, qa_prompt)
+        # Grounded analysis over real model data → SMALL generation tier
+        # (help/fallback streaming stays on the classifier default).
+        stream_llm_response(session, ctx.gpt_text, qa_prompt, model=MODEL_GENERATION_SMALL)
     except Exception as e:
         logger.error(f"❌ Error in describe_model_body: {e}", exc_info=True)
         reply_message(
@@ -793,60 +804,57 @@ def workflow_body(session: Session):
 
     # ── Step 3: Trigger code generation ──────────────────────────────
     # When a previous mismatch-confirmation stashed smart-gen instructions
-    # (the user clicked "Update model + generate"), Step 3 fires the
-    # Vibe-Driven Generator with those instructions instead of the
-    # deterministic generator. The model has just been rebuilt for the
-    # new domain, so the smart-gen run has a coherent starting point.
+    # (the user clicked "Update model + generate"), Step 3 hands off to
+    # the Vibe-Driven Generator. It must NOT auto-fire: the smart run
+    # spends the USER'S OWN API key, so we ask for explicit confirmation
+    # (B-2). A stash that isn't fresh wasn't created by this flow — a
+    # leftover from an abandoned dialog must not hijack this workflow,
+    # so it is cleared and the normal deterministic Step 3 proceeds.
     stashed_smartgen = session.get(PENDING_SMART_GEN_INSTRUCTIONS)
     stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER)
     if isinstance(stashed_smartgen, str) and stashed_smartgen.strip():
-        reply_message(
-            session,
-            f"Validation **passed** with 0 errors.{warning_msg}\n\n"
-            f"**Step 3/3** — Running the Vibe-Driven Generator on your "
-            f"new model...",
+        from handlers.generation_handler import (
+            _build_smart_gen_confirmation,
+            _clear_pending_smart_gen,
+            _smart_gen_stash_is_fresh,
         )
-        try:
-            from handlers.smart_generation_handler import (
-                GenerationClassification,
-                build_trigger_smart_generator_payload,
-            )
-            from handlers.generation_handler import _clear_pending_smart_gen
-            smart_classification = GenerationClassification(
-                route="smart",
-                refined_instructions=stashed_smartgen,
-                provider=stashed_provider or "anthropic",
-                reason="model rebuilt; resuming smart generation",
-            )
-            response_payload = build_trigger_smart_generator_payload(
-                smart_classification,
-                reason_prefix="model updated, now generating",
+
+        stashed_ts = session.get(PENDING_SMART_GEN_TIMESTAMP)
+        if not _smart_gen_stash_is_fresh(stashed_ts):
+            logger.info(
+                "[Workflow] Ignoring stale smart-gen stash (not created by "
+                "this flow) — continuing with deterministic generation"
             )
             _clear_pending_smart_gen(session)
-        except Exception as error:
-            logger.error(f"❌ [Workflow] Smart-gen handoff failed: {error}", exc_info=True)
-            response_payload = {
-                "action": "agent_error",
-                "code": "generation_handler_error",
-                "message": "Failed to hand off to the Vibe-Driven Generator.",
-                "retryable": True,
-            }
-
-        if isinstance(response_payload, dict):
-            original_message = response_payload.get("message", "")
-            response_payload["message"] = (
-                f"{original_message}\n\n"
-                f"**Workflow complete!** Model rebuilt, validated, and the "
-                f"Vibe-Driven Generator is now customising your codebase."
-            )
-            reply_payload(session, response_payload)
         else:
-            reply_message(
-                session,
-                "Code generation handoff did not return a valid result. "
-                "You can retry by saying *\"generate the code\"*.",
-            )
-        return
+            try:
+                response_payload = _build_smart_gen_confirmation(
+                    session,
+                    stashed_smartgen,
+                    stashed_provider or "anthropic",
+                    reason_prefix=(
+                        f"Validation **passed** with 0 errors.{warning_msg}\n\n"
+                        f"**Step 3/3** — Your model is rebuilt and validated."
+                    ),
+                )
+            except Exception as error:
+                logger.error(f"❌ [Workflow] Smart-gen handoff failed: {error}", exc_info=True)
+                response_payload = {
+                    "action": "agent_error",
+                    "code": "generation_handler_error",
+                    "message": "Failed to hand off to the Vibe-Driven Generator.",
+                    "retryable": True,
+                }
+
+            if isinstance(response_payload, dict):
+                reply_payload(session, response_payload)
+            else:
+                reply_message(
+                    session,
+                    "Code generation handoff did not return a valid result. "
+                    "You can retry by saying *\"generate the code\"*.",
+                )
+            return
 
     reply_message(
         session,

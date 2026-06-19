@@ -94,37 +94,105 @@ workflow_state = agent.new_state("workflow_state")
 # ``unified_classifier._SYSTEM_PROMPT``. The one-liners below exist
 # only so BAF's classifier can still pick a sensible intent if our
 # unified call ever fails (rare safety-net path). Keep them SHORT.
+#
+# Training sentences are REQUIRED: the default intent classifier is now
+# the local SimpleIntentClassifier (see agent_setup), which trains on
+# them at startup — this keeps the BAF fallback (and the voice/text-event
+# route) free instead of one LLM call per message. The unified classifier
+# remains authoritative via ``json_intent_matches``.
 hello_intent = agent.new_intent(
     name="hello_intent",
     description="User greets the assistant or makes small-talk.",
+    training_sentences=[
+        "hello",
+        "hi there",
+        "hey, how are you",
+        "good morning",
+        "hello assistant",
+        "hi, are you there",
+    ],
 )
 create_complete_system_intent = agent.new_intent(
     name="create_complete_system_intent",
     description="User wants to create a NEW diagram or complete system from scratch.",
+    training_sentences=[
+        "create a library management system",
+        "design a class diagram for an online shop",
+        "create a state machine for order processing",
+        "build a complete hotel booking system",
+        "make a new agent diagram for a pizza chatbot",
+        "model a quantum circuit for grover's search",
+    ],
 )
 modify_model_intent = agent.new_intent(
     name="modify_model_intent",
     description="User wants to add/remove/change elements in an existing diagram.",
+    training_sentences=[
+        "add an email attribute to the user class",
+        "rename order to purchase",
+        "remove the price attribute from product",
+        "add a transition from idle to active",
+        "change the multiplicity between customer and order",
+        "delete the payment class",
+    ],
 )
 modeling_help_intent = agent.new_intent(
     name="modeling_help_intent",
     description="User asks a conceptual question about modeling (not about their own diagram).",
+    training_sentences=[
+        "what is an association class",
+        "how do I model inheritance",
+        "explain the difference between composition and aggregation",
+        "when should I use a state machine",
+        "help me with uml modeling",
+        "what does multiplicity mean",
+    ],
 )
 describe_model_intent = agent.new_intent(
     name="describe_model_intent",
     description="User asks a question about the current diagram on their canvas.",
+    training_sentences=[
+        "describe my diagram",
+        "what classes do I have",
+        "explain my current model",
+        "how many attributes does the user class have",
+        "what does my circuit do",
+        "summarize the diagrams in my project",
+    ],
 )
 uml_spec_intent = agent.new_intent(
     name="uml_spec_intent",
     description="User asks about the formal UML specification document (rare).",
+    training_sentences=[
+        "what does the uml specification say about associations",
+        "how does the uml spec define stereotypes",
+        "according to the uml standard what is a classifier",
+        "uml specification rules for state machines",
+        "cite the uml spec section on multiplicity",
+    ],
 )
 generation_intent = agent.new_intent(
     name=GENERATION_INTENT_NAME,
     description="User wants SOURCE CODE in any stack, or to export/deploy.",
+    training_sentences=[
+        "generate django",
+        "generate python code from my model",
+        "generate sql for my diagram",
+        "give me pydantic classes",
+        "export my project as json",
+        "deploy the app to render",
+    ],
 )
 workflow_intent = agent.new_intent(
     name="workflow_intent",
     description="User wants the full end-to-end pipeline (model + validate + generate) in one flow.",
+    training_sentences=[
+        "create a complete web app for a hotel booking system end to end",
+        "build the model, validate it, and generate the code in one go",
+        "do the full pipeline for an inventory system",
+        "create the model and generate django code for a blog",
+        "end to end workflow for a booking platform",
+    ],
 )
 
 # ── Wire state bodies & transitions ─────────────────────────────────────

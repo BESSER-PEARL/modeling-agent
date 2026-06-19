@@ -196,12 +196,12 @@ def execute_model_operation(
                     "How would you like me to generate the GUI?\n\n"
                     "1️⃣ **Auto-generate** — Fast & deterministic. Creates one page per class "
                     "with data tables and method buttons.\n"
-                    "2️⃣ **LLM-generated** *(experimental)* — AI-designed layout with "
+                    "2️⃣ **AI-generated** *(experimental)* — AI-designed layout with "
                     "personalized pages, navigation, and styling."
                 ),
                 "suggestedActions": [
                     {"label": "Auto-generate", "prompt": "auto"},
-                    {"label": "LLM-generated (experimental)", "prompt": "llm"},
+                    {"label": "AI-generated (experimental)", "prompt": "llm"},
                 ],
             })
             logger.info("[ModelOp] Asked user to choose GUI generation mode")
@@ -230,8 +230,9 @@ def execute_model_operation(
     conversation_context = ""
     if not _skip_existing_check:
         try:
-            from memory import get_memory
-            session_id = getattr(session, 'id', None) or str(id(session))
+            from memory import get_memory, memory_session_key
+            # Stable payload sessionId so memory survives reconnects (B-5).
+            session_id = memory_session_key(session, request)
             mem = get_memory(session_id)
             recent = mem.get_last_n(CONVERSATION_HISTORY_DEPTH)
             if recent and len(recent) > 1:
@@ -297,7 +298,13 @@ def execute_model_operation(
 
     try:
         if operation_mode == "modify_model":
-            extra_kwargs: Dict[str, Any] = {"class_metadata": gui_class_metadata}
+            # ``raw_request`` lets handlers distinguish the user's actual
+            # message from the context-enriched modeling prompt (used for the
+            # two-pass fast-path length check).
+            extra_kwargs: Dict[str, Any] = {
+                "class_metadata": gui_class_metadata,
+                "raw_request": operation_request,
+            }
             if target_diagram_type == "ObjectDiagram":
                 reference_diagram = resolve_object_reference_diagram(request, target_model)
                 reference_class_count = count_reference_classes(reference_diagram)
@@ -337,12 +344,14 @@ def execute_model_operation(
                     modeling_prompt,
                     reference_diagram=reference_diagram,
                     existing_model=target_model,
+                    raw_request=operation_request,
                 )
             else:
                 result = handler.generate_complete_system(
                     modeling_prompt,
                     existing_model=target_model,
                     class_metadata=gui_class_metadata,
+                    raw_request=operation_request,
                 )
     except Exception as exc:
         logger.error(f"❌ [ModelOp] Handler exception: {exc}", exc_info=True)

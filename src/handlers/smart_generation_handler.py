@@ -1,9 +1,10 @@
 """Unified LLM-based classifier for generation requests.
 
-The modeling agent's intent classifier (BAF, ``gpt-4.1-mini``) decides
-at the STATE level whether a message is a generation request
-(``generation_intent``). Once BAF routes us to ``generation_state``,
-this module makes ONE more LLM call that decides the SUB-routing:
+The modeling agent's intent routing (unified classifier, with BAF's
+local Simple classifier as fallback) decides at the STATE level whether
+a message is a generation request (``generation_intent``). Once routed
+to ``generation_state``, this module makes ONE more LLM call that
+decides the SUB-routing:
 
     route ∈ {"smart", "deterministic", "modeling", "other"}
 
@@ -25,7 +26,8 @@ time a user asks for a new language, and intent recognition that scales
 to any stack without code changes.
 
 The user's Anthropic/OpenAI BYOK key is never used here — this call
-runs on the modeling-agent operator's shared ``gpt-4.1-mini`` key.
+runs on the modeling-agent operator's shared key (classifier tier, see
+``model_config``).
 """
 
 from __future__ import annotations

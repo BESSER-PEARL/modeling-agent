@@ -10,6 +10,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
+from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
 from schemas import SingleQuantumGateSpec, SystemQuantumCircuitSpec, QuantumModificationSpec
 from utilities.model_context import detailed_model_summary
 
@@ -428,7 +429,11 @@ Rules:
         prompt = self.get_system_prompt()
 
         try:
-            parsed = self.predict_structured(user_request, SingleQuantumGateSpec, system_prompt=prompt)
+            # Single element → SMALL generation tier (latency-sensitive).
+            parsed = self.predict_structured(
+                user_request, SingleQuantumGateSpec, system_prompt=prompt,
+                model=MODEL_GENERATION_SMALL,
+            )
             spec = parsed.model_dump()
 
             operation = spec.get("operation")
@@ -615,7 +620,11 @@ Rules:
         user_prompt = f"User Request: {user_request}"
 
         try:
-            parsed = self.predict_structured(user_prompt, SystemQuantumCircuitSpec, system_prompt=system_prompt)
+            # Complete-system generation → LARGE tier (see model_config).
+            parsed = self.predict_structured(
+                user_prompt, SystemQuantumCircuitSpec, system_prompt=system_prompt,
+                model=MODEL_GENERATION_LARGE,
+            )
             spec = parsed.model_dump()
 
             operations = spec.get("operations") if isinstance(spec.get("operations"), list) else []
@@ -718,7 +727,11 @@ Rules:
 
         try:
             user_prompt = f"User Request: {user_request}{context_block}"
-            parsed = self.predict_structured(user_prompt, QuantumModificationSpec, system_prompt=prompt)
+            # Modification → SMALL generation tier (latency-sensitive).
+            parsed = self.predict_structured(
+                user_prompt, QuantumModificationSpec, system_prompt=prompt,
+                model=MODEL_GENERATION_SMALL,
+            )
             spec = parsed.model_dump()
 
             operations = spec.get("operations") if isinstance(spec.get("operations"), list) else []

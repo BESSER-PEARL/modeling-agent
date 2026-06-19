@@ -236,8 +236,11 @@ _SYSTEM_PROMPT = (
     "sub-routing fields. Return the structured classification only — "
     "no prose, no questions, no follow-ups.\n\n"
     "=== TOP-LEVEL INTENT RULES (pick one) ===\n\n"
-    "hello_intent: greetings, small-talk, capability questions, "
-    "thanks, acknowledgements. No modeling / code action requested.\n\n"
+    "hello_intent: greetings, small-talk, capability questions "
+    "('what can you do'), thanks, acknowledgements. A question about "
+    "the user's OWN model or app is NEVER hello — in particular "
+    "'where is the app?', 'how do I run / try / see / use it?', "
+    "'can I try it?' are generation_intent, not hello.\n\n"
     "create_complete_system_intent: user wants a NEW diagram or "
     "complete system from scratch. Keywords that trigger this: "
     "'create a class diagram for', 'design a system', 'model a', "
@@ -270,7 +273,10 @@ _SYSTEM_PROMPT = (
     "or framework (ruby on rails, rust, kotlin, swift, go, elixir, "
     "c#, c++, php, laravel, flask, express, next.js, spring boot, "
     "angular, vue, svelte, ios, android). Also: export to json/buml, "
-    "deploy to render. NEVER use this when the user says 'generate a "
+    "deploy to render. ALSO includes asking to RUN, TRY, PREVIEW, "
+    "LAUNCH, USE, or SEE the app, or 'where is the app?' — the user "
+    "has a model and wants runnable output, which comes from "
+    "generating code. NEVER use this when the user says 'generate a "
     "class diagram' — that's create_complete_system_intent.\n\n"
     "workflow_intent: user EXPLICITLY wants the FULL end-to-end flow "
     "in one go: 'create a complete web app for X and generate the "
@@ -299,6 +305,10 @@ _SYSTEM_PROMPT = (
     "4. BESSER built-in with NO extras → 'deterministic' with "
     "generator_type set. Examples: 'generate django', 'give me "
     "pydantic classes', 'generate sql'.\n"
+    "4b. Vague 'how do I run / try / see / get the app' or 'where is "
+    "the app' with NO stack named → 'deterministic' with "
+    "generator_type=null (the agent then shows the generator menu so "
+    "the user picks what to build).\n"
     "5. User actually wants a DIAGRAM (not source code) → 'modeling'.\n"
     "6. Greetings / small-talk leaking through → 'other'.\n\n"
     "=== domain_mismatch (populate when generation_route='smart') ===\n"
@@ -345,7 +355,8 @@ def classify_message(
 ) -> UnifiedClassification:
     """Classify a user message into a state-level intent + sub-routing fields.
 
-    ONE ``gpt-4.1-mini`` structured-output call. Returns a safe
+    ONE classifier-tier structured-output call (see ``model_config``).
+    Returns a safe
     ``fallback_intent`` classification if the provider is unavailable
     or the call fails — the caller should trust the returned object
     and dispatch based on ``intent``.
@@ -402,7 +413,20 @@ def get_or_classify(
     ):
         return cached_classification
 
-    result = classify_message(request, llm_provider)
+    # Frontend callbacks (``generator_result`` etc.) are protocol events,
+    # not user prose — their routing is determined by the ``action``
+    # field, so classifying their text is pure waste AND wrong: in
+    # production a generation-completion echo was LLM-classified as
+    # ``hello_intent`` and routed to greetings, so the generation
+    # handler's frontend_event branch never ran.
+    if getattr(request, "action", None) == "frontend_event":
+        result = UnifiedClassification(
+            intent="generation_intent",
+            generation_route="other",
+            reason="frontend_event callback — routed deterministically, no LLM call",
+        )
+    else:
+        result = classify_message(request, llm_provider)
     if event_id is not None:
         session.set(UNIFIED_CLASSIFICATION, result)
         session.set(UNIFIED_CLASSIFICATION_EVENT_ID, event_id)

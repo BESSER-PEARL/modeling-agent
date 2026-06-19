@@ -1,6 +1,8 @@
 """Bridge to the BESSER backend validation service."""
 
 import logging
+import os
+
 import requests
 
 logger = logging.getLogger(__name__)
@@ -9,18 +11,24 @@ logger = logging.getLogger(__name__)
 def validate_diagram(
     diagram_json: dict,
     diagram_type: str,
-    api_url: str = "http://localhost:3001",
+    api_url: str | None = None,
 ) -> dict:
     """Validate a diagram via the BESSER backend.
 
     Args:
         diagram_json: The diagram model JSON
         diagram_type: One of ClassDiagram, StateMachineDiagram, etc.
-        api_url: Base URL of the BESSER backend API
+        api_url: Base URL of the BESSER backend API. Defaults to the
+            ``BESSER_BACKEND_URL`` env var (set in docker-compose to the
+            backend service URL), falling back to the local-dev default.
+            Without the env var, every validation in a container fails
+            with connection-refused and silently returns valid=True.
 
     Returns:
         {"valid": bool, "errors": list[str], "warnings": list[str]}
     """
+    if api_url is None:
+        api_url = os.environ.get("BESSER_BACKEND_URL", "http://localhost:3001")
     try:
         response = requests.post(
             f"{api_url}/besser_api/validate-diagram",

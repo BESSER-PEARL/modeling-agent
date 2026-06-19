@@ -336,10 +336,14 @@ def handle_pending_system_confirmation(session: Session) -> bool:
 
 
 def _resume_smart_gen_after_replace(session: Session) -> None:
-    """Fire the stashed smart-gen handoff after a model replace, if any.
+    """Ask to run the stashed smart-gen handoff after a model replace.
 
     No-op when there are no stashed instructions (the common case — most
-    replaces happen outside the mismatch flow).
+    replaces happen outside the mismatch flow). Must NOT auto-fire: the
+    smart generator spends the USER'S OWN API key, so the stash is
+    refreshed and the user gets an explicit run/cancel choice (B-2). The
+    actual trigger is emitted by the confirm handler in
+    ``handle_generation_request``.
     """
     stashed_instructions = session.get(PENDING_SMART_GEN_INSTRUCTIONS)
     if not isinstance(stashed_instructions, str) or not stashed_instructions.strip():
@@ -348,39 +352,30 @@ def _resume_smart_gen_after_replace(session: Session) -> None:
     stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic"
 
     try:
-        from handlers.smart_generation_handler import (
-            GenerationClassification,
-            build_trigger_smart_generator_payload,
+        from handlers.generation_handler import (
+            _build_smart_gen_confirmation,
+            _clear_pending_smart_gen,
         )
-        from handlers.generation_handler import _clear_pending_smart_gen
     except ImportError:  # pragma: no cover — defensive in case of refactor
         logger.exception("[PendingConfirm] Could not import smart-gen handoff helpers")
         return
 
     try:
-        smart_classification = GenerationClassification(
-            route="smart",
-            refined_instructions=stashed_instructions,
-            provider=stashed_provider,
-            reason="model rebuilt; resuming smart generation",
-        )
-        payload = build_trigger_smart_generator_payload(
-            smart_classification,
-            reason_prefix="model updated, now generating",
+        # _build_smart_gen_confirmation re-stashes with a fresh timestamp —
+        # the user just actively continued this flow.
+        payload = _build_smart_gen_confirmation(
+            session,
+            stashed_instructions,
+            stashed_provider,
+            reason_prefix="Model rebuilt and ready.",
         )
     except Exception:
-        logger.exception("[PendingConfirm] Failed to build smart-gen handoff payload")
+        logger.exception("[PendingConfirm] Failed to build smart-gen confirmation payload")
         _clear_pending_smart_gen(session)
         return
 
     if isinstance(payload, dict):
-        original_message = payload.get("message", "")
-        payload["message"] = (
-            f"{original_message}\n\nModel rebuilt — handing off to the "
-            f"Vibe-Driven Generator now."
-        )
         reply_payload(session, payload)
-    _clear_pending_smart_gen(session)
 
 
 def _resume_remaining_ops(

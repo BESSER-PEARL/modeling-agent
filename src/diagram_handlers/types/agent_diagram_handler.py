@@ -8,6 +8,7 @@ import logging
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
 from ..core.prompt_fragments import POSITION_DISCLAIMER
+from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
 from schemas import AgentSingleElementSpec, SystemAgentSpec, AgentModificationResponse
 from utilities.model_context import detailed_model_summary
 
@@ -39,7 +40,11 @@ IMPORTANT RULES:
         user_prompt = f"Create an agent diagram element specification for: {user_request}"
 
         try:
-            parsed = self.predict_structured(user_prompt, AgentSingleElementSpec, system_prompt=system_prompt)
+            # Single element → SMALL generation tier (latency-sensitive).
+            parsed = self.predict_structured(
+                user_prompt, AgentSingleElementSpec, system_prompt=system_prompt,
+                model=MODEL_GENERATION_SMALL,
+            )
             agent_spec = parsed.model_dump()
 
             normalized_spec = self._normalize_single_element_spec(agent_spec, user_request)
@@ -77,7 +82,7 @@ Before generating, think through:
 - Is every state reachable and does every state have an exit?
 
 IMPORTANT RULES:
-1. Create AS MANY states and intents as needed for the conversation.
+1. SCOPE: match the agent's size to the request. A plain request gets a focused conversation flow (4-8 states); only build a bigger flow when the user explicitly asks for a comprehensive agent or lists many scenarios themselves.
 2. Each state can have MULTIPLE replies (text lines):
    - Use replyType="text" for scripted responses (most common)
    - Use replyType="llm" for AI-generated dynamic responses
@@ -96,7 +101,11 @@ IMPORTANT RULES:
         user_request_prompt = f"{user_request}"
 
         try:
-            parsed = self.predict_structured(user_request_prompt, SystemAgentSpec, system_prompt=system_prompt)
+            # Complete-system generation → LARGE tier (see model_config).
+            parsed = self.predict_structured(
+                user_request_prompt, SystemAgentSpec, system_prompt=system_prompt,
+                model=MODEL_GENERATION_LARGE,
+            )
             system_spec = parsed.model_dump()
 
             normalized_system = self._normalize_system_spec(system_spec, user_request)

@@ -15,6 +15,7 @@ from ..core.base_handler import (
     SYSTEM_OBJECT_OPTIONAL,
 )
 from ..core.prompt_fragments import POSITION_DISCLAIMER, REMOVE_ELEMENT_RULE
+from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
 from schemas import SingleObjectSpec, SystemObjectSpec, ObjectModificationResponse
 from utilities.model_context import detailed_model_summary
 
@@ -431,7 +432,11 @@ CRITICAL RULES:
             user_prompt += self._format_reference_classes(reference_diagram['elements'])
         
         try:
-            parsed = self.predict_structured(user_prompt, SingleObjectSpec, system_prompt=system_prompt)
+            # Single element → SMALL generation tier (latency-sensitive).
+            parsed = self.predict_structured(
+                user_prompt, SingleObjectSpec, system_prompt=system_prompt,
+                model=MODEL_GENERATION_SMALL,
+            )
             object_spec = parsed.model_dump()
 
             # Sanitize objectName: strip any ": ClassName" suffix the LLM may have included
@@ -500,8 +505,10 @@ IMPORTANT RULES:
             user_prompt += self._format_reference_relationships(class_relationships)
 
         try:
+            # Complete-system generation → LARGE tier (see model_config).
             parsed = self.predict_structured(
-                user_prompt, SystemObjectSpec, system_prompt=system_prompt
+                user_prompt, SystemObjectSpec, system_prompt=system_prompt,
+                model=MODEL_GENERATION_LARGE,
             )
             system_spec = parsed.model_dump()
 

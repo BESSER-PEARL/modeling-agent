@@ -16,6 +16,18 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Apply vendored BAF fix on top of the pip-installed framework.
+# Stock besser-agentic-framework 4.3.2 deletes the _connections slot
+# unconditionally when a websocket closes. With our stable ?user_id= param
+# (added so conversation memory survives reconnects), the two WS connections
+# a browser tab opens — the assistant widget + the workspace drawer — share
+# one session key, so a closing connection evicts the live one and the
+# agent's replies are silently dropped. The vendored file adds an
+# ownership-guarded delete + reply-route-to-sender. Remove this once the fix
+# is upstreamed to BAF. Pinned to 4.3.2 — re-vendor if the version bumps.
+COPY patches/websocket_platform.py \
+    /usr/local/lib/python3.11/site-packages/baf/platforms/websocket/websocket_platform.py
+
 # Copy the modeling agent code
 COPY . .
 

@@ -1,10 +1,12 @@
 import logging
 import re
+import time
 from typing import Any, Dict, List, Optional, Tuple  # noqa: F401
 
 from baf.core.session import Session
 
 from handlers.smart_generation_handler import (
+    _DEFAULT_SMART_GEN_MODEL_BY_PROVIDER,
     build_trigger_smart_generator_payload,
     classify_generation_request,
 )
@@ -15,6 +17,7 @@ from session_keys import (
     PENDING_GENERATOR_TYPE,
     PENDING_SMART_GEN_INSTRUCTIONS,
     PENDING_SMART_GEN_PROVIDER,
+    PENDING_SMART_GEN_TIMESTAMP,
     SKIP_MISMATCH_CHECK_ONCE,
     UNIFIED_CLASSIFICATION,
 )
@@ -60,6 +63,75 @@ def _read_unified_mismatch_info(session: Session) -> Tuple[bool, Optional[str]]:
     return is_mismatch, suggested
 
 
+# Stashed smart-gen payloads expire after this long. The confirm handler
+# rejects anything older so an abandoned dialog can never trigger a
+# BYOK-spending run days later (B-2 stale-stash fix).
+_SMART_GEN_STASH_TTL_SECONDS = 30 * 60
+
+
+def _smart_gen_stash_is_fresh(timestamp: Any) -> bool:
+    """True when the stash timestamp exists and is within the TTL.
+
+    Stashes written before the timestamp key existed return False — they
+    are by definition of unknown age and must not fire.
+    """
+    if not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool):
+        return False
+    return (time.time() - timestamp) <= _SMART_GEN_STASH_TTL_SECONDS
+
+
+def _stash_smart_gen(session: Session, instructions: str, provider: str) -> None:
+    """Stash a smart-gen payload with a fresh timestamp (see TTL above)."""
+    session.set(PENDING_SMART_GEN_INSTRUCTIONS, instructions)
+    session.set(PENDING_SMART_GEN_PROVIDER, provider)
+    session.set(PENDING_SMART_GEN_TIMESTAMP, time.time())
+
+
+def _build_smart_gen_confirmation(
+    session: Session,
+    instructions: str,
+    provider: str,
+    *,
+    reason_prefix: str = "",
+) -> Dict[str, Any]:
+    """Stash the smart-gen payload and ask for explicit confirmation.
+
+    The Vibe-Driven Generator runs on the USER'S OWN API key, so it must
+    never start without an explicit confirmation — with a stored key the
+    run would otherwise begin silently (B-2). The confirm/cancel phrases
+    are handled at the top of :func:`handle_generation_request`.
+    """
+    refined = (instructions or "").strip()
+    provider = provider or "anthropic"
+    _stash_smart_gen(session, refined, provider)
+
+    llm_model = _DEFAULT_SMART_GEN_MODEL_BY_PROVIDER.get(provider, "claude-sonnet-4-6")
+    summary = refined if len(refined) <= 600 else refined[:600] + "…"
+    prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
+
+    return {
+        "action": "assistant_message",
+        "message": (
+            f"{prefix}Ready to run the **Vibe-Driven Generator** "
+            f"(`{llm_model}` via {provider}). It builds a customised "
+            f"codebase from your model **using your own API key** — the "
+            f"key stays in your browser and is sent only with this run.\n\n"
+            f"**It will follow these instructions:**\n> {summary}\n\n"
+            f"Run it now?"
+        ),
+        "suggestedActions": [
+            {
+                "label": "Run Vibe-Driven Generator (uses your API key)",
+                "prompt": "generate anyway with my current model",
+            },
+            {
+                "label": "Cancel",
+                "prompt": "cancel the generation",
+            },
+        ],
+    }
+
+
 def _build_mismatch_confirmation(session: Session, classification, suggested: str) -> Dict[str, Any]:
     """Stash the smart-gen instructions and ask the user how to proceed.
 
@@ -75,8 +147,7 @@ def _build_mismatch_confirmation(session: Session, classification, suggested: st
     """
     refined = (classification.refined_instructions or "").strip()
     provider = classification.provider or "anthropic"
-    session.set(PENDING_SMART_GEN_INSTRUCTIONS, refined)
-    session.set(PENDING_SMART_GEN_PROVIDER, provider)
+    _stash_smart_gen(session, refined, provider)
 
     return {
         "action": "assistant_message",
@@ -525,6 +596,7 @@ def _clear_pending_smart_gen(session: Session) -> None:
     for key in (
         PENDING_SMART_GEN_INSTRUCTIONS,
         PENDING_SMART_GEN_PROVIDER,
+        PENDING_SMART_GEN_TIMESTAMP,
         SKIP_MISMATCH_CHECK_ONCE,
     ):
         if isinstance(session_data, dict) and key in session_data:
@@ -643,10 +715,10 @@ def should_route_to_generation(session: Session, request: AssistantRequest) -> b
     (NO LLM call, NO text heuristics) and defer all intent
     classification to the two places that already do that job:
 
-      1. BAF's intent classifier (one ``gpt-4.1-mini`` call per message)
-         decides whether this is a generation request. Its
-         ``json_intent_matches`` transition routes to
-         ``generation_state`` on its own.
+      1. The unified classifier (one classifier-tier call per message,
+         with BAF's local Simple classifier as fallback) decides whether
+         this is a generation request. Its ``json_intent_matches``
+         transition routes to ``generation_state`` on its own.
       2. Inside ``generation_state``, ``handle_generation_request`` calls
          :func:`classify_generation_request` — ONE structured-output
          LLM call — for the smart-vs-deterministic sub-routing.
@@ -697,12 +769,14 @@ def _normalize_defaults(generator_type: str, request: AssistantRequest, config: 
     return config
 
 
-def _handle_frontend_event(request: AssistantRequest) -> Dict[str, Any]:
+def _handle_frontend_event(request: AssistantRequest, session=None) -> Dict[str, Any]:
     event_type = request.raw_payload.get("eventType")
     if event_type == "generator_result":
         ok = bool(request.raw_payload.get("ok"))
         message = request.raw_payload.get("message")
         metadata = request.raw_payload.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("smart"):
+            return _handle_smart_generator_result(ok, message, metadata, session)
         result_message = message if isinstance(message, str) and message.strip() else (
             "Generation completed successfully." if ok else "Generation failed."
         )
@@ -713,6 +787,81 @@ def _handle_frontend_event(request: AssistantRequest) -> Dict[str, Any]:
         "action": "assistant_message",
         "message": "Received frontend event update.",
     }
+
+
+def _handle_smart_generator_result(
+    ok: bool,
+    message: Any,
+    metadata: Dict[str, Any],
+    session,
+) -> Dict[str, Any]:
+    """Outcome report for a smart-generation run the agent triggered.
+
+    Previously the smart path was fire-and-forget: the agent that
+    classified the request and refined the instructions never learned
+    whether the run succeeded, what it cost, or why it failed — so it
+    couldn't follow up and "why did it fail?" got a blank stare. This
+    records the outcome in conversation memory and replies with an
+    outcome-aware message + suggested next steps.
+    """
+    error_code = metadata.get("errorCode")
+    cost = metadata.get("costUsd")
+    generator_used = metadata.get("generator_used")
+    cost_text = f" (cost ${cost:.2f})" if isinstance(cost, (int, float)) else ""
+
+    if ok:
+        parts = ["Smart generation finished successfully" + cost_text + "."]
+        if generator_used:
+            parts.append(f"Scaffold: `{generator_used}`.")
+        if metadata.get("filename") or metadata.get("fileName"):
+            parts.append(f"File: {metadata.get('filename') or metadata.get('fileName')}")
+        result_message = " ".join(parts)
+        suggestions = None
+    elif error_code == "COST_CAP":
+        result_message = (
+            "The smart-generation run hit its cost cap before finishing"
+            + cost_text
+            + ". You can retry with a larger budget, or narrow the "
+            "instructions so less code needs to be generated."
+        )
+        suggestions = ["Retry with refined instructions"]
+    elif error_code == "CANCELLED":
+        result_message = "The smart-generation run was stopped" + cost_text + "."
+        suggestions = ["Retry the generation"]
+    elif error_code == "INVALID_KEY":
+        result_message = (
+            "Smart generation failed: the provider rejected the API key. "
+            "Check the key in the AI settings and try again."
+        )
+        suggestions = None
+    else:
+        detail = message if isinstance(message, str) and message.strip() else None
+        result_message = (
+            "Smart generation failed"
+            + (f" ({error_code})" if error_code else "")
+            + cost_text
+            + ("." if not detail else f": {detail}")
+        )
+        suggestions = ["Retry with refined instructions"]
+
+    # Record the outcome so follow-up turns ("why did it fail?",
+    # "run it again") have context. Best-effort — memory failures must
+    # never break the reply.
+    if session is not None:
+        try:
+            from memory import get_memory, memory_session_key
+
+            # Stable payload sessionId so memory survives reconnects (B-5).
+            session_id = memory_session_key(session)
+            mem = get_memory(session_id)
+            mem.add_assistant(f"[smart-generation outcome] {result_message}"[:500])
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("Could not record smart-gen outcome in memory", exc_info=True)
+
+    payload: Dict[str, Any] = {"action": "assistant_message", "message": result_message}
+    if suggestions:
+        payload["suggestedActions"] = suggestions
+    return payload
 
 
 def handle_generation_request(session: Session, request: AssistantRequest) -> Dict[str, Any]:
@@ -730,7 +879,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     heuristics.
     """
     if request.action == "frontend_event":
-        return _handle_frontend_event(request)
+        return _handle_frontend_event(request, session)
 
     # Mismatch-confirmation shortcuts: when the user clicks one of the
     # quick-action buttons emitted by ``_build_mismatch_confirmation``,
@@ -749,12 +898,27 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         }
 
     if has_pending_smart_gen and "generate anyway" in msg_lower:
-        # Skip the mismatch guard and re-run the smart-gen handoff with
-        # the previously-stashed instructions / provider. The user has
-        # explicitly accepted the model/code divergence.
+        # Explicit user confirmation: fire the smart-gen handoff with the
+        # previously-stashed instructions / provider. This is the ONLY
+        # place a trigger_smart_generator payload is emitted — every
+        # other path stashes + asks first (B-2: the run spends the
+        # user's own API key).
         from handlers.smart_generation_handler import GenerationClassification
         stashed_instructions = session.get(PENDING_SMART_GEN_INSTRUCTIONS) or ""
         stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic"
+        stashed_ts = session.get(PENDING_SMART_GEN_TIMESTAMP)
+        if not _smart_gen_stash_is_fresh(stashed_ts):
+            # Reject stale confirmations: a stash older than the TTL may
+            # belong to a long-abandoned dialog the user no longer means.
+            _clear_pending_smart_gen(session)
+            _clear_pending_state(session)
+            return {
+                "action": "assistant_message",
+                "message": (
+                    "That generation request expired — please ask again "
+                    "and I'll prepare a fresh run."
+                ),
+            }
         _clear_pending_smart_gen(session)
         if stashed_instructions.strip():
             return build_trigger_smart_generator_payload(
@@ -762,7 +926,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                     route="smart",
                     refined_instructions=stashed_instructions,
                     provider=stashed_provider,
-                    reason="user chose to generate without updating the model",
+                    reason="user confirmed the run",
                 ),
                 reason_prefix="generating with current model",
             )
@@ -809,7 +973,13 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 if is_mismatch and suggested:
                     return _build_mismatch_confirmation(session, classification, suggested)
 
-            return build_trigger_smart_generator_payload(classification)
+            # Never fire directly: the smart generator spends the user's
+            # own API key, so stash + ask for explicit confirmation (B-2).
+            return _build_smart_gen_confirmation(
+                session,
+                classification.refined_instructions or "",
+                classification.provider or "anthropic",
+            )
 
         if classification.route == "modeling":
             _clear_pending_state(session)
