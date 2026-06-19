@@ -179,6 +179,8 @@ class BPMNModification(BaseModel):
 
 
 class BPMNModificationResponse(BaseModel):
+    # default_factory=list (not min_length=1) is intentional: when elementFound
+    # is false the LLM returns an empty list, and Pydantic must accept that.
     modifications: List[BPMNModification] = Field(
         default_factory=list,
         description="List of modifications to apply to the process. Empty when elementFound is false.",

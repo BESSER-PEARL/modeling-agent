@@ -342,23 +342,25 @@ def _summarize_bpmn(model: Dict[str, Any], *, max_items: int = 25) -> List[str]:
     if not isinstance(elements, dict):
         return []
 
-    node_types = {
-        "BPMNTask", "BPMNStartEvent", "BPMNEndEvent",
-        "BPMNIntermediateEvent", "BPMNGateway",
-    }
     lines: List[str] = []
     names: Dict[str, str] = {}  # eid -> display name (may be empty string)
 
     for eid, el in elements.items():
-        if not isinstance(el, dict) or el.get("type") not in node_types:
+        if not isinstance(el, dict):
+            continue
+        el_type = el.get("type", "")
+        # Include all BPMN node types. BPMNFlow lives in relationships, not
+        # elements, so excluding it here is sufficient — no explicit whitelist
+        # means new Apollon node types (e.g. BPMNCallActivity) are auto-included.
+        if not el_type.startswith("BPMN") or el_type == "BPMNFlow":
             continue
         name = el.get("name") or ""
         names[eid] = name
-        kind = str(el.get("type", "")).replace("BPMN", "")
+        kind = el_type.replace("BPMN", "")
         detail = ""
-        if el.get("type") == "BPMNTask" and el.get("taskType") and el.get("taskType") != "default":
+        if el_type == "BPMNTask" and el.get("taskType") and el.get("taskType") != "default":
             detail = f" {el['taskType']}"
-        elif el.get("type") == "BPMNGateway" and el.get("gatewayType"):
+        elif el_type == "BPMNGateway" and el.get("gatewayType"):
             detail = f" {el['gatewayType']}"
         display = f" {name}" if name else ""
         lines.append(f"[{eid}]{display} ({kind}{detail})")

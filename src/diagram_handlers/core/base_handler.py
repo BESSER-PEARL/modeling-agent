@@ -267,13 +267,16 @@ class BaseDiagramHandler(ABC):
         human = action.replace('_', ' ').capitalize()
         return f"{human} **{target_name}**."
 
-    @staticmethod
-    def _build_mod_target_name(action: str, target: dict) -> str:
+    def _build_mod_target_name(self, action: str, target: dict, mod: dict = None) -> str:
         """Build a descriptive target name that includes sub-element context.
 
         For remove_element / modify_attribute / etc., if both a class name and
         an attribute/method name are present, return something like
         ``"attribute gender from Shoe"`` instead of just ``"Shoe"``.
+
+        Subclasses may override to extend with diagram-specific resolution
+        (e.g. BPMN flow endpoint lookup). The full ``mod`` dict is passed so
+        overrides can inspect ``changes`` without needing a separate hook.
         """
         class_name = (
             target.get('className') or target.get('stateName')
@@ -296,15 +299,14 @@ class BaseDiagramHandler(ABC):
 
         return class_name or attr_name or method_name or 'element'
 
-    @classmethod
-    def _friendly_batch_message(cls, mods: list) -> str:
+    def _friendly_batch_message(self, mods: list) -> str:
         """Produce a friendly summary for a batch of modifications."""
         parts = []
         for m in mods:
             act = m.get('action', 'modification')
             t = m.get('target', {})
-            name = cls._build_mod_target_name(act, t)
-            parts.append(cls._friendly_mod_message(act, name))
+            name = self._build_mod_target_name(act, t, m)
+            parts.append(self._friendly_mod_message(act, name))
         if len(parts) == 1:
             return parts[0]
         return f"Applied {len(parts)} changes:\n" + "\n".join(f"- {p}" for p in parts)
@@ -406,7 +408,7 @@ class BaseDiagramHandler(ABC):
                 mod = modification_spec['modification']
                 act = mod.get('action', 'modification')
                 target = mod.get('target', {})
-                name = self._build_mod_target_name(act, target)
+                name = self._build_mod_target_name(act, target, mod)
                 name = self._sanitize_target_name(name)
                 modification_spec['message'] = self._friendly_mod_message(act, name)
 
@@ -672,11 +674,11 @@ class BaseDiagramHandler(ABC):
                     f"schema={response_schema.__name__}, "
                     f"max_tokens={max_tokens})"
                 )
-                # Log prompt content for diagnostics
+                # Log prompt content for diagnostics (full content only at DEBUG)
                 for i, msg in enumerate(messages):
                     role = msg.get("role", "?")
                     content = msg.get("content", "")
-                    logger.info(
+                    logger.debug(
                         f"📝 [{self.get_diagram_type()}] Prompt msg[{i}] role={role} "
                         f"len={len(content)} chars:\n{content}"
                     )

@@ -10,7 +10,7 @@ the flows.
 """
 
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
 from ..core.prompt_fragments import EXACT_NAMES_RULE, POSITION_DISCLAIMER, REMOVE_ELEMENT_RULE
@@ -191,6 +191,14 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows."""
     ) -> Dict[str, Any]:
         system_prompt = MODIFY_SYSTEM_PROMPT_BPMN
 
+        # Store elements on the instance so _build_mod_target_name can resolve
+        # element names without needing a separate parameter thread.
+        self._elements: Dict[str, Any] = {}
+        if current_model and isinstance(current_model, dict):
+            raw = current_model.get("elements")
+            if isinstance(raw, dict):
+                self._elements = raw
+
         context_block = ""
         if current_model and isinstance(current_model, dict):
             summary = detailed_model_summary(current_model, "BPMN")
@@ -204,9 +212,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows."""
             result = self._execute_modification(
                 user_prompt, system_prompt, BPMNModificationResponse,
             )
-            if result.get("action") != "assistant_message":
-                result["message"] = self._bpmn_mod_message(result, current_model)
-            return result
+            return self._validate_mod_refs(result)
         except LLMPredictionError as exc:
             logger.error(f"[BPMN] generate_modification LLM FAILED: {exc}")
             return self._error_response(
@@ -296,7 +302,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows."""
         return msg
 
     # ------------------------------------------------------------------
-    # BPMN-specific modification message building
+    # BPMN-specific element resolution helpers
     # ------------------------------------------------------------------
 
     _GATEWAY_TYPE_LABELS = {
@@ -319,6 +325,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows."""
         "BPMNStartEvent": "Start Event",
         "BPMNEndEvent": "End Event",
         "BPMNIntermediateEvent": "Intermediate Event",
+        "BPMNCallActivity": "Call Activity",
     }
 
     @classmethod
@@ -348,134 +355,97 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows."""
                 return el
         return None
 
-    def _bpmn_mod_message(
-        self,
-        mod_spec: Dict[str, Any],
-        current_model: Optional[Dict[str, Any]],
-    ) -> str:
-        """Build a human-readable message for one or more BPMN modifications."""
-        elements: Dict[str, Any] = {}
-        if isinstance(current_model, dict):
-            raw = current_model.get("elements")
-            if isinstance(raw, dict):
-                elements = raw
+    # ------------------------------------------------------------------
+    # Base-class extension: BPMN-aware target name resolution
+    # ------------------------------------------------------------------
 
-        mods: List[Dict[str, Any]] = mod_spec.get("modifications") or []
-        single = mod_spec.get("modification")
-        if single:
-            mods = [single]
-        if not mods:
-            return "Applied modification."
+    def _build_mod_target_name(self, action: str, target: dict, mod: dict = None) -> str:
+        """Extend base name resolution for BPMN-specific operations.
 
-        # Collect all existing-element refs that need a context lookup
-        # (only remove_element, modify_node, and flow endpoints).
-        ordered_refs: List[str] = []
-        seen_refs: set = set()
-
-        def collect(ref: Optional[str]) -> None:
-            if ref and ref not in seen_refs:
-                seen_refs.add(ref)
-                ordered_refs.append(ref)
-
-        for m in mods:
-            t = m.get("target") or {}
-            c = m.get("changes") or {}
-            act = m.get("action", "")
-            if act in ("remove_element", "modify_node"):
-                collect(t.get("nodeId") or t.get("nodeName"))
-            if act in ("add_flow", "remove_flow"):
-                collect(c.get("source"))
-                collect(c.get("target"))
-
-        # First pass: group unnamed elements by type_label so we know
-        # whether to add ordinals (only when >1 of the same type appear).
-        unnamed_type_groups: Dict[str, List[str]] = {}
-        for ref in ordered_refs:
-            el = self._bpmn_resolve(ref, elements)
-            if el is None or el.get("name"):
-                continue
-            lbl = self._bpmn_el_type_label(el)
-            unnamed_type_groups.setdefault(lbl, []).append(ref)
-
-        # Second pass: build ref → display-label mapping.
-        # Ordinal cursors track how many of each unnamed type we've labelled so far.
-        ref_labels: Dict[str, str] = {}
-        ordinal_cursors: Dict[str, int] = {}
-
-        def label_of(ref: Optional[str]) -> str:
-            if not ref:
-                return "element"
-            if ref in ref_labels:
-                return ref_labels[ref]
-            el = self._bpmn_resolve(ref, elements)
-            if el is None:
-                ref_labels[ref] = ref
-                return ref
-            name = el.get("name") or ""
-            if name:
-                ref_labels[ref] = name
-                return name
-            type_lbl = self._bpmn_el_type_label(el)
-            group = unnamed_type_groups.get(type_lbl, [ref])
-            if len(group) > 1:
-                ordinal_cursors[type_lbl] = ordinal_cursors.get(type_lbl, 0) + 1
-                display = f"{type_lbl} {ordinal_cursors[type_lbl]}"
-            else:
-                display = type_lbl
-            ref_labels[ref] = display
-            return display
-
-        parts = [self._bpmn_single_mod_sentence(m, label_of) for m in mods]
-        if len(parts) == 1:
-            return parts[0]
-        return f"Applied {len(parts)} changes:\n" + "\n".join(f"- {p}" for p in parts)
-
-    def _bpmn_single_mod_sentence(
-        self,
-        mod: Dict[str, Any],
-        label_of: Callable[[Optional[str]], str],
-    ) -> str:
-        """Format one BPMN modification as a user-facing sentence."""
-        action = mod.get("action", "modification")
-        target = mod.get("target") or {}
-        changes = mod.get("changes") or {}
-        node_ref = target.get("nodeId") or target.get("nodeName")
-
-        if action in ("add_task", "add_gateway", "add_event"):
-            name = (target.get("nodeName") or "").strip()
-            if not name:
-                if action == "add_gateway":
-                    name = self._GATEWAY_TYPE_LABELS.get(
-                        changes.get("gatewayType", "exclusive"), "Gateway"
-                    )
-                elif action == "add_event":
-                    name = self._EVENT_KIND_LABELS.get(
-                        changes.get("eventKind", "start"), "Event"
-                    )
-                else:
-                    name = self._TASK_TYPE_LABELS.get(
-                        changes.get("taskType", "default"), "Task"
-                    )
-            return f"Added **{name}**."
-
-        if action == "remove_element":
-            return f"Removed **{label_of(node_ref)}**."
+        - Flow operations (add_flow/remove_flow) display endpoint names joined
+          by an arrow, resolved from self._elements when available.
+        - Node operations on unnamed elements fall back to the type label
+          (e.g. "Parallel Gateway") instead of the raw Apollon UUID.
+        """
+        elements = getattr(self, "_elements", {})
 
         if action in ("add_flow", "remove_flow"):
-            src = label_of(changes.get("source"))
-            tgt = label_of(changes.get("target"))
-            verb = "Added flow" if action == "add_flow" else "Removed flow"
-            return f"{verb}: **{src}** → **{tgt}**."
+            changes = (mod or {}).get("changes") or {}
+            src_ref = changes.get("source", "")
+            tgt_ref = changes.get("target", "")
+            src_el = self._bpmn_resolve(src_ref, elements)
+            tgt_el = self._bpmn_resolve(tgt_ref, elements)
+            src_name = (src_el.get("name") if src_el else None) or (
+                self._bpmn_el_type_label(src_el) if src_el else src_ref or "element"
+            )
+            tgt_name = (tgt_el.get("name") if tgt_el else None) or (
+                self._bpmn_el_type_label(tgt_el) if tgt_el else tgt_ref or "element"
+            )
+            return f"{src_name} → {tgt_name}"
 
-        if action == "modify_node":
-            old = label_of(node_ref)
-            new_name = (changes.get("name") or "").strip()
-            node_name = (target.get("nodeName") or "").strip()
-            if new_name and new_name != node_name:
-                return f"Renamed **{old}** to **{new_name}**."
-            return f"Updated **{old}**."
+        node_ref = target.get("nodeId") or target.get("nodeName")
+        if node_ref and elements:
+            el = self._bpmn_resolve(node_ref, elements)
+            if el is not None:
+                return el.get("name") or self._bpmn_el_type_label(el)
 
-        # Generic fallback
-        name = label_of(node_ref)
-        verb = self._ACTION_LABELS.get(action, action.replace("_", " ").capitalize())
-        return f"{verb} **{name}**."
+        return super()._build_mod_target_name(action, target, mod)
+
+    # ------------------------------------------------------------------
+    # Server-side ref guardrail (item 1)
+    # ------------------------------------------------------------------
+
+    def _ref_exists(self, mod: Dict[str, Any], elements: Dict[str, Any]) -> bool:
+        """Return True if every element ref in this modification exists in the model."""
+        action = mod.get("action", "")
+        if action in ("remove_element", "modify_node"):
+            ref = (mod.get("target") or {}).get("nodeId") or (mod.get("target") or {}).get("nodeName")
+            return ref is None or self._bpmn_resolve(ref, elements) is not None
+        if action in ("add_flow", "remove_flow"):
+            changes = mod.get("changes") or {}
+            src, tgt = changes.get("source"), changes.get("target")
+            src_ok = src is None or self._bpmn_resolve(src, elements) is not None
+            tgt_ok = tgt is None or self._bpmn_resolve(tgt, elements) is not None
+            return src_ok and tgt_ok
+        return True
+
+    def _validate_mod_refs(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Drop modifications whose element refs cannot be resolved in the current model.
+
+        If all modifications are dropped, converts the result to an assistant_message
+        so the user gets a clear explanation rather than a silent no-op.
+        """
+        elements = self._elements
+        if not elements or result.get("action") != "modify_model":
+            return result
+
+        if "modifications" in result:
+            mods = result["modifications"]
+            valid = [m for m in mods if self._ref_exists(m, elements)]
+            dropped = len(mods) - len(valid)
+            if dropped:
+                logger.info(f"[BPMN] Dropped {dropped} modification(s) with unresolved element ref(s)")
+            if not valid:
+                return {
+                    "action": "assistant_message",
+                    "message": (
+                        "I couldn't find the element(s) you described in the current diagram. "
+                        "Please check the names and try again."
+                    ),
+                }
+            result = dict(result)
+            result["modifications"] = valid
+            return result
+
+        if "modification" in result:
+            if not self._ref_exists(result["modification"], elements):
+                logger.info("[BPMN] Dropped modification with unresolved element ref")
+                return {
+                    "action": "assistant_message",
+                    "message": (
+                        "I couldn't find that element in the current diagram. "
+                        "Please check the name and try again."
+                    ),
+                }
+
+        return result

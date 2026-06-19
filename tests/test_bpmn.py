@@ -99,117 +99,239 @@ def test_bpmn_model_summary_flow_uses_ids():
     assert "Flow:" in summary
 
 
-def test_bpmn_mod_message_add_named_task():
+def test_bpmn_generate_modification_element_not_found_returns_assistant_message(monkeypatch):
+    """When the LLM signals elementFound=False, generate_modification must return
+    an assistant_message action — never forward an empty modify_model to the WME."""
+    import sys
+    from pathlib import Path
+    _SRC = Path(__file__).resolve().parent.parent / "src"
+    if str(_SRC) not in sys.path:
+        sys.path.insert(0, str(_SRC))
+
     from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    from schemas.bpmn import BPMNModificationResponse
+
+    not_found_response = BPMNModificationResponse(
+        elementFound=False,
+        modifications=[],
+        message="I couldn't find 'Buy Groceries' in this diagram.",
+    )
+
+    def fake_predict(self, user_prompt, schema_cls, **kwargs):
+        return not_found_response
+
+    monkeypatch.setattr(BPMNDiagramHandler, "predict_structured", fake_predict)
     h = BPMNDiagramHandler(None)
-    spec = {
-        "modification": {
-            "action": "add_task",
-            "target": {"nodeName": "Send Invoice"},
-            "changes": {"taskType": "send"},
-        }
-    }
-    msg = h._bpmn_mod_message(spec, None)
-    assert "Send Invoice" in msg
-    assert "Added" in msg
+    result = h.generate_modification("remove Buy Groceries", current_model=None)
+
+    assert result["action"] == "assistant_message"
+    assert "Buy Groceries" in result["message"]
 
 
-def test_bpmn_mod_message_add_unnamed_gateway_falls_back_to_type():
+def test_bpmn_generate_modification_add_task_returns_modify_model(monkeypatch):
+    """A successful add_task modification must produce a modify_model action
+    with the task name present in the message."""
+    import sys
+    from pathlib import Path
+    _SRC = Path(__file__).resolve().parent.parent / "src"
+    if str(_SRC) not in sys.path:
+        sys.path.insert(0, str(_SRC))
+
     from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    from schemas.bpmn import BPMNModificationResponse, BPMNModification, BPMNModificationTarget
+
+    ok_response = BPMNModificationResponse(
+        elementFound=True,
+        modifications=[
+            BPMNModification(
+                action="add_task",
+                target=BPMNModificationTarget(nodeName="Send Invoice"),
+                changes={"taskType": "send"},
+            )
+        ],
+        message="Added Send Invoice task.",
+    )
+
+    def fake_predict(self, user_prompt, schema_cls, **kwargs):
+        return ok_response
+
+    monkeypatch.setattr(BPMNDiagramHandler, "predict_structured", fake_predict)
     h = BPMNDiagramHandler(None)
-    spec = {
-        "modification": {
-            "action": "add_gateway",
-            "target": {"nodeName": ""},
-            "changes": {"gatewayType": "parallel"},
-        }
-    }
-    msg = h._bpmn_mod_message(spec, None)
-    assert "Parallel Gateway" in msg
+    result = h.generate_modification("add a Send Invoice task", current_model=None)
+
+    assert result["action"] == "modify_model"
+    assert "Send Invoice" in result.get("message", "")
 
 
-def test_bpmn_mod_message_remove_element_uses_context():
+def test_bpmn_generate_modification_add_flow_message_shows_arrow(monkeypatch):
+    """add_flow modification message must show source → target names resolved
+    from the current model, not raw element IDs."""
+    import sys
+    from pathlib import Path
+    _SRC = Path(__file__).resolve().parent.parent / "src"
+    if str(_SRC) not in sys.path:
+        sys.path.insert(0, str(_SRC))
+
     from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
-    h = BPMNDiagramHandler(None)
-    model = {
-        "elements": {
-            "uuid-gw-01": {"type": "BPMNGateway", "name": "", "gatewayType": "parallel"},
-        }
-    }
-    spec = {
-        "modification": {
-            "action": "remove_element",
-            "target": {"nodeId": "uuid-gw-01", "nodeName": None},
-            "changes": None,
-        }
-    }
-    msg = h._bpmn_mod_message(spec, model)
-    assert "Parallel Gateway" in msg
-    assert "Removed" in msg
-    assert "(unnamed)" not in msg
+    from schemas.bpmn import BPMNModificationResponse, BPMNModification, BPMNModificationTarget, BPMNModificationChanges
 
-
-def test_bpmn_mod_message_remove_two_unnamed_gateways_gets_ordinals():
-    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
-    h = BPMNDiagramHandler(None)
-    model = {
-        "elements": {
-            "uuid-gw-01": {"type": "BPMNGateway", "name": "", "gatewayType": "parallel"},
-            "uuid-gw-02": {"type": "BPMNGateway", "name": "", "gatewayType": "parallel"},
-        }
-    }
-    spec = {
-        "modifications": [
-            {"action": "remove_element", "target": {"nodeId": "uuid-gw-01"}, "changes": None},
-            {"action": "remove_element", "target": {"nodeId": "uuid-gw-02"}, "changes": None},
-        ]
-    }
-    msg = h._bpmn_mod_message(spec, model)
-    assert "Parallel Gateway 1" in msg
-    assert "Parallel Gateway 2" in msg
-
-
-def test_bpmn_mod_message_add_flow_shows_arrow():
-    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
-    h = BPMNDiagramHandler(None)
     model = {
         "elements": {
             "task-01": {"type": "BPMNTask", "name": "Ship Order", "taskType": "default"},
             "task-02": {"type": "BPMNTask", "name": "Send Invoice", "taskType": "send"},
         }
     }
-    spec = {
-        "modification": {
-            "action": "add_flow",
-            "target": {},
-            "changes": {"source": "task-01", "target": "task-02"},
-        }
-    }
-    msg = h._bpmn_mod_message(spec, model)
+
+    ok_response = BPMNModificationResponse(
+        elementFound=True,
+        modifications=[
+            BPMNModification(
+                action="add_flow",
+                target=BPMNModificationTarget(nodeName=None),
+                changes=BPMNModificationChanges(source="task-01", target="task-02"),
+            )
+        ],
+        message="Added flow.",
+    )
+
+    def fake_predict(self, user_prompt, schema_cls, **kwargs):
+        return ok_response
+
+    monkeypatch.setattr(BPMNDiagramHandler, "predict_structured", fake_predict)
+    h = BPMNDiagramHandler(None)
+    result = h.generate_modification("connect Ship Order to Send Invoice", current_model=model)
+
+    assert result["action"] == "modify_model"
+    msg = result.get("message", "")
     assert "Ship Order" in msg
     assert "Send Invoice" in msg
     assert "→" in msg
 
 
-def test_bpmn_mod_message_modify_node_rename():
+def test_bpmn_generate_modification_remove_flow(monkeypatch):
+    """remove_flow must produce a modify_model result."""
+    import sys
+    from pathlib import Path
+    _SRC = Path(__file__).resolve().parent.parent / "src"
+    if str(_SRC) not in sys.path:
+        sys.path.insert(0, str(_SRC))
+
     from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
-    h = BPMNDiagramHandler(None)
+    from schemas.bpmn import BPMNModificationResponse, BPMNModification, BPMNModificationTarget, BPMNModificationChanges
+
     model = {
         "elements": {
-            "task-01": {"type": "BPMNTask", "name": "Check Inventory", "taskType": "default"},
+            "task-01": {"type": "BPMNTask", "name": "Check Stock"},
+            "task-02": {"type": "BPMNTask", "name": "Ship Order"},
         }
     }
-    spec = {
-        "modification": {
-            "action": "modify_node",
-            "target": {"nodeId": "task-01", "nodeName": "Check Inventory"},
-            "changes": {"name": "Verify Stock"},
+
+    ok_response = BPMNModificationResponse(
+        elementFound=True,
+        modifications=[
+            BPMNModification(
+                action="remove_flow",
+                target=BPMNModificationTarget(nodeName=None),
+                changes=BPMNModificationChanges(source="task-01", target="task-02"),
+            )
+        ],
+        message="Removed flow.",
+    )
+
+    def fake_predict(self, user_prompt, schema_cls, **kwargs):
+        return ok_response
+
+    monkeypatch.setattr(BPMNDiagramHandler, "predict_structured", fake_predict)
+    h = BPMNDiagramHandler(None)
+    result = h.generate_modification("remove the flow between Check Stock and Ship Order", current_model=model)
+
+    assert result["action"] == "modify_model"
+    msg = result.get("message", "")
+    assert "Check Stock" in msg
+    assert "Ship Order" in msg
+
+
+def test_bpmn_guardrail_drops_modification_with_hallucinated_ref(monkeypatch):
+    """When the LLM says elementFound=True but the target ID doesn't exist,
+    the server-side guardrail must catch it and return an assistant_message."""
+    import sys
+    from pathlib import Path
+    _SRC = Path(__file__).resolve().parent.parent / "src"
+    if str(_SRC) not in sys.path:
+        sys.path.insert(0, str(_SRC))
+
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    from schemas.bpmn import BPMNModificationResponse, BPMNModification, BPMNModificationTarget
+
+    model = {
+        "elements": {
+            "task-real": {"type": "BPMNTask", "name": "Real Task"},
         }
     }
-    msg = h._bpmn_mod_message(spec, model)
-    assert "Check Inventory" in msg
-    assert "Verify Stock" in msg
-    assert "Renamed" in msg
+
+    hallucinated_response = BPMNModificationResponse(
+        elementFound=True,  # LLM lies — element doesn't exist
+        modifications=[
+            BPMNModification(
+                action="remove_element",
+                target=BPMNModificationTarget(nodeId="ghost-uuid-999", nodeName=None),
+                changes=None,
+            )
+        ],
+        message="Removed ghost element.",
+    )
+
+    def fake_predict(self, user_prompt, schema_cls, **kwargs):
+        return hallucinated_response
+
+    monkeypatch.setattr(BPMNDiagramHandler, "predict_structured", fake_predict)
+    h = BPMNDiagramHandler(None)
+    result = h.generate_modification("remove the non-existent element", current_model=model)
+
+    assert result["action"] == "assistant_message"
+
+
+def test_bpmn_guardrail_unnamed_element_resolved_by_type_label(monkeypatch):
+    """remove_element targeting an unnamed node by ID shows its type label in
+    the message, not the raw Apollon UUID."""
+    import sys
+    from pathlib import Path
+    _SRC = Path(__file__).resolve().parent.parent / "src"
+    if str(_SRC) not in sys.path:
+        sys.path.insert(0, str(_SRC))
+
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    from schemas.bpmn import BPMNModificationResponse, BPMNModification, BPMNModificationTarget
+
+    model = {
+        "elements": {
+            "uuid-gw-01": {"type": "BPMNGateway", "name": "", "gatewayType": "parallel"},
+        }
+    }
+
+    ok_response = BPMNModificationResponse(
+        elementFound=True,
+        modifications=[
+            BPMNModification(
+                action="remove_element",
+                target=BPMNModificationTarget(nodeId="uuid-gw-01", nodeName=None),
+                changes=None,
+            )
+        ],
+        message="Removed gateway.",
+    )
+
+    def fake_predict(self, user_prompt, schema_cls, **kwargs):
+        return ok_response
+
+    monkeypatch.setattr(BPMNDiagramHandler, "predict_structured", fake_predict)
+    h = BPMNDiagramHandler(None)
+    result = h.generate_modification("remove the parallel gateway", current_model=model)
+
+    assert result["action"] == "modify_model"
+    msg = result.get("message", "")
+    assert "Parallel Gateway" in msg
+    assert "uuid-gw-01" not in msg
 
 
 def test_bpmn_suggestions_have_nonempty_prompts():
