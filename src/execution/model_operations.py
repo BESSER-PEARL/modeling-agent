@@ -124,6 +124,36 @@ def execute_model_operation(
         operation_request = request.message
     operation_request = operation_request.strip()
 
+    # ── Modify-without-target guard ──────────────────────────────────────
+    # A modify_model op on a flow-style diagram only makes sense when that
+    # diagram already exists with content. When it doesn't (e.g. the user
+    # asks to "add an agent/chatbot to the app" while sitting on the
+    # class/GUI diagram — so the request resolves to an AgentDiagram that
+    # hasn't been created yet), promote the op to complete_system so the
+    # diagram is actually generated instead of failing in
+    # generate_modification on an empty model.
+    #
+    # Scoped to AgentDiagram / StateMachineDiagram / QuantumCircuitDiagram:
+    # their generate_modification needs an existing structure to edit. The
+    # ClassDiagram / ObjectDiagram / GUI handlers already create elements
+    # from an empty model on modify (e.g. "create a class called User"), so
+    # they are intentionally excluded to avoid regressing single-element
+    # creation into a full-system build.
+    _PROMOTE_MODIFY_WHEN_EMPTY = {
+        "AgentDiagram",
+        "StateMachineDiagram",
+        "QuantumCircuitDiagram",
+    }
+    if operation_mode == "modify_model" and target_diagram_type in _PROMOTE_MODIFY_WHEN_EMPTY:
+        _existing = resolve_target_model(request, target_diagram_type)
+        if not model_has_elements(_existing):
+            logger.info(
+                "[ModelOp] No existing %s to modify — promoting modify_model "
+                "to complete_system so the diagram is created.",
+                target_diagram_type,
+            )
+            operation_mode = "complete_system"
+
     logger.info(
         f"⚙️ [ModelOp] Executing: diagram={target_diagram_type}, mode={operation_mode}, "
         f"request={operation_request[:120]!r}"
