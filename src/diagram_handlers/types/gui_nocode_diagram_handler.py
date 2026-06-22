@@ -37,6 +37,31 @@ def _clean_text(value: Any, fallback: str = "") -> str:
     return fallback
 
 
+def _coerce_numeric(value: Any) -> Any:
+    """Best-effort convert a chart ``value`` to a number.
+
+    ``GUISampleDataPoint.value`` is typed as ``str`` (so OpenAI strict
+    structured outputs accept it), but charts expect numbers. Convert
+    numeric-looking strings to int/float; leave non-numeric values as-is.
+    """
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        text = value.strip().replace(",", "")
+        if not text:
+            return value
+        try:
+            if "." in text or "e" in text.lower():
+                return float(text)
+            return int(text)
+        except ValueError:
+            try:
+                return float(text)
+            except ValueError:
+                return value
+    return value
+
+
 def _sanitize_page_name(value: Any, fallback: str = "Page") -> str:
     label = _clean_text(value, fallback=fallback)
     if not label:
@@ -143,6 +168,123 @@ def _ensure_page_wrapper(page: Dict[str, Any]) -> Dict[str, Any]:
         component["components"] = []
 
     return component
+
+
+# ----------------------------------------------------------------------
+# Page / section lookup + edit helpers (used by generate_modification)
+# ----------------------------------------------------------------------
+
+# Common CSS color names → hex, so requests like "make it red" map to a
+# concrete value. Anything already looking like a CSS color is passed through.
+_NAMED_COLORS = {
+    "red": "#e74c3c", "blue": "#2563eb", "green": "#2ecc71",
+    "yellow": "#f1c40f", "orange": "#e67e22", "purple": "#9b59b6",
+    "pink": "#ff69b4", "teal": "#1abc9c", "cyan": "#00bcd4",
+    "black": "#111827", "white": "#ffffff", "gray": "#6b7280",
+    "grey": "#6b7280", "navy": "#1e3a5f", "indigo": "#4f46e5",
+    "violet": "#8b5cf6", "brown": "#92400e", "gold": "#d4af37",
+    "silver": "#c0c0c0", "maroon": "#800000", "lime": "#84cc16",
+    "magenta": "#d946ef",
+}
+
+
+def _resolve_color(value: Any) -> Optional[str]:
+    """Resolve a color name or CSS color to a concrete CSS color string."""
+    text = _clean_text(value)
+    if not text:
+        return None
+    lowered = text.lower()
+    if lowered in _NAMED_COLORS:
+        return _NAMED_COLORS[lowered]
+    # Already a hex / rgb / hsl / named CSS value — pass through.
+    if re.match(r"^#([0-9a-f]{3}|[0-9a-f]{6})$", lowered) or lowered.startswith(("rgb", "hsl")):
+        return text
+    return text
+
+
+def _find_page(model: Dict[str, Any], page_name: str) -> Optional[Dict[str, Any]]:
+    target = _clean_text(page_name).lower()
+    pages = model.get("pages") if isinstance(model.get("pages"), list) else []
+    for page in pages:
+        if isinstance(page, dict) and _clean_text(page.get("name")).lower() == target:
+            return page
+    # Fall back to the first page if there is exactly one (common single-page case).
+    real_pages = [p for p in pages if isinstance(p, dict)]
+    if len(real_pages) == 1:
+        return real_pages[0]
+    return None
+
+
+def _iter_section_components(wrapper: Dict[str, Any]):
+    """Yield ``(parent_list, index, component)`` for every top-level section.
+
+    Sections live either directly under the page wrapper or one level deep
+    inside an ``assistant-main`` container. This flattens both so callers can
+    edit, remove, or reorder a section regardless of nesting.
+    """
+    top = wrapper.get("components")
+    if not isinstance(top, list):
+        return
+    for comp in list(top):
+        if not isinstance(comp, dict):
+            continue
+        cls = comp.get("attributes", {}).get("class", "") if isinstance(comp.get("attributes"), dict) else ""
+        if cls == "assistant-main":
+            inner = comp.get("components")
+            if isinstance(inner, list):
+                for child in list(inner):
+                    if isinstance(child, dict):
+                        yield inner, inner.index(child), child
+        else:
+            yield top, top.index(comp), comp
+
+
+def _section_label(comp: Dict[str, Any]) -> str:
+    """Human label for a section: its first heading text, else its type class."""
+    def _first_heading(node: Dict[str, Any]) -> Optional[str]:
+        for child in node.get("components", []) if isinstance(node.get("components"), list) else []:
+            if not isinstance(child, dict):
+                continue
+            if child.get("tagName") in ("h1", "h2", "h3") and _clean_text(child.get("content")):
+                return _clean_text(child.get("content"))
+            nested = _first_heading(child)
+            if nested:
+                return nested
+        return None
+
+    heading = _first_heading(comp)
+    if heading:
+        return heading
+    cls = comp.get("attributes", {}).get("class", "") if isinstance(comp.get("attributes"), dict) else ""
+    return cls.replace("assistant-", "").replace("-", " ").strip() or "section"
+
+
+def _set_section_heading(comp: Dict[str, Any], new_title: str) -> bool:
+    """Replace the first heading's text in a section. Returns True if changed."""
+    if not isinstance(comp.get("components"), list):
+        return False
+    for child in comp["components"]:
+        if not isinstance(child, dict):
+            continue
+        if child.get("tagName") in ("h1", "h2", "h3"):
+            child["content"] = new_title
+            return True
+        if _set_section_heading(child, new_title):
+            return True
+    return False
+
+
+def _match_section(comp: Dict[str, Any], query: str) -> bool:
+    """Does *comp* match the user's section reference (by heading or type)?"""
+    q = _clean_text(query).lower()
+    if not q:
+        return False
+    label = _section_label(comp).lower()
+    if q in label or label in q:
+        return True
+    cls = comp.get("attributes", {}).get("class", "") if isinstance(comp.get("attributes"), dict) else ""
+    section_type = cls.replace("assistant-", "")
+    return bool(section_type) and q in section_type
 
 
 def _hero_component(title: str, body: str, cta_label: str) -> Dict[str, Any]:
@@ -561,16 +703,17 @@ def _extract_sample_data(
             continue
         if chart_type == "radar-chart":
             if "subject" in item and "value" in item:
-                cleaned.append(item)
+                cleaned.append({**item, "value": _coerce_numeric(item.get("value"))})
             elif "name" in item and "value" in item:
-                cleaned.append({"subject": item["name"], "value": item["value"],
+                cleaned.append({"subject": item["name"],
+                                "value": _coerce_numeric(item.get("value")),
                                 "fullMark": item.get("fullMark", 100)})
         elif chart_type == "pie-chart":
             if "name" in item and "value" in item:
-                cleaned.append(item)
+                cleaned.append({**item, "value": _coerce_numeric(item.get("value"))})
         else:
             if "name" in item and "value" in item:
-                cleaned.append(item)
+                cleaned.append({**item, "value": _coerce_numeric(item.get("value"))})
     if cleaned:
         return cleaned
 
@@ -1926,15 +2069,42 @@ When classes are available, design pages around the data:
         ]
         pages_hint = ", ".join(page_names) if page_names else "Home"
 
-        prompt = f"""You are a UI modeling assistant.
+        # Prefer the user's raw message for deterministic parsing — the modeling
+        # prompt passed in ``user_request`` is enriched with workspace context.
+        raw_request = _clean_text(kwargs.get("raw_request")) or user_request
 
-Return ONLY JSON with this shape:
+        # ── 1. Deterministic fast-path ──────────────────────────────────────
+        # Simple, unambiguous edits (rename / recolor / reorder) are applied
+        # directly without an LLM round-trip. This is fast AND robust: it can
+        # never fail the way a structured-output call can, and never destroys
+        # the existing model.
+        try:
+            fast = self._try_deterministic_modify(model, raw_request, page_names)
+            if fast is not None:
+                applied_model, message = fast
+                return {
+                    "action": "modify_model",
+                    "diagramType": self.get_diagram_type(),
+                    "model": applied_model,
+                    "message": message,
+                }
+        except Exception:
+            logger.warning("[GUINoCode] deterministic modify fast-path failed", exc_info=True)
+
+        # ── 2. LLM-structured path ──────────────────────────────────────────
+        prompt = f"""You are a UI modeling assistant that edits an existing GUI.
+
+Pick the single operation that best matches the user's request and return ONLY JSON:
 {{
-  "operation": "append_section|rename_page|remove_page",
-  "pageName": "Target page",
-  "newPageName": "Required for rename_page",
+  "operation": "append_section|remove_section|rename_page|add_page|remove_page|rename_section|recolor_section|recolor_page|reorder_section",
+  "pageName": "Target page (use an existing page name when possible)",
+  "newPageName": "New page name (rename_page / add_page)",
+  "sectionTitle": "Heading or type of the section to act on (rename_section / recolor_section / remove_section / reorder_section)",
+  "newSectionTitle": "New heading (rename_section)",
+  "color": "Color name or CSS value (recolor_section / recolor_page)",
+  "position": "top|bottom|up|down (reorder_section)",
   "section": {{
-    "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard|metric_card",
+    "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard|metric_card|stats_grid|footer|two_column",
     "title": "Section title",
     "body": "Optional text",
     "items": ["Optional item"],
@@ -1942,71 +2112,362 @@ Return ONLY JSON with this shape:
     "ctaLabel": "Optional CTA",
     "className": "Optional class name to bind data to",
     "sampleData": [
-      {{"name": "Realistic label from domain", "value": 42}}
+      {{"name": "Realistic label from domain", "value": "42"}}
     ]
   }}
 }}
 
 Rules:
-1. Prefer append_section when request asks to add/update content.
-2. Use existing page names when possible.
-3. When adding data visualisation, use table/chart/dashboard types with className.
-4. For table/chart/dashboard sections, ALWAYS include a "sampleData" array with 4-6 realistic preview rows using actual attribute names and plausible domain values. For charts: {{"name": "label", "value": number}}. For pie charts add "color". For tables: dict with column-name keys.
+1. Choose the most specific operation. Do NOT append a section for a rename/recolor/reorder/remove request.
+2. Use existing page names when possible: {pages_hint}.
+3. ``section`` is only needed for append_section / add_page.
+4. For table/chart/dashboard sections, include a "sampleData" array (4-6 rows). Chart values are STRINGS (e.g. "42").
 5. Return JSON only.{class_block}"""
 
         try:
-            user_prompt = f"Available pages: {pages_hint}\n\nUser Request: {user_request}"
+            user_prompt = f"Available pages: {pages_hint}\n\nUser Request: {raw_request}"
             # Modification → SMALL generation tier (latency-sensitive).
             parsed = self.predict_structured(
                 user_prompt, GUIModificationSpec, system_prompt=prompt,
                 model=MODEL_GENERATION_SMALL,
             )
             spec = parsed.model_dump()
-
-            operation = _clean_text(spec.get("operation"), fallback="append_section")
-            page_name = _sanitize_page_name(spec.get("pageName"), fallback=page_names[0] if page_names else "Home")
-
-            if operation == "rename_page":
-                new_page_name = _sanitize_page_name(spec.get("newPageName"), fallback=page_name)
-                for page in model.get("pages", []):
-                    if not isinstance(page, dict):
-                        continue
-                    if _clean_text(page.get("name")).lower() == page_name.lower():
-                        page["name"] = new_page_name
-                        page["route_path"] = f"/{re.sub(r'[^a-z0-9-]+', '-', new_page_name.lower()).strip('-') or 'page'}"
-                        break
-                message = f"Renamed the **{page_name}** page to **{new_page_name}**."
-            elif operation == "remove_page":
-                filtered_pages = [
-                    page
-                    for page in model.get("pages", [])
-                    if not isinstance(page, dict) or _clean_text(page.get("name")).lower() != page_name.lower()
-                ]
-                if filtered_pages:
-                    model["pages"] = filtered_pages
-                message = f"Removed the **{page_name}** page from the GUI."
-            else:
-                section_spec = spec.get("section") if isinstance(spec.get("section"), dict) else {}
-                section_component = _build_section_component(section_spec, class_metadata)
-                model = self._append_section(model, page_name, section_component)
-                message = f"Added a new section to the **{page_name}** page."
-
+            applied_model, message = self._apply_modification_spec(
+                model, spec, page_names, class_metadata,
+            )
             return {
                 "action": "modify_model",
                 "diagramType": self.get_diagram_type(),
-                "model": model,
+                "model": applied_model,
                 "message": message,
             }
         except LLMPredictionError:
             logger.error("[GUINoCode] generate_modification LLM FAILED", exc_info=True)
-            return self._error_response("I couldn't process that GUI modification. Please try again or rephrase your request.")
-        except Exception:
+            # SAFETY: never destroy the existing GUI on failure. Return the
+            # original model unchanged with a clarification asking the user to
+            # be specific, rather than an empty/error payload.
             return {
                 "action": "modify_model",
                 "diagramType": self.get_diagram_type(),
                 "model": model,
-                "message": "I couldn't parse the requested GUI modification, but your existing model is safe. Could you rephrase what you'd like to change?",
+                "message": (
+                    "I couldn't apply that change automatically, and I've left your GUI "
+                    "unchanged. Could you be more specific? For example: *'rename the "
+                    f"{(page_names[0] if page_names else 'Home')} page to Overview'*, "
+                    "*'change the hero section color to red'*, or *'move the Recent edits "
+                    "card to the top'*."
+                ),
             }
+        except Exception:
+            logger.warning("[GUINoCode] generate_modification apply failed", exc_info=True)
+            return {
+                "action": "modify_model",
+                "diagramType": self.get_diagram_type(),
+                "model": model,
+                "message": (
+                    "I couldn't parse that GUI modification, but your existing model is "
+                    "safe and unchanged. Could you rephrase what you'd like to change?"
+                ),
+            }
+
+    # ------------------------------------------------------------------
+    # Modification helpers
+    # ------------------------------------------------------------------
+
+    def _try_deterministic_modify(
+        self,
+        model: Dict[str, Any],
+        request: str,
+        page_names: List[str],
+    ) -> Optional[tuple]:
+        """Apply common edits parsed directly from the request, no LLM needed.
+
+        Returns ``(model, message)`` when a rule fired, else ``None`` so the
+        caller falls through to the LLM path. Never deletes content.
+        """
+        text = _clean_text(request)
+        if not text:
+            return None
+        # Trailing punctuation ("...to red?") would otherwise fall outside the
+        # color/name char classes and break the end-anchored patterns.
+        text = text.rstrip("?.! ").strip()
+        low = text.lower()
+
+        # --- Rename a page: "rename X to Y" / "rename page X to Y" ---
+        # Capture everything between "rename [page]" and "to" as the source so
+        # multi-word names ("Page Management") survive, then resolve the source
+        # against existing page names (most robust) before falling back to a
+        # section rename.
+        m = re.search(
+            r"rename\s+(?:the\s+)?(?:page\s+)?['\"]?(.+?)['\"]?\s+to\s+['\"]?(.+?)['\"]?$",
+            text, re.IGNORECASE,
+        )
+        if m:
+            raw_old = _clean_text(m.group(1))
+            new_name = _sanitize_page_name(m.group(2))
+            # Prefer the existing page name that the source text matches, so a
+            # leading word ("page") swallowed by the regex doesn't break it.
+            matched_page = None
+            for page in model.get("pages", []):
+                if not isinstance(page, dict):
+                    continue
+                pname = _clean_text(page.get("name"))
+                if not pname:
+                    continue
+                if raw_old.lower() == pname.lower() or pname.lower().endswith(raw_old.lower()):
+                    matched_page = page
+                    break
+            if matched_page is not None:
+                old_name = _clean_text(matched_page.get("name"))
+                matched_page["name"] = new_name
+                matched_page["route_path"] = (
+                    f"/{re.sub(r'[^a-z0-9-]+', '-', new_name.lower()).strip('-') or 'page'}"
+                )
+                return model, f"Renamed the **{old_name}** page to **{new_name}**."
+            # Otherwise it may be a section rename — try that.
+            if self._rename_section(model, raw_old, new_name):
+                return model, f"Renamed the **{raw_old}** section to **{new_name}**."
+
+        # --- Recolor: "change [the] [<target>] color to <color>" ---
+        # Require the word "colo(u)r" to be present so we don't misread an
+        # open-ended request ("make the dashboard fancier") as a recolor.
+        m = None
+        color_word = None
+        if re.search(r"\bcolou?r\b", low):
+            m = re.search(
+                r"(?:change|set|make|turn|paint)\b.*?\bcolou?r\b.*?\bto\b\s+([a-z#0-9(),.\s]+)$",
+                low,
+            )
+            if not m:
+                # "make the hero red" / "make it blue" — only when the trailing
+                # word is an actual named color.
+                m = re.search(r"\bmake\b\s+(?:it|the\s+.+?)\s+([a-z]+)$", low)
+                if m and m.group(1) not in _NAMED_COLORS:
+                    m = None
+        else:
+            # "make the hero red" without the word "color": accept only if the
+            # final token is a recognised color name.
+            trailing = re.search(r"\b(?:make|turn|paint)\b\s+(?:it|the\s+.+?)\s+([a-z]+)$", low)
+            if trailing and trailing.group(1) in _NAMED_COLORS:
+                m = trailing
+        if m:
+            color_word = m.group(1).strip()
+            color = _resolve_color(color_word)
+            if color and (color_word in _NAMED_COLORS or color.startswith(("#", "rgb", "hsl"))):
+                # Did the user name a specific section?
+                section_ref = self._extract_section_reference(low)
+                if section_ref:
+                    changed = self._recolor_section(model, page_names, section_ref, color)
+                    if changed:
+                        return model, f"Changed the **{section_ref}** section color to **{color_word}**."
+                # Otherwise recolor the page(s).
+                self._recolor_page(model, page_names, color)
+                return model, f"Changed the GUI color to **{color_word}**."
+
+        # --- Reorder / align: "move <section> to the top/bottom" ---
+        m = re.search(
+            r"(?:move|put|place|align)\s+(?:the\s+)?['\"]?(.+?)['\"]?\s+(?:card|section)?\s*(?:to|at|on)\s+(?:the\s+)?(top|bottom|first|last|start|end)\b",
+            low,
+        )
+        if m:
+            section_ref = _clean_text(m.group(1))
+            pos_raw = m.group(2)
+            position = "top" if pos_raw in ("top", "first", "start") else "bottom"
+            moved = self._reorder_section(model, page_names, section_ref, position)
+            if moved:
+                return model, f"Moved the **{section_ref}** section to the **{position}** of the page."
+
+        return None
+
+    @staticmethod
+    def _extract_section_reference(low_text: str) -> Optional[str]:
+        """Pull a section name/type out of a recolor request, if present."""
+        m = re.search(
+            r"\b(hero|footer|header|table|form|content|dashboard|feature[s]?|nav(?:igation)?|sidebar|"
+            r"card|stats?|chart|banner)\b",
+            low_text,
+        )
+        return m.group(1) if m else None
+
+    def _rename_section(self, model: Dict[str, Any], query: str, new_title: str) -> bool:
+        for page in model.get("pages", []):
+            if not isinstance(page, dict):
+                continue
+            wrapper = _ensure_page_wrapper(page)
+            for _parent, _idx, comp in _iter_section_components(wrapper):
+                if _match_section(comp, query):
+                    if _set_section_heading(comp, new_title):
+                        return True
+        return False
+
+    def _recolor_section(
+        self, model: Dict[str, Any], page_names: List[str], query: str, color: str,
+    ) -> bool:
+        changed = False
+        for page in model.get("pages", []):
+            if not isinstance(page, dict):
+                continue
+            wrapper = _ensure_page_wrapper(page)
+            for _parent, _idx, comp in _iter_section_components(wrapper):
+                if _match_section(comp, query):
+                    style = comp.get("style")
+                    if not isinstance(style, dict):
+                        style = {}
+                        comp["style"] = style
+                    # Heroes use a gradient background; override with a solid color.
+                    style.pop("background", None)
+                    style["background-color"] = color
+                    changed = True
+        return changed
+
+    def _recolor_page(self, model: Dict[str, Any], page_names: List[str], color: str) -> None:
+        """Set the page background color on every page wrapper."""
+        for page in model.get("pages", []):
+            if not isinstance(page, dict):
+                continue
+            wrapper = _ensure_page_wrapper(page)
+            style = wrapper.get("style")
+            if not isinstance(style, dict):
+                style = {}
+                wrapper["style"] = style
+            style["background-color"] = color
+
+    def _reorder_section(
+        self, model: Dict[str, Any], page_names: List[str], query: str, position: str,
+    ) -> bool:
+        for page in model.get("pages", []):
+            if not isinstance(page, dict):
+                continue
+            wrapper = _ensure_page_wrapper(page)
+            for parent, idx, comp in _iter_section_components(wrapper):
+                if _match_section(comp, query):
+                    # Remove from current spot and re-insert at top/bottom of
+                    # the same parent list.
+                    parent.pop(idx)
+                    if position == "top":
+                        parent.insert(0, comp)
+                    else:
+                        parent.append(comp)
+                    return True
+        return False
+
+    def _apply_modification_spec(
+        self,
+        model: Dict[str, Any],
+        spec: Dict[str, Any],
+        page_names: List[str],
+        class_metadata: Optional[List[Dict[str, Any]]],
+    ) -> tuple:
+        """Apply a parsed ``GUIModificationSpec`` dict to *model* in place.
+
+        Returns ``(model, message)``. Never deletes the last remaining page.
+        """
+        operation = _clean_text(spec.get("operation"), fallback="append_section")
+        default_page = page_names[0] if page_names else "Home"
+        page_name = _sanitize_page_name(spec.get("pageName"), fallback=default_page)
+
+        if operation == "rename_page":
+            new_page_name = _sanitize_page_name(spec.get("newPageName"), fallback=page_name)
+            for page in model.get("pages", []):
+                if isinstance(page, dict) and _clean_text(page.get("name")).lower() == page_name.lower():
+                    page["name"] = new_page_name
+                    page["route_path"] = (
+                        f"/{re.sub(r'[^a-z0-9-]+', '-', new_page_name.lower()).strip('-') or 'page'}"
+                    )
+                    break
+            return model, f"Renamed the **{page_name}** page to **{new_page_name}**."
+
+        if operation == "add_page":
+            new_page_name = _sanitize_page_name(spec.get("newPageName") or page_name, fallback="Page")
+            new_page = {
+                "name": new_page_name,
+                "route_path": f"/{re.sub(r'[^a-z0-9-]+', '-', new_page_name.lower()).strip('-') or 'page'}",
+                "frames": [{"component": _default_wrapper_component()}],
+            }
+            model.setdefault("pages", []).append(new_page)
+            section_spec = spec.get("section") if isinstance(spec.get("section"), dict) else None
+            if section_spec:
+                model = self._append_section(model, new_page_name, _build_section_component(section_spec, class_metadata))
+            return model, f"Added a new page named **{new_page_name}**."
+
+        if operation == "remove_page":
+            pages = [p for p in model.get("pages", []) if isinstance(p, dict)]
+            filtered = [p for p in pages if _clean_text(p.get("name")).lower() != page_name.lower()]
+            # SAFETY: never remove the last page — leave at least one.
+            if filtered and len(filtered) < len(pages):
+                model["pages"] = filtered
+                return model, f"Removed the **{page_name}** page from the GUI."
+            return model, (
+                f"I couldn't remove the **{page_name}** page (it either doesn't exist or "
+                "it's the only page). Your GUI is unchanged."
+            )
+
+        if operation == "rename_section":
+            query = _clean_text(spec.get("sectionTitle"))
+            new_title = _clean_text(spec.get("newSectionTitle"))
+            if query and new_title and self._rename_section(model, query, new_title):
+                return model, f"Renamed the **{query}** section to **{new_title}**."
+            return model, (
+                f"I couldn't find a section matching **{query or 'that'}** to rename. "
+                "Your GUI is unchanged."
+            )
+
+        if operation == "recolor_section":
+            query = _clean_text(spec.get("sectionTitle"))
+            color = _resolve_color(spec.get("color"))
+            if query and color and self._recolor_section(model, page_names, query, color):
+                return model, f"Changed the **{query}** section color."
+            return model, (
+                f"I couldn't find a section matching **{query or 'that'}** to recolor. "
+                "Your GUI is unchanged."
+            )
+
+        if operation == "recolor_page":
+            color = _resolve_color(spec.get("color"))
+            if color:
+                self._recolor_page(model, page_names, color)
+                return model, "Changed the GUI background color."
+            return model, "I couldn't determine the requested color. Your GUI is unchanged."
+
+        if operation == "reorder_section":
+            query = _clean_text(spec.get("sectionTitle"))
+            position = _clean_text(spec.get("position"), fallback="top")
+            position = "top" if position in ("top", "up", "first", "start") else "bottom"
+            if query and self._reorder_section(model, page_names, query, position):
+                return model, f"Moved the **{query}** section to the **{position}** of the page."
+            return model, (
+                f"I couldn't find a section matching **{query or 'that'}** to move. "
+                "Your GUI is unchanged."
+            )
+
+        if operation == "remove_section":
+            query = _clean_text(spec.get("sectionTitle"))
+            removed = self._remove_section(model, query)
+            if removed:
+                return model, f"Removed the **{query}** section."
+            return model, (
+                f"I couldn't find a section matching **{query or 'that'}** to remove. "
+                "Your GUI is unchanged."
+            )
+
+        # Default: append_section
+        section_spec = spec.get("section") if isinstance(spec.get("section"), dict) else {}
+        section_component = _build_section_component(section_spec, class_metadata)
+        model = self._append_section(model, page_name, section_component)
+        return model, f"Added a new section to the **{page_name}** page."
+
+    def _remove_section(self, model: Dict[str, Any], query: str) -> bool:
+        if not query:
+            return False
+        for page in model.get("pages", []):
+            if not isinstance(page, dict):
+                continue
+            wrapper = _ensure_page_wrapper(page)
+            for parent, idx, comp in _iter_section_components(wrapper):
+                if _match_section(comp, query):
+                    parent.pop(idx)
+                    return True
+        return False
 
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
         model = _default_gui_model()

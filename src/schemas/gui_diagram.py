@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Literal, Optional
+from typing import List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -11,9 +11,15 @@ class GUISampleDataPoint(BaseModel):
     name: str = Field(
         description="Label for the data point (e.g. category name, x-axis label)",
     )
-    value: Any = Field(
+    # NOTE: This must be a CONCRETE type. ``Any`` renders a typeless JSON-schema
+    # property which OpenAI strict structured-output mode rejects with a 400
+    # BadRequestError — that single field broke EVERY GUI modification call
+    # (GUIModificationSpec embeds GUISectionSpec embeds this model). A concrete
+    # Union of str/int/float renders as a clean ``anyOf`` that strict mode
+    # accepts while still allowing both numeric and label values.
+    value: Optional[Union[str, int, float]] = Field(
         default=0,
-        description="Numeric or string value for the data point",
+        description="Numeric or string value for the data point (e.g. 42).",
     )
     color: Optional[str] = Field(
         default=None,
@@ -98,21 +104,66 @@ class SystemGUISpec(BaseModel):
 # -- Modification schema --
 
 class GUIModificationSpec(BaseModel):
-    """Schema for GUI diagram modification operations."""
-    operation: Literal["append_section", "rename_page", "remove_page"] = Field(
+    """Schema for GUI diagram modification operations.
+
+    Covers the common edit requests: adding/removing pages and sections,
+    renaming them, recoloring a section or the whole page, and reordering
+    a section to the top/bottom of its page.
+    """
+    operation: Literal[
+        "append_section",
+        "remove_section",
+        "rename_page",
+        "add_page",
+        "remove_page",
+        "rename_section",
+        "recolor_section",
+        "recolor_page",
+        "reorder_section",
+    ] = Field(
         default="append_section",
-        description="Operation: append_section, rename_page, or remove_page.",
+        description=(
+            "Operation to perform. Use rename_page to rename a page, "
+            "rename_section to rename/retitle a section, recolor_section or "
+            "recolor_page to change colors, reorder_section to move a section "
+            "up/down, append_section/remove_section to add or delete a section, "
+            "add_page/remove_page to add or delete a page."
+        ),
     )
     pageName: str = Field(
         min_length=1,
-        description="Name of the target page to modify",
+        description="Name of the target page to modify (or the page to act on)",
     )
     newPageName: Optional[str] = Field(
         default=None,
-        max_length=50,
-        description="New page name (only used with 'rename_page' operation)",
+        max_length=80,
+        description="New page name (used with 'rename_page' and 'add_page').",
+    )
+    sectionTitle: Optional[str] = Field(
+        default=None,
+        description=(
+            "Current title/heading or type of the target section to find "
+            "(used with rename_section, recolor_section, remove_section, "
+            "reorder_section). May be a heading like 'Recent edits' or a type "
+            "like 'hero'/'table'."
+        ),
+    )
+    newSectionTitle: Optional[str] = Field(
+        default=None,
+        description="New title/heading for the section (used with 'rename_section').",
+    )
+    color: Optional[str] = Field(
+        default=None,
+        description=(
+            "Target color as a CSS value or common name (e.g. 'red', '#ff0000') "
+            "for recolor_section / recolor_page operations."
+        ),
+    )
+    position: Optional[Literal["top", "bottom", "up", "down"]] = Field(
+        default=None,
+        description="Where to move the section for 'reorder_section'.",
     )
     section: Optional[GUISectionSpec] = Field(
         default=None,
-        description="Section to append (only used with 'append_section' operation)",
+        description="Section to append (used with 'append_section' / 'add_page').",
     )
