@@ -429,8 +429,9 @@ KEY RULES:
 5. RENAME: single modify_class only. Relationships update automatically.
 6. DELETE a class: you MUST include remove_element entries for the class AND for EVERY relationship connected to it. If you only mention the removal in your message but don't include the remove_element actions, the class WILL NOT be removed. Example: to delete "Address" with 2 relationships → 3 remove_element entries (1 for the class + 2 for relationships).
 7. modify_relationship = update existing. add_relationship = brand new.
-8. add_class: set target.className and put className, attributes[], methods[] in "changes".
+8. add_class: the new class name goes ONLY in changes.className. LEAVE target EMPTY ({}) for add_class — do NOT put the name (or any placeholder) in target.className; the target is the brand-new class, so it has no existing name to reference. Put className, attributes[], methods[] in "changes". NEVER invent a placeholder like "ClassNameHere" or "...PlaceholderHere" for any field — if you have no real value, leave the field empty.
 9. When adding new classes, add relationships connecting them to existing classes. Include multiplicities. This is critical — isolated classes with no relationships are useless.
+10. ASSOCIATION CLASS: if the user asks for an "association class" (or "link/junction/join class") between A and B, create a normal linking class with a clean single-word name (e.g. RolePermission for Role+Permission), give it the two foreign-key attributes, and add an add_relationship from A to the linking class and from the linking class to B. The class name goes in changes.className — never a placeholder.
 
 ENUMERATION RULES:
 - Create enum: add_class with isEnumeration=true. Enum values are attributes with name only (NO type field).
@@ -446,7 +447,8 @@ Examples:
 - "connect Order to Customer" → add_relationship (Association)
 - "change multiplicity to many" → modify_relationship
 - "delete the Address class" → modifications array: [remove_element with target.className="Address", remove_element with target.relationshipName="..." for EACH relationship involving Address]. You MUST include ALL of these or the class stays on the diagram.
-- "add a User class with name and email" → add_class with target.className="User", changes.className="User", changes.attributes=[{name:"name",type:"String"},{name:"email",type:"String"}]
+- "add a User class with name and email" → add_class with target={}, changes.className="User", changes.attributes=[{name:"name",type:"String"},{name:"email",type:"String"}]
+- "create an association class between Role and Permission" → modifications array: [add_class with target={}, changes.className="RolePermission", changes.attributes=[{name:"roleId",type:"String"},{name:"permissionId",type:"String"}]; add_relationship Role→RolePermission; add_relationship RolePermission→Permission]. NEVER put "RolePermissionPlaceholder" or similar in any field.
 - "create an OrderStatus enum with PENDING, SHIPPED, DELIVERED" → add_class with isEnumeration=true, changes.attributes=[{name:"PENDING"},{name:"SHIPPED"},{name:"DELIVERED"}]
 - "add status attribute of type OrderStatus to Order" → add_attribute with target.className="Order", changes.name="status", changes.type="OrderStatus"
 - "create a Priority enum with Low, Medium, High" → add_class isEnumeration=true, className="Priority", attributes=[{name:"Low"},{name:"Medium"},{name:"High"}]
@@ -563,6 +565,11 @@ Examples:
                 spec_processor=_expand_refactoring,
             )
 
+            # Replace the generic/default message with a clean, descriptive one
+            # for add_class (the name lives in changes.className, not the now-
+            # cleared target.className) and for association/linking-class requests.
+            self._apply_clean_modification_message(modification_spec, user_request)
+
             logger.info(
                 f"[ClassDiagram] Modification spec: "
                 f"batch={'modifications' in modification_spec}, "
@@ -593,6 +600,134 @@ Examples:
             "diagramType": self.get_diagram_type(),
             "message": "I couldn't apply that modification automatically. Could you rephrase your request? For example: *'Add a phone attribute to User'* or *'Create a relationship between Order and Product'*."
         }
+
+    # ------------------------------------------------------------------
+    # Modification message building
+    # ------------------------------------------------------------------
+
+    # Case-insensitive markers of a hallucinated placeholder name. Mirrors the
+    # schema-level _PLACEHOLDER_TOKENS but lives here as a final defensive guard
+    # so no placeholder can ever reach the user-facing success message.
+    _PLACEHOLDER_MARKERS = ("placeholder", "classnamehere", "namehere")
+
+    @classmethod
+    def _looks_like_placeholder(cls, value: Optional[str]) -> bool:
+        if not value or not isinstance(value, str):
+            return False
+        low = value.lower()
+        return any(marker in low for marker in cls._PLACEHOLDER_MARKERS)
+
+    def _apply_clean_modification_message(
+        self, spec: Dict[str, Any], user_request: str,
+    ) -> None:
+        """Set a clean, descriptive success message for add_class / association-class.
+
+        The base ``_execute_modification`` builds the default message from
+        ``target.className``, which is intentionally cleared for add_class — so
+        the default would read "Added **element**". Here we source the real name
+        from ``changes.className`` and, when the user asked for an "association
+        class", state that a linking class was created between the two endpoints.
+
+        Mutates *spec* in place. No-op when there is no add_class involved.
+        """
+        # Normalize to a flat list of inner modifications.
+        if isinstance(spec.get("modifications"), list):
+            mods = spec["modifications"]
+        elif isinstance(spec.get("modification"), dict):
+            mods = [spec["modification"]]
+        else:
+            return
+
+        add_class_mods = [
+            m for m in mods
+            if isinstance(m, dict) and m.get("action") == "add_class"
+        ]
+        if not add_class_mods:
+            return
+
+        # Resolve clean class names (defensively drop any surviving placeholder).
+        new_names: List[str] = []
+        for m in add_class_mods:
+            changes = m.get("changes") or {}
+            name = changes.get("className") if isinstance(changes, dict) else None
+            if name and not self._looks_like_placeholder(name):
+                new_names.append(name)
+        if not new_names:
+            return
+
+        wants_assoc = any(
+            kw in user_request.lower()
+            for kw in ("association class", "associationclass", "link class",
+                       "linking class", "junction class", "join class")
+        )
+
+        # Association/linking-class request: name the two endpoints if we can
+        # find the relationships connecting the new class to existing classes.
+        if wants_assoc:
+            link_name = new_names[0]
+            endpoints = self._endpoints_for_link_class(link_name, mods)
+            if len(endpoints) >= 2:
+                spec["message"] = (
+                    f"Created a linking class **{link_name}** between "
+                    f"**{endpoints[0]}** and **{endpoints[1]}** "
+                    "(an association class is modeled here as a junction class "
+                    "with foreign-key attributes and relationships to both)."
+                )
+            else:
+                spec["message"] = (
+                    f"Created a linking class **{link_name}** to associate the "
+                    "two classes (modeled as a junction class with foreign-key "
+                    "attributes)."
+                )
+            return
+
+        # Plain add_class — describe what was created using the real name(s).
+        if len(new_names) == 1:
+            name = new_names[0]
+            changes = (add_class_mods[0].get("changes") or {})
+            attrs = changes.get("attributes") or []
+            attr_names = [a.get("name") for a in attrs if isinstance(a, dict) and a.get("name")][:5]
+            msg = f"Added the **{name}** class"
+            if attr_names:
+                msg += " with attributes: " + ", ".join(f"`{n}`" for n in attr_names)
+                if len(attrs) > 5:
+                    msg += f" (+{len(attrs) - 5} more)"
+            msg += "."
+            # When add_class is part of a larger batch, keep the batch summary
+            # but lead with the clean class line so the name is never junk.
+            if len(mods) > 1:
+                msg += f" (applied {len(mods)} changes total)."
+            spec["message"] = msg
+        else:
+            spec["message"] = (
+                "Added classes: "
+                + ", ".join(f"**{n}**" for n in new_names) + "."
+            )
+
+    @staticmethod
+    def _endpoints_for_link_class(
+        link_name: str, mods: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Return the existing class names a linking class connects to.
+
+        Scans add_relationship mods for the other end of each relationship that
+        touches *link_name* (via target.sourceClass / target.targetClass),
+        de-duplicated and excluding the link class itself.
+        """
+        endpoints: List[str] = []
+        for m in mods:
+            if not isinstance(m, dict) or m.get("action") != "add_relationship":
+                continue
+            target = m.get("target") or {}
+            if not isinstance(target, dict):
+                continue
+            src = target.get("sourceClass")
+            tgt = target.get("targetClass")
+            if link_name in (src, tgt):
+                other = tgt if src == link_name else src
+                if other and other != link_name and other not in endpoints:
+                    endpoints.append(other)
+        return endpoints
 
     # ------------------------------------------------------------------
     # Refactoring Action Expansion

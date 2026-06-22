@@ -9,7 +9,7 @@ from typing import List, Literal, Optional
 
 import re
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class MethodParameterSpec(BaseModel):
@@ -69,11 +69,58 @@ class SystemClassSpec(BaseModel):
 
 # -- Modification schemas --
 
+# Hallucinated "placeholder" tokens the LLM invents for required name fields it
+# has no real value for (e.g. add_class.target.className). Matched
+# case-insensitively as a substring so any of these anywhere in the name flags
+# it as junk. Covers the live cases "...ClassNamePlaceholderHere" and
+# "ChatbotHandlerClassNamePlaceholder".
+# NOTE: substring-matched, so keep these specific enough not to collide with a
+# legitimate domain class name (e.g. a real "Todo" class). Avoid bare tokens
+# like "todo"/"tbd"/"xxx".
+_PLACEHOLDER_TOKENS = (
+    "placeholder",
+    "classnamehere",
+    "classname here",
+    "namehere",
+    "yourclassname",
+    "yourclass",
+    "<name>",
+    "<class>",
+    "<classname>",
+    "enterclassname",
+    "insertclassname",
+    "exampleclassname",
+    "newclassname",
+)
+
+
+def _is_placeholder(value: str | None) -> bool:
+    """Return True if *value* looks like a hallucinated placeholder token.
+
+    Case-insensitive substring match against ``_PLACEHOLDER_TOKENS`` so a leak
+    like ``RolePermissionAssociationClassNamePlaceholderHere`` or
+    ``ChatbotHandlerClassNamePlaceholder`` is caught even when the LLM prefixes
+    or suffixes it with a real-looking word.
+    """
+    if not value or not isinstance(value, str):
+        return False
+    low = value.strip().lower()
+    return any(tok in low for tok in _PLACEHOLDER_TOKENS)
+
+
 def _clean_name(value: str | None) -> str | None:
-    """Strip JSON artifacts (},  ],  etc.) that the LLM may include in names."""
+    """Strip JSON artifacts (}, ], etc.) and null out hallucinated placeholders.
+
+    First removes trailing JSON syntax the LLM may leak into a name, then nulls
+    the value entirely if it matches a placeholder token — so a leak can never
+    reach the applied model or the success message.
+    """
     if not value:
         return value
-    return re.sub(r'[{}\[\],]+$', '', value).strip() or None
+    cleaned = re.sub(r'[{}\[\],]+$', '', value).strip() or None
+    if _is_placeholder(cleaned):
+        return None
+    return cleaned
 
 
 class ClassModificationTarget(BaseModel):
@@ -97,13 +144,6 @@ class ClassModificationTarget(BaseModel):
 class ClassModificationChanges(BaseModel):
     name: Optional[str] = Field(default=None, max_length=30, description="New name for rename operations (PascalCase, ONE word only)")
     type: Optional[str] = Field(default=None, description="New type for attribute/parameter changes")
-
-    @model_validator(mode='after')
-    def strip_json_artifacts(self) -> 'ClassModificationChanges':
-        self.name = _clean_name(self.name)
-        if self.className:
-            self.className = _clean_name(self.className)
-        return self
     visibility: Optional[Literal["public", "private", "protected", "package"]] = None
     returnType: Optional[str] = None
     parameters: Optional[List[MethodParameterSpec]] = None
@@ -124,6 +164,36 @@ class ClassModificationChanges(BaseModel):
     code: Optional[str] = Field(default=None, description="Python code for method implementation")
     isEnumeration: Optional[bool] = Field(default=None, description="Set enumeration status for class")
 
+    @field_validator('name', 'className', mode='before')
+    @classmethod
+    def _null_placeholder_names(cls, v):
+        """Null a hallucinated placeholder name BEFORE length validation.
+
+        These fields cap at 30 chars; a long leak like
+        "ChatbotHandlerClassNamePlaceholder" (34 chars) would otherwise raise a
+        max_length ValidationError and fail the whole modification. Running in
+        ``mode='before'`` nulls it first so the constraint never sees the junk.
+        """
+        if isinstance(v, str) and _is_placeholder(v):
+            return None
+        return v
+
+    @model_validator(mode='after')
+    def strip_json_artifacts(self) -> 'ClassModificationChanges':
+        """Strip JSON artifacts and null any hallucinated placeholder name.
+
+        Also drops placeholder-named attributes/methods (their ``name`` field
+        has min_length=1 so it can't be nulled in place — the whole entry is
+        removed instead) so a leak can't survive on a sub-element either.
+        """
+        self.name = _clean_name(self.name)
+        self.className = _clean_name(self.className)
+        if self.attributes:
+            self.attributes = [a for a in self.attributes if not _is_placeholder(a.name)]
+        if self.methods:
+            self.methods = [m for m in self.methods if not _is_placeholder(m.name)]
+        return self
+
 
 class ClassModification(BaseModel):
     action: Literal[
@@ -137,6 +207,39 @@ class ClassModification(BaseModel):
     ] = Field(description="Action to perform.")
     target: ClassModificationTarget
     changes: Optional[ClassModificationChanges] = Field(default=None, description="Changes to apply. Required for all actions except remove_element.")
+
+    @model_validator(mode='after')
+    def resolve_add_class_name(self) -> 'ClassModification':
+        """For add_class, source the real class name and clear junk target.
+
+        The new class name belongs in ``changes.className``; ``target.className``
+        is meaningless for add_class (the target is a brand-new class). The LLM
+        frequently hallucinates a placeholder there. This validator:
+
+        1. Resolves the real, non-placeholder name from whichever of
+           ``changes.className`` / ``target.className`` actually holds it
+           (self-consistency: if the name landed only in target, promote it).
+        2. Always clears ``target.className`` so a placeholder can never leak
+           into the applied model or the success message.
+
+        Field-level cleaning has already nulled obvious placeholders by the time
+        this runs, so anything surviving here is treated as a real name.
+        """
+        if self.action != "add_class":
+            return self
+
+        # changes is created lazily so add_class always has somewhere to write
+        if self.changes is None:
+            self.changes = ClassModificationChanges()
+
+        # Both are already placeholder-cleaned (None if junk). Prefer the
+        # canonical location (changes.className); fall back to target.className.
+        resolved = self.changes.className or _clean_name(self.target.className)
+        self.changes.className = resolved
+
+        # target.className is meaningless for a NEW class — never let it through.
+        self.target.className = None
+        return self
 
 
 class ClassModificationResponse(BaseModel):
