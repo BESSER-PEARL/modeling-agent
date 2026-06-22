@@ -745,44 +745,77 @@ def workflow_body(session: Session):
         # Default to web_app for generic "complete application" requests
         target_generator = "web_app"
 
-    reply_message(
-        session,
-        f"Starting the **end-to-end workflow** for your request. "
-        f"I will create the model(s), validate them, and generate **{target_generator}** code.\n\n"
-        f"**Step 1/3** — Building your model...",
-    )
+    # ── Round-trip: reuse an existing model instead of rebuilding it ──
+    # When the project already has a usable ClassDiagram AND the request
+    # points at it ("generate from this/my model", "from these models"),
+    # skip the build step and go straight to validate + generate — don't
+    # silently regenerate a new model over the user's edits (#40).
+    reuse_existing_model = None
+    _existing_cd_diagram = request.context.get_diagram_from_snapshot("ClassDiagram")
+    if isinstance(_existing_cd_diagram, dict):
+        _existing_model = _existing_cd_diagram.get("model")
+        if isinstance(_existing_model, dict) and is_diagram_nontrivial(_existing_model, "ClassDiagram"):
+            _lower = user_message.lower()
+            _reuse_signals = (
+                "this", "these", "my model", "my models", "current model",
+                "existing model", "from the model", "from my", "from these",
+                "from this", "the model", "existing diagram", "what we have",
+                "already created", "i have",
+            )
+            if any(s in _lower for s in _reuse_signals):
+                reuse_existing_model = _existing_model
 
-    # ── Step 1: Create the model(s) via the existing planner ─────────
-    try:
-        execute_planned_operations(
-            session=session,
-            request=request,
-            default_mode="complete_system",
-            matched_intent="workflow_intent",
-        )
-    except Exception as e:
-        logger.error(f"❌ [Workflow] Model creation failed: {e}", exc_info=True)
+    if reuse_existing_model is not None:
         reply_message(
             session,
-            "Something went wrong while creating the model. "
-            "Could you try rephrasing your request?",
+            f"Starting the **end-to-end workflow** using your **existing model** — "
+            f"I'll validate it and generate **{target_generator}** code (no rebuild).\n\n"
+            f"**Step 1/3** — Reusing your current model.",
         )
-        return
+    else:
+        reply_message(
+            session,
+            f"Starting the **end-to-end workflow** for your request. "
+            f"I will create the model(s), validate them, and generate **{target_generator}** code.\n\n"
+            f"**Step 1/3** — Building your model...",
+        )
 
-    # If there's a pending confirmation (e.g. replace existing model),
-    # we have to stop here — the user needs to respond first.
-    if session.get(PENDING_COMPLETE_SYSTEM) or session.get(PENDING_GUI_CHOICE):
-        logger.info("[Workflow] Paused — waiting for user confirmation before continuing")
-        # Store workflow continuation state so we could resume later
-        session.set(WORKFLOW_PENDING_GENERATOR, target_generator)
-        return
+        # ── Step 1: Create the model(s) via the existing planner ─────────
+        try:
+            execute_planned_operations(
+                session=session,
+                request=request,
+                default_mode="complete_system",
+                matched_intent="workflow_intent",
+            )
+        except Exception as e:
+            logger.error(f"❌ [Workflow] Model creation failed: {e}", exc_info=True)
+            reply_message(
+                session,
+                "Something went wrong while creating the model. "
+                "Could you try rephrasing your request?",
+            )
+            return
+
+        # If there's a pending confirmation (e.g. replace existing model),
+        # we have to stop here — the user needs to respond first.
+        if session.get(PENDING_COMPLETE_SYSTEM) or session.get(PENDING_GUI_CHOICE):
+            logger.info("[Workflow] Paused — waiting for user confirmation before continuing")
+            # Store workflow continuation state so we could resume later
+            session.set(WORKFLOW_PENDING_GENERATOR, target_generator)
+            return
 
     # ── Step 2: Validate the model ───────────────────────────────────
     reply_message(session, "**Step 2/3** — Running validation on your model...")
 
-    # Collect the active model from the session context for validation
-    active_model = request.context.active_model or request.current_model
-    active_diagram_type = request.context.active_diagram_type or request.diagram_type
+    # Collect the active model from the session context for validation.
+    # When reusing the user's existing model (#40), use it directly.
+    if reuse_existing_model is not None:
+        active_model = reuse_existing_model
+        active_diagram_type = "ClassDiagram"
+    else:
+        active_model = request.context.active_model or request.current_model
+        active_diagram_type = request.context.active_diagram_type or request.diagram_type
 
     # Also check the project snapshot for the model we just created
     snapshot = request.context.project_snapshot
