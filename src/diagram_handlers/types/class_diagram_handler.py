@@ -103,7 +103,7 @@ RULES:
 1. Include all the classes, relationships, and concepts the user asks for. Then flesh out each class with thorough attributes (IDs, timestamps, status fields where appropriate).
 2. SCOPE: match the diagram size to the request. A plain request ("create a library model") gets the CORE domain only: 6-10 classes. Do NOT add peripheral subsystems (notifications, audit logs, reporting, staffing, fines, reservations, branches...) unless the user names them. Only exceed 12 classes when the user explicitly asks for a "complete", "comprehensive", "detailed" or "enterprise" system, or lists that many entities themselves. A focused diagram the user can extend beats an overwhelming one.
 3. Each class should have 3-5+ attributes. Don't create stub classes.
-4. When creating Enumerations (isEnumeration=true), list enum values as attributes (name only, no type needed). When another class has an attribute whose type is that enumeration, set the attribute's type to the enum's PascalCase name (e.g., type="OrderStatus", NOT "str" or "String").
+4. When creating Enumerations (isEnumeration=true), list enum values as attributes (name only, no type needed). When another class has an attribute whose type is that enumeration, set the attribute's type to the enum's PascalCase name (e.g., type="OrderStatus", NOT "str" or "String"). An enumeration is used ONLY as an attribute type — NEVER create a relationship (Association, Composition, Aggregation, etc.) whose source or target is an enumeration. For example, for a Task with a status, add an attribute Task.status of type TaskStatus; do NOT add a relationship from Task to the TaskStatus enum.
 5. Methods: Generally SKIP methods unless the user asks. Only include 1-2 core domain methods per class MAX. Never include getters/setters.
 6. Relationships are CRITICAL — always include meaningful connections. Use Association (general), Inheritance (is-a, sparingly), Composition (strong has-a), Aggregation (weak has-a), Realization (interface).
 7. ALWAYS include multiplicities on relationships (1, 0..1, 0..*, 1..*).
@@ -111,6 +111,8 @@ RULES:
 9. Use proper naming: PascalCase for classes, camelCase for attributes/methods.
 10. {POSITION_DISCLAIMER}
 11. Methods default to implementationType "none" (UML signature only, no code). ONLY generate code in the 'code' field when the user explicitly asks for it. Supported types: 'code' for Python (e.g., "implement in Python", "add Python code"), 'bal' for BESSER Action Language (e.g., "implement in BAL", "use action language"). BAL syntax: def method_name(param: type) -> return_type {{ statements; }}. Python syntax: standard def with self parameter.
+12. ENUMERATIONS ARE NEVER RELATED. A relationship (in the relationships list) must connect two real classes — NEVER an enumeration. If a class has an enum-valued property (status, priority, type, role, category, etc.), model it as an ATTRIBUTE on that class whose type is the enum's PascalCase name — do NOT emit a relationship pointing at the enum. There must be ZERO relationships whose source or target is an isEnumeration=true class.
+13. CONSTRAINTS (OCL): if the user EXPLICITLY states a business rule that multiplicities and attribute types cannot express — uniqueness ("emails must be unique"), a limit beyond cardinality ("a speaker presents at most one session per time slot"), or a value range ("age must be at least 18") — capture it in the "constraints" list as an OCL invariant in B-OCL syntax: context <ClassName> inv <name>: <expression>. The context MUST be one of the classes you created. Examples: "context Account inv positiveBalance: self.balance >= 0"; "context Speaker inv oneSessionPerSlot: self.sessions->forAll(s1, s2 | s1 <> s2 implies s1.timeSlot <> s2.timeSlot)". CRITICAL: capture ONLY rules the user actually stated. If the user stated no such rule, leave "constraints" EMPTY — NEVER invent constraints.
 
 Examples:
 - E-commerce: User, Product, Order, Payment, ShoppingCart with associations and multiplicities
@@ -156,7 +158,10 @@ Examples:
                 "Composition, Aggregation, Inheritance)? What multiplicities?\n"
                 "4. Are there any association classes needed (e.g., Enrollment between "
                 "Student and Course with grade)?\n"
-                "5. Is there any inheritance hierarchy that makes sense?\n\n"
+                "5. Is there any inheritance hierarchy that makes sense?\n"
+                "6. Did the user EXPLICITLY state any business rule that needs an OCL "
+                "constraint (uniqueness, a limit beyond cardinality, a value range)? "
+                "Only note rules the user actually stated — do NOT invent any.\n\n"
                 "Provide a clear design analysis. Be thorough about relationships — "
                 "they are the most commonly missed element. Do NOT pad the design "
                 "with peripheral subsystems the user didn't ask for."
@@ -174,6 +179,15 @@ Examples:
                 reasoning_model=MODEL_REASONING,
             )
             system_spec = parsed.model_dump()
+
+            # Guard: never ship a relationship whose endpoint is an enumeration.
+            # Rewrite any such relationship into an enum-typed attribute on the
+            # non-enum side (or drop it). Enums are attribute types, not related.
+            self._rewrite_enum_relationships(system_spec)
+
+            # Drop any OCL constraint whose context isn't a real class in the
+            # spec (the LLM occasionally references a class it didn't create).
+            self._validate_constraints(system_spec)
 
             logger.info(
                 f"[ClassDiagram] Structured system spec: "
@@ -198,6 +212,15 @@ Examples:
 
             message = self._build_system_message(system_spec)
 
+            # NOTE (#46 follow-up): system_spec now carries a "constraints" list
+            # of OCL invariants (see SystemClassSpec). The agent captures and
+            # emits them here, but the documented inject_complete_system payload
+            # (docs/source/websocket_protocol.rst) and the FRONTEND systemSpec→
+            # editor-model converter only consume "classes" and "relationships".
+            # Until the frontend adds an OCL slot (and the editor's class-diagram
+            # JSON gains a place to store invariants), these constraints reach
+            # the boundary but are NOT yet persisted in the editor. Frontend/
+            # editor support is the remaining follow-up.
             return {
                 "action": "inject_complete_system",
                 "systemSpec": system_spec,
@@ -211,6 +234,258 @@ Examples:
         except Exception as exc:
             logger.error(f"❌ [ClassDiagram] generate_complete_system FAILED: {exc}", exc_info=True)
             return self._incremental_system_fallback(user_request, existing_model)
+
+    # ------------------------------------------------------------------
+    # Enum-relationship guard (#33)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _to_camel_case(name: str) -> str:
+        """Lowercase the first character so an enum's PascalCase name becomes a
+        sensible camelCase attribute name (TaskStatus -> taskStatus)."""
+        if not name:
+            return name
+        return name[0].lower() + name[1:]
+
+    def _rewrite_enum_relationships(self, system_spec: Dict[str, Any]) -> None:
+        """Remove relationships whose endpoint is an enumeration, converting each
+        into an enum-typed attribute on the non-enum class.
+
+        A class must never have a relationship (Association, Composition, etc.)
+        to an Enumeration — the enum belongs as an attribute *type*. The LLM
+        occasionally emits such a relationship anyway (e.g. Task --> TaskStatus
+        instead of Task.status : TaskStatus). This guard rewrites those into an
+        attribute on the non-enum side typed as the enum's name. When neither
+        side is a real (non-enum) class, the relationship is dropped.
+
+        Mutates *system_spec* in place. No-op when there are no enum endpoints.
+        """
+        classes = system_spec.get("classes")
+        relationships = system_spec.get("relationships")
+        if not isinstance(classes, list) or not isinstance(relationships, list):
+            return
+
+        # Map class name -> spec, and the set of enum class names.
+        class_by_name: Dict[str, Dict[str, Any]] = {}
+        enum_names: set[str] = set()
+        for cls in classes:
+            if not isinstance(cls, dict):
+                continue
+            name = cls.get("className")
+            if not isinstance(name, str) or not name:
+                continue
+            class_by_name[name] = cls
+            if cls.get("isEnumeration"):
+                enum_names.add(name)
+
+        if not enum_names:
+            return
+
+        kept: List[Dict[str, Any]] = []
+        rewritten = 0
+        dropped = 0
+        for rel in relationships:
+            if not isinstance(rel, dict):
+                kept.append(rel)
+                continue
+            source = rel.get("source")
+            target = rel.get("target")
+            src_is_enum = source in enum_names
+            tgt_is_enum = target in enum_names
+
+            if not src_is_enum and not tgt_is_enum:
+                kept.append(rel)
+                continue
+
+            # The enum endpoint and the (hopefully non-enum) other endpoint.
+            enum_name = source if src_is_enum else target
+            other_name = target if src_is_enum else source
+
+            owner = class_by_name.get(other_name)
+            # Only attach an attribute when the other side is a real, non-enum
+            # class. enum<->enum (or unknown) relationships are simply dropped.
+            if owner is not None and other_name not in enum_names:
+                attrs = owner.setdefault("attributes", [])
+                if not isinstance(attrs, list):
+                    attrs = []
+                    owner["attributes"] = attrs
+                attr_name = self._to_camel_case(enum_name)
+                already = any(
+                    isinstance(a, dict) and a.get("type") == enum_name
+                    for a in attrs
+                )
+                if not already:
+                    attrs.append({
+                        "name": attr_name,
+                        "type": enum_name,
+                        "visibility": "public",
+                    })
+                rewritten += 1
+                logger.info(
+                    "[ClassDiagram] Rewrote relationship-to-enum %s<->%s into "
+                    "attribute %s.%s : %s",
+                    source, target, other_name, attr_name, enum_name,
+                )
+            else:
+                dropped += 1
+                logger.info(
+                    "[ClassDiagram] Dropped relationship-to-enum %s<->%s "
+                    "(no non-enum class to attach an attribute to)",
+                    source, target,
+                )
+
+        if rewritten or dropped:
+            system_spec["relationships"] = kept
+            logger.info(
+                "[ClassDiagram] Enum-relationship guard: rewrote %d, dropped %d",
+                rewritten, dropped,
+            )
+
+    def _validate_constraints(self, system_spec: Dict[str, Any]) -> None:
+        """Drop OCL constraints whose context isn't a real class in the spec (#46).
+
+        Keeps only constraints with a non-empty ``expression`` whose ``context``
+        names a class that actually exists, so a hallucinated context can't reach
+        the editor. Mutates *system_spec* in place. No-op when there are none.
+        """
+        constraints = system_spec.get("constraints")
+        if not isinstance(constraints, list) or not constraints:
+            return
+        class_names = {
+            c.get("className")
+            for c in system_spec.get("classes", [])
+            if isinstance(c, dict) and c.get("className")
+        }
+        kept: List[Dict[str, Any]] = []
+        for con in constraints:
+            if not isinstance(con, dict):
+                continue
+            expr = con.get("expression")
+            context = con.get("context")
+            if not isinstance(expr, str) or not expr.strip():
+                continue
+            if context not in class_names:
+                logger.info(
+                    "[ClassDiagram] Dropped OCL constraint with unknown context %r",
+                    context,
+                )
+                continue
+            kept.append(con)
+        system_spec["constraints"] = kept
+        if kept:
+            logger.info("[ClassDiagram] Captured %d OCL constraint(s)", len(kept))
+
+    @staticmethod
+    def _enum_names_in_model(current_model: Optional[Dict[str, Any]]) -> set[str]:
+        """Return the set of enumeration class names present in *current_model*.
+
+        Enumerations are stored in the editor model as elements with
+        ``type == "Enumeration"``.
+        """
+        names: set[str] = set()
+        if not isinstance(current_model, dict):
+            return names
+        elements = current_model.get("elements")
+        if not isinstance(elements, dict):
+            return names
+        for el in elements.values():
+            if isinstance(el, dict) and el.get("type") == "Enumeration":
+                name = el.get("name")
+                if isinstance(name, str) and name.strip():
+                    names.add(name.strip())
+        return names
+
+    def _rewrite_enum_relationship_mods(
+        self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Rewrite add_relationship mods that point at an enumeration (#33).
+
+        A relationship endpoint that is an enumeration — whether the enum
+        already exists in *current_model* or is created by an add_class with
+        ``isEnumeration=true`` earlier in the same batch — is converted into an
+        ``add_attribute`` on the non-enum class, typed as the enum's name. If
+        neither endpoint is a real class, the relationship mod is dropped.
+
+        Mutates *spec* in place. No-op when no relationship touches an enum.
+        """
+        # Normalize to the flat inner-mod list.
+        if isinstance(spec.get("modifications"), list):
+            mods = spec["modifications"]
+            is_batch = True
+        elif isinstance(spec.get("modification"), dict):
+            mods = [spec["modification"]]
+            is_batch = False
+        else:
+            return
+
+        # Enum names from the existing model plus any enum being added now.
+        enum_names = self._enum_names_in_model(current_model)
+        for m in mods:
+            if not isinstance(m, dict) or m.get("action") != "add_class":
+                continue
+            changes = m.get("changes") or {}
+            if isinstance(changes, dict) and changes.get("isEnumeration"):
+                cn = changes.get("className")
+                if isinstance(cn, str) and cn.strip():
+                    enum_names.add(cn.strip())
+
+        if not enum_names:
+            return
+
+        new_mods: List[Dict[str, Any]] = []
+        changed = False
+        for m in mods:
+            if not isinstance(m, dict) or m.get("action") != "add_relationship":
+                new_mods.append(m)
+                continue
+            target = m.get("target") or {}
+            src = target.get("sourceClass") if isinstance(target, dict) else None
+            tgt = target.get("targetClass") if isinstance(target, dict) else None
+            src_is_enum = src in enum_names
+            tgt_is_enum = tgt in enum_names
+            if not src_is_enum and not tgt_is_enum:
+                new_mods.append(m)
+                continue
+
+            enum_name = src if src_is_enum else tgt
+            other_name = tgt if src_is_enum else src
+            changed = True
+            if other_name and other_name not in enum_names:
+                new_mods.append({
+                    "action": "add_attribute",
+                    "target": {
+                        "className": other_name,
+                        "attributeName": self._to_camel_case(enum_name),
+                    },
+                    "changes": {
+                        "name": self._to_camel_case(enum_name),
+                        "type": enum_name,
+                    },
+                })
+                logger.info(
+                    "[ClassDiagram] Rewrote add_relationship %s<->%s into "
+                    "add_attribute %s.%s : %s",
+                    src, tgt, other_name, self._to_camel_case(enum_name), enum_name,
+                )
+            else:
+                logger.info(
+                    "[ClassDiagram] Dropped add_relationship %s<->%s "
+                    "(enum endpoint with no non-enum class)",
+                    src, tgt,
+                )
+
+        if not changed:
+            return
+
+        if is_batch:
+            spec["modifications"] = new_mods
+        else:
+            # Was a single modification; promote to batch only if needed.
+            spec.pop("modification", None)
+            if len(new_mods) == 1:
+                spec["modification"] = new_mods[0]
+            else:
+                spec["modifications"] = new_mods
 
     def _incremental_system_fallback(
         self, user_request: str, existing_model: Optional[Dict[str, Any]] = None,
@@ -378,6 +653,12 @@ Examples:
                 msg += f" (+{len(classes) - 6} more)"
         if rels:
             msg += f" and {len(rels)} relationship(s)"
+        constraints = spec.get("constraints") or []
+        if constraints:
+            msg += (
+                f". I also captured {len(constraints)} OCL constraint(s) from the "
+                "rules you stated"
+            )
         msg += ". Feel free to ask me to modify or extend any part of the diagram!"
         return msg
 
@@ -553,10 +834,12 @@ Examples:
                 return deduped
 
             def _expand_refactoring(handler, spec):
-                """Expand refactoring actions into primitive modifications."""
+                """Expand refactoring actions into primitives, then guard against
+                any relationship whose endpoint is an enumeration (#33)."""
                 if handler._is_refactoring_action(spec):
                     logger.info("[ClassDiagram] Detected refactoring action, expanding into primitives")
                     spec = handler._expand_refactoring_actions(spec, current_model)
+                handler._rewrite_enum_relationship_mods(spec, current_model)
                 return spec
 
             modification_spec = self._execute_modification(

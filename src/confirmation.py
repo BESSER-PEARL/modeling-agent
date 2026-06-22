@@ -69,6 +69,50 @@ _AUTO_KEYWORDS = ['auto', '1', 'deterministic', 'fast', 'standard', 'default', '
 _LLM_KEYWORDS = ['llm', '2', 'personali', 'ai', 'experimental', 'custom', 'design']
 
 
+def _build_auto_gui_message(request: Any) -> str:
+    """Build the auto-generate GUI success message, naming the pages created.
+
+    The deterministic ("auto") path builds one page per class on the frontend.
+    We resolve the class diagram here so the assistant can CONFIRM completion
+    and name the pages — previously the auto path only said "Generating GUI…"
+    and never reported that it was done (#3).
+
+    Falls back to a generic completion message if the class diagram can't be
+    resolved (the frontend still generates the GUI; we just can't name pages).
+    """
+    done_intro = "Created your GUI from the Class Diagram. "
+    try:
+        from utilities.model_resolution import resolve_class_diagram
+        from utilities.class_metadata import extract_class_metadata
+
+        class_diagram = resolve_class_diagram(request)
+        class_metadata = extract_class_metadata(class_diagram) if class_diagram else []
+        page_names = [
+            c["name"] for c in class_metadata
+            if isinstance(c, dict) and c.get("name")
+        ]
+    except Exception:  # pragma: no cover — defensive; never block on the message
+        logger.debug("[GUIChoice] Could not resolve class names for auto-GUI message", exc_info=True)
+        page_names = []
+
+    if not page_names:
+        return (
+            done_intro
+            + "Each class now has its own page with a data table and method buttons. "
+            "You can ask me to customize any page or add new sections!"
+        )
+
+    shown = page_names[:6]
+    names_str = ", ".join(f"**{n}**" for n in shown)
+    if len(page_names) > 6:
+        names_str += f" (+{len(page_names) - 6} more)"
+    return (
+        f"Created your GUI with **{len(page_names)}** page(s) — {names_str}. "
+        "Each page has a data table and method buttons for its class. "
+        "You can ask me to customize any page or add new sections!"
+    )
+
+
 def handle_pending_gui_choice(session: Session) -> bool:
     """Process a pending GUI generation-mode choice, if one exists.
 
@@ -109,11 +153,11 @@ def handle_pending_gui_choice(session: Session) -> bool:
         reply_payload(session, {
             "action": "auto_generate_gui",
             "diagramType": "GUINoCodeDiagram",
-            "message": (
-                "Generating GUI from your Class Diagram\u2026\n\n"
-                "I'll generate the GUI automatically from your Class Diagram. "
-                "Each class will get its own page with a data table and method buttons."
-            ),
+            # Frontend builds one page per class via autoGenerateGUIFromClassDiagram.
+            # We resolve the class diagram here so the message CONFIRMS completion
+            # naming the pages that were created (#3) \u2014 the auto path previously
+            # only said "Generating\u2026" and never reported it was done.
+            "message": _build_auto_gui_message(request),
         })
         # Resume any remaining operations from the original plan
         if isinstance(remaining_ops, list) and remaining_ops:

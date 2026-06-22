@@ -11,6 +11,7 @@ from .class_diagram import (
     MethodParameterSpec,
     MethodSpec,
     RelationshipSpec,
+    OCLConstraintSpec,
     SingleClassSpec,
     SystemClassSpec,
     ClassModificationTarget,
@@ -67,7 +68,7 @@ from .quantum_circuit import (
 __all__ = [
     # Class Diagram
     "AttributeSpec", "MethodParameterSpec", "MethodSpec",
-    "RelationshipSpec", "SingleClassSpec", "SystemClassSpec",
+    "RelationshipSpec", "OCLConstraintSpec", "SingleClassSpec", "SystemClassSpec",
     "ClassModificationTarget", "ClassModificationChanges",
     "ClassModification", "ClassModificationResponse",
     # State Machine

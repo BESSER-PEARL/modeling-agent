@@ -60,11 +60,41 @@ class RelationshipSpec(BaseModel):
     name: Optional[str] = Field(default=None, description="Optional relationship name")
 
 
+class OCLConstraintSpec(BaseModel):
+    """A single OCL invariant capturing a business rule the user explicitly stated.
+
+    Used to record constraints that cannot be expressed by multiplicities or
+    attribute types alone (uniqueness, multiplicity-beyond-cardinality, value
+    ranges). The ``expression`` is a full OCL invariant in BESSER's B-OCL
+    syntax (``context <Class> inv [name]: <expression>``).
+    """
+    context: str = Field(
+        description="The PascalCase name of the class this invariant constrains "
+                    "(the OCL context class). Must be one of the classes above.",
+    )
+    expression: str = Field(
+        description="A full OCL invariant in B-OCL syntax, e.g. "
+                    "'context Speaker inv oneSessionPerSlot: "
+                    "self.sessions->forAll(s1, s2 | s1 <> s2 implies s1.timeSlot <> s2.timeSlot)'. "
+                    "Capture ONLY rules the user explicitly stated.",
+    )
+    name: Optional[str] = Field(
+        default=None,
+        description="Optional short invariant name (e.g. 'oneSessionPerSlot').",
+    )
+
+
 class SystemClassSpec(BaseModel):
     """A complete class diagram with multiple classes and relationships."""
     systemName: str = Field(default="", description="Descriptive system name")
     classes: List[SingleClassSpec] = Field(min_length=1, description="All classes in the system.")
     relationships: List[RelationshipSpec] = Field(default_factory=list, description="Relationships between classes.")
+    constraints: List[OCLConstraintSpec] = Field(
+        default_factory=list,
+        description="OCL invariants for business rules the user EXPLICITLY stated "
+                    "(uniqueness, multiplicity-beyond-cardinality, value ranges). "
+                    "Leave EMPTY when the user stated no such rule — never invent constraints.",
+    )
 
 
 # -- Modification schemas --
