@@ -194,6 +194,24 @@ _QUICK_RESPONSES = {
         "- You can switch between diagram types anytime\n"
         "- Ask *\"What can you do?\"* for a full list of capabilities"
     ),
+    "how_to_run": (
+        "**Running the app you generated:**\n\n"
+        "1. **Unzip** the download.\n"
+        "2. If it includes a **`docker-compose.yml`** (most web apps do):\n"
+        "   ```\n"
+        "   docker compose up --build\n"
+        "   ```\n"
+        "   then open the URL it prints — usually **http://localhost:8000** "
+        "(backend) or **http://localhost:3000** (frontend).\n\n"
+        "3. Otherwise, by stack:\n"
+        "   - **FastAPI / Python backend** — `pip install -r requirements.txt`, "
+        "then `uvicorn main:app --reload` (or `python main.py`).\n"
+        "   - **Django** — `pip install -r requirements.txt`, "
+        "`python manage.py migrate`, `python manage.py runserver`.\n"
+        "   - **React / Next.js frontend** — `npm install`, then `npm run dev`.\n\n"
+        "The generated project ships a **README** with the exact command — "
+        "check it if you're unsure."
+    ),
 }
 
 # Patterns that trigger quick responses (checked in order)
@@ -210,6 +228,12 @@ _QUICK_PATTERNS = [
     (["help me", "i need help", "how does this work", "how do i use",
       "getting started", "quick start", "tutorial", "guide me"],
      "help"),
+    # How do I run the generated/downloaded app?
+    (["how do i run", "how to run", "how do i start", "how do i launch",
+      "run the app", "run the zip", "run the generated", "run the downloaded",
+      "run it on my", "run this on my", "start the backend", "start the generated",
+      "downloaded the zip", "got the zip", "run the code"],
+     "how_to_run"),
 ]
 
 
