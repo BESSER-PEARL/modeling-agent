@@ -256,7 +256,10 @@ def execute_model_operation(
 
     target_model = resolve_target_model(request, target_diagram_type)
 
-    # Inject conversation context for multi-turn awareness.
+    # Inject conversation context for multi-turn awareness: the rolling
+    # SUMMARY of older turns (so the agent remembers beyond the recent
+    # window — the summary was previously computed but never fed to the
+    # LLM) PLUS the last CONVERSATION_HISTORY_DEPTH messages verbatim.
     conversation_context = ""
     if not _skip_existing_check:
         try:
@@ -264,7 +267,14 @@ def execute_model_operation(
             # Stable payload sessionId so memory survives reconnects (B-5).
             session_id = memory_session_key(session, request)
             mem = get_memory(session_id)
+            summary = (mem.get_summary() or "").strip()
             recent = mem.get_last_n(CONVERSATION_HISTORY_DEPTH)
+            blocks = []
+            if summary:
+                blocks.append(
+                    "Summary of earlier conversation (remember what the user has "
+                    f"already created or discussed):\n  {summary}"
+                )
             if recent and len(recent) > 1:
                 history_lines = []
                 for msg in recent[:-1]:
@@ -272,11 +282,16 @@ def execute_model_operation(
                     content = msg.get("content", "")[:200]
                     history_lines.append(f"  {role}: {content}")
                 if history_lines:
-                    conversation_context = (
-                        "Recent conversation context (use this to understand what the user has been working on):\n"
-                        + "\n".join(history_lines)
-                        + "\n\n"
+                    blocks.append(
+                        "Recent messages (oldest first):\n" + "\n".join(history_lines)
                     )
+            if blocks:
+                conversation_context = (
+                    "Recent conversation context (use this to understand what the "
+                    "user has been working on):\n"
+                    + "\n\n".join(blocks)
+                    + "\n\n"
+                )
         except Exception as exc:
             logger.debug(f"Conversation memory retrieval failed (best-effort): {exc}")
 

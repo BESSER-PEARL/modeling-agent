@@ -24,4 +24,7 @@ LLM_MAX_TOKENS_SMALL = 2048
 LLM_MAX_TOKENS_TEXT = 4096
 
 # ── Conversation context ─────────────────────────────────────────────────
-CONVERSATION_HISTORY_DEPTH = 5
+# How many recent messages are fed to the LLM verbatim each turn. The rolling
+# summary (memory/conversation_memory.py) covers everything older, so the agent
+# remembers the whole session, not just this window.
+CONVERSATION_HISTORY_DEPTH = 10
