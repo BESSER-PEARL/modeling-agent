@@ -311,12 +311,13 @@ def _build_user_block(request: AssistantRequest) -> str:
 
 
 _DEFAULT_SMART_GEN_MODEL_BY_PROVIDER: Dict[str, str] = {
-    # Match ``besser/generators/llm/llm_client.py::DEFAULT_MODEL`` and
-    # the backend's ``runner.py::_DEFAULT_MODELS``. If these diverge,
-    # a run with no explicit ``llmModel`` override will fail with an
-    # "unknown model" upstream error.
+    # Match ``besser/generators/llm/llm_client.py::DEFAULT_MODELS`` and
+    # the backend's config endpoint. If these diverge, a run with no
+    # explicit ``llmModel`` override will fail with an "unknown model"
+    # upstream error.
     "anthropic": "claude-sonnet-4-6",
     "openai": "gpt-4o",
+    "mistral": "mistral-large-latest",
 }
 
 
@@ -352,7 +353,7 @@ def build_trigger_smart_generator_payload(
             "I'll hand this off to the Vibe-Driven Generator so it can build a "
             "customised codebase from your model." + parenthetical + " "
             "If this is the first time you're using it, you'll be asked to "
-            "paste your own Anthropic or OpenAI API key — it stays in your "
-            "browser and is sent only with this single request."
+            "paste your own API key (OpenAI, Anthropic, or Mistral) — it stays "
+            "in your browser and is sent only with this single request."
         ),
     }

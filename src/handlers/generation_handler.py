@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional, Tuple  # noqa: F401
 from baf.core.session import Session
 
 from handlers.smart_generation_handler import (
-    _DEFAULT_SMART_GEN_MODEL_BY_PROVIDER,
     build_trigger_smart_generator_payload,
     classify_generation_request,
 )
@@ -105,17 +104,21 @@ def _build_smart_gen_confirmation(
     provider = provider or "anthropic"
     _stash_smart_gen(session, refined, provider)
 
-    llm_model = _DEFAULT_SMART_GEN_MODEL_BY_PROVIDER.get(provider, "claude-sonnet-4-6")
     summary = refined if len(refined) <= 600 else refined[:600] + "…"
     prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
 
+    # NOTE: deliberately does NOT name a model/provider here. The actual run
+    # uses whatever provider+model the user saved with their BYOK key in the
+    # browser, which the agent never sees — naming a guess (e.g. "gpt-4o via
+    # openai") contradicted runs on a different saved provider (e.g. Mistral).
     return {
         "action": "assistant_message",
         "message": (
-            f"{prefix}Ready to run the **Vibe-Driven Generator** "
-            f"(`{llm_model}` via {provider}). It builds a customised "
-            f"codebase from your model **using your own API key** — the "
-            f"key stays in your browser and is sent only with this run.\n\n"
+            f"{prefix}Ready to run the **Vibe-Driven Generator**. It builds a "
+            f"customised codebase from your model **using your own API key** — "
+            f"the key stays in your browser and is sent only with this run, and "
+            f"the run uses the provider and model you've configured for the "
+            f"generator.\n\n"
             f"**It will follow these instructions:**\n> {summary}\n\n"
             f"Run it now?"
         ),
@@ -810,11 +813,26 @@ def _handle_smart_generator_result(
     cost_text = f" (cost ${cost:.2f})" if isinstance(cost, (int, float)) else ""
 
     if ok:
-        parts = ["Smart generation finished successfully" + cost_text + "."]
+        incomplete = bool(metadata.get("incomplete"))
+        incomplete_reason = metadata.get("incompleteReason")
+        if incomplete:
+            head = (
+                "Smart generation produced output, but the run stopped early "
+                "so it may be incomplete"
+            )
+            if incomplete_reason:
+                head += f": {incomplete_reason}"
+            parts = [head + cost_text + "."]
+        else:
+            parts = ["Smart generation finished successfully" + cost_text + "."]
         if generator_used:
             parts.append(f"Scaffold: `{generator_used}`.")
         if metadata.get("filename") or metadata.get("fileName"):
             parts.append(f"File: {metadata.get('filename') or metadata.get('fileName')}")
+        if incomplete:
+            parts.append(
+                "You can resume the run to finish the remaining changes."
+            )
         result_message = " ".join(parts)
         suggestions = None
     elif error_code == "COST_CAP":
