@@ -409,11 +409,20 @@ def classify_message(
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": _build_user_block(request)},
         ]
+        # Reasoning models (gpt-5* / o-series) burn hidden reasoning tokens
+        # from the SAME completion budget. With only 800 tokens the visible
+        # structured output is starved → parsed=None → _safe_fallback on
+        # EVERY message (#44). Give reasoning models headroom; keep the tight
+        # budget for fast non-reasoning models like gpt-4o-mini.
+        from model_config import supports_custom_temperature
+
+        classifier_model = getattr(llm_provider, "model_name", "") or ""
+        max_tokens = 800 if supports_custom_temperature(classifier_model) else 4000
         result: UnifiedClassification = llm_provider.parse(
             messages=messages,
             schema=UnifiedClassification,
             temperature=0.0,
-            max_tokens=800,
+            max_tokens=max_tokens,
         )
         if result is None:
             return _safe_fallback("LLM returned no result")
