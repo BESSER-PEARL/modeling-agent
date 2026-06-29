@@ -783,9 +783,14 @@ Examples:
                     target = mod.get("target") or {}
                     if not isinstance(target, dict):
                         continue
-                    # Skip if already has a specific identifier
+                    # Skip if already has a specific identifier. sourceClass/
+                    # targetClass identify a relationship by its endpoints — WITHOUT
+                    # them here, "remove the relationship between Order and Customer"
+                    # fell through and promoted "Order" to className, deleting the
+                    # whole Order class (#20).
                     if any(target.get(k) for k in ("className", "classId",
                                                     "relationshipId", "relationshipName",
+                                                    "sourceClass", "targetClass",
                                                     "attributeId", "attributeName",
                                                     "methodId", "methodName")):
                         continue
