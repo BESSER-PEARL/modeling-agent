@@ -2254,15 +2254,23 @@ Rules:
             # Prefer the existing page name that the source text matches, so a
             # leading word ("page") swallowed by the regex doesn't break it.
             matched_page = None
+            _old = raw_old.lower()
+            # Exact match across ALL pages first, so "Management" can't hijack
+            # "User Management" just because it's earlier in the list (#58).
             for page in model.get("pages", []):
-                if not isinstance(page, dict):
-                    continue
-                pname = _clean_text(page.get("name"))
-                if not pname:
-                    continue
-                if raw_old.lower() == pname.lower() or pname.lower().endswith(raw_old.lower()):
+                if isinstance(page, dict) and _clean_text(page.get("name")).lower() == _old:
                     matched_page = page
                     break
+            if matched_page is None:
+                # Fall back to a suffix match only when it is UNAMBIGUOUS.
+                suffix_matches = [
+                    page for page in model.get("pages", [])
+                    if isinstance(page, dict)
+                    and _clean_text(page.get("name"))
+                    and _clean_text(page.get("name")).lower().endswith(_old)
+                ]
+                if len(suffix_matches) == 1:
+                    matched_page = suffix_matches[0]
             if matched_page is not None:
                 old_name = _clean_text(matched_page.get("name"))
                 matched_page["name"] = new_name
