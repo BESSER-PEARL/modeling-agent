@@ -35,9 +35,12 @@ logger = logging.getLogger(__name__)
 # Keyword lists
 # ------------------------------------------------------------------
 
+# NOTE: 'delete'/'remove'/'clear'/'erase' were deliberately removed from the
+# REPLACE list — they are ordinary edit verbs, so a brand-new request like
+# "delete the Author class" was being consumed as a "replace" confirmation and
+# silently wiping the model. Replace now requires explicit replace intent.
 REPLACE_KEYWORDS = [
-    'replace', 'yes', 'overwrite', 'new one', 'start fresh',
-    'remove', 'clear', 'delete', 'erase', 'fresh',
+    'replace', 'yes', 'overwrite', 'new one', 'start fresh', 'fresh',
 ]
 KEEP_KEYWORDS = [
     'keep', 'no', 'add', 'both', 'alongside', 'merge',
@@ -49,16 +52,19 @@ NEW_TAB_KEYWORDS = [
     'different tab', 'create new', 'add tab', 'fresh tab',
 ]
 
-# Short words that must match as whole words to avoid false positives
-# (e.g. "no" should not match inside "nothing", "note", "another").
-_WHOLE_WORD_KEYWORDS = {'no', 'yes', 'add', 'keep'}
+# Negation markers — if the user negates a replace ("do not replace",
+# "don't overwrite"), it must NOT be read as a replace answer.
+_NEGATION_RE = re.compile(r"\b(?:no|not|never|none|cannot)\b|n['’]?t\b", re.IGNORECASE)
 
 
 def keyword_matches(keyword: str, text: str) -> bool:
-    """Check if *keyword* appears in *text*, using word-boundary matching for short ambiguous words."""
-    if keyword in _WHOLE_WORD_KEYWORDS:
-        return bool(re.search(rf'\b{re.escape(keyword)}\b', text))
-    return keyword in text
+    """Whole-word / whole-phrase match of *keyword* in *text*.
+
+    Substring matching caused silent data loss: 'replace' matched inside
+    'do not replace', 'add' inside 'address', etc. Always match on word
+    boundaries so a keyword only counts when it stands as its own token(s).
+    """
+    return bool(re.search(rf'\b{re.escape(keyword)}\b', text))
 
 
 # ------------------------------------------------------------------
@@ -240,6 +246,15 @@ def handle_pending_system_confirmation(session: Session) -> bool:
     wants_new_tab = pending.get('can_add_tab', False) and any(keyword_matches(w, user_msg) for w in NEW_TAB_KEYWORDS)
     wants_replace = any(keyword_matches(w, user_msg) for w in REPLACE_KEYWORDS)
     wants_keep = any(keyword_matches(w, user_msg) for w in KEEP_KEYWORDS)
+
+    # BLOCKER safety guard: replacing DESTROYS the user's existing model, so
+    # only do it on an UNAMBIGUOUS replace. Any keep signal, or any negation
+    # ("no, keep my model, do not replace it"), downgrades to keep. This stops
+    # the confirmed silent data loss where a keep/negation reply still wiped
+    # the model because 'replace' precedence beat 'keep'.
+    if wants_replace and (wants_keep or _NEGATION_RE.search(user_msg)):
+        wants_replace = False
+        wants_keep = True
 
     if not wants_replace and not wants_keep and not wants_new_tab:
         # The user's message doesn't look like a confirmation answer.
