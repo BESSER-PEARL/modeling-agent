@@ -8,6 +8,19 @@ from baf.library.transition.events.base_events import ReceiveJSONEvent
 
 from .types import AssistantRequest, FileAttachment, WorkspaceContext, SUPPORTED_DIAGRAM_TYPES
 from session_keys import PARSED_ASSISTANT_REQUEST, PARSED_REQUEST_EVENT_ID, VOICE_CONTEXT
+from agent_config import MAX_USER_MESSAGE_CHARS
+
+
+def _cap_user_message(msg: str) -> str:
+    """Hard-cap an inbound user message at the protocol boundary (#30).
+
+    MAX_USER_MESSAGE_CHARS was only enforced in an empty-message fallback, so a
+    huge paste reached memory and every LLM prompt untruncated. Cap it here so
+    all downstream consumers (which read request.message directly) are bounded.
+    """
+    if isinstance(msg, str) and len(msg) > MAX_USER_MESSAGE_CHARS:
+        return msg[:MAX_USER_MESSAGE_CHARS] + "…[truncated]"
+    return msg
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +183,7 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         message_text = message_envelope["message"]
 
     cleaned_message, prefixed_diagram = strip_diagram_prefix(message_text)
+    cleaned_message = _cap_user_message(cleaned_message)
 
     payload_diagram_type = (
         context_payload.get("activeDiagramType")
@@ -302,6 +316,7 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
     if not raw_payload:
         event_message = getattr(session.event, "message", "")
         cleaned_message, prefixed_diagram = strip_diagram_prefix(event_message if isinstance(event_message, str) else "")
+        cleaned_message = _cap_user_message(cleaned_message)
         diagram_type = normalize_diagram_type(prefixed_diagram or default_diagram_type, default=default_diagram_type)
 
         # Voice messages arrive as plain text (after STT) with no JSON context.
