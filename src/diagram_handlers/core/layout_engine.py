@@ -1445,6 +1445,35 @@ def layout_class_system(
     return system_spec
 
 
+def _deduplicate_layout_names(elements: List[Dict[str, Any]], name_key: str) -> None:
+    """Suffix duplicate element names in-place before layout (#57).
+
+    The system layouts key their lookups on ``{name: element}``. When two
+    elements share a name the second collapses onto the first, leaving the
+    duplicate without a computed position (it then renders at 0,0 / on top of
+    its twin). Renaming the later duplicate (``Foo`` -> ``Foo_2``) keeps every
+    element addressable so all of them get laid out. Transitions/links that
+    referenced the shared name still resolve to the first occurrence (which
+    keeps its original name) — the best we can do for an inherently ambiguous
+    spec.
+    """
+    seen: Set[str] = set()
+    for el in elements:
+        if not isinstance(el, dict):
+            continue
+        name = el.get(name_key) or ""
+        if name not in seen:
+            seen.add(name)
+            continue
+        suffix = 2
+        candidate = f"{name}_{suffix}"
+        while candidate in seen:
+            suffix += 1
+            candidate = f"{name}_{suffix}"
+        el[name_key] = candidate
+        seen.add(candidate)
+
+
 def layout_object_single(
     spec: Dict[str, Any],
     existing_model: Optional[Dict[str, Any]] = None,
@@ -1483,6 +1512,10 @@ def layout_object_system(
     objects: List[Dict[str, Any]] = system_spec.get("objects", [])
     if not objects:
         return system_spec
+
+    # Make duplicate object names unique so none get dropped from the
+    # name-keyed lookups below (#57).
+    _deduplicate_layout_names(objects, "objectName")
 
     links: List[Dict[str, Any]] = system_spec.get("links", [])
     n_objects = len(objects)
@@ -1643,6 +1676,10 @@ def layout_state_system(
     states: List[Dict[str, Any]] = system_spec.get("states", [])
     if not states:
         return system_spec
+
+    # Make duplicate state names unique so none get dropped from the
+    # name-keyed lookups below (#57).
+    _deduplicate_layout_names(states, "stateName")
 
     transitions: List[Dict[str, Any]] = system_spec.get("transitions", [])
     n_states = len(states)
