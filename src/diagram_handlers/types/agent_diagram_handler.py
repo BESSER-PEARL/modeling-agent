@@ -474,7 +474,10 @@ IMPORTANT RULES:
             return None
 
         state_names = {state["stateName"] for state in states}
-        primary_state = next(iter(state_names), None)
+        # Deterministic fallback target: the FIRST state in order, not an
+        # arbitrary element of a set (which made unresolved transitions point
+        # to a nondeterministic state run-to-run). #51
+        primary_state = states[0].get("stateName")
 
         source = transition.get("source") or transition.get("from") or "initial"
         target = transition.get("target") or transition.get("to")
