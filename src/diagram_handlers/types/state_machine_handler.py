@@ -209,11 +209,12 @@ TRANSITION DESIGN GUIDELINES:
     ) -> Dict[str, Any]:
         """Validate a generated state machine and fix common issues.
 
-        Checks for:
-        - Missing initial/final states
-        - Orphan states (no incoming or outgoing transitions)
-        - States with only generic names
-        - Missing error/alternative paths
+        Fixes:
+        - Drops transitions whose source/target names don't exist (they would
+          otherwise materialize as phantom states during layout).
+        - Adds a missing initial / final state and wires it into the flow.
+        - Connects orphan regular states (no incoming/outgoing transition) into
+          the happy path so every state is reachable.
         """
         states = spec.get("states", [])
         transitions = spec.get("transitions", [])
@@ -221,22 +222,23 @@ TRANSITION DESIGN GUIDELINES:
         if not states:
             return spec
 
-        # Check for orphan states (no transitions connecting them)
         state_names = {s.get("stateName") for s in states}
-        sources = {t.get("source") for t in transitions}
-        targets = {t.get("target") for t in transitions}
-        connected = sources | targets
 
-        orphans = []
-        for s in states:
-            name = s.get("stateName", "")
-            stype = s.get("stateType", "regular")
-            if stype == "initial" and name not in sources:
-                orphans.append(name)
-            elif stype == "final" and name not in targets:
-                orphans.append(name)
-            elif stype == "regular" and name not in connected:
-                orphans.append(name)
+        # Validate transition endpoints: a transition referencing a state that
+        # doesn't exist is dropped. Previously these were left in place and
+        # could appear as phantom nodes when the layout engine built the graph.
+        valid_transitions = []
+        for t in transitions:
+            src = t.get("source")
+            tgt = t.get("target")
+            if src in state_names and tgt in state_names:
+                valid_transitions.append(t)
+            else:
+                logger.info(
+                    "[StateMachine] Validation: dropping transition with unknown "
+                    "endpoint(s): source=%r target=%r", src, tgt,
+                )
+        transitions = valid_transitions
 
         # Check for missing initial state
         has_initial = any(s.get("stateType") == "initial" for s in states)
@@ -294,8 +296,47 @@ TRANSITION DESIGN GUIDELINES:
                 })
             logger.info("[StateMachine] Validation: added missing final state")
 
-        if orphans:
-            logger.info(f"[StateMachine] Validation: found {len(orphans)} orphan state(s): {orphans}")
+        # Connect orphan regular states into the flow. An orphan has no
+        # incoming AND no outgoing transition, so it floats disconnected.
+        # Previously these were only logged; now we wire them into the happy
+        # path (initial -> orphan -> final) so the diagram stays connected.
+        sources = {t.get("source") for t in transitions}
+        targets = {t.get("target") for t in transitions}
+        initial_state = next(
+            (s.get("stateName") for s in states if s.get("stateType") == "initial"), None,
+        )
+        final_state = next(
+            (s.get("stateName") for s in states if s.get("stateType") == "final"), None,
+        )
+        for s in states:
+            if s.get("stateType", "regular") != "regular":
+                continue
+            name = s.get("stateName", "")
+            if not name or name in sources or name in targets:
+                continue
+            if initial_state and initial_state != name:
+                transitions.append({
+                    "source": initial_state,
+                    "target": name,
+                    "trigger": "",
+                    "guard": "",
+                    "effect": "",
+                })
+                sources.add(initial_state)
+                targets.add(name)
+            if final_state and final_state != name:
+                transitions.append({
+                    "source": name,
+                    "target": final_state,
+                    "trigger": "",
+                    "guard": "",
+                    "effect": "",
+                })
+                sources.add(name)
+                targets.add(final_state)
+            logger.info(
+                "[StateMachine] Validation: connected orphan state %r into the flow", name,
+            )
 
         spec["states"] = states
         spec["transitions"] = transitions
