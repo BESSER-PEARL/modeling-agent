@@ -112,8 +112,20 @@ def resolve_object_reference_diagram(
     return None
 
 
+# Element types the ObjectDiagram handler can instantiate objects from.
+# Must stay in sync with object_diagram_handler's class extraction guard —
+# counting only "Class" wrongly blocked object-diagram generation for class
+# diagrams made entirely of abstract classes (#54).
+_INSTANTIABLE_CLASS_TYPES = ("Class", "AbstractClass")
+
+
 def count_reference_classes(reference_diagram: Optional[Dict[str, Any]]) -> int:
-    """Count how many Class elements exist in a reference diagram."""
+    """Count how many class-like elements exist in a reference diagram.
+
+    Includes both concrete and abstract classes so a class diagram of only
+    abstract classes is not treated as empty (the ObjectDiagram handler can
+    instantiate objects from either).
+    """
     if not isinstance(reference_diagram, dict):
         return 0
     elements = reference_diagram.get("elements")
@@ -122,7 +134,7 @@ def count_reference_classes(reference_diagram: Optional[Dict[str, Any]]) -> int:
     return sum(
         1
         for element in elements.values()
-        if isinstance(element, dict) and element.get("type") == "Class"
+        if isinstance(element, dict) and element.get("type") in _INSTANTIABLE_CLASS_TYPES
     )
 
 

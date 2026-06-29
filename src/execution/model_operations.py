@@ -357,6 +357,22 @@ def execute_model_operation(
                     logger.info(
                         f"[ModelOp] ObjectDiagram modify reference resolved with {reference_class_count} class(es)."
                     )
+                elif not model_has_elements(target_model):
+                    # No class diagram to instantiate from AND the object
+                    # diagram is empty — this modify would create the first,
+                    # unlinked object. Apply the same guard the complete_system
+                    # path uses instead of silently producing a dangling object
+                    # (#54). Edits to an EXISTING object diagram still proceed.
+                    logger.warning(
+                        "[ModelOp] ObjectDiagram modify with no reference classes "
+                        "and no existing objects — blocking unlinked object creation."
+                    )
+                    reply_message(
+                        session,
+                        "Please create a **Class Diagram** first — Object Diagrams "
+                        "need class definitions to instantiate from.",
+                    )
+                    return None
                 else:
                     logger.warning(
                         "[ModelOp] ObjectDiagram modify reference is missing or empty; output may drift."
