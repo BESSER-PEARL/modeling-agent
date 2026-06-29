@@ -406,6 +406,7 @@ Rules:
         next_free_column = len(cols)
         gate_metadata: Dict[str, Any] = normalized.get("gateMetadata", {}) if append else {}
 
+        measured_rows: set[int] = set()
         for op in operations:
             column, placements, metadata = _operation_to_placements(op)
             target_column = next_free_column if column is None or column < 0 else column
@@ -413,6 +414,8 @@ Rules:
             column_values = cols[target_column]
             for row, symbol in placements:
                 _place_symbol(column_values, row, symbol)
+                if isinstance(symbol, str) and symbol.upper().startswith("MEASURE"):
+                    measured_rows.add(row)
             # Store function-gate metadata so the frontend can restore nested-circuit info
             if metadata is not None and placements:
                 first_row = placements[0][0]
@@ -422,6 +425,10 @@ Rules:
 
         normalized["cols"] = cols
         normalized["qubitCount"] = qubit_count
+        # Allocate one classical bit per measured qubit — classicalBitCount was
+        # always left at 0, so measurement results had nowhere to go (#50).
+        existing_cbits = _to_int(normalized.get("classicalBitCount"), 0)
+        normalized["classicalBitCount"] = max(existing_cbits, len(measured_rows))
         normalized["gateMetadata"] = gate_metadata
         return normalized
 
