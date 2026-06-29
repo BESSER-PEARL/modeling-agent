@@ -214,6 +214,7 @@ class ObjectDiagramHandler(BaseDiagramHandler):
                     {
                         "name": attr["name"],
                         "attributeId": attr["id"],
+                        "type": attr.get("type", "str"),  # carry type through (#26)
                         "value": self._value_for_attribute(
                             attr["name"], attr.get("type", "str"), class_name, index
                         ),
@@ -309,6 +310,9 @@ class ObjectDiagramHandler(BaseDiagramHandler):
                     {
                         "name": ref_attr_name,
                         "attributeId": ref_attr["id"],
+                        # Carry the class attribute's type through — without it
+                        # every object attribute rendered as 'str' (#26).
+                        "type": ref_attr.get("type", "str"),
                         "value": value,
                     }
                 )
