@@ -1953,30 +1953,60 @@ Section types:
 - two_column: Side-by-side layout. Provide "left" and "right" as nested section specs (e.g. left: table, right: pie_chart)
 
 Layout rules:
-1. Create 2-4 pages depending on request complexity.
-2. Each page should include 2-5 sections.
-3. FIRST page MUST start with a hero section as the first section.
-4. EVERY page MUST end with a footer section as the last section.
-5. Use stats_grid for overview numbers at the top of dashboard pages (after hero or at start).
-6. Use two_column to pair related content side by side (e.g. a table + a chart).
-7. When classes are available, include at least one data-bound section (table, chart, or dashboard) per page.
-8. Use dashboard type for overview pages that need both data display and visualisation.
-9. Always set className when using table/chart/dashboard sections.
-10. For table/chart/dashboard sections, ALWAYS include a "sampleData" array with 4-6 realistic preview rows using actual attribute names and plausible domain-specific values (e.g. for a Shoe class: {{"brand": "Nike", "size": 42, "price": 129.99}}). For charts, each item needs "name" (label) and "value" (number). For pie charts, add a "color" hex string. For tables, each item should be a dict with column names as keys.
-11. Return JSON only.
+1. FIRST decide the app TYPE from the request, then design for it (patterns below).
+   Do NOT bolt a marketing hero onto a data app — that is the #1 thing that makes
+   generated UIs look generic and wrong.
+2. Create 2-4 pages; each page 2-5 sections.
+3. Lead each page with the section that fits its PURPOSE (not always a hero):
+   - marketing / landing / "home" page -> hero
+   - dashboard / admin / overview page -> stats_grid (KPIs)
+   - data / list / catalog / directory page -> a short "content" intro that acts as
+     the page header (what you can browse/search), immediately followed by a table
+4. EVERY page ends with a footer section.
+5. Use stats_grid to surface key numbers near the top of overview/data pages.
+6. Use two_column to pair related content (classically a table + a chart).
+7. Use dashboard for pages that need both data display and visualisation together.
+8. When classes are available, every page includes >=1 data-bound section
+   (table/chart/dashboard) and ALWAYS sets className.
+9. For table/chart/dashboard sections, ALWAYS include a "sampleData" array of 4-6
+   realistic rows using real attribute names and plausible domain values (e.g. a
+   Shoe table: {{"brand": "Nike", "size": 42, "price": 129.99}}). Charts: each item
+   needs "name" + "value"; pie charts add a "color" hex. Tables: each item is a dict
+   keyed by column name.
+10. Return JSON only.
 
-Page design patterns (use as reference):
-- DASHBOARD pattern: hero -> stats_grid (3-4 KPIs) -> two_column(table + bar_chart) -> footer
-- CRUD LIST pattern: content(intro) -> table(class data) -> form(add new item) -> footer
-- OVERVIEW pattern: hero -> feature_list(capabilities) -> stats_grid -> footer
-- DETAIL pattern: content(description) -> dashboard(class data) -> form(edit) -> footer
+App TYPE -> page pattern (pick the closest, then adapt freely):
+- MARKETING / LANDING: hero -> feature_list -> stats_grid -> footer
+- ADMIN / DASHBOARD: stats_grid(3-4 KPIs) -> two_column(table + bar_chart) -> table -> footer   (NO marketing hero)
+- DATA / CATALOG / DIRECTORY (a library catalog, product list, member directory):
+    content(header: what you can browse) -> stats_grid(totals) -> table(the records)
+    -> two_column(table + pie_chart by category) -> footer
+- CRUD APP: content(intro) -> table(records) -> form(add / edit) -> footer
+- DETAIL PAGE: content(description) -> dashboard(entity data) -> form(edit) -> footer
 
-When classes are available, design pages around the data:
-- One page per major entity (e.g., Products page, Orders page, Users page)
-- Overview/Home page with stats_grid summarizing all entities
-- Each entity page should have at least a table showing its data
-- Add charts that make sense for the entity (pie for categories, bar for quantities, line for time series)
-- Sample data should use realistic values that match the domain{class_block}"""
+When classes are available, design data-first: one page per major entity, a Home/
+Overview page whose stats_grid summarizes all entities, charts that fit the entity
+(pie for categories, bar for quantities, line for time series), realistic domain data.
+
+Example — a library catalog (a DATA app: it leads with a content header + stats, NOT a hero):
+{{
+  "projectName": "City Library",
+  "pages": [
+    {{"name": "Catalog", "sections": [
+      {{"type": "content", "title": "Browse the Catalog", "body": "Search and explore the library's books, authors and availability."}},
+      {{"type": "stats_grid", "title": "At a glance", "items": [{{"label": "Books", "value": "12,480"}}, {{"label": "Members", "value": "3,210"}}, {{"label": "On loan", "value": "1,045"}}]}},
+      {{"type": "two_column",
+        "left": {{"type": "table", "title": "Books", "className": "Book", "sampleData": [{{"title": "Dune", "author": "Herbert", "genre": "Sci-Fi", "available": true}}, {{"title": "1984", "author": "Orwell", "genre": "Dystopia", "available": false}}]}},
+        "right": {{"type": "pie_chart", "title": "By genre", "className": "Book", "sampleData": [{{"name": "Sci-Fi", "value": 320, "color": "#6366f1"}}, {{"name": "Fiction", "value": 540, "color": "#f59e0b"}}, {{"name": "History", "value": 210, "color": "#22c55e"}}]}}}},
+      {{"type": "footer", "items": ["Hours", "Membership", "Contact"]}}
+    ]}},
+    {{"name": "Members", "sections": [
+      {{"type": "stats_grid", "items": [{{"label": "Active", "value": "3,210"}}, {{"label": "New this month", "value": "142"}}, {{"label": "Overdue", "value": "87"}}]}},
+      {{"type": "table", "title": "Members", "className": "Member", "sampleData": [{{"name": "A. Khan", "joined": "2024-01-12", "loans": 3}}, {{"name": "L. Romero", "joined": "2023-11-03", "loans": 1}}]}},
+      {{"type": "footer", "items": ["Hours", "Membership", "Contact"]}}
+    ]}}
+  ]
+}}{class_block}"""
 
         logger.info(f"[GUINoCode] generate_complete_system called with: {user_request[:120]!r}")
 
