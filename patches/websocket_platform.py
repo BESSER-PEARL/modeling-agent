@@ -206,6 +206,14 @@ class WebSocketPlatform(Platform):
                         if not isinstance(payload.message, dict) or not payload.message:
                             logger.error('Invalid message format for USER_SET_VARIABLE')
                             continue  # skip this iteration
+                        # Client keep-alive heartbeat. Re-claim the reply slot for
+                        # this (demonstrably live) connection so a reply produced
+                        # during a long generation routes back to whichever socket
+                        # the client currently holds -- even after reconnects. Then
+                        # skip without setting a variable or spamming the logs.
+                        if '__heartbeat' in payload.message:
+                            self._connections[str(session_key)] = conn
+                            continue
                         for key, value in payload.message.items():
                             session.set(key, value)
                             logger.info(f"Session variable {key} set to {value}.")
@@ -340,6 +348,12 @@ class WebSocketPlatform(Platform):
         if session_id in self._connections:
             conn = self._connections[session_id]
             conn.send(json.dumps(payload, cls=PayloadEncoder))
+        else:
+            logger.warning(
+                "Dropped reply for session %r (action=%s): no live connection "
+                "registered -- client likely disconnected mid-generation.",
+                session_id, getattr(payload, "action", "?"),
+            )
 
     def reply(self, session: Session, message: str) -> None:
         if session.platform is not self:
