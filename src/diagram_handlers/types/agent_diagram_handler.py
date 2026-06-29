@@ -3,8 +3,9 @@ Agent Diagram Handler
 Handles generation of UML Agent Diagrams (multi-agent conversational flows)
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 import logging
+import re
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
 from ..core.prompt_fragments import POSITION_DISCLAIMER
@@ -300,7 +301,25 @@ IMPORTANT RULES:
         if element_type == "intent":
             normalized_intent = self._normalize_intent_spec(spec, request)
             if not normalized_intent:
-                raise ValueError("Intent specification requires at least one training phrase.")
+                # A single-intent request with no usable training phrases used
+                # to raise here, get swallowed by the broad except in
+                # generate_single_element, and fall back to building a STATE —
+                # the opposite of what the user asked for (#53). Instead,
+                # synthesize a couple of starter phrases from the intent name
+                # so we still create an intent the user can flesh out.
+                intent_name = (
+                    spec.get("intentName")
+                    or spec.get("name")
+                    or self.extract_name_from_request(request, "Intent")
+                )
+                normalized_intent = {
+                    "type": "intent",
+                    "intentName": intent_name,
+                    "trainingPhrases": self._default_training_phrases(intent_name),
+                }
+                position = self._normalize_position(spec)
+                if position:
+                    normalized_intent["position"] = position
             return normalized_intent
 
         if element_type in {"initial", "initialnode", "start"}:
@@ -369,6 +388,30 @@ IMPORTANT RULES:
         if position:
             normalized_intent["position"] = position
         return normalized_intent
+
+    @staticmethod
+    def _default_training_phrases(intent_name: str) -> List[str]:
+        """Synthesize starter training phrases from an intent name.
+
+        Used when the user asks to create an intent but provides no example
+        utterances — an intent with zero phrases is unusable, so we seed a
+        couple of sensible defaults derived from the (camelCase / snake_case)
+        intent name instead of failing.
+        """
+        raw = (intent_name or "Intent").strip()
+        # Split camelCase and snake/kebab-case into words.
+        spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", raw)
+        spaced = re.sub(r"[_\-]+", " ", spaced)
+        humanized = " ".join(spaced.split()).lower().strip() or "this"
+        phrases = [humanized, f"I want to {humanized}"]
+        # De-duplicate while preserving order.
+        seen: Set[str] = set()
+        unique: List[str] = []
+        for phrase in phrases:
+            if phrase and phrase not in seen:
+                seen.add(phrase)
+                unique.append(phrase)
+        return unique
 
     def _normalize_reply_list(self, replies: Any, default_text: str) -> List[Dict[str, str]]:
         """Normalize reply/fallback entries into structured dictionaries"""
