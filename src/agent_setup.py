@@ -182,13 +182,23 @@ def init_rag(agent: Agent):
 
 
 def init_stt(agent: Agent) -> OpenAISpeech2Text:
-    """Initialize and return OpenAI speech-to-text for voice messages."""
+    """Initialize and return OpenAI speech-to-text for voice messages.
+
+    Language is auto-detected by default (the previous hard-pin to English
+    mis-transcribed non-English voice — e.g. the LIST/Luxembourg deployment,
+    #65). Set ``BESSER_AGENT_STT_LANGUAGE`` (e.g. ``en``, ``fr``, ``de``) to
+    pin a specific language.
+    """
+    language = os.getenv("BESSER_AGENT_STT_LANGUAGE", "").strip() or None
     stt = OpenAISpeech2Text(
         agent=agent,
         model_name='whisper-1',
-        language='en',
+        language=language,
     )
-    logger.info("Speech-to-text initialized: whisper-1 (language=en)")
+    logger.info(
+        "Speech-to-text initialized: whisper-1 (language=%s)",
+        language or "auto-detect",
+    )
     return stt
 
 
