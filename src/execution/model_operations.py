@@ -144,6 +144,7 @@ def execute_model_operation(
         "StateMachineDiagram",
         "QuantumCircuitDiagram",
     }
+    _promoted_modify_to_complete = False
     if operation_mode == "modify_model" and target_diagram_type in _PROMOTE_MODIFY_WHEN_EMPTY:
         _existing = resolve_target_model(request, target_diagram_type)
         if not model_has_elements(_existing):
@@ -153,6 +154,7 @@ def execute_model_operation(
                 target_diagram_type,
             )
             operation_mode = "complete_system"
+            _promoted_modify_to_complete = True
 
     logger.info(
         f"⚙️ [ModelOp] Executing: diagram={target_diagram_type}, mode={operation_mode}, "
@@ -182,7 +184,7 @@ def execute_model_operation(
                     'operation': stored_operation,
                     'default_mode': default_mode,
                 },
-                source_description=f"I generated a new {target_diagram_type}",
+                source_description=f"I can create a new {target_diagram_type}",
             )
             logger.info(
                 f"[ModelOp] Asked user to confirm replace/keep for existing {target_diagram_type}"
@@ -440,6 +442,15 @@ def execute_model_operation(
     if result.get("action") == "assistant_message":
         reply_message(session, result.get("message", "Something went wrong. Please try again."))
         return None
+
+    # When a modify_model op was silently promoted to a full complete_system
+    # build (no existing diagram to edit), tell the user the scope changed so
+    # they aren't surprised by a whole new diagram instead of a small edit (#60).
+    if _promoted_modify_to_complete and isinstance(result.get("message"), str):
+        result["message"] = (
+            f"There wasn't an existing {diagram_label} to modify, so I created a "
+            f"new one instead. " + result["message"]
+        )
 
     result["diagramType"] = target_diagram_type
     diagram_id = resolve_diagram_id(request, target_diagram_type)
