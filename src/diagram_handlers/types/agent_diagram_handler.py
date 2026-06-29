@@ -82,6 +82,33 @@ IMPORTANT RULES:
     def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a complete agent conversation flow with deterministic positioning."""
 
+        # Multi-agent guard (issue I): the editor models ONE agent per Agent
+        # diagram. Previously an explicit "multi-agent system" request was
+        # silently flattened into a single agent with a success message. Detect
+        # it on the RAW user message (not the context-enriched prompt, which
+        # mentions existing AgentDiagrams) and explain instead of misleading.
+        import re as _re
+        _raw = kwargs.get("raw_request") or user_request or ""
+        if _re.search(
+            r"\bmulti[\s-]?agents?\b|\bmultiple\s+agents?\b|\bseveral\s+agents?\b"
+            r"|\b(?:two|three|four|five|\d+)\s+(?:separate\s+|different\s+|distinct\s+)?agents?\b"
+            r"|\bagents?\s+that\s+(?:delegate|coordinate|communicate|hand\s*off|talk)\b",
+            _raw, _re.IGNORECASE,
+        ):
+            return {
+                "action": "assistant_message",
+                "message": (
+                    "BESSER's editor models **one agent per Agent diagram**, so I can't build "
+                    "a true multi-agent system (agents delegating to each other) inside a single "
+                    "diagram yet. I can either:\n\n"
+                    "1. Build **one agent** that handles all those responsibilities as separate "
+                    "conversation flows, or\n"
+                    "2. Create **separate Agent diagrams** (one per agent) in their own tabs.\n\n"
+                    "Which would you prefer? (For real agent-to-agent orchestration you'd wire "
+                    "them together in Python with the BESSER Agentic Framework.)"
+                ),
+            }
+
         system_prompt = f"""You are a conversational agent modeling expert. Create a COMPLETE agent diagram specification.
 
 Before generating, think through:
