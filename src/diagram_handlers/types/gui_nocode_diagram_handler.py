@@ -1984,9 +1984,13 @@ App TYPE -> page pattern (pick the closest, then adapt freely):
 - CRUD APP: content(intro) -> table(records) -> form(add / edit) -> footer
 - DETAIL PAGE: content(description) -> dashboard(entity data) -> form(edit) -> footer
 
-When classes are available, design data-first: one page per major entity, a Home/
-Overview page whose stats_grid summarizes all entities, charts that fit the entity
-(pie for categories, bar for quantities, line for time series), realistic domain data.
+Design data-first: one page per major entity, a Home/Overview page whose stats_grid
+summarizes all entities, charts that fit the entity (pie for categories, bar for
+quantities, line for time series), realistic domain data.
+CONSISTENCY IS CRITICAL: when no class diagram is provided, invent a small fixed
+schema up front and reuse the SAME field names for an entity in EVERY section it
+appears (a Book is always {{"title", "author", "genre", "available"}} — never
+{{"name", "year"}} elsewhere). Set className to the entity name on every data section.
 
 Example — a library catalog (a DATA app: it leads with a content header + stats, NOT a hero):
 {{
@@ -2013,17 +2017,29 @@ Example — a library catalog (a DATA app: it leads with a content header + stat
         try:
             # --- Two-pass generation for richer UI design ---
             reasoning_prompt = (
-                "You are a UI/UX design expert. Think step by step about "
-                "the following web application request and plan the page layout.\n\n"
+                "You are a UI/UX design expert. Think step by step about the "
+                "following web application request and plan the page layout.\n\n"
                 f"User Request: {user_request}\n\n"
-                "Analyze:\n"
-                "1. What pages does this app need? (Home, Dashboard, Detail pages, Settings?)\n"
-                "2. For each page, what sections make sense? (hero banner, data tables, charts, forms?)\n"
-                "3. What data entities should be displayed? What charts visualize them best?\n"
-                "4. What is the navigation flow between pages?\n"
-                "5. What realistic sample data would make the preview look professional?\n\n"
-                "Design a modern, clean UI layout. Think like a Lovable/Vercel designer — "
-                "clean typography, generous spacing, purposeful color use."
+                "Work in this order:\n"
+                "1. DATA MODEL FIRST. Identify the 2-4 core entities this app "
+                "revolves around. For EACH entity write its exact field names + "
+                "types, e.g. Book: title:str, author:str, genre:str, year:int, "
+                "available:bool. These field names are the contract for the whole "
+                "UI — pick them once and do not vary them.\n"
+                "2. Pages: prefer one page per major entity plus an overview/home "
+                "page.\n"
+                "3. Sections per page: choose the app TYPE (marketing / dashboard / "
+                "data-catalog / CRUD) and lead each page with the section that fits "
+                "it — do NOT default to a marketing hero for a data app.\n"
+                "4. Binding (most important): every table/chart/form that shows an "
+                "entity MUST reuse the EXACT field names from step 1 — the same "
+                "entity must look identical on every page. A chart aggregates ONE "
+                "field (e.g. count of books by genre).\n"
+                "5. Navigation flow, and realistic domain sample data built from the "
+                "step-1 fields.\n\n"
+                "Design a modern, clean UI. Think like a Lovable/Vercel designer — "
+                "clean typography, generous spacing, purposeful color, and data that "
+                "stays coherent across every page."
             )
 
             # Complete-system generation → LARGE tier; reasoning pass on
