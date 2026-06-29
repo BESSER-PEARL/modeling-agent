@@ -2414,14 +2414,23 @@ Rules:
 
         if operation == "rename_page":
             new_page_name = _sanitize_page_name(spec.get("newPageName"), fallback=page_name)
+            renamed = False
             for page in model.get("pages", []):
                 if isinstance(page, dict) and _clean_text(page.get("name")).lower() == page_name.lower():
                     page["name"] = new_page_name
                     page["route_path"] = (
                         f"/{re.sub(r'[^a-z0-9-]+', '-', new_page_name.lower()).strip('-') or 'page'}"
                     )
+                    renamed = True
                     break
-            return model, f"Renamed the **{page_name}** page to **{new_page_name}**."
+            if renamed:
+                return model, f"Renamed the **{page_name}** page to **{new_page_name}**."
+            # Don't claim success when no page matched (a real source of
+            # "it said it renamed but nothing changed" reports).
+            return model, (
+                f"I couldn't find a page named **{page_name}** to rename. "
+                "Your GUI is unchanged."
+            )
 
         if operation == "add_page":
             new_page_name = _sanitize_page_name(spec.get("newPageName") or page_name, fallback="Page")
