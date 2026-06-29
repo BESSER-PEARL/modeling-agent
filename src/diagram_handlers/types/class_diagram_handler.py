@@ -655,9 +655,13 @@ Examples:
             msg += f" and {len(rels)} relationship(s)"
         constraints = spec.get("constraints") or []
         if constraints:
+            # Honest message: OCL constraints are understood but the editor has
+            # no slot to display/store them yet, so don't claim they're captured
+            # on the diagram (#45).
             msg += (
-                f". I also captured {len(constraints)} OCL constraint(s) from the "
-                "rules you stated"
+                f". I noted {len(constraints)} OCL business rule(s) from your "
+                "description, but the editor can't show OCL constraints on the "
+                "diagram yet, so they aren't displayed"
             )
         msg += ". Feel free to ask me to modify or extend any part of the diagram!"
         return msg

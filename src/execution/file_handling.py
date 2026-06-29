@@ -31,7 +31,37 @@ def handle_file_attachments(session: Session, request: AssistantRequest) -> bool
 
     openai_key = ctx.openai_api_key
 
-    for attachment in request.attachments:
+    # Cap attachment count + per-file size BEFORE decoding — each attachment
+    # triggers a sequential vision/LLM call, so an unbounded batch blocks the
+    # single-threaded agent for minutes and runs up cost (#31).
+    MAX_ATTACHMENTS = 5
+    MAX_FILE_B64_CHARS = 14_000_000  # ~10 MB once decoded
+    attachments = list(request.attachments)
+    if len(attachments) > MAX_ATTACHMENTS:
+        logger.warning(
+            "[FileConversion] %d attachments — processing first %d only",
+            len(attachments), MAX_ATTACHMENTS,
+        )
+        reply_payload(session, {
+            "action": "assistant_message",
+            "message": (
+                f"You attached {len(attachments)} files — I'll process the first "
+                f"{MAX_ATTACHMENTS} to stay responsive. Send the rest in a follow-up."
+            ),
+        })
+        attachments = attachments[:MAX_ATTACHMENTS]
+
+    for attachment in attachments:
+        if len(attachment.content_b64 or "") > MAX_FILE_B64_CHARS:
+            logger.warning(
+                "[FileConversion] Skipping oversized attachment %s (%d b64 chars)",
+                attachment.filename, len(attachment.content_b64 or ""),
+            )
+            reply_payload(session, {
+                "action": "assistant_message",
+                "message": f"Skipped **{attachment.filename}** — it's too large to process.",
+            })
+            continue
         logger.info(
             f"[FileConversion] Processing attachment: {attachment.filename} "
             f"({attachment.mime_type}, {len(attachment.content_b64)} b64 chars)"
