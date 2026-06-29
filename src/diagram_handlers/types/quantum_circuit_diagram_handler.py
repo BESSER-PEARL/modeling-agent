@@ -282,6 +282,10 @@ def _operation_to_placements(operation: Dict[str, Any]) -> Tuple[Optional[int], 
     if gate_name in {"CNOT", "CZ", "CY"}:
         control_row = _to_int(operation.get("controlRow"), 0)
         target_row = _to_int(operation.get("targetRow"), max(control_row + 1, 1))
+        # control and target must be different qubits, else the control dot and
+        # the gate symbol land in the same cell and one overwrites the other (#49).
+        if target_row == control_row:
+            target_row = control_row + 1
         target_symbol = "X" if gate_name == "CNOT" else "Z" if gate_name == "CZ" else "Y"
         return column, [(control_row, "\u2022"), (target_row, target_symbol)], None
 
@@ -289,13 +293,22 @@ def _operation_to_placements(operation: Dict[str, Any]) -> Tuple[Optional[int], 
     if gate_name == "TOFFOLI":
         ctrl1 = _to_int(operation.get("controlRow"), 0)
         ctrl2 = _to_int(operation.get("controlRow2"), max(ctrl1 + 1, 1))
+        if ctrl2 == ctrl1:
+            ctrl2 = ctrl1 + 1
         target_row = _to_int(operation.get("targetRow"), max(ctrl2 + 1, 2))
+        if target_row in (ctrl1, ctrl2):  # all three qubits must be distinct (#49)
+            target_row = max(ctrl1, ctrl2) + 1
         return column, [(ctrl1, "\u2022"), (ctrl2, "\u2022"), (target_row, "X")], None
 
-    # --- SWAP pair -----------------------------------------------------------
-    if gate_name == "SWAP_PAIR":
-        row = _to_int(operation.get("row"), 0)
+    # --- SWAP (plain "SWAP" and legacy "SWAP_PAIR") --------------------------
+    # Plain SWAP used to fall through to the single-symbol default, dropping
+    # targetRow and rendering one broken marker \u2014 every prompt tells the model
+    # to use "SWAP", so handle both identically. (#24)
+    if gate_name in {"SWAP", "SWAP_PAIR"}:
+        row = _to_int(operation.get("row", operation.get("controlRow")), 0)
         target_row = _to_int(operation.get("targetRow"), row + 1)
+        if target_row == row:
+            target_row = row + 1
         return column, [(row, "Swap"), (target_row, "Swap")], None
 
     # --- Standalone CONTROL / ANTI_CONTROL -----------------------------------
@@ -388,14 +401,17 @@ Rules:
         normalized = _normalize_quantum_model(model)
         existing_cols = normalized.get("cols", []) if append else []
 
-        max_row = normalized.get("qubitCount", DEFAULT_QUBITS) - 1
+        # Seed from the existing register ONLY when appending; a fresh
+        # generation sizes to the actual operations instead of flooring at
+        # DEFAULT_QUBITS (#25 — a 2-qubit Bell state was padded to 5 qubits).
+        max_row = (normalized.get("qubitCount", DEFAULT_QUBITS) - 1) if append else -1
         for op in operations:
             _, placements, _ = _operation_to_placements(op)
             for row, _ in placements:
                 max_row = max(max_row, row)
 
-        qubit_count = _normalize_qubit_count(qubit_count_hint, fallback=max_row + 1)
-        qubit_count = max(qubit_count, max_row + 1)
+        qubit_count = _normalize_qubit_count(qubit_count_hint, fallback=max(max_row + 1, 1))
+        qubit_count = max(qubit_count, max_row + 1, 1)
 
         cols: List[List[Any]] = []
         for col in existing_cols:
