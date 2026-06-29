@@ -59,6 +59,23 @@ class RelationshipSpec(BaseModel):
     targetMultiplicity: str = Field(default="*", description="Target multiplicity: 1, 0..1, 0..*, or 1..*")
     name: Optional[str] = Field(default=None, description="Optional relationship name")
 
+    @field_validator("sourceMultiplicity", "targetMultiplicity", mode="before")
+    @classmethod
+    def _normalize_multiplicity(cls, v):
+        # LLMs emit many/N/n/0..n/* etc. which the BUML multiplicity parser
+        # rejects, breaking export. Map them to accepted forms (1, 0..1, 0..*,
+        # 1..*) and pass valid values through. (#46)
+        if v is None:
+            return "1"
+        s = str(v).strip().lower().replace(" ", "")
+        if s in ("", "?"):
+            return "1"
+        if s in ("*", "n", "many", "0..n", "0..*", "*..*", "n..n", "0..many"):
+            return "0..*"
+        if s in ("1..n", "1..*", "1..many", "+"):
+            return "1..*"
+        return s.replace("..n", "..*").replace("..many", "..*")
+
 
 class OCLConstraintSpec(BaseModel):
     """A single OCL invariant capturing a business rule the user explicitly stated.
