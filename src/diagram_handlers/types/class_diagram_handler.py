@@ -1350,9 +1350,12 @@ Examples:
 
         primitives: List[Dict[str, Any]] = []
 
-        # 1. Create the enum as a class with <<enumeration>> stereotype
+        # 1. Create the enum as a real enumeration. The frontend keys off
+        #    changes.isEnumeration; without it we got a plain Class. Enum
+        #    literals must NOT be typed by the enum name (that produced
+        #    "Low: Status") — leave them type-less. (#23)
         enum_attrs = [
-            {"name": v, "type": enum_name, "visibility": "public"}
+            {"name": v, "visibility": "public"}
             for v in values if isinstance(v, str)
         ]
         primitives.append({
@@ -1360,6 +1363,7 @@ Examples:
             "target": {"className": enum_name},
             "changes": {
                 "className": enum_name,
+                "isEnumeration": True,
                 "stereotype": "enumeration",
                 "attributes": enum_attrs,
                 "methods": [],
