@@ -13,6 +13,7 @@ state body.
 
 import logging
 import re
+from dataclasses import replace
 from typing import Any
 
 from baf.core.session import Session
@@ -182,9 +183,10 @@ def handle_pending_gui_choice(session: Session) -> bool:
     stored_replace = pending.get('_replace_existing')
     remaining_ops = pending.get('remaining_operations')
 
-    # Restore the original request message for the operation
-    working_request = request
-    working_request.message = pending.get('operation_request', request.message)
+    # Restore the original request message for the operation. Use a copy:
+    # ``request`` is the session-cached AssistantRequest, so mutating it in
+    # place would corrupt the cached object for any later read this turn (#63).
+    working_request = replace(request, message=pending.get('operation_request', request.message))
 
     try:
         execute_model_operation(
@@ -300,9 +302,10 @@ def handle_pending_system_confirmation(session: Session) -> bool:
     stored_operation = pending.get('operation', {})
     stored_default_mode = pending.get('default_mode', 'complete_system')
 
-    # Rebuild a minimal request that carries the stored message.
-    working_request = request
-    working_request.message = stored_message
+    # Rebuild a minimal request that carries the stored message. Use a copy:
+    # ``request`` is the session-cached AssistantRequest, so mutating it in
+    # place would corrupt the cached object for any later read this turn (#63).
+    working_request = replace(request, message=stored_message)
 
     # ── New tab path ──────────────────────────────────────────────────
     if wants_new_tab:
