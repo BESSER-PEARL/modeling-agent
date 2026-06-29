@@ -190,7 +190,16 @@ class ConversationMemory:
             new_summary = self._summarizer(prompt)[:_DEFAULT_MAX_SUMMARY_LEN]
         except Exception as exc:
             logger.warning(f"[Memory:{self.session_id}] Summarization failed: {exc}")
-            new_summary = text_to_summarize[:_DEFAULT_MAX_SUMMARY_LEN]
+            # Summarization failed. Don't pass the raw transcript off as a real
+            # summary — it would later be fed to the LLM under a "summary"
+            # heading and bury the rolling summary under truncated message text
+            # (#68). Store it explicitly LABELED as a partial transcript so the
+            # downstream prompt frames it honestly.
+            snippet = text_to_summarize[:_DEFAULT_MAX_SUMMARY_LEN].strip()
+            new_summary = (
+                "[Partial transcript — automatic summarization was unavailable "
+                "for these earlier turns]\n" + snippet
+            )[:_DEFAULT_MAX_SUMMARY_LEN]
 
         # Store under lock (fast operation)
         with self._lock:
