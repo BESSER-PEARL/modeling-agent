@@ -1,7 +1,10 @@
+import logging
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from protocol.types import AssistantRequest, SUPPORTED_DIAGRAM_TYPES
+
+logger = logging.getLogger(__name__)
 
 KEYWORD_TARGETS = [
     # Class / Structural
@@ -220,33 +223,60 @@ def determine_target_diagram_types(
     request: AssistantRequest,
     last_intent: Optional[str] = None,
     max_targets: int = 3,
+    llm_target_type: Optional[str] = None,
 ) -> List[str]:
     """
     Resolve one or more diagram targets for a user message.
 
     Priority:
+    0. The unified classifier's ``target_diagram_type`` (it read the full
+       message + the workspace) — the PRIMARY signal when present and valid.
     1. Explicit diagram references in the prompt (ordered by first appearance)
     2. Implicit semantic hints (scored keyword rules)
     3. Active diagram fallback
+
+    The keyword pipeline (1–3) is the fallback for when the LLM left
+    ``target_diagram_type`` null. This consumes the classifier verdict that
+    was previously produced but discarded — fixing wrong-diagram routing for
+    natural phrasing (e.g. "add a virtual assistant" → AgentDiagram, "I need
+    screens" → GUINoCodeDiagram) that the keyword lists miss.
     """
     message_lower = (request.message or "").lower()
     explicit_targets = _collect_explicit_targets(message_lower)
+    implicit_targets = _rank_implicit_targets(message_lower)
+
+    if llm_target_type and llm_target_type in SUPPORTED_DIAGRAM_TYPES:
+        # Shadow-log a disagreement so the LLM-vs-keyword verdict is observable.
+        keyword_primary = (explicit_targets or implicit_targets or [None])[0]
+        if keyword_primary and keyword_primary != llm_target_type:
+            logger.info(
+                "[diagram-target] LLM=%s keyword=%s -> using LLM",
+                llm_target_type, keyword_primary,
+            )
+        # Keyword hits only contribute ADDITIONAL targets (multi-diagram
+        # requests); the LLM verdict leads.
+        extras = [t for t in (explicit_targets + implicit_targets) if t != llm_target_type]
+        return ([llm_target_type] + extras)[:max_targets]
+
     if explicit_targets:
         return explicit_targets[:max_targets]
-
-    implicit_targets = _rank_implicit_targets(message_lower)
     if implicit_targets:
         return implicit_targets[:max_targets]
-
     fallback = _fallback_diagram_from_context(request, last_intent=last_intent)
     return [fallback]
 
 
-def determine_target_diagram_type(request: AssistantRequest, last_intent: Optional[str] = None) -> str:
+def determine_target_diagram_type(
+    request: AssistantRequest,
+    last_intent: Optional[str] = None,
+    llm_target_type: Optional[str] = None,
+) -> str:
     """
     Resolve a single primary diagram target for the current user message.
     """
-    targets = determine_target_diagram_types(request, last_intent=last_intent, max_targets=1)
+    targets = determine_target_diagram_types(
+        request, last_intent=last_intent, max_targets=1, llm_target_type=llm_target_type
+    )
     return targets[0] if targets else _fallback_diagram_from_context(request, last_intent=last_intent)
 
 

@@ -284,8 +284,11 @@ def _fallback_operations(
     request: AssistantRequest,
     default_mode: str,
     matched_intent: Optional[str],
+    llm_target_type: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    targets = determine_target_diagram_types(request, last_intent=matched_intent, max_targets=3)
+    targets = determine_target_diagram_types(
+        request, last_intent=matched_intent, max_targets=3, llm_target_type=llm_target_type
+    )
 
     # ClassDiagram is a prerequisite for other diagram types (GUI, Object, etc.)
     # so it must always be processed first when present alongside others.
@@ -687,6 +690,7 @@ def plan_assistant_operations(
     default_mode: str,
     matched_intent: Optional[str],
     llm_predict: Callable[[str], str],
+    llm_target_type: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Build an ordered operation plan for the assistant.
@@ -706,8 +710,13 @@ def plan_assistant_operations(
             return validated
 
     # ----- Phase 1: keyword-based fallback -----
-    fallback = _fallback_operations(request, default_mode=default_mode, matched_intent=matched_intent)
-    inferred_targets = determine_target_diagram_types(request, last_intent=matched_intent, max_targets=6)
+    fallback = _fallback_operations(
+        request, default_mode=default_mode, matched_intent=matched_intent,
+        llm_target_type=llm_target_type,
+    )
+    inferred_targets = determine_target_diagram_types(
+        request, last_intent=matched_intent, max_targets=6, llm_target_type=llm_target_type,
+    )
     # Cache detect_generator_type — called once and reused
     detected_gen = detect_generator_type(request.message)
     has_generation_request = detected_gen is not None

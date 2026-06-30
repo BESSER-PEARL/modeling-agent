@@ -93,11 +93,22 @@ def execute_planned_operations(
     matched_intent: Optional[str],
 ) -> None:
     """Run the orchestrator planner and dispatch each resulting operation."""
+    # Consume the unified classifier's diagram-type verdict (it read the full
+    # message + workspace) as the PRIMARY diagram target — previously this was
+    # produced but discarded, and the type was re-derived from keyword lists.
+    _llm_target = None
+    try:
+        from session_keys import UNIFIED_CLASSIFICATION
+        _uc = session.get(UNIFIED_CLASSIFICATION)
+        _llm_target = getattr(_uc, "target_diagram_type", None) if _uc is not None else None
+    except Exception:
+        _llm_target = None
     operations = plan_assistant_operations(
         request=request,
         default_mode=default_mode,
         matched_intent=matched_intent,
         llm_predict=ctx.gpt_predict_json,
+        llm_target_type=_llm_target,
     )
 
     if not operations:
