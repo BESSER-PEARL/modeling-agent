@@ -426,7 +426,7 @@ def execute_model_operation(
         # own key, prompt them to add one (BYOK); when the user's OWN key
         # fails, tell them to check it. errorCode (rate_limit / auth_error) is
         # carried so the frontend can offer "Add your API key".
-        from errors import classify_error, build_error_response, ErrorCode
+        from errors import classify_error, ErrorCode
         try:
             _code = classify_error(exc)
         except Exception:
@@ -436,32 +436,43 @@ def execute_model_operation(
             _byok_active = byok.is_active()
         except Exception:
             _byok_active = False
+        # Emit action='agent_error' with errorCode so the frontend surfaces an
+        # inline "Add your API key" button (it keys on rate_limit/auth_error).
         if _byok_active and _code in (ErrorCode.RATE_LIMIT, ErrorCode.AUTH_ERROR):
-            reply_payload(session, build_error_response(
-                ErrorCode.AUTH_ERROR,
-                message=(
+            reply_payload(session, {
+                "action": "agent_error",
+                "errorCode": "auth_error",
+                "message": (
                     "Your API key was rejected or hit its rate limit. Check the "
                     "key (the key icon in the assistant) and try again."
                 ),
-            ))
+                "retryable": True,
+                "suggestedRecovery": "Check your API key",
+            })
         elif _code == ErrorCode.RATE_LIMIT:
-            reply_payload(session, build_error_response(
-                ErrorCode.RATE_LIMIT,
-                message=(
+            reply_payload(session, {
+                "action": "agent_error",
+                "errorCode": "rate_limit",
+                "message": (
                     "We've hit the shared free usage limit for the AI service. "
                     "Add your own API key (the key icon in the assistant) to keep "
                     "going — it stays in your browser and is used only for your "
                     "requests."
                 ),
-            ))
+                "retryable": True,
+                "suggestedRecovery": "Add your own API key",
+            })
         elif _code == ErrorCode.AUTH_ERROR:
-            reply_payload(session, build_error_response(
-                ErrorCode.AUTH_ERROR,
-                message=(
+            reply_payload(session, {
+                "action": "agent_error",
+                "errorCode": "auth_error",
+                "message": (
                     "The AI service is temporarily unavailable. Please try again "
                     "shortly, or add your own API key in the assistant settings."
                 ),
-            ))
+                "retryable": False,
+                "suggestedRecovery": "Try again shortly, or add your own API key",
+            })
         else:
             reply_message(
                 session,
