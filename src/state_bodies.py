@@ -739,6 +739,33 @@ def workflow_body(session: Session):
 
     user_message = request.message
 
+    # ── Safety net: route custom/smart builds to the Vibe-Driven generator ──
+    # A "generate a full app / dashboard / webapp (react, fastapi, custom
+    # stack, …)" request belongs to the Vibe-Driven (smart) generator running
+    # on the user's EXISTING model — NOT the deterministic
+    # build→validate→generate workflow (which would rebuild the model and emit
+    # a generic CRUD scaffold). The unified classifier sometimes buckets these
+    # as workflow_intent; re-check the generation sub-route and, when it is
+    # 'smart', hand off to the Vibe-Driven confirmation (uses the current
+    # model, asks before spending the user's key — no rebuild).
+    try:
+        from handlers.smart_generation_handler import classify_generation_request
+        _provider = _get_llm_provider() if _get_llm_provider else None
+        _gen_route = classify_generation_request(request, _provider)
+    except Exception as _route_err:  # never let routing crash the workflow
+        logger.warning(f"[Workflow] generation sub-route classification failed: {_route_err}")
+        _gen_route = None
+    if _gen_route is not None and getattr(_gen_route, "route", None) == "smart":
+        logger.info(
+            "[Workflow] smart build → handing off to the Vibe-Driven generator "
+            "on the existing model (no rebuild)"
+        )
+        from handlers.generation_handler import _build_smart_gen_confirmation
+        _refined = (getattr(_gen_route, "refined_instructions", None) or user_message or "").strip()
+        _smart_provider = getattr(_gen_route, "provider", None) or "anthropic"
+        reply_payload(session, _build_smart_gen_confirmation(session, _refined, _smart_provider))
+        return
+
     # ── Step 0: Parse generator target from the user message ─────────
     target_generator = detect_generator_type(user_message)
     if not target_generator:
@@ -760,7 +787,8 @@ def workflow_body(session: Session):
                 "this", "these", "my model", "my models", "current model",
                 "existing model", "from the model", "from my", "from these",
                 "from this", "the model", "existing diagram", "what we have",
-                "already created", "i have",
+                "already created", "i have", "actual model", "actual metamodel",
+                "my actual", "my class diagram", "my diagram", "current diagram",
             )
             if any(s in _lower for s in _reuse_signals):
                 reuse_existing_model = _existing_model
