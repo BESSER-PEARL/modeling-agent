@@ -15,6 +15,7 @@ from ..types.gui_nocode_diagram_handler import GUINoCodeDiagramHandler
 from ..types.object_diagram_handler import ObjectDiagramHandler
 from ..types.quantum_circuit_diagram_handler import QuantumCircuitDiagramHandler
 from ..types.state_machine_handler import StateMachineHandler
+from ..types.user_profile_handler import UserProfileDiagramHandler
 
 HANDLER_CLASSES = (
     ClassDiagramHandler,
@@ -24,6 +25,7 @@ HANDLER_CLASSES = (
     GUINoCodeDiagramHandler,
     QuantumCircuitDiagramHandler,
     BPMNDiagramHandler,
+    UserProfileDiagramHandler,
 )
 
 

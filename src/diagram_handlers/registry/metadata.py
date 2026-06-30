@@ -52,6 +52,13 @@ DIAGRAM_TYPE_METADATA = {
         "description": "Model business processes with tasks, gateways, and flows",
         "keywords": ["bpmn", "business process", "process", "gateway", "task", "workflow"],
     },
+    "UserDiagram": {
+        "name": "User Profile Diagram",
+        "icon": "user",
+        "elements": ["Profile", "Attribute", "Link"],
+        "description": "Model target user profiles with attribute matching criteria",
+        "keywords": ["user profile", "persona", "user model", "target user", "audience"],
+    },
 }
 
 

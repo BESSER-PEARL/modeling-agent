@@ -16,6 +16,7 @@ SUPPORTED_DIAGRAM_TYPES = {
     "GUINoCodeDiagram",
     "QuantumCircuitDiagram",
     "BPMN",
+    "UserDiagram",
 }
 
 

@@ -71,7 +71,7 @@ class TestDiagramHandlerFactory:
         expected = {
             "ClassDiagram", "ObjectDiagram", "StateMachineDiagram",
             "AgentDiagram", "GUINoCodeDiagram", "QuantumCircuitDiagram",
-            "BPMN",
+            "BPMN", "UserDiagram",
         }
         assert set(supported) == expected
 
