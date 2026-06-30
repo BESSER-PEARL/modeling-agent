@@ -113,47 +113,62 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
             clean = _clean_attr_name(raw_name)
             class_data[owner]["methods"].append(clean)
 
-    # Format class lines
+    # Explicit class COUNT header first — so factual queries ("how many
+    # classes?") are answered from a stated number, and relationships are
+    # never miscounted as classes.
     class_items = list(class_data.items())
+    names_preview = ", ".join(cd["name"] for _, cd in class_items[:max_classes])
+    if len(class_items) > max_classes:
+        names_preview += f" (+{len(class_items) - max_classes} more)"
+    lines.append(f"Classes ({len(class_items)}): {names_preview}")
     for cid, cd in class_items[:max_classes]:
-        parts = [f"Class {cd['name']}"]
+        parts = [f"  - {cd['name']}"]
         if cd["attrs"]:
             attrs_str = ", ".join(cd["attrs"][:max_attrs])
             if len(cd["attrs"]) > max_attrs:
                 attrs_str += f" (+{len(cd['attrs']) - max_attrs} more)"
             parts.append(f"attributes: {attrs_str}")
         if cd["methods"]:
-            methods_str = ", ".join(cd["methods"][:max_attrs])
-            parts.append(f"methods: {methods_str}")
+            parts.append(f"methods: {', '.join(cd['methods'][:max_attrs])}")
         lines.append(" | ".join(parts))
-    if len(class_items) > max_classes:
-        lines.append(f"  …and {len(class_items) - max_classes} more class(es)")
 
-    # Format relationships
+    # Relationships — separate generalizations (inheritance) from associations
+    # so "is X a subclass of Y?" is answerable and the two are never conflated.
+    _GEN_TYPES = {"ClassInheritance", "ClassGeneralization", "ClassRealization"}
+    _REL_LABEL = {
+        "ClassComposition": "composition", "ClassAggregation": "aggregation",
+        "ClassBidirectional": "association", "ClassUnidirectional": "directed association",
+        "ClassDependency": "dependency", "ClassAssociation": "association",
+    }
+    gens: List[str] = []
+    assocs: List[str] = []
     if isinstance(relationships, dict):
-        rel_items = list(relationships.values())
-        for rel in rel_items[:15]:
+        for rel in relationships.values():
             if not isinstance(rel, dict):
                 continue
             source = rel.get("source")
             target = rel.get("target")
             if not isinstance(source, dict) or not isinstance(target, dict):
                 continue
-            src_id = source.get("element", "")
-            tgt_id = target.get("element", "")
-            src_name = class_data.get(src_id, {}).get("name", src_id)
-            tgt_name = class_data.get(tgt_id, {}).get("name", tgt_id)
-            rel_type = rel.get("type", "Association")
-            rel_name = rel.get("name", "")
-            src_mult = source.get("multiplicity", "")
-            tgt_mult = target.get("multiplicity", "")
-            mult_str = ""
-            if src_mult or tgt_mult:
-                mult_str = f" [{src_mult}..{tgt_mult}]"
-            name_str = f' "{rel_name}"' if rel_name else ""
-            lines.append(f"{rel_type}: {src_name} -> {tgt_name}{mult_str}{name_str}")
-        if len(rel_items) > 15:
-            lines.append(f"  …and {len(rel_items) - 15} more relationship(s)")
+            src_name = class_data.get(source.get("element", ""), {}).get("name", source.get("element", ""))
+            tgt_name = class_data.get(target.get("element", ""), {}).get("name", target.get("element", ""))
+            rtype = rel.get("type", "ClassBidirectional")
+            if rtype in _GEN_TYPES:
+                # Apollon inheritance arrow points child -> parent.
+                gens.append(f"{src_name} extends {tgt_name}")
+            else:
+                label = _REL_LABEL.get(rtype, "association")
+                src_mult = source.get("multiplicity", "")
+                tgt_mult = target.get("multiplicity", "")
+                mult = f" [{src_mult}..{tgt_mult}]" if (src_mult or tgt_mult) else ""
+                rel_name = rel.get("name", "")
+                name_str = f' "{rel_name}"' if rel_name else ""
+                assocs.append(f"{src_name} -> {tgt_name} ({label}){mult}{name_str}")
+    if gens:
+        lines.append(f"Generalizations ({len(gens)}): " + "; ".join(gens[:15]))
+    if assocs:
+        more = f" (+{len(assocs) - 15} more)" if len(assocs) > 15 else ""
+        lines.append(f"Relationships ({len(assocs)}): " + "; ".join(assocs[:15]) + more)
 
     return lines
 
