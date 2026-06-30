@@ -224,6 +224,63 @@ class UnifiedClassification(BaseModel):
         ),
     )
 
+    model_disposition: Optional[Literal[
+        "extend_existing",
+        "replace_existing",
+        "new_tab",
+        "reuse_for_generation",
+        "new_from_scratch",
+    ]] = Field(
+        default=None,
+        description=(
+            "How the request relates to the EXISTING workspace model — judge "
+            "from WORKSPACE CONTEXT (does a usable model already exist?) plus "
+            "the wording. Populate for create / modify / workflow / generation "
+            "intents:\n"
+            "  'extend_existing'      — add to / change the current model "
+            "('add a Payment class', 'also include returns', 'expand this', "
+            "'add auth to my model').\n"
+            "  'replace_existing'     — user EXPLICITLY wants to discard the "
+            "current model and start over ('scrap this and start fresh with', "
+            "'replace it with a ...', 'redo it as').\n"
+            "  'new_tab'              — build a SEPARATE new diagram alongside "
+            "('in a new tab', 'a second diagram for', 'also model a ...').\n"
+            "  'reuse_for_generation' — generate code / an app FROM the "
+            "existing model WITHOUT changing it ('generate X from my model', "
+            "'build an app from this', 'from my class diagram', 'use what I "
+            "have', 'the diagram I've been working on').\n"
+            "  'new_from_scratch'     — no usable model exists yet, OR the "
+            "user clearly describes a brand-new system to build from nothing.\n"
+            "Leave NULL ONLY when genuinely ambiguous — the agent will ask "
+            "rather than guess destructively."
+        ),
+    )
+
+    needs_clarification: bool = Field(
+        default=False,
+        description=(
+            "Set True ONLY when acting would require a GUESS: no resolvable "
+            "referent ('do the thing', 'make it better', 'fix it'), an "
+            "unresolved pronoun with no antecedent ('rename it', 'connect "
+            "them' with nothing prior to point at), two materially different "
+            "readings, or a missing target the WORKSPACE CONTEXT cannot "
+            "supply. Do NOT set it for requests you can reasonably act on, "
+            "for plain confirmations ('yes'/'no'), or merely because a "
+            "request is broad — bias toward acting when a sensible default "
+            "exists. When True, also write clarifying_question."
+        ),
+    )
+    clarifying_question: Optional[str] = Field(
+        default=None,
+        description=(
+            "REQUIRED when needs_clarification=True. ONE short, specific "
+            "question that, once answered, lets you act — reference the "
+            "workspace where useful (e.g. 'Which class should I add the email "
+            "attribute to — Customer or Order?'). Max 200 chars. LEAVE NULL "
+            "otherwise."
+        ),
+    )
+
     reason: str = Field(
         ...,
         description=(
@@ -409,6 +466,27 @@ _SYSTEM_PROMPT = (
     "create an agent / chatbot / conversational assistant / bot, even "
     "if they are currently viewing the class diagram or GUI — the new "
     "agent belongs in its own AgentDiagram.\n\n"
+    "=== model_disposition (use WORKSPACE CONTEXT) ===\n"
+    "Read WORKSPACE CONTEXT to see what already exists, then say how the "
+    "request relates to it. 'reuse_for_generation' = generate code/an app "
+    "from the existing model without changing it ('build an app from my "
+    "model', 'from my class diagram', 'use what I have'). "
+    "'extend_existing' = add to / modify the current model. "
+    "'replace_existing' = explicitly discard and start over. 'new_tab' = a "
+    "separate new diagram alongside. 'new_from_scratch' = nothing usable "
+    "exists yet or a brand-new unrelated system. Do NOT default to a "
+    "destructive rebuild just because the wording omits 'my model' — if a "
+    "usable model is present and the user asks to generate from it, that is "
+    "'reuse_for_generation'. Leave NULL only when truly ambiguous.\n\n"
+    "=== needs_clarification (ask instead of guess) ===\n"
+    "Set needs_clarification=True ONLY when acting would require a GUESS: a "
+    "referent-less request ('do the thing', 'make it better', 'fix it'), an "
+    "unresolved pronoun with no antecedent ('rename it', 'connect them' with "
+    "nothing prior), two materially different readings, or a missing target "
+    "the WORKSPACE CONTEXT cannot supply. Then write ONE short, specific "
+    "clarifying_question. Do NOT ask when a reasonable default exists, for "
+    "plain 'yes'/'no' confirmations, or merely because a request is broad — "
+    "bias strongly toward acting; only ask when genuinely stuck.\n\n"
     "=== OUTPUT ===\n"
     "Return the structured classification. Always include 'reason' "
     "(≤160 chars) explaining your choice. Be decisive — do not "
@@ -530,36 +608,102 @@ def _build_user_block(request: AssistantRequest) -> str:
     active_type = getattr(ctx, "active_diagram_type", None)
     if active_type:
         summary_lines.append(f"- active diagram: {active_type}")
-    summaries = getattr(ctx, "diagram_summaries", None) or []
-    if isinstance(summaries, list):
-        for summary in summaries[:6]:
-            if not isinstance(summary, dict):
-                continue
-            diagram_type = summary.get("type") or summary.get("diagramType")
-            title = summary.get("title")
-            element_count = summary.get("elementCount")
-            bits = [b for b in (diagram_type, title) if b]
-            if element_count is not None:
-                bits.append(f"{element_count} elements")
-            if bits:
-                summary_lines.append("- " + " · ".join(str(b) for b in bits))
-
-    # Extract class names from the active class diagram so the classifier
-    # can detect domain mismatches (e.g. user asks for a shoe store while
-    # the diagram is Team/Player). We only pass class NAMES — attributes
-    # and methods would bloat the prompt and aren't needed for the
-    # mismatch judgement.
+    # FULL editor content: every relevant diagram type with its element
+    # count + a few element names, and an explicit "not present" line for
+    # missing ones — so the classifier can reason about what already exists
+    # and about prerequisites (e.g. a webapp request when no GUI exists).
+    summary_lines.extend(_workspace_summary_lines(ctx))
+    # Full class-name list (up to 30) for the domain_mismatch judgement.
     class_names = _extract_class_names(ctx)
     if class_names:
         summary_lines.append(
-            "- existing class names: " + ", ".join(class_names[:30])
+            "- all class names: " + ", ".join(class_names[:30])
         )
 
     if summary_lines:
         lines.append("")
-        lines.append("WORKSPACE CONTEXT:")
+        lines.append("WORKSPACE CONTEXT (what is currently in the editor):")
         lines.extend(summary_lines)
     return "\n".join(lines)
+
+
+# Sub-element types whose names are member rows, not top-level diagram
+# elements — excluded from the per-diagram name preview.
+_NAME_SKIP_TYPES = {
+    "ClassAttribute", "ClassMethod", "ClassOCLConstraint",
+    "ObjectAttribute", "ObjectMethod",
+}
+
+# The diagram types worth surfacing to the classifier, with a human unit.
+_RELEVANT_DIAGRAM_TYPES = [
+    ("ClassDiagram", "class(es)"),
+    ("ObjectDiagram", "object(s)"),
+    ("StateMachineDiagram", "state(s)"),
+    ("AgentDiagram", "agent element(s)"),
+    ("GUINoCodeDiagram", "GUI element(s)"),
+    ("QuantumCircuitDiagram", "quantum element(s)"),
+]
+
+
+def _diagram_element_names(model: Any, limit: int = 8) -> tuple[int, list[str]]:
+    """(top-level element count, up to ``limit`` element names) for a model.
+
+    Skips member rows (attributes/methods) and child elements so the names
+    are the meaningful top-level entities. Never raises.
+    """
+    if not isinstance(model, dict):
+        return 0, []
+    elements = model.get("elements")
+    if not isinstance(elements, dict):
+        return 0, []
+    count = 0
+    names: list[str] = []
+    for elem in elements.values():
+        if not isinstance(elem, dict):
+            continue
+        if elem.get("type") in _NAME_SKIP_TYPES:
+            continue
+        if elem.get("owner"):
+            continue
+        count += 1
+        name = elem.get("name")
+        if isinstance(name, str) and name.strip() and len(names) < limit:
+            names.append(name.strip())
+    return count, names
+
+
+def _workspace_summary_lines(ctx: Any) -> list[str]:
+    """Per-diagram-type summary of everything currently in the editor.
+
+    One line per relevant diagram type: present types show their element
+    count + a few names (across tabs); missing types show "not present".
+    Never raises.
+    """
+    out: list[str] = []
+    for dtype, unit in _RELEVANT_DIAGRAM_TYPES:
+        try:
+            diagrams = ctx.get_all_diagrams_of_type(dtype)
+        except Exception:
+            diagrams = []
+        total = 0
+        names: list[str] = []
+        for d in diagrams:
+            if not isinstance(d, dict):
+                continue
+            c, n = _diagram_element_names(d.get("model"))
+            total += c
+            for name in n:
+                if name not in names and len(names) < 8:
+                    names.append(name)
+        if total > 0:
+            tabs = f" across {len(diagrams)} tabs" if len(diagrams) > 1 else ""
+            shown = ", ".join(names)
+            more = f", +{total - len(names)} more" if names and total > len(names) else ""
+            detail = f" ({shown}{more})" if shown else ""
+            out.append(f"- {dtype}: {total} {unit}{tabs}{detail}")
+        else:
+            out.append(f"- {dtype}: not present")
+    return out
 
 
 def _extract_class_names(ctx: Any) -> list[str]:

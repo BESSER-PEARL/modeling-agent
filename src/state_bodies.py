@@ -138,6 +138,27 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
         except Exception as exc:
             logger.debug(f"Recording user message in memory failed (best-effort): {exc}")
 
+    # Ask-instead-of-guess: when the classifier judges the request genuinely
+    # ambiguous (no resolvable referent, two readings, missing target the
+    # workspace can't supply), stream its clarifying question and stop rather
+    # than guessing a destructive mutation. Conservative by design — the
+    # classifier is told to bias toward acting. Cached classification, so no
+    # extra LLM call. Never fires on frontend_event callbacks; pending flows
+    # were already handled above.
+    if request.message and getattr(request, "action", None) != "frontend_event":
+        try:
+            _uc = get_or_classify(
+                session, request,
+                _get_llm_provider() if _get_llm_provider else None,
+            )
+            if getattr(_uc, "needs_clarification", False):
+                _q = (getattr(_uc, "clarifying_question", None) or "").strip()
+                if _q:
+                    reply_message(session, _q)
+                    return None
+        except Exception as _clarify_err:
+            logger.debug(f"clarify check skipped (best-effort): {_clarify_err}")
+
     return request
 
 
@@ -783,22 +804,37 @@ def workflow_body(session: Session):
         target_generator = "web_app"
 
     # ── Round-trip: reuse an existing model instead of rebuilding it ──
-    # When the project already has a usable ClassDiagram AND the request
-    # points at it ("generate from this/my model", "from these models"),
-    # skip the build step and go straight to validate + generate — don't
-    # silently regenerate a new model over the user's edits (#40).
+    # Prefer the LLM's model_disposition verdict (it saw the full workspace)
+    # over brittle keyword matching, so phrasings like "build the app from
+    # the diagram I've been working on" reuse the model instead of
+    # destructively rebuilding it (#40). Fall back to the keyword signals
+    # only when the LLM left the disposition null/ambiguous.
     reuse_existing_model = None
     if _has_usable_model:
-        _lower = user_message.lower()
-        _reuse_signals = (
-            "this", "these", "my model", "my models", "current model",
-            "existing model", "from the model", "from my", "from these",
-            "from this", "the model", "existing diagram", "what we have",
-            "already created", "i have", "actual model", "actual metamodel",
-            "my actual", "my class diagram", "my diagram", "current diagram",
-        )
-        if any(s in _lower for s in _reuse_signals):
+        _disposition = None
+        try:
+            _uc = get_or_classify(
+                session, request,
+                _get_llm_provider() if _get_llm_provider else None,
+            )
+            _disposition = getattr(_uc, "model_disposition", None)
+        except Exception as _disp_err:
+            logger.warning(f"[Workflow] model_disposition lookup failed: {_disp_err}")
+        if _disposition in ("reuse_for_generation", "extend_existing"):
             reuse_existing_model = _existing_model
+        elif _disposition in ("replace_existing", "new_from_scratch", "new_tab"):
+            reuse_existing_model = None  # honor an explicit rebuild/replace
+        else:
+            _lower = user_message.lower()
+            _reuse_signals = (
+                "this", "these", "my model", "my models", "current model",
+                "existing model", "from the model", "from my", "from these",
+                "from this", "the model", "existing diagram", "what we have",
+                "already created", "i have", "actual model", "actual metamodel",
+                "my actual", "my class diagram", "my diagram", "current diagram",
+            )
+            if any(s in _lower for s in _reuse_signals):
+                reuse_existing_model = _existing_model
 
     if reuse_existing_model is not None:
         reply_message(
