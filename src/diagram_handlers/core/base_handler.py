@@ -438,7 +438,23 @@ class BaseDiagramHandler(ABC):
         the OpenAI client directly when an override is requested. Falls
         back to the BAF path when no override is given or the client is
         unavailable. Token tracking stays with the caller.
+
+        BYOK: when the current request carries a user-supplied key (see
+        ``byok.current_byok``), this free-text generation call is routed
+        through the user's own per-request client instead of the shared
+        server LLM. SDK auth/rate-limit errors propagate so
+        ``predict_with_retry`` / ``errors.classify_error`` surface them.
         """
+        from byok import get_active_client  # local import: avoids import cycle
+        byok_client = get_active_client()
+        if byok_client is not None:
+            return byok_client.predict_raw(
+                prompt,
+                model=model,
+                temperature=LLM_TEMPERATURE,
+                reasoning_effort=reasoning_effort_for(model) if model else None,
+            )
+
         client = getattr(self.llm, 'client', None)
         if model and client is not None and hasattr(client, 'chat'):
             raw_kwargs: Dict[str, Any] = {

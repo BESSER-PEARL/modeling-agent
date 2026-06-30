@@ -38,6 +38,50 @@ from baf.platforms.websocket.streamlit_ui import (
 )
 
 
+# Session-variable keys whose values must never be written to the logs.
+# The frontend sends the user's BYOK key as ``user_api_key`` via
+# USER_SET_VARIABLE; redact it (and any other obviously-sensitive key)
+# rather than logging the value in plaintext.
+_SENSITIVE_VAR_KEYS = {
+    "user_api_key", "api_key", "apikey", "secret", "password", "token", "auth",
+}
+
+
+def _set_request_byok(session):
+    """Set the per-request BYOK context var from the session's stored key.
+
+    The frontend sends the user's key/provider/model via USER_SET_VARIABLE,
+    so they live on the session under ``user_api_key`` / ``user_api_provider``
+    / ``user_api_model``. ``byok`` is imported lazily because this file is
+    copied into the installed ``baf`` package at build time; ``src/`` is on
+    ``sys.path`` once the agent has started (and the handler only runs then).
+
+    Returns a token to pass to :func:`_reset_request_byok`, or ``None`` if
+    BYOK is unavailable for any reason (the request then uses the shared LLM).
+    """
+    try:
+        import byok
+        return byok.set_current(
+            session.get("user_api_provider"),
+            session.get("user_api_key"),
+            session.get("user_api_model"),
+        )
+    except Exception as exc:  # never let BYOK wiring break message handling
+        logger.warning(f"BYOK: could not set per-request key: {exc}")
+        return None
+
+
+def _reset_request_byok(token) -> None:
+    """Reset the per-request BYOK context var (best effort)."""
+    if token is None:
+        return
+    try:
+        import byok
+        byok.reset_current(token)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"BYOK: could not reset per-request key: {exc}")
+
+
 def _extract_user_id_from_request(request) -> str | None:
     if not request:
         return None
@@ -173,7 +217,19 @@ class WebSocketPlatform(Platform):
                             message=payload.message,
                             session=session,
                             human=True)
-                        self._agent.receive_event(event)
+                        # BYOK request boundary: if the user supplied their own
+                        # API key (stored on the session by USER_SET_VARIABLE),
+                        # set the per-request context var BEFORE receive_event.
+                        # receive_event -> Session.call_manage_transition ->
+                        # loop.call_soon_threadsafe captures a copy of THIS
+                        # thread's context, so the value propagates into the
+                        # session's event-loop thread for this turn. Reset after
+                        # so the handler thread never leaks the key.
+                        _byok_token = _set_request_byok(session)
+                        try:
+                            self._agent.receive_event(event)
+                        finally:
+                            _reset_request_byok(_byok_token)
                     elif payload.action == PayloadAction.USER_VOICE.value:
                         # Decode the base64 string to get audio bytes
                         audio_bytes = base64.b64decode(payload.message.encode('utf-8'))
@@ -187,7 +243,12 @@ class WebSocketPlatform(Platform):
                             message=message,
                             session=session,
                             human=True)
-                        self._agent.receive_event(event)
+                        # BYOK request boundary (voice turn) — see USER_MESSAGE.
+                        _byok_token = _set_request_byok(session)
+                        try:
+                            self._agent.receive_event(event)
+                        finally:
+                            _reset_request_byok(_byok_token)
                     elif payload.action == PayloadAction.USER_FILE.value:
                         event: ReceiveFileEvent = ReceiveFileEvent(
                             file=File.decode(payload.message),
@@ -216,7 +277,14 @@ class WebSocketPlatform(Platform):
                             continue
                         for key, value in payload.message.items():
                             session.set(key, value)
-                            logger.info(f"Session variable {key} set to {value}.")
+                            # Never log sensitive values (e.g. the user's BYOK
+                            # API key arrives here as ``user_api_key``).
+                            safe_value = (
+                                "(redacted)"
+                                if str(key).lower() in _SENSITIVE_VAR_KEYS
+                                else value
+                            )
+                            logger.info(f"Session variable {key} set to {safe_value}.")
             except ConnectionClosedError:
                 logger.info('Client connection closed unexpectedly')
             except Exception as e:

@@ -285,18 +285,39 @@ def stream_llm_response(
     full_text = ""
 
     try:
-        client = getattr(llm_instance, 'client', None)
-        if client is not None and hasattr(client, 'chat'):
-            # Real streaming via OpenAI SDK
-            full_text = _stream_openai(
-                session, client, prompt, system_prompt, stream_id,
-                model=model or getattr(llm_instance, 'name', MODEL_CLASSIFIER),
+        # BYOK: when the current request carries a user-supplied key, route
+        # this conversational/help/describe call through the user's own
+        # per-request client. Anthropic/Mistral don't share OpenAI's
+        # streaming chunk shape, so BYOK replies are fetched whole and sent
+        # as a single chunk through the same stream protocol. SDK
+        # auth/rate-limit errors propagate to the handler below.
+        from byok import get_active_client
+        byok_client = get_active_client()
+        if byok_client is not None:
+            # No system/user split in the free-text BYOK shape; fold the
+            # system prompt into the prompt when present.
+            byok_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+            full_text = byok_client.predict_raw(
+                byok_prompt,
+                model=model,
+                json_mode=False,
+                temperature=LLM_TEXT_TEMPERATURE,
             )
+            if full_text:
+                reply_stream_chunk(session, full_text, stream_id)
         else:
-            # Fallback: single-chunk non-streaming
-            response = llm_instance.predict(prompt)
-            full_text = response if isinstance(response, str) else str(response)
-            reply_stream_chunk(session, full_text, stream_id)
+            client = getattr(llm_instance, 'client', None)
+            if client is not None and hasattr(client, 'chat'):
+                # Real streaming via OpenAI SDK
+                full_text = _stream_openai(
+                    session, client, prompt, system_prompt, stream_id,
+                    model=model or getattr(llm_instance, 'name', MODEL_CLASSIFIER),
+                )
+            else:
+                # Fallback: single-chunk non-streaming
+                response = llm_instance.predict(prompt)
+                full_text = response if isinstance(response, str) else str(response)
+                reply_stream_chunk(session, full_text, stream_id)
 
     except Exception as e:
         logger.error(f"❌ [Streaming] Error: {e}")

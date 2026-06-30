@@ -421,11 +421,53 @@ def execute_model_operation(
                 )
     except Exception as exc:
         logger.error(f"❌ [ModelOp] Handler exception: {exc}", exc_info=True)
-        reply_message(
-            session,
-            f"Something went wrong while processing your {diagram_label} request. "
-            "Please try again or rephrase.",
-        )
+        # Smart message for provider rate-limit / auth failures. When the
+        # SHARED server key hits its limit and the user has NOT supplied their
+        # own key, prompt them to add one (BYOK); when the user's OWN key
+        # fails, tell them to check it. errorCode (rate_limit / auth_error) is
+        # carried so the frontend can offer "Add your API key".
+        from errors import classify_error, build_error_response, ErrorCode
+        try:
+            _code = classify_error(exc)
+        except Exception:
+            _code = ErrorCode.UNKNOWN
+        try:
+            import byok
+            _byok_active = byok.is_active()
+        except Exception:
+            _byok_active = False
+        if _byok_active and _code in (ErrorCode.RATE_LIMIT, ErrorCode.AUTH_ERROR):
+            reply_payload(session, build_error_response(
+                ErrorCode.AUTH_ERROR,
+                message=(
+                    "Your API key was rejected or hit its rate limit. Check the "
+                    "key (the key icon in the assistant) and try again."
+                ),
+            ))
+        elif _code == ErrorCode.RATE_LIMIT:
+            reply_payload(session, build_error_response(
+                ErrorCode.RATE_LIMIT,
+                message=(
+                    "We've hit the shared free usage limit for the AI service. "
+                    "Add your own API key (the key icon in the assistant) to keep "
+                    "going — it stays in your browser and is used only for your "
+                    "requests."
+                ),
+            ))
+        elif _code == ErrorCode.AUTH_ERROR:
+            reply_payload(session, build_error_response(
+                ErrorCode.AUTH_ERROR,
+                message=(
+                    "The AI service is temporarily unavailable. Please try again "
+                    "shortly, or add your own API key in the assistant settings."
+                ),
+            ))
+        else:
+            reply_message(
+                session,
+                f"Something went wrong while processing your {diagram_label} request. "
+                "Please try again or rephrase.",
+            )
         return None
     finally:
         _progress_stop.set()
