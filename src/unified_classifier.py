@@ -330,29 +330,48 @@ _SYSTEM_PROMPT = (
     "  * 'smart' = scaffolding + custom features. Internally runs a "
     "deterministic template first, then the LLM adds custom features "
     "on top.\n\n"
-    "Sub-routing rules:\n"
-    "1. Non-BESSER language/framework (rails, rust, kotlin, swift, "
-    "go, elixir, php, laravel, flask, express, next.js, spring boot, "
-    "angular, vue, svelte, ios app, android app, ...) → 'smart'.\n"
-    "2. Compound build ('backend + frontend', 'full-stack fastapi "
-    "with jwt + postgres', 'dockerized next.js', 'react + fastapi') → "
+    "Sub-routing — apply the PRINCIPLE first, use the examples only as "
+    "illustrations (they are NOT an exhaustive keyword list):\n"
+    "PRINCIPLE: route 'smart' whenever the request needs ANY custom "
+    "behavior, business rule, access control, role/permission, "
+    "authentication, login/signup, integration, deployment target, a "
+    "specific/real UI or dashboard, non-default infrastructure, OR a "
+    "non-BESSER language/framework — anything a bare CRUD template "
+    "cannot express. Route 'deterministic' ONLY for the plain baseline "
+    "scaffold of a single named BESSER generator with NO added "
+    "behavior. Decide on the MEANING of the request, NOT on whether a "
+    "specific adjective/stack keyword appears. When genuinely torn "
+    "between smart and deterministic, prefer 'smart' — it produces a "
+    "real working app, whereas deterministic only emits an empty "
+    "scaffold. These are ALL 'smart': 'a web app for managing my "
+    "inventory', 'a site where customers can browse and order', 'make "
+    "it production-ready', 'only admins can edit records', 'let users "
+    "log in', 'vibe-code me something cool from my model', 'turn this "
+    "into a dashboard'.\n"
+    "Illustrative examples:\n"
+    "1. Non-BESSER language/framework (rails, rust, kotlin, swift, go, "
+    "elixir, php, laravel, flask, express, next.js, spring boot, "
+    "angular, vue, svelte, ios/android app, ...) → 'smart'.\n"
+    "2. Compound build ('backend + frontend', 'react + fastapi', "
+    "'full-stack fastapi with jwt + postgres', 'dockerized next.js') → "
     "'smart'.\n"
-    "2b. A DASHBOARD, or a 'full' / 'complete' / 'custom' web app, "
-    "website, or application described by what it should DO or look "
-    "like (not merely 'run the web_app generator') → 'smart'. BESSER's "
+    "2b. A DASHBOARD, or a real/custom web app, website, or application "
+    "described by what it should DO or look like → 'smart'. BESSER's "
     "deterministic 'web_app' generator only emits a generic CRUD GUI "
     "scaffold and needs a GUI diagram; reserve generator_type='web_app' "
     "for when the user EXPLICITLY asks to run BESSER's web_app / GUI "
-    "generator. Examples that are 'smart': 'generate me a full "
-    "dashboard', 'build me a webapp from my model', 'make a react "
-    "dashboard', 'generate a full dashboard webapp in react and "
-    "fastapi'.\n"
-    "3. BESSER built-in + EXTRAS (auth, JWT, OAuth, Docker, specific "
-    "DB beyond default, migrations, tests, rate-limiting, middleware, "
-    "CORS, CI/CD) → 'smart'. Examples: 'web app with authentication', "
-    "'django with jwt', 'backend with docker'.\n"
-    "4. BESSER built-in with NO extras → 'deterministic' with "
-    "generator_type set. Examples: 'generate django', 'give me "
+    "generator. 'smart' examples: 'generate me a full dashboard', "
+    "'build me a webapp from my model', 'make a react dashboard'.\n"
+    "3. ANY BESSER built-in PLUS custom behavior or features — "
+    "authentication, login/signup, roles / permissions / access-control "
+    "('only admins can edit', 'users see only their own data'), JWT, "
+    "OAuth, Docker/containers, a specific non-default database, "
+    "migrations, tests, rate-limiting, middleware, CORS, CI/CD, "
+    "business rules, or integrations → 'smart'. Examples: 'web app with "
+    "authentication', 'django with jwt', 'backend that runs in a "
+    "container'.\n"
+    "4. A bare BESSER built-in with NO added behavior → 'deterministic' "
+    "with generator_type set. Examples: 'generate django', 'give me "
     "pydantic classes', 'generate sql'.\n"
     "4b. Vague 'how do I run / try / see / get the app' or 'where is "
     "the app' with NO stack named → 'deterministic' with "
@@ -444,7 +463,7 @@ def classify_message(
         )
         if result is None:
             return _safe_fallback("LLM returned no result")
-        return _post_validate(result)
+        return _post_validate(result, message)
     except Exception:
         logger.exception("classify_message failed; falling back to fallback_intent")
         return _safe_fallback("LLM classifier failed")
@@ -573,13 +592,13 @@ def _extract_class_names(ctx: Any) -> list[str]:
     return names
 
 
-def _post_validate(result: UnifiedClassification) -> UnifiedClassification:
+def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedClassification:
     """Defensive validation of LLM output.
 
     Catches the classic "LLM returned route='smart' but forgot to write
     instructions" and "intent='generation' but no generation_route"
-    bugs. Demotes them to safer states rather than propagating broken
-    classifications downstream.
+    bugs. Repairs them in place rather than collapsing a valid intent to a
+    worse one.
     """
     if result.intent == "generation_intent":
         if result.generation_route is None:
@@ -593,15 +612,18 @@ def _post_validate(result: UnifiedClassification) -> UnifiedClassification:
             )
         if result.generation_route == "smart":
             if not (result.refined_instructions or "").strip():
+                # Keep the smart/vibe route — do NOT collapse to the
+                # deterministic generator menu, which silently kills requests
+                # like "dashboard pls" or "vibe-code me something cool from my
+                # model". Fall back to the raw user message as the generator
+                # instructions so the smart path still runs.
                 logger.warning(
                     "LLM returned smart route with no refined_instructions; "
-                    "demoting to deterministic-unknown"
+                    "synthesizing instructions from the user message"
                 )
-                return UnifiedClassification(
-                    intent="generation_intent",
-                    generation_route="deterministic",
-                    generator_type=None,
-                    reason="classifier omitted smart instructions",
+                result.refined_instructions = (
+                    (message or "").strip()
+                    or "Build a custom application from the current model."
                 )
         elif result.generation_route == "deterministic":
             # generator_type may be None — the caller will show the

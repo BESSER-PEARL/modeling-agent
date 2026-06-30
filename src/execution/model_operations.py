@@ -192,11 +192,14 @@ def execute_model_operation(
             return None
 
     # ── GUI generation-mode choice ───────────────────────────────────────
+    # NOTE: pure scoping/filler words ("only", "just") and over-generic ones
+    # ("form", "layout", "style") were removed — they forced the experimental
+    # custom-GUI path on plain requests like "create a GUI for just the Product
+    # class". Keep only hints that genuinely signal a custom/bespoke GUI.
     _CUSTOM_GUI_HINTS = {
         "chart", "dashboard", "custom", "specific", "page for",
         "sidebar", "metric", "kpi", "landing", "hero",
-        "form", "layout", "only", "just", "don't include",
-        "exclude", "style", "theme", "color", "dark",
+        "don't include", "exclude", "theme", "color", "dark",
         "personali", "unique", "tailored", "bespoke",
     }
     _resolved_class_diagram = None

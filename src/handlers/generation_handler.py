@@ -86,6 +86,35 @@ def _stash_smart_gen(session: Session, instructions: str, provider: str) -> None
     session.set(PENDING_SMART_GEN_TIMESTAMP, time.time())
 
 
+def _project_has_any_model(context: Any) -> bool:
+    """True if the workspace has at least one non-empty diagram model.
+
+    Checks the active model AND every diagram in the project snapshot, so a
+    stale ``active_model`` right after an injection does not trigger a false
+    "empty workspace" refusal as long as the model is present somewhere in the
+    snapshot. Returns True when there's no context to judge from (err toward
+    generating — the frontend holds the authoritative model).
+    """
+    if context is None:
+        return True
+
+    def _nonempty(model: Any) -> bool:
+        return isinstance(model, dict) and bool(model.get("elements"))
+
+    if _nonempty(getattr(context, "active_model", None)):
+        return True
+
+    snapshot = getattr(context, "project_snapshot", None)
+    diagrams = snapshot.get("diagrams") if isinstance(snapshot, dict) else None
+    if isinstance(diagrams, dict):
+        for entries in diagrams.values():
+            entry_list = entries if isinstance(entries, list) else [entries]
+            for entry in entry_list:
+                if isinstance(entry, dict) and _nonempty(entry.get("model")):
+                    return True
+    return False
+
+
 def _build_smart_gen_confirmation(
     session: Session,
     instructions: str,
@@ -1156,30 +1185,22 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 "then fill in the repository details and hit **Publish**."
             ),
         }
-    # Empty model guard: disabled because the WebSocket context may be stale
-    # right after an injection (frontend has the model but sends pre-injection
-    # snapshot with the next message). Frontend validates before calling backend.
-    # context = getattr(request, 'context', None)
-    # active_model = getattr(context, 'active_model', None) if context else None
-    # if active_model is None:
-    #     snapshot = getattr(context, 'project_snapshot', None) if context else None
-    #     if isinstance(snapshot, dict):
-    #         diagrams = snapshot.get('diagrams', {})
-    #         active_type = getattr(context, 'active_diagram_type', None)
-    #         if isinstance(diagrams, dict) and active_type:
-    #             diagram_data = diagrams.get(active_type, {})
-    #             if isinstance(diagram_data, dict):
-    #                 active_model = diagram_data.get('model')
-    #
-    # if not active_model or (isinstance(active_model, dict) and not active_model.get('elements')):
-    #     return {
-    #         "action": "assistant_message",
-    #         "message": (
-    #             f"Your diagram is empty — please create a model first before "
-    #             f"generating **{generator_type}** code. Try describing your system "
-    #             f"(e.g. *\"create a library management system\"*)."
-    #         ),
-    #     }
+    # Empty-workspace guard: a deterministic generator on a genuinely empty
+    # project emits a broken/empty artifact. We check the WHOLE project
+    # snapshot (every diagram), not just the possibly-stale active_model — so a
+    # snapshot that lags a fresh injection by one message does NOT cause a
+    # false "empty" refusal as long as the model is present anywhere. Only
+    # refuse when nothing usable exists at all.
+    if not _project_has_any_model(getattr(request, "context", None)):
+        return {
+            "action": "assistant_message",
+            "message": (
+                f"Your workspace looks empty — there's no model to turn into "
+                f"**{generator_type}** code yet. Describe what you want first "
+                f"(e.g. *\"create a library management system\"*), then ask me to "
+                f"generate the code."
+            ),
+        }
 
     return {
         "action": "trigger_generator",
