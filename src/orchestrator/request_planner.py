@@ -480,6 +480,14 @@ _HEURISTIC_CLASS = re.compile(
     re.IGNORECASE,
 )
 
+_HEURISTIC_BPMN = re.compile(
+    r"^(?:create|build|design|make)\s+(?:a\s+|an\s+|the\s+)?"
+    r"(?:bpmn\s*(?:diagram|process|model)?|business\s*process(?:\s*diagram)?)"
+    r"(?:\s+(?:for|of|with)\s+(?P<domain>.+))?"
+    r"\s*$",
+    re.IGNORECASE,
+)
+
 # Map of (pattern, diagramType) for the single-diagram heuristics
 _SINGLE_DIAGRAM_HEURISTICS = [
     (_HEURISTIC_GUI, "GUINoCodeDiagram"),
@@ -488,6 +496,7 @@ _SINGLE_DIAGRAM_HEURISTICS = [
     (_HEURISTIC_QUANTUM, "QuantumCircuitDiagram"),
     (_HEURISTIC_OBJECT, "ObjectDiagram"),
     (_HEURISTIC_CLASS, "ClassDiagram"),
+    (_HEURISTIC_BPMN, "BPMN"),
 ]
 
 
@@ -749,7 +758,7 @@ Operation types:
 1) model:
 {{
   "type": "model",
-  "diagramType": "ClassDiagram|ObjectDiagram|StateMachineDiagram|AgentDiagram|GUINoCodeDiagram|QuantumCircuitDiagram",
+  "diagramType": "ClassDiagram|ObjectDiagram|StateMachineDiagram|AgentDiagram|GUINoCodeDiagram|QuantumCircuitDiagram|BPMN",
   "mode": "complete_system|modify_model",
   "request": "sub-request focused ONLY on this specific diagram type"
 }}

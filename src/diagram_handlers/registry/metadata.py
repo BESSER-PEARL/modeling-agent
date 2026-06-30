@@ -45,6 +45,13 @@ DIAGRAM_TYPE_METADATA = {
         "description": "Model quantum circuits with gates and measurements",
         "keywords": ["quantum", "qiskit", "gate", "qubit", "circuit"],
     },
+    "BPMN": {
+        "name": "BPMN Diagram",
+        "icon": "bpmn",
+        "elements": ["StartEvent", "Task", "Gateway", "EndEvent", "SequenceFlow"],
+        "description": "Model business processes with tasks, gateways, and flows",
+        "keywords": ["bpmn", "business process", "process", "gateway", "task", "workflow"],
+    },
 }
 
 

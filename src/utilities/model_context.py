@@ -19,7 +19,7 @@ def compact_model_summary(model_data: Any, diagram_type: str) -> str:
     if not isinstance(model_data, dict):
         return f"{diagram_type}: no structured model available."
 
-    if diagram_type in {"ClassDiagram", "ObjectDiagram", "StateMachineDiagram", "AgentDiagram"}:
+    if diagram_type in {"ClassDiagram", "ObjectDiagram", "StateMachineDiagram", "AgentDiagram", "BPMN"}:
         elements = model_data.get("elements")
         relationships = model_data.get("relationships")
         if isinstance(elements, dict) and isinstance(relationships, dict):
@@ -330,6 +330,66 @@ def _summarize_agent_diagram(model: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def _summarize_bpmn(model: Dict[str, Any], *, max_items: int = 25) -> List[str]:
+    """Summarize a BPMN model: flow nodes (tasks/events/gateways) and sequence flows.
+
+    Each node is prefixed with its Apollon element id as [id] so the LLM can
+    reference unnamed nodes unambiguously.  Named nodes can still be targeted by
+    name; unnamed nodes MUST be referenced by the [id] value.
+    """
+    elements = model.get("elements")
+    relationships = model.get("relationships")
+    if not isinstance(elements, dict):
+        return []
+
+    lines: List[str] = []
+    names: Dict[str, str] = {}  # eid -> display name (may be empty string)
+
+    for eid, el in elements.items():
+        if not isinstance(el, dict):
+            continue
+        el_type = el.get("type", "")
+        # Include all BPMN node types. BPMNFlow lives in relationships, not
+        # elements, so excluding it here is sufficient — no explicit whitelist
+        # means new Apollon node types (e.g. BPMNCallActivity) are auto-included.
+        if not el_type.startswith("BPMN") or el_type == "BPMNFlow":
+            continue
+        name = el.get("name") or ""
+        names[eid] = name
+        kind = el_type.replace("BPMN", "")
+        detail = ""
+        if el_type == "BPMNTask" and el.get("taskType") and el.get("taskType") != "default":
+            detail = f" {el['taskType']}"
+        elif el_type == "BPMNGateway" and el.get("gatewayType"):
+            detail = f" {el['gatewayType']}"
+        display = f" {name}" if name else ""
+        lines.append(f"[{eid}]{display} ({kind}{detail})")
+
+    if isinstance(relationships, dict):
+        for rel in relationships.values():
+            if not isinstance(rel, dict) or rel.get("type") != "BPMNFlow":
+                continue
+            source = rel.get("source")
+            target = rel.get("target")
+            if not isinstance(source, dict) or not isinstance(target, dict):
+                continue
+            s_id = source.get("element", "")
+            t_id = target.get("element", "")
+            s_name = names.get(s_id, "")
+            t_name = names.get(t_id, "")
+            s_display = f"[{s_id}] {s_name}" if s_name else f"[{s_id}]"
+            t_display = f"[{t_id}] {t_name}" if t_name else f"[{t_id}]"
+            label = rel.get("name", "")
+            lbl = f" [{label}]" if label else ""
+            lines.append(f"Flow: {s_display} -> {t_display}{lbl}")
+
+    if len(lines) > max_items:
+        overflow = len(lines) - max_items
+        lines = lines[:max_items]
+        lines.append(f"  …and {overflow} more node/flow item(s)")
+    return lines
+
+
 # Mapping of Quirk-style gate symbols to human-readable names.
 _QUIRK_SYMBOL_MAP: Dict[str, str] = {
     # Half Turns
@@ -567,6 +627,11 @@ def detailed_model_summary(model_data: Any, diagram_type: str) -> str:
         lines = _summarize_agent_diagram(model_data)
         if lines:
             return "Current agent diagram:\n- " + "\n- ".join(lines)
+
+    elif diagram_type == "BPMN":
+        lines = _summarize_bpmn(model_data)
+        if lines:
+            return "Current BPMN process:\n- " + "\n- ".join(lines)
 
     # Fallback to compact
     return compact_model_summary(model_data, diagram_type)

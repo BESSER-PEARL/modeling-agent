@@ -17,3 +17,4 @@ htmlcov/
 !config_example.yaml
 docs/build/
 scripts/*
+.claude/
