@@ -251,7 +251,22 @@ class ClassModification(BaseModel):
         "remove_element",
         "extract_class", "split_class", "merge_classes",
         "promote_attribute", "add_enum",
-    ] = Field(description="Action to perform.")
+    ] = Field(description=(
+        "Action to perform. Choose carefully:\n"
+        "- add_relationship: CONNECT TWO EXISTING classes. Set target.sourceClass "
+        "+ target.targetClass + changes.relationshipType. Use for 'add a "
+        "composition/aggregation/association between X and Y', 'connect X and Y', "
+        "'X has/owns/contains/references/knows a Y' when Y is a CLASS; and for "
+        "INHERITANCE: 'X extends Y', 'X is a subclass of Y', 'make X inherit from "
+        "Y', 'X and Y both extend Z' (emit ONE add_relationship per child with "
+        "relationshipType='Inheritance'). NEVER create new classes for X or Y "
+        "when they already exist in the model — link the existing ones.\n"
+        "- add_class: ONLY to create a brand-new class that does not exist yet.\n"
+        "- add_attribute: add a field to an existing class — use for 'X has a Y' "
+        "ONLY when Y is a primitive type (string/int/date/bool), not a class.\n"
+        "- modify_relationship / remove_element / modify_*: change or delete an "
+        "existing element."
+    ))
     target: ClassModificationTarget
     changes: Optional[ClassModificationChanges] = Field(default=None, description="Changes to apply. Required for all actions except remove_element.")
 
