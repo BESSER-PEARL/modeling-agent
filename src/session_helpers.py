@@ -18,8 +18,6 @@ from protocol.adapters import parse_assistant_request
 from handlers.generation_handler import (
     should_route_to_generation,
     detect_generator_type,
-    _is_modeling_request,
-    _is_diagram_creation_request,
 )
 from agent_config import (
     MAX_USER_MESSAGE_CHARS,
@@ -121,7 +119,7 @@ def json_intent_matches(session: Session, params: Dict[str, Any]) -> bool:
     # Priority 2: BAF's description-based classifier. Fallback only —
     # runs when the unified classifier hook wasn't installed (tests,
     # unusual state machines). The old keyword cross-validation layer
-    # (``detect_generator_type`` / ``_is_modeling_request`` etc.) that
+    # (keyword and phrase heuristics) that
     # used to rescue BAF from its own misclassifications has been
     # deleted — if we're in this branch, we trust BAF's answer as-is.
     if hasattr(session.event, 'predicted_intent') and session.event.predicted_intent:

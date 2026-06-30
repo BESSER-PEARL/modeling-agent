@@ -64,8 +64,7 @@ _DETERMINISTIC_GENERATOR_TYPES = Literal[
     "smartdata",
     "agent",
     "qiskit",
-    "rest_api",
-    "rdf",
+    # rest_api/rdf are handled by the smart (Vibe-Driven) generator, not a deterministic template.
     "export",
     "deploy",
 ]

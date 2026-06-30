@@ -5,7 +5,6 @@ from orchestrator.workspace_orchestrator import (
     determine_target_diagram_type,
     determine_target_diagram_types,
     resolve_diagram_id,
-    build_switch_diagram_action,
     _collect_explicit_targets,
     _rank_implicit_targets,
 )
@@ -136,19 +135,3 @@ class TestResolveDiagramId:
     def test_missing(self):
         request = _make_request("")
         assert resolve_diagram_id(request, "ObjectDiagram") is None
-
-
-# ---------------------------------------------------------------------------
-# build_switch_diagram_action
-# ---------------------------------------------------------------------------
-
-class TestBuildSwitchDiagramAction:
-    def test_structure(self):
-        action = build_switch_diagram_action("StateMachineDiagram", reason="User asked")
-        assert action["action"] == "switch_diagram"
-        assert action["diagramType"] == "StateMachineDiagram"
-        assert action["reason"] == "User asked"
-
-    def test_default_reason(self):
-        action = build_switch_diagram_action("ClassDiagram")
-        assert "ClassDiagram" in action["reason"]

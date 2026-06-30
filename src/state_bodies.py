@@ -1137,7 +1137,6 @@ def register_all(*, agent, states, intents):
     states['describe_model'].set_body(describe_model_body)
     states['generation'].set_body(generation_body)
     states['uml_rag'].set_body(uml_rag_body)
-    states['workflow'].set_body(workflow_body)
 
     # -- Wire transitions --
     intent_map = {
@@ -1148,7 +1147,6 @@ def register_all(*, agent, states, intents):
         intents['uml_spec']: states['uml_rag'],
         intents['generation']: states['generation'],
         intents['hello']: states['greetings'],
-        intents['workflow']: states['workflow'],
     }
 
     generation_st = states['generation']
@@ -1161,7 +1159,6 @@ def register_all(*, agent, states, intents):
         ('describe_model', 'describe_model'),
         ('uml_rag', 'greetings'),
         ('generation', 'generation'),
-        ('workflow', 'workflow'),
     ]:
         add_unified_transitions(
             states[state_name], intent_map, states[fallback_name], generation_st,

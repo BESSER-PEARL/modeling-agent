@@ -57,8 +57,7 @@ KEYWORD_TARGETS = [
 
 
 # ---------------------------------------------------------------------------
-# Discriminating pattern rules — replacement for the old additive-weight
-# IMPLICIT_TARGET_RULES.
+# Discriminating pattern rules for implicit diagram-target detection.
 #
 # Each rule is a (diagram_type, compiled_regex) pair.  Patterns use
 # AND-based logic: they require at least one *strong, discriminating*
@@ -112,18 +111,6 @@ _IMPLICIT_PATTERNS: List[Tuple[str, re.Pattern]] = [
         re.I)),
 ]
 
-# Backward-compatible alias — some imports reference this name.
-# Keep the old dict shape so nothing breaks at import time, but mark
-# deprecated.  The actual scoring function `_rank_implicit_targets` now
-# uses `_IMPLICIT_PATTERNS` instead.
-IMPLICIT_TARGET_RULES: Dict[str, List[Tuple[str, int]]] = {
-    "ClassDiagram": [("structural", 5), ("domain model", 5), ("class", 4)],
-    "ObjectDiagram": [("object instance", 5), ("instances", 4)],
-    "StateMachineDiagram": [("lifecycle", 5), ("transition", 4), ("state", 3)],
-    "AgentDiagram": [("multi-agent", 5), ("agent", 4), ("intent", 4)],
-    "GUINoCodeDiagram": [("gui", 4), ("user interface", 5), ("frontend", 3)],
-    "QuantumCircuitDiagram": [("quantum", 6), ("qubit", 5), ("grover", 5)],
-}
 
 FALLBACK_PRIORITY: Tuple[str, ...] = (
     "ClassDiagram",
@@ -316,11 +303,3 @@ def resolve_diagram_id(request: AssistantRequest, target_diagram_type: str) -> O
         if isinstance(diagram_id, str):
             return diagram_id
     return None
-
-
-def build_switch_diagram_action(target_diagram_type: str, reason: str = "") -> Dict[str, Any]:
-    return {
-        "action": "switch_diagram",
-        "diagramType": target_diagram_type,
-        "reason": reason or f"Switching to {target_diagram_type} based on your request.",
-    }

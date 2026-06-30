@@ -83,7 +83,6 @@ modeling_help_state = agent.new_state("modeling_help_state")
 describe_model_state = agent.new_state("describe_model_state")
 uml_rag_state = agent.new_state("uml_rag_state")
 generation_state = agent.new_state("generation_state")
-workflow_state = agent.new_state("workflow_state")
 
 # ── Intents ──────────────────────────────────────────────────────────────
 #
@@ -183,18 +182,6 @@ generation_intent = agent.new_intent(
         "deploy the app to render",
     ],
 )
-workflow_intent = agent.new_intent(
-    name="workflow_intent",
-    description="User wants the full end-to-end pipeline (model + validate + generate) in one flow.",
-    training_sentences=[
-        "create a complete web app for a hotel booking system end to end",
-        "build the model, validate it, and generate the code in one go",
-        "do the full pipeline for an inventory system",
-        "create the model and generate django code for a blog",
-        "end to end workflow for a booking platform",
-    ],
-)
-
 # ── Wire state bodies & transitions ─────────────────────────────────────
 register_all(
     agent=agent,
@@ -206,7 +193,6 @@ register_all(
         "describe_model": describe_model_state,
         "uml_rag": uml_rag_state,
         "generation": generation_state,
-        "workflow": workflow_state,
     },
     intents={
         "hello": hello_intent,
@@ -216,7 +202,6 @@ register_all(
         "describe_model": describe_model_intent,
         "uml_spec": uml_spec_intent,
         "generation": generation_intent,
-        "workflow": workflow_intent,
     },
 )
 

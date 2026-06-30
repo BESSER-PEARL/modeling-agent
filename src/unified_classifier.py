@@ -63,7 +63,6 @@ _INTENT_NAMES = Literal[
     "describe_model_intent",
     "uml_spec_intent",
     "generation_intent",
-    "workflow_intent",
     # Catch-all — BAF's own fallback state body runs when nothing
     # matches. Routed to whatever state fallback the current state
     # has (typically modeling_help_state).
@@ -86,8 +85,7 @@ _DETERMINISTIC_GENERATOR_TYPES = Literal[
     "smartdata",
     "agent",
     "qiskit",
-    "rest_api",
-    "rdf",
+    # rest_api/rdf are handled by the smart (Vibe-Driven) generator, not a deterministic template.
     "export",
     "deploy",
 ]
@@ -134,10 +132,11 @@ class UnifiedClassification(BaseModel):
             "  'generation_intent'              — user wants SOURCE CODE in ANY "
             "language or stack, or to EXPORT / DEPLOY. Includes BESSER built-ins "
             "(django, pydantic, sql, ...) AND any other language (rails, rust, "
-            "kotlin, next.js, go, ...).\n"
-            "  'workflow_intent'                — user wants the FULL end-to-end "
-            "pipeline in one flow (e.g. 'create a complete web app for X and "
-            "generate all the code')\n"
+            "kotlin, next.js, go, ...). A request to CREATE/design a NEW model "
+            "AND generate code from it in one message (e.g. 'create a booking "
+            "system and generate django') is create_complete_system_intent, "
+            "NOT generation_intent — build the model first; the agent offers to "
+            "generate afterward.\n"
             "  'fallback_intent'                — none of the above fit cleanly."
         ),
     )
@@ -235,7 +234,7 @@ class UnifiedClassification(BaseModel):
         description=(
             "How the request relates to the EXISTING workspace model — judge "
             "from WORKSPACE CONTEXT (does a usable model already exist?) plus "
-            "the wording. Populate for create / modify / workflow / generation "
+            "the wording. Populate for create / modify / generation "
             "intents:\n"
             "  'extend_existing'      — add to / change the current model "
             "('add a Payment class', 'also include returns', 'expand this', "
@@ -366,17 +365,16 @@ _SYSTEM_PROMPT = (
     "RUN it, that is modeling_help_intent, not generation. NEVER use "
     "this when the user says 'generate a class diagram' — that's "
     "create_complete_system_intent.\n\n"
-    "workflow_intent: user EXPLICITLY wants to BUILD A NEW MODEL FROM "
-    "SCRATCH **and** generate code in one go — they must clearly ask to "
-    "create/design the model too: 'create a complete web app for a "
-    "booking system and generate the code', 'design a library system "
-    "and build it end-to-end'. Rare. CRITICAL: a request to GENERATE an "
-    "app / dashboard / website / code FROM AN EXISTING or CURRENT model "
-    "— e.g. 'generate me a full dashboard from my class diagram', 'build "
-    "a react + fastapi app from my model', 'generate a webapp' when a "
-    "model already exists — is generation_intent, NOT workflow_intent. "
-    "If the user is NOT explicitly asking to (re)create the model, it is "
-    "generation_intent.\n\n"
+    "CREATE-vs-GENERATE (important): a request to GENERATE code / an app "
+    "FROM AN EXISTING or current model — 'generate a dashboard from my "
+    "class diagram', 'build a react + fastapi app from my model', "
+    "'generate a webapp' when a model already exists — is "
+    "generation_intent. A request to CREATE / design a NEW model AND "
+    "generate from it in ONE message — 'create a booking system and "
+    "generate django', 'design a library and build it end-to-end' — is "
+    "create_complete_system_intent: the agent builds the model first, "
+    "then offers to generate the code. Do NOT invent a separate "
+    "end-to-end intent.\n\n"
     "fallback_intent: none of the above fits cleanly.\n\n"
     "=== GENERATION SUB-ROUTING (populate when intent='generation_intent') ===\n\n"
     "CRITICAL BACKGROUND: BESSER has two generation paths.\n"
