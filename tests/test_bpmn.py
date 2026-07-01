@@ -43,6 +43,57 @@ def test_bpmn_validation_adds_start_end():
     assert {"startEvent", "endEvent"} <= {n["type"] for n in spec["nodes"]}
 
 
+def test_bpmn_validation_connects_orphaned_end_event_via_underconnected_gateway():
+    """Reproduces a real generation bug: an exclusive gateway with only one
+    outgoing flow ('yes') and a matching end event ('Order Cancelled') that the
+    model clearly intended as the 'no' branch but never emitted a flow for."""
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": [
+            {"id": "start", "name": "Order Placed", "type": "startEvent"},
+            {"id": "check_stock", "name": "Check Stock", "type": "task"},
+            {"id": "gw", "name": "Items Available?", "type": "gateway"},
+            {"id": "prepare", "name": "Prepare Package", "type": "task"},
+            {"id": "completed", "name": "Order Completed", "type": "endEvent"},
+            {"id": "cancelled", "name": "Order Cancelled", "type": "endEvent"},
+        ],
+        "flows": [
+            {"source": "start", "target": "check_stock", "name": ""},
+            {"source": "check_stock", "target": "gw", "name": ""},
+            {"source": "gw", "target": "prepare", "name": "yes"},
+            {"source": "prepare", "target": "completed", "name": ""},
+        ],
+    })
+    targets = {f["target"] for f in spec["flows"]}
+    assert "cancelled" in targets, "orphaned end event must get an incoming flow"
+    new_flow = next(f for f in spec["flows"] if f["target"] == "cancelled")
+    assert new_flow["source"] == "gw", "should reconnect from the under-connected gateway"
+    assert new_flow["name"] == "no", "should infer the opposite label of the existing 'yes' branch"
+
+
+def test_bpmn_validation_connects_orphaned_task_falls_back_to_previous_node():
+    """No gateway is available to reconnect from -- falls back to the
+    previous node in generation order rather than leaving it disconnected."""
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": [
+            {"id": "start", "name": "Start", "type": "startEvent"},
+            {"id": "a", "name": "Do A", "type": "task"},
+            {"id": "b", "name": "Do B", "type": "task"},
+            {"id": "end", "name": "End", "type": "endEvent"},
+        ],
+        "flows": [
+            {"source": "start", "target": "a", "name": ""},
+            # "b" is never connected -- the bug this test guards against.
+            {"source": "a", "target": "end", "name": ""},
+        ],
+    })
+    targets = {f["target"] for f in spec["flows"]}
+    assert "b" in targets
+    new_flow = next(f for f in spec["flows"] if f["target"] == "b")
+    assert new_flow["source"] == "a"
+
+
 def test_bpmn_fallback_envelope():
     from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
     r = BPMNDiagramHandler(None).generate_fallback_system()
