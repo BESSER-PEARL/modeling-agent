@@ -62,11 +62,11 @@ class BPMNDiagramHandler(BaseDiagramHandler):
 
 DESIGN RULES:
 1. Exactly ONE start event; at least one end event.
-2. Use tasks for activities/steps with clear verb-phrase names ('Check Inventory', 'Ship Order').
-3. Use an exclusive gateway for an either/or decision; name it as a question ('In stock?') and label its outgoing flows with the condition ('yes' / 'no').
+2. Use tasks for activities/steps with clear verb-phrase names ('Check Inventory', 'Ship Order'). Set taskType based on WHO/WHAT performs it: 'user' for a person acting (customer, staff member typing/clicking), 'manual' for a person doing a PHYSICAL action with no system involved (packing a box), 'service' for an automated system check or call, 'send'/'receive' for a message to/from another party. Do not leave every task as the 'default' type — pick the closest fit.
+3. Use an exclusive gateway for EACH distinct either/or decision the request describes; name it as a question ('In stock?') and label its outgoing flows with the condition ('yes' / 'no'). If the request describes N separate checks (e.g. "validate payment" AND "check stock" are two different checks), you MUST emit N separate gateways — do not merge multiple checks into one gateway or fold a described decision into a plain task.
 4. Use a parallel gateway to split into CONCURRENT work and another to JOIN it back. A parallel split MUST have ≥2 outgoing flows to DIFFERENT target nodes; a parallel join MUST have ≥2 incoming flows from different sources. NEVER chain parallel tasks linearly — always fan them out from the split gateway and fan them back into the join gateway.
-5. Connect everything with sequence flows. Every node except the start has an incoming flow; every node except end events has an outgoing flow.
-6. Keep it focused (typically 4-10 nodes). Base BPMN only — no pools, lanes, message flows, or sub-processes.
+5. Connect everything with sequence flows. Every node except the start has an incoming flow; every node except end events has an outgoing flow. Every end event must be reachable — if a decision branch leads to a distinct outcome (e.g. "order cannot be completed"), route that branch's flow explicitly to the end event that represents it; never leave an end event with no incoming flow.
+6. Keep it focused (typically 4-10 nodes, more if the request genuinely describes more distinct steps/decisions — do not compress described steps just to stay under 10). Base BPMN only — no pools, lanes, message flows, or sub-processes.
 7. {POSITION_DISCLAIMER}
 
 Node ids are short lowercase slugs ('check_stock') referenced by flows."""
@@ -87,11 +87,20 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows."""
             f"User Request: {user_request}\n\n"
             "Analyze:\n"
             "1. What is the trigger (start event)?\n"
-            "2. What are the activities (tasks) and their order?\n"
-            "3. Where are the decisions (exclusive gateways) and what are the conditions?\n"
+            "2. What are the activities (tasks) and their order? For each, who/what "
+            "performs it (a person = user/manual task, a system = service/script task, "
+            "a notification = send/receive task)?\n"
+            "3. Where are the decisions (exclusive gateways) and what are the conditions? "
+            "List EVERY distinct check the request describes as its own gateway — do not "
+            "merge two different checks (e.g. 'validate payment' and 'check stock' are "
+            "TWO gateways, not one) and do not fold a described decision into a plain task.\n"
             "4. Is any work concurrent (parallel gateways)?\n"
-            "5. What are the possible outcomes (end events)?\n\n"
-            "Focus on the SEQUENCE FLOWS — they are the most commonly under-specified part."
+            "5. What are the possible outcomes (end events)? For each negative/exception "
+            "outcome a gateway branch leads to (e.g. 'order cannot be completed'), make sure "
+            "that branch's flow actually reaches the matching end event.\n\n"
+            "Focus on the SEQUENCE FLOWS — they are the most commonly under-specified part. "
+            "Before finalizing, re-read the request once more and check you have not silently "
+            "dropped or merged any step or decision point it mentioned."
         )
 
         try:
@@ -169,9 +178,63 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows."""
                 flows.append({"source": last, "target": end_id, "name": ""})
             logger.info("[BPMN] Validation: added missing end event")
 
+        self._connect_orphaned_nodes(nodes, flows)
+
         spec["nodes"] = nodes
         spec["flows"] = flows
         return spec
+
+    @staticmethod
+    def _connect_orphaned_nodes(nodes: List[Dict[str, Any]], flows: List[Dict[str, Any]]) -> None:
+        """Give every non-start node at least one incoming flow (design rule 5 /
+        BPMNFlowSpec's "every node except the start has an incoming flow").
+
+        The model most commonly drops the flow into a branch target it clearly
+        intended — e.g. a "no" branch off an exclusive gateway that ends up with
+        only one outgoing flow while the matching end event ("Order Cancelled")
+        sits unconnected. Prefer reconnecting from that kind of under-connected
+        gateway (and infer the opposite yes/no label when the gateway's existing
+        branch has one) before falling back to the previous node in generation
+        order, so the graph is always fully reachable. Mutates `flows` in place.
+        """
+        start_id = next((n.get("id") for n in nodes if n.get("type") == "startEvent"), None)
+        targets = {f.get("target") for f in flows}
+
+        outgoing_count: Dict[str, int] = {}
+        outgoing_labels: Dict[str, List[str]] = {}
+        for f in flows:
+            src = f.get("source")
+            outgoing_count[src] = outgoing_count.get(src, 0) + 1
+            outgoing_labels.setdefault(src, []).append((f.get("name") or "").strip().lower())
+
+        gateway_ids = [n.get("id") for n in nodes if n.get("type") == "gateway"]
+        under_connected_gateways = [gid for gid in gateway_ids if outgoing_count.get(gid, 0) < 2]
+
+        for index, node in enumerate(nodes):
+            node_id = node.get("id")
+            if node_id is None or node_id == start_id or node_id in targets:
+                continue
+
+            source_id = None
+            label = ""
+            if under_connected_gateways:
+                source_id = under_connected_gateways.pop(0)
+                existing_labels = outgoing_labels.get(source_id, [])
+                if existing_labels == ["yes"]:
+                    label = "no"
+                elif existing_labels == ["no"]:
+                    label = "yes"
+            elif index > 0:
+                source_id = nodes[index - 1].get("id")
+
+            if source_id and source_id != node_id:
+                flows.append({"source": source_id, "target": node_id, "name": label})
+                targets.add(node_id)
+                outgoing_count[source_id] = outgoing_count.get(source_id, 0) + 1
+                logger.info(
+                    f"[BPMN] Validation: connected orphaned node {node_id!r} from {source_id!r}"
+                    + (f" (label={label!r})" if label else "")
+                )
 
     @staticmethod
     def _unique_id(base: str, existing: set) -> str:
