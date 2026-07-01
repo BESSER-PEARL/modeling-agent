@@ -336,7 +336,23 @@ def modeling_help_body(session: Session):
     diagram_info = get_diagram_type_info(diagram_type)
 
     # Build context-aware help prompt depending on the diagram type
-    if diagram_type == "QuantumCircuitDiagram":
+    if diagram_type == "BPMN":
+        help_prompt = (
+            f'You are an expert business-process modeling assistant. '
+            f'The user asked: "{request.message}"\n\n'
+            f'They are working with the BPMN process diagram editor.\n\n'
+            "You have deep knowledge of:\n"
+            "- BPMN elements: start/end events, tasks (user, service, send, receive, manual, script), "
+            "gateways (exclusive, parallel, inclusive), sequence flows\n"
+            "- Process design patterns: sequential flows, exclusive decisions, parallel work, loops\n"
+            "- Best practices: clear verb-phrase task names, gateway labeling, start/end event placement\n\n"
+            "Provide clear, practical advice about BPMN modeling. "
+            "If they ask about a process pattern, explain the key elements and how to express it in BPMN. "
+            "If they want to build something, tell them they can ask you to create it "
+            "(e.g., 'Create a BPMN process for order fulfillment').\n\n"
+            "Keep your response conversational, encouraging, and technically accurate."
+        )
+    elif diagram_type == "QuantumCircuitDiagram":
         help_prompt = (
             f'You are an expert quantum computing and quantum circuit modeling assistant. '
             f'The user asked: "{request.message}"\n\n'
