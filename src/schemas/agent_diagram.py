@@ -9,7 +9,14 @@ from pydantic import BaseModel, Field
 
 class AgentReplySpec(BaseModel):
     text: str = Field(
-        description="Reply text, LLM prompt, or Python code depending on replyType.",
+        description=(
+            "Reply text, LLM prompt, or Python code depending on replyType. When "
+            "replyType is 'code', this MUST be a complete function definition "
+            "starting with 'def <name>(session):' — never bare statements; the "
+            "code is written verbatim into the generated agent's source file and "
+            "the function name is extracted from the 'def' line to be called at "
+            "runtime, so code without a 'def' produces a broken agent."
+        ),
     )
     replyType: Literal["text", "llm", "rag", "db_reply", "code"] = Field(
         default="text",
@@ -214,7 +221,11 @@ class AgentModificationChanges(BaseModel):
     )
     text: Optional[str] = Field(
         default=None,
-        description="Reply text to add to a state.",
+        description=(
+            "Reply text to add to a state. When replyType is 'code', this MUST "
+            "be a complete function definition starting with 'def <name>(session):' "
+            "— never bare statements; see AgentReplySpec.text for why."
+        ),
     )
     replyType: Optional[Literal["text", "llm", "rag", "db_reply", "code"]] = Field(
         default=None,
