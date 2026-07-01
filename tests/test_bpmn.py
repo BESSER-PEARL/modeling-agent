@@ -28,6 +28,31 @@ def test_bpmn_schema_defaults():
     assert d["nodes"][0]["taskType"] == "default"
 
 
+def test_bpmn_schema_pools_default_empty():
+    from schemas import SystemBPMNSpec
+    d = SystemBPMNSpec(nodes=[{"id": "t", "name": "Do", "type": "task"}]).model_dump()
+    assert d["pools"] == []
+    assert d["nodes"][0]["poolId"] is None
+    assert d["nodes"][0]["laneId"] is None
+
+
+def test_bpmn_schema_pool_with_lanes_round_trips():
+    from schemas import SystemBPMNSpec
+    d = SystemBPMNSpec(
+        nodes=[{"id": "bake", "name": "Bake Pizza", "type": "task", "poolId": "vendor", "laneId": "chef"}],
+        pools=[
+            {"id": "vendor", "name": "Pizza Vendor", "lanes": [
+                {"id": "chef", "name": "Pizza Chef"},
+                {"id": "clerk", "name": "Clerk"},
+            ]},
+        ],
+    ).model_dump()
+    assert d["pools"][0]["id"] == "vendor"
+    assert {l["id"] for l in d["pools"][0]["lanes"]} == {"chef", "clerk"}
+    assert d["nodes"][0]["poolId"] == "vendor"
+    assert d["nodes"][0]["laneId"] == "chef"
+
+
 def test_bpmn_modification_target_has_node_id():
     from schemas.bpmn import BPMNModificationTarget
     t = BPMNModificationTarget(nodeId="abc-uuid-123", nodeName=None)
@@ -92,6 +117,57 @@ def test_bpmn_validation_connects_orphaned_task_falls_back_to_previous_node():
     assert "b" in targets
     new_flow = next(f for f in spec["flows"] if f["target"] == "b")
     assert new_flow["source"] == "a"
+
+
+def test_bpmn_validation_drops_dangling_pool_ref():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": [{"id": "t", "name": "Do", "type": "task", "poolId": "ghost", "laneId": "ghost_lane"}],
+        "flows": [],
+        "pools": [{"id": "real", "name": "Real Pool", "lanes": []}],
+    })
+    node = next(n for n in spec["nodes"] if n["id"] == "t")
+    assert node["poolId"] is None
+    assert node["laneId"] is None
+
+
+def test_bpmn_validation_drops_dangling_lane_ref_keeps_pool():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": [{"id": "t", "name": "Do", "type": "task", "poolId": "vendor", "laneId": "ghost_lane"}],
+        "flows": [],
+        "pools": [{"id": "vendor", "name": "Vendor", "lanes": [{"id": "chef", "name": "Chef"}]}],
+    })
+    node = next(n for n in spec["nodes"] if n["id"] == "t")
+    assert node["poolId"] == "vendor"
+    assert node["laneId"] is None
+
+
+def test_bpmn_validation_keeps_valid_pool_and_lane_refs():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": [{"id": "t", "name": "Do", "type": "task", "poolId": "vendor", "laneId": "chef"}],
+        "flows": [],
+        "pools": [{"id": "vendor", "name": "Vendor", "lanes": [{"id": "chef", "name": "Chef"}]}],
+    })
+    node = next(n for n in spec["nodes"] if n["id"] == "t")
+    assert node["poolId"] == "vendor"
+    assert node["laneId"] == "chef"
+    assert spec["pools"][0]["id"] == "vendor"
+
+
+def test_bpmn_validation_no_pools_clears_all_refs():
+    """A node that hallucinates a poolId when the spec declares no pools at
+    all must be normalized back to a flat node."""
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": [{"id": "t", "name": "Do", "type": "task", "poolId": "vendor", "laneId": "chef"}],
+        "flows": [],
+    })
+    node = next(n for n in spec["nodes"] if n["id"] == "t")
+    assert node["poolId"] is None
+    assert node["laneId"] is None
+    assert spec["pools"] == []
 
 
 def test_bpmn_fallback_envelope():
