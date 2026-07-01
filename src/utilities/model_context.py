@@ -39,6 +39,58 @@ def compact_model_summary(model_data: Any, diagram_type: str) -> str:
                         f"{preview}{extra} and "
                         f"{len(relationships)} relationship(s)."
                     )
+            elif diagram_type == "StateMachineDiagram":
+                # Count actual states only — exclude the StateInitialNode
+                # pseudostate and per-state StateBody/StateFallbackBody/
+                # StateCodeBlock sub-elements.
+                state_names = [
+                    el.get("name") for el in elements.values()
+                    if isinstance(el, dict) and el.get("type") == "State"
+                    and isinstance(el.get("name"), str) and el["name"].strip()
+                ]
+                state_count = len(state_names)
+                if state_count > 0:
+                    preview = ", ".join(state_names[:6])
+                    extra = f" (+{state_count - 6} more)" if state_count > 6 else ""
+                    return (
+                        f"{diagram_type}: {state_count} state(s): "
+                        f"{preview}{extra} and "
+                        f"{len(relationships)} transition(s)."
+                    )
+            elif diagram_type == "AgentDiagram":
+                # Count actual states/intents — exclude the StateInitialNode
+                # pseudostate and per-element AgentStateBody/AgentIntentBody
+                # sub-elements.
+                state_count = sum(
+                    1 for el in elements.values()
+                    if isinstance(el, dict) and el.get("type") == "AgentState"
+                    and isinstance(el.get("name"), str) and el["name"].strip()
+                )
+                intent_names = [
+                    el.get("name") for el in elements.values()
+                    if isinstance(el, dict) and el.get("type") == "AgentIntent"
+                    and isinstance(el.get("name"), str) and el["name"].strip()
+                ]
+                if state_count > 0 or intent_names:
+                    preview = ", ".join(intent_names[:6])
+                    extra = f" (+{len(intent_names) - 6} more)" if len(intent_names) > 6 else ""
+                    intent_part = f", intents: {preview}{extra}" if intent_names else ""
+                    return (
+                        f"{diagram_type}: {state_count} state(s), "
+                        f"{len(intent_names)} intent(s){intent_part}."
+                    )
+            elif diagram_type == "ObjectDiagram":
+                # Count actual objects only — exclude attribute sub-elements.
+                object_names = [
+                    el.get("name") for el in elements.values()
+                    if isinstance(el, dict) and el.get("type") == "Object"
+                    and isinstance(el.get("name"), str) and el["name"].strip()
+                ]
+                object_count = len(object_names)
+                if object_count > 0:
+                    preview = ", ".join(object_names[:6])
+                    extra = f" (+{object_count - 6} more)" if object_count > 6 else ""
+                    return f"{diagram_type}: {object_count} object(s): {preview}{extra}."
             return (
                 f"{diagram_type}: {len(elements)} element(s), "
                 f"{len(relationships)} relationship(s)."
@@ -174,35 +226,94 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
 
 
 def _summarize_state_machine(model: Dict[str, Any], *, max_items: int = 20) -> List[str]:
-    """Summarize a StateMachineDiagram model: states with actions, transitions."""
+    """Summarize a StateMachineDiagram model: real states, bodies, transitions.
+
+    Only genuine ``State`` elements are counted/listed as states — the editor
+    also creates a ``StateInitialNode`` pseudostate plus per-state
+    ``StateBody``/``StateFallbackBody``/``StateCodeBlock`` sub-elements, none
+    of which are states themselves (mirrors how the class-diagram summary
+    excludes attributes/methods from the class count).
+    """
     elements = model.get("elements")
     relationships = model.get("relationships")
     if not isinstance(elements, dict):
         return []
 
     lines: List[str] = []
-    element_names: Dict[str, str] = {}  # id -> name
+    element_names: Dict[str, str] = {}  # id -> name (any element, for transition lookups)
+    state_data: Dict[str, Dict[str, Any]] = {}  # id -> {name, bodies, fallbacks, entry, exit, do}
+    initial_count = 0
+    final_count = 0
 
-    # States
     for eid, el in elements.items():
         if not isinstance(el, dict):
             continue
         el_type = el.get("type")
-        if el_type not in ("State", "StateInitialNode", "StateFinalNode"):
+        name = el.get("name") or ""
+        if el_type == "State":
+            if not name.strip():
+                continue
+            element_names[eid] = name.strip()
+            state_data[eid] = {
+                "name": name.strip(), "bodies": [], "fallbacks": [],
+                "entry": el.get("entryAction", "") or "",
+                "exit": el.get("exitAction", "") or "",
+                "do": el.get("doActivity", "") or "",
+            }
+        elif el_type == "StateInitialNode":
+            initial_count += 1
+            element_names[eid] = name or "(initial)"
+        elif el_type == "StateFinalNode":
+            final_count += 1
+            element_names[eid] = name or "(final)"
+
+    # Attach per-state body/fallback function names (owner-based, mirrors
+    # how the class-diagram summary attaches attributes/methods to classes).
+    for el in elements.values():
+        if not isinstance(el, dict):
             continue
-        name = el.get("name", "Unnamed")
-        element_names[eid] = name
-        parts = [f"State {name} ({el_type})"]
-        entry = el.get("entryAction", "")
-        exit_a = el.get("exitAction", "")
-        do_act = el.get("doActivity", "")
-        if entry:
-            parts.append(f"entry={entry}")
-        if exit_a:
-            parts.append(f"exit={exit_a}")
-        if do_act:
-            parts.append(f"do={do_act}")
+        owner = el.get("owner")
+        if not isinstance(owner, str) or owner not in state_data:
+            continue
+        el_type = el.get("type")
+        body_name = el.get("name")
+        if not isinstance(body_name, str) or not body_name.strip():
+            continue
+        if el_type == "StateBody":
+            state_data[owner]["bodies"].append(body_name.strip())
+        elif el_type == "StateFallbackBody":
+            state_data[owner]["fallbacks"].append(body_name.strip())
+
+    # Explicit state COUNT header first — so factual queries ("how many
+    # states?") are answered from a stated number instead of the LLM
+    # counting listed lines (which previously included the StateInitialNode
+    # pseudostate as an extra "state").
+    state_items = list(state_data.items())
+    names_preview = ", ".join(sd["name"] for _, sd in state_items[:max_items])
+    if len(state_items) > max_items:
+        names_preview += f" (+{len(state_items) - max_items} more)"
+    lines.append(f"States ({len(state_items)}): {names_preview}")
+    for _, sd in state_items[:max_items]:
+        parts = [f"  - {sd['name']}"]
+        if sd["bodies"]:
+            parts.append(f"body: {', '.join(sd['bodies'])}")
+        if sd["fallbacks"]:
+            parts.append(f"fallback: {', '.join(sd['fallbacks'])}")
+        if sd["entry"]:
+            parts.append(f"entry={sd['entry']}")
+        if sd["exit"]:
+            parts.append(f"exit={sd['exit']}")
+        if sd["do"]:
+            parts.append(f"do={sd['do']}")
         lines.append(" | ".join(parts))
+
+    if initial_count or final_count:
+        bits = []
+        if initial_count:
+            bits.append(f"{initial_count} initial pseudostate(s)")
+        if final_count:
+            bits.append(f"{final_count} final pseudostate(s)")
+        lines.append("Pseudostates (not counted as states): " + ", ".join(bits))
 
     # Transitions
     if isinstance(relationships, dict):
@@ -302,45 +413,123 @@ def _summarize_gui_model(model: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def _summarize_agent_diagram(model: Dict[str, Any]) -> List[str]:
-    """Summarize an AgentDiagram model: states, intents, transitions."""
+def _summarize_agent_diagram(model: Dict[str, Any], *, max_items: int = 20) -> List[str]:
+    """Summarize an AgentDiagram model: real states/intents (with their reply
+    bodies / training phrases), and transitions.
+
+    Only genuine ``AgentState``/``AgentIntent`` elements are counted/listed —
+    the editor also creates a ``StateInitialNode`` pseudostate plus per-element
+    ``AgentStateBody`` (bot reply text) / ``AgentIntentBody`` (training phrase)
+    sub-elements, none of which are states or intents themselves (mirrors how
+    the class-diagram summary excludes attributes/methods from the class
+    count). Training phrases are surfaced so questions like "which intent
+    handles the user saying hello" are answerable from the summary alone.
+    """
     elements = model.get("elements")
     relationships = model.get("relationships")
     if not isinstance(elements, dict):
         return []
 
     lines: List[str] = []
+    element_names: Dict[str, str] = {}  # id -> name (any element, for transition lookups)
+    state_data: Dict[str, Dict[str, Any]] = {}   # id -> {name, replies}
+    intent_data: Dict[str, Dict[str, Any]] = {}  # id -> {name, phrases}
 
-    states = [e.get("name") for e in elements.values()
-              if isinstance(e, dict) and e.get("type") == "AgentState" and e.get("name")]
-    if states:
-        state_str = ', '.join(states[:10])
-        if len(states) > 10:
-            state_str += f" …+{len(states) - 10} more"
-        lines.append(f"States: {state_str}")
+    for eid, el in elements.items():
+        if not isinstance(el, dict):
+            continue
+        el_type = el.get("type")
+        name = el.get("name") or ""
+        if el_type == "AgentState":
+            if not name.strip():
+                continue
+            element_names[eid] = name.strip()
+            state_data[eid] = {"name": name.strip(), "replies": []}
+        elif el_type == "AgentIntent":
+            if not name.strip():
+                continue
+            element_names[eid] = name.strip()
+            intent_data[eid] = {"name": name.strip(), "phrases": []}
+        elif el_type == "StateInitialNode":
+            element_names[eid] = name or "(initial)"
 
-    intents = [e.get("name") for e in elements.values()
-               if isinstance(e, dict) and e.get("type") == "AgentIntent" and e.get("name")]
-    if intents:
-        intent_str = ', '.join(intents[:10])
-        if len(intents) > 10:
-            intent_str += f" …+{len(intents) - 10} more"
-        lines.append(f"Intents: {intent_str}")
+    # Attach owned reply bodies / training phrases (owner-based, mirrors how
+    # the class-diagram summary attaches attributes/methods to classes).
+    for el in elements.values():
+        if not isinstance(el, dict):
+            continue
+        owner = el.get("owner")
+        el_type = el.get("type")
+        text = el.get("name")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        if el_type == "AgentStateBody" and owner in state_data:
+            state_data[owner]["replies"].append(text.strip())
+        elif el_type == "AgentIntentBody" and owner in intent_data:
+            intent_data[owner]["phrases"].append(text.strip())
 
+    # Explicit COUNT headers first — mirrors the class-diagram summary so
+    # factual queries ("how many intents?") are answered from a stated
+    # number instead of the LLM guessing from a flat element dump.
+    state_items = list(state_data.items())
+    if state_items:
+        names_preview = ", ".join(sd["name"] for _, sd in state_items[:max_items])
+        if len(state_items) > max_items:
+            names_preview += f" (+{len(state_items) - max_items} more)"
+        lines.append(f"States ({len(state_items)}): {names_preview}")
+        for _, sd in state_items[:max_items]:
+            if sd["replies"]:
+                lines.append(f"  - {sd['name']} | replies: {'; '.join(sd['replies'][:5])}")
+            else:
+                lines.append(f"  - {sd['name']}")
+
+    intent_items = list(intent_data.items())
+    if intent_items:
+        names_preview = ", ".join(idata["name"] for _, idata in intent_items[:max_items])
+        if len(intent_items) > max_items:
+            names_preview += f" (+{len(intent_items) - max_items} more)"
+        lines.append(f"Intents ({len(intent_items)}): {names_preview}")
+        for _, idata in intent_items[:max_items]:
+            if idata["phrases"]:
+                lines.append(f"  - {idata['name']} | training phrases: {', '.join(idata['phrases'][:8])}")
+            else:
+                lines.append(f"  - {idata['name']}")
+
+    # Transitions — real type is "AgentStateTransition" (plus
+    # "AgentStateTransitionInit" wiring the initial pseudostate). Annotate
+    # each with the intent that triggers it so "which intent leads to X" is
+    # answerable directly from this line.
     if isinstance(relationships, dict):
         transitions: List[str] = []
         for rel in relationships.values():
-            if not isinstance(rel, dict) or rel.get("type") != "AgentTransition":
+            if not isinstance(rel, dict):
                 continue
-            source = elements.get(rel.get("source", ""))
-            target = elements.get(rel.get("target", ""))
-            if isinstance(source, dict) and isinstance(target, dict):
-                transitions.append(f"{source.get('name')} → {target.get('name')}")
+            if rel.get("type") not in ("AgentStateTransition", "AgentStateTransitionInit"):
+                continue
+            source = rel.get("source")
+            target = rel.get("target")
+            if not isinstance(source, dict) or not isinstance(target, dict):
+                continue
+            src_id = source.get("element", "")
+            tgt_id = target.get("element", "")
+            src_name = element_names.get(src_id, src_id)
+            tgt_name = element_names.get(tgt_id, tgt_id)
+            predefined = rel.get("predefined")
+            predefined_type = predefined.get("predefinedType", "") if isinstance(predefined, dict) else ""
+            intent_name = predefined.get("intentName", "") if isinstance(predefined, dict) else ""
+            if intent_name:
+                detail = f" (on intent: {intent_name})"
+            elif predefined_type == "auto":
+                detail = " (auto)"
+            elif predefined_type:
+                detail = f" ({predefined_type})"
+            else:
+                detail = ""
+            transitions.append(f"{src_name} -> {tgt_name}{detail}")
         if transitions:
-            trans_str = ', '.join(transitions[:5])
-            if len(transitions) > 5:
-                trans_str += f" …+{len(transitions) - 5} more"
-            lines.append(f"Transitions: {trans_str}")
+            trans_str = "; ".join(transitions[:15])
+            more = f" (+{len(transitions) - 15} more)" if len(transitions) > 15 else ""
+            lines.append(f"Transitions ({len(transitions)}): {trans_str}{more}")
 
     return lines
 
@@ -676,7 +865,7 @@ def is_diagram_nontrivial(model_data: Any, diagram_type: str) -> bool:
             return False
         for el in elements.values():
             if isinstance(el, dict) and el.get("type") in {
-                "AgentState", "AgentIntent", "AgentBody",
+                "AgentState", "AgentIntent", "AgentStateBody", "AgentIntentBody",
             }:
                 return True
         return False
