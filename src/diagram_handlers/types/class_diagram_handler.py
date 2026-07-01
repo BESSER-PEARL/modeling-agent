@@ -4,6 +4,7 @@ Handles generation of UML Class Diagrams
 """
 
 import logging
+import re
 from typing import Dict, Any, List, Optional
 
 from ..core.base_handler import (
@@ -230,10 +231,10 @@ Examples:
 
         except LLMPredictionError as exc:
             logger.error(f"❌ [ClassDiagram] generate_complete_system LLM FAILED: {exc}")
-            return self._incremental_system_fallback(user_request, existing_model)
+            return self._incremental_system_fallback(user_request, existing_model, raw_request=raw_request)
         except Exception as exc:
             logger.error(f"❌ [ClassDiagram] generate_complete_system FAILED: {exc}", exc_info=True)
-            return self._incremental_system_fallback(user_request, existing_model)
+            return self._incremental_system_fallback(user_request, existing_model, raw_request=raw_request)
 
     # ------------------------------------------------------------------
     # Enum-relationship guard (#33)
@@ -487,8 +488,75 @@ Examples:
             else:
                 spec["modifications"] = new_mods
 
+    # Matches an explicit trailing list of named entities, e.g. "... with
+    # members, tiers, transactions, and rewards" or "... including patients,
+    # doctors, appointments, prescriptions". Used only as a deterministic,
+    # LLM-free last resort — see ``_extract_named_entities_heuristic`` below.
+    _ENTITY_LIST_TRIGGER_RE = re.compile(
+        r"\b(?:with|including|involving|having|containing)\s+(.+)$",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _singularize(word: str) -> str:
+        """Naive plural -> singular normalization for class naming (Books -> Book)."""
+        lower = word.lower()
+        if lower.endswith("ies") and len(word) > 3:
+            return word[:-3] + "y"
+        if lower.endswith(("ses", "xes", "zes", "ches", "shes")):
+            return word[:-2]
+        if lower.endswith("s") and not lower.endswith("ss"):
+            return word[:-1]
+        return word
+
+    @classmethod
+    def _extract_named_entities_heuristic(cls, text: Optional[str]) -> List[str]:
+        """Deterministically pull candidate class names out of an explicit
+        entity list in the user's request (e.g. "...with members, tiers,
+        transactions, and rewards"). No LLM call involved.
+
+        Used as a last-resort, non-lossy safety net inside
+        ``_incremental_system_fallback``: when the LLM-based class-name
+        extraction (below) fails or comes back empty, a request that clearly
+        names its entities should still yield those classes instead of a
+        single generic "Entity" stub. Returns an empty list when no such
+        list is found (plain requests like "create a library management
+        system" are left untouched).
+        """
+        if not isinstance(text, str) or not text.strip():
+            return []
+
+        match = None
+        for m in cls._ENTITY_LIST_TRIGGER_RE.finditer(text):
+            match = m  # keep the match closest to the end of the request
+        if not match:
+            return []
+
+        # Stop at sentence-ending punctuation so trailing clauses (e.g. "...
+        # and then generate Django code") don't leak into the entity list.
+        fragment = re.split(r"[.!?;]", match.group(1))[0]
+        fragment = re.sub(r"\band\b", ",", fragment, flags=re.IGNORECASE).replace("&", ",")
+
+        names: List[str] = []
+        seen: set = set()
+        for part in fragment.split(","):
+            words = re.findall(r"[A-Za-z][A-Za-z0-9]*", part)
+            if not words:
+                continue
+            candidate = cls._singularize(words[-1])
+            pascal = candidate[:1].upper() + candidate[1:]
+            key = pascal.lower()
+            if len(pascal) < 2 or key in seen:
+                continue
+            seen.add(key)
+            names.append(pascal)
+        return names[:10]
+
     def _incremental_system_fallback(
-        self, user_request: str, existing_model: Optional[Dict[str, Any]] = None,
+        self,
+        user_request: str,
+        existing_model: Optional[Dict[str, Any]] = None,
+        raw_request: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Fallback: try to generate the system by creating classes individually.
 
@@ -498,7 +566,7 @@ Examples:
         """
         logger.info("[ClassDiagram] Attempting incremental fallback generation")
 
-        # Try to extract class names from the request
+        # Try to extract class names from the request via the LLM first.
         extraction_prompt = (
             "From this request, extract ONLY the class/entity names the user wants. "
             "Return a JSON array of strings. Example: [\"User\", \"Product\", \"Order\"]\n\n"
@@ -506,15 +574,33 @@ Examples:
             "Return ONLY the JSON array, no explanations."
         )
 
+        class_names: List[Any] = []
         try:
             response = self.predict_with_retry(extraction_prompt, max_retries=1)
             cleaned = self.clean_json_response(response)
             import json as _json
-            class_names = _json.loads(cleaned)
-            if not isinstance(class_names, list) or len(class_names) == 0:
-                raise ValueError("No class names extracted")
-        except Exception:
-            logger.warning("[ClassDiagram] Could not extract class names, using basic fallback")
+            parsed_names = _json.loads(cleaned)
+            if isinstance(parsed_names, list) and parsed_names:
+                class_names = parsed_names
+        except Exception as exc:
+            logger.warning(f"[ClassDiagram] LLM class-name extraction failed: {exc}")
+
+        if not class_names:
+            # Deterministic, LLM-free last resort: pull entity names
+            # directly out of an explicit list in the request itself, so a
+            # request that clearly names its entities (e.g. "...with members,
+            # tiers, transactions, and rewards") never degrades to a single
+            # generic "Entity" stub just because the extraction call above
+            # also failed/returned malformed JSON.
+            class_names = self._extract_named_entities_heuristic(raw_request or user_request)
+            if class_names:
+                logger.info(
+                    f"[ClassDiagram] LLM extraction empty — recovered "
+                    f"{len(class_names)} entity name(s) heuristically: {class_names}"
+                )
+
+        if not class_names:
+            logger.warning("[ClassDiagram] Could not extract any class names, using basic fallback")
             return self.generate_fallback_system()
 
         # Generate each class individually
