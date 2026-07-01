@@ -42,6 +42,11 @@ logger = logging.getLogger(__name__)
 # silently wiping the model. Replace now requires explicit replace intent.
 REPLACE_KEYWORDS = [
     'replace', 'yes', 'overwrite', 'new one', 'start fresh', 'fresh',
+    # 'confirm' is the primary affirmative answer offered by the
+    # destructive-edit guard's suggestedActions (see model_operations.py's
+    # _build_destructive_modify_confirmation) -- it also doubles as a
+    # replace synonym for the plain complete_system confirmation.
+    'confirm',
 ]
 KEEP_KEYWORDS = [
     'keep', 'no', 'add', 'both', 'alongside', 'merge',
@@ -268,6 +273,56 @@ def handle_pending_system_confirmation(session: Session) -> bool:
         )
         session.set(PENDING_COMPLETE_SYSTEM, None)
         return False  # Let normal state body handle the new request
+
+    # ── Destructive modify-model guard ────────────────────────────────
+    # Stored by model_operations._build_destructive_modify_confirmation
+    # when a modify_model plan would delete most/all of the existing
+    # model. Unlike the file-upload precomputed path below, a non-confirm
+    # answer must NOT send the payload at all (just with a flag toggled)
+    # -- it must discard the destructive plan entirely so the model is
+    # left completely untouched.
+    if pending.get('destructive_modify'):
+        if wants_replace:
+            stored_payload = pending.get('precomputed_payload')
+            if isinstance(stored_payload, dict):
+                logger.info(
+                    "🔄 [PendingConfirm] User confirmed destructive modify_model — "
+                    "applying stored plan"
+                )
+                reply_payload(session, stored_payload)
+            else:
+                reply_message(
+                    session,
+                    "Something went wrong — the pending change is no longer available. "
+                    "Please try again.",
+                )
+            session.set(PENDING_COMPLETE_SYSTEM, None)
+
+            # If this destructive op was one step of a larger multi-op plan
+            # (see execution/planning.py, which stashes 'remaining_operations'
+            # onto ANY pending dict under this same session key), resume the
+            # rest now that the user has confirmed. Mirrors the replace/keep/
+            # new-tab branches below.
+            remaining_ops = pending.get('remaining_operations')
+            if isinstance(remaining_ops, list) and remaining_ops:
+                stored_diagram_type = pending.get('diagram_type', 'ClassDiagram')
+                stored_message = pending.get('original_message', request.message)
+                working_request = replace(request, message=stored_message)
+                logger.info(
+                    f"[PendingConfirm] Resuming {len(remaining_ops)} remaining operation(s) "
+                    "after destructive-modify confirmation"
+                )
+                _resume_remaining_ops(
+                    session, remaining_ops, working_request,
+                    stored_diagram_type, 'modify_model', stored_message, pending,
+                )
+        else:
+            logger.info(
+                "[PendingConfirm] User declined destructive modify_model — discarding plan"
+            )
+            reply_message(session, "Cancelled — no changes were made. Your model is unchanged.")
+            session.set(PENDING_COMPLETE_SYSTEM, None)
+        return True
 
     # --- User answered: execute the stored creation -----------------------
 

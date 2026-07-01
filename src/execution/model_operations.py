@@ -91,6 +91,178 @@ def _build_existing_model_confirmation(
 
 
 # ------------------------------------------------------------------
+# Destructive modify-model guard
+#
+# A 1544-question QA run found that the vague correction "that's wrong,
+# redo it" on an 11-class CRM class diagram produced a modify_model plan
+# with 49 remove_element operations that wiped the ENTIRE model -- applied
+# silently, with no confirmation. Every diagram handler's generate_modification
+# (see diagram_handlers/core/base_handler.py::_execute_modification) returns
+# either a single "modification" dict or a batch "modifications" list of
+# {action, target, changes} entries; when that batch's *net effect* is to
+# remove most/all of the existing top-level elements, we must ask before
+# applying it instead of trusting the LLM's plan blindly.
+# ------------------------------------------------------------------
+
+# Target fields that scope a remove_element to a CHILD of a top-level
+# element (an attribute, method, relationship, or transition endpoint)
+# rather than to the top-level element itself. Deleting ONE class together
+# with its relationships requires several remove_element entries -- one per
+# relationship, per class_diagram_handler's REMOVE_ELEMENT_RULE -- so these
+# must be excluded from the "how many top-level elements would this remove"
+# tally below, or a normal single-class deletion would be over-guarded.
+_CHILD_SCOPE_TARGET_KEYS = (
+    "attributeName", "attributeId",
+    "methodName", "methodId",
+    "relationshipName", "relationshipId",
+    "sourceClass", "targetClass",
+    "sourceStateName", "targetStateName",
+    "transitionName", "transitionId",
+)
+
+# Element "type" values that are always children of another element
+# (mirrors the convention used by the layout engine's occupied-rect
+# extraction) -- these never count as a top-level element when tallying
+# the EXISTING model either.
+_CHILD_ELEMENT_TYPES = {
+    "ClassAttribute", "ClassMethod",
+    "AgentStateBody", "AgentStateFallbackBody", "AgentIntentBody",
+}
+
+# Any ONE of these being true means the modify_model plan would destroy a
+# large fraction of the existing model:
+#   - 3+ top-level elements removed in a single plan, or
+#   - the removal would clear the model entirely, or
+#   - 2+ removed AND that is at least half of what currently exists.
+# The >=2 floor on the fraction rule keeps it from flagging e.g. "remove 1
+# of my 2 classes" (a normal single edit) while still catching "remove 1 of
+# my 1 class" via the clears-the-model rule.
+_DESTRUCTIVE_MIN_REMOVED = 3
+_DESTRUCTIVE_MIN_REMOVED_FOR_FRACTION = 2
+_DESTRUCTIVE_FRACTION = 0.5
+
+
+def _is_top_level_removal(target: Any) -> bool:
+    """True when a remove_element target identifies a top-level element
+    (a class/state/object/intent) rather than one of its children."""
+    if not isinstance(target, dict) or not target:
+        return False
+    if any(target.get(key) for key in _CHILD_SCOPE_TARGET_KEYS):
+        return False
+    return any(
+        isinstance(value, str) and value.strip()
+        for value in target.values()
+    )
+
+
+def _count_removed_top_level_elements(result: Dict[str, Any]) -> int:
+    """Count how many TOP-LEVEL elements a modify_model result would delete.
+
+    Handles both the single-``modification`` and batch-``modifications``
+    shapes emitted by every diagram handler's ``generate_modification``.
+    Returns 0 (never crashes) when the result doesn't have either shape --
+    e.g. GUINoCodeDiagram's modify path returns an already-applied ``model``
+    instead, and only ever performs one edit at a time, so it's out of
+    scope for this batch-plan guard.
+    """
+    if not isinstance(result, dict):
+        return 0
+    mods = result.get("modifications")
+    if not isinstance(mods, list):
+        single = result.get("modification")
+        mods = [single] if isinstance(single, dict) else []
+
+    return sum(
+        1
+        for mod in mods
+        if isinstance(mod, dict)
+        and mod.get("action") == "remove_element"
+        and _is_top_level_removal(mod.get("target"))
+    )
+
+
+def _count_existing_top_level_elements(model: Optional[Dict[str, Any]]) -> int:
+    """Count top-level (non-child) elements in the CURRENT model."""
+    if not isinstance(model, dict):
+        return 0
+    elements = model.get("elements")
+    if not isinstance(elements, dict):
+        return 0
+    count = 0
+    for element in elements.values():
+        if not isinstance(element, dict):
+            continue
+        if element.get("type") in _CHILD_ELEMENT_TYPES:
+            continue
+        if element.get("owner"):
+            continue
+        count += 1
+    return count
+
+
+def _is_mass_deletion(removed: int, existing: int) -> bool:
+    """True when *removed* top-level elements is a destructive fraction of
+    *existing* -- see threshold rationale in the constants above."""
+    if removed <= 0:
+        return False
+    if removed >= _DESTRUCTIVE_MIN_REMOVED:
+        return True
+    if existing > 0 and removed >= existing:
+        return True
+    if (
+        removed >= _DESTRUCTIVE_MIN_REMOVED_FOR_FRACTION
+        and existing > 0
+        and (removed / existing) >= _DESTRUCTIVE_FRACTION
+    ):
+        return True
+    return False
+
+
+def _build_destructive_modify_confirmation(
+    session: Session,
+    target_diagram_type: str,
+    removed_count: int,
+    existing_count: int,
+    result: Dict[str, Any],
+) -> None:
+    """Ask the user to confirm a modify_model plan that would wipe out most
+    or all of the existing model, instead of silently applying it.
+
+    Stores the ALREADY-COMPUTED ``result`` payload (not an operation to
+    re-run): re-invoking the LLM on confirm could produce a different plan
+    than the one the user just approved, so ``handle_pending_system_
+    confirmation`` in confirmation.py sends this exact payload back on a
+    "confirm" answer, or discards it entirely otherwise.
+    """
+    pending_data = {
+        "destructive_modify": True,
+        "diagram_type": target_diagram_type,
+        "precomputed_payload": result,
+    }
+    session.set(PENDING_COMPLETE_SYSTEM, pending_data)
+
+    if existing_count > 0:
+        detail = f"remove {removed_count} of your {existing_count} existing element(s)"
+    else:
+        detail = f"remove {removed_count} element(s)"
+
+    message = (
+        f"That change would {detail} — most or all of your current "
+        f"{target_diagram_type}. Since the instruction was short, I want to "
+        "confirm before applying such a large change. **Confirm** to go "
+        "ahead, or **cancel** to keep your model as is."
+    )
+    reply_payload(session, {
+        "action": "assistant_message",
+        "message": message,
+        "suggestedActions": [
+            {"label": "Confirm — apply the change", "prompt": "confirm"},
+            {"label": "Cancel — keep my model", "prompt": "cancel"},
+        ],
+    })
+
+
+# ------------------------------------------------------------------
 # Single model operation
 # ------------------------------------------------------------------
 
@@ -530,6 +702,30 @@ def execute_model_operation(
     )
     if suggestions:
         result["suggestedActions"] = suggestions
+
+    # ── Destructive modify-model guard ───────────────────────────────────
+    # Block a modify_model plan whose net effect would delete most/all of
+    # the existing top-level elements (see the guard section above); ask
+    # for confirmation instead of applying it silently.
+    if operation_mode == "modify_model":
+        _removed_count = _count_removed_top_level_elements(result)
+        if _removed_count > 0:
+            _existing_count = _count_existing_top_level_elements(target_model)
+            if _is_mass_deletion(_removed_count, _existing_count):
+                logger.warning(
+                    f"[ModelOp] Blocking destructive modify_model on {target_diagram_type}: "
+                    f"would remove {_removed_count} top-level element(s) "
+                    f"(existing={_existing_count}) — asking for confirmation "
+                    "instead of applying silently."
+                )
+                _build_destructive_modify_confirmation(
+                    session=session,
+                    target_diagram_type=target_diagram_type,
+                    removed_count=_removed_count,
+                    existing_count=_existing_count,
+                    result=result,
+                )
+                return None
 
     logger.info(
         f"📤 [ModelOp] Sending result: action={result.get('action')}, "
