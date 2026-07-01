@@ -594,6 +594,33 @@ def _build_full_project_summary(request: AssistantRequest) -> str:
     return "\n\n".join(sections)
 
 
+def _recent_conversation_block(session: Session, request, max_turns: int = 6) -> str:
+    """Recent prior turns as text, so a describe/evaluate answer can resolve
+    referents ("it", "that", "the first one", "those") against what was just
+    asked/answered. ``_common_preamble`` has already recorded the CURRENT user
+    message, so drop that trailing entry — we want the PRIOR context. Never
+    raises."""
+    try:
+        mem = get_memory(memory_session_key(session, request))
+        turns = mem.get_last_n(max_turns + 1)
+    except Exception:
+        return ""
+    cur = (request.message or "").strip()
+    if turns and turns[-1].get("role") == "user" and (turns[-1].get("content") or "").strip() == cur:
+        turns = turns[:-1]
+    turns = turns[-max_turns:]
+    lines = []
+    for t in turns:
+        role = (t.get("role") or "?").strip()
+        content = (t.get("content") or "").strip().replace("\n", " ")
+        if not content:
+            continue
+        if len(content) > 300:
+            content = content[:297].rstrip() + "..."
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
 def describe_model_body(session: Session):
     """Answer user questions about the current diagram / project."""
     request = _common_preamble(session)
@@ -622,6 +649,22 @@ def describe_model_body(session: Session):
         )
         return
 
+    # Recent turns so follow-up questions with referents ("it", "the first
+    # one", "those") resolve to the element the user actually means.
+    history_block = _recent_conversation_block(session, request)
+    history_section = (
+        (
+            "RECENT CONVERSATION (older first). Use it to resolve any referent "
+            "in the question below \u2014 \"it\", \"that\", \"the first one\", "
+            "\"those\", \"the second\", etc. \u2014 to the SPECIFIC element the "
+            "user means (based on what was just asked or answered), then answer "
+            "about THAT element, not the whole diagram:\n"
+            f"{history_block}\n\n"
+        )
+        if history_block
+        else ""
+    )
+
     qa_prompt = (
         "You are an expert assistant for the BESSER Web Modeling Editor. "
         "The user has a project that may contain multiple diagrams "
@@ -630,6 +673,7 @@ def describe_model_body(session: Session):
         f"default-seed diagrams have already been filtered out, so describe "
         f"ONLY the diagrams listed below:\n\n"
         f"{full_summary}\n\n"
+        f"{history_section}"
         f"The user asks: \"{request.message}\"\n\n"
         "Answer their question accurately based ONLY on the project data above. "
         "If they ask about a specific diagram type, focus on that one. "
