@@ -50,8 +50,19 @@ def resolve_target_model(
                     return target["model"]
 
     # Last resort: current_model may still be populated by adapters.py from
-    # the snapshot resolution, so honour it as a final fallback.
-    if isinstance(request.current_model, dict):
+    # the snapshot resolution, so honour it as a final fallback — BUT only
+    # when it is actually a model of the REQUESTED type. ``current_model``
+    # holds the ACTIVE diagram's model; returning it for a DIFFERENT target
+    # type makes callers believe that target already exists. Concretely:
+    # asking for a brand-new AgentDiagram while viewing a ClassDiagram used
+    # to return the class model, so the create-guard hallucinated an
+    # "AgentDiagram: 5 element(s)" that doesn't exist and prompted the user
+    # to replace/keep a diagram they never had.
+    active_type = (
+        getattr(request.context, "active_diagram_type", None)
+        or getattr(request, "diagram_type", None)
+    )
+    if active_type == target_diagram_type and isinstance(request.current_model, dict):
         return request.current_model
     return None
 

@@ -265,6 +265,8 @@ GENERATOR_KEYWORDS: Dict[str, List[str]] = {
         "export model", "export the model", "export my model",
         "download project", "download the project", "download my project",
         "save as json", "save as buml", "save project",
+        "save the project", "save my project", "save project to json",
+        "save the project to json", "save the project as json",
         "export diagram", "export the diagram",
     ],
     "deploy": [
@@ -273,6 +275,10 @@ GENERATOR_KEYWORDS: Dict[str, List[str]] = {
         "deploy to cloud", "deploy project", "deploy the project",
         "deploy my project", "render deploy", "publish app", "publish the app",
         "publish to render", "publish my app",
+        "deploy this model", "deploy the model", "deploy my model",
+        "deploy it", "deploy this", "go ahead and deploy",
+        "push this to prod", "push to prod", "push it to prod",
+        "ship it to production", "ship this to production",
     ],
 }
 
@@ -294,6 +300,34 @@ DIALECT_VALUES = ["sqlite", "postgresql", "mysql", "mssql", "mariadb", "oracle"]
 MODE_VALUES = ["regular", "smart_data"]
 QISKIT_BACKENDS = ["aer_simulator", "fake_backend", "ibm_quantum"]
 
+# Common ways users actually spell a dialect/DBMS that don't match a
+# DIALECT_VALUES entry verbatim (e.g. "postgres" instead of "postgresql").
+# Without this, a message that clearly names a dialect ("postgres SQL")
+# still triggered the "which dialect?" config prompt (#QA bug).
+_DIALECT_ALIASES: Dict[str, str] = {
+    "postgres": "postgresql",
+    "psql": "postgresql",
+    "sql server": "mssql",
+    "sqlserver": "mssql",
+    "maria": "mariadb",
+}
+
+
+def _resolve_dialect(lower_message: str) -> Optional[str]:
+    """Return the canonical DIALECT_VALUES name mentioned in *lower_message*.
+
+    Checks exact ``DIALECT_VALUES`` first, then the common aliases above
+    (word-boundary matched so e.g. "psql" doesn't match inside an
+    unrelated word). Returns ``None`` when no dialect/DBMS is named.
+    """
+    for dialect in DIALECT_VALUES:
+        if re.search(r"\b" + re.escape(dialect) + r"\b", lower_message):
+            return dialect
+    for alias, canonical in _DIALECT_ALIASES.items():
+        if re.search(r"\b" + re.escape(alias) + r"\b", lower_message):
+            return canonical
+    return None
+
 
 def _sanitize_identifier(value: str, fallback: str) -> str:
     cleaned = re.sub(r"[^a-zA-Z0-9_]", "_", (value or "").strip()).strip("_").lower()
@@ -310,7 +344,8 @@ _FUZZY_PATTERNS: List[Tuple[str, re.Pattern]] = [
     ("export", re.compile(
         r"\b(?:export|download|save)\b.*\b(?:json|buml|project|model|diagram)\b", re.I)),
     ("deploy", re.compile(
-        r"\b(?:deploy|publish)\b.*\b(?:render|cloud|app|application|project)\b", re.I)),
+        r"\b(?:deploy|publish|push|ship)\b.*\b(?:render|cloud|app|application|"
+        r"project|model|prod|production|live)\b", re.I)),
 ]
 
 
@@ -399,16 +434,14 @@ def parse_inline_generator_config(
                 config["containerization"] = False
 
     elif generator_type == "sql":
-        for dialect in DIALECT_VALUES:
-            if dialect in lower:
-                config["dialect"] = dialect
-                break
+        dialect = _resolve_dialect(lower)
+        if dialect:
+            config["dialect"] = dialect
 
     elif generator_type == "sqlalchemy":
-        for dbms in DIALECT_VALUES:
-            if dbms in lower:
-                config["dbms"] = dbms
-                break
+        dbms = _resolve_dialect(lower)
+        if dbms:
+            config["dbms"] = dbms
 
     elif generator_type == "jsonschema":
         if "smart" in lower:

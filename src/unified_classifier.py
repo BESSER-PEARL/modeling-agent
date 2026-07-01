@@ -35,6 +35,7 @@ body can read from the same source of truth.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -110,7 +111,12 @@ class UnifiedClassification(BaseModel):
         ...,
         description=(
             "State-level intent. Pick exactly one:\n"
-            "  'hello_intent'                   — greeting / small-talk\n"
+            "  'hello_intent'                   — an ACTUAL greeting / "
+            "small-talk FROM the user (e.g. 'hi', 'hello there', 'thanks'). "
+            "A QUESTION that merely QUOTES a greeting word is NOT a greeting: "
+            "'which intent handles the user saying hello', 'what happens when "
+            "the user says hi', 'does my bot greet people' are questions "
+            "ABOUT the model → describe_model_intent, not hello_intent.\n"
             "  'create_complete_system_intent'  — user wants a NEW diagram or "
             "complete system FROM SCRATCH (e.g. 'create a class diagram for a "
             "library', 'model a booking system', 'build a Grover algorithm "
@@ -120,10 +126,38 @@ class UnifiedClassification(BaseModel):
             "diagram, not a class.\n"
             "  'modify_model_intent'            — user wants to ADD / REMOVE / "
             "CHANGE elements in an EXISTING diagram (e.g. 'add a class called "
-            "User', 'remove the Book class', 'connect Author and Book')\n"
+            "User', 'remove the Book class', 'connect Author and Book'). This "
+            "ALSO covers INDIRECT requests that express a wish for the model "
+            "to CAPTURE / TRACK / STORE / RECORD / REMEMBER a piece of DATA "
+            "about an existing entity — e.g. 'it would help to know when each "
+            "order was placed' (→ add a date attribute to Order), 'I'd like "
+            "to keep track of each customer's address', 'we should remember "
+            "the shipping date', 'every product needs a price'. The user is "
+            "asking you to MODEL that data, not asking a question — route "
+            "modify_model_intent and let the modify step add the "
+            "attribute/relationship. BUT a QUESTION asking for your advice "
+            "about WHETHER or HOW to change the model ('do I need an Address "
+            "class?', 'how would you improve this?', 'what should I add?') is "
+            "NOT a modify command — it is describe_model_intent (analyze + "
+            "advise). Route modify_model_intent only for a STATEMENT/COMMAND "
+            "of a concrete change ('add a price to Product', 'every product "
+            "needs a price', 'connect Customer and Order'), never for an "
+            "open question seeking your recommendation.\n"
             "  'describe_model_intent'          — user is asking ABOUT their "
-            "current diagram (e.g. 'what classes do I have?', 'list all "
-            "states')\n"
+            "current diagram, wanting to KNOW/SEE what ALREADY exists (e.g. "
+            "'what classes do I have?', 'list all states', 'is X connected to "
+            "Y?'). This ALSO covers EVALUATIVE / ADVISORY questions that ask "
+            "for your OPINION, RECOMMENDATION, or CRITIQUE of the existing "
+            "model — 'is my model any good?', 'how would you improve this "
+            "design?', 'what would you add?', 'what am I missing?', 'do I "
+            "need a separate Address class?', 'are there problems with my "
+            "design?', 'what should I change?', 'is this a good way to model "
+            "X?'. These ask you to ANALYZE and ADVISE (and you SHOULD answer "
+            "with grounded, specific suggestions about THEIR classes) — they "
+            "are NOT commands to make a change, so do NOT route them to "
+            "modify_model_intent and do NOT set needs_clarification. NOT a "
+            "request to add new data — if the user wants the model to start "
+            "holding a NEW piece of information, that is modify_model_intent.\n"
             "  'modeling_help_intent'           — user asks for CONCEPTUAL "
             "help (e.g. 'how do I model inheritance?', 'explain UML "
             "composition')\n"
@@ -337,7 +371,14 @@ _SYSTEM_PROMPT = (
     "describe_model_intent: user asks QUESTIONS about their CURRENT "
     "diagram. 'how many classes', 'what attributes', 'list all', "
     "'tell me about my model', 'describe', 'summarize', 'what does "
-    "this circuit do'. Always about what ALREADY EXISTS.\n\n"
+    "this circuit do'. Always about what ALREADY EXISTS. EXCEPTION: a "
+    "question asking to SEE / PREVIEW the model AS CODE in a specific "
+    "target language or format ('what does this look like as postgres "
+    "sql?', 'show me this as SQL', 'spit out the postgres create "
+    "statements', 'what would the Django models look like?') is "
+    "generation_intent, NOT describe_model_intent — even though phrased "
+    "as a question, the user wants the generator's OUTPUT in that "
+    "format, not a description of the classes/attributes.\n\n"
     "modeling_help_intent: conceptual help, explanations, best "
     "practices. 'how do I', 'explain', 'what is', 'how does X work', "
     "'what are best practices for'. Conceptual, not about their "
@@ -355,8 +396,12 @@ _SYSTEM_PROMPT = (
     "smartdata, agent, qiskit, rest_api, rdf) AND ANY OTHER language "
     "or framework (ruby on rails, rust, kotlin, swift, go, elixir, "
     "c#, c++, php, laravel, flask, express, next.js, spring boot, "
-    "angular, vue, svelte, ios, android). Also: export to json/buml, "
-    "deploy to render. ALSO includes asking to RUN, TRY, PREVIEW, "
+    "angular, vue, svelte, ios, android). Also: export to json/buml "
+    "('export as json', 'save the project to json'), and DEPLOY — "
+    "'deploy to render', 'deploy this model', 'push this to prod', "
+    "'go ahead and deploy it', 'ship it to production' are ALL "
+    "generation_intent wanting the deploy action, even without the "
+    "literal word 'deploy'/'render'. ALSO includes asking to RUN, TRY, PREVIEW, "
     "LAUNCH, USE, or SEE the app, or 'where is the app?' when they do "
     "NOT yet have generated code — the user has a model and wants "
     "runnable output, which comes from generating code. BUT if they "
@@ -425,9 +470,75 @@ _SYSTEM_PROMPT = (
     "business rules, or integrations → 'smart'. Examples: 'web app with "
     "authentication', 'django with jwt', 'backend that runs in a "
     "container'.\n"
+    "3b. EXCEPTION — a named SQL DIALECT is NOT an 'extra': when the "
+    "request is for the SQL or SQLAlchemy generator specifically and "
+    "simply NAMES the target dialect/DBMS (postgres/postgresql, mysql, "
+    "sqlite, mssql, mariadb, oracle) with NO other added behavior, that "
+    "is the generator's own required parameter — NOT the 'specific "
+    "non-default database' extra from rule 3. Stay 'deterministic' with "
+    "generator_type='sql' (or 'sqlalchemy') and let the dialect be "
+    "parsed from the message; do NOT escalate to 'smart' just because a "
+    "dialect is named. Examples (all 'deterministic', generator_type='sql'): "
+    "'what does this look like as postgres sql?', 'spit out the postgres "
+    "create statements', 'generate mysql for my model'. Only escalate when "
+    "the user ALSO asks for something the template can't do (auth, Docker, "
+    "business rules, a full app around the schema, ...).\n"
     "4. A bare BESSER built-in with NO added behavior → 'deterministic' "
-    "with generator_type set. Examples: 'generate django', 'give me "
-    "pydantic classes', 'generate sql'.\n"
+    "with generator_type set. The BESSER built-ins, each with its OWN "
+    "deterministic template, are: django, backend, sql, sqlalchemy, "
+    "python, java, pydantic, jsonschema, smartdata, web_app, agent, "
+    "qiskit (plus export, deploy). When the user names ONE of these and "
+    "asks for nothing extra, route 'deterministic' and set generator_type "
+    "to it. The decoration words 'code', 'models', 'classes', 'schema', "
+    "'from my model', 'for my diagram' do NOT make it smart — they are "
+    "just how people ask for the plain output. Map the obvious phrasings: "
+    "'generate java' / 'java classes' / 'java code from my model' → "
+    "generator_type='java'; 'json schema' / 'generate jsonschema' → "
+    "'jsonschema'; 'sqlalchemy' / 'sqlalchemy models' → 'sqlalchemy'; "
+    "'pydantic' / 'pydantic models' → 'pydantic'; 'python' / 'python "
+    "classes' (plain domain model, no app) → 'python'; 'sql' → 'sql'; "
+    "'django' → 'django'; 'smartdata' → 'smartdata'. NOTE: 'smartdata' is "
+    "a BESSER generator NAME — despite containing the substring 'smart', "
+    "naming it ('run smartdata on this model', 'generate smartdata', "
+    "'smartdata for my crm model') is ALWAYS 'deterministic' with "
+    "generator_type='smartdata', NEVER the 'smart' route; do not let the "
+    "substring match fool you. Also: naming the SPECIFIC EXISTING classes "
+    "from the loaded model in the request ('write the pydantic schema for "
+    "Customer and Order', 'create the sqlalchemy orm for me', 'give me "
+    "the pydantic model for Order') does NOT make it 'smart' and is NEVER "
+    "an invitation for YOU to hand-author code inline — it is a plain "
+    "request to RUN the named deterministic generator on the existing "
+    "model. Route 'deterministic' with the matching generator_type; never "
+    "invent fields, never ask the user to redescribe classes that are "
+    "already listed in WORKSPACE CONTEXT. Only escalate ONE of "
+    "these to 'smart' when the user ALSO asks for added behavior (auth, "
+    "JWT, Docker, a custom DB, migrations, tests, a real/custom app or "
+    "dashboard) or a NON-BESSER stack. Examples (all 'deterministic'): "
+    "'generate django', 'give me pydantic classes', 'generate sql', "
+    "'generate java code from my model', 'generate a json schema', "
+    "'generate sqlalchemy models', 'generate python code'.\n"
+    "4c. EXPORT vs jsonschema: 'export my project', 'export/save/download "
+    "as json', 'export the model', 'download my project' mean the "
+    "project-FILE export → generator_type='export', NOT 'jsonschema'. "
+    "Reserve generator_type='jsonschema' for an explicit 'json schema' / "
+    "'JSON Schema' request that wants a schema DOCUMENT describing the "
+    "model. The bare word 'json' inside an EXPORT request never means "
+    "jsonschema.\n"
+    "4d. DEPLOY vs EXPORT: judge the VERB, not the noun that follows it. "
+    "'export' / 'save' / 'download' + (json/buml/project/model) → "
+    "generator_type='export'. 'deploy' / 'publish' / 'push ... to prod' / "
+    "'ship ... to production' / 'go live' / 'launch it' → "
+    "generator_type='deploy', generation_route='deterministic' — "
+    "REGARDLESS of whether the sentence also contains the word 'model' "
+    "or 'project'. 'deploy this model', 'push this to prod', 'go ahead "
+    "and deploy it', 'ship this to production' are ALL "
+    "generator_type='deploy', NEVER 'export' just because they mention "
+    "'model'/'project'. A bare deploy/publish request needs NO extra "
+    "config to still count as 'deterministic' — BESSER's deploy flow "
+    "collects hosting/repo details in its own dialog afterward, so a "
+    "deploy request is ALWAYS 'deterministic' with generator_type='deploy', "
+    "never 'smart' and never 'other', even if it also mentions Docker, "
+    "CI/CD, or a specific host.\n"
     "4b. Vague 'how do I run / try / see / get the app' or 'where is "
     "the app' with NO stack named → 'deterministic' with "
     "generator_type=null (the agent then shows the generator menu so "
@@ -442,11 +553,20 @@ _SYSTEM_PROMPT = (
     "→ domain_mismatch=True, suggested_new_domain='a shoe store'.\n"
     "  * Classes 'Book', 'Author' + request 'add JWT auth and Docker' "
     "→ domain_mismatch=False (request is about stack, not domain).\n"
+    "  * Classes 'Customer', 'Order' + request 'generate a rust rest "
+    "api' → domain_mismatch=False. A request that names only a "
+    "LANGUAGE / FRAMEWORK / STACK / API style (rust, go, kotlin, spring "
+    "boot, react, fastapi, 'a rest api', 'a graphql api', 'a "
+    "microservice', 'a backend', 'a web app') has NO business domain of "
+    "its own — it inherits the existing model's domain, so it is NEVER a "
+    "mismatch. Only a request naming a DIFFERENT BUSINESS DOMAIN (shoe "
+    "store, hotel, hospital, blog, airline) can be a mismatch.\n"
     "  * No class names present (empty model or non-class diagram only) "
     "→ domain_mismatch=null.\n"
     "BE CONSERVATIVE: if the request could be applied on top of the "
-    "existing classes, return False. Only flag True when the domain "
-    "vocabulary clearly does not match.\n\n"
+    "existing classes, return False. Only flag True when the request "
+    "names a clearly DIFFERENT business domain than the existing "
+    "classes — never merely because it names a stack or framework.\n\n"
     "=== refined_instructions (populate when generation_route='smart') ===\n"
     "A polished, implementation-focused prompt for the smart generator:\n"
     "  * name the stack explicitly (Rails, PostgreSQL, Devise auth, ...)\n"
@@ -500,6 +620,7 @@ _SYSTEM_PROMPT = (
 def classify_message(
     request: AssistantRequest,
     llm_provider: Any,
+    history: Optional[list] = None,
 ) -> UnifiedClassification:
     """Classify a user message into a state-level intent + sub-routing fields.
 
@@ -508,6 +629,12 @@ def classify_message(
     ``fallback_intent`` classification if the provider is unavailable
     or the call fails — the caller should trust the returned object
     and dispatch based on ``intent``.
+
+    ``history`` is an optional list of prior ``{"role", "content"}`` turns
+    (most recent last) so the classifier can resolve referents like "the
+    same", "continue", "it", or "do that for all" against what was just
+    asked/done — this is what makes the agent feel like it remembers the
+    session instead of treating every message cold.
 
     Never raises — the classifier must never crash the agent.
     """
@@ -520,7 +647,7 @@ def classify_message(
     try:
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": _build_user_block(request)},
+            {"role": "user", "content": _build_user_block(request, history)},
         ]
         # Reasoning models (gpt-5* / o-series) burn hidden reasoning tokens
         # from the SAME completion budget. With only 800 tokens the visible
@@ -583,21 +710,112 @@ def get_or_classify(
             reason="frontend_event callback — routed deterministically, no LLM call",
         )
     else:
-        result = classify_message(request, llm_provider)
+        result = classify_message(
+            request, llm_provider, _recent_history(session, request)
+        )
+        _log_classification(request, result)
     if event_id is not None:
         session.set(UNIFIED_CLASSIFICATION, result)
         session.set(UNIFIED_CLASSIFICATION_EVENT_ID, event_id)
     return result
 
 
+def _log_classification(
+    request: AssistantRequest, result: UnifiedClassification
+) -> None:
+    """One concise INFO line per real classification — the agent's routing
+    decision. The only previously-invisible step in the pipeline; makes
+    "why did it route there?" answerable from the logs. Never raises."""
+    try:
+        msg = (request.message or "").strip().replace("\n", " ")
+        if len(msg) > 80:
+            msg = msg[:77] + "..."
+        bits = [f"intent={result.intent}"]
+        if result.generation_route:
+            bits.append(f"route={result.generation_route}")
+        if result.generator_type:
+            bits.append(f"gen={result.generator_type}")
+        if result.target_diagram_type:
+            bits.append(f"target={result.target_diagram_type}")
+        if result.model_disposition:
+            bits.append(f"disp={result.model_disposition}")
+        if result.domain_mismatch:
+            bits.append("domain_mismatch=True")
+        if result.needs_clarification:
+            bits.append("clarify=True")
+        logger.info("[classify] %s | %s", " ".join(bits), msg)
+    except Exception:  # pragma: no cover - logging must never break routing
+        pass
+
+
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
 
+# How many prior turns to feed the classifier, and how much of each.
+_HISTORY_MAX_TURNS = 6
+_HISTORY_MAX_CHARS = 240
 
-def _build_user_block(request: AssistantRequest) -> str:
-    """Compose the user message + workspace context for the classifier."""
+
+def _recent_history(session: Any, request: AssistantRequest) -> Optional[list]:
+    """Best-effort: the last few conversation turns for referent resolution.
+
+    Read at classification time — which is BEFORE ``_common_preamble``
+    records the *current* user message — so this returns the PRIOR turns
+    only, exactly the context needed to resolve referents in the current
+    message ("the same", "continue", "do it for all", ...).
+
+    Lazy import keeps ``unified_classifier`` importable without the memory
+    stack and sidesteps any import cycle. Never raises.
+    """
+    try:
+        from memory import get_memory, memory_session_key
+
+        mem = get_memory(memory_session_key(session, request))
+        return mem.get_last_n(_HISTORY_MAX_TURNS)
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.debug("recent_history unavailable (best-effort): %s", exc)
+        return None
+
+
+def _history_lines(history: Optional[list]) -> list:
+    """Render prior turns as compact ``role: content`` lines (oldest first)."""
+    if not history:
+        return []
+    out: list = []
+    for turn in history[-_HISTORY_MAX_TURNS:]:
+        if not isinstance(turn, dict):
+            continue
+        role = (turn.get("role") or "?").strip()
+        content = (turn.get("content") or "").strip().replace("\n", " ")
+        if not content:
+            continue
+        if len(content) > _HISTORY_MAX_CHARS:
+            content = content[: _HISTORY_MAX_CHARS - 3].rstrip() + "..."
+        out.append(f"{role}: {content}")
+    return out
+
+
+def _build_user_block(
+    request: AssistantRequest, history: Optional[list] = None
+) -> str:
+    """Compose the user message + recent conversation + workspace context."""
     lines = ["USER MESSAGE:", request.message or ""]
+
+    # Recent conversation turns so the classifier can resolve referents
+    # ("the same", "continue", "do that for all", "it", "that one")
+    # against what was just asked/done — the difference between an agent
+    # that remembers the session and one that treats every message cold.
+    hist_lines = _history_lines(history)
+    if hist_lines:
+        lines.append("")
+        lines.append(
+            "RECENT CONVERSATION (oldest first; resolve referents such as "
+            '"the same", "continue", "it", "do that for all" against it, '
+            "but classify the USER MESSAGE above — not these prior turns):"
+        )
+        lines.extend(hist_lines)
+
     ctx = getattr(request, "context", None)
     if ctx is None:
         return "\n".join(lines)
@@ -734,6 +952,26 @@ def _extract_class_names(ctx: Any) -> list[str]:
     return names
 
 
+# Words that unambiguously signal a DEPLOY request in the safety nets
+# below. Checked alongside "no export/save/download wording" so we never
+# override a message that could genuinely mean export.
+_DEPLOY_WORDS = ("deploy", "publish", "push", "ship", "go live", "launch")
+_EXPORT_WORDS = ("export", "save", "download")
+
+
+def _looks_like_unambiguous_deploy(lower_message: str) -> bool:
+    """True when *lower_message* clearly means DEPLOY, not EXPORT.
+
+    Used by :func:`_post_validate` to repair the classic mix-up where a
+    deploy-shaped message ("deploy this model", "push this to prod") is
+    mis-typed as ``generator_type='export'`` (structurally similar to
+    "export the model") or dropped into the ``'other'`` (refusal) route.
+    """
+    return any(w in lower_message for w in _DEPLOY_WORDS) and not any(
+        w in lower_message for w in _EXPORT_WORDS
+    )
+
+
 def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedClassification:
     """Defensive validation of LLM output.
 
@@ -753,7 +991,28 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
                 reason="classifier missed generation sub-routing",
             )
         if result.generation_route == "smart":
-            if not (result.refined_instructions or "").strip():
+            lower_msg = (message or "").lower()
+            # Safety net: "smartdata" is a deterministic BESSER built-in
+            # NAME that happens to contain the substring "smart" — the
+            # LLM sometimes lexically confuses that with the 'smart'
+            # (vibe-driven) route. Only correct it when the message names
+            # smartdata AND doesn't also ask for something the template
+            # can't do (those genuinely belong on the smart path).
+            _smart_extras = (
+                "auth", "jwt", "oauth", "docker", "container", "migrat",
+                "rate limit", "middleware", "cors", "ci/cd", "role",
+                "permission", "login", "signup", "sign-in",
+            )
+            if re.search(r"\bsmart\s*data\b", lower_msg) and not any(
+                w in lower_msg for w in _smart_extras
+            ):
+                logger.warning(
+                    "LLM routed 'smartdata' request to smart via substring "
+                    "confusion; correcting to deterministic/smartdata"
+                )
+                result.generation_route = "deterministic"
+                result.generator_type = "smartdata"
+            elif not (result.refined_instructions or "").strip():
                 # Keep the smart/vibe route — do NOT collapse to the
                 # deterministic generator menu, which silently kills requests
                 # like "dashboard pls" or "vibe-code me something cool from my
@@ -768,9 +1027,37 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
                     or "Build a custom application from the current model."
                 )
         elif result.generation_route == "deterministic":
-            # generator_type may be None — the caller will show the
-            # generator menu. That's fine; no demotion needed.
-            pass
+            # Safety net: a DEPLOY-shaped message ("deploy this model",
+            # "push this to prod") sometimes gets mis-typed as 'export'
+            # (structurally similar to "export the model") or left with
+            # generator_type=None (falls through to the generic menu).
+            lower_msg = (message or "").lower()
+            if result.generator_type in (None, "export") and _looks_like_unambiguous_deploy(
+                lower_msg
+            ):
+                logger.warning(
+                    "LLM routed a deploy-shaped message to generator_type=%s; "
+                    "correcting to deploy",
+                    result.generator_type,
+                )
+                result.generator_type = "deploy"
+            # Otherwise generator_type may legitimately be None — the
+            # caller will show the generator menu. That's fine; no
+            # demotion needed.
+        elif result.generation_route == "other":
+            # Safety net: an unambiguous deploy request ("go ahead and
+            # deploy it", "push this to prod") sometimes gets classified
+            # as 'other' (no clear code-generation request) and the agent
+            # refuses instead of deploying. Promote it the same way as
+            # the 'deterministic' branch above.
+            lower_msg = (message or "").lower()
+            if _looks_like_unambiguous_deploy(lower_msg):
+                logger.warning(
+                    "LLM routed a deploy-shaped message to 'other'; "
+                    "correcting to deterministic/deploy"
+                )
+                result.generation_route = "deterministic"
+                result.generator_type = "deploy"
     return result
 
 
