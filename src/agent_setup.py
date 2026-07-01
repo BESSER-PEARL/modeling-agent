@@ -29,6 +29,41 @@ from model_config import MODEL_CLASSIFIER, MODEL_EMBEDDINGS
 logger = logging.getLogger(__name__)
 
 
+def _enable_shared_llm_retry(llm_instance: LLMOpenAI, label: str) -> None:
+    """Make *llm_instance*'s shared OpenAI client retry transient failures.
+
+    ``LLMOpenAI.client`` is ``None`` until BESSER's ``NLPEngine.initialize()``
+    calls ``llm_instance.initialize()`` during agent startup — well after
+    this module runs — so we cannot patch the client here directly. Instead
+    we wrap ``initialize`` itself: once the real one has created the client,
+    we patch its network-call methods in place (see
+    ``utilities.llm_retry.patch_openai_client_for_retry``). Because the
+    client object is created once and reused for the LLM's lifetime, this
+    is a single choke point — BAF's ``predict``/``chat``/intent
+    classification, ``llm.provider``'s structured-output ``parse()`` and
+    streaming ``stream()``, and ``gpt_predict_json``'s model-override
+    branch below all end up calling through this same patched client.
+
+    Only ever applied to the shared server LLMs constructed in this
+    function. BYOK's per-request client (``byok.BYOKClient``) is a
+    separate object this function never touches, so the intentional
+    "shared limit reached / add your API key" messaging in
+    ``model_operations.py`` still fires once the (now bounded) retries here
+    are exhausted.
+    """
+    from utilities.llm_retry import patch_openai_client_for_retry
+
+    original_initialize = llm_instance.initialize
+
+    def _initialize_then_patch_for_retry() -> None:
+        original_initialize()
+        client = getattr(llm_instance, "client", None)
+        if client is not None:
+            patch_openai_client_for_retry(client, label=label)
+
+    llm_instance.initialize = _initialize_then_patch_for_retry
+
+
 def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     """Initialize the LLMs and return ``(gpt, gpt_text, gpt_predict_json)``."""
     # NOTE: Do NOT put response_format in the global parameters dict.
@@ -53,6 +88,9 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
         },
         num_previous_messages=CONVERSATION_HISTORY_DEPTH,
     )
+    # Retry transient upstream failures (429/5xx/timeouts) with backoff at
+    # the shared client's network-call layer — see _enable_shared_llm_retry.
+    _enable_shared_llm_retry(gpt, label="gpt")
 
     # Thin wrapper that enforces JSON mode for predict() calls only.
     _gpt_json_params: Dict[str, Any] = {
@@ -105,6 +143,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     )
     # Fix the model name used in API calls (registry key stays '<model>-text')
     gpt_text.name = MODEL_CLASSIFIER
+    _enable_shared_llm_retry(gpt_text, label="gpt_text")
 
     if gpt is None:
         raise RuntimeError("LLM initialization returned None")
