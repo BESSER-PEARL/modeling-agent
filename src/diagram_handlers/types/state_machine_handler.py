@@ -19,10 +19,30 @@ from ..core.base_handler import (
     SYSTEM_STATE_REQUIRED,
     SYSTEM_STATE_OPTIONAL,
 )
-from ..core.prompt_fragments import POSITION_DISCLAIMER, REMOVE_ELEMENT_RULE
+from ..core.prompt_fragments import (
+    CHANGES_FIELD_RULE,
+    EXACT_NAMES_RULE,
+    POSITION_DISCLAIMER,
+    REMOVE_ELEMENT_RULE,
+)
 from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
 from schemas import SingleStateSpec as SingleStateSchema, SystemStateMachineSpec, StateMachineModificationResponse
 from utilities.model_context import detailed_model_summary
+
+
+MODIFY_SYSTEM_PROMPT_STATE_MACHINE = f"""You are a UML modeling expert. The user wants to modify a state machine diagram.
+
+MODIFICATION RULES:
+1. Actions available: "add_state", "modify_state", "add_transition", "modify_transition", "add_code_block", "remove_element"
+2. add_state: set target.stateName to the new state name. Put stateType ("regular", "initial", or "final"), entryAction, exitAction, doActivity in "changes".
+3. modify_state: {EXACT_NAMES_RULE}
+4. add_transition: set target.sourceState and target.targetState. Put trigger, guard, effect in "changes".
+5. {REMOVE_ELEMENT_RULE}
+6. {CHANGES_FIELD_RULE}
+7. Use PascalCase for state names and camelCase for triggers
+8. Example: "add a Processing state" → add_state with target.stateName="Processing", changes.stateType="regular"
+9. Example: "add a state with entry action validate" → add_state with changes.stateType="regular", changes.entryAction="validate()"
+10. add_code_block: create a Python code block. Set target.stateName to a label, put code and language in changes."""
 
 logger = logging.getLogger(__name__)
 
@@ -457,23 +477,7 @@ TRANSITION DESIGN GUIDELINES:
     def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate modifications for existing state machine elements."""
 
-        system_prompt = (
-            """You are a UML modeling expert. The user wants to modify a state machine diagram.
-
-MODIFICATION RULES:
-1. Actions available: "add_state", "modify_state", "add_transition", "modify_transition", "add_code_block", "remove_element"
-2. add_state: set target.stateName to the new state name. Put stateType ("regular", "initial", or "final"), entryAction, exitAction, doActivity in "changes".
-3. modify_state: use exact target names from the current model
-4. add_transition: set target.sourceState and target.targetState. Put trigger, guard, effect in "changes".
-5. """
-            + REMOVE_ELEMENT_RULE
-            + """
-6. When modifying, only include the fields that should change in the "changes" object
-7. Use PascalCase for state names and camelCase for triggers
-8. Example: "add a Processing state" → add_state with target.stateName="Processing", changes.stateType="regular"
-9. Example: "add a state with entry action validate" → add_state with changes.stateType="regular", changes.entryAction="validate()"
-10. add_code_block: create a Python code block. Set target.stateName to a label, put code and language in changes. """
-        )
+        system_prompt = MODIFY_SYSTEM_PROMPT_STATE_MACHINE
 
         # Build context from current model using centralized helper
         context_block = ''

@@ -14,12 +14,29 @@ from ..core.base_handler import (
     SYSTEM_OBJECT_REQUIRED,
     SYSTEM_OBJECT_OPTIONAL,
 )
-from ..core.prompt_fragments import POSITION_DISCLAIMER, REMOVE_ELEMENT_RULE
+from ..core.prompt_fragments import (
+    EXACT_NAMES_RULE,
+    MULTI_MOD_ARRAY_RULE,
+    POSITION_DISCLAIMER,
+    REMOVE_ELEMENT_RULE,
+)
 from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
 from schemas import SingleObjectSpec, SystemObjectSpec, ObjectModificationResponse
 from utilities.model_context import detailed_model_summary
 
 logger = logging.getLogger(__name__)
+
+
+MODIFY_SYSTEM_PROMPT_OBJECT = f"""You are a UML modeling expert. The user wants to modify an object diagram.
+
+IMPORTANT RULES:
+1. Actions available: "add_object", "modify_object", "modify_attribute_value", "add_link", "remove_element"
+2. add_object: set target.objectName to a short lowercase instance identifier (e.g. "user2", "order1"). NEVER include the class name or a colon in objectName. Put className, classId, and attributes (with concrete values) in "changes".
+3. {EXACT_NAMES_RULE}
+4. {REMOVE_ELEMENT_RULE}
+5. {MULTI_MOD_ARRAY_RULE}
+6. If a reference class diagram is provided, you MUST copy its classId and per-attribute attributeId verbatim into the modification — these ids are what the frontend uses to link the object back to its class definition.
+7. Example: "add an object user2 of class User" → add_object with target.objectName="user2", changes.className="User", changes.classId="<id from reference>", changes.attributes=[{{name:"id",attributeId:"<id>",value:"USR002"}},{{name:"name",attributeId:"<id>",value:"Bob"}}]"""
 
 
 class ObjectDiagramHandler(BaseDiagramHandler):
@@ -754,20 +771,7 @@ IMPORTANT RULES:
                 # attributeId — the LLM often omits them even when instructed.
                 reference_classes, _ = self._extract_reference_catalog(reference_diagram)
 
-        system_prompt = (
-            """You are a UML modeling expert. The user wants to modify an object diagram.
-
-IMPORTANT RULES:
-1. Actions available: "add_object", "modify_object", "modify_attribute_value", "add_link", "remove_element"
-2. add_object: set target.objectName to a short lowercase instance identifier (e.g. "user2", "order1"). NEVER include the class name or a colon in objectName. Put className, classId, and attributes (with concrete values) in "changes".
-3. For existing elements, always specify exact target names from the current model
-4. """
-            + REMOVE_ELEMENT_RULE
-            + """
-5. When the user asks for MULTIPLE changes at once, return multiple entries in the modifications array
-6. If a reference class diagram is provided, you MUST copy its classId and per-attribute attributeId verbatim into the modification — these ids are what the frontend uses to link the object back to its class definition.
-7. Example: "add an object user2 of class User" → add_object with target.objectName="user2", changes.className="User", changes.classId="<id from reference>", changes.attributes=[{name:"id",attributeId:"<id>",value:"USR002"},{name:"name",attributeId:"<id>",value:"Bob"}]"""
-        )
+        system_prompt = MODIFY_SYSTEM_PROMPT_OBJECT
 
         # Build context from current model using centralized helper
         context_block = ''

@@ -483,6 +483,14 @@ _HEURISTIC_CLASS = re.compile(
     re.IGNORECASE,
 )
 
+_HEURISTIC_BPMN = re.compile(
+    r"^(?:create|build|design|make)\s+(?:a\s+|an\s+|the\s+)?"
+    r"(?:bpmn\s*(?:diagram|process|model)?|business\s*process(?:\s*diagram)?)"
+    r"(?:\s+(?:for|of|with)\s+(?P<domain>.+))?"
+    r"\s*$",
+    re.IGNORECASE,
+)
+
 # Map of (pattern, diagramType) for the single-diagram heuristics
 _SINGLE_DIAGRAM_HEURISTICS = [
     (_HEURISTIC_GUI, "GUINoCodeDiagram"),
@@ -491,6 +499,7 @@ _SINGLE_DIAGRAM_HEURISTICS = [
     (_HEURISTIC_QUANTUM, "QuantumCircuitDiagram"),
     (_HEURISTIC_OBJECT, "ObjectDiagram"),
     (_HEURISTIC_CLASS, "ClassDiagram"),
+    (_HEURISTIC_BPMN, "BPMN"),
 ]
 
 
@@ -682,6 +691,8 @@ User: "generate python code" → [{"type":"generation","generatorType":"python"}
 User: "create a pizza ordering chatbot agent" → [{"type":"model","diagramType":"AgentDiagram","mode":"complete_system","request":"create pizza ordering chatbot agent"}]
 User: "design an e-commerce system, create a gui for it, and generate a web app" → [{"type":"model","diagramType":"ClassDiagram","mode":"complete_system","request":"design e-commerce system"},{"type":"model","diagramType":"GUINoCodeDiagram","mode":"complete_system","request":"create GUI for e-commerce"},{"type":"generation","generatorType":"web_app"}]
 User: "create a quantum circuit with 3 qubits and hadamard gates" → [{"type":"model","diagramType":"QuantumCircuitDiagram","mode":"complete_system","request":"create quantum circuit with 3 qubits and hadamard gates"}]
+User: "add a constraint that a Library always has at least one Book" → [{"type":"model","diagramType":"ClassDiagram","mode":"modify_model","request":"add a constraint that a Library always has at least one Book"}]
+User: "the precondition of Account::deposit is amount > 0" → [{"type":"model","diagramType":"ClassDiagram","mode":"modify_model","request":"the precondition of Account::deposit is amount > 0"}]
 """.strip()
 
 
@@ -756,7 +767,7 @@ Operation types:
 1) model:
 {{
   "type": "model",
-  "diagramType": "ClassDiagram|ObjectDiagram|StateMachineDiagram|AgentDiagram|GUINoCodeDiagram|QuantumCircuitDiagram",
+  "diagramType": "ClassDiagram|ObjectDiagram|StateMachineDiagram|AgentDiagram|GUINoCodeDiagram|QuantumCircuitDiagram|BPMN",
   "mode": "complete_system|modify_model",
   "request": "sub-request focused ONLY on this specific diagram type"
 }}

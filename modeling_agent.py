@@ -121,6 +121,7 @@ create_complete_system_intent = agent.new_intent(
         "build a complete hotel booking system",
         "make a new agent diagram for a pizza chatbot",
         "model a quantum circuit for grover's search",
+        "model a business process as a BPMN diagram",
     ],
 )
 modify_model_intent = agent.new_intent(
@@ -133,6 +134,7 @@ modify_model_intent = agent.new_intent(
         "add a transition from idle to active",
         "change the multiplicity between customer and order",
         "delete the payment class",
+        "add a task to the order fulfillment process",
     ],
 )
 modeling_help_intent = agent.new_intent(

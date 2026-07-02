@@ -386,6 +386,7 @@ _DIAGRAM_TYPE_TOKENS = [
     "class diagram", "object diagram", "state machine", "state diagram",
     "agent diagram", "gui diagram", "quantum circuit", "quantum diagram",
     "structural diagram", "domain model", "structural model",
+    "bpmn", "business process", "process diagram",
 ]
 
 def _extract_project_name_from_context(request: AssistantRequest) -> str:
@@ -973,6 +974,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             "class diagram", "object diagram", "state machine",
             "state diagram", "structural diagram", "domain model",
             "quantum circuit", "quantum diagram", "agent diagram",
+            "bpmn", "business process", "process diagram",
         ]
         if any(token in _lower_msg for token in _non_gui_diagram_tokens):
             _clear_pending_state(session)

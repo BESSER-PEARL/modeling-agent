@@ -256,14 +256,41 @@ class TestValidateModificationSpec:
         with pytest.raises(ValueError, match="missing"):
             handler.validate_modification_spec(spec)
 
-    def test_batch_with_invalid_inner_raises(self, handler):
+    def test_batch_with_invalid_inner_keeps_valid(self, handler):
+        """Skip-bad-keep-good: a batch with one valid + one invalid entry
+        should drop the invalid one, keep the valid one, and surface the
+        skip via ``_skipped_modifications``. The user gets a partial
+        result instead of a fabricated 'modify_class against Unknown'
+        fallback that hides the failure entirely.
+        """
         spec = {
             "modifications": [
                 {"action": "ok", "target": {"className": "X"}},
                 {"target": {"className": "Y"}},  # missing "action"
             ]
         }
-        with pytest.raises(ValueError, match="action"):
+        result = handler.validate_modification_spec(spec)
+        assert result is spec
+        assert len(result["modifications"]) == 1
+        assert result["modifications"][0]["target"]["className"] == "X"
+        assert "_skipped_modifications" in result
+        assert len(result["_skipped_modifications"]) == 1
+        skipped = result["_skipped_modifications"][0]
+        assert skipped["index"] == 1
+        assert "action" in skipped["reason"]
+
+    def test_batch_with_all_invalid_inner_raises(self, handler):
+        """When *every* batch entry is invalid there's nothing to apply,
+        so historical behaviour (raise) still applies — the outer
+        fallback path then surfaces the failure to the user.
+        """
+        spec = {
+            "modifications": [
+                {"target": {"className": "X"}},  # missing "action"
+                {"target": {"className": "Y"}},  # missing "action"
+            ]
+        }
+        with pytest.raises(ValueError, match="All 2 modification entries"):
             handler.validate_modification_spec(spec)
 
 

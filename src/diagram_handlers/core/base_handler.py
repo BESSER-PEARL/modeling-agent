@@ -250,6 +250,13 @@ class BaseDiagramHandler(ABC):
         'modify_object': 'Updated',
         'add_object': 'Added',
         'add_link': 'Added link to',
+        'add_ocl_constraint': 'Added OCL constraint on',
+        'add_task': 'Added',
+        'add_gateway': 'Added',
+        'add_event': 'Added',
+        'add_flow': 'Added flow to',
+        'modify_node': 'Updated',
+        'remove_flow': 'Removed flow from',
     }
 
     @staticmethod
@@ -273,15 +280,21 @@ class BaseDiagramHandler(ABC):
         human = action.replace('_', ' ').capitalize()
         return f"{human} **{target_name}**."
 
-    @staticmethod
-    def _build_mod_target_name(action: str, target: dict) -> str:
+    def _build_mod_target_name(self, action: str, target: dict, mod: dict = None) -> str:
         """Build a descriptive target name that includes sub-element context.
 
         For remove_element / modify_attribute / etc., if both a class name and
         an attribute/method name are present, return something like
         ``"attribute gender from Shoe"`` instead of just ``"Shoe"``.
+
+        Subclasses may override to extend with diagram-specific resolution
+        (e.g. BPMN flow endpoint lookup). The full ``mod`` dict is passed so
+        overrides can inspect ``changes`` without needing a separate hook.
         """
-        class_name = target.get('className') or target.get('stateName') or target.get('objectName')
+        class_name = (
+            target.get('className') or target.get('stateName')
+            or target.get('objectName') or target.get('nodeName')
+        )
         attr_name = target.get('attributeName')
         method_name = target.get('methodName')
         rel_source = target.get('sourceClass')
@@ -299,15 +312,14 @@ class BaseDiagramHandler(ABC):
 
         return class_name or attr_name or method_name or 'element'
 
-    @classmethod
-    def _friendly_batch_message(cls, mods: list) -> str:
+    def _friendly_batch_message(self, mods: list) -> str:
         """Produce a friendly summary for a batch of modifications."""
         parts = []
         for m in mods:
             act = m.get('action', 'modification')
             t = m.get('target', {})
-            name = cls._build_mod_target_name(act, t)
-            parts.append(cls._friendly_mod_message(act, name))
+            name = self._build_mod_target_name(act, t, m)
+            parts.append(self._friendly_mod_message(act, name))
         if len(parts) == 1:
             return parts[0]
         return f"Applied {len(parts)} changes:\n" + "\n".join(f"- {p}" for p in parts)
@@ -371,6 +383,16 @@ class BaseDiagramHandler(ABC):
             user_prompt, response_schema, system_prompt=system_prompt,
             model=MODEL_GENERATION_SMALL,
         )
+
+        # Element-not-found short-circuit (used by BPMN and compatible schemas).
+        # When the LLM signals the target element doesn't exist, surface its
+        # explanation as a plain text reply rather than attempting an empty update.
+        if not getattr(parsed, 'elementFound', True):
+            return {
+                "action": "assistant_message",
+                "message": getattr(parsed, 'message', 'The requested element was not found.'),
+            }
+
         mod_list = parsed.model_dump()["modifications"]
 
         # Handler-specific cleanup of the raw modification list
@@ -402,9 +424,20 @@ class BaseDiagramHandler(ABC):
                 mod = modification_spec['modification']
                 act = mod.get('action', 'modification')
                 target = mod.get('target', {})
-                name = self._build_mod_target_name(act, target)
+                name = self._build_mod_target_name(act, target, mod)
                 name = self._sanitize_target_name(name)
                 modification_spec['message'] = self._friendly_mod_message(act, name)
+
+        # Surface partial-validation skips so the user knows something was
+        # dropped (otherwise a 4-of-5 batch silently looks like a 4-of-4).
+        skipped = modification_spec.get('_skipped_modifications')
+        if skipped:
+            existing = modification_spec.get('message') or ''
+            note = (
+                f"\n\nNote: I skipped {len(skipped)} part(s) I couldn't "
+                f"parse — the rest were applied."
+            )
+            modification_spec['message'] = (existing + note).strip()
 
         return modification_spec
 
@@ -599,6 +632,7 @@ class BaseDiagramHandler(ABC):
         "ObjectModificationResponse",
         "StateMachineModificationResponse", "GUIModificationSpec",
         "QuantumModificationSpec", "AgentModificationResponse",
+        "BPMNModificationResponse",
     }
     _SMALL_OUTPUT_MAX_TOKENS = LLM_MAX_TOKENS_SMALL
     _LARGE_OUTPUT_MAX_TOKENS = LLM_MAX_TOKENS_LARGE
@@ -717,7 +751,7 @@ class BaseDiagramHandler(ABC):
                 for i, msg in enumerate(messages):
                     role = msg.get("role", "?")
                     content = msg.get("content", "")
-                    logger.info(
+                    logger.debug(
                         f"📝 [{self.get_diagram_type()}] Prompt msg[{i}] role={role} "
                         f"len={len(content)} chars"
                     )
@@ -1027,18 +1061,48 @@ class BaseDiagramHandler(ABC):
         """Validate a modification response from the LLM.
 
         Supports both single ``modification`` (dict) and batch
-        ``modifications`` (list of dicts).  Raises ``ValueError`` if the
-        shape is invalid.
+        ``modifications`` (list of dicts).
+
+        For a batch, partial failure is tolerated: invalid inner entries
+        are dropped and recorded under ``spec["_skipped_modifications"]``
+        as ``{"index": int, "reason": str}`` so the caller can surface
+        them in the user-facing message. The valid entries proceed.
+        Only when **every** inner entry is invalid does the call raise
+        ``ValueError`` — at that point there is nothing to apply and the
+        outer fallback path is the right place to land.
+
+        For a single ``modification``, any error still raises immediately
+        (there's nothing to keep).
         """
         # Batch path: "modifications" is a list of inner objects
         if 'modifications' in spec and isinstance(spec['modifications'], list):
+            kept: List[Dict[str, Any]] = []
+            skipped: List[Dict[str, Any]] = []
             for i, inner in enumerate(spec['modifications']):
                 inner_errors = validate_spec(
                     inner, MODIFICATION_INNER_REQUIRED,
                     label=f"modifications[{i}]",
                 )
                 if inner_errors:
-                    raise ValueError("; ".join(inner_errors))
+                    reason = "; ".join(inner_errors)
+                    skipped.append({"index": i, "reason": reason})
+                    logger.warning(
+                        f"[{self.get_diagram_type()}] Skipping invalid "
+                        f"modifications[{i}]: {reason}"
+                    )
+                else:
+                    kept.append(inner)
+
+            if not kept:
+                # All entries invalid — keep historical behaviour.
+                joined = " | ".join(s["reason"] for s in skipped)
+                raise ValueError(
+                    f"All {len(skipped)} modification entries were invalid: {joined}"
+                )
+
+            spec['modifications'] = kept
+            if skipped:
+                spec['_skipped_modifications'] = skipped
             return spec
 
         # Single path: "modification" is a dict

@@ -15,6 +15,7 @@ SUPPORTED_DIAGRAM_TYPES = {
     "AgentDiagram",
     "GUINoCodeDiagram",
     "QuantumCircuitDiagram",
+    "BPMN",
 }
 
 

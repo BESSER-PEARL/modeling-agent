@@ -210,6 +210,8 @@ class ClassModificationChanges(BaseModel):
     implementationType: Optional[Literal["none", "code", "bal", "state_machine", "quantum_circuit"]] = Field(default=None, description="Implementation type for method.")
     code: Optional[str] = Field(default=None, description="Python code for method implementation")
     isEnumeration: Optional[bool] = Field(default=None, description="Set enumeration status for class")
+    constraint: Optional[str] = Field(default=None, description="Full BOCL block ('context Class (inv|pre|post) [name]: body') for add_ocl_constraint")
+    text: Optional[str] = Field(default=None, description="Plain-language description surfaced when an OCL constraint fails (used by add_ocl_constraint)")
 
     @field_validator('name', 'className', mode='before')
     @classmethod
@@ -251,6 +253,7 @@ class ClassModification(BaseModel):
         "remove_element",
         "extract_class", "split_class", "merge_classes",
         "promote_attribute", "add_enum",
+        "add_ocl_constraint",
     ] = Field(description=(
         "Action to perform. Choose carefully:\n"
         "- add_relationship: CONNECT TWO EXISTING classes. Set target.sourceClass "
@@ -264,6 +267,7 @@ class ClassModification(BaseModel):
         "- add_class: ONLY to create a brand-new class that does not exist yet.\n"
         "- add_attribute: add a field to an existing class — use for 'X has a Y' "
         "ONLY when Y is a primitive type (string/int/date/bool), not a class.\n"
+        "- add_ocl_constraint: add an OCL constraint to a class.\n"
         "- modify_relationship / remove_element / modify_*: change or delete an "
         "existing element."
     ))

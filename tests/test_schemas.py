@@ -267,6 +267,20 @@ class TestClassModification:
         )
         assert m.changes is None
 
+    def test_add_ocl_constraint(self):
+        m = ClassModification(
+            action="add_ocl_constraint",
+            target=ClassModificationTarget(className="Library"),
+            changes=ClassModificationChanges(
+                constraint="context Library inv at_least_one_book: self.books->size() > 0",
+                text="A library always has at least one book",
+            ),
+        )
+        assert m.action == "add_ocl_constraint"
+        assert m.target.className == "Library"
+        assert m.changes.constraint.startswith("context Library inv")
+        assert m.changes.text == "A library always has at least one book"
+
 
 class TestClassModificationResponse:
     def test_valid_with_one_modification(self):
