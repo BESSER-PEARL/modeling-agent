@@ -462,6 +462,17 @@ class TestResolveDiagramType:
         }
         assert _resolve_diagram_type(spec, None) == "AgentDiagram"
 
+    def test_infer_bpmn_from_shape(self):
+        spec = {
+            "nodes": [{"id": "start", "type": "startEvent"}],
+            "flows": [],
+        }
+        assert _resolve_diagram_type(spec, None) == "BPMN"
+
+    def test_explicit_bpmn_diagram_type(self):
+        spec = {"diagramType": "BPMN", "nodes": []}
+        assert _resolve_diagram_type(spec, None) == "BPMN"
+
     def test_default_to_class_diagram(self):
         spec = {"something": "else"}
         assert _resolve_diagram_type(spec, None) == "ClassDiagram"
@@ -655,6 +666,135 @@ class TestAgentDiagramConversion:
             llm_predict=mock_empty_agent,
         )
         assert result["action"] == "agent_error"
+
+
+def _mock_llm_bpmn(prompt: str) -> str:
+    """Mock LLM that returns a flat BPMN process spec."""
+    return json.dumps({
+        "diagramType": "BPMN",
+        "nodes": [
+            {"id": "start", "name": "Order Placed", "type": "startEvent"},
+            {"id": "check", "name": "Check Stock", "type": "task", "taskType": "service"},
+            {"id": "gw", "name": "In stock?", "type": "gateway", "gatewayType": "exclusive"},
+            {"id": "ship", "name": "Ship Order", "type": "task", "taskType": "user"},
+            {"id": "end", "name": "Order Shipped", "type": "endEvent"},
+        ],
+        "flows": [
+            {"source": "start", "target": "check", "name": ""},
+            {"source": "check", "target": "gw", "name": ""},
+            {"source": "gw", "target": "ship", "name": "yes"},
+            {"source": "ship", "target": "end", "name": ""},
+        ],
+        "pools": [],
+    })
+
+
+def _mock_llm_bpmn_with_pools(prompt: str) -> str:
+    """Mock LLM that returns a BPMN process spec with a 2-pool collaboration."""
+    return json.dumps({
+        "diagramType": "BPMN",
+        "nodes": [
+            {"id": "start", "name": "Order Placed", "type": "startEvent", "poolId": "customer"},
+            {"id": "order", "name": "Place Order", "type": "task", "taskType": "user", "poolId": "customer"},
+            {"id": "receive", "name": "Receive Order", "type": "task", "taskType": "receive", "poolId": "vendor"},
+            {"id": "end", "name": "Order Received", "type": "endEvent", "poolId": "vendor"},
+        ],
+        "flows": [
+            {"source": "start", "target": "order", "name": ""},
+            {"source": "order", "target": "receive", "name": ""},
+            {"source": "receive", "target": "end", "name": ""},
+        ],
+        "pools": [
+            {"id": "customer", "name": "Customer", "lanes": []},
+            {"id": "vendor", "name": "Vendor", "lanes": []},
+        ],
+    })
+
+
+class TestBpmnConversion:
+    """Test BPMN process diagram conversion (modeling-agent#collab-diagram bug:
+    file_conversion_handler previously had no BPMN option at all, so a pasted
+    process narrative could only ever resolve to ClassDiagram/StateMachineDiagram)."""
+
+    def test_generic_text_to_bpmn(self):
+        text = (
+            "A customer places an order on the online shop. The system checks "
+            "whether the ordered items are in stock. If in stock, the warehouse "
+            "ships the order."
+        )
+        result = convert_file_to_diagram_spec(
+            file_content_b64=_make_b64(text),
+            filename="process.txt",
+            llm_predict=_mock_llm_bpmn,
+        )
+        assert result["action"] == "inject_complete_system"
+        assert result["diagramType"] == "BPMN"
+        assert len(result["systemSpec"]["nodes"]) == 5
+        assert len(result["systemSpec"]["flows"]) == 4
+        assert "task" in result["message"].lower()
+
+    def test_bpmn_with_pools(self):
+        text = "Actors: Customer and Vendor. The customer places an order; the vendor receives it."
+        result = convert_file_to_diagram_spec(
+            file_content_b64=_make_b64(text),
+            filename="process.txt",
+            llm_predict=_mock_llm_bpmn_with_pools,
+        )
+        assert result["action"] == "inject_complete_system"
+        assert result["diagramType"] == "BPMN"
+        pools = result["systemSpec"]["pools"]
+        assert {p["id"] for p in pools} == {"customer", "vendor"}
+        assert "2 pool" in result["message"]
+
+    def test_bpmn_empty_nodes_error(self):
+        def mock_empty_nodes(prompt: str) -> str:
+            return json.dumps({"diagramType": "BPMN", "nodes": [], "flows": [], "pools": []})
+
+        result = convert_file_to_diagram_spec(
+            file_content_b64=_make_b64("nothing here"),
+            filename="empty.txt",
+            llm_predict=mock_empty_nodes,
+        )
+        assert result["action"] == "agent_error"
+
+    def test_bpmn_bad_flow_ref_dropped(self):
+        def mock_bad_flow(prompt: str) -> str:
+            return json.dumps({
+                "diagramType": "BPMN",
+                "nodes": [{"id": "start", "name": "Start", "type": "startEvent"}],
+                "flows": [{"source": "start", "target": "missing", "name": ""}],
+                "pools": [],
+            })
+
+        result = convert_file_to_diagram_spec(
+            file_content_b64=_make_b64("a process"),
+            filename="process.txt",
+            llm_predict=mock_bad_flow,
+        )
+        assert result["action"] == "inject_complete_system"
+        # the dangling flow is dropped, but _validate_and_refine still connects
+        # the start event to an auto-inserted end event
+        assert all(f["target"] != "missing" for f in result["systemSpec"]["flows"])
+
+    def test_bpmn_missing_start_end_repaired(self):
+        """convert_file_to_diagram_spec must reuse BPMNDiagramHandler's own
+        repair pass, not just pass the raw extracted nodes through."""
+        def mock_no_start_end(prompt: str) -> str:
+            return json.dumps({
+                "diagramType": "BPMN",
+                "nodes": [{"id": "check", "name": "Check Stock", "type": "task"}],
+                "flows": [],
+                "pools": [],
+            })
+
+        result = convert_file_to_diagram_spec(
+            file_content_b64=_make_b64("check stock"),
+            filename="process.txt",
+            llm_predict=mock_no_start_end,
+        )
+        assert result["action"] == "inject_complete_system"
+        node_types = {n["type"] for n in result["systemSpec"]["nodes"]}
+        assert {"startEvent", "endEvent"} <= node_types
 
 
 class TestBackwardCompatibility:

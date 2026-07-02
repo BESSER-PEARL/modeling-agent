@@ -17,6 +17,7 @@ Supported target diagram types:
   - StateMachineDiagram (states, transitions)
   - ObjectDiagram (objects with attribute values, links)
   - AgentDiagram (intents, states, transitions for chatbot agents)
+  - BPMN (business process narratives: steps/tasks, decisions, actors)
 """
 
 import base64
@@ -49,6 +50,7 @@ CONVERTIBLE_DIAGRAM_TYPES = {
     "StateMachineDiagram",
     "ObjectDiagram",
     "AgentDiagram",
+    "BPMN",
 }
 
 # ── Per-diagram-type JSON schemas ──────────────────────────────────────────────
@@ -149,11 +151,39 @@ AGENT_DIAGRAM_SCHEMA = """{
   ]
 }"""
 
+BPMN_SCHEMA = """{
+  "diagramType": "BPMN",
+  "nodes": [
+    {"id": "start", "name": "Order Placed", "type": "startEvent"},
+    {"id": "check_stock", "name": "Check Stock", "type": "task", "taskType": "service"},
+    {"id": "gw", "name": "In stock?", "type": "gateway", "gatewayType": "exclusive"},
+    {"id": "ship", "name": "Ship Order", "type": "task", "taskType": "user"},
+    {"id": "end", "name": "Order Shipped", "type": "endEvent"}
+  ],
+  "flows": [
+    {"source": "start", "target": "check_stock", "name": ""},
+    {"source": "check_stock", "target": "gw", "name": ""},
+    {"source": "gw", "target": "ship", "name": "yes"}
+  ],
+  "pools": []
+}"""
+# node "type" is one of: startEvent, endEvent, intermediateEvent, task, gateway.
+# "taskType" (for task nodes) is one of: default, user, service, send, receive,
+# manual, business-rule, script. "gatewayType" (for gateway nodes) is one of:
+# exclusive, parallel, inclusive, event-based, complex.
+# "pools" is optional — only populate it when the process names 2+ distinct
+# participants/organizations (pool) or roles within one organization (pool
+# lanes); each pool is {"id", "name", "lanes": [{"id", "name"}]} and referenced
+# from a node via optional "poolId"/"laneId". Leave pools empty otherwise.
+
 ALL_SCHEMAS = f"""
 === ClassDiagram (for entity/data models, schemas, class structures) ===
 {CLASS_DIAGRAM_SCHEMA}
 
-=== StateMachineDiagram (for workflows, processes, state transitions, protocols) ===
+=== BPMN (for business process narratives: ordered steps/tasks, decisions, actors) ===
+{BPMN_SCHEMA}
+
+=== StateMachineDiagram (for object/system lifecycles: named states and transitions) ===
 {STATE_MACHINE_SCHEMA}
 
 === ObjectDiagram (for specific instances/examples with concrete attribute values) ===
@@ -300,10 +330,17 @@ def _build_auto_detect_prompt(source_label: str) -> str:
         "- ClassDiagram: data models, entity structures, schemas, classes with attributes/methods, "
         "requirements documents, user stories, epics, feature lists, system specifications, "
         "any document describing WHAT a system manages (entities, roles, data). "
-        "When in doubt, prefer ClassDiagram — it is the most common and versatile.\n"
+        "When in doubt between ClassDiagram and something entity-shaped, prefer ClassDiagram.\n"
+        "- BPMN: a business/organizational PROCESS narrated as an ordered sequence of steps/tasks "
+        "performed by one or more actors, with decision points ('if X then Y else Z'), parallel "
+        "work, or hand-offs between actors (e.g., 'the customer places an order, then the system "
+        "checks stock, then the warehouse prepares the package...'). This is the correct choice "
+        "for narrative process/workflow descriptions — prefer it whenever the content reads as a "
+        "sequence of activities/tasks rather than a formal state-transition list.\n"
         "- StateMachineDiagram: ONLY when the content explicitly defines named states and "
-        "transitions between them (e.g., 'Idle -> Running -> Stopped'). "
-        "Do NOT choose this just because a document mentions a process or workflow.\n"
+        "transitions between them (e.g., 'Idle -> Running -> Stopped'), describing the LIFECYCLE "
+        "of a single object/system. Do NOT choose this for narrative process descriptions — "
+        "those are BPMN, even if the document also mentions 'workflow' or 'process'.\n"
         "- ObjectDiagram: specific instances with concrete values (e.g., 'user1 : User, name=\"Alice\"')\n"
         "- AgentDiagram: chatbot flows, intent-response patterns, conversational AI\n\n"
         "IMPORTANT RULES:\n"
@@ -349,6 +386,7 @@ def _get_schema_for_type(diagram_type: str) -> str:
         "StateMachineDiagram": STATE_MACHINE_SCHEMA,
         "ObjectDiagram": OBJECT_DIAGRAM_SCHEMA,
         "AgentDiagram": AGENT_DIAGRAM_SCHEMA,
+        "BPMN": BPMN_SCHEMA,
     }.get(diagram_type, CLASS_DIAGRAM_SCHEMA)
 
 
@@ -359,6 +397,7 @@ def _get_type_label(diagram_type: str) -> str:
         "StateMachineDiagram": "UML State Machine Diagram",
         "ObjectDiagram": "UML Object Diagram",
         "AgentDiagram": "Agent / Chatbot Diagram",
+        "BPMN": "BPMN Process Diagram",
     }.get(diagram_type, "UML Diagram")
 
 
@@ -723,6 +762,8 @@ def _parse_llm_response(
         return _validate_object_diagram_spec(spec, filename, source_label)
     elif diagram_type == "AgentDiagram":
         return _validate_agent_diagram_spec(spec, filename, source_label)
+    elif diagram_type == "BPMN":
+        return _validate_bpmn_spec(spec, filename, source_label)
     else:
         return _validate_class_diagram_spec(spec, filename, source_label)
 
@@ -739,6 +780,13 @@ def _resolve_diagram_type(spec: Dict[str, Any], expected_type: Optional[str]) ->
         return expected_type
 
     # Infer from the shape of the spec
+    if "nodes" in spec and isinstance(spec["nodes"], list) and len(spec.get("nodes", [])) > 0:
+        first = spec["nodes"][0] if spec["nodes"] else {}
+        if isinstance(first, dict) and first.get("type") in (
+            "startEvent", "endEvent", "intermediateEvent", "task", "gateway",
+        ):
+            return "BPMN"
+
     if "states" in spec and isinstance(spec["states"], list) and len(spec.get("states", [])) > 0:
         first = spec["states"][0] if spec["states"] else {}
         if isinstance(first, dict):
@@ -1002,6 +1050,108 @@ def _validate_agent_diagram_spec(
         filename=filename,
         source_label=source_label,
         summary=", ".join(parts) if parts else "agent specification",
+    )
+
+
+def _validate_bpmn_spec(
+    spec: Dict[str, Any], filename: str, source_label: str,
+) -> Dict[str, Any]:
+    """Validate and build a BPMN inject_complete_system response."""
+    nodes = spec.get("nodes", [])
+    if not isinstance(nodes, list) or len(nodes) == 0:
+        return _error_response(
+            f"No process steps could be extracted from the {source_label} file. "
+            "Please check that the file describes a business process (steps, decisions, actors)."
+        )
+
+    flows = spec.get("flows", [])
+    if not isinstance(flows, list):
+        flows = []
+    pools = spec.get("pools", [])
+    if not isinstance(pools, list):
+        pools = []
+
+    valid_node_types = ("startEvent", "endEvent", "intermediateEvent", "task", "gateway")
+    validated_nodes = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_id = node.get("id")
+        if not isinstance(node_id, str) or not node_id.strip():
+            continue
+        node_type = node.get("type")
+        if node_type not in valid_node_types:
+            continue
+        validated_nodes.append({
+            "id": node_id.strip(),
+            "name": node.get("name", "") if isinstance(node.get("name"), str) else "",
+            "type": node_type,
+            "taskType": node.get("taskType") if isinstance(node.get("taskType"), str) else None,
+            "gatewayType": node.get("gatewayType") if isinstance(node.get("gatewayType"), str) else None,
+            "poolId": node.get("poolId") if isinstance(node.get("poolId"), str) else None,
+            "laneId": node.get("laneId") if isinstance(node.get("laneId"), str) else None,
+        })
+
+    if not validated_nodes:
+        return _error_response(f"No valid process steps found in the {source_label} file.")
+
+    validated_pools = []
+    for pool in pools:
+        if not isinstance(pool, dict):
+            continue
+        pool_id = pool.get("id")
+        if not isinstance(pool_id, str) or not pool_id.strip():
+            continue
+        lanes = pool.get("lanes", [])
+        validated_lanes = [
+            {"id": lane["id"].strip(), "name": lane.get("name", "") if isinstance(lane.get("name"), str) else ""}
+            for lane in lanes
+            if isinstance(lanes, list) and isinstance(lane, dict)
+            and isinstance(lane.get("id"), str) and lane.get("id").strip()
+        ] if isinstance(lanes, list) else []
+        validated_pools.append({
+            "id": pool_id.strip(),
+            "name": pool.get("name", "") if isinstance(pool.get("name"), str) else "",
+            "lanes": validated_lanes,
+        })
+
+    node_ids = {n["id"] for n in validated_nodes}
+    validated_flows = []
+    for flow in flows:
+        if not isinstance(flow, dict):
+            continue
+        source = flow.get("source", "")
+        target = flow.get("target", "")
+        if source in node_ids and target in node_ids:
+            validated_flows.append({
+                "source": source,
+                "target": target,
+                "name": flow.get("name", "") if isinstance(flow.get("name"), str) else "",
+            })
+        else:
+            logger.warning(
+                f"[FileConversion] Dropping flow {source}->{target}: node not found in extracted nodes"
+            )
+
+    # Reuse the BPMN handler's own repair pass (start/end insertion, orphaned-node
+    # reconnection, dangling pool/lane ref cleanup) so file-converted specs get the
+    # same guarantees as agent-generated ones.
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    system_spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": validated_nodes, "flows": validated_flows, "pools": validated_pools,
+    })
+
+    task_count = sum(1 for n in system_spec["nodes"] if n["type"] == "task")
+    gateway_count = sum(1 for n in system_spec["nodes"] if n["type"] == "gateway")
+    pool_note = f", {len(system_spec.get('pools') or [])} pool(s)" if system_spec.get("pools") else ""
+
+    return _success_response(
+        diagram_type="BPMN",
+        system_spec=system_spec,
+        filename=filename,
+        source_label=source_label,
+        summary=f"{task_count} task(s), {gateway_count} gateway(s), and "
+                f"{len(system_spec['flows'])} flow(s){pool_note}",
     )
 
 
