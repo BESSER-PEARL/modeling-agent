@@ -85,12 +85,30 @@ class TestResolveTargetModel:
         assert result is snapshot_model
 
     def test_fallback_to_current_model(self):
+        # Reconciled to feature behavior (commit b5ff3ec): current_model is
+        # only used as a last-resort fallback when the active diagram type
+        # MATCHES the requested target type. Returning current_model for a
+        # mismatched target used to hallucinate diagrams that don't exist
+        # (e.g. a brand-new AgentDiagram request resolving to the active
+        # ClassDiagram's model), so the active type must equal the target
+        # here for the fallback to fire.
+        request = AssistantRequest(
+            current_model=MINIMAL_CLASS_MODEL,
+            context=WorkspaceContext(active_diagram_type="ClassDiagram"),
+        )
+        result = resolve_target_model(request, "ClassDiagram")
+        assert result is MINIMAL_CLASS_MODEL
+
+    def test_fallback_withheld_on_type_mismatch(self):
+        # Companion case for the guard added in b5ff3ec: when the active
+        # diagram type does NOT match the requested target, current_model
+        # must NOT be used as a fallback.
         request = AssistantRequest(
             current_model=MINIMAL_CLASS_MODEL,
             context=WorkspaceContext(active_diagram_type="ObjectDiagram"),
         )
         result = resolve_target_model(request, "ClassDiagram")
-        assert result is MINIMAL_CLASS_MODEL
+        assert result is None
 
     def test_no_model_available(self):
         request = AssistantRequest(context=WorkspaceContext())
@@ -237,8 +255,12 @@ class TestDetailedModelSummaryClassDiagram:
         assert "login" in result
 
     def test_includes_relationships(self):
+        # Reconciled to feature behavior (commit 2cfcee9): relationship types
+        # are now rendered as human-readable lowercase labels (e.g.
+        # "association", "composition") via _REL_LABEL, not the raw
+        # "Association" element-type string.
         result = detailed_model_summary(CLASS_MODEL_FULL, "ClassDiagram")
-        assert "Association" in result
+        assert "(association)" in result
         assert "User" in result and "Order" in result
 
     def test_includes_multiplicities(self):
@@ -254,9 +276,14 @@ class TestDetailedModelSummaryClassDiagram:
         assert result.startswith("Current class diagram:")
 
     def test_empty_elements(self):
+        # Reconciled to feature behavior (commit 2cfcee9): the explicit
+        # "Classes (N):" count header is now always emitted (even for N=0)
+        # so factual queries ("how many classes?") have a stated number to
+        # read — this means an empty model no longer falls back to the
+        # compact summary (which is what previously carried the
+        # "ClassDiagram" substring this test used to check for).
         result = detailed_model_summary({"elements": {}, "relationships": {}}, "ClassDiagram")
-        # Falls back to compact
-        assert "ClassDiagram" in result
+        assert "Classes (0)" in result
 
     def test_non_dict_input(self):
         result = detailed_model_summary(None, "ClassDiagram")
@@ -312,9 +339,15 @@ class TestDetailedModelSummaryStateMachine:
         assert "Processing" in result
 
     def test_includes_state_types(self):
+        # Reconciled to feature behavior (commit 83800f5): StateInitialNode /
+        # StateFinalNode are pseudostates, not real states, and are now
+        # deliberately EXCLUDED from the state list/count (this fixed an
+        # off-by-one where the initial node was counted as an extra state).
+        # They're instead surfaced as a separate, non-counted pseudostate
+        # summary line — the literal type names no longer appear verbatim.
         result = detailed_model_summary(STATE_MODEL_FULL, "StateMachineDiagram")
-        assert "StateInitialNode" in result
-        assert "StateFinalNode" in result
+        assert "States (2)" in result  # Idle, Processing only — pseudostates excluded
+        assert "Pseudostates (not counted as states): 1 initial pseudostate(s), 1 final pseudostate(s)" in result
 
     def test_includes_entry_action(self):
         result = detailed_model_summary(STATE_MODEL_FULL, "StateMachineDiagram")
@@ -349,8 +382,12 @@ class TestDetailedModelSummaryStateMachine:
         assert result.startswith("Current state machine:")
 
     def test_empty_state_machine(self):
+        # Reconciled to feature behavior (commit 83800f5): mirrors the
+        # class-diagram change — the "States (N):" count header is always
+        # emitted (even for N=0), so an empty model no longer falls back to
+        # the compact summary that used to contain "StateMachineDiagram".
         result = detailed_model_summary({"elements": {}, "relationships": {}}, "StateMachineDiagram")
-        assert "StateMachineDiagram" in result
+        assert "States (0)" in result
 
 
 # ---------------------------------------------------------------------------
@@ -454,8 +491,15 @@ AGENT_MODEL = {
         "i1": {"type": "AgentIntent", "name": "say_hello"},
         "i2": {"type": "AgentIntent", "name": "say_bye"},
     },
+    # NOTE: relationship reconciled to the real element schema — the source
+    # code (_summarize_agent_diagram) only recognizes "AgentStateTransition"
+    # / "AgentStateTransitionInit" relationship types, and expects
+    # source/target as {"element": <id>} dicts (matching CLASS_MODEL_FULL /
+    # STATE_MODEL_FULL above). The original "AgentTransition" type with bare
+    # string source/target never matched, so no transition line was ever
+    # produced by this fixture.
     "relationships": {
-        "t1": {"type": "AgentTransition", "source": "s1", "target": "s2"},
+        "t1": {"type": "AgentStateTransition", "source": {"element": "s1"}, "target": {"element": "s2"}},
     },
 }
 
@@ -476,8 +520,11 @@ class TestDetailedModelSummaryAgent:
         assert "say_bye" in result
 
     def test_includes_transitions(self):
+        # Reconciled to feature behavior: _summarize_agent_diagram renders
+        # transitions with an ASCII "->" (like the class/state-machine
+        # summaries), not a unicode "→" arrow.
         result = detailed_model_summary(AGENT_MODEL, "AgentDiagram")
-        assert "Greeting → Farewell" in result
+        assert "Greeting -> Farewell" in result
 
     def test_empty_agent_model(self):
         model = {"elements": {}, "relationships": {}}

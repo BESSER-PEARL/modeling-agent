@@ -99,9 +99,13 @@ class TestMethodParameterSpec:
 
 class TestAttributeSpec:
     def test_valid_creation(self):
+        # Reconciled to feature behavior: AttributeSpec.type is Optional and
+        # defaults to None (not "String") throughout this schema's history —
+        # null signals an enum-literal attribute, which has no data type. See
+        # AttributeSpec's field description in src/schemas/class_diagram.py.
         a = AttributeSpec(name="title")
         assert a.name == "title"
-        assert a.type == "String"
+        assert a.type is None
         assert a.visibility == "public"
 
     @pytest.mark.parametrize("name", ["", ])
