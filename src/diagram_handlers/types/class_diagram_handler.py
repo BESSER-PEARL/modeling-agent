@@ -718,9 +718,9 @@ Examples:
             "systemSpec": system_spec,
             "diagramType": self.get_diagram_type(),
             "message": (
-                f"I had some trouble generating the full system at once, but I created "
-                f"{len(classes)} class(es): {class_names_str}. "
-                "You may want to ask me to add relationships between them!"
+                f"I had a bit of trouble building everything at once, but I set up "
+                f"{len(classes)} item(s): {class_names_str}. "
+                "Want me to connect them together?"
             ),
         }
 
@@ -783,14 +783,14 @@ Examples:
         attrs = spec.get("attributes", [])
         methods = spec.get("methods", [])
         attr_names = [a.get("name", "") for a in attrs[:5]]
-        parts = [f"Created the **{name}** class"]
+        parts = [f"Added **{name}**"]
         if attr_names:
-            parts.append(f" with attributes: {', '.join(f'`{n}`' for n in attr_names)}")
+            parts.append(f" — it keeps track of {', '.join(f'`{n}`' for n in attr_names)}")
             if len(attrs) > 5:
                 parts.append(f" (+{len(attrs) - 5} more)")
         if methods:
-            parts.append(f" and {len(methods)} method(s)")
-        parts.append(". You can ask me to add relationships, new attributes, or create more classes!")
+            parts.append(f" and can do {len(methods)} thing(s)")
+        parts.append(". Want to add more details or connect it to something else?")
         return "".join(parts)
 
     def _build_system_message(self, spec: Dict[str, Any]) -> str:
@@ -799,30 +799,209 @@ Examples:
         classes = spec.get("classes", [])
         rels = spec.get("relationships", [])
         class_names = [c.get("className", "?") for c in classes[:6]]
-        msg = f"Built the **{system_name}** class diagram with {len(classes)} class(es)"
+        msg = f"I set up **{system_name}** — {len(classes)} thing(s) it tracks"
         if class_names:
             msg += f": {', '.join(f'**{n}**' for n in class_names)}"
             if len(classes) > 6:
                 msg += f" (+{len(classes) - 6} more)"
         if rels:
-            msg += f" and {len(rels)} relationship(s)"
+            msg += f" and {len(rels)} connection(s) between them"
         constraints = spec.get("constraints") or []
         if constraints:
-            # Honest message: OCL constraints are understood but the editor has
-            # no slot to display/store them yet, so don't claim they're captured
-            # on the diagram (#45).
+            # Honest message: the business rules are understood but the editor
+            # has no slot to display/store them yet, so don't claim they're
+            # shown on the canvas (#45).
             msg += (
-                f". I noted {len(constraints)} OCL business rule(s) from your "
-                "description, but the editor can't show OCL constraints on the "
-                "diagram yet, so they aren't displayed"
+                f". I also noted {len(constraints)} rule(s) you mentioned, though "
+                "they aren't shown on the canvas yet"
             )
-        msg += ". Feel free to ask me to modify or extend any part of the diagram!"
+        msg += ". Just tell me what you'd like to change or add!"
         return msg
+
+    # ------------------------------------------------------------------
+    # Missing-target validation (drop phantom removals/edits)
+    # ------------------------------------------------------------------
+
+    # Actions that reference something that must ALREADY exist (removals /
+    # in-place edits). Additions are never validated here.
+    _MUST_EXIST_ACTIONS = frozenset({
+        "remove_element", "modify_class",
+        "modify_attribute", "modify_method", "modify_relationship",
+    })
+
+    @staticmethod
+    def _clean_member_name(raw: Optional[str]) -> str:
+        """Strip a visibility prefix (+/-/#/~) and a type suffix from a member name."""
+        name = (raw or "").strip()
+        if name and name[0] in "+-#~":
+            name = name[1:].strip()
+        if ":" in name:
+            name = name.split(":", 1)[0].strip()
+        return name
+
+    def _build_model_index(
+        self, current_model: Optional[Dict[str, Any]],
+    ) -> tuple[set, set, set]:
+        """Return ``(class_names, attr_names, method_names)`` (all lowercased)
+        present in *current_model*, for validating modification targets.
+
+        Handles the Apollon editor format (attributes/methods stored as separate
+        ``ClassAttribute``/``ClassMethod`` elements linked to their class by
+        ``owner``) AND an inline format (a class element carrying an
+        ``attributes``/``methods`` list or dict).
+        """
+        class_names: set = set()
+        attr_names: set = set()
+        method_names: set = set()
+        if not isinstance(current_model, dict):
+            return class_names, attr_names, method_names
+        elements = current_model.get("elements")
+        if not isinstance(elements, dict):
+            return class_names, attr_names, method_names
+
+        def _add_inline_members(container: Dict[str, Any]) -> None:
+            for key, bucket in (("attributes", attr_names), ("methods", method_names)):
+                members = container.get(key)
+                if isinstance(members, dict):
+                    members = list(members.values())
+                if not isinstance(members, list):
+                    continue
+                for mem in members:
+                    nm = mem.get("name") if isinstance(mem, dict) else (mem if isinstance(mem, str) else None)
+                    if isinstance(nm, str) and nm.strip():
+                        bucket.add(self._clean_member_name(nm).lower())
+
+        for el in elements.values():
+            if not isinstance(el, dict):
+                continue
+            el_type = el.get("type")
+            name = el.get("name")
+            if el_type in ("Class", "AbstractClass", "Enumeration") or (
+                el_type is None and isinstance(el.get("attributes"), (list, dict))
+            ):
+                if isinstance(name, str) and name.strip():
+                    class_names.add(name.strip().lower())
+                _add_inline_members(el)
+            elif el_type == "ClassAttribute":
+                if isinstance(name, str) and name.strip():
+                    attr_names.add(self._clean_member_name(name).lower())
+            elif el_type == "ClassMethod":
+                if isinstance(name, str) and name.strip():
+                    method_names.add(self._clean_member_name(name).lower())
+
+        return class_names, attr_names, method_names
+
+    def _phantom_note_for_mod(
+        self, mod: Dict[str, Any], class_names: set, attr_names: set, method_names: set,
+    ) -> Optional[str]:
+        """Return a plain-language "couldn't find" note when *mod* removes or
+        edits a target that doesn't exist in the model, else ``None`` (keep it).
+
+        Conservative: an attribute/method is treated as missing only when it is
+        absent from EVERY class (so an op that names the wrong class but a real
+        field is still applied), and additions are never validated.
+        """
+        action = mod.get("action")
+        if action not in self._MUST_EXIST_ACTIONS:
+            return None
+        target = mod.get("target")
+        if not isinstance(target, dict):
+            return None
+
+        verb = "remove" if action == "remove_element" else "update"
+        cn = (target.get("className") or "").strip()
+        attr = (target.get("attributeName") or "").strip()
+        meth = (target.get("methodName") or "").strip()
+        src = (target.get("sourceClass") or "").strip()
+        tgt = (target.get("targetClass") or "").strip()
+
+        # 1) Attribute target — missing only when absent everywhere.
+        if attr:
+            if attr.lower() not in attr_names:
+                return f"I couldn't find a **{attr}** field to {verb}."
+            return None
+        # 2) Method target.
+        if meth:
+            if meth.lower() not in method_names:
+                return f"I couldn't find a **{meth}** method to {verb}."
+            return None
+        # 3) Relationship target (by endpoints) — missing when a named endpoint
+        #    class doesn't exist.
+        if src or tgt:
+            missing = [c for c in (src, tgt) if c and c.lower() not in class_names]
+            if missing:
+                if src and tgt:
+                    return (
+                        f"I couldn't find a connection between **{src}** and "
+                        f"**{tgt}** to {verb}."
+                    )
+                return f"I couldn't find **{missing[0]}** to {verb} a connection for."
+            return None
+        # 4) Class target (remove a class, rename a class, …).
+        if cn:
+            if cn.lower() not in class_names:
+                return f"I couldn't find **{cn}** to {verb}."
+            return None
+        return None
+
+    def _drop_phantom_target_ops(
+        self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]],
+    ) -> List[str]:
+        """Drop removal/modify ops whose named target is absent from the model.
+
+        Returns a list of plain-language "couldn't find …" notes (one per dropped
+        op) for the user. Additions are never touched. Mutates *spec* in place,
+        rewriting its ``modification``/``modifications`` payload with the ops that
+        survived. When every op is dropped the spec is left with no ops (the
+        caller surfaces the notes as a plain message instead).
+        """
+        if not isinstance(spec, dict) or spec.get("action") != "modify_model":
+            return []
+        elements = current_model.get("elements") if isinstance(current_model, dict) else None
+        if not isinstance(elements, dict) or not elements:
+            # No model to validate against → don't drop anything.
+            return []
+
+        if isinstance(spec.get("modifications"), list):
+            mods = spec["modifications"]
+        elif isinstance(spec.get("modification"), dict):
+            mods = [spec["modification"]]
+        else:
+            return []
+
+        class_names, attr_names, method_names = self._build_model_index(current_model)
+
+        kept: List[Any] = []
+        notes: List[str] = []
+        for mod in mods:
+            note = (
+                self._phantom_note_for_mod(mod, class_names, attr_names, method_names)
+                if isinstance(mod, dict) else None
+            )
+            if note is None:
+                kept.append(mod)
+            else:
+                notes.append(note)
+                logger.info(
+                    f"[ClassDiagram] Dropped phantom-target op "
+                    f"({mod.get('action')}): {note}"
+                )
+
+        if not notes:
+            return []
+
+        spec.pop("modification", None)
+        spec.pop("modifications", None)
+        if len(kept) == 1:
+            spec["modification"] = kept[0]
+        elif kept:
+            spec["modifications"] = kept
+        return notes
 
     # ------------------------------------------------------------------
     # Modification Support (Existing - Updated for new architecture)
     # ------------------------------------------------------------------
-    
+
     def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate modifications for existing class diagram elements.
 
@@ -948,10 +1127,38 @@ Examples:
                 spec_processor=_expand_refactoring,
             )
 
+            # Deterministic missing-target validation: drop any removal/edit op
+            # whose named target doesn't exist in the model, and tell the user
+            # what couldn't be found. Previously these were silently dropped —
+            # e.g. "remove priority" on a model with no priority field applied
+            # the add half and quietly discarded the remove with zero feedback.
+            not_found_notes = self._drop_phantom_target_ops(modification_spec, current_model)
+
+            # If every op was a phantom-target removal/edit, nothing remains to
+            # apply — surface the not-found note(s) as a plain message rather
+            # than shipping an empty modification.
+            if not_found_notes and not (
+                modification_spec.get("modification")
+                or modification_spec.get("modifications")
+            ):
+                return {
+                    "action": "assistant_message",
+                    "message": " ".join(not_found_notes),
+                }
+
             # Replace the generic/default message with a clean, descriptive one
             # for add_class (the name lives in changes.className, not the now-
             # cleared target.className) and for association/linking-class requests.
             self._apply_clean_modification_message(modification_spec, user_request)
+
+            # Append the not-found note(s) so the dropped removal/edit isn't
+            # silent even when a legitimate add in the same request succeeded.
+            if not_found_notes:
+                existing = modification_spec.get("message") or ""
+                joined = " ".join(not_found_notes)
+                modification_spec["message"] = (
+                    f"{existing}\n\n{joined}".strip() if existing else joined
+                )
 
             logger.info(
                 f"[ClassDiagram] Modification spec: "

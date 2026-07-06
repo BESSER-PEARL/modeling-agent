@@ -46,12 +46,12 @@ _STATE_MACHINE_SUGGESTIONS = [
 _GUI_SUGGESTIONS_WITH_CLASS = [
     ("Generate web app", "generate web app"),
     ("Generate React frontend", "generate react"),
-    ("Modify the GUI", ""),
+    ("See GUI", ""),
 ]
 
 _GUI_SUGGESTIONS_WITHOUT_CLASS = [
     ("Create the backend model", "create a class diagram for this GUI"),
-    ("Modify the GUI", ""),
+    ("See GUI", ""),
 ]
 
 _AGENT_SUGGESTIONS = [

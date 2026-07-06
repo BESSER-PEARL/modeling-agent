@@ -1850,19 +1850,12 @@ Rules:
     def _build_gui_system_message(self, pages: list) -> str:
         """Build a descriptive message for a complete GUI model."""
         page_names = [p.get("name", "Page") for p in pages[:5] if isinstance(p, dict)]
-        section_count = sum(
-            len([c for c in p.get("frames", [{}])[0].get("component", {}).get("components", [])
-                 if isinstance(c, dict)])
-            for p in pages if isinstance(p, dict) and p.get("frames")
-        )
-        msg = f"Created a GUI with **{len(pages)}** page(s)"
+        msg = f"I built **{len(pages)}** screen(s) for your app"
         if page_names:
             msg += f": {', '.join(f'**{n}**' for n in page_names)}"
             if len(pages) > 5:
                 msg += f" (+{len(pages) - 5} more)"
-        if section_count:
-            msg += f" containing {section_count} section(s) total"
-        msg += ". You can ask me to add more pages, sections, or modify the existing layout!"
+        msg += ". Want me to add more screens or change the layout?"
         return msg
 
     def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:

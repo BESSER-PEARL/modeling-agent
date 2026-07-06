@@ -37,6 +37,125 @@ logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------
+# In-turn creation → snapshot bridge (empty-workspace guard fix)
+#
+# A create/complete-system op pushes the freshly built model STRAIGHT to the
+# frontend; it never round-trips through the backend's project snapshot. When a
+# single user turn is planned into "create diagram → generate code", the later
+# generate step reads the pre-create (often empty) snapshot and wrongly refuses
+# with "your workspace looks empty — there's no model to turn into code yet".
+#
+# These helpers record a lightweight copy of the just-created model back into the
+# working request's project snapshot so the generate step's empty-workspace guard
+# (_project_has_any_model) sees it. The frontend still holds the authoritative
+# model; this copy only has to be non-empty enough to pass the guard.
+# ------------------------------------------------------------------
+
+def _elements_from_result(result_payload: Any) -> Dict[str, Any]:
+    """Extract a non-empty ``elements`` map from a handler result payload.
+
+    Understands the class-diagram ``systemSpec`` shape, an editor-model
+    ``model.elements`` shape, and a single-``element`` shape. Falls back to a
+    single marker element when a *successful* create returned an unrecognized
+    (but non-empty) payload, so the empty-workspace guard still treats the
+    workspace as populated. Returns ``{}`` only when the payload carried a
+    parseable-but-empty model (e.g. a systemSpec with zero classes) — in that
+    case the guard should legitimately still fire.
+    """
+    if not isinstance(result_payload, dict):
+        return {}
+
+    # Editor-model style: {"model": {"elements": {...}}}
+    model = result_payload.get("model")
+    if isinstance(model, dict) and isinstance(model.get("elements"), dict):
+        return dict(model["elements"])
+
+    # Class-diagram style: {"systemSpec": {"classes": [...], ...}}
+    spec = result_payload.get("systemSpec")
+    if isinstance(spec, dict):
+        elements: Dict[str, Any] = {}
+        classes = spec.get("classes")
+        if isinstance(classes, list):
+            for i, cls in enumerate(classes):
+                if not isinstance(cls, dict):
+                    continue
+                name = cls.get("className") or cls.get("name") or f"class_{i}"
+                elements[f"created-{i}-{name}"] = {"type": "Class", "name": str(name)}
+        # May be {} when the spec had no classes → guard should still fire.
+        return elements
+
+    # Single-element style: {"element": {...}}
+    element = result_payload.get("element")
+    if isinstance(element, dict):
+        name = element.get("className") or element.get("name") or "element"
+        return {f"created-{name}": {"type": "Class", "name": str(name)}}
+
+    # Unrecognized but successful create → mark non-empty with a placeholder so
+    # a later generate step doesn't think the workspace is empty.
+    return {"created-marker": {"type": "Element"}}
+
+
+def _record_created_model_in_snapshot(
+    context: Any, diagram_type: str, result_payload: Dict[str, Any],
+) -> bool:
+    """Make an in-turn creation visible to a later generate step in the same plan.
+
+    Records a lightweight representation of the just-created model under
+    ``context.project_snapshot["diagrams"][diagram_type]`` so a generate op
+    planned in the SAME turn passes ``_project_has_any_model``.
+
+    Returns ``True`` when the snapshot was updated. No-op (``False``) when the
+    context/type is missing, the payload produced nothing, or a non-empty model
+    for that type is already present in the snapshot.
+    """
+    if context is None or not isinstance(diagram_type, str) or not diagram_type:
+        return False
+
+    def _entry_is_nonempty(entry: Any) -> bool:
+        return (
+            isinstance(entry, dict)
+            and isinstance(entry.get("model"), dict)
+            and bool(entry["model"].get("elements"))
+        )
+
+    snapshot = getattr(context, "project_snapshot", None)
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+        try:
+            context.project_snapshot = snapshot
+        except Exception:  # pragma: no cover — context without a settable field
+            return False
+
+    diagrams = snapshot.get("diagrams")
+    if not isinstance(diagrams, dict):
+        diagrams = {}
+        snapshot["diagrams"] = diagrams
+
+    existing = diagrams.get(diagram_type)
+    existing_entries = (
+        existing if isinstance(existing, list)
+        else ([existing] if existing is not None else [])
+    )
+    if any(_entry_is_nonempty(e) for e in existing_entries):
+        # A non-empty model for this type is already in the snapshot; the guard
+        # already passes, so there is nothing to bridge.
+        return False
+
+    elements = _elements_from_result(result_payload)
+    if not elements:
+        # The create genuinely produced nothing — leave the guard to fire.
+        return False
+
+    diagrams[diagram_type] = [{"model": {"elements": elements}}]
+    logger.info(
+        f"[ModelOp] Recorded in-turn {diagram_type} creation into snapshot "
+        f"({len(elements)} element(s)) so a later generate step won't see an "
+        "empty workspace."
+    )
+    return True
+
+
+# ------------------------------------------------------------------
 # Shared confirmation flow for existing-model guard
 # ------------------------------------------------------------------
 
@@ -733,6 +852,16 @@ def execute_model_operation(
         f"keys={list(result.keys())}"
     )
     reply_payload(session, result)
+
+    # Bridge this in-turn creation into the working request's snapshot so a
+    # generate op planned later in the SAME turn doesn't read the pre-create
+    # (empty) snapshot and wrongly refuse with "your workspace looks empty".
+    # Only genuine creations (not modify_model, which implies a pre-existing
+    # model) update the snapshot here.
+    if result.get("action") in ("inject_complete_system", "inject_element"):
+        _record_created_model_in_snapshot(
+            getattr(request, "context", None), target_diagram_type, result,
+        )
 
     session.set(LAST_EXECUTED_DIAGRAM_TYPE, target_diagram_type)
 

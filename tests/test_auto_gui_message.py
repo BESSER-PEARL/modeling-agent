@@ -95,7 +95,7 @@ _CLASS_MODEL = {
 def test_message_confirms_completion_and_names_pages():
     msg = _run_message(_CLASS_MODEL)
     # Confirms it is DONE (not just "Generating…").
-    assert "Created your GUI" in msg
+    assert "screen" in msg
     assert "Generating" not in msg
     # Names the two real classes as pages; the enum is not a page.
     assert "Book" in msg
@@ -108,14 +108,14 @@ def test_message_confirms_completion_and_names_pages():
 def test_message_falls_back_when_no_classes():
     msg = _run_message({"elements": {}, "relationships": {}})
     # Still confirms completion even without resolvable page names.
-    assert "Created your GUI" in msg
+    assert "screen" in msg
     assert "Generating" not in msg
 
 
 def test_message_falls_back_when_resolver_raises():
     msg = _run_message(raise_=True)
     # Never raises; degrades to a generic completion message.
-    assert "Created your GUI" in msg
+    assert "screen" in msg
 
 
 def test_message_truncates_long_page_lists():

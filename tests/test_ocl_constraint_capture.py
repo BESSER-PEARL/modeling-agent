@@ -165,8 +165,11 @@ class TestConstraintCaptureEndToEnd:
         assert len(constraints) == 1
         assert constraints[0]["context"] == "Speaker"
         assert "forAll" in constraints[0]["expression"]
-        # The success message tells the user constraints were captured.
-        assert "constraint" in result["message"].lower()
+        # The success message tells the user the stated rule was noted (worded
+        # in plain, non-technical language — see FIX 3 wording softening).
+        msg = result["message"].lower()
+        assert "rule" in msg
+        assert "aren't shown" in msg or "not shown" in msg
 
     def test_no_constraint_stated_yields_empty(self):
         """When the spec carries no constraints, the systemSpec constraints

@@ -92,7 +92,7 @@ def _build_auto_gui_message(request: Any) -> str:
     Falls back to a generic completion message if the class diagram can't be
     resolved (the frontend still generates the GUI; we just can't name pages).
     """
-    done_intro = "Created your GUI from the Class Diagram. "
+    done_intro = "Your app's screens are ready. "
     try:
         from utilities.model_resolution import resolve_class_diagram
         from utilities.class_metadata import extract_class_metadata
@@ -110,8 +110,9 @@ def _build_auto_gui_message(request: Any) -> str:
     if not page_names:
         return (
             done_intro
-            + "Each class now has its own page with a data table and method buttons. "
-            "You can ask me to customize any page or add new sections!"
+            + "Every part of your app now has its own screen with a data view and "
+            "quick action buttons. Just tell me if you'd like to tweak any screen "
+            "or add more!"
         )
 
     shown = page_names[:6]
@@ -119,9 +120,9 @@ def _build_auto_gui_message(request: Any) -> str:
     if len(page_names) > 6:
         names_str += f" (+{len(page_names) - 6} more)"
     return (
-        f"Created your GUI with **{len(page_names)}** page(s) — {names_str}. "
-        "Each page has a data table and method buttons for its class. "
-        "You can ask me to customize any page or add new sections!"
+        f"I built **{len(page_names)}** screen(s) for your app — {names_str}. "
+        "Each one shows its data with quick action buttons. "
+        "Just tell me if you'd like to tweak any screen or add more!"
     )
 
 
