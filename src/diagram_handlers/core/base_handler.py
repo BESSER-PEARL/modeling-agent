@@ -247,6 +247,9 @@ class BaseDiagramHandler(ABC):
         'remove_transition': 'Removed transition from',
         'modify_intent': 'Updated',
         'add_intent': 'Added',
+        'add_rag_element': 'Added knowledge base',
+        'add_state_body': 'Added reply to',
+        'add_intent_training_phrase': 'Added training phrase to',
         'modify_object': 'Updated',
         'add_object': 'Added',
         'add_link': 'Added link to',
@@ -310,7 +313,23 @@ class BaseDiagramHandler(ABC):
         if class_name and method_name and action in ('remove_element', 'modify_method', 'remove_method'):
             return f"method {method_name} from {class_name}"
 
-        return class_name or attr_name or method_name or 'element'
+        # Agent transition endpoints (source → target state)
+        src_state = target.get('sourceStateName')
+        tgt_state = target.get('targetStateName')
+        if src_state and tgt_state:
+            return f"{src_state} → {tgt_state}"
+        if src_state or tgt_state:
+            return src_state or tgt_state
+
+        # Agent intent / RAG names, then a generic changes.name fallback, before
+        # giving up on the literal 'element'.
+        intent_name = target.get('intentName')
+        rag_name = target.get('name')
+        changes = (mod or {}).get('changes') if isinstance(mod, dict) else None
+        changes_name = changes.get('name') if isinstance(changes, dict) else None
+
+        return (class_name or attr_name or method_name or intent_name
+                or rag_name or changes_name or 'element')
 
     def _friendly_batch_message(self, mods: list) -> str:
         """Produce a friendly summary for a batch of modifications."""

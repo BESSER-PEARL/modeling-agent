@@ -809,6 +809,36 @@ IMPORTANT RULES:
         index = self._index_existing_agent_model(current_model)
         states, intents, rag = index["states"], index["intents"], index["rag"]
 
+        # --- First pass: names of states/intents ADDED in this same batch ----
+        # A transition whose endpoint is a state/intent that is itself being
+        # added in the SAME batch would otherwise be dropped as
+        # "missing_target" (it isn't in the *existing* model yet), leaving the
+        # new state silently orphaned — the "add BMWIntegrationState and relate
+        # it to the flow" bug. We collect the normalized names of add ops that
+        # will survive their own add-validation and treat them as "pending"
+        # endpoints when validating transitions below. Normalization matches
+        # ``_index_existing_agent_model`` (lowercased) so membership works.
+        pending: set = set()
+        for mod in mod_list:
+            if not isinstance(mod, dict):
+                continue
+            names = self._mod_target_names(mod)
+            action = mod.get("action")
+            if action == "add_state":
+                # Duplicate of an existing state → skipped as "exists"; the name
+                # is already in ``states`` so it must not join ``pending``.
+                if names["stateName"] and names["stateName"] in states:
+                    continue
+                add_name = names["stateName"] or names["name"]
+                if add_name:
+                    pending.add(add_name)
+            elif action == "add_intent":
+                if names["intentName"] and names["intentName"] in intents:
+                    continue
+                add_name = names["intentName"] or names["name"]
+                if add_name:
+                    pending.add(add_name)
+
         kept: List[Dict[str, Any]] = []
         skipped: List[Dict[str, Any]] = []
 
@@ -869,7 +899,9 @@ IMPORTANT RULES:
                     # Source may be a state, an intent, or the initial node.
                     src = names["sourceStateName"] or state_target or intent_target
                     tgt = names["targetStateName"]
-                    known = states | intents | {"initial"}
+                    # ``pending`` lets a transition into/out of a just-added
+                    # state or intent survive (FIX for same-batch orphans).
+                    known = states | intents | pending | {"initial"}
                     # The source must resolve to a known element; the target,
                     # when specified, must also be known. An add_transition that
                     # references an element that doesn't exist is exactly what
@@ -887,7 +919,80 @@ IMPORTANT RULES:
             else:
                 skipped.append({"reason": "no_target", "mod": mod})
 
+        # Stable reorder: every add_state / add_intent must appear BEFORE any
+        # add_transition / remove_transition. The frontend applies kept mods in
+        # array order and resolves a transition's endpoints by name at apply
+        # time, so a transition referencing a just-added state must not precede
+        # the add op that introduces it. Relative order within each group (and
+        # among all other ops) is preserved (Python's sort is stable).
+        def _reorder_rank(mod: Any) -> int:
+            act = mod.get("action") if isinstance(mod, dict) else None
+            if act in ("add_state", "add_intent"):
+                return 0
+            if act in ("add_transition", "remove_transition"):
+                return 2
+            return 1
+
+        kept.sort(key=_reorder_rank)
+
         return {"kept": kept, "skipped": skipped}
+
+    @staticmethod
+    def _added_state_display_name(mod: Dict[str, Any]) -> Optional[str]:
+        """Raw (non-normalized) display name of an ``add_state`` op.
+
+        Used for user-facing notes, so it keeps the original casing rather than
+        the lowercased form ``_mod_target_names`` returns.
+        """
+        target = mod.get("target") or {}
+        changes = mod.get("changes") or {}
+        name = target.get("stateName") or changes.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+        return None
+
+    def _find_orphan_added_states(self, kept: List[Dict[str, Any]]) -> List[str]:
+        """Names of kept ``add_state`` ops that no kept transition references.
+
+        A newly added state with no ``add_transition``/``remove_transition``
+        naming it (as source or target) is left disconnected from the rest of
+        the agent. We surface these honestly rather than fabricating an edge.
+        """
+        connected: set = set()
+        for mod in kept:
+            if not isinstance(mod, dict):
+                continue
+            if mod.get("action") in ("add_transition", "remove_transition"):
+                names = self._mod_target_names(mod)
+                for key in ("sourceStateName", "targetStateName", "stateName", "intentName"):
+                    if names.get(key):
+                        connected.add(names[key])
+        orphans: List[str] = []
+        for mod in kept:
+            if not isinstance(mod, dict) or mod.get("action") != "add_state":
+                continue
+            display = self._added_state_display_name(mod)
+            if display and display.lower() not in connected:
+                orphans.append(display)
+        return orphans
+
+    @staticmethod
+    def _orphan_states_note(orphans: List[str]) -> str:
+        """Plain-language note appended when new states are left unconnected."""
+        if not orphans:
+            return ""
+        if len(orphans) == 1:
+            return (
+                f"\n\nNote: I added **{orphans[0]}** but it isn't connected to the "
+                f"rest of the agent yet — tell me which state should lead into it "
+                f"(or out of it) and I'll wire it up."
+            )
+        joined = ", ".join(f"**{n}**" for n in orphans)
+        return (
+            f"\n\nNote: I added {joined} but they aren't connected to the rest of "
+            f"the agent yet — tell me which states should lead into them (or out "
+            f"of them) and I'll wire them up."
+        )
 
     def _clarify_response(self, message: str) -> Dict[str, Any]:
         """Return a non-mutating clarification message.
@@ -958,7 +1063,13 @@ RULES:
 6. Only ADD elements the user explicitly asked for. Do not delete existing
    elements as a side effect of an addition.
 7. Example: "add a welcome state" → add_state with target.stateName="welcomeState", changes.replies=[{text:"Welcome!", replyType:"text"}]
-8. Example: "add a greeting intent" → add_intent with target.intentName="GreetingIntent", changes.trainingPhrases=["hello","hi","hey there"]"""
+8. Example: "add a greeting intent" → add_intent with target.intentName="GreetingIntent", changes.trainingPhrases=["hello","hi","hey there"]
+9. When you ADD a new state, ALSO emit an add_transition that connects it into
+   the existing flow so it is never left orphaned: set target.sourceStateName
+   (an existing state, or "initial") and target.targetStateName (the new
+   state), and — if the transition is intent-triggered — changes.intentName.
+   Only skip the transition if the user explicitly asked for a disconnected
+   state."""
 
         # Build context from current model using centralized summariser
         context_block = ''
@@ -983,17 +1094,29 @@ RULES:
                 # an empty / destructive modify_model payload — the diagram is
                 # left exactly as-is.
                 raise _EmptyModificationError()
+            # Backstop: flag any just-added state that no kept transition wires
+            # into the flow. Covers both the "LLM never emitted a connecting
+            # transition" case and anything FIX 1 couldn't rescue. We don't
+            # invent an edge — we tell the user honestly (message appended below).
+            self._last_orphan_states = self._find_orphan_added_states(kept)
             # Guarantee every replyType="code" reply is a proper function block
             # (merged from develop — modeling-agent#8) before it is applied.
             return self._fix_code_replies_in_modifications(kept)
 
         self._last_skipped = []
+        self._last_orphan_states = []
 
         try:
             spec = self._execute_modification(
                 user_prompt, system_prompt, AgentModificationResponse,
                 post_processor=_post_processor,
             )
+            # Surface orphaned new states so a modify never silently leaves a
+            # disconnected node with a misleading "Applied N changes" message.
+            orphans = getattr(self, "_last_orphan_states", []) or []
+            if orphans and isinstance(spec, dict) and spec.get("action") == "modify_model":
+                existing = spec.get("message") or ""
+                spec["message"] = (existing + self._orphan_states_note(orphans)).strip()
             return spec
 
         except _EmptyModificationError:
