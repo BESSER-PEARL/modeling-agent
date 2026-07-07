@@ -524,6 +524,36 @@ def stylesheet_rules(domain: str) -> List[Dict]:
         "border-radius": radius,
     }))
 
+    # --- Plain data table (class-less standalone GUIs) -------------------
+    rules.append(_class_rule("ds-table", {
+        "width": "100%",
+        "border-collapse": "collapse",
+        "background-color": p["surface"],
+        "border": f"1px solid {p['border']}",
+        "border-radius": radius,
+        "overflow": "hidden",
+        "font-size": ts["body"]["size"],
+        "color": p["text"],
+    }))
+    rules.append(_raw_rule(".ds-table th", {
+        "text-align": "left",
+        "padding": "0.75rem 1rem",
+        "background-color": p["background"],
+        "border-bottom": f"2px solid {p['border']}",
+        "font-weight": "600",
+        "font-size": "0.8125rem",
+        "letter-spacing": "0.02em",
+        "text-transform": "uppercase",
+        "color": p["muted"],
+    }))
+    rules.append(_raw_rule(".ds-table td", {
+        "padding": "0.75rem 1rem",
+        "border-bottom": f"1px solid {p['border']}",
+    }))
+    rules.append(_raw_rule(".ds-table tbody tr:last-child td", {
+        "border-bottom": "none",
+    }))
+
     # --- Buttons ---------------------------------------------------------
     rules.append(_class_rule("ds-btn", {
         "display": "inline-flex",

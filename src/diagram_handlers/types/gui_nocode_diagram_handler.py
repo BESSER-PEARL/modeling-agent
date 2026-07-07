@@ -9,6 +9,7 @@ import copy
 import json
 import re
 import logging
+from html import escape as _html_escape
 from typing import Any, Dict, List, Optional
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
@@ -37,6 +38,18 @@ DEFAULT_GUI_VERSION = "0.21.13"
 # path a much larger cap. Scoped here (passed explicitly to predict_two_pass)
 # so no other handler's budget changes.
 GUI_COMPLETE_SYSTEM_MAX_TOKENS = 16384
+
+# A cheap, always-valid, CSP-safe inline-SVG placeholder the LLM can reuse (and
+# recolor) so cards/heroes are never image-less. Kept tiny so it can be inlined
+# many times without bloating the payload. Survives the converter's SVG whitelist
+# (svg/rect/circle) untouched.
+_SVG_THUMB_HINT = (
+    "<svg viewBox='0 0 80 80' width='72' height='72' role='img' aria-label='thumbnail' "
+    "style='border-radius:12px'>"
+    "<rect width='80' height='80' rx='12' fill='#e2e8f0'/>"
+    "<circle cx='40' cy='30' r='14' fill='#94a3b8'/>"
+    "<rect x='16' y='50' width='48' height='18' rx='9' fill='#cbd5e1'/></svg>"
+)
 
 # Chart colour palette (deterministic cycling)
 _CHART_COLORS = [
@@ -918,13 +931,78 @@ def _chart_component(
     }
 
 
+def _coerce_table_rows(
+    src: Dict[str, Any], columns: List[str], sample: List[Any]
+) -> "tuple[List[str], List[List[str]]]":
+    """Best-effort REAL rows for a standalone (class-less) data table.
+
+    Priority: explicit ``rows`` (each a ``{cells:[...]}`` aligned to columns) →
+    chart-style ``sampleData`` (name/value → 2 columns) → a couple of synthesized
+    rows from the column names. NEVER returns an empty body — the whole point is
+    that a class-less table stops rendering as one blank cell.
+    """
+    rows: List[List[str]] = []
+    for r in (src.get("rows") or []):
+        cells = r.get("cells") if isinstance(r, dict) else (r if isinstance(r, list) else None)
+        if isinstance(cells, list):
+            vals = [_clean_text(str(c)) for c in cells if c is not None]
+            if any(vals):
+                rows.append(vals)
+    if rows:
+        return columns, rows
+
+    sv: List[List[str]] = []
+    for d in (sample or []):
+        if isinstance(d, dict) and _clean_text(str(d.get("name", ""))):
+            val = d.get("value")
+            sv.append([_clean_text(str(d.get("name"))), "" if val is None else _clean_text(str(val))])
+    if sv:
+        cols = columns if len(columns) == 2 else ["Item", "Value"]
+        return cols, sv
+
+    if columns:
+        # A few neutral rows so the table has structure even with no data.
+        rows = [["—" for _ in columns] for _ in range(3)]
+    return columns, rows
+
+
+def _html_data_table_node(columns: List[str], rows: List[List[str]]) -> Dict[str, Any]:
+    """A themed, ALWAYS-populated ``<table class='ds-table'>`` component node.
+
+    Used for standalone GUIs (no ClassDiagram) where the data-bound table widget
+    would render empty — a plain HTML table with real rows renders directly.
+    """
+    cols = [str(c) for c in (columns or []) if _clean_text(str(c))] or ["Item", "Value"]
+    head = "".join(f"<th>{_html_escape(str(c))}</th>" for c in cols)
+    body = ""
+    for r in (rows or []):
+        cells = [str(x) for x in r][: len(cols)]
+        cells += [""] * (len(cols) - len(cells))
+        body += "<tr>" + "".join(f"<td>{_html_escape(c)}</td>" for c in cells) + "</tr>"
+    markup = f"<table class='ds-table'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+    nodes = html_to_components(markup)
+    return nodes[0] if nodes else {"tagName": "table", "attributes": {"class": "ds-table"}}
+
+
 def _table_component(
     section_spec: Dict[str, Any],
     class_metadata: Optional[List[Dict[str, Any]]],
 ) -> Dict[str, Any]:
-    """Build a GrapesJS data-table component bound to a class."""
+    """Build a data table for a section.
+
+    With a resolved ClassDiagram binding → the recognizer-compatible data-bound
+    ``type:'table'`` widget (columns from the class, rows from its data-source).
+    WITHOUT a class (the common standalone-GUI case) → a themed HTML table
+    populated from the LLM's ``fields`` + ``rows``/``sampleData`` so it renders
+    with real content instead of a single empty cell.
+    """
     title = _clean_text(section_spec.get("title"), fallback="Data Table")
     cls = _resolve_class_binding(section_spec, class_metadata)
+
+    if not cls:
+        columns = [c for c in (section_spec.get("fields") or []) if isinstance(c, str) and c.strip()]
+        cols, rows = _coerce_table_rows(section_spec, columns, section_spec.get("sampleData") or [])
+        return _html_data_table_node(cols, rows)
 
     table_attrs: Dict[str, Any] = {
         "class": "table-component",
@@ -1903,6 +1981,7 @@ def _build_bind_widget(
         "className": class_name,
         "sampleData": sample,
         "fields": columns,
+        "rows": bind.get("rows") or [],
     }
 
     if kind in _BIND_CHART_KINDS:
@@ -2390,7 +2469,8 @@ Each section is EXACTLY ONE of these two shapes:
   "bind": {{
     "kind": "table|bar_chart|pie_chart|line_chart|radar_chart|metric_card|form|dashboard",
     "className": "Entity name from the class diagram (when available)",
-    "columns": ["field", "names"],
+    "columns": ["Column", "headers"],
+    "rows": [{{"cells": ["cell A1", "cell A2"]}}, {{"cells": ["cell B1", "cell B2"]}}],
     "series": ["series names"],
     "sampleData": [{{"name": "Realistic label", "value": 42}}]
   }},
@@ -2398,7 +2478,9 @@ Each section is EXACTLY ONE of these two shapes:
 }}
    - Put a <!--WIDGET:kind--> comment inside the chrome where the widget belongs; the server splices the real, data-bound widget there.
    - The "html" chrome is OPTIONAL — omit it and the widget is card-wrapped automatically — but authoring chrome around it gives a far nicer result.
-   - ALWAYS include 4-6 realistic sampleData rows: charts need name+value (pie adds a color hex); tables use column-keyed values.
+   - TABLES: you MUST fill "columns" AND 4-6 "rows" ("cells" aligned 1:1 to "columns"). A table with no rows renders EMPTY — that is a failure.
+   - CHARTS: fill 4-6 "sampleData" points (name + numeric value; pie adds a "color" hex).
+   - Prefer a DATA section ONLY for genuinely tabular/records data (orders, bookings, transactions, patients, inventory). For listings of PEOPLE / PRODUCTS / PROFILES / FEATURES / PLANS, use an HTML card GRID instead (see below) — never a table.
 
 Design-system classes (styled automatically for the {domain} theme — just use the names):
   ds-page, ds-container, ds-section, ds-hero, ds-heading, ds-card, ds-grid-2, ds-grid-3,
@@ -2412,12 +2494,23 @@ Realism directives (this is what makes the result credible, not generic):
 - Reproduce the SPECIFIC real-world artifact the request implies, with its real structure. E.g. a government service page has an official header, an eligibility notice, an applicant-identity fieldset, a multi-step application form, a document upload, declarations/consent checkboxes, and a submit + application tracker — NOT a generic marketing page.
 - Write plausible, concrete domain copy: real-sounding labels, figures and names. Never leave a placeholder.
 
+CARD GRID (use for listings of people / products / profiles / features / plans):
+  <section class='ds-section'><h2 class='ds-heading'>Featured Profiles</h2>
+    <div class='ds-grid-3'>
+      <div class='ds-card'>{_SVG_THUMB_HINT}<h3 class='ds-heading'>Ava, 27</h3><p>Loves hiking & jazz. 92% match.</p><a class='ds-btn ds-btn-primary' href='#'>View</a></div>
+      ...3-6 cards, each with a real name/label + concrete copy + a visual...
+    </div></section>
+
+Imagery (a page with zero images looks unfinished — every hero + every card in a grid gets a visual):
+- Use an inline <svg ...>...</svg> illustration or avatar, OR an <img> whose src is a data: URI. NEVER an external/http image URL (blocked by CSP).
+- Cheap, always-valid placeholder you may reuse and recolor: {_SVG_THUMB_HINT}
+
 Layout rules:
-1. Create 2-4 pages; each page 3-6 ordered sections.
+1. Create MULTIPLE pages for an app/platform/dashboard (Home + 2-3 feature screens); a single rich page ONLY when the user explicitly asked for "a landing page" or "a page". Each page has 3-6 ordered sections.
 2. Lead each page with the section that fits its PURPOSE — a marketing ds-hero ONLY for a landing page; data pages lead with a heading + a ds-notice or KPI row.
 3. Full-width sections (ds-hero, ds-footer, ds-nav) span the page; everything else sits in cards inside a centered container.
 4. EVERY page ends with a ds-footer section.
-5. When classes are available, every page has >=1 DATA section bound with className.
+5. Every page has real headings AND paragraph copy — never a page that is only widgets. Every data widget is populated (tables have rows, charts have sampleData).
 6. Keep an entity's field names IDENTICAL across every section it appears in.
 7. Return JSON only.{class_block}"""
 

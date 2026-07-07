@@ -389,10 +389,29 @@ class TestTableComponent:
         assert "Pages" in labels
 
     def test_table_without_metadata(self):
-        spec = {"title": "Empty Table"}
+        # Without a ClassDiagram binding, the data-bound widget would render
+        # empty (no data-source, no rows). We now fall back to a themed HTML
+        # table populated from the LLM's fields + rows so it shows real content.
+        spec = {
+            "title": "Recent Orders",
+            "fields": ["Order", "Customer", "Total"],
+            "rows": [
+                {"cells": ["#1001", "A. Smith", "$42"]},
+                {"cells": ["#1002", "B. Jones", "$19"]},
+            ],
+        }
         result = _table_component(spec, None)
-        assert result["type"] == "table"
-        assert "data-source" not in result["attributes"]
+        assert result["tagName"] == "table"
+        assert "ds-table" in result["attributes"]["class"]
+        # headers from fields
+        thead = result["components"][0]
+        headers = [th.get("content", "") for th in thead["components"][0]["components"]]
+        assert headers == ["Order", "Customer", "Total"]
+        # rows from the LLM data (not empty)
+        tbody = result["components"][1]
+        assert len(tbody["components"]) == 2
+        first_row = [td.get("content", "") for td in tbody["components"][0]["components"]]
+        assert first_row == ["#1001", "A. Smith", "$42"]
 
 
 # ---------------------------------------------------------------------------

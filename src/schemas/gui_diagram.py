@@ -43,6 +43,20 @@ class GUIStatItem(BaseModel):
     )
 
 
+class GUITableRow(BaseModel):
+    """One sample row for a data table.
+
+    ``cells`` is a flat list of display strings aligned positionally to the
+    table's ``columns`` (cell *i* belongs under column *i*). Kept as a concrete
+    ``List[str]`` — never an open dict — so OpenAI strict structured output
+    still validates (see the ``GUISampleDataPoint`` note above).
+    """
+    cells: List[str] = Field(
+        default_factory=list,
+        description="Cell values for this row as strings, one per column, in column order.",
+    )
+
+
 class GUIBindSpec(BaseModel):
     """Data-binding spec for a DATA section (Phase 3).
 
@@ -75,6 +89,14 @@ class GUIBindSpec(BaseModel):
     sampleData: List[GUISampleDataPoint] = Field(
         default_factory=list,
         description="Sample data points for the bound widget preview.",
+    )
+    rows: List[GUITableRow] = Field(
+        default_factory=list,
+        description=(
+            "Sample rows for a 'table' binding — 4-6 realistic rows, each a list "
+            "of cell strings aligned to 'columns'. REQUIRED for tables so the "
+            "table renders with real data instead of an empty grid."
+        ),
     )
 
 
