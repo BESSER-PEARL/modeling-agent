@@ -10,6 +10,7 @@ from handlers.file_conversion_handler import (
     detect_file_type,
     detect_plantuml_diagram_type,
     _resolve_diagram_type,
+    _parse_llm_response,
     CONVERTIBLE_DIAGRAM_TYPES,
 )
 
@@ -222,6 +223,16 @@ class TestConvertFileImage:
 
 class TestConvertFileEdgeCases:
     """Test error handling and edge cases."""
+
+    def test_parse_llm_response_none_is_graceful(self):
+        # An empty/None vision reply must NOT crash on .strip() — it should
+        # return a clean, retryable agent_error (regression: the image->GUI
+        # vision call returned None and crashed with NoneType.strip()).
+        for bad in (None, "", "   "):
+            result = _parse_llm_response(bad, "page.png", "image")
+            assert result["action"] == "agent_error"
+            msg = result["message"].lower()
+            assert "couldn't read" in msg or "no content" in msg
 
     def test_invalid_base64_returns_error(self):
         result = convert_file_to_class_spec(

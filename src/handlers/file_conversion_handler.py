@@ -746,6 +746,17 @@ def _parse_llm_response(
     expected_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Parse the LLM response, detect diagram type, and validate the spec."""
+    # A vision/LLM call can return None (empty content, a refusal, or a truncated
+    # response) — guard BEFORE .strip() so an intermittent empty reply becomes a
+    # clean, retryable message instead of an AttributeError crash.
+    if not isinstance(raw_response, str) or not raw_response.strip():
+        logger.error(
+            f"[FileConversion] Empty/None LLM response for {source_label} ({filename})"
+        )
+        return _error_response(
+            f"I couldn't read the {source_label} — the AI model returned no content. "
+            "Please try again, or describe the page you want instead."
+        )
     # Clean markdown code fences if present
     cleaned = raw_response.strip()
     if cleaned.startswith("```json"):
