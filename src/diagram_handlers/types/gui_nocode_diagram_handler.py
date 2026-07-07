@@ -1929,8 +1929,18 @@ def _normalize_html_section(
     else:
         section = {"tagName": "section", "attributes": {"class": class_hint}, "components": real}
     _ensure_section_class(section, class_hint)
-    if not _is_chrome_section(section) and not _section_has_heading(section):
-        _prepend_heading(section, title)
+    # Only inject a heading when we have a REAL title. Prepending a generic
+    # "Section" (the old fallback) leaked ugly placeholder headings onto every
+    # heading-less band (stats rows, CTA bands, image strips). Edit-op matching
+    # relies on the stable class, not a forced heading, so skipping is safe.
+    clean_title = _clean_text(title)
+    if (
+        clean_title
+        and clean_title.lower() != "section"
+        and not _is_chrome_section(section)
+        and not _section_has_heading(section)
+    ):
+        _prepend_heading(section, clean_title)
     return section
 
 
@@ -2478,9 +2488,8 @@ Each section is EXACTLY ONE of these two shapes:
 }}
    - Put a <!--WIDGET:kind--> comment inside the chrome where the widget belongs; the server splices the real, data-bound widget there.
    - The "html" chrome is OPTIONAL — omit it and the widget is card-wrapped automatically — but authoring chrome around it gives a far nicer result.
-   - TABLES: you MUST fill "columns" AND 4-6 "rows" ("cells" aligned 1:1 to "columns"). A table with no rows renders EMPTY — that is a failure.
-   - CHARTS: fill 4-6 "sampleData" points (name + numeric value; pie adds a "color" hex).
-   - Prefer a DATA section ONLY for genuinely tabular/records data (orders, bookings, transactions, patients, inventory). For listings of PEOPLE / PRODUCTS / PROFILES / FEATURES / PLANS, use an HTML card GRID instead (see below) — never a table.
+   - Whatever widget you place, populate it or it renders empty: a table needs "columns" + "rows" ("cells" aligned 1:1 to "columns"); a chart needs "sampleData" (name + numeric value; pie adds a "color" hex).
+   - Pick the widget that fits the content: a table suits tabular records (orders, bookings, transactions, inventory); a card grid (below) usually reads better for listings of people / products / profiles / features. Use your judgment.
 
 Design-system classes (styled automatically for the {domain} theme — just use the names):
   ds-page, ds-container, ds-section, ds-hero, ds-heading, ds-card, ds-grid-2, ds-grid-3,
@@ -2494,23 +2503,23 @@ Realism directives (this is what makes the result credible, not generic):
 - Reproduce the SPECIFIC real-world artifact the request implies, with its real structure. E.g. a government service page has an official header, an eligibility notice, an applicant-identity fieldset, a multi-step application form, a document upload, declarations/consent checkboxes, and a submit + application tracker — NOT a generic marketing page.
 - Write plausible, concrete domain copy: real-sounding labels, figures and names. Never leave a placeholder.
 
-CARD GRID (use for listings of people / products / profiles / features / plans):
+CARD GRID (a strong pattern for listings of people / products / profiles / features / plans):
   <section class='ds-section'><h2 class='ds-heading'>Featured Profiles</h2>
     <div class='ds-grid-3'>
       <div class='ds-card'>{_SVG_THUMB_HINT}<h3 class='ds-heading'>Ava, 27</h3><p>Loves hiking & jazz. 92% match.</p><a class='ds-btn ds-btn-primary' href='#'>View</a></div>
-      ...3-6 cards, each with a real name/label + concrete copy + a visual...
+      ...one card per item, each with a real name/label + concrete copy + (optionally) a visual...
     </div></section>
 
-Imagery (a page with zero images looks unfinished — every hero + every card in a grid gets a visual):
-- Use an inline <svg ...>...</svg> illustration or avatar, OR an <img> whose src is a data: URI. NEVER an external/http image URL (blocked by CSP).
-- Cheap, always-valid placeholder you may reuse and recolor: {_SVG_THUMB_HINT}
+Imagery (use it where it strengthens the design — heroes, profile/product cards, feature icons):
+- ONLY an inline <svg ...>...</svg> or an <img> whose src is a data: URI ever renders — external/http image URLs are blocked by CSP, so never use them.
+- Reusable, CSP-safe placeholder if you want one: {_SVG_THUMB_HINT}
 
-Layout rules:
-1. Create MULTIPLE pages for an app/platform/dashboard (Home + 2-3 feature screens); a single rich page ONLY when the user explicitly asked for "a landing page" or "a page". Each page has 3-6 ordered sections.
-2. Lead each page with the section that fits its PURPOSE — a marketing ds-hero ONLY for a landing page; data pages lead with a heading + a ds-notice or KPI row.
-3. Full-width sections (ds-hero, ds-footer, ds-nav) span the page; everything else sits in cards inside a centered container.
-4. EVERY page ends with a ds-footer section.
-5. Every page has real headings AND paragraph copy — never a page that is only widgets. Every data widget is populated (tables have rows, charts have sampleData).
+Design judgment — build what THIS request actually needs; do not pad or force a fixed skeleton:
+1. Pages: let the request set the count. A multi-screen app / platform / dashboard naturally spans several pages (an overview/home plus a screen per major feature); a "landing page" or single-"page" request is one focused page. Each page a coherent set of ordered sections.
+2. Lead each page with the section that fits its purpose — a marketing ds-hero for a landing page; a data screen with a heading + KPIs or a ds-notice. Don't default to a hero for a data app.
+3. Full-width sections (ds-hero, ds-footer, ds-nav) span the page; other sections sit in cards inside a centered container.
+4. Close with a ds-footer when it suits the page (most marketing/landing pages); an app/data screen may not need one.
+5. Populate every widget you place, and give each page enough real copy to read as finished — but include only what the request calls for, not filler.
 6. Keep an entity's field names IDENTICAL across every section it appears in.
 7. Return JSON only.{class_block}"""
 
@@ -2528,8 +2537,10 @@ Layout rules:
                 "types, e.g. Book: title:str, author:str, genre:str, year:int, "
                 "available:bool. These field names are the contract for the whole "
                 "UI — pick them once and do not vary them.\n"
-                "2. Pages: prefer one page per major entity plus an overview/home "
-                "page.\n"
+                "2. Pages: decide how many screens THIS request needs — a full "
+                "app/platform/dashboard spans several (an overview/home plus a "
+                "screen per major feature or entity); a 'landing page' or single "
+                "'page' request is one focused page. Don't pad.\n"
                 "3. Sections per page: choose the app TYPE (marketing / dashboard / "
                 "data-catalog / CRUD) and lead each page with the section that fits "
                 "it — do NOT default to a marketing hero for a data app.\n"
