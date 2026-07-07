@@ -54,6 +54,9 @@ SAFE_TAGS = frozenset({
     "p", "span", "a", "ul", "ol", "li", "img", "button", "label",
     "strong", "em", "b", "i", "small", "br", "hr", "blockquote",
     "figure", "figcaption",
+    # form controls (static mockup fields — GrapesJS renders them editable)
+    "form", "fieldset", "legend", "input", "textarea", "select", "option",
+    "optgroup",
     # inline svg (icons)
     "svg", "path", "g", "circle", "rect", "line", "polyline", "polygon", "text",
     # plain, non data-bound tables
@@ -63,7 +66,7 @@ SAFE_TAGS = frozenset({
 #: Tags that never have children — treated as self-closing so the parser's
 #: lack of HTML void-element knowledge doesn't leave them "open".
 VOID_TAGS = frozenset({
-    "img", "br", "hr",
+    "img", "br", "hr", "input",
     "path", "circle", "rect", "line", "polyline", "polygon",
 })
 

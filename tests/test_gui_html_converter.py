@@ -185,6 +185,51 @@ def test_plain_table_is_allowed_as_markup():
     assert node["components"][0]["tagName"] == "thead"
 
 
+def test_form_controls_survive_with_attributes():
+    # Regression: an LLM-authored form must keep its input/select/textarea
+    # controls (they used to be flattened away, leaving labels with no fields).
+    form = _first(html_to_components(
+        '<form class="ds-form">'
+        '<div class="ds-field"><label for="n">Name</label>'
+        '<input class="ds-input" type="text" name="n" placeholder="Jane" /></div>'
+        '<div class="ds-field"><label for="r">Reason</label>'
+        '<textarea class="ds-input" name="r" rows="3"></textarea></div>'
+        '<div class="ds-field"><label for="o">Office</label>'
+        '<select class="ds-input" name="o"><option>North</option><option>South</option></select></div>'
+        '<button class="ds-btn ds-btn-primary" type="submit">Submit</button>'
+        '</form>'
+    ))
+    assert form["tagName"] == "form"
+    tags = []
+
+    def _walk(n):
+        if isinstance(n, dict):
+            if n.get("tagName"):
+                tags.append(n["tagName"])
+            for c in n.get("components") or []:
+                _walk(c)
+
+    _walk(form)
+    assert tags.count("input") == 1
+    assert tags.count("textarea") == 1
+    assert tags.count("select") == 1
+    assert tags.count("option") == 2
+    assert tags.count("label") == 3
+    # the input is a void element and preserves its benign attributes
+    inp = next(c for c in _iter(form) if c.get("tagName") == "input")
+    assert inp["attributes"]["type"] == "text"
+    assert inp["attributes"]["name"] == "n"
+    assert inp["attributes"]["placeholder"] == "Jane"
+    assert inp["attributes"]["class"] == "ds-input"
+    assert "components" not in inp  # void: no children frame left open
+
+
+def _iter(node):
+    yield node
+    for c in node.get("components") or []:
+        yield from _iter(c)
+
+
 # ---------------------------------------------------------------------------
 # Unknown / unsafe tag handling
 # ---------------------------------------------------------------------------
