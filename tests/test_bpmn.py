@@ -34,6 +34,7 @@ def test_bpmn_schema_pools_default_empty():
     assert d["pools"] == []
     assert d["nodes"][0]["poolId"] is None
     assert d["nodes"][0]["laneId"] is None
+    assert d["nodes"][0]["owner"] is None
 
 
 def test_bpmn_schema_pool_with_lanes_round_trips():
@@ -51,6 +52,7 @@ def test_bpmn_schema_pool_with_lanes_round_trips():
     assert {l["id"] for l in d["pools"][0]["lanes"]} == {"chef", "clerk"}
     assert d["nodes"][0]["poolId"] == "vendor"
     assert d["nodes"][0]["laneId"] == "chef"
+    assert d["nodes"][0]["owner"] is None
 
 
 def test_bpmn_modification_target_has_node_id():
@@ -129,6 +131,7 @@ def test_bpmn_validation_drops_dangling_pool_ref():
     node = next(n for n in spec["nodes"] if n["id"] == "t")
     assert node["poolId"] is None
     assert node["laneId"] is None
+    assert node["owner"] is None
 
 
 def test_bpmn_validation_drops_dangling_lane_ref_keeps_pool():
@@ -141,6 +144,7 @@ def test_bpmn_validation_drops_dangling_lane_ref_keeps_pool():
     node = next(n for n in spec["nodes"] if n["id"] == "t")
     assert node["poolId"] == "vendor"
     assert node["laneId"] is None
+    assert node["owner"] is None
 
 
 def test_bpmn_validation_keeps_valid_pool_and_lane_refs():
@@ -153,6 +157,7 @@ def test_bpmn_validation_keeps_valid_pool_and_lane_refs():
     node = next(n for n in spec["nodes"] if n["id"] == "t")
     assert node["poolId"] == "vendor"
     assert node["laneId"] == "chef"
+    assert node["owner"] == "chef"
     assert spec["pools"][0]["id"] == "vendor"
 
 
@@ -167,7 +172,42 @@ def test_bpmn_validation_no_pools_clears_all_refs():
     node = next(n for n in spec["nodes"] if n["id"] == "t")
     assert node["poolId"] is None
     assert node["laneId"] is None
+    assert node["owner"] is None
     assert spec["pools"] == []
+
+
+def test_bpmn_validation_infers_lane_owner_from_neighbors():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": [
+            {"id": "start", "name": "Patient Arrives", "type": "startEvent", "poolId": "hospital"},
+            {"id": "register", "name": "Register Patient", "type": "task", "taskType": "user", "poolId": "hospital", "laneId": "receptionist"},
+            {"id": "vitals", "name": "Take Vitals", "type": "task", "taskType": "manual", "poolId": "hospital", "laneId": "nurse"},
+            {"id": "examine", "name": "Examine Patient", "type": "task", "taskType": "user", "poolId": "hospital", "laneId": "doctor"},
+            {"id": "end", "name": "Patient Examined", "type": "endEvent", "poolId": "hospital"},
+        ],
+        "flows": [
+            {"source": "start", "target": "register", "name": ""},
+            {"source": "register", "target": "vitals", "name": ""},
+            {"source": "vitals", "target": "examine", "name": ""},
+            {"source": "examine", "target": "end", "name": ""},
+        ],
+        "pools": [{
+            "id": "hospital",
+            "name": "Hospital",
+            "lanes": [
+                {"id": "receptionist", "name": "Receptionist"},
+                {"id": "nurse", "name": "Nurse"},
+                {"id": "doctor", "name": "Doctor"},
+            ],
+        }],
+    })
+    nodes = {n["id"]: n for n in spec["nodes"]}
+    assert nodes["start"]["laneId"] == "receptionist"
+    assert nodes["start"]["owner"] == "receptionist"
+    assert nodes["end"]["laneId"] == "doctor"
+    assert nodes["end"]["owner"] == "doctor"
+
 
 
 def test_bpmn_fallback_envelope():
@@ -468,3 +508,4 @@ def test_bpmn_suggestions_have_nonempty_prompts():
         assert action.get("prompt"), (
             f"Chip '{action.get('label')}' has empty prompt — WME will no-op when user clicks it"
         )
+
