@@ -12,6 +12,16 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
+from .gui_html_converter import (
+    html_to_components,
+    find_widget_slots,
+    replace_widget_slot,
+)
+from .gui_design_system import (
+    stylesheet_rules,
+    block_exemplars,
+    pick_domain,
+)
 from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
 from schemas import SingleGUIElementSpec, GUIModificationSpec
 from utilities.class_metadata import format_class_metadata_for_prompt
@@ -1692,7 +1702,7 @@ def _build_class_bound_gui(class_metadata: List[Dict[str, Any]]) -> Dict[str, An
     }
 
 
-def _build_section_component(section_spec: Dict[str, Any], class_metadata: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+def _legacy_section_component(section_spec: Dict[str, Any], class_metadata: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     section_type = _clean_text(section_spec.get("type"), fallback="content").lower()
     title = _clean_text(section_spec.get("title"), fallback="New Section")
     body = _clean_text(section_spec.get("body"), fallback="Section content")
@@ -1732,6 +1742,314 @@ def _build_section_component(section_spec: Dict[str, Any], class_metadata: Optio
         return _metric_card_component(section_spec, class_metadata)
 
     return _content_component(title, body)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — LLM-authored HTML sections + structured widget binding
+# ---------------------------------------------------------------------------
+#
+# A section may now be authored three ways (checked in this order):
+#   1. ``bind``  — a structured data binding; the server builds the typed,
+#                  recognizer-compatible widget and splices it into optional
+#                  LLM-authored HTML *chrome* at a ``<!--WIDGET:slot-->`` marker.
+#   2. ``html``  — rich themed markup the LLM wrote using the .ds-* classes;
+#                  converted to a component tree and normalized to a single
+#                  section carrying a stable class + leading heading.
+#   3. legacy    — today's typed ``type``/``fields`` builders (full back-compat).
+# Every branch degrades gracefully: a failure falls back to the typed builder
+# for the declared kind or a themed content box — a section NEVER crashes the
+# whole page.
+
+_HEADING_TAGS = ("h1", "h2", "h3")
+
+# Chart ``bind.kind`` -> the chart-type token the typed builder expects.
+_BIND_CHART_KINDS = {
+    "bar_chart": "bar-chart",
+    "pie_chart": "pie-chart",
+    "line_chart": "line-chart",
+    "radar_chart": "radar-chart",
+}
+
+
+def _section_has_heading(node: Dict[str, Any]) -> bool:
+    """True if *node* contains an h1/h2/h3 with text (recursively).
+
+    Mirrors ``_section_label``'s heading probe so an injected heading is
+    findable by the modification edit-ops (_match_section / _set_section_heading).
+    """
+    if not isinstance(node, dict):
+        return False
+    comps = node.get("components")
+    if not isinstance(comps, list):
+        return False
+    for child in comps:
+        if not isinstance(child, dict):
+            continue
+        if child.get("tagName") in _HEADING_TAGS and _clean_text(child.get("content")):
+            return True
+        if _section_has_heading(child):
+            return True
+    return False
+
+
+def _ensure_section_class(node: Dict[str, Any], fallback: str = "ds-section") -> None:
+    """Guarantee *node* carries a non-empty ``class`` so edit-ops can locate it."""
+    attrs = node.get("attributes")
+    if not isinstance(attrs, dict):
+        attrs = {}
+        node["attributes"] = attrs
+    if not _clean_text(attrs.get("class")):
+        attrs["class"] = fallback
+
+
+def _is_chrome_section(node: Dict[str, Any]) -> bool:
+    """True for full-width chrome (footer / nav) that locates by class, not a
+    heading — so we don't inject a spurious filler heading into it."""
+    tag = node.get("tagName", "")
+    if tag in ("footer", "nav"):
+        return True
+    attrs = node.get("attributes")
+    cls = attrs.get("class", "") if isinstance(attrs, dict) else ""
+    classes = set(cls.split()) if isinstance(cls, str) else set()
+    return bool(classes & {"ds-footer", "ds-nav", "assistant-footer", "assistant-nav-header"})
+
+
+def _prepend_heading(node: Dict[str, Any], title: str) -> None:
+    """Insert a leading ``<h2 class="ds-heading">`` so the section has a title."""
+    heading = {
+        "tagName": "h2",
+        "attributes": {"class": "ds-heading"},
+        "content": _clean_text(title, fallback="Section"),
+    }
+    # A section whose only child was text is stored via ``content`` — convert it
+    # back to a textnode child so we can prepend the heading before it.
+    if "content" in node and not isinstance(node.get("components"), list):
+        node["components"] = [{"type": "textnode", "content": node.pop("content")}]
+    comps = node.get("components")
+    if not isinstance(comps, list):
+        comps = []
+        node["components"] = comps
+    comps.insert(0, heading)
+
+
+def _normalize_html_section(
+    nodes: List[Dict[str, Any]],
+    title: str = "Section",
+    class_hint: str = "ds-section",
+) -> Optional[Dict[str, Any]]:
+    """Collapse a converted-HTML node list into ONE stable section node.
+
+    Guarantees exactly one top-level node with a class + a leading heading so
+    downstream edit-ops (which treat one section == one node) keep matching.
+    Returns ``None`` when there is nothing renderable (caller then falls back).
+    """
+    real = [n for n in nodes if isinstance(n, dict)]
+    if not real:
+        return None
+    if len(real) == 1 and _clean_text(real[0].get("tagName")):
+        section = real[0]
+    else:
+        section = {"tagName": "section", "attributes": {"class": class_hint}, "components": real}
+    _ensure_section_class(section, class_hint)
+    if not _is_chrome_section(section) and not _section_has_heading(section):
+        _prepend_heading(section, title)
+    return section
+
+
+def _ds_card_section(title: str, widget_node: Dict[str, Any]) -> Dict[str, Any]:
+    """Wrap a bare widget in a themed ``.ds-section > .ds-card`` with a heading."""
+    card_children: List[Dict[str, Any]] = [
+        {
+            "tagName": "h3",
+            "attributes": {"class": "ds-heading"},
+            "content": _clean_text(title, fallback="Section"),
+        },
+        widget_node,
+    ]
+    return {
+        "tagName": "section",
+        "attributes": {"class": "ds-section"},
+        "components": [
+            {"tagName": "div", "attributes": {"class": "ds-card"}, "components": card_children}
+        ],
+    }
+
+
+def _bind_default_title(bind: Dict[str, Any]) -> str:
+    return _clean_text(bind.get("kind"), fallback="Data").replace("_", " ").title()
+
+
+def _build_bind_widget(
+    bind: Dict[str, Any],
+    section_spec: Dict[str, Any],
+    class_metadata: Optional[List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """Build the typed, recognizer-compatible widget node for ``bind.kind``.
+
+    Synthesizes a legacy-style section spec (className / sampleData / fields)
+    the existing typed builders understand, so the widget keeps its exact
+    recognizer contract (type:'table'+data-source+columns, type:'<chart>'+series,
+    type:'metric-card', ...) while the surrounding skin is LLM-authored.
+    """
+    kind = _clean_text(bind.get("kind")).lower()
+    title = _clean_text(section_spec.get("title"), fallback="")
+    cta = _clean_text(section_spec.get("ctaLabel"), fallback="Submit")
+    class_name = _clean_text(bind.get("className")) or _clean_text(section_spec.get("className"))
+    columns = [c for c in (bind.get("columns") or []) if isinstance(c, str) and c.strip()]
+    sample = bind.get("sampleData") or section_spec.get("sampleData") or []
+
+    widget_spec: Dict[str, Any] = {
+        "title": title,
+        "className": class_name,
+        "sampleData": sample,
+        "fields": columns,
+    }
+
+    if kind in _BIND_CHART_KINDS:
+        return _chart_component(_BIND_CHART_KINDS[kind], widget_spec, class_metadata)
+    if kind == "table":
+        return _table_component(widget_spec, class_metadata)
+    if kind == "metric_card":
+        return _metric_card_component(widget_spec, class_metadata)
+    if kind == "form":
+        return _form_component(title or "Form", columns, cta)
+    if kind == "dashboard":
+        return _dashboard_component(widget_spec, class_metadata)
+    # Unknown kind — a data table is the safest generic widget.
+    return _table_component(widget_spec, class_metadata)
+
+
+def _build_bound_section(
+    section_spec: Dict[str, Any],
+    bind: Dict[str, Any],
+    class_metadata: Optional[List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """Splice a typed widget into optional LLM chrome, or card-wrap it."""
+    widget_node = _build_bind_widget(bind, section_spec, class_metadata)
+    title = _clean_text(section_spec.get("title")) or _bind_default_title(bind)
+
+    chrome = section_spec.get("html")
+    if _clean_text(chrome):
+        nodes = html_to_components(chrome)
+        slots = find_widget_slots(nodes)
+        if slots:
+            nodes = replace_widget_slot(nodes, slots[0], widget_node)
+        else:
+            # Chrome without a marker: keep the authored skin AND append the
+            # widget in a card so its data still renders (nothing lost).
+            nodes = list(nodes) + [
+                {"tagName": "div", "attributes": {"class": "ds-card"}, "components": [widget_node]}
+            ]
+        section = _normalize_html_section(nodes, title=title)
+        if section is not None:
+            return section
+
+    # No chrome (or empty conversion): wrap the widget in a themed card section.
+    return _ds_card_section(title, widget_node)
+
+
+def _build_section_component(
+    section_spec: Dict[str, Any],
+    class_metadata: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Turn one section spec into ONE GrapesJS section node (Phase 3 dispatch).
+
+    Branches: ``bind`` -> typed widget in LLM chrome; ``html`` -> authored
+    themed markup; else -> legacy typed builder. Each branch is guarded so any
+    failure degrades to the typed builder for the declared kind or a themed
+    content box — a section is NEVER allowed to crash the page.
+    """
+    if not isinstance(section_spec, dict):
+        return _content_component("New Section", "Section content")
+
+    bind = section_spec.get("bind")
+    html = section_spec.get("html")
+
+    # -- (1) DATA section: structured binding (+ optional LLM chrome) --------
+    if isinstance(bind, dict) and _clean_text(bind.get("kind")):
+        try:
+            return _build_bound_section(section_spec, bind, class_metadata)
+        except Exception:
+            logger.warning(
+                "[GUINoCode] bind section failed; falling back to typed builder",
+                exc_info=True,
+            )
+            fallback_spec = dict(section_spec)
+            fallback_spec["type"] = _clean_text(bind.get("kind")) or "content"
+            if not _clean_text(fallback_spec.get("className")):
+                fallback_spec["className"] = _clean_text(bind.get("className"))
+            try:
+                return _legacy_section_component(fallback_spec, class_metadata)
+            except Exception:
+                return _content_component(
+                    _clean_text(section_spec.get("title"), fallback="Section"), ""
+                )
+
+    # -- (2) HTML section: LLM-authored themed markup -----------------------
+    if _clean_text(html):
+        try:
+            nodes = html_to_components(html)
+            section = _normalize_html_section(
+                nodes, title=_clean_text(section_spec.get("title"), fallback="Section")
+            )
+            if section is not None:
+                return section
+        except Exception:
+            logger.warning(
+                "[GUINoCode] html section failed; falling back to content box",
+                exc_info=True,
+            )
+        # Empty / unparseable html → themed content box (never crash).
+        return _content_component(
+            _clean_text(section_spec.get("title"), fallback="Section"),
+            _clean_text(section_spec.get("body"), fallback="Section content"),
+        )
+
+    # -- (3) Legacy typed section (full back-compat) ------------------------
+    try:
+        return _legacy_section_component(section_spec, class_metadata)
+    except Exception:
+        logger.warning(
+            "[GUINoCode] legacy section build failed; content fallback",
+            exc_info=True,
+        )
+        return _content_component(
+            _clean_text(section_spec.get("title"), fallback="Section"),
+            _clean_text(section_spec.get("body"), fallback="Section content"),
+        )
+
+
+def _collect_data_uri_assets(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Collect any embedded ``data:`` image sources as GrapesJS asset entries.
+
+    LLM markup may embed inline images as data-URIs (external URLs are stripped
+    by the converter). Surfacing them in ``model['assets']`` lets the editor's
+    asset manager list them. Returns ``[]`` when there is no inline imagery.
+    """
+    found: List[Dict[str, Any]] = []
+    seen: set = set()
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                _walk(item)
+            return
+        if not isinstance(node, dict):
+            return
+        if node.get("tagName") == "img":
+            attrs = node.get("attributes")
+            src = attrs.get("src", "") if isinstance(attrs, dict) else ""
+            if isinstance(src, str) and src.startswith("data:") and src not in seen:
+                seen.add(src)
+                found.append({"type": "image", "src": src})
+        _walk(node.get("components"))
+        _walk(node.get("frames"))
+        comp = node.get("component")
+        if isinstance(comp, dict):
+            _walk(comp)
+
+    _walk(pages)
+    return found
 
 
 def _extract_balanced_objects(text: str, start: int) -> List[str]:
@@ -1901,15 +2219,22 @@ Rules:
 
         # Separate full-width components (hero, footer, nav) from card sections.
         # Card sections are wrapped in a <main> container with max-width for
-        # a clean centered layout.
+        # a clean centered layout. Covers both the legacy ``assistant-*`` skin
+        # and the Phase-3 ``ds-*`` design-system classes; the class attribute
+        # may carry several classes, so match on any token.
         final_components: List[Dict[str, Any]] = []
         main_children: List[Dict[str, Any]] = []
-        _FULL_WIDTH_CLASSES = {"assistant-hero", "assistant-footer", "assistant-nav-header"}
+        _FULL_WIDTH_CLASSES = {
+            "assistant-hero", "assistant-footer", "assistant-nav-header",
+            "ds-hero", "ds-footer", "ds-nav",
+        }
 
         def _is_full_width(comp: Dict[str, Any]) -> bool:
-            cls = comp.get("attributes", {}).get("class", "")
+            attrs = comp.get("attributes")
+            cls = attrs.get("class", "") if isinstance(attrs, dict) else ""
+            classes = set(cls.split()) if isinstance(cls, str) else set()
             tag = comp.get("tagName", "")
-            return cls in _FULL_WIDTH_CLASSES or tag in ("nav", "footer")
+            return bool(classes & _FULL_WIDTH_CLASSES) or tag in ("nav", "footer")
 
         for comp in page_components:
             if _is_full_width(comp):
@@ -2024,107 +2349,77 @@ Rules:
         if class_metadata:
             class_block = "\n\n" + format_class_metadata_for_prompt(class_metadata)
 
-        system_prompt = f"""You are a UI modeling expert.
+        # Pick the design domain up front (deterministic keyword heuristic). It
+        # drives BOTH the exemplars injected into the authoring prompt below and
+        # the final stylesheet at assembly; the LLM may override it via a
+        # top-level "domain" field in its output.
+        domain = pick_domain(user_request)
+        exemplars = block_exemplars(domain)
+        exemplars_block = "\n\n".join(
+            f"<!-- {name} -->\n{markup}" for name, markup in exemplars.items()
+        )
+
+        system_prompt = f"""You are a senior product designer AUTHORING a themed, production-realistic web app for the **{domain}** domain.
+
+You do NOT pick sections from a fixed widget menu. You AUTHOR the markup for each section using a shared design system, and you BIND real data widgets where the app shows data.
 
 Return ONLY JSON with this shape:
 {{
-  "projectName": "Name",
+  "projectName": "App name",
+  "domain": "{domain}",
   "pages": [
     {{
       "name": "Home",
-      "sections": [
-        {{
-          "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard|metric_card|stats_grid|footer|two_column",
-          "title": "Section title",
-          "body": "Optional text",
-          "items": ["Optional list item / footer link label"],
-          "fields": ["Optional field"],
-          "ctaLabel": "Optional CTA",
-          "className": "Optional class name to bind data to",
-          "sampleData": [
-            {{"name": "Realistic label from domain", "value": 42}}
-          ],
-          "stats": [{{"label": "Total Users", "value": "1,234"}}],
-          "left": {{"type": "...", "title": "..."}},
-          "right": {{"type": "...", "title": "..."}}
-        }}
-      ]
+      "sections": [ <ordered list of sections, each one of the two shapes below> ]
     }}
   ]
 }}
 
-Section types:
-- hero: Hero/landing banner with title, body, CTA button (full-width, great for first section on home page)
-- feature_list: List of feature items
-- content: Generic text section
-- form: Input form with fields
-- table: Data table bound to a class — auto-generates columns from attributes and relationships
-- bar_chart / pie_chart / line_chart / radar_chart: Chart visualisations bound to class data
-- dashboard: Combined table + charts for a class (auto-generates table + relevant charts)
-- metric_card: Single KPI metric card from a class
-- stats_grid: Row of stat cards. Provide "stats" as [{{"label": "Total Users", "value": "1,234"}}, ...] (3-4 items) — put the numbers in "value" so they render
-- footer: Page footer with project name and links. Provide "items" as link labels like ["Privacy", "Terms", "Contact"]
-- two_column: Side-by-side layout. Provide "left" and "right" as nested section specs (e.g. left: table, right: pie_chart)
+Each section is EXACTLY ONE of these two shapes:
+
+(a) HTML section — rich themed markup you write yourself:
+{{
+  "html": "<section class='ds-section'><h2 class='ds-heading'>Section title</h2> ...rich content using .ds-* classes + semantic tags... </section>"
+}}
+   - It MUST start with a heading (h1-h6) and its ROOT element MUST carry a stable class (e.g. ds-section, ds-hero, ds-footer).
+   - Use ONLY the .ds-* component classes listed below and semantic tags: h1-h6, p, span, a, ul, li, button, img (data-URI or no src), svg, and plain table markup.
+   - NO <script>/<style>, NO external URLs, NO webfonts (blocked by CSP). NO lorem ipsum, NO empty placeholders.
+
+(b) DATA section — LLM-authored chrome + a real, live, data-bound widget:
+{{
+  "bind": {{
+    "kind": "table|bar_chart|pie_chart|line_chart|radar_chart|metric_card|form|dashboard",
+    "className": "Entity name from the class diagram (when available)",
+    "columns": ["field", "names"],
+    "series": ["series names"],
+    "sampleData": [{{"name": "Realistic label", "value": 42}}]
+  }},
+  "html": "<section class='ds-section'><h3 class='ds-heading'>Title</h3><div class='ds-card'><!--WIDGET:table--></div></section>"
+}}
+   - Put a <!--WIDGET:kind--> comment inside the chrome where the widget belongs; the server splices the real, data-bound widget there.
+   - The "html" chrome is OPTIONAL — omit it and the widget is card-wrapped automatically — but authoring chrome around it gives a far nicer result.
+   - ALWAYS include 4-6 realistic sampleData rows: charts need name+value (pie adds a color hex); tables use column-keyed values.
+
+Design-system classes (styled automatically for the {domain} theme — just use the names):
+  ds-page, ds-container, ds-section, ds-hero, ds-heading, ds-card, ds-grid-2, ds-grid-3,
+  ds-kpi, ds-kpi-value, ds-kpi-label, ds-table-wrap, ds-btn, ds-btn-primary, ds-notice,
+  ds-badge, ds-field, ds-label, ds-input, ds-nav, ds-footer.
+
+Proven, editable-safe block patterns for the {domain} domain — COMPOSE from these and REUSE their .ds-* classes:
+{exemplars_block}
+
+Realism directives (this is what makes the result credible, not generic):
+- Reproduce the SPECIFIC real-world artifact the request implies, with its real structure. E.g. a government service page has an official header, an eligibility notice, an applicant-identity fieldset, a multi-step application form, a document upload, declarations/consent checkboxes, and a submit + application tracker — NOT a generic marketing page.
+- Write plausible, concrete domain copy: real-sounding labels, figures and names. Never leave a placeholder.
 
 Layout rules:
-1. FIRST decide the app TYPE from the request, then design for it (patterns below).
-   Do NOT bolt a marketing hero onto a data app — that is the #1 thing that makes
-   generated UIs look generic and wrong.
-2. Create 2-4 pages; each page 2-5 sections.
-3. Lead each page with the section that fits its PURPOSE (not always a hero):
-   - marketing / landing / "home" page -> hero
-   - dashboard / admin / overview page -> stats_grid (KPIs)
-   - data / list / catalog / directory page -> a short "content" intro that acts as
-     the page header (what you can browse/search), immediately followed by a table
-4. EVERY page ends with a footer section.
-5. Use stats_grid to surface key numbers near the top of overview/data pages.
-6. Use two_column to pair related content (classically a table + a chart).
-7. Use dashboard for pages that need both data display and visualisation together.
-8. When classes are available, every page includes >=1 data-bound section
-   (table/chart/dashboard) and ALWAYS sets className.
-9. For table/chart/dashboard sections, ALWAYS include a "sampleData" array of 4-6
-   realistic rows using real attribute names and plausible domain values (e.g. a
-   Shoe table: {{"brand": "Nike", "size": 42, "price": 129.99}}). Charts: each item
-   needs "name" + "value"; pie charts add a "color" hex. Tables: each item is a dict
-   keyed by column name.
-10. Return JSON only.
-
-App TYPE -> page pattern (pick the closest, then adapt freely):
-- MARKETING / LANDING: hero -> feature_list -> stats_grid -> footer
-- ADMIN / DASHBOARD: stats_grid(3-4 KPIs) -> two_column(table + bar_chart) -> table -> footer   (NO marketing hero)
-- DATA / CATALOG / DIRECTORY (a library catalog, product list, member directory):
-    content(header: what you can browse) -> stats_grid(totals) -> table(the records)
-    -> two_column(table + pie_chart by category) -> footer
-- CRUD APP: content(intro) -> table(records) -> form(add / edit) -> footer
-- DETAIL PAGE: content(description) -> dashboard(entity data) -> form(edit) -> footer
-
-Design data-first: one page per major entity, a Home/Overview page whose stats_grid
-summarizes all entities, charts that fit the entity (pie for categories, bar for
-quantities, line for time series), realistic domain data.
-CONSISTENCY IS CRITICAL: when no class diagram is provided, invent a small fixed
-schema up front and reuse the SAME field names for an entity in EVERY section it
-appears (a Book is always {{"title", "author", "genre", "available"}} — never
-{{"name", "year"}} elsewhere). Set className to the entity name on every data section.
-
-Example — a library catalog (a DATA app: it leads with a content header + stats, NOT a hero):
-{{
-  "projectName": "City Library",
-  "pages": [
-    {{"name": "Catalog", "sections": [
-      {{"type": "content", "title": "Browse the Catalog", "body": "Search and explore the library's books, authors and availability."}},
-      {{"type": "stats_grid", "title": "At a glance", "stats": [{{"label": "Books", "value": "12,480"}}, {{"label": "Members", "value": "3,210"}}, {{"label": "On loan", "value": "1,045"}}]}},
-      {{"type": "two_column",
-        "left": {{"type": "table", "title": "Books", "className": "Book", "sampleData": [{{"title": "Dune", "author": "Herbert", "genre": "Sci-Fi", "available": true}}, {{"title": "1984", "author": "Orwell", "genre": "Dystopia", "available": false}}]}},
-        "right": {{"type": "pie_chart", "title": "By genre", "className": "Book", "sampleData": [{{"name": "Sci-Fi", "value": 320, "color": "#6366f1"}}, {{"name": "Fiction", "value": 540, "color": "#f59e0b"}}, {{"name": "History", "value": 210, "color": "#22c55e"}}]}}}},
-      {{"type": "footer", "items": ["Hours", "Membership", "Contact"]}}
-    ]}},
-    {{"name": "Members", "sections": [
-      {{"type": "stats_grid", "stats": [{{"label": "Active", "value": "3,210"}}, {{"label": "New this month", "value": "142"}}, {{"label": "Overdue", "value": "87"}}]}},
-      {{"type": "table", "title": "Members", "className": "Member", "sampleData": [{{"name": "A. Khan", "joined": "2024-01-12", "loans": 3}}, {{"name": "L. Romero", "joined": "2023-11-03", "loans": 1}}]}},
-      {{"type": "footer", "items": ["Hours", "Membership", "Contact"]}}
-    ]}}
-  ]
-}}{class_block}"""
+1. Create 2-4 pages; each page 3-6 ordered sections.
+2. Lead each page with the section that fits its PURPOSE — a marketing ds-hero ONLY for a landing page; data pages lead with a heading + a ds-notice or KPI row.
+3. Full-width sections (ds-hero, ds-footer, ds-nav) span the page; everything else sits in cards inside a centered container.
+4. EVERY page ends with a ds-footer section.
+5. When classes are available, every page has >=1 DATA section bound with className.
+6. Keep an entity's field names IDENTICAL across every section it appears in.
+7. Return JSON only.{class_block}"""
 
         logger.info(f"[GUINoCode] generate_complete_system called with: {user_request[:120]!r}")
 
@@ -2150,7 +2445,13 @@ Example — a library catalog (a DATA app: it leads with a content header + stat
                 "entity must look identical on every page. A chart aggregates ONE "
                 "field (e.g. count of books by genre).\n"
                 "5. Navigation flow, and realistic domain sample data built from the "
-                "step-1 fields.\n\n"
+                "step-1 fields.\n"
+                "6. DOMAIN: classify this app as ONE of government / finance / health / "
+                "startup / default — this sets the visual theme AND the tone of the copy "
+                f"(our heuristic guess is '{domain}'; confirm it or correct it). Then "
+                "commit to reproducing the SPECIFIC real-world artifact the request "
+                "implies, with its real structure and concrete, plausible copy — never "
+                "generic placeholder text.\n\n"
                 "Design a modern, clean UI. Think like a Lovable/Vercel designer — "
                 "clean typography, generous spacing, purposeful color, and data that "
                 "stays coherent across every page."
@@ -2197,10 +2498,22 @@ Example — a library catalog (a DATA app: it leads with a content header + stat
                 fallback = self.generate_fallback_system()
                 return fallback
 
+            # The domain drives the whole visual identity: the LLM may override
+            # the heuristic pick via a top-level "domain" field, else we keep it.
+            spec_domain = _clean_text(spec.get("domain")) or domain
+            try:
+                styles = stylesheet_rules(spec_domain)
+            except Exception:
+                logger.warning(
+                    "[GUINoCode] stylesheet_rules failed; falling back to empty styles",
+                    exc_info=True,
+                )
+                styles = []
+
             model = {
                 "pages": pages,
-                "styles": [],
-                "assets": [],
+                "styles": styles,
+                "assets": _collect_data_uri_assets(pages),
                 "symbols": [],
                 "version": DEFAULT_GUI_VERSION,
             }

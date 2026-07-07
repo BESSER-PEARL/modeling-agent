@@ -53,6 +53,7 @@ from .agent_diagram import (
 )
 from .gui_diagram import (
     GUISectionSpec,
+    GUIBindSpec,
     SingleGUIElementSpec,
     GUIPageSpec,
     SystemGUISpec,
@@ -96,8 +97,8 @@ __all__ = [
     "AgentModificationTarget", "AgentModificationChanges",
     "AgentModification", "AgentModificationResponse",
     # GUI Diagram
-    "GUISectionSpec", "SingleGUIElementSpec", "GUIPageSpec", "SystemGUISpec",
-    "GUIModificationSpec",
+    "GUISectionSpec", "GUIBindSpec", "SingleGUIElementSpec", "GUIPageSpec",
+    "SystemGUISpec", "GUIModificationSpec",
     # Quantum Circuit
     "QuantumOperationSpec", "SingleQuantumGateSpec", "SystemQuantumCircuitSpec",
     "QuantumModificationSpec",

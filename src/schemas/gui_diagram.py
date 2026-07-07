@@ -43,15 +43,67 @@ class GUIStatItem(BaseModel):
     )
 
 
+class GUIBindSpec(BaseModel):
+    """Data-binding spec for a DATA section (Phase 3).
+
+    A DATA section pairs LLM-authored HTML *chrome* (carrying a
+    ``<!--WIDGET:slot-->`` placeholder) with a structured binding the server
+    turns into a real, recognizer-compatible widget node via the typed
+    builders. Every field is CONCRETE-typed so the model still survives OpenAI
+    strict structured output — see the ``GUISampleDataPoint`` note above about
+    why ``Any``/open-dict fields are forbidden (a single one 400s EVERY GUI
+    generate/modification call).
+    """
+    kind: Literal[
+        "table", "bar_chart", "pie_chart", "line_chart", "radar_chart",
+        "metric_card", "form", "dashboard",
+    ] = Field(
+        description="Which typed data widget to bind (e.g. table, bar_chart, form).",
+    )
+    className: Optional[str] = Field(
+        default=None,
+        description="Reference class name from the ClassDiagram for data binding.",
+    )
+    columns: List[str] = Field(
+        default_factory=list,
+        description="Column / field names for table and form widgets.",
+    )
+    series: List[str] = Field(
+        default_factory=list,
+        description="Series names for chart widgets.",
+    )
+    sampleData: List[GUISampleDataPoint] = Field(
+        default_factory=list,
+        description="Sample data points for the bound widget preview.",
+    )
+
+
 class GUISectionSpec(BaseModel):
-    type: Literal[
+    # Phase 3: ``type`` is now OPTIONAL — a section may instead be authored as
+    # rich HTML (``html``) or bound to a typed widget (``bind``). Kept as a
+    # concrete Optional[Literal] (never Any) so strict structured output still
+    # validates. When absent, the legacy typed builder defaults to "content".
+    type: Optional[Literal[
         "hero", "feature_list", "content", "form", "table",
         "bar_chart", "pie_chart", "line_chart", "radar_chart",
         "dashboard", "metric_card", "stats_grid", "footer",
         "two_column",
-    ] = Field(
-        default="content",
-        description="Section layout type (e.g. hero, content, form, table, bar_chart, dashboard, footer).",
+    ]] = Field(
+        default=None,
+        description="Legacy section layout type (hero, content, form, table, ...). Optional; prefer 'html' or 'bind'.",
+    )
+    html: Optional[str] = Field(
+        default=None,
+        description=(
+            "LLM-authored rich themed HTML for this section using the .ds-* "
+            "component classes and semantic tags. MUST start with a heading and "
+            "carry a stable class on its root element. For a DATA section, embed "
+            "a <!--WIDGET:slot--> comment where the bound widget should splice in."
+        ),
+    )
+    bind: Optional["GUIBindSpec"] = Field(
+        default=None,
+        description="Structured data binding for a DATA section (paired with optional 'html' chrome).",
     )
     title: str = Field(
         default="",
@@ -130,6 +182,13 @@ class SystemGUISpec(BaseModel):
         default="",
         description="Name of the GUI application or system",
     )
+    domain: Optional[str] = Field(
+        default=None,
+        description=(
+            "Design domain driving the visual theme: one of government, finance, "
+            "health, startup, default."
+        ),
+    )
     pages: List[GUIPageSpec] = Field(
         min_length=1,
         description="List of pages in the GUI system (at least one required)",
@@ -204,6 +263,7 @@ class GUIModificationSpec(BaseModel):
     )
 
 
-# ``GUISectionSpec`` references itself (left/right) via forward refs — resolve
-# them now that every referenced model is defined.
+# ``GUISectionSpec`` references itself (left/right) and ``GUIBindSpec`` via
+# forward refs — resolve them now that every referenced model is defined.
+GUIBindSpec.model_rebuild()
 GUISectionSpec.model_rebuild()
