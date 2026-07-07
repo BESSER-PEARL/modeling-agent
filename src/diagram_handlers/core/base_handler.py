@@ -482,7 +482,9 @@ class BaseDiagramHandler(ABC):
     # LLM call with retry
     # ------------------------------------------------------------------
 
-    def _predict_raw(self, prompt: str, model: Optional[str] = None) -> str:
+    def _predict_raw(
+        self, prompt: str, model: Optional[str] = None, *, max_tokens: Optional[int] = None,
+    ) -> str:
         """Single free-text LLM call honoring a per-call model override.
 
         BAF's ``LLMOpenAI.predict`` always sends ``self.llm.name`` as the
@@ -497,6 +499,8 @@ class BaseDiagramHandler(ABC):
         server LLM. SDK auth/rate-limit errors propagate so
         ``predict_with_retry`` / ``errors.classify_error`` surface them.
         """
+        effective_max_tokens = max_tokens or LLM_MAX_TOKENS_LARGE
+
         from byok import get_active_client  # local import: avoids import cycle
         byok_client = get_active_client()
         if byok_client is not None:
@@ -505,6 +509,7 @@ class BaseDiagramHandler(ABC):
                 model=model,
                 temperature=LLM_TEMPERATURE,
                 reasoning_effort=reasoning_effort_for(model) if model else None,
+                max_tokens=effective_max_tokens,
             )
 
         client = getattr(self.llm, 'client', None)
@@ -512,7 +517,7 @@ class BaseDiagramHandler(ABC):
             raw_kwargs: Dict[str, Any] = {
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
-                "max_completion_tokens": LLM_MAX_TOKENS_LARGE,
+                "max_completion_tokens": effective_max_tokens,
             }
             # gpt-5* / o-series models 400 on an explicit non-default
             # temperature — omit the parameter for them; cap their hidden
@@ -530,6 +535,7 @@ class BaseDiagramHandler(ABC):
     # NOTE: This adds an extra LLM round-trip (2–4s latency).
     def predict_with_retry(
         self, prompt: str, max_retries: int = 1, *, model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """Call the LLM with automatic retry and jittered exponential backoff.
 
@@ -586,7 +592,7 @@ class BaseDiagramHandler(ABC):
                     f"(attempt {attempt + 1}/{total_attempts}, "
                     f"prompt_len={len(effective_prompt)})"
                 )
-                response = self._predict_raw(effective_prompt, model=model)
+                response = self._predict_raw(effective_prompt, model=model, max_tokens=max_tokens)
 
                 # Track tokens from the last API call if available
                 try:
@@ -1161,6 +1167,7 @@ class BaseDiagramHandler(ABC):
         *,
         model: Optional[str] = None,
         reasoning_model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """Two-pass LLM generation: first reason about the design, then generate JSON.
 
@@ -1189,13 +1196,15 @@ class BaseDiagramHandler(ABC):
                 "falling back to single-pass"
             )
             return self.predict_with_retry(
-                f"{system_prompt}\n\nUser Request: {user_request}", model=model,
+                f"{system_prompt}\n\nUser Request: {user_request}",
+                model=model, max_tokens=max_tokens,
             )
 
         if not reasoning or not reasoning.strip():
             logger.warning(f"[{self.get_diagram_type()}] Reasoning pass returned empty, falling back")
             return self.predict_with_retry(
-                f"{system_prompt}\n\nUser Request: {user_request}", model=model,
+                f"{system_prompt}\n\nUser Request: {user_request}",
+                model=model, max_tokens=max_tokens,
             )
 
         logger.info(
@@ -1212,7 +1221,7 @@ class BaseDiagramHandler(ABC):
             "Return ONLY the JSON, no explanations."
         )
 
-        return self.predict_with_retry(structured_prompt, model=model)
+        return self.predict_with_retry(structured_prompt, model=model, max_tokens=max_tokens)
 
     # ------------------------------------------------------------------
     # Validation-feedback loop (critique → fix)

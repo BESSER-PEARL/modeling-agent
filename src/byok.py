@@ -244,17 +244,21 @@ class BYOKClient:
         json_mode: bool = False,
         temperature: Optional[float] = None,
         reasoning_effort: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """Single free-text chat-completion call, returning the text.
 
         ``model`` is the agent's per-call (OpenAI-canonical) tier request;
         it is mapped to this provider's equivalent via :func:`resolve_model`.
+        ``max_tokens`` overrides the default completion cap (used by the GUI
+        complete-system path to keep large multi-page JSON from truncating).
         """
         target = resolve_model(self.provider, model, self._user_model)
         temp = LLM_TEMPERATURE if temperature is None else temperature
+        cap = max_tokens or LLM_MAX_TOKENS_LARGE
         if self.provider == "anthropic":
-            return self._anthropic_call(prompt, target, json_mode, temp)
-        return self._openai_call(prompt, target, json_mode, temp, reasoning_effort)
+            return self._anthropic_call(prompt, target, json_mode, temp, cap)
+        return self._openai_call(prompt, target, json_mode, temp, reasoning_effort, cap)
 
     def predict_text(self, prompt: str) -> str:
         """Simple free-text path (cheap/small tier, conversational temp)."""
@@ -271,6 +275,7 @@ class BYOKClient:
         json_mode: bool,
         temperature: float,
         reasoning_effort: Optional[str],
+        max_tokens: int = LLM_MAX_TOKENS_LARGE,
     ) -> str:
         kwargs = {
             "model": model,
@@ -278,9 +283,9 @@ class BYOKClient:
         }
         # Mistral uses ``max_tokens``; OpenAI uses ``max_completion_tokens``.
         if self.provider == "mistral":
-            kwargs["max_tokens"] = LLM_MAX_TOKENS_LARGE
+            kwargs["max_tokens"] = max_tokens
         else:
-            kwargs["max_completion_tokens"] = LLM_MAX_TOKENS_LARGE
+            kwargs["max_completion_tokens"] = max_tokens
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
         # gpt-5* / o-series reject a custom temperature; cap reasoning instead.
@@ -302,6 +307,7 @@ class BYOKClient:
         model: str,
         json_mode: bool,
         temperature: float,
+        max_tokens: int = LLM_MAX_TOKENS_LARGE,
     ) -> str:
         content = prompt
         if json_mode:
@@ -312,7 +318,7 @@ class BYOKClient:
         # Anthropic accepts temperature in [0, 1]; the agent uses 0.2/0.4.
         message = self._client.messages.create(
             model=model,
-            max_tokens=LLM_MAX_TOKENS_LARGE,
+            max_tokens=max_tokens,
             temperature=max(0.0, min(1.0, temperature)),
             messages=[{"role": "user", "content": content}],
         )

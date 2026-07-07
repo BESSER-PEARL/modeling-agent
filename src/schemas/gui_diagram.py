@@ -27,6 +27,22 @@ class GUISampleDataPoint(BaseModel):
     )
 
 
+class GUIStatItem(BaseModel):
+    """A single stat card (label + displayed value) for a ``stats_grid``.
+
+    Concrete-typed so it survives OpenAI strict structured output — see the
+    module note above about why ``Any``/open-dict fields are forbidden here.
+    """
+    label: str = Field(
+        default="",
+        description="Stat card label, e.g. 'Total Users'.",
+    )
+    value: str = Field(
+        default="",
+        description="Displayed stat value as a string, e.g. '1,234' or '87%'.",
+    )
+
+
 class GUISectionSpec(BaseModel):
     type: Literal[
         "hero", "feature_list", "content", "form", "table",
@@ -64,6 +80,25 @@ class GUISectionSpec(BaseModel):
     sampleData: List[GUISampleDataPoint] = Field(
         default_factory=list,
         description="Sample data points for chart, stats, and table sections.",
+    )
+    stats: List[GUIStatItem] = Field(
+        default_factory=list,
+        description=(
+            "Stat cards for a 'stats_grid' section, each a {label, value} pair "
+            "(e.g. [{\"label\": \"Total Users\", \"value\": \"1,234\"}]). Prefer "
+            "this over 'items' for stats_grid so the displayed figures survive."
+        ),
+    )
+    # Recursive sub-sections for a "two_column" layout. Concrete self-typed
+    # (not Any/dict) so OpenAI strict structured output still validates — a
+    # typeless field here would 400 EVERY GUI generate/modification call.
+    left: Optional["GUISectionSpec"] = Field(
+        default=None,
+        description="Nested section rendered in the LEFT column of a 'two_column' layout.",
+    )
+    right: Optional["GUISectionSpec"] = Field(
+        default=None,
+        description="Nested section rendered in the RIGHT column of a 'two_column' layout.",
     )
 
 
@@ -167,3 +202,8 @@ class GUIModificationSpec(BaseModel):
         default=None,
         description="Section to append (used with 'append_section' / 'add_page').",
     )
+
+
+# ``GUISectionSpec`` references itself (left/right) via forward refs — resolve
+# them now that every referenced model is defined.
+GUISectionSpec.model_rebuild()

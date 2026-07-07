@@ -20,6 +20,14 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_GUI_VERSION = "0.21.13"
 
+# Complete-system JSON is the one generation path that produces very large
+# multi-page output. The shared free-text budget (LLM_MAX_TOKENS_LARGE = 8192)
+# truncates ambitious requests mid-stream — exactly the requests users care
+# about — collapsing the whole app to a one-line "Welcome" stub. Give this
+# path a much larger cap. Scoped here (passed explicitly to predict_two_pass)
+# so no other handler's budget changes.
+GUI_COMPLETE_SYSTEM_MAX_TOKENS = 16384
+
 # Chart colour palette (deterministic cycling)
 _CHART_COLORS = [
     "#3498db", "#e74c3c", "#2ecc71", "#f39c12", "#9b59b6",
@@ -1112,20 +1120,41 @@ def _stats_grid_component(
     section_spec: Dict[str, Any],
     class_metadata: Optional[List[Dict[str, Any]]],
 ) -> Dict[str, Any]:
-    """Build a grid of metric cards from a list of stat items."""
+    """Build a grid of metric cards from a list of stat items.
+
+    Reads the typed ``stats`` list (``{label, value}`` pairs) first, then
+    falls back to ``items`` — which on the free-text complete-system path
+    arrives as ``{label, value}`` dicts (or plain label strings). The
+    LLM-provided ``value`` is preserved on the card (issue #7: figures used
+    to be silently discarded). For the class-bound case each card binds to a
+    DISTINCT numeric attribute instead of all cards sharing the first field.
+    """
     title = _clean_text(section_spec.get("title"), fallback="Key Metrics")
-    items = section_spec.get("items") if isinstance(section_spec.get("items"), list) else []
+    raw_stats = section_spec.get("stats") if isinstance(section_spec.get("stats"), list) else []
+    if not raw_stats:
+        raw_stats = section_spec.get("items") if isinstance(section_spec.get("items"), list) else []
 
     # Resolve class metadata for data binding
     cls = _resolve_class_binding(section_spec, class_metadata)
 
+    # Distinct numeric fields so each card binds to its OWN attribute rather
+    # than every card showing the same first numeric field.
+    numeric_attrs: List[Dict[str, Any]] = []
+    if cls:
+        numeric_attrs = [a for a in cls.get("attributes", []) if a.get("isNumeric")]
+        if not numeric_attrs:
+            fallback_attr = _pick_data_field(cls)
+            numeric_attrs = [fallback_attr] if fallback_attr else []
+
     cards: List[Dict[str, Any]] = []
-    for item in items:
+    for idx, item in enumerate(raw_stats):
         if isinstance(item, dict):
             label = _clean_text(item.get("label") or item.get("name"), fallback="Metric")
+            value = _clean_text(item.get("value"))
             fmt = _clean_text(item.get("format"), fallback="number")
         elif isinstance(item, str):
             label = item
+            value = ""
             fmt = "number"
         else:
             continue
@@ -1140,11 +1169,16 @@ def _stats_grid_component(
             "negative-color": "#e74c3c",
             "format": fmt,
         }
+        # Preserve the LLM-provided figure so it renders instead of being
+        # discarded and recomputed to nothing.
+        if value:
+            card_attrs["metric-value"] = value
         if cls:
             card_attrs["data-source"] = cls["id"]
-            data_attr = _pick_data_field(cls)
-            if data_attr:
-                card_attrs["data-field"] = data_attr["id"]
+            if numeric_attrs:
+                data_attr = numeric_attrs[idx % len(numeric_attrs)]
+                if data_attr:
+                    card_attrs["data-field"] = data_attr["id"]
 
         cards.append({
             "type": "metric-card",
@@ -1700,6 +1734,91 @@ def _build_section_component(section_spec: Dict[str, Any], class_metadata: Optio
     return _content_component(title, body)
 
 
+def _extract_balanced_objects(text: str, start: int) -> List[str]:
+    """Return each brace-balanced ``{...}`` object found in an array body.
+
+    Scans from ``start`` (the index just after the array's opening ``[``),
+    respecting string literals and escapes so braces/brackets inside string
+    values never corrupt the depth count. Stops at the array's closing ``]``
+    or when the text ends (truncation). A final, unbalanced object — the one
+    the LLM was mid-way through when it was cut off — is dropped.
+    """
+    objects: List[str] = []
+    depth = 0
+    obj_start = -1
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                obj_start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and obj_start != -1:
+                    objects.append(text[obj_start:i + 1])
+                    obj_start = -1
+        elif ch == "]" and depth == 0:
+            break
+    return objects
+
+
+def _salvage_truncated_system(text: str) -> Optional[Dict[str, Any]]:
+    """Best-effort recovery of a truncated complete-system JSON.
+
+    When the LLM's multi-page JSON is cut off mid-stream (finish_reason ==
+    'length'), ``json.loads`` fails and the whole system would otherwise
+    collapse to the Welcome stub. This keeps every page that was *fully*
+    emitted before the truncation point by scanning the ``pages`` array and
+    extracting the balanced page objects, discarding only the final partial
+    page. Returns a ``{"projectName", "pages"}`` dict when at least one
+    complete page survives, else ``None`` (nothing recoverable → let the
+    caller fall back to the stub).
+    """
+    if not text or '"pages"' not in text:
+        return None
+    key_idx = text.find('"pages"')
+    bracket_idx = text.find("[", key_idx)
+    if bracket_idx == -1:
+        return None
+
+    parsed_pages: List[Dict[str, Any]] = []
+    for obj_str in _extract_balanced_objects(text, bracket_idx + 1):
+        try:
+            obj = json.loads(obj_str)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            parsed_pages.append(obj)
+
+    if not parsed_pages:
+        return None
+
+    project_name = "App"
+    m = re.search(r'"projectName"\s*:\s*"([^"]*)"', text)
+    if m:
+        project_name = m.group(1)
+
+    logger.warning(
+        "[GUINoCode] Salvaged %d complete page(s) from truncated system JSON "
+        "(kept them instead of collapsing to the Welcome stub).",
+        len(parsed_pages),
+    )
+    return {"projectName": project_name, "pages": parsed_pages}
+
+
 class GUINoCodeDiagramHandler(BaseDiagramHandler):
     """Handler for GUI no-code diagram generation."""
 
@@ -1717,13 +1836,14 @@ Return ONLY JSON with this shape:
     "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard|metric_card|stats_grid|footer|two_column",
     "title": "Section title",
     "body": "Optional descriptive text",
-    "items": ["Optional item or stat object"],
+    "items": ["Optional list item / footer link label"],
     "fields": ["Optional field label"],
     "ctaLabel": "Optional button label",
     "className": "Optional class name from Class Diagram to bind data to",
     "sampleData": [
       {{"name": "Realistic label from domain", "value": 42}}
     ],
+    "stats": [{{"label": "Total Users", "value": "1,234"}}],
     "left": {{"type": "...", "title": "..."}},
     "right": {{"type": "...", "title": "..."}}
   }}
@@ -1738,7 +1858,7 @@ Section types:
 - bar_chart / pie_chart / line_chart / radar_chart: Chart visualisations bound to a class
 - dashboard: Combined table + charts for a class
 - metric_card: Single KPI metric card from a class
-- stats_grid: Row of stat cards. Provide \"items\" as [{{\"label\": \"Total Users\", \"value\": \"1,234\"}}]
+- stats_grid: Row of stat cards. Provide \"stats\" as [{{\"label\": \"Total Users\", \"value\": \"1,234\"}}] — put the figure in \"value\"
 - footer: Page footer with project name and links. Provide items as link labels
 - two_column: Side-by-side layout. Provide "left" and "right" as nested section specs
 
@@ -1917,13 +2037,14 @@ Return ONLY JSON with this shape:
           "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard|metric_card|stats_grid|footer|two_column",
           "title": "Section title",
           "body": "Optional text",
-          "items": ["Optional item or stat object"],
+          "items": ["Optional list item / footer link label"],
           "fields": ["Optional field"],
           "ctaLabel": "Optional CTA",
           "className": "Optional class name to bind data to",
           "sampleData": [
             {{"name": "Realistic label from domain", "value": 42}}
           ],
+          "stats": [{{"label": "Total Users", "value": "1,234"}}],
           "left": {{"type": "...", "title": "..."}},
           "right": {{"type": "...", "title": "..."}}
         }}
@@ -1941,7 +2062,7 @@ Section types:
 - bar_chart / pie_chart / line_chart / radar_chart: Chart visualisations bound to class data
 - dashboard: Combined table + charts for a class (auto-generates table + relevant charts)
 - metric_card: Single KPI metric card from a class
-- stats_grid: Row of stat cards. Provide "items" as [{{"label": "Total Users", "value": "1,234"}}, ...] (3-4 items)
+- stats_grid: Row of stat cards. Provide "stats" as [{{"label": "Total Users", "value": "1,234"}}, ...] (3-4 items) — put the numbers in "value" so they render
 - footer: Page footer with project name and links. Provide "items" as link labels like ["Privacy", "Terms", "Contact"]
 - two_column: Side-by-side layout. Provide "left" and "right" as nested section specs (e.g. left: table, right: pie_chart)
 
@@ -1991,14 +2112,14 @@ Example — a library catalog (a DATA app: it leads with a content header + stat
   "pages": [
     {{"name": "Catalog", "sections": [
       {{"type": "content", "title": "Browse the Catalog", "body": "Search and explore the library's books, authors and availability."}},
-      {{"type": "stats_grid", "title": "At a glance", "items": [{{"label": "Books", "value": "12,480"}}, {{"label": "Members", "value": "3,210"}}, {{"label": "On loan", "value": "1,045"}}]}},
+      {{"type": "stats_grid", "title": "At a glance", "stats": [{{"label": "Books", "value": "12,480"}}, {{"label": "Members", "value": "3,210"}}, {{"label": "On loan", "value": "1,045"}}]}},
       {{"type": "two_column",
         "left": {{"type": "table", "title": "Books", "className": "Book", "sampleData": [{{"title": "Dune", "author": "Herbert", "genre": "Sci-Fi", "available": true}}, {{"title": "1984", "author": "Orwell", "genre": "Dystopia", "available": false}}]}},
         "right": {{"type": "pie_chart", "title": "By genre", "className": "Book", "sampleData": [{{"name": "Sci-Fi", "value": 320, "color": "#6366f1"}}, {{"name": "Fiction", "value": 540, "color": "#f59e0b"}}, {{"name": "History", "value": 210, "color": "#22c55e"}}]}}}},
       {{"type": "footer", "items": ["Hours", "Membership", "Contact"]}}
     ]}},
     {{"name": "Members", "sections": [
-      {{"type": "stats_grid", "items": [{{"label": "Active", "value": "3,210"}}, {{"label": "New this month", "value": "142"}}, {{"label": "Overdue", "value": "87"}}]}},
+      {{"type": "stats_grid", "stats": [{{"label": "Active", "value": "3,210"}}, {{"label": "New this month", "value": "142"}}, {{"label": "Overdue", "value": "87"}}]}},
       {{"type": "table", "title": "Members", "className": "Member", "sampleData": [{{"name": "A. Khan", "joined": "2024-01-12", "loans": 3}}, {{"name": "L. Romero", "joined": "2023-11-03", "loans": 1}}]}},
       {{"type": "footer", "items": ["Hours", "Membership", "Contact"]}}
     ]}}
@@ -2043,8 +2164,15 @@ Example — a library catalog (a DATA app: it leads with a content header + stat
                 reasoning_prompt=reasoning_prompt,
                 model=MODEL_GENERATION_LARGE,
                 reasoning_model=MODEL_REASONING,
+                max_tokens=GUI_COMPLETE_SYSTEM_MAX_TOKENS,
             )
-            spec = self.parse_json_safely(self.clean_json_response(response or ""))
+            cleaned = self.clean_json_response(response or "")
+            spec = self.parse_json_safely(cleaned)
+            if not isinstance(spec, dict):
+                # The big multi-page JSON was likely truncated mid-stream —
+                # try to keep the pages that were fully emitted rather than
+                # dropping the entire app to the Welcome stub.
+                spec = _salvage_truncated_system(cleaned)
             if not isinstance(spec, dict):
                 raise ValueError("Invalid system spec")
 
