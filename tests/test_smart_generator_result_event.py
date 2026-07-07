@@ -67,7 +67,7 @@ def _smart_event(ok, metadata=None, message=None):
     return _FakeRequest(payload)
 
 
-def test_smart_success_reports_cost_and_generator(monkeypatch):
+def test_smart_success_hides_cost_and_generator(monkeypatch):
     recorded = []
 
     class _Mem:
@@ -87,8 +87,11 @@ def test_smart_success_reports_cost_and_generator(monkeypatch):
     )
 
     assert result["action"] == "assistant_message"
-    assert "$0.42" in result["message"]
-    assert "generate_fastapi_backend" in result["message"]
+    # Cost and the internal scaffold/generator name are intentionally hidden
+    # from the user-facing message.
+    assert "finished successfully" in result["message"]
+    assert "$0.42" not in result["message"]
+    assert "generate_fastapi_backend" not in result["message"]
     assert recorded and "smart-generation outcome" in recorded[0]
 
 

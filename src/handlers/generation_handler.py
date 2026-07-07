@@ -742,7 +742,8 @@ def _handle_smart_generator_result(
     error_code = metadata.get("errorCode")
     cost = metadata.get("costUsd")
     generator_used = metadata.get("generator_used")
-    cost_text = f" (cost ${cost:.2f})" if isinstance(cost, (int, float)) else ""
+    # Cost is intentionally NOT surfaced to the user (kept out of chat).
+    cost_text = ""
 
     if ok:
         incomplete = bool(metadata.get("incomplete"))
@@ -757,8 +758,6 @@ def _handle_smart_generator_result(
             parts = [head + cost_text + "."]
         else:
             parts = ["Smart generation finished successfully" + cost_text + "."]
-        if generator_used:
-            parts.append(f"Scaffold: `{generator_used}`.")
         if metadata.get("filename") or metadata.get("fileName"):
             parts.append(f"File: {metadata.get('filename') or metadata.get('fileName')}")
         if incomplete:

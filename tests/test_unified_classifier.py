@@ -8,6 +8,7 @@ from session_keys import (
     UNIFIED_CLASSIFICATION_EVENT_ID,
 )
 from unified_classifier import (
+    _SYSTEM_PROMPT,
     UnifiedClassification,
     classify_message,
     get_or_classify,
@@ -217,3 +218,96 @@ class TestSchemaContracts:
                 reason="test",
             )
             assert cls.target_diagram_type == v
+
+
+class _RecordingProvider:
+    """Fake provider that records the messages it was handed and returns a
+    canned decision — lets us assert on the prompt / user block the
+    classifier actually builds without a real LLM call."""
+
+    def __init__(self, decision):
+        self.decision = decision
+        self.messages = None
+
+    def parse(self, *, messages, schema, temperature, max_tokens):
+        self.messages = messages
+        return self.decision
+
+
+class TestSmartGenFollowUpRouting:
+    """Guardrails for the smart-gen feature-follow-up routing fix.
+
+    After a smart / Vibe-Driven generation, a follow-up like 'add a
+    authentification system to it' must route to generation_intent
+    (smart), not modify_model_intent (which used to add a class to the
+    diagram). These are deterministic checks on the prompt content and on
+    a mocked-classification pass-through (the routing decision itself is
+    LLM-based and not unit-testable here).
+    """
+
+    def test_system_prompt_documents_smart_gen_followup(self):
+        prompt = _SYSTEM_PROMPT
+        # The dedicated rule block exists...
+        assert "SMART-GEN FOLLOW-UP" in prompt
+        # ...names the recency cues the classifier sees in history...
+        assert "Vibe-Driven Generator" in prompt
+        assert "[smart-generation outcome]" in prompt
+        # ...pins the intended routing target...
+        assert "generation_route='smart'" in prompt
+        assert "reuse_for_generation" in prompt
+        # ...and calls out the exact production bug (UserAccountSystem class).
+        assert "UserAccountSystem" in prompt
+
+    def test_prompt_keeps_genuine_model_edits_on_modify(self):
+        # The discriminator examples for real model edits must survive so
+        # 'add a Payment class' etc. stay on modify_model_intent.
+        prompt = _SYSTEM_PROMPT
+        assert "add a Payment class" in prompt
+        assert "stays modify_model_intent EVEN right" in prompt
+
+    def test_recent_smart_gen_history_reaches_classifier(self):
+        history = [
+            {"role": "user", "content": "build me a webapp from my model"},
+            {"role": "assistant",
+             "content": "[smart-generation outcome] Smart generation "
+                        "finished successfully."},
+        ]
+        decision = UnifiedClassification(
+            intent="generation_intent",
+            generation_route="smart",
+            model_disposition="reuse_for_generation",
+            refined_instructions="Add user authentication to the app.",
+            reason="feature follow-up after smart gen",
+        )
+        provider = _RecordingProvider(decision)
+        classify_message(
+            _make_request("add a authentification system to it"),
+            llm_provider=provider,
+            history=history,
+        )
+        # System prompt is our authoritative rule set.
+        assert provider.messages[0]["content"] == _SYSTEM_PROMPT
+        user_block = provider.messages[1]["content"]
+        # The smart-gen outcome + follow-up message are both visible to the
+        # classifier so it can apply the SMART-GEN FOLLOW-UP rule.
+        assert "Smart generation finished successfully" in user_block
+        assert "add a authentification system to it" in user_block
+
+    def test_smart_gen_followup_classification_passes_through(self):
+        # A well-formed smart follow-up classification must survive
+        # _post_validate verbatim (smart route + instructions present).
+        decision = UnifiedClassification(
+            intent="generation_intent",
+            generation_route="smart",
+            model_disposition="reuse_for_generation",
+            refined_instructions="Add user authentication: login/signup.",
+            reason="add auth to generated app",
+        )
+        result = classify_message(
+            _make_request("add authentication to it"),
+            llm_provider=_RecordingProvider(decision),
+        )
+        assert result.intent == "generation_intent"
+        assert result.generation_route == "smart"
+        assert result.model_disposition == "reuse_for_generation"
+        assert result.refined_instructions.startswith("Add user authentication")
