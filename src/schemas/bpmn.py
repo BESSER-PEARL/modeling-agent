@@ -81,6 +81,14 @@ class BPMNNodeSpec(BaseModel):
             "lanes; leave null otherwise."
         ),
     )
+    owner: Optional[str] = Field(
+        default=None,
+        description=(
+            "WME ownership field for lane-contained nodes. When laneId is set and valid, "
+            "the backend normalizes owner to the same lane id so the generated BPMN "
+            "nodes move with their lane and export correctly."
+        ),
+    )
 
 
 class BPMNLaneSpec(BaseModel):
