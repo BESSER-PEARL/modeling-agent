@@ -678,45 +678,63 @@ def _convert_image(
     mime_type = _get_mime_type(filename)
     vision_prompt = _build_image_prompt()  # auto-detect from image
 
-    try:
-        import requests as http_requests
+    import requests as http_requests
 
-        response = http_requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {openai_api_key}",
-            },
-            json={
-                # Vision tier — env-overridable (see model_config).
-                "model": MODEL_VISION,
-                "messages": [
+    payload = {
+        # Vision tier — env-overridable (see model_config).
+        "model": MODEL_VISION,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": vision_prompt},
                     {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": vision_prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{mime_type};base64,{image_b64}",
-                                },
-                            },
-                        ],
-                    }
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime_type};base64,{image_b64}"},
+                    },
                 ],
-                "response_format": {"type": "json_object"},
-                **_vision_sampling_params(),
-            },
-            timeout=60,
-        )
-        response.raise_for_status()
-        data = response.json()
-        raw_text = data["choices"][0]["message"]["content"]
-    except Exception as e:
-        logger.error(f"[FileConversion] Vision API call failed: {e}")
-        return _error_response(
-            "Failed to process the image. Please make sure the image contains a clear UML diagram."
-        )
+            }
+        ],
+        "response_format": {"type": "json_object"},
+        **_vision_sampling_params(),
+    }
+
+    # The vision model intermittently returns null content (a transient empty
+    # completion / safety filter) even for a perfectly readable image — the SAME
+    # image frequently succeeds on a retry. So retry a few times on empty content
+    # before giving up, and log finish_reason/refusal so the cause is diagnosable.
+    raw_text = None
+    for attempt in range(3):
+        try:
+            response = http_requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {openai_api_key}",
+                },
+                json=payload,
+                timeout=60,
+            )
+            response.raise_for_status()
+            choice = response.json()["choices"][0]
+            raw_text = choice["message"].get("content")
+            if raw_text:
+                break
+            logger.warning(
+                "[FileConversion] Vision returned null content "
+                "(attempt %d/3, model=%s, finish=%s, refusal=%s) for %s",
+                attempt + 1, MODEL_VISION, choice.get("finish_reason"),
+                choice["message"].get("refusal"), filename,
+            )
+        except Exception as e:
+            logger.error(
+                f"[FileConversion] Vision API call failed (attempt {attempt + 1}/3): {e}"
+            )
+            if attempt == 2:
+                return _error_response(
+                    "Failed to process the image. Please make sure the image contains "
+                    "a clear UML diagram or UI mockup."
+                )
 
     return _parse_llm_response(raw_text, filename, "image", expected_type=None)
 
