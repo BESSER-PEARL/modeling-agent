@@ -24,6 +24,14 @@ Deliberately NOT retried here:
   * Auth errors (401) / bad request (400) / other 4xx — permanent for the
     current request; retrying would only burn the backoff budget and
     delay the (correct) error.
+  * Permanent *billing/quota* failures that masquerade as a 429 —
+    ``insufficient_quota`` (a depleted account), ``invalid_api_key``,
+    ``account_deactivated``, ``billing_hard_limit_reached``. These arrive
+    as ``openai.RateLimitError`` (HTTP 429), so without an explicit code
+    check the "429 is transient" rule below would spin on a doomed request.
+    Under concurrency that pile-up of workers each parked on a backoff that
+    can never succeed is what took the whole box unresponsive; failing fast
+    turns it into an instant, correct "out of quota" error instead.
   * BYOK's per-user client (``byok.BYOKClient``) — a different client
     object entirely, never patched by this module. A user's own key
     failing (or the shared key's retries being exhausted) must still
@@ -92,14 +100,60 @@ def _sdk_exception_types() -> Tuple[Type[BaseException], ...]:
     return tuple(exc_types)
 
 
+# OpenAI/Anthropic error codes that are PERMANENT for the current key/account.
+# The dangerous one is ``insufficient_quota``: the SDK delivers it as a 429
+# ``RateLimitError``, so the "any RateLimitError is transient" rule in
+# :func:`_is_transient` would otherwise retry a depleted key — and under
+# concurrency, every in-flight request parking a worker on a backoff that can
+# never succeed is what wedged the box.
+_PERMANENT_ERROR_CODES = frozenset({
+    "insufficient_quota",
+    "invalid_api_key",
+    "account_deactivated",
+    "billing_hard_limit_reached",
+})
+
+
+def _permanent_error_code(exc: BaseException) -> "str | None":
+    """Return the permanent OpenAI/Anthropic error *code* carried by *exc*, else None.
+
+    The SDK exposes the structured code on ``exc.code`` or nested in
+    ``exc.body['error']['code' | 'type']``; a lowercase substring scan of the
+    message is the final fallback so a depleted-quota 429 is still caught if the
+    SDK's error shape shifts.
+    """
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code in _PERMANENT_ERROR_CODES:
+        return code
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict):
+            bcode = err.get("code") or err.get("type")
+            if isinstance(bcode, str) and bcode in _PERMANENT_ERROR_CODES:
+                return bcode
+    msg = str(exc).lower()
+    for permanent in _PERMANENT_ERROR_CODES:
+        if permanent in msg:
+            return permanent
+    return None
+
+
 def _is_transient(exc: BaseException) -> bool:
     """True when *exc* looks like a transient upstream failure worth retrying.
 
     Retries: rate-limit (429 / ``RateLimitError``), timeouts, connection
     errors, and 5xx / ``InternalServerError``.
-    Never retries: auth errors (401), bad-request (400), or any other 4xx —
-    and never a successful call, since this is only consulted on exception.
+    Never retries: permanent billing/quota codes (``insufficient_quota`` &c.,
+    checked first because they arrive as a 429), auth errors (401),
+    bad-request (400), or any other 4xx — and never a successful call, since
+    this is only consulted on exception.
     """
+    # Permanent billing/quota/auth codes first — these can arrive AS a 429
+    # RateLimitError, so they must short-circuit the transient rule below.
+    if _permanent_error_code(exc) is not None:
+        return False
+
     if isinstance(exc, _sdk_exception_types()):
         return True
 
@@ -135,6 +189,15 @@ def with_retry(func: F, *, label: str = "llm_call") -> F:
             try:
                 return func(*args, **kwargs)
             except Exception as exc:
+                permanent = _permanent_error_code(exc)
+                if permanent is not None:
+                    # Fail fast: retrying a depleted/invalid key only burns the
+                    # backoff budget and, under load, wedges the service.
+                    logger.error(
+                        "%s: permanent LLM error '%s' — failing fast (no retry): %s",
+                        label, permanent, exc,
+                    )
+                    raise
                 if attempt >= MAX_ATTEMPTS or not _is_transient(exc):
                     raise
                 delay = min(MAX_DELAY_SECONDS, BASE_DELAY_SECONDS * (2 ** (attempt - 1)))
