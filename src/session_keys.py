@@ -25,7 +25,7 @@ HAS_GREETED = "has_greeted"
 WORKFLOW_PENDING_GENERATOR = "_workflow_pending_generator"
 
 # Smart-gen confirmation gate: every path that would run the
-# Vibe-Driven Generator (which spends the USER'S OWN API key) stashes
+# Spec-Driven Agent (which spends the USER'S OWN API key) stashes
 # the smart-gen payload here and asks for explicit confirmation first.
 # Also used by the domain-mismatch handoff: on "Update model + generate"
 # the workflow_body picks the stash up after rebuilding the model.

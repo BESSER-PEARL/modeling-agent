@@ -1,6 +1,6 @@
 """Tests for the confirm-before-smart gate (B-2).
 
-The Vibe-Driven Generator runs on the USER'S OWN API key, so no code
+The Spec-Driven Agent runs on the USER'S OWN API key, so no code
 path may emit ``trigger_smart_generator`` without an explicit user
 confirmation. The gate stashes the payload (+ timestamp), replies with
 run/cancel quick actions, and the confirm handler rejects stale stashes.

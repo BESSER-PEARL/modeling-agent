@@ -446,7 +446,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
     # instructions in the session and paused waiting for this answer.
     # Now that the model has been replaced (the only path that makes
     # sense to chain — keeping the old model would defeat the point of
-    # the mismatch fix), fire the Vibe-Driven Generator handoff.
+    # the mismatch fix), fire the Spec-Driven Agent handoff.
     if replace_existing:
         _resume_smart_gen_after_replace(session)
 

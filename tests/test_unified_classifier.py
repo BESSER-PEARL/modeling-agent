@@ -237,7 +237,7 @@ class _RecordingProvider:
 class TestSmartGenFollowUpRouting:
     """Guardrails for the smart-gen feature-follow-up routing fix.
 
-    After a smart / Vibe-Driven generation, a follow-up like 'add a
+    After a smart / Spec-Driven generation, a follow-up like 'add a
     authentification system to it' must route to generation_intent
     (smart), not modify_model_intent (which used to add a class to the
     diagram). These are deterministic checks on the prompt content and on
@@ -250,7 +250,7 @@ class TestSmartGenFollowUpRouting:
         # The dedicated rule block exists...
         assert "SMART-GEN FOLLOW-UP" in prompt
         # ...names the recency cues the classifier sees in history...
-        assert "Vibe-Driven Generator" in prompt
+        assert "Spec-Driven Agent" in prompt
         assert "[smart-generation outcome]" in prompt
         # ...pins the intended routing target...
         assert "generation_route='smart'" in prompt

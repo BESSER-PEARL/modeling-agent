@@ -124,7 +124,7 @@ def _build_smart_gen_confirmation(
 ) -> Dict[str, Any]:
     """Stash the smart-gen payload and ask for explicit confirmation.
 
-    The Vibe-Driven Generator runs on the USER'S OWN API key, so it must
+    The Spec-Driven Agent runs on the USER'S OWN API key, so it must
     never start without an explicit confirmation — with a stored key the
     run would otherwise begin silently (B-2). The confirm/cancel phrases
     are handled at the top of :func:`handle_generation_request`.
@@ -143,7 +143,7 @@ def _build_smart_gen_confirmation(
     return {
         "action": "assistant_message",
         "message": (
-            f"{prefix}Ready to run the **Vibe-Driven Generator**. It builds a "
+            f"{prefix}Ready to run the **Spec-Driven Agent**. It builds a "
             f"customised codebase from your model **using your own API key** — "
             f"the key stays in your browser and is sent only with this run, and "
             f"the run uses the provider and model you've configured for the "
@@ -153,7 +153,7 @@ def _build_smart_gen_confirmation(
         ),
         "suggestedActions": [
             {
-                "label": "Run Vibe-Driven Generator (uses your API key)",
+                "label": "Run Spec-Driven Agent (uses your API key)",
                 "prompt": "generate anyway with my current model",
             },
             {
@@ -187,7 +187,7 @@ def _build_mismatch_confirmation(session: Session, classification, suggested: st
             f"Your existing class diagram doesn't match **{suggested}**. "
             f"Pick one:\n\n"
             f"• **Update model + generate** — I'll redesign the class "
-            f"diagram for {suggested} first, then run the Vibe-Driven "
+            f"diagram for {suggested} first, then run the Spec-Driven "
             f"Generator. Your current classes will be replaced.\n"
             f"• **Generate anyway** — keep your current model; the "
             f"generator will produce {suggested} code, but your diagram "

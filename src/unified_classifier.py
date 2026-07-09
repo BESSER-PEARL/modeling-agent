@@ -86,7 +86,7 @@ _DETERMINISTIC_GENERATOR_TYPES = Literal[
     "smartdata",
     "agent",
     "qiskit",
-    # rest_api/rdf are handled by the smart (Vibe-Driven) generator, not a deterministic template.
+    # rest_api/rdf are handled by the smart (Spec-Driven) generator, not a deterministic template.
     "export",
     "deploy",
 ]
@@ -379,7 +379,7 @@ _SYSTEM_PROMPT = (
     "Agent class with a name attribute') IS a class modification — "
     "keep it modify_model_intent on the class diagram. EXCEPTION 2 "
     "(smart-gen follow-up): if the RECENT CONVERSATION shows a "
-    "just-completed smart / Vibe-Driven generation and the user asks to "
+    "just-completed smart / Spec-Driven generation and the user asks to "
     "ADD or CHANGE a FEATURE of the generated app/code ('add "
     "authentication to it', 'add a login page', 'make it responsive', "
     "'add a dashboard to the app'), that is generation_intent (smart), "
@@ -440,8 +440,8 @@ _SYSTEM_PROMPT = (
     "end-to-end intent.\n\n"
     "SMART-GEN FOLLOW-UP (add/change a FEATURE of the just-generated "
     "app) — READ THIS BEFORE choosing modify_model_intent: when the "
-    "RECENT CONVERSATION shows the agent JUST ran the smart / Vibe-Driven "
-    "generator (a turn mentioning 'Vibe-Driven Generator', 'Smart "
+    "RECENT CONVERSATION shows the agent JUST ran the smart / Spec-Driven "
+    "generator (a turn mentioning 'Spec-Driven Agent', 'Smart "
     "generation', or '[smart-generation outcome]') AND the new message "
     "asks to ADD or CHANGE a FEATURE of the GENERATED APP / CODE, that is "
     "generation_intent with generation_route='smart' and "
@@ -1052,7 +1052,7 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
             # Safety net: "smartdata" is a deterministic BESSER built-in
             # NAME that happens to contain the substring "smart" — the
             # LLM sometimes lexically confuses that with the 'smart'
-            # (vibe-driven) route. Only correct it when the message names
+            # (spec-driven) route. Only correct it when the message names
             # smartdata AND doesn't also ask for something the template
             # can't do (those genuinely belong on the smart path).
             _smart_extras = (

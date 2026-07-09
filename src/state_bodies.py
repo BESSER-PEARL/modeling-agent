@@ -835,7 +835,7 @@ def workflow_body(session: Session):
 
     # ── Safety net: generate a custom/smart app FROM AN EXISTING MODEL ──
     # "generate a full app / dashboard / react+fastapi from my model" belongs
-    # to the Vibe-Driven (smart) generator on the EXISTING model — not the
+    # to the Spec-Driven (smart) generator on the EXISTING model — not the
     # deterministic build→validate→generate workflow. Only divert when a
     # usable model ALREADY exists. Otherwise this is a genuine "create the
     # model AND generate" request and we must build the model first — skipping
@@ -851,7 +851,7 @@ def workflow_body(session: Session):
             _gen_route = None
         if _gen_route is not None and getattr(_gen_route, "route", None) == "smart":
             logger.info(
-                "[Workflow] smart build on existing model → Vibe-Driven generator (no rebuild)"
+                "[Workflow] smart build on existing model → Spec-Driven generator (no rebuild)"
             )
             from handlers.generation_handler import _build_smart_gen_confirmation
             _refined = (getattr(_gen_route, "refined_instructions", None) or user_message or "").strip()
@@ -995,7 +995,7 @@ def workflow_body(session: Session):
     # ── Step 3: Trigger code generation ──────────────────────────────
     # When a previous mismatch-confirmation stashed smart-gen instructions
     # (the user clicked "Update model + generate"), Step 3 hands off to
-    # the Vibe-Driven Generator. It must NOT auto-fire: the smart run
+    # the Spec-Driven Agent. It must NOT auto-fire: the smart run
     # spends the USER'S OWN API key, so we ask for explicit confirmation
     # (B-2). A stash that isn't fresh wasn't created by this flow — a
     # leftover from an abandoned dialog must not hijack this workflow,
@@ -1032,7 +1032,7 @@ def workflow_body(session: Session):
                 response_payload = {
                     "action": "agent_error",
                     "code": "generation_handler_error",
-                    "message": "Failed to hand off to the Vibe-Driven Generator.",
+                    "message": "Failed to hand off to the Spec-Driven Agent.",
                     "retryable": True,
                 }
 

@@ -64,7 +64,7 @@ _DETERMINISTIC_GENERATOR_TYPES = Literal[
     "smartdata",
     "agent",
     "qiskit",
-    # rest_api/rdf are handled by the smart (Vibe-Driven) generator, not a deterministic template.
+    # rest_api/rdf are handled by the smart (Spec-Driven) generator, not a deterministic template.
     "export",
     "deploy",
 ]
@@ -349,7 +349,7 @@ def build_trigger_smart_generator_payload(
         "provider": provider,
         "llmModel": llm_model,
         "message": (
-            "I'll hand this off to the Vibe-Driven Generator so it can build a "
+            "I'll hand this off to the Spec-Driven Agent so it can build a "
             "customised codebase from your model." + parenthetical + " "
             "If this is the first time you're using it, you'll be asked to "
             "paste your own API key (OpenAI, Anthropic, or Mistral) — it stays "

@@ -33,7 +33,7 @@ GENERATOR_PREREQUISITES: Dict[str, List[str]] = {
     "java": ["ClassDiagram"],
     "pydantic": ["ClassDiagram"],
     "jsonschema": ["ClassDiagram"],
-    # rest_api/rdf are handled by the smart (Vibe-Driven) generator, not a deterministic template.
+    # rest_api/rdf are handled by the smart (Spec-Driven) generator, not a deterministic template.
     "agent": ["AgentDiagram"],
     "qiskit": ["QuantumCircuitDiagram"],
 }
