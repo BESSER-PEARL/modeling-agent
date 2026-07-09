@@ -19,7 +19,7 @@ class MethodParameterSpec(BaseModel):
 
 class AttributeSpec(BaseModel):
     name: str = Field(min_length=1, max_length=50, description="Attribute name in camelCase")
-    type: Optional[str] = Field(default=None, description="Data type (e.g. String, int, bool, float, Date, or PascalCase class/enum name). Null for enum literals.")
+    type: Optional[str] = Field(default=None, description="Data type: a PRIMITIVE (String, int, bool, float, Date, datetime) or an ENUM name only. Do NOT use another class as an attribute type — model 'X has a Y' (Y is a class) as a relationship, not an attribute. Null for enum literals.")
     visibility: Literal["public", "private", "protected", "package"] = Field(default="public", description="UML visibility")
     isDerived: bool = Field(default=False, description="Whether this is a derived/computed attribute.")
     defaultValue: Optional[str] = Field(default=None, description="Default value for the attribute.")

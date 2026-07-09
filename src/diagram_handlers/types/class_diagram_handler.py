@@ -180,6 +180,7 @@ RULES:
 10. {POSITION_DISCLAIMER}
 11. Methods default to implementationType "none" (UML signature only, no code). ONLY generate code in the 'code' field when the user explicitly asks for it. Supported types: 'code' for Python (e.g., "implement in Python", "add Python code"), 'bal' for BESSER Action Language (e.g., "implement in BAL", "use action language"). BAL syntax: def method_name(param: type) -> return_type {{ statements; }}. Python syntax: standard def with self parameter.
 12. ENUMERATIONS ARE NEVER RELATED. A relationship (in the relationships list) must connect two real classes — NEVER an enumeration. If a class has an enum-valued property (status, priority, type, role, category, etc.), model it as an ATTRIBUTE on that class whose type is the enum's PascalCase name — do NOT emit a relationship pointing at the enum. There must be ZERO relationships whose source or target is an isEnumeration=true class.
+14. ATTRIBUTE TYPES ARE PRIMITIVES OR ENUMS — NEVER ANOTHER CLASS. An attribute's type must be a primitive (String, int, bool, float, Date, datetime, time) or an enumeration name. If a class "has a" another class you also model (a PointOfInterest has a Location, an Order has a Customer, a Trip has a start Location and an end Location), express it as a RELATIONSHIP (Association) between the two classes — give the relationship a role name (e.g. startLocation, endLocation) to distinguish multiple links to the same class. NEVER put the class's name in an attribute's "type". Value objects you define (Location, Address, Money, Coordinates, TimeRange) are classes: connect them with relationships, don't use them as attribute types.
 13. CONSTRAINTS (OCL): if the user EXPLICITLY states a business rule that multiplicities and attribute types cannot express — uniqueness ("emails must be unique"), a limit beyond cardinality ("a speaker presents at most one session per time slot"), or a value range ("age must be at least 18") — capture it in the "constraints" list as an OCL invariant in B-OCL syntax: context <ClassName> inv <name>: <expression>. The context MUST be one of the classes you created. Examples: "context Account inv positiveBalance: self.balance >= 0"; "context Speaker inv oneSessionPerSlot: self.sessions->forAll(s1, s2 | s1 <> s2 implies s1.timeSlot <> s2.timeSlot)". CRITICAL: capture ONLY rules the user actually stated. If the user stated no such rule, leave "constraints" EMPTY — NEVER invent constraints.
 
 Examples:
@@ -252,6 +253,13 @@ Examples:
             # Rewrite any such relationship into an enum-typed attribute on the
             # non-enum side (or drop it). Enums are attribute types, not related.
             self._rewrite_enum_relationships(system_spec)
+
+            # Guard: never ship an attribute whose TYPE names another class.
+            # The deterministic code generators only handle primitive + enum
+            # attribute types; a class-typed attribute crashes them and forces
+            # the expensive LLM-from-scratch fallback. Rewrite it into an
+            # association (or coerce an unknown type to String).
+            self._rewrite_class_typed_attributes(system_spec)
 
             # Drop any OCL constraint whose context isn't a real class in the
             # spec (the LLM occasionally references a class it didn't create).
@@ -407,6 +415,106 @@ Examples:
             logger.info(
                 "[ClassDiagram] Enum-relationship guard: rewrote %d, dropped %d",
                 rewritten, dropped,
+            )
+
+    # Attribute types the deterministic generators accept without an association.
+    _PRIMITIVE_ATTR_TYPES = frozenset({
+        "string", "str", "int", "integer", "long", "short", "bool", "boolean",
+        "float", "double", "decimal", "number", "char", "byte",
+        "date", "datetime", "time", "timedelta", "any",
+    })
+
+    def _rewrite_class_typed_attributes(self, system_spec: Dict[str, Any]) -> None:
+        """Convert an attribute TYPED as another class into an Association.
+
+        The deterministic FastAPI/SQLAlchemy/Pydantic generators accept only
+        primitive + enum attribute types. A class-typed attribute (e.g.
+        ``PointOfInterest.location : Location``) raises "unsupported attribute
+        type" and forces the expensive LLM-from-scratch rebuild. This guard
+        rewrites such an attribute into an ``Association`` owner->target (role
+        = the attribute name, so ``startLocation``/``endLocation`` stay
+        distinct). A PascalCase type naming no class/enum in the spec is a
+        hallucinated reference and is coerced to ``String``.
+
+        The INVERSE guard (relationship-to-enum -> attribute) is
+        :meth:`_rewrite_enum_relationships`. Mutates *system_spec* in place;
+        no-op when every attribute is already a primitive/enum.
+        """
+        classes = system_spec.get("classes")
+        if not isinstance(classes, list):
+            return
+
+        class_names: set[str] = set()
+        enum_names: set[str] = set()
+        for cls in classes:
+            if not isinstance(cls, dict):
+                continue
+            name = cls.get("className")
+            if isinstance(name, str) and name:
+                class_names.add(name)
+                if cls.get("isEnumeration"):
+                    enum_names.add(name)
+        non_enum_classes = class_names - enum_names
+
+        relationships = system_spec.get("relationships")
+        if not isinstance(relationships, list):
+            relationships = []
+            system_spec["relationships"] = relationships
+
+        converted = 0
+        coerced = 0
+        for cls in classes:
+            if not isinstance(cls, dict) or cls.get("isEnumeration"):
+                continue
+            owner = cls.get("className")
+            attrs = cls.get("attributes")
+            if not owner or not isinstance(attrs, list):
+                continue
+            kept: List[Dict[str, Any]] = []
+            for a in attrs:
+                if not isinstance(a, dict):
+                    kept.append(a)
+                    continue
+                t = a.get("type")
+                if not isinstance(t, str) or not t.strip():
+                    kept.append(a)
+                    continue
+                tt = t.strip()
+                if tt.lower() in self._PRIMITIVE_ATTR_TYPES or tt in enum_names:
+                    kept.append(a)  # primitive or valid enum-typed attribute
+                    continue
+                if tt in non_enum_classes:
+                    # class-typed attribute -> association owner -> target
+                    relationships.append({
+                        "type": "Association",
+                        "source": owner,
+                        "target": tt,
+                        "sourceMultiplicity": "0..*",
+                        "targetMultiplicity": "0..1" if a.get("isOptional") else "1",
+                        "name": a.get("name") or self._to_camel_case(tt),
+                    })
+                    converted += 1
+                    logger.info(
+                        "[ClassDiagram] Rewrote class-typed attribute %s.%s : %s "
+                        "into an Association", owner, a.get("name"), tt,
+                    )
+                    # drop the attribute (replaced by the association)
+                else:
+                    # PascalCase but not a known class/enum/primitive -> a
+                    # hallucinated type reference; keep the field, make it a String.
+                    a["type"] = "String"
+                    coerced += 1
+                    logger.info(
+                        "[ClassDiagram] Coerced unknown attribute type %s.%s : %s "
+                        "-> String", owner, a.get("name"), tt,
+                    )
+                    kept.append(a)
+            cls["attributes"] = kept
+
+        if converted or coerced:
+            logger.info(
+                "[ClassDiagram] Class-typed-attribute guard: %d -> association, "
+                "%d -> String", converted, coerced,
             )
 
     def _validate_constraints(self, system_spec: Dict[str, Any]) -> None:
