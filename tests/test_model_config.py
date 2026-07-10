@@ -33,9 +33,9 @@ def test_defaults_without_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     mod = importlib.reload(model_config)
     assert mod.MODEL_CLASSIFIER == "gpt-4o-mini"
-    assert mod.MODEL_GENERATION_LARGE == "gpt-5.5"
-    assert mod.MODEL_GENERATION_SMALL == "gpt-4o"
-    assert mod.MODEL_REASONING == "gpt-5"
+    assert mod.MODEL_GENERATION_LARGE == "gpt-5.6-terra"
+    assert mod.MODEL_GENERATION_SMALL == "gpt-5.6-luna"
+    assert mod.MODEL_REASONING == "gpt-5.6-terra"
     assert mod.MODEL_VISION == "gpt-5"
     assert mod.MODEL_EMBEDDINGS == "text-embedding-3-small"
 
