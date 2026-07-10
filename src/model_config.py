@@ -34,14 +34,17 @@ def _env(name: str, default: str) -> str:
 
 
 MODEL_CLASSIFIER = _env("CLASSIFIER", "gpt-4o-mini")
-# gpt-5.5 with reasoning_effort="low" (see REASONING_EFFORT below): bench
-# 2026-06-11 showed it keeps gpt-5.5's diagram quality (10 cls, 3 rel
-# types, enums, 6.6 attrs/cls) at 26s vs 42s default — gpt-4o was 11s but
-# clearly poorer (6 cls, associations only, 0 enums). A user-facing model
-# picker is planned — see MODELING_AGENT_IMPROVEMENTS.md B-4b.
-MODEL_GENERATION_LARGE = _env("GENERATION_LARGE", "gpt-5.5")
-MODEL_GENERATION_SMALL = _env("GENERATION_SMALL", "gpt-4o")
-MODEL_REASONING = _env("REASONING", "gpt-5")
+# 2026-07: moved onto the newer gpt-5.6 family. gpt-5.6-terra ($2.50/$15) is a
+# generation newer than gpt-5.5 ($5/$30) at HALF the cost and is faster, and its
+# cached-input price ($0.25 vs $2.50) makes the stable system prompt ~10x cheaper
+# on input. reasoning_effort="low" + fixed-temperature handling apply
+# automatically (the "gpt-5" prefix already matches gpt-5.6). A/B terra vs
+# gpt-5.6-sol ($5/$30, max quality) on diagram quality and keep the winner.
+# Vision stays on gpt-5 until gpt-5.6 image support is confirmed. All
+# overridable via BESSER_AGENT_MODEL_* env vars.
+MODEL_GENERATION_LARGE = _env("GENERATION_LARGE", "gpt-5.6-terra")
+MODEL_GENERATION_SMALL = _env("GENERATION_SMALL", "gpt-5.6-luna")
+MODEL_REASONING = _env("REASONING", "gpt-5.6-terra")
 MODEL_VISION = _env("VISION", "gpt-5")
 
 # Pinned explicitly so a langchain/OpenAI default bump never silently
