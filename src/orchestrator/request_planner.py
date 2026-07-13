@@ -3,7 +3,11 @@ import logging
 import re
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from handlers.generation_handler import GENERATOR_KEYWORDS, detect_generator_type
+from handlers.generation_handler import (
+    GENERATOR_KEYWORDS,
+    GENERATOR_PREREQUISITES,
+    detect_generator_type,
+)
 from protocol.types import AssistantRequest, SUPPORTED_DIAGRAM_TYPES
 
 from .workspace_orchestrator import KEYWORD_TARGETS, determine_target_diagram_types
@@ -19,24 +23,6 @@ ALLOWED_MODEL_MODES: Set[str] = {
 }
 
 ALLOWED_GENERATORS: Set[str] = set(GENERATOR_KEYWORDS.keys())
-
-# Maps generator type → diagram types that must exist before generation can run.
-GENERATOR_PREREQUISITES: Dict[str, List[str]] = {
-    "web_app": ["ClassDiagram", "GUINoCodeDiagram"],
-    "react": ["ClassDiagram", "GUINoCodeDiagram"],
-    "flutter": ["ClassDiagram", "GUINoCodeDiagram"],
-    "django": ["ClassDiagram"],
-    "backend": ["ClassDiagram"],
-    "sql": ["ClassDiagram"],
-    "sqlalchemy": ["ClassDiagram"],
-    "python": ["ClassDiagram"],
-    "java": ["ClassDiagram"],
-    "pydantic": ["ClassDiagram"],
-    "jsonschema": ["ClassDiagram"],
-    # rest_api/rdf are handled by the smart (Spec-Driven) generator, not a deterministic template.
-    "agent": ["AgentDiagram"],
-    "qiskit": ["QuantumCircuitDiagram"],
-}
 
 PLANNER_CONNECTORS = (
     " and ",

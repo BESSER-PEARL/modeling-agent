@@ -127,6 +127,21 @@ def test_confirm_fires_trigger_and_clears_stash(monkeypatch):
     assert session.get(PENDING_SMART_GEN_INSTRUCTIONS) is None
 
 
+@pytest.mark.parametrize("reply", ["yes", "Yes, please!", "run it now"])
+def test_natural_confirmation_fires_trigger(monkeypatch, reply):
+    gen_mod = _gen_handler()
+    from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+
+    _patch_provider(monkeypatch, _smart_classification())
+    session = FakeSession()
+    gen_mod.handle_generation_request(session, _make_request("build me a rails api"))
+
+    result = gen_mod.handle_generation_request(session, _make_request(reply))
+
+    assert result["action"] == "trigger_smart_generator"
+    assert session.get(PENDING_SMART_GEN_INSTRUCTIONS) is None
+
+
 def test_cancel_clears_stash_without_firing(monkeypatch):
     gen_mod = _gen_handler()
     from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
@@ -141,6 +156,42 @@ def test_cancel_clears_stash_without_firing(monkeypatch):
     assert cancel["action"] == "assistant_message"
     assert "unchanged" in cancel["message"]
     assert session.get(PENDING_SMART_GEN_INSTRUCTIONS) is None
+
+
+@pytest.mark.parametrize("reply", ["no", "No, thanks!", "cancel"])
+def test_natural_cancellation_never_fires(monkeypatch, reply):
+    gen_mod = _gen_handler()
+    from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+
+    _patch_provider(monkeypatch, _smart_classification())
+    session = FakeSession()
+    gen_mod.handle_generation_request(session, _make_request("build me a rails api"))
+
+    result = gen_mod.handle_generation_request(session, _make_request(reply))
+
+    assert result["action"] == "assistant_message"
+    assert "cancel" in result["message"].lower()
+    assert session.get(PENDING_SMART_GEN_INSTRUCTIONS) is None
+
+
+@pytest.mark.parametrize(
+    "reply",
+    ["yes, but cancel", "no, actually run it", "do not cancel the generation"],
+)
+def test_mixed_or_qualified_confirmation_is_not_interpreted(reply):
+    gen_mod = _gen_handler()
+
+    assert gen_mod._smart_gen_confirmation_decision(reply) is None
+
+
+def test_pending_smart_confirmation_routes_to_generation_handler():
+    gen_mod = _gen_handler()
+    from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+
+    session = FakeSession()
+    session.set(PENDING_SMART_GEN_INSTRUCTIONS, "Build a Rails API.")
+
+    assert gen_mod.should_route_to_generation(session, _make_request("yes")) is True
 
 
 # ---------------------------------------------------------------------

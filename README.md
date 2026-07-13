@@ -25,7 +25,7 @@ generate, convert) over WebSocket-compatible payloads.
 
 ## Supported Generators
 
-`django`, `backend`, `web_app`, `sql`, `sqlalchemy`, `python`, `java`, `pydantic`, `jsonschema`, `smartdata`, `agent`, `qiskit`
+`django`, `backend`, `web_app`, `sql`, `sqlalchemy`, `python`, `java`, `pydantic`, `jsonschema`, `smartdata`, `agent`, `qiskit`, `rest_api`, `rdf`
 
 ## Repository Structure
 

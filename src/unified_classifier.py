@@ -86,7 +86,8 @@ _DETERMINISTIC_GENERATOR_TYPES = Literal[
     "smartdata",
     "agent",
     "qiskit",
-    # rest_api/rdf are handled by the smart (Spec-Driven) generator, not a deterministic template.
+    "rest_api",
+    "rdf",
     "export",
     "deploy",
 ]
@@ -101,6 +102,7 @@ _TARGET_DIAGRAM_TYPES = Literal[
     "AgentDiagram",
     "GUINoCodeDiagram",
     "QuantumCircuitDiagram",
+    "BPMN",
 ]
 
 
@@ -535,7 +537,7 @@ _SYSTEM_PROMPT = (
     "with generator_type set. The BESSER built-ins, each with its OWN "
     "deterministic template, are: django, backend, sql, sqlalchemy, "
     "python, java, pydantic, jsonschema, smartdata, web_app, agent, "
-    "qiskit (plus export, deploy). When the user names ONE of these and "
+    "qiskit, rest_api, rdf (plus export, deploy). When the user names ONE of these and "
     "asks for nothing extra, route 'deterministic' and set generator_type "
     "to it. The decoration words 'code', 'models', 'classes', 'schema', "
     "'from my model', 'for my diagram' do NOT make it smart — they are "
@@ -545,7 +547,8 @@ _SYSTEM_PROMPT = (
     "'jsonschema'; 'sqlalchemy' / 'sqlalchemy models' → 'sqlalchemy'; "
     "'pydantic' / 'pydantic models' → 'pydantic'; 'python' / 'python "
     "classes' (plain domain model, no app) → 'python'; 'sql' → 'sql'; "
-    "'django' → 'django'; 'smartdata' → 'smartdata'. NOTE: 'smartdata' is "
+    "'django' → 'django'; 'rest api' → 'rest_api'; 'rdf' → 'rdf'; "
+    "'smartdata' → 'smartdata'. NOTE: 'smartdata' is "
     "a BESSER generator NAME — despite containing the substring 'smart', "
     "naming it ('run smartdata on this model', 'generate smartdata', "
     "'smartdata for my crm model') is ALWAYS 'deterministic' with "
@@ -915,6 +918,7 @@ _RELEVANT_DIAGRAM_TYPES = [
     ("AgentDiagram", "agent element(s)"),
     ("GUINoCodeDiagram", "GUI element(s)"),
     ("QuantumCircuitDiagram", "quantum element(s)"),
+    ("BPMN", "process element(s)"),
 ]
 
 

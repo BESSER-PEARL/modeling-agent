@@ -18,12 +18,27 @@ from protocol.types import AssistantRequest, WorkspaceContext
 from tests.conftest import FakeSession
 
 
+_CLASS_MODEL = {
+    "elements": {
+        "class-1": {"type": "Class", "name": "Book"},
+    },
+    "relationships": {},
+}
+
+
 def _make_request(message: str, action: str = "user_message") -> AssistantRequest:
     return AssistantRequest(
         action=action,
         message=message,
         context=WorkspaceContext(
-            project_snapshot={"name": "TestProject", "diagrams": {}},
+            active_diagram_type="ClassDiagram",
+            active_model=_CLASS_MODEL,
+            project_snapshot={
+                "name": "TestProject",
+                "diagrams": {
+                    "ClassDiagram": [{"model": _CLASS_MODEL}],
+                },
+            },
         ),
     )
 
@@ -68,6 +83,10 @@ class TestDetectGeneratorType:
 
     def test_qiskit(self):
         assert detect_generator_type("generate qiskit code") == "qiskit"
+
+    def test_rest_api_and_rdf(self):
+        assert detect_generator_type("generate rest api") == "rest_api"
+        assert detect_generator_type("generate rdf") == "rdf"
 
     def test_none_for_unrelated(self):
         assert detect_generator_type("create a User class") is None
@@ -323,6 +342,45 @@ class TestHandleGenerationRequest:
         assert result["action"] == "trigger_generator"
         assert result["generatorType"] == "smartdata"
         assert result["config"]["output_format"] == "json"
+
+    @pytest.mark.parametrize("generator_type", ["rest_api", "rdf"])
+    def test_rest_and_rdf_generators_trigger_deterministically(
+        self, monkeypatch, generator_type,
+    ):
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="deterministic",
+            generator_type=generator_type,
+            reason="named built-in generator",
+        ))
+        result = handle_generation_request(
+            FakeSession(), _make_request(f"generate {generator_type}"),
+        )
+        assert result["action"] == "trigger_generator"
+        assert result["generatorType"] == generator_type
+
+    def test_unrelated_model_does_not_satisfy_python_prerequisite(self, monkeypatch):
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="deterministic", generator_type="python", reason="python",
+        ))
+        request = _make_request("generate python")
+        state_model = {
+            "elements": {"state-1": {"type": "State", "name": "Ready"}},
+            "relationships": {},
+        }
+        request.context = WorkspaceContext(
+            active_diagram_type="StateMachineDiagram",
+            active_model=state_model,
+            project_snapshot={
+                "diagrams": {
+                    "StateMachineDiagram": [{"model": state_model}],
+                }
+            },
+        )
+
+        result = handle_generation_request(FakeSession(), request)
+
+        assert result["action"] == "assistant_message"
+        assert "Class Diagram" in result["message"]
 
 
 # ---------------------------------------------------------------------------

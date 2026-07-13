@@ -31,6 +31,7 @@ from session_keys import (
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
     PENDING_GENERATOR_TYPE,
+    PENDING_SMART_GEN_INSTRUCTIONS,
     UNIFIED_CLASSIFICATION,
 )
 
@@ -80,8 +81,9 @@ def json_intent_matches(session: Session, params: Dict[str, Any]) -> bool:
     """Check if the predicted intent matches the target intent for JSON events.
 
     Priority:
-      1. Unified classifier's verdict (``UNIFIED_CLASSIFICATION`` in
-         session) — our own LLM call, authoritative.
+      1. Unified classifier's non-fallback verdict
+         (``UNIFIED_CLASSIFICATION`` in session) — our own LLM call,
+         authoritative when it reached a decision.
       2. BAF's built-in ``session.event.predicted_intent`` — fallback
          when the unified classifier wasn't called (e.g. tests, or
          if the ensure-classification hook is ever disabled).
@@ -105,6 +107,8 @@ def json_intent_matches(session: Session, params: Dict[str, Any]) -> bool:
         return False
     if session.get(PENDING_GUI_CHOICE):
         return False
+    if session.get(PENDING_SMART_GEN_INSTRUCTIONS):
+        return False
 
     target_intent_name = params.get('intent_name')
     if not target_intent_name:
@@ -113,7 +117,7 @@ def json_intent_matches(session: Session, params: Dict[str, Any]) -> bool:
     # Priority 1: the unified classifier, if it ran for this message.
     # See ``ensure_unified_classification`` in state_bodies.py.
     unified = session.get(UNIFIED_CLASSIFICATION)
-    if unified is not None:
+    if unified is not None and unified.intent != "fallback_intent":
         return unified.intent == target_intent_name
 
     # Priority 2: BAF's description-based classifier. Fallback only —
@@ -135,7 +139,11 @@ def json_no_intent_matched(session: Session) -> bool:
     Also returns True when a pending confirmation suppressed intent matching,
     so the message stays in the current state for _common_preamble to handle.
     """
-    if session.get(PENDING_COMPLETE_SYSTEM) or session.get(PENDING_GUI_CHOICE):
+    if (
+        session.get(PENDING_COMPLETE_SYSTEM)
+        or session.get(PENDING_GUI_CHOICE)
+        or session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+    ):
         return True
     if hasattr(session.event, 'predicted_intent') and session.event.predicted_intent:
         matched_intent = session.event.predicted_intent.intent

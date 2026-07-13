@@ -31,12 +31,22 @@ from session_keys import PENDING_GENERATOR_TYPE
 from tests.conftest import FakeSession
 
 
+_CLASS_MODEL = {
+    "elements": {"class-1": {"type": "Class", "name": "Book"}},
+    "relationships": {},
+}
+
+
 def _make_request(message: str) -> AssistantRequest:
     return AssistantRequest(
         message=message,
         context=WorkspaceContext(
             active_diagram_type="ClassDiagram",
-            project_snapshot={"name": "LibraryProject", "diagrams": {}},
+            active_model=_CLASS_MODEL,
+            project_snapshot={
+                "name": "LibraryProject",
+                "diagrams": {"ClassDiagram": [{"model": _CLASS_MODEL}]},
+            },
             diagram_summaries=[
                 {"type": "ClassDiagram", "title": "Library", "elementCount": 4},
             ],
@@ -109,6 +119,18 @@ class TestClassifyGenerationRequest:
         result = classify_generation_request(request, llm_provider=provider)
         assert result.route == "deterministic"
         assert result.generator_type == "django"
+
+    @pytest.mark.parametrize("generator_type", ["rest_api", "rdf"])
+    def test_legacy_schema_accepts_deterministic_api_and_semantic_generators(
+        self, generator_type,
+    ):
+        classification = GenerationClassification(
+            route="deterministic",
+            generator_type=generator_type,
+            reason="BESSER built-in",
+        )
+
+        assert classification.generator_type == generator_type
 
     def test_smart_with_empty_instructions_demoted_to_deterministic_unknown(self):
         """If the LLM returns ``route='smart'`` but forgets to write

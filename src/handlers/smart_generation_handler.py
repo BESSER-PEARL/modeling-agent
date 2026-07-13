@@ -64,7 +64,8 @@ _DETERMINISTIC_GENERATOR_TYPES = Literal[
     "smartdata",
     "agent",
     "qiskit",
-    # rest_api/rdf are handled by the smart (Spec-Driven) generator, not a deterministic template.
+    "rest_api",
+    "rdf",
     "export",
     "deploy",
 ]

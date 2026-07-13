@@ -10,6 +10,7 @@ from handlers.smart_generation_handler import (
     classify_generation_request,
 )
 from protocol.types import AssistantRequest
+from utilities.model_context import is_diagram_nontrivial
 from session_keys import (
     CONFIG_PROMPT_ATTEMPTS,
     PENDING_GENERATOR_CONFIG,
@@ -68,6 +69,29 @@ def _read_unified_mismatch_info(session: Session) -> Tuple[bool, Optional[str]]:
 _SMART_GEN_STASH_TTL_SECONDS = 30 * 60
 
 
+# Generator prerequisites are shared with the request planner. Keeping the
+# contract here lets both direct generation and multi-step plans validate the
+# same diagram requirements without a circular import.
+GENERATOR_PREREQUISITES: Dict[str, List[str]] = {
+    "web_app": ["ClassDiagram", "GUINoCodeDiagram"],
+    "react": ["ClassDiagram", "GUINoCodeDiagram"],
+    "flutter": ["ClassDiagram", "GUINoCodeDiagram"],
+    "django": ["ClassDiagram"],
+    "backend": ["ClassDiagram"],
+    "sql": ["ClassDiagram"],
+    "sqlalchemy": ["ClassDiagram"],
+    "python": ["ClassDiagram"],
+    "java": ["ClassDiagram"],
+    "pydantic": ["ClassDiagram"],
+    "jsonschema": ["ClassDiagram"],
+    "smartdata": ["ClassDiagram"],
+    "rest_api": ["ClassDiagram"],
+    "rdf": ["ClassDiagram"],
+    "agent": ["AgentDiagram"],
+    "qiskit": ["QuantumCircuitDiagram"],
+}
+
+
 def _smart_gen_stash_is_fresh(timestamp: Any) -> bool:
     """True when the stash timestamp exists and is within the TTL.
 
@@ -86,33 +110,96 @@ def _stash_smart_gen(session: Session, instructions: str, provider: str) -> None
     session.set(PENDING_SMART_GEN_TIMESTAMP, time.time())
 
 
-def _project_has_any_model(context: Any) -> bool:
-    """True if the workspace has at least one non-empty diagram model.
+_SMART_GEN_CONFIRM_PHRASES = {
+    "yes", "yes please", "confirm", "confirm it", "run it", "run it now",
+    "please run it", "go ahead", "proceed", "start it", "start the generation",
+    "generate anyway", "generate anyway with my current model",
+}
+_SMART_GEN_CANCEL_PHRASES = {
+    "no", "no thanks", "cancel", "cancel it", "cancel generation",
+    "cancel the generation", "stop", "stop it", "abort", "never mind",
+    "do not run it", "don't run it",
+}
 
-    Checks the active model AND every diagram in the project snapshot, so a
-    stale ``active_model`` right after an injection does not trigger a false
-    "empty workspace" refusal as long as the model is present somewhere in the
-    snapshot. Returns True when there's no context to judge from (err toward
-    generating — the frontend holds the authoritative model).
-    """
-    if context is None:
-        return True
 
-    def _nonempty(model: Any) -> bool:
-        return isinstance(model, dict) and bool(model.get("elements"))
+def _smart_gen_confirmation_decision(message: str) -> Optional[str]:
+    """Return ``confirm``/``cancel`` only for an unambiguous whole reply."""
+    normalized = re.sub(r"[,.!?]+", " ", (message or "").strip().lower())
+    normalized = " ".join(normalized.split())
+    if normalized in _SMART_GEN_CONFIRM_PHRASES:
+        return "confirm"
+    if normalized in _SMART_GEN_CANCEL_PHRASES:
+        return "cancel"
+    return None
 
-    if _nonempty(getattr(context, "active_model", None)):
-        return True
+
+def _iter_models_of_type(context: Any, diagram_type: str):
+    """Yield active and snapshot models for one diagram type."""
+    seen: set[int] = set()
+    if getattr(context, "active_diagram_type", None) == diagram_type:
+        active_model = getattr(context, "active_model", None)
+        if isinstance(active_model, dict):
+            seen.add(id(active_model))
+            yield active_model
 
     snapshot = getattr(context, "project_snapshot", None)
     diagrams = snapshot.get("diagrams") if isinstance(snapshot, dict) else None
+    target = diagrams.get(diagram_type) if isinstance(diagrams, dict) else None
+    entries = (
+        target
+        if isinstance(target, list)
+        else ([target] if target is not None else [])
+    )
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        model = entry.get("model")
+        if not isinstance(model, dict) and (
+            "elements" in entry or "pages" in entry or "cols" in entry
+        ):
+            model = entry
+        if isinstance(model, dict) and id(model) not in seen:
+            seen.add(id(model))
+            yield model
+
+
+def _project_has_diagram_model(context: Any, diagram_type: str) -> bool:
+    if context is None:
+        return True
+    return any(
+        is_diagram_nontrivial(model, diagram_type)
+        for model in _iter_models_of_type(context, diagram_type)
+    )
+
+
+def _project_has_any_model(context: Any) -> bool:
+    """True if any canonical diagram model has meaningful content."""
+    if context is None:
+        return True
+    diagram_types = {
+        dtype
+        for required in GENERATOR_PREREQUISITES.values()
+        for dtype in required
+    }
+    snapshot = getattr(context, "project_snapshot", None)
+    diagrams = snapshot.get("diagrams") if isinstance(snapshot, dict) else None
     if isinstance(diagrams, dict):
-        for entries in diagrams.values():
-            entry_list = entries if isinstance(entries, list) else [entries]
-            for entry in entry_list:
-                if isinstance(entry, dict) and _nonempty(entry.get("model")):
-                    return True
-    return False
+        diagram_types.update(key for key in diagrams if isinstance(key, str))
+    active_type = getattr(context, "active_diagram_type", None)
+    if isinstance(active_type, str):
+        diagram_types.add(active_type)
+    return any(_project_has_diagram_model(context, dtype) for dtype in diagram_types)
+
+
+def _missing_generator_prerequisites(context: Any, generator_type: str) -> List[str]:
+    """Return required diagram types that are absent or only seed content."""
+    if context is None:
+        return []
+    return [
+        dtype
+        for dtype in GENERATOR_PREREQUISITES.get(generator_type, [])
+        if not _project_has_diagram_model(context, dtype)
+    ]
 
 
 def _build_smart_gen_confirmation(
@@ -258,6 +345,8 @@ GENERATOR_KEYWORDS: Dict[str, List[str]] = {
     "smartdata": ["smart data", "smartdata"],
     "agent": ["besser agent", "agent generator", "generate agent"],
     "qiskit": ["qiskit", "quantum code", "quantum generator", "quantum circuit code", "ibm quantum"],
+    "rest_api": ["rest api", "rest_api", "generate rest api"],
+    "rdf": ["rdf", "rdf generator", "rdf vocabulary", "generate rdf"],
     "export": [
         "export project", "export the project", "export my project",
         "export to json", "export into json", "export as json", "export json",
@@ -290,6 +379,8 @@ GENERATOR_REQUIRED_FIELDS: Dict[str, List[str]] = {
     "jsonschema": ["mode"],
     "smartdata": [],
     "qiskit": ["backend", "shots"],
+    "rest_api": [],
+    "rdf": [],
     "export": ["format"],
     "deploy": [],
 }
@@ -663,9 +754,8 @@ def should_route_to_generation(session: Session, request: AssistantRequest) -> b
 
       * ``frontend_event`` callbacks (``generator_result``, etc.) —
         ``raw_payload`` events, not conversational messages.
-      * ``pending_generator`` state — the user is mid-flow answering a
-        multi-turn config prompt and the next message is config input,
-        not a new intent.
+      * pending generator/config or smart-generation confirmation state —
+        the next message belongs to the in-progress flow, not a new intent.
 
     Older versions of this function ran text-content heuristics
     (``detect_generator_type``, ``_is_modeling_request``, phrase lists,
@@ -677,7 +767,9 @@ def should_route_to_generation(session: Session, request: AssistantRequest) -> b
     if request.action == "frontend_event":
         return True
     pending_generator, _ = _get_pending_state(session)
-    return bool(pending_generator)
+    return bool(
+        pending_generator or session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+    )
 
 
 def _normalize_defaults(generator_type: str, request: AssistantRequest, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -830,15 +922,16 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     if request.action == "frontend_event":
         return _handle_frontend_event(request, session)
 
-    # Mismatch-confirmation shortcuts: when the user clicks one of the
-    # quick-action buttons emitted by ``_build_mismatch_confirmation``,
-    # short-circuit the classifier and act on the stashed smart-gen
-    # payload directly. We match on phrase substrings (case-insensitive)
-    # rather than exact equality so paraphrased messages still work.
+    # Pending smart-generation confirmation: short-circuit the classifier only
+    # for an unambiguous whole yes/no/cancel reply. Qualified or mixed replies
+    # are deliberately not treated as approval to spend the user's API key.
     msg_lower = (request.message or "").strip().lower()
     has_pending_smart_gen = bool(session.get(PENDING_SMART_GEN_INSTRUCTIONS))
+    smart_gen_decision = (
+        _smart_gen_confirmation_decision(msg_lower) if has_pending_smart_gen else None
+    )
 
-    if has_pending_smart_gen and "cancel the generation" in msg_lower:
+    if smart_gen_decision == "cancel":
         _clear_pending_smart_gen(session)
         _clear_pending_state(session)
         return {
@@ -846,7 +939,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             "message": "Cancelled. Your model is unchanged.",
         }
 
-    if has_pending_smart_gen and "generate anyway" in msg_lower:
+    if smart_gen_decision == "confirm":
         # Explicit user confirmation: fire the smart-gen handoff with the
         # previously-stashed instructions / provider. This is the ONLY
         # place a trigger_smart_generator payload is emitted — every
@@ -880,6 +973,11 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 reason_prefix="generating with current model",
             )
         # Fall through to normal classification if the stash was empty.
+
+    if has_pending_smart_gen:
+        # A different request abandons this confirmation. Clearing the stash
+        # prevents a later generic "yes" from spending against an old run.
+        _clear_pending_smart_gen(session)
 
     pending_generator, pending_config = _get_pending_state(session)
 
@@ -1012,6 +1110,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 "**Database**: `sql`, `sqlalchemy`\n"
                 "**Code**: `python`, `java`, `pydantic`\n"
                 "**Data formats**: `jsonschema`, `smartdata`\n"
+                "**APIs & semantics**: `rest_api`, `rdf`\n"
                 "**Other**: `agent`, `qiskit`\n\n"
                 "**Export**: `export json` or `export buml`\n"
                 "**Deploy**: `deploy to render`\n\n"
@@ -1088,18 +1187,32 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 "then fill in the repository details and hit **Publish**."
             ),
         }
-    # Empty-workspace guard: a deterministic generator on a genuinely empty
-    # project emits a broken/empty artifact. We check the WHOLE project
-    # snapshot (every diagram), not just the possibly-stale active_model — so a
-    # snapshot that lags a fresh injection by one message does NOT cause a
-    # false "empty" refusal as long as the model is present anywhere. Only
-    # refuse when nothing usable exists at all.
-    if not _project_has_any_model(getattr(request, "context", None)):
+    # Validate the diagrams this specific generator consumes. An unrelated
+    # model must not satisfy a ClassDiagram prerequisite, and canonical GUI
+    # models carry ``pages`` rather than an ``elements`` map.
+    request_context = getattr(request, "context", None)
+    missing_prerequisites = _missing_generator_prerequisites(
+        request_context, generator_type,
+    )
+    if missing_prerequisites:
+        labels = {
+            "ClassDiagram": "Class Diagram",
+            "GUINoCodeDiagram": "GUI Diagram",
+            "AgentDiagram": "Agent Diagram",
+            "QuantumCircuitDiagram": "Quantum Circuit Diagram",
+        }
+        missing_text = " and ".join(
+            f"**{labels.get(dtype, dtype)}**" for dtype in missing_prerequisites
+        )
+        if not _project_has_any_model(request_context):
+            lead = "Your workspace looks empty"
+        else:
+            lead = f"Your workspace is missing a usable {missing_text}"
         return {
             "action": "assistant_message",
             "message": (
-                f"Your workspace looks empty — there's no model to turn into "
-                f"**{generator_type}** code yet. Describe what you want first "
+                f"{lead} — **{generator_type}** generation requires {missing_text}. "
+                f"Describe what you want first "
                 f"(e.g. *\"create a library management system\"*), then ask me to "
                 f"generate the code."
             ),

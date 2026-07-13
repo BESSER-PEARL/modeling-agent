@@ -3,6 +3,7 @@
 import json
 import pytest
 from orchestrator.request_planner import (
+    GENERATOR_PREREQUISITES,
     plan_assistant_operations,
     _split_message_segments,
     _match_segment_target,
@@ -24,6 +25,11 @@ def _make_request(message: str, active_diagram_type: str = "ClassDiagram") -> As
 def _noop_predict(prompt: str) -> str:
     """Fake LLM predict that returns an empty plan."""
     return json.dumps({"operations": []})
+
+
+def test_api_and_semantic_generators_share_class_diagram_prerequisite():
+    assert GENERATOR_PREREQUISITES["rest_api"] == ["ClassDiagram"]
+    assert GENERATOR_PREREQUISITES["rdf"] == ["ClassDiagram"]
 
 
 # ---------------------------------------------------------------------------

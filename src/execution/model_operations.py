@@ -25,6 +25,7 @@ from utilities.model_resolution import (
 )
 from utilities.workspace_context import build_workspace_context_block, record_session_action
 from utilities.class_metadata import extract_class_metadata
+from utilities.model_context import is_diagram_nontrivial
 from suggestions import get_suggested_actions
 from session_keys import (
     LAST_EXECUTED_DIAGRAM_TYPE,
@@ -45,22 +46,21 @@ logger = logging.getLogger(__name__)
 # generate step reads the pre-create (often empty) snapshot and wrongly refuses
 # with "your workspace looks empty — there's no model to turn into code yet".
 #
-# These helpers record a lightweight copy of the just-created model back into the
-# working request's project snapshot so the generate step's empty-workspace guard
-# (_project_has_any_model) sees it. The frontend still holds the authoritative
-# model; this copy only has to be non-empty enough to pass the guard.
+# These helpers record a lightweight canonical copy of the just-created model
+# back into the working request's project snapshot so a later generate step can
+# validate its diagram prerequisites. The frontend remains authoritative.
 # ------------------------------------------------------------------
 
-def _elements_from_result(result_payload: Any) -> Dict[str, Any]:
+def _elements_from_result(
+    result_payload: Any,
+    diagram_type: Optional[str] = None,
+) -> Dict[str, Any]:
     """Extract a non-empty ``elements`` map from a handler result payload.
 
-    Understands the class-diagram ``systemSpec`` shape, an editor-model
+    Understands class and agent ``systemSpec`` payloads, an editor-model
     ``model.elements`` shape, and a single-``element`` shape. Falls back to a
-    single marker element when a *successful* create returned an unrecognized
-    (but non-empty) payload, so the empty-workspace guard still treats the
-    workspace as populated. Returns ``{}`` only when the payload carried a
-    parseable-but-empty model (e.g. a systemSpec with zero classes) — in that
-    case the guard should legitimately still fire.
+    marker for legacy callers; the snapshot bridge validates that marker
+    against the requested diagram type before recording it.
     """
     if not isinstance(result_payload, dict):
         return {}
@@ -74,6 +74,25 @@ def _elements_from_result(result_payload: Any) -> Dict[str, Any]:
     spec = result_payload.get("systemSpec")
     if isinstance(spec, dict):
         elements: Dict[str, Any] = {}
+        if diagram_type == "AgentDiagram":
+            for index, state in enumerate(spec.get("states") or []):
+                if not isinstance(state, dict):
+                    continue
+                name = state.get("stateName") or state.get("name") or f"state_{index}"
+                elements[f"created-state-{index}-{name}"] = {
+                    "type": "AgentState",
+                    "name": str(name),
+                }
+            for index, intent in enumerate(spec.get("intents") or []):
+                if not isinstance(intent, dict):
+                    continue
+                name = intent.get("intentName") or intent.get("name") or f"intent_{index}"
+                elements[f"created-intent-{index}-{name}"] = {
+                    "type": "AgentIntent",
+                    "name": str(name),
+                }
+            return elements
+
         classes = spec.get("classes")
         if isinstance(classes, list):
             for i, cls in enumerate(classes):
@@ -115,7 +134,7 @@ def _record_created_model_in_snapshot(
         return (
             isinstance(entry, dict)
             and isinstance(entry.get("model"), dict)
-            and bool(entry["model"].get("elements"))
+            and is_diagram_nontrivial(entry["model"], diagram_type)
         )
 
     snapshot = getattr(context, "project_snapshot", None)
@@ -141,16 +160,27 @@ def _record_created_model_in_snapshot(
         # already passes, so there is nothing to bridge.
         return False
 
-    elements = _elements_from_result(result_payload)
-    if not elements:
-        # The create genuinely produced nothing — leave the guard to fire.
+    direct_model = result_payload.get("model")
+    if isinstance(direct_model, dict) and is_diagram_nontrivial(
+        direct_model, diagram_type,
+    ):
+        bridged_model = dict(direct_model)
+    else:
+        elements = _elements_from_result(result_payload, diagram_type)
+        if not elements:
+            # The create genuinely produced nothing — leave the guard to fire.
+            return False
+        bridged_model = {"elements": elements}
+
+    if not is_diagram_nontrivial(bridged_model, diagram_type):
+        # Do not let a generic placeholder satisfy a typed prerequisite (for
+        # example, GUI readiness requires canonical ``pages`` content).
         return False
 
-    diagrams[diagram_type] = [{"model": {"elements": elements}}]
+    diagrams[diagram_type] = [{"model": bridged_model}]
     logger.info(
         f"[ModelOp] Recorded in-turn {diagram_type} creation into snapshot "
-        f"({len(elements)} element(s)) so a later generate step won't see an "
-        "empty workspace."
+        "so a later generate step can validate its prerequisites."
     )
     return True
 

@@ -1,5 +1,7 @@
 """Tests for the unified message classifier."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from protocol.types import AssistantRequest, WorkspaceContext
@@ -13,6 +15,7 @@ from unified_classifier import (
     classify_message,
     get_or_classify,
 )
+from session_helpers import json_intent_matches, json_no_intent_matched
 
 from tests.conftest import FakeSession
 
@@ -91,7 +94,7 @@ class TestClassifyMessage:
         assert result.generation_route == "smart"
         assert result.refined_instructions.startswith("Build a Rails 7")
 
-    def test_smart_without_instructions_demoted_to_deterministic_unknown(self):
+    def test_smart_without_instructions_uses_raw_message(self):
         bad = UnifiedClassification(
             intent="generation_intent",
             generation_route="smart",
@@ -102,8 +105,8 @@ class TestClassifyMessage:
             _make_request("do something"), llm_provider=_FakeProvider(bad),
         )
         assert result.intent == "generation_intent"
-        assert result.generation_route == "deterministic"
-        assert result.generator_type is None
+        assert result.generation_route == "smart"
+        assert result.refined_instructions == "do something"
 
     def test_generation_intent_without_route_demoted_to_fallback(self):
         bad = UnifiedClassification(
@@ -121,7 +124,7 @@ class TestClassifyMessage:
             "hello_intent", "create_complete_system_intent",
             "modify_model_intent", "modeling_help_intent",
             "describe_model_intent", "uml_spec_intent",
-            "generation_intent", "workflow_intent", "fallback_intent",
+            "generation_intent", "fallback_intent",
         ]
         for name in intents:
             cls = UnifiedClassification(
@@ -179,6 +182,21 @@ class TestGetOrClassifyCache:
         result = get_or_classify(session, _make_request("hello"), provider)
         assert result.intent == "hello_intent"
 
+    def test_cached_unified_fallback_defers_to_baf_intent(self):
+        session = _CacheableSession(event_id="evt-fallback")
+        session.event.predicted_intent = SimpleNamespace(
+            intent=SimpleNamespace(name="generation_intent")
+        )
+        session.set(
+            UNIFIED_CLASSIFICATION,
+            UnifiedClassification(intent="fallback_intent", reason="provider down"),
+        )
+
+        assert json_intent_matches(
+            session, {"intent_name": "generation_intent"},
+        ) is True
+        assert json_no_intent_matched(session) is False
+
 
 class TestSchemaContracts:
     """Pin the exact literal values so TypeScript frontend and backend stay in sync."""
@@ -211,6 +229,7 @@ class TestSchemaContracts:
         for v in (
             "ClassDiagram", "ObjectDiagram", "StateMachineDiagram",
             "AgentDiagram", "GUINoCodeDiagram", "QuantumCircuitDiagram",
+            "BPMN",
         ):
             cls = UnifiedClassification(
                 intent="create_complete_system_intent",
@@ -232,6 +251,45 @@ class _RecordingProvider:
     def parse(self, *, messages, schema, temperature, max_tokens):
         self.messages = messages
         return self.decision
+
+
+def test_bpmn_workspace_context_reaches_classifier():
+    request = AssistantRequest(
+        message="add a review task after approval",
+        context=WorkspaceContext(
+            active_diagram_type="BPMN",
+            active_model={
+                "elements": {
+                    "task-1": {"type": "BPMNTask", "name": "Approve Request"},
+                }
+            },
+            project_snapshot={
+                "diagrams": {
+                    "BPMN": [{
+                        "model": {
+                            "elements": {
+                                "task-1": {
+                                    "type": "BPMNTask",
+                                    "name": "Approve Request",
+                                }
+                            }
+                        }
+                    }]
+                }
+            },
+        ),
+    )
+    provider = _RecordingProvider(UnifiedClassification(
+        intent="modify_model_intent",
+        target_diagram_type="BPMN",
+        reason="active BPMN process",
+    ))
+
+    result = classify_message(request, provider)
+
+    assert result.target_diagram_type == "BPMN"
+    assert "BPMN: 1 process element(s)" in provider.messages[1]["content"]
+    assert "Approve Request" in provider.messages[1]["content"]
 
 
 class TestSmartGenFollowUpRouting:

@@ -1,4 +1,4 @@
-"""Tests for the same-turn create→generate "workspace looks empty" fix.
+"""Tests for same-turn create→generate prerequisite bridging.
 
 Repro: one prompt ("create a web app with a map and biking routes") is planned
 into [create ClassDiagram, create GUINoCodeDiagram, generate web_app]. The
@@ -7,10 +7,10 @@ into the backend request context, so the Phase-2 generate step read the original
 EMPTY snapshot and wrongly replied "Your workspace looks empty — there's no
 model to turn into web_app code yet."
 
-The fix bridges each in-turn creation into the working request's project
-snapshot (``_record_created_model_in_snapshot``) so the generate step's
-empty-workspace guard (``_project_has_any_model``) sees it — while a genuinely
-empty workspace (generate with no prior create) still gets the guidance.
+The bridge records canonical in-turn creations in the working project snapshot
+so generator-specific prerequisites see them. A GUI must be represented by
+``pages`` (not a generic ``elements`` marker), and a genuinely empty workspace
+still gets guidance.
 """
 
 import pytest
@@ -20,6 +20,7 @@ from execution.model_operations import (
     _elements_from_result,
 )
 from handlers.generation_handler import (
+    _missing_generator_prerequisites,
     _project_has_any_model,
     handle_generation_request,
 )
@@ -38,6 +39,24 @@ _CLASS_CREATE_PAYLOAD = {
     "action": "inject_complete_system",
     "systemSpec": {"classes": [{"className": "Book"}, {"className": "Member"}]},
     "diagramType": "ClassDiagram",
+}
+
+_GUI_CREATE_PAYLOAD = {
+    "action": "inject_complete_system",
+    "diagramType": "GUINoCodeDiagram",
+    "model": {
+        "pages": [{"id": "home", "name": "Home", "frames": []}],
+        "styles": [],
+    },
+}
+
+_AGENT_CREATE_PAYLOAD = {
+    "action": "inject_complete_system",
+    "diagramType": "AgentDiagram",
+    "systemSpec": {
+        "states": [{"stateName": "welcome"}],
+        "intents": [{"intentName": "Greeting"}],
+    },
 }
 
 
@@ -78,14 +97,31 @@ class TestSnapshotBridgeHelper:
         assert _record_created_model_in_snapshot(ctx, "ClassDiagram", _CLASS_CREATE_PAYLOAD) is False
         assert snap["diagrams"]["ClassDiagram"][0]["model"]["elements"]["x"]["name"] == "X"
 
-    def test_unrecognized_payload_marks_nonempty(self):
-        """A successful create with an unrecognized payload still counts as
-        non-empty (something was created)."""
+    def test_unrecognized_gui_payload_does_not_fake_a_usable_gui(self):
         ctx = _ctx({"name": "P", "diagrams": {}})
         assert _record_created_model_in_snapshot(
             ctx, "GUINoCodeDiagram", {"action": "inject_complete_system"}
+        ) is False
+        assert _project_has_any_model(ctx) is False
+        assert _missing_generator_prerequisites(ctx, "web_app") == [
+            "ClassDiagram", "GUINoCodeDiagram",
+        ]
+
+    def test_canonical_gui_pages_are_visible_without_elements_map(self):
+        ctx = _ctx({"name": "P", "diagrams": {}})
+
+        assert _record_created_model_in_snapshot(
+            ctx, "GUINoCodeDiagram", _GUI_CREATE_PAYLOAD,
         ) is True
         assert _project_has_any_model(ctx) is True
+
+    def test_agent_system_spec_satisfies_agent_generator_prerequisite(self):
+        ctx = _ctx({"name": "P", "diagrams": {}})
+
+        assert _record_created_model_in_snapshot(
+            ctx, "AgentDiagram", _AGENT_CREATE_PAYLOAD,
+        ) is True
+        assert _missing_generator_prerequisites(ctx, "agent") == []
 
     def test_elements_from_result_shapes(self):
         # systemSpec (class diagram)
@@ -100,12 +136,18 @@ class TestSnapshotBridgeHelper:
         (which copies the snapshot by reference) carries it to the generate step."""
         ctx = _ctx({"name": "P", "diagrams": {}})
         _record_created_model_in_snapshot(ctx, "ClassDiagram", _CLASS_CREATE_PAYLOAD)
+        assert _missing_generator_prerequisites(ctx, "web_app") == [
+            "GUINoCodeDiagram",
+        ]
+        _record_created_model_in_snapshot(
+            ctx, "GUINoCodeDiagram", _GUI_CREATE_PAYLOAD,
+        )
         base = AssistantRequest(
             message="generate web_app", diagram_type="ClassDiagram",
             current_model=None, context=ctx,
         )
         gen_req = build_generation_request(base, generator_type="web_app")
-        assert _project_has_any_model(gen_req.context) is True
+        assert _missing_generator_prerequisites(gen_req.context, "web_app") == []
 
 
 # ---------------------------------------------------------------------------
