@@ -388,6 +388,10 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
         if not changes.get("classId"):
             changes["classId"] = info["id"]
         changes["attributes"] = self._full_attributes(info, changes.get("attributes"))
+        # Carry the metamodel class icon so the frontend modifier can build the
+        # UserModelIcon child (User diagrams always render in icon view).
+        if not changes.get("icon"):
+            changes["icon"] = self._class_icon(info["id"], elements)
         mod["changes"] = changes
 
         path = self._path_to_root(class_name)
@@ -407,6 +411,7 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
                     "className": anc_info["name"] if anc_info else ancestor,
                     "classId": anc_info["id"] if anc_info else None,
                     "attributes": self._full_attributes(anc_info, []) if anc_info else [],
+                    "icon": self._class_icon(anc_info["id"], elements) if anc_info else None,
                 },
             })
             ensured.add(anc_l)

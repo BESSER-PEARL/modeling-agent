@@ -134,6 +134,10 @@ class UserProfileModificationChanges(BaseModel):
         default=None,
         description="Element id of the metamodel class (populated server-side).",
     )
+    icon: Optional[str] = Field(
+        default=None,
+        description="Metamodel class icon SVG for add_object (populated server-side).",
+    )
     attributes: Optional[List[UserProfileAttributeSpec]] = Field(
         default=None,
         description="Attribute criteria for add_object.",
