@@ -9,6 +9,14 @@ venv/
 ENV/
 *.egg-info/
 .pytest_cache/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
 
 # IDE
 .vscode/

@@ -146,9 +146,15 @@ class TestParseV2Payload:
         assert request.diagram_type == "ClassDiagram"
         assert request.is_v2
 
-    def test_with_active_model(self):
+    def test_resolves_model_from_project_snapshot(self):
         model = {"elements": {"cls-1": {"name": "Foo"}}}
-        raw = make_v2_payload("Modify User", "ClassDiagram", active_model=model)
+        snapshot = {"diagrams": {"ClassDiagram": {"model": model}}}
+        raw = make_v2_payload(
+            "Modify User",
+            "ClassDiagram",
+            active_model={"elements": {"stale": {"name": "Stale"}}},
+            project_snapshot=snapshot,
+        )
         request = parse_v2_payload(raw)
         assert request.current_model == model
 
