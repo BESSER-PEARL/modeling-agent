@@ -65,6 +65,7 @@ def _set_request_byok(session):
             session.get("user_api_provider"),
             session.get("user_api_key"),
             session.get("user_api_model"),
+            session.get("user_api_base"),
         )
     except Exception as exc:  # never let BYOK wiring break message handling
         logger.warning(f"BYOK: could not set per-request key: {exc}")
@@ -167,6 +168,16 @@ class WebSocketPlatform(Platform):
         self._use_ui: bool = use_ui
         self._authenticate_users = authenticate_users
         self._connections: dict[str, ServerConnection] = {}
+        # Per-session outbox: replies that can't be delivered right now (the
+        # slot holds a stale/half-open socket, or the client is mid-reconnect)
+        # are buffered here and flushed on the next slot reclaim (USER_MESSAGE
+        # / __heartbeat). This RECOVERS a fast reply produced during a reconnect
+        # gap instead of silently losing it -- the root cause of "generate did
+        # nothing": a ~4s smart-gen confirmation fired before any 15s heartbeat
+        # re-pointed the slot at the live socket. Bounded per session.
+        self._outbox: dict[str, list[Payload]] = {}
+        self._outbox_lock = threading.Lock()
+        self._outbox_max = 50
         self._websocket_server: WebSocketServer = None
 
         def message_handler(conn: ServerConnection) -> None:
@@ -213,6 +224,8 @@ class WebSocketPlatform(Platform):
                         # Route replies back to whichever conn sent this message
                         self._connections[str(session_key)] = conn
                         logger.info("REPLY_ROUTE: key=%r -> conn=%r (message sender)" % (session_key, conn.id))
+                        # Deliver anything buffered during a prior reconnect gap.
+                        self._flush_outbox(str(session_key), conn)
                         event: ReceiveMessageEvent = ReceiveMessageEvent.create_event_from(
                             message=payload.message,
                             session=session,
@@ -274,6 +287,9 @@ class WebSocketPlatform(Platform):
                         # skip without setting a variable or spamming the logs.
                         if '__heartbeat' in payload.message:
                             self._connections[str(session_key)] = conn
+                            # A heartbeat proves this socket is live -> flush any
+                            # replies buffered while the slot was stale/absent.
+                            self._flush_outbox(str(session_key), conn)
                             continue
                         for key, value in payload.message.items():
                             session.set(key, value)
@@ -413,15 +429,72 @@ class WebSocketPlatform(Platform):
         logger.info(f'{self._agent.name}\'s WebSocketPlatform stopped')
 
     def _send(self, session_id, payload: Payload) -> None:
-        if session_id in self._connections:
-            conn = self._connections[session_id]
-            conn.send(json.dumps(payload, cls=PayloadEncoder))
+        session_id = str(session_id)
+        conn = self._connections.get(session_id)
+        if conn is not None:
+            try:
+                conn.send(json.dumps(payload, cls=PayloadEncoder))
+                logger.info(
+                    "REPLY_SENT: session=%r action=%s -> conn=%r",
+                    session_id, getattr(payload, "action", "?"), getattr(conn, "id", "?"),
+                )
+                return
+            except Exception as e:
+                # ``conn.send`` on a stale/half-open socket can raise (and on a
+                # half-open TCP may not) -- either way the slot is bad. Prune it
+                # and fall through to buffering so the reply is redelivered when
+                # the client's next message/heartbeat reclaims a live slot.
+                logger.warning(
+                    "REPLY_SEND_FAILED: session=%r action=%s conn=%r err=%s -- buffering",
+                    session_id, getattr(payload, "action", "?"), getattr(conn, "id", "?"), e,
+                )
+                if self._connections.get(session_id) is conn:
+                    self._connections.pop(session_id, None)
         else:
             logger.warning(
-                "Dropped reply for session %r (action=%s): no live connection "
-                "registered -- client likely disconnected mid-generation.",
+                "REPLY_BUFFERED: session=%r action=%s -- no live connection; "
+                "will redeliver on reconnect.",
                 session_id, getattr(payload, "action", "?"),
             )
+        self._buffer_reply(session_id, payload)
+
+    def _buffer_reply(self, session_id: str, payload: Payload) -> None:
+        """Buffer an undeliverable reply for redelivery, bounded per session."""
+        with self._outbox_lock:
+            queue = self._outbox.setdefault(session_id, [])
+            queue.append(payload)
+            overflow = len(queue) - self._outbox_max
+            if overflow > 0:
+                del queue[0:overflow]  # drop oldest
+
+    def _flush_outbox(self, session_id: str, conn: ServerConnection) -> None:
+        """Redeliver buffered replies to a freshly-(re)claimed live connection.
+
+        Called at every slot reclaim (USER_MESSAGE / __heartbeat) so a reply
+        buffered during a reconnect gap reaches the browser on its next beat.
+        """
+        with self._outbox_lock:
+            pending = self._outbox.pop(session_id, None)
+        if not pending:
+            return
+        logger.info(
+            "REPLY_FLUSH: session=%r delivering %d buffered reply(ies) -> conn=%r",
+            session_id, len(pending), getattr(conn, "id", "?"),
+        )
+        for i, payload in enumerate(pending):
+            try:
+                conn.send(json.dumps(payload, cls=PayloadEncoder))
+            except Exception as e:
+                # Still failing -- re-buffer this + the rest (order preserved)
+                # so a later reclaim retries, and stop.
+                logger.warning(
+                    "REPLY_FLUSH_FAILED: session=%r err=%s -- re-buffering %d",
+                    session_id, e, len(pending) - i,
+                )
+                with self._outbox_lock:
+                    queue = self._outbox.setdefault(session_id, [])
+                    queue[0:0] = pending[i:]
+                return
 
     def reply(self, session: Session, message: str) -> None:
         if session.platform is not self:

@@ -126,18 +126,38 @@ def resolve_model(
 # Per-request config + context variable
 # ---------------------------------------------------------------------------
 
+def _allow_custom_base_url() -> bool:
+    """Whether a per-request BYOK ``base_url`` (PIA / local providers) is allowed.
+
+    OFF by default: having the agent open an arbitrary user-supplied URL is an
+    SSRF surface on a shared host. Local / on-prem / PIA deploys opt in via
+    ``BESSER_AGENT_ALLOW_CUSTOM_BASE_URL``.
+    """
+    import os
+    return os.getenv("BESSER_AGENT_ALLOW_CUSTOM_BASE_URL", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 @dataclass(frozen=True)
 class BYOKConfig:
     """The user's key/provider for a single request. ``model`` is the user's
-    explicitly chosen model (used for the ``large`` tier), if any."""
+    explicitly chosen model (used for the ``large`` tier), if any. ``base_url``
+    is set for the OpenAI-compatible 'PIA'/'local' providers (they arrive as
+    provider='openai' + this URL)."""
 
     provider: str
     api_key: str
     model: Optional[str] = None
+    base_url: Optional[str] = None
 
     def redacted(self) -> str:
         """A log-safe description that never reveals the key."""
-        return f"BYOK(provider={self.provider}, model={self.model or '<default>'}, key=(redacted))"
+        base = f", base_url={self.base_url}" if self.base_url else ""
+        return (
+            f"BYOK(provider={self.provider}, model={self.model or '<default>'}"
+            f"{base}, key=(redacted))"
+        )
 
 
 # Holds the active per-request BYOK config, or ``None`` when the request
@@ -151,6 +171,7 @@ def set_current(
     provider: Optional[str],
     api_key: Optional[str],
     model: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> "contextvars.Token":
     """Set the per-request BYOK config from raw session values.
 
@@ -160,11 +181,27 @@ def set_current(
     """
     provider_norm = (provider or "").strip().lower()
     key = (api_key or "").strip()
+    base = (base_url or "").strip() or None
     if not key or provider_norm not in SUPPORTED_PROVIDERS:
         if key and provider_norm and provider_norm not in SUPPORTED_PROVIDERS:
             logger.warning("BYOK: ignoring unsupported provider %r", provider_norm)
         return current_byok.set(None)
-    cfg = BYOKConfig(provider=provider_norm, api_key=key, model=(model or "").strip() or None)
+    # SSRF gate: a custom base_url (PIA / local) is only honoured when the deploy
+    # opts in. Otherwise disable BYOK entirely — a PIA/local key against the real
+    # OpenAI endpoint would fail anyway, so falling back to the shared LLM is the
+    # safe, sensible behaviour on a hosted box.
+    if base and not _allow_custom_base_url():
+        logger.warning(
+            "BYOK: custom base_url disabled on this deployment; falling back to "
+            "the shared LLM. Set BESSER_AGENT_ALLOW_CUSTOM_BASE_URL to enable."
+        )
+        return current_byok.set(None)
+    cfg = BYOKConfig(
+        provider=provider_norm,
+        api_key=key,
+        model=(model or "").strip() or None,
+        base_url=base,
+    )
     logger.info("BYOK active for this request: %s", cfg.redacted())
     return current_byok.set(cfg)
 
@@ -206,7 +243,13 @@ class BYOKClient:
     the ``anthropic`` SDK's messages API.
     """
 
-    def __init__(self, provider: str, api_key: str, model: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        provider: str,
+        api_key: str,
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ) -> None:
         self.provider = (provider or "").strip().lower()
         self._user_model = (model or "").strip() or None
         if self.provider not in SUPPORTED_PROVIDERS:
@@ -220,7 +263,11 @@ class BYOKClient:
                     "The 'openai' SDK is required for OpenAI/Mistral BYOK."
                 ) from exc
             client_kwargs = {"api_key": api_key, "timeout": _SDK_TIMEOUT_SECONDS}
-            if self.provider == "mistral":
+            if base_url:
+                # 'PIA'/'local' providers arrive as provider='openai' + a custom
+                # OpenAI-compatible endpoint (gateway / localhost).
+                client_kwargs["base_url"] = base_url
+            elif self.provider == "mistral":
                 client_kwargs["base_url"] = MISTRAL_BASE_URL
             self._client = OpenAI(**client_kwargs)
         else:  # anthropic — lazily gated; SDK may not be installed
@@ -383,4 +430,4 @@ def get_active_client() -> Optional[BYOKClient]:
     cfg = current_byok.get()
     if cfg is None:
         return None
-    return BYOKClient(cfg.provider, cfg.api_key, cfg.model)
+    return BYOKClient(cfg.provider, cfg.api_key, cfg.model, cfg.base_url)
