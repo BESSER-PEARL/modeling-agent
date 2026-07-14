@@ -147,11 +147,15 @@ async def _wait_meaningful(ws, timeout):
             continue
         act = m.get("action")
         if act == "stream_chunk":
-            buf += (m.get("content") or m.get("delta") or "")
+            # The live wire uses "chunk" (session_helpers.reply_stream_chunk);
+            # content/delta kept only as defensive fallbacks.
+            buf += (m.get("chunk") or m.get("content") or m.get("delta") or "")
             continue
         if act == "stream_done":
-            if buf.strip():
-                return {"action": "assistant_message", "message": buf,
+            # stream_done carries the assembled text in "fullText".
+            full = m.get("fullText") or buf
+            if full.strip():
+                return {"action": "assistant_message", "message": full,
                         "suggestedActions": m.get("suggestedActions")}
             continue
         if act in ("trigger_generator", "trigger_smart_generator",
