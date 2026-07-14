@@ -1,5 +1,7 @@
 """Tests for the generation handler (handlers/generation_handler.py)."""
 
+import types
+
 import pytest
 from handlers.generation_handler import (
     detect_generator_type,
@@ -342,6 +344,87 @@ class TestHandleGenerationRequest:
         assert result["action"] == "trigger_generator"
         assert result["generatorType"] == "smartdata"
         assert result["config"]["output_format"] == "json"
+
+    @staticmethod
+    def _cache_classification(session, *, route="deterministic",
+                             generator_type=None, refined_instructions=None,
+                             provider="anthropic"):
+        """Populate the per-message unified-classification cache the way the
+        state_bodies priority-0 hook does in production (the pivot check reads
+        it directly — no LLM call)."""
+        from session_keys import UNIFIED_CLASSIFICATION
+        session.set(UNIFIED_CLASSIFICATION, types.SimpleNamespace(
+            intent="generation_intent",
+            generation_route=route,
+            generator_type=generator_type,
+            refined_instructions=refined_instructions,
+            provider=provider,
+            reason="cached",
+            domain_mismatch=False,
+            suggested_new_domain=None,
+        ))
+
+    def test_pivot_from_pending_django_config_to_sql(self, monkeypatch):
+        """Reported bug: while mid-Django-config (we asked for the project
+        name), 'generate the database' must switch to the SQL generator, not
+        keep re-prompting for Django project info."""
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="deterministic", generator_type="sql",
+            reason="user wants a database",
+        ))
+        request = _make_request("generate a sqlite database")
+        session = FakeSession()
+        session.set("pending_generator_type", "django")
+        session.set("pending_generator_config", {})
+        self._cache_classification(session, generator_type="sql")
+        result = handle_generation_request(session, request)
+        # Pivoted to SQL (dialect parsed from the message) — NOT a Django prompt.
+        assert result["action"] == "trigger_generator"
+        assert result["generatorType"] == "sql"
+        assert "django" not in str(result).lower()
+
+    def test_pivot_from_pending_django_config_to_smart(self, monkeypatch):
+        """Escalating to the smart generator mid-Django-config must abandon the
+        pending flow (surface confirmation), not re-prompt for Django."""
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="smart",
+            refined_instructions="build a full app with authentication",
+            provider="anthropic", reason="user wants a full app",
+        ))
+        request = _make_request("actually build me a full app with auth")
+        session = FakeSession()
+        session.set("pending_generator_type", "django")
+        session.set("pending_generator_config", {})
+        self._cache_classification(
+            session, route="smart",
+            refined_instructions="build a full app with authentication",
+            provider="anthropic")
+        result = handle_generation_request(session, request)
+        # Not the Django config prompt; the smart flow took over.
+        assert not (
+            result["action"] == "assistant_message"
+            and "project name" in result.get("message", "").lower()
+        )
+
+    def test_pending_django_config_answer_does_not_pivot(self, monkeypatch):
+        """Guard against over-switching: when the fresh classification still
+        reads as the SAME generator (e.g. a config answer / 'use defaults'),
+        the Django flow must continue, not be abandoned."""
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="deterministic", generator_type="django",
+            reason="continuing django",
+        ))
+        request = _make_request("use defaults")
+        session = FakeSession()
+        session.set("pending_generator_type", "django")
+        session.set("pending_generator_config", {})
+        self._cache_classification(session, generator_type="django")
+        result = handle_generation_request(session, request)
+        # Stayed in the Django flow — never pivoted to another generator.
+        if result["action"] == "trigger_generator":
+            assert result["generatorType"] == "django"
+        else:
+            assert result["action"] == "assistant_message"
 
     @pytest.mark.parametrize("generator_type", ["rest_api", "rdf"])
     def test_rest_and_rdf_generators_trigger_deterministically(

@@ -980,23 +980,54 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         _clear_pending_smart_gen(session)
 
     pending_generator, pending_config = _get_pending_state(session)
+    _use_pending = bool(pending_generator and pending_generator != _AWAITING_SELECTION)
 
-    if pending_generator and pending_generator != _AWAITING_SELECTION:
-        # Multi-turn continuation: user is mid-flow answering a config
-        # prompt (e.g. "what's your Django project name?"). Use the
-        # already-picked generator and fall through to the config
-        # parsing / dispatch path below without calling the LLM
-        # classifier again.
+    # When a config-collection flow is pending (e.g. we asked for the Django
+    # project name), the user may PIVOT instead of answering — "generate the
+    # database" while mid-Django-config, or escalating to the smart generator.
+    # Trust the fresh classification: if it's a clear request for a DIFFERENT
+    # built-in generator, or the smart route, abandon the pending flow and
+    # re-route — otherwise we'd re-prompt for the old generator's config
+    # forever (the "asked for a database, got Django questions" bug).
+    # Consult the CACHED classification (populated by state_bodies' priority-0
+    # hook — read directly so there is NO extra LLM call here). If the cache is
+    # empty we simply don't pivot and continue the pending flow.
+    classification = None
+    if _use_pending:
+        _cached = session.get(UNIFIED_CLASSIFICATION)
+        if _cached is not None and getattr(_cached, "intent", None) == "generation_intent":
+            _fresh = _classification_to_legacy(_cached)
+            pivoted = _fresh.route == "smart" or (
+                _fresh.route == "deterministic"
+                and _fresh.generator_type
+                and _fresh.generator_type != pending_generator
+            )
+            if pivoted:
+                logger.info(
+                    "generation pivot: abandoning pending '%s' config flow for "
+                    "route=%s generator_type=%s",
+                    pending_generator, _fresh.route, _fresh.generator_type,
+                )
+                _clear_pending_state(session)
+                session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+                _use_pending = False
+                classification = _fresh  # reuse below; avoids a second lookup
+
+    if _use_pending:
+        # Multi-turn continuation: user is answering the pending generator's
+        # config prompt (e.g. "what's your Django project name?"). Use the
+        # already-picked generator and fall through to the config parsing /
+        # dispatch path below without re-routing.
         generator_type: Optional[str] = pending_generator
     else:
-        # First-time-through: read the unified classifier's verdict
-        # from the per-message cache (populated by state_bodies'
-        # priority-0 hook). Falls back to a fresh call only when the
-        # cache is empty — typically in tests that bypass the state
-        # machine. Net result in production: ZERO extra LLM calls
-        # here — the classification was already done before this
-        # state body ran.
-        classification = _get_classification_from_cache_or_classify(session, request)
+        # First-time-through (or just-pivoted): read the unified classifier's
+        # verdict from the per-message cache (populated by state_bodies'
+        # priority-0 hook). Falls back to a fresh call only when the cache is
+        # empty — typically in tests that bypass the state machine. Net result
+        # in production: ZERO extra LLM calls — the classification was already
+        # done before this state body ran (and reused above when pending).
+        if classification is None:
+            classification = _get_classification_from_cache_or_classify(session, request)
         logger.info(
             "generation sub-route: route=%s generator_type=%s reason=%s",
             classification.route, classification.generator_type, classification.reason,
