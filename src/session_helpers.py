@@ -287,7 +287,7 @@ def stream_llm_response(
             # Real streaming via OpenAI SDK
             full_text = _stream_openai(
                 session, client, prompt, system_prompt, stream_id,
-                model=getattr(llm_instance, 'name', 'gpt-4.1-mini'),
+                model=getattr(llm_instance, 'name', 'gpt-5.4-mini'),
             )
         else:
             # Fallback: single-chunk non-streaming
@@ -315,7 +315,7 @@ def _stream_openai(
     prompt: str,
     system_prompt: str,
     stream_id: str,
-    model: str = "gpt-4.1-mini",
+    model: str = "gpt-5.4-mini",
 ) -> str:
     """Real token-by-token streaming using the OpenAI SDK.
 

@@ -584,7 +584,7 @@ def _convert_pdf(
                 "Authorization": f"Bearer {openai_api_key}",
             },
             json={
-                "model": "gpt-4.1",
+                "model": "gpt-5.4-mini",
                 "messages": [{"role": "user", "content": content_blocks}],
                 "max_tokens": 8192,
                 "temperature": 0.1,
@@ -631,7 +631,7 @@ def _convert_image(
                 "Authorization": f"Bearer {openai_api_key}",
             },
             json={
-                "model": "gpt-4.1",
+                "model": "gpt-5.4-mini",
                 "messages": [
                     {
                         "role": "user",

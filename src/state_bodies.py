@@ -43,6 +43,11 @@ from handlers.generation_handler import (
 from handlers.validation_handler import validate_diagram
 from orchestrator import determine_target_diagram_type
 from utilities.model_context import detailed_model_summary
+from utilities.user_metamodel import (
+    build_user_profile_help_prompt,
+    format_user_metamodel_guide,
+    is_user_profile_help,
+)
 from routing.intents import GENERATION_INTENT_NAME
 from session_keys import (
     HAS_GREETED,
@@ -368,6 +373,10 @@ def modeling_help_body(session: Session):
             "tell them they can ask you to create it (e.g., 'Create a Grover\\'s search circuit').\n\n"
             "Keep your response conversational, encouraging, and technically accurate."
         )
+    elif diagram_type == "UserDiagram" or is_user_profile_help(request.message):
+        # Explain the user-profile modeling environment (elements, attributes,
+        # enum values, how they connect) grounded in the bundled metamodel.
+        help_prompt = build_user_profile_help_prompt(request.message)
     else:
         help_prompt = (
             f'You are an expert modeling assistant working with {diagram_info["name"]}. '
@@ -489,12 +498,31 @@ def describe_model_body(session: Session):
         )
         return
 
+    # For User Profile projects, add the metamodel semantics so the assistant
+    # can explain what the boxes on the canvas (Accessibility, Disability, …)
+    # actually mean — the model itself carries only names and criteria.
+    active_dt = request.context.active_diagram_type or request.diagram_type
+    include_user_guide = active_dt == "UserDiagram" or is_user_profile_help(request.message)
+    if not include_user_guide:
+        snapshot = request.context.project_snapshot
+        if isinstance(snapshot, dict):
+            diagrams = snapshot.get("diagrams")
+            if isinstance(diagrams, dict) and "UserDiagram" in diagrams:
+                include_user_guide = True
+    user_guide_block = (
+        f"\n\nReference — the User Profile metamodel these elements are drawn from "
+        f"(use it to explain what an element or attribute means):\n\n{format_user_metamodel_guide()}\n"
+        if include_user_guide
+        else ""
+    )
+
     qa_prompt = (
         "You are an expert assistant for the BESSER Web Modeling Editor. "
         "The user has a project that may contain multiple diagrams "
-        "(class, state machine, object, GUI, quantum circuit, agent).\n\n"
+        "(class, state machine, object, GUI, quantum circuit, agent, user profile).\n\n"
         f"Here is a detailed summary of their full project:\n\n"
-        f"{full_summary}\n\n"
+        f"{full_summary}\n"
+        f"{user_guide_block}\n"
         f"The user asks: \"{request.message}\"\n\n"
         "Answer their question accurately based ONLY on the project data above. "
         "If they ask about a specific diagram type, focus on that one. "

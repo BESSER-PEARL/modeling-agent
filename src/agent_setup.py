@@ -41,7 +41,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     # execution.py via the ConversationMemory module.
     gpt = LLMOpenAI(
         agent=agent,
-        name='gpt-4.1-mini',
+        name='gpt-5.4-mini',
         parameters={
             'temperature': LLM_TEMPERATURE,
             'max_completion_tokens': LLM_MAX_TOKENS_LARGE,
@@ -76,7 +76,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
         num_previous_messages=20,
     )
     # Fix the model name used in API calls (registry key stays 'gpt-4.1-mini-text')
-    gpt_text.name = 'gpt-4.1-mini'
+    gpt_text.name = 'gpt-5.4-mini'
 
     if gpt is None:
         raise RuntimeError("LLM initialization returned None")
@@ -84,7 +84,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     # Initialize the LLM provider abstraction (for structured outputs, streaming)
     try:
         from llm import get_provider
-        get_provider(gpt, model_name='gpt-4.1-mini')
+        get_provider(gpt, model_name='gpt-5.4-mini')
         logger.info("LLM provider abstraction initialized")
     except Exception as exc:
         logger.warning(f"LLM provider init failed (non-critical): {exc}")
@@ -125,7 +125,7 @@ def init_rag(agent: Agent):
             agent=agent,
             vector_store=vector_store,
             splitter=splitter,
-            llm_name='gpt-4.1-mini',
+            llm_name='gpt-5.4-mini',
             k=4,
             num_previous_messages=6,
         )
@@ -175,7 +175,7 @@ def init_intent_classifier_config() -> LLMIntentClassifierConfiguration:
       intent and entity descriptions
     """
     return LLMIntentClassifierConfiguration(
-        llm_name='gpt-4.1-mini',
+        llm_name='gpt-5.4-mini',
         parameters={},
         use_intent_descriptions=True,
         use_training_sentences=False,

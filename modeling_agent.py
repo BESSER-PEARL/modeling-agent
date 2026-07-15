@@ -162,6 +162,10 @@ modeling_help_intent = agent.new_intent(
         'Quantum help: "explain quantum gates", "how does superposition work", '
         '"what is entanglement", "explain Grover\'s algorithm concept", '
         '"how do quantum circuits work", "what is a Hadamard gate". '
+        'User-profile help: "what is the Accessibility element", '
+        '"what does the Competence element mean", "explain the user profile '
+        'metamodel", "which user-profile elements do I need to model an elderly '
+        'user with sight issues", "what attributes does Personal_Information have". '
         "This is for CONCEPTUAL help and explanations, NOT for creating, "
         "modifying, or describing existing models."
     ),

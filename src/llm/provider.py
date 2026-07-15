@@ -42,7 +42,7 @@ class LLMProvider:
     All calls are automatically tracked via the TokenTracker singleton.
     """
 
-    def __init__(self, llm_instance: Any, model_name: str = "gpt-4.1-mini") -> None:
+    def __init__(self, llm_instance: Any, model_name: str = "gpt-5.4-mini") -> None:
         self._llm = llm_instance
         self._model = model_name
         self.tracker = get_tracker()
@@ -142,7 +142,6 @@ class LLMProvider:
         stream = client.chat.completions.create(
             model=self._model,
             messages=messages,
-            temperature=temperature,
             max_completion_tokens=max_tokens,
             stream=True,
             stream_options={"include_usage": True},
@@ -170,7 +169,7 @@ _provider_lock = threading.Lock()
 
 def get_provider(
     llm_instance: Any = None,
-    model_name: str = "gpt-4.1-mini",
+    model_name: str = "gpt-5.4-mini",
 ) -> Optional[LLMProvider]:
     """Get or create the global LLMProvider singleton.
 

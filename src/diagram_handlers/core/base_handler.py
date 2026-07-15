@@ -517,7 +517,7 @@ class BaseDiagramHandler(ABC):
                         tracker.record(
                             prompt_tokens=est_prompt,
                             completion_tokens=est_completion,
-                            model=getattr(self.llm, 'name', 'gpt-4.1-mini'),
+                            model=getattr(self.llm, 'name', 'gpt-5.4-mini'),
                         )
                 except Exception as exc:
                     logger.debug(f"Token tracking failed (best-effort): {exc}")
@@ -684,7 +684,7 @@ class BaseDiagramHandler(ABC):
                         f"len={len(content)} chars:\n{content}"
                     )
                 completion = client.beta.chat.completions.parse(
-                    model=self.llm.name if hasattr(self.llm, 'name') else "gpt-4.1-mini",
+                    model=self.llm.name if hasattr(self.llm, 'name') else "gpt-5.4-mini",
                     messages=messages,
                     response_format=response_schema,
                     temperature=temperature,
@@ -699,7 +699,7 @@ class BaseDiagramHandler(ABC):
                 if usage:
                     tracker.record_from_usage(
                         usage,
-                        model=self.llm.name if hasattr(self.llm, 'name') else "gpt-4.1-mini",
+                        model=self.llm.name if hasattr(self.llm, 'name') else "gpt-5.4-mini",
                     )
                     logger.info(
                         f"📊 [{self.get_diagram_type()}] Token usage: "

@@ -400,3 +400,65 @@ def test_user_profile_suggestions_have_prompts():
     assert actions
     for action in actions:
         assert action.get("prompt"), f"Chip '{action.get('label')}' has empty prompt"
+
+
+# ---------------------------------------------------------------------------
+# Metamodel semantics & help guide (explaining the modeling environment)
+# ---------------------------------------------------------------------------
+
+_BUNDLED_CLASSES = {
+    "User", "Personal_Information", "Culture", "Competence",
+    "Accessibility", "Language", "Skill", "Education", "Disability",
+}
+
+
+def test_semantics_cover_all_bundled_classes():
+    from utilities.user_metamodel import load_user_metamodel_semantics
+
+    sem = load_user_metamodel_semantics()
+    classes = sem.get("classes", {})
+    assert _BUNDLED_CLASSES <= set(classes)
+    assert all(isinstance(v, str) and v.strip() for v in classes.values())
+
+
+def test_metamodel_guide_lists_elements_enums_and_semantics():
+    from utilities.user_metamodel import format_user_metamodel_guide
+
+    guide = format_user_metamodel_guide()
+    # Every bundled element is named.
+    for cls in _BUNDLED_CLASSES:
+        assert cls in guide
+    # Attribute + enum values are surfaced.
+    assert "affects" in guide
+    assert "Sight" in guide          # AspectsEnum literal
+    assert "CEFR" in guide and "B2" in guide
+    # Curated semantic prose is woven in.
+    assert "accessibility needs" in guide
+    # The connection tree is rendered.
+    assert "Accessibility -> Disability" in guide or "Accessibility ->" in guide
+    # The criteria/operator note is present.
+    assert "CRITERION" in guide
+
+
+def test_is_user_profile_help_detection():
+    from utilities.user_metamodel import is_user_profile_help
+
+    assert is_user_profile_help("in user profile modeling, what is Accessibility?")
+    assert is_user_profile_help("explain the user metamodel")
+    assert is_user_profile_help("build a persona for an elderly user")
+    # Not user-profile help — must not hijack class-diagram questions.
+    assert not is_user_profile_help("what is a class?")
+    assert not is_user_profile_help("explain composition in UML")
+    assert not is_user_profile_help(None)
+
+
+def test_build_user_profile_help_prompt_embeds_question_and_guide():
+    from utilities.user_metamodel import build_user_profile_help_prompt, format_user_metamodel_guide
+
+    question = "which elements are necessary to define a user that is old and has sight issues?"
+    prompt = build_user_profile_help_prompt(question)
+    assert question in prompt
+    # The full metamodel guide is embedded as grounding.
+    assert format_user_metamodel_guide() in prompt
+    # Instructs the model to stay within the metamodel.
+    assert "Do not invent" in prompt
