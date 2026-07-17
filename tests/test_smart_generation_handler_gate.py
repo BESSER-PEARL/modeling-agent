@@ -102,7 +102,8 @@ def test_smart_route_stashes_and_asks_instead_of_firing(monkeypatch):
     assert all(isinstance(a, dict) and {"label", "prompt"} <= set(a) for a in actions)
     prompts = [a["prompt"] for a in actions]
     assert "generate anyway with my current model" in prompts
-    assert "cancel the generation" in prompts
+    # Cancel button removed (product decision) — only Run is offered.
+    assert "cancel the generation" not in prompts
 
     # Stash is set with a numeric timestamp
     assert session.get(PENDING_SMART_GEN_INSTRUCTIONS).startswith("Build a Rails 7 API")

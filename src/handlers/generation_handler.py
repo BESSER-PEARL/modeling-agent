@@ -238,14 +238,13 @@ def _build_smart_gen_confirmation(
             f"**It will follow these instructions:**\n> {summary}\n\n"
             f"Run it now?"
         ),
+        # Cancel action removed per product decision — the proposition offers
+        # only Run; the user can simply not click it (or type another request)
+        # to not proceed.
         "suggestedActions": [
             {
                 "label": "Run Spec-Driven Agent (uses your API key)",
                 "prompt": "generate anyway with my current model",
-            },
-            {
-                "label": "Cancel",
-                "prompt": "cancel the generation",
             },
         ],
     }

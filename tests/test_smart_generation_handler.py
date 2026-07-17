@@ -269,7 +269,9 @@ class TestHandleGenerationRequest:
         assert "API key" in result["message"]
         prompts = [a["prompt"] for a in result["suggestedActions"]]
         assert "generate anyway with my current model" in prompts
-        assert "cancel the generation" in prompts
+        # Cancel button removed (product decision) — only Run is offered;
+        # the user can still cancel by typing.
+        assert "cancel the generation" not in prompts
         from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
         assert "Rails" in session.get(PENDING_SMART_GEN_INSTRUCTIONS)
 
