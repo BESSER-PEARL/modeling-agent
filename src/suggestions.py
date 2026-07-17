@@ -19,10 +19,10 @@ logger = logging.getLogger(__name__)
 # context and available diagrams.
 
 _CLASS_DIAGRAM_COMPLETE = [
-    ("Generate Python code", "generate python"),
-    ("Generate Django backend", "generate django"),
-    ("Create a GUI for this system", "create a gui for this system"),
-    ("Add a state machine", "create a state machine for this system"),
+    ("Generate a GUI", "create a gui for this system"),
+    ("Generate the backend", "generate the backend"),
+    ("Generate Django app", "generate django"),
+    ("Add a relationship", "add a relationship between classes"),
 ]
 
 _CLASS_DIAGRAM_SINGLE = [
@@ -295,27 +295,24 @@ def _context_aware_suggestions(
     candidates: List[tuple] = []
 
     if diagram_type == "ClassDiagram":
-        # Suggest adding attributes to a specific class
-        if element_names and operation_mode == "complete_system":
+        # Lead with turning the model into a running app — after
+        # "create a <X> app" the user wants to BUILD it, not dump raw
+        # Python classes or add an unrelated state machine.
+        if not _has_diagram(available_diagrams, "GUINoCodeDiagram"):
+            candidates.append(("Generate a GUI", "create a gui for this system"))
+        candidates.append(("Generate the backend", "generate the backend"))
+        candidates.append(("Generate Django app", "generate django"))
+        # Secondary: refine the model (only if there's room after the
+        # generation actions, which are capped at 4 below).
+        if relationship_count == 0 and element_count > 1:
+            candidates.append(
+                ("Add relationships", "add relationships between my classes")
+            )
+        elif element_names and operation_mode == "complete_system":
             first_class = element_names[0]
             candidates.append(
                 (f"Add attributes to {first_class}", f"add more attributes to {first_class}")
             )
-        # If no relationships, suggest adding some
-        if relationship_count == 0 and element_count > 1:
-            candidates.append(
-                ("Add relationships between classes", "add relationships between my classes")
-            )
-        # Cross-diagram suggestions
-        if not _has_diagram(available_diagrams, "StateMachineDiagram"):
-            candidates.append(
-                ("Add a state machine", "create a state machine for this system")
-            )
-        if not _has_diagram(available_diagrams, "GUINoCodeDiagram"):
-            candidates.append(
-                ("Create a GUI", "create a gui for this system")
-            )
-        candidates.append(("Generate code", "generate python"))
 
     elif diagram_type == "StateMachineDiagram":
         if element_names:
