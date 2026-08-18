@@ -74,6 +74,16 @@ from .bpmn import (
     BPMNModification,
     BPMNModificationResponse,
 )
+from .user_profile import (
+    UserProfileAttributeSpec,
+    SingleUserProfileSpec,
+    UserProfileLinkSpec,
+    SystemUserProfileSpec,
+    UserProfileModificationTarget,
+    UserProfileModificationChanges,
+    UserProfileModification,
+    UserProfileModificationResponse,
+)
 
 __all__ = [
     # Class Diagram
@@ -104,4 +114,9 @@ __all__ = [
     "BPMNNodeSpec", "BPMNFlowSpec", "BPMNLaneSpec", "BPMNPoolSpec", "SystemBPMNSpec",
     "BPMNModificationTarget", "BPMNModificationChanges",
     "BPMNModification", "BPMNModificationResponse",
+    # User Profile
+    "UserProfileAttributeSpec", "SingleUserProfileSpec", "UserProfileLinkSpec",
+    "SystemUserProfileSpec",
+    "UserProfileModificationTarget", "UserProfileModificationChanges",
+    "UserProfileModification", "UserProfileModificationResponse",
 ]

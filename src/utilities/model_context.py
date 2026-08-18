@@ -44,6 +44,24 @@ def compact_model_summary(model_data: Any, diagram_type: str) -> str:
                 f"{len(relationships)} relationship(s)."
             )
 
+    if diagram_type == "UserDiagram":
+        elements = model_data.get("elements")
+        relationships = model_data.get("relationships")
+        if isinstance(elements, dict):
+            box_names = [
+                el.get("className") or el.get("name")
+                for el in elements.values()
+                if isinstance(el, dict) and el.get("type") == "UserModelName"
+            ]
+            rel_count = len(relationships) if isinstance(relationships, dict) else 0
+            preview = ", ".join(n for n in box_names[:6] if n)
+            extra = f" (+{len(box_names) - 6} more)" if len(box_names) > 6 else ""
+            return (
+                f"{diagram_type}: {len(box_names)} profile box(es)"
+                + (f": {preview}{extra}" if preview else "")
+                + f" and {rel_count} link(s)."
+            )
+
     if diagram_type == "GUINoCodeDiagram":
         pages = model_data.get("pages")
         if isinstance(pages, list):
@@ -258,6 +276,43 @@ def _summarize_object_diagram(model: Dict[str, Any], *, max_objects: int = 15) -
         overflow = len(lines) - max_objects
         lines = lines[:max_objects]
         lines.append(f"  …and {overflow} more object(s)")
+    return lines
+
+
+def _summarize_user_profile(model: Dict[str, Any], *, max_boxes: int = 15) -> List[str]:
+    """Summarize a UserDiagram model: profile boxes with their criteria rows.
+
+    Each box is a ``UserModelName`` element; its ``UserModelAttribute`` children
+    already embed the operator+value in their ``name`` (e.g. ``age < 18``).
+    """
+    elements = model.get("elements")
+    if not isinstance(elements, dict):
+        return []
+
+    lines: List[str] = []
+    for el in elements.values():
+        if not isinstance(el, dict) or el.get("type") != "UserModelName":
+            continue
+        class_name = el.get("className") or el.get("name", "Profile")
+        instance = el.get("name", "")
+        instance_part = f" ({instance})" if instance and instance != class_name else ""
+        criteria: List[str] = []
+        for attr_id in el.get("attributes", []) or []:
+            attr = elements.get(attr_id)
+            if isinstance(attr, dict) and attr.get("name"):
+                criteria.append(str(attr["name"]).strip())
+        summary = f"Box {class_name}{instance_part}"
+        if criteria:
+            shown = criteria[:8]
+            if len(criteria) > 8:
+                shown.append(f"…+{len(criteria) - 8} more")
+            summary += f" | criteria: {', '.join(shown)}"
+        lines.append(summary)
+
+    if len(lines) > max_boxes:
+        overflow = len(lines) - max_boxes
+        lines = lines[:max_boxes]
+        lines.append(f"  …and {overflow} more box(es)")
     return lines
 
 
@@ -632,6 +687,11 @@ def detailed_model_summary(model_data: Any, diagram_type: str) -> str:
         lines = _summarize_bpmn(model_data)
         if lines:
             return "Current BPMN process:\n- " + "\n- ".join(lines)
+
+    elif diagram_type == "UserDiagram":
+        lines = _summarize_user_profile(model_data)
+        if lines:
+            return "Current user profile:\n- " + "\n- ".join(lines)
 
     # Fallback to compact
     return compact_model_summary(model_data, diagram_type)

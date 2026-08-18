@@ -226,6 +226,7 @@ _PRIMARY_ELEMENT_TYPES: Dict[str, Set[str]] = {
     "ObjectDiagram": {"Object"},
     "StateMachineDiagram": {"State", "StateInitialNode", "StateFinalNode"},
     "AgentDiagram": {"AgentState", "AgentIntent", "StateInitialNode"},
+    "UserDiagram": {"UserModelName"},
 }
 
 _CHILD_ELEMENT_TYPES: Set[str] = {
@@ -2082,6 +2083,58 @@ def layout_agent_system(
 
 
 # ---------------------------------------------------------------------------
+# User Profile layout — profiles behave like objects (boxes + links).
+# We alias ``profileName`` -> ``objectName`` and reuse the object layout so
+# positions and edge directions are computed by the existing Sugiyama code.
+# ---------------------------------------------------------------------------
+
+def layout_user_single(
+    spec: Dict[str, Any],
+    existing_model: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Assign position to a single user-profile box."""
+    width, height = estimate_object_size(spec)
+    occupied = extract_occupied_rects(existing_model, "UserDiagram")
+    center_x = _snap((CANVAS_MIN_X + CANVAS_MAX_X) // 2 - width // 2)
+    center_y = _snap((CANVAS_MIN_Y + CANVAS_MAX_Y) // 2 - height // 2)
+    x, y = _find_free_position(width, height, occupied,
+                                preferred_x=center_x, preferred_y=center_y)
+    spec["position"] = {"x": x, "y": y}
+    return spec
+
+
+def layout_user_system(
+    system_spec: Dict[str, Any],
+    existing_model: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Assign positions to a complete user-profile model.
+
+    Reuses :func:`layout_object_system` by aliasing each profile's
+    ``profileName`` to ``objectName`` (the object layout reads that key and
+    sets ``position`` on the same dicts).  The temporary alias is removed
+    afterwards.  Existing-canvas collision uses ``UserModelName`` boxes.
+    """
+    profiles = system_spec.get("profiles", [])
+    if not profiles:
+        return system_spec
+    links = system_spec.get("links", [])
+
+    for profile in profiles:
+        profile["objectName"] = profile.get("profileName") or profile.get("className", "")
+
+    object_view = {"objects": profiles, "links": links}
+    # extract_occupied_rects keys off diagram type; object layout uses
+    # "ObjectDiagram" internally, which still picks up UserModelName boxes
+    # (owner == null) from an existing user-profile model.
+    layout_object_system(object_view, existing_model)
+
+    for profile in profiles:
+        profile.pop("objectName", None)
+
+    return system_spec
+
+
+# ---------------------------------------------------------------------------
 # Convenience dispatcher
 # ---------------------------------------------------------------------------
 
@@ -2129,6 +2182,11 @@ def apply_layout(
         if mode == "system":
             return layout_agent_system(spec, existing_model)
         return layout_agent_single(spec, existing_model)
+
+    if diagram_type == "UserDiagram":
+        if mode == "system":
+            return layout_user_system(spec, existing_model)
+        return layout_user_single(spec, existing_model)
 
     # Fallback: try single-class layout
     return layout_class_single(spec, existing_model)
