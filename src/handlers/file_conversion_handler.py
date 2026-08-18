@@ -26,6 +26,8 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent_config import LLM_MODEL_VISION
+
 logger = logging.getLogger(__name__)
 
 # ── File type detection ────────────────────────────────────────────────────────
@@ -623,7 +625,7 @@ def _convert_pdf(
                 "Authorization": f"Bearer {openai_api_key}",
             },
             json={
-                "model": "gpt-4.1",
+                "model": LLM_MODEL_VISION,
                 "messages": [{"role": "user", "content": content_blocks}],
                 "max_tokens": 8192,
                 "temperature": 0.1,
@@ -670,7 +672,7 @@ def _convert_image(
                 "Authorization": f"Bearer {openai_api_key}",
             },
             json={
-                "model": "gpt-4.1",
+                "model": LLM_MODEL_VISION,
                 "messages": [
                     {
                         "role": "user",

@@ -22,6 +22,7 @@ from handlers.generation_handler import (
     _is_diagram_creation_request,
 )
 from agent_config import (
+    LLM_MODEL_DEFAULT,
     MAX_USER_MESSAGE_CHARS,
     STREAM_BUFFER_THRESHOLD,
     LLM_TEXT_TEMPERATURE,
@@ -287,7 +288,7 @@ def stream_llm_response(
             # Real streaming via OpenAI SDK
             full_text = _stream_openai(
                 session, client, prompt, system_prompt, stream_id,
-                model=getattr(llm_instance, 'name', 'gpt-4.1-mini'),
+                model=getattr(llm_instance, 'name', LLM_MODEL_DEFAULT),
             )
         else:
             # Fallback: single-chunk non-streaming
@@ -315,7 +316,7 @@ def _stream_openai(
     prompt: str,
     system_prompt: str,
     stream_id: str,
-    model: str = "gpt-4.1-mini",
+    model: str = LLM_MODEL_DEFAULT,
 ) -> str:
     """Real token-by-token streaming using the OpenAI SDK.
 
