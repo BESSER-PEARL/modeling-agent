@@ -28,6 +28,33 @@ def test_bpmn_schema_defaults():
     assert d["nodes"][0]["taskType"] == "default"
 
 
+def test_bpmn_schema_pools_default_empty():
+    from schemas import SystemBPMNSpec
+    d = SystemBPMNSpec(nodes=[{"id": "t", "name": "Do", "type": "task"}]).model_dump()
+    assert d["pools"] == []
+    assert d["nodes"][0]["poolId"] is None
+    assert d["nodes"][0]["laneId"] is None
+    assert d["nodes"][0]["owner"] is None
+
+
+def test_bpmn_schema_pool_with_lanes_round_trips():
+    from schemas import SystemBPMNSpec
+    d = SystemBPMNSpec(
+        nodes=[{"id": "bake", "name": "Bake Pizza", "type": "task", "poolId": "vendor", "laneId": "chef"}],
+        pools=[
+            {"id": "vendor", "name": "Pizza Vendor", "lanes": [
+                {"id": "chef", "name": "Pizza Chef"},
+                {"id": "clerk", "name": "Clerk"},
+            ]},
+        ],
+    ).model_dump()
+    assert d["pools"][0]["id"] == "vendor"
+    assert {l["id"] for l in d["pools"][0]["lanes"]} == {"chef", "clerk"}
+    assert d["nodes"][0]["poolId"] == "vendor"
+    assert d["nodes"][0]["laneId"] == "chef"
+    assert d["nodes"][0]["owner"] is None
+
+
 def test_bpmn_modification_target_has_node_id():
     from schemas.bpmn import BPMNModificationTarget
     t = BPMNModificationTarget(nodeId="abc-uuid-123", nodeName=None)
@@ -41,6 +68,146 @@ def test_bpmn_validation_adds_start_end():
         {"nodes": [{"id": "t", "name": "Do", "type": "task"}], "flows": []}
     )
     assert {"startEvent", "endEvent"} <= {n["type"] for n in spec["nodes"]}
+
+
+def test_bpmn_validation_connects_orphaned_end_event_via_underconnected_gateway():
+    """Reproduces a real generation bug: an exclusive gateway with only one
+    outgoing flow ('yes') and a matching end event ('Order Cancelled') that the
+    model clearly intended as the 'no' branch but never emitted a flow for."""
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": [
+            {"id": "start", "name": "Order Placed", "type": "startEvent"},
+            {"id": "check_stock", "name": "Check Stock", "type": "task"},
+            {"id": "gw", "name": "Items Available?", "type": "gateway"},
+            {"id": "prepare", "name": "Prepare Package", "type": "task"},
+            {"id": "completed", "name": "Order Completed", "type": "endEvent"},
+            {"id": "cancelled", "name": "Order Cancelled", "type": "endEvent"},
+        ],
+        "flows": [
+            {"source": "start", "target": "check_stock", "name": ""},
+            {"source": "check_stock", "target": "gw", "name": ""},
+            {"source": "gw", "target": "prepare", "name": "yes"},
+            {"source": "prepare", "target": "completed", "name": ""},
+        ],
+    })
+    targets = {f["target"] for f in spec["flows"]}
+    assert "cancelled" in targets, "orphaned end event must get an incoming flow"
+    new_flow = next(f for f in spec["flows"] if f["target"] == "cancelled")
+    assert new_flow["source"] == "gw", "should reconnect from the under-connected gateway"
+    assert new_flow["name"] == "no", "should infer the opposite label of the existing 'yes' branch"
+
+
+def test_bpmn_validation_connects_orphaned_task_falls_back_to_previous_node():
+    """No gateway is available to reconnect from -- falls back to the
+    previous node in generation order rather than leaving it disconnected."""
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": [
+            {"id": "start", "name": "Start", "type": "startEvent"},
+            {"id": "a", "name": "Do A", "type": "task"},
+            {"id": "b", "name": "Do B", "type": "task"},
+            {"id": "end", "name": "End", "type": "endEvent"},
+        ],
+        "flows": [
+            {"source": "start", "target": "a", "name": ""},
+            # "b" is never connected -- the bug this test guards against.
+            {"source": "a", "target": "end", "name": ""},
+        ],
+    })
+    targets = {f["target"] for f in spec["flows"]}
+    assert "b" in targets
+    new_flow = next(f for f in spec["flows"] if f["target"] == "b")
+    assert new_flow["source"] == "a"
+
+
+def test_bpmn_validation_drops_dangling_pool_ref():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": [{"id": "t", "name": "Do", "type": "task", "poolId": "ghost", "laneId": "ghost_lane"}],
+        "flows": [],
+        "pools": [{"id": "real", "name": "Real Pool", "lanes": []}],
+    })
+    node = next(n for n in spec["nodes"] if n["id"] == "t")
+    assert node["poolId"] is None
+    assert node["laneId"] is None
+    assert node["owner"] is None
+
+
+def test_bpmn_validation_drops_dangling_lane_ref_keeps_pool():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": [{"id": "t", "name": "Do", "type": "task", "poolId": "vendor", "laneId": "ghost_lane"}],
+        "flows": [],
+        "pools": [{"id": "vendor", "name": "Vendor", "lanes": [{"id": "chef", "name": "Chef"}]}],
+    })
+    node = next(n for n in spec["nodes"] if n["id"] == "t")
+    assert node["poolId"] == "vendor"
+    assert node["laneId"] is None
+    assert node["owner"] is None
+
+
+def test_bpmn_validation_keeps_valid_pool_and_lane_refs():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": [{"id": "t", "name": "Do", "type": "task", "poolId": "vendor", "laneId": "chef"}],
+        "flows": [],
+        "pools": [{"id": "vendor", "name": "Vendor", "lanes": [{"id": "chef", "name": "Chef"}]}],
+    })
+    node = next(n for n in spec["nodes"] if n["id"] == "t")
+    assert node["poolId"] == "vendor"
+    assert node["laneId"] == "chef"
+    assert node["owner"] == "chef"
+    assert spec["pools"][0]["id"] == "vendor"
+
+
+def test_bpmn_validation_no_pools_clears_all_refs():
+    """A node that hallucinates a poolId when the spec declares no pools at
+    all must be normalized back to a flat node."""
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": [{"id": "t", "name": "Do", "type": "task", "poolId": "vendor", "laneId": "chef"}],
+        "flows": [],
+    })
+    node = next(n for n in spec["nodes"] if n["id"] == "t")
+    assert node["poolId"] is None
+    assert node["laneId"] is None
+    assert node["owner"] is None
+    assert spec["pools"] == []
+
+
+def test_bpmn_validation_infers_lane_owner_from_neighbors():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": [
+            {"id": "start", "name": "Patient Arrives", "type": "startEvent", "poolId": "hospital"},
+            {"id": "register", "name": "Register Patient", "type": "task", "taskType": "user", "poolId": "hospital", "laneId": "receptionist"},
+            {"id": "vitals", "name": "Take Vitals", "type": "task", "taskType": "manual", "poolId": "hospital", "laneId": "nurse"},
+            {"id": "examine", "name": "Examine Patient", "type": "task", "taskType": "user", "poolId": "hospital", "laneId": "doctor"},
+            {"id": "end", "name": "Patient Examined", "type": "endEvent", "poolId": "hospital"},
+        ],
+        "flows": [
+            {"source": "start", "target": "register", "name": ""},
+            {"source": "register", "target": "vitals", "name": ""},
+            {"source": "vitals", "target": "examine", "name": ""},
+            {"source": "examine", "target": "end", "name": ""},
+        ],
+        "pools": [{
+            "id": "hospital",
+            "name": "Hospital",
+            "lanes": [
+                {"id": "receptionist", "name": "Receptionist"},
+                {"id": "nurse", "name": "Nurse"},
+                {"id": "doctor", "name": "Doctor"},
+            ],
+        }],
+    })
+    nodes = {n["id"]: n for n in spec["nodes"]}
+    assert nodes["start"]["laneId"] == "receptionist"
+    assert nodes["start"]["owner"] == "receptionist"
+    assert nodes["end"]["laneId"] == "doctor"
+    assert nodes["end"]["owner"] == "doctor"
+
 
 
 def test_bpmn_fallback_envelope():
@@ -341,3 +508,4 @@ def test_bpmn_suggestions_have_nonempty_prompts():
         assert action.get("prompt"), (
             f"Chip '{action.get('label')}' has empty prompt — WME will no-op when user clicks it"
         )
+

@@ -66,6 +66,8 @@ from .quantum_circuit import (
 from .bpmn import (
     BPMNNodeSpec,
     BPMNFlowSpec,
+    BPMNLaneSpec,
+    BPMNPoolSpec,
     SystemBPMNSpec,
     BPMNModificationTarget,
     BPMNModificationChanges,
@@ -109,7 +111,7 @@ __all__ = [
     "QuantumOperationSpec", "SingleQuantumGateSpec", "SystemQuantumCircuitSpec",
     "QuantumModificationSpec",
     # BPMN
-    "BPMNNodeSpec", "BPMNFlowSpec", "SystemBPMNSpec",
+    "BPMNNodeSpec", "BPMNFlowSpec", "BPMNLaneSpec", "BPMNPoolSpec", "SystemBPMNSpec",
     "BPMNModificationTarget", "BPMNModificationChanges",
     "BPMNModification", "BPMNModificationResponse",
     # User Profile

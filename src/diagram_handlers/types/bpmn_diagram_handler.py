@@ -1,12 +1,17 @@
 """
 BPMN Diagram Handler
-Handles generation and modification of base BPMN process diagrams.
+Handles generation and modification of BPMN process diagrams, including
+multi-participant collaboration diagrams.
 
-Emits a flat process (start/end events, tasks, exclusive/parallel/inclusive
-gateways, sequence flows).  No pools/lanes and no agentic concepts (roles,
-governance, collaboration, trust).  Positions are NOT generated here: the WME
-injector lays the process out left-to-right and the editor's layouter routes
-the flows.
+Emits a process (start/end events, tasks, exclusive/parallel/inclusive
+gateways, flows) optionally grouped into pools (participants) and lanes
+(roles within a pool). No other agentic concepts (governance, trust, etc).
+Positions are NOT generated here: the WME injector lays the process (and any
+pools/lanes) out and the editor's layouter routes the flows. Message vs.
+sequence flow type is also derived on the WME side from pool membership —
+the agent never sets a flow type. Pools/lanes are generation-only for now;
+the modification path (generate_modification) does not yet support
+add_pool/add_lane actions.
 """
 
 import logging
@@ -62,14 +67,15 @@ class BPMNDiagramHandler(BaseDiagramHandler):
 
 DESIGN RULES:
 1. Exactly ONE start event; at least one end event.
-2. Use tasks for activities/steps with clear verb-phrase names ('Check Inventory', 'Ship Order').
-3. Use an exclusive gateway for an either/or decision; name it as a question ('In stock?') and label its outgoing flows with the condition ('yes' / 'no').
+2. Use tasks for activities/steps with clear verb-phrase names ('Check Inventory', 'Ship Order'). Set taskType based on WHO/WHAT performs it: 'user' for a person acting (customer, staff member typing/clicking), 'manual' for a person doing a PHYSICAL action with no system involved (packing a box), 'service' for an automated system check or call, 'send'/'receive' for a message to/from another party. Do not leave every task as the 'default' type — pick the closest fit.
+3. Use an exclusive gateway for EACH distinct either/or decision the request describes; name it as a question ('In stock?') and label its outgoing flows with the condition ('yes' / 'no'). If the request describes N separate checks (e.g. "validate payment" AND "check stock" are two different checks), you MUST emit N separate gateways — do not merge multiple checks into one gateway or fold a described decision into a plain task.
 4. Use a parallel gateway to split into CONCURRENT work and another to JOIN it back. A parallel split MUST have ≥2 outgoing flows to DIFFERENT target nodes; a parallel join MUST have ≥2 incoming flows from different sources. NEVER chain parallel tasks linearly — always fan them out from the split gateway and fan them back into the join gateway.
-5. Connect everything with sequence flows. Every node except the start has an incoming flow; every node except end events has an outgoing flow.
-6. Keep it focused (typically 4-10 nodes). Base BPMN only — no pools, lanes, message flows, or sub-processes.
-7. {POSITION_DISCLAIMER}
+5. Connect everything with sequence flows. Every node except the start has an incoming flow; every node except end events has an outgoing flow. Every end event must be reachable — if a decision branch leads to a distinct outcome (e.g. "order cannot be completed"), route that branch's flow explicitly to the end event that represents it; never leave an end event with no incoming flow.
+6. Keep it focused (typically 4-10 nodes, more if the request genuinely describes more distinct steps/decisions — do not compress described steps just to stay under 10).
+7. Use POOLS only when the request describes two or more distinct participants — separate organizations, companies, or systems interacting (e.g. "customer" and "vendor", "shop" and "supplier", "our system" and "the payment gateway"). Give each participant its own entry in `pools` and set every node it owns to that pool's id via `poolId`. Communication between two pools MUST be a flow from a node in one pool to a node in another — the WME renders these as message flows automatically, you never set a flow type. Use LANES inside a single pool ONLY when the request names distinct roles or departments performing steps within ONE organization (e.g. "clerk", "chef", "delivery driver"); declare them under that pool's `lanes` and set each node's `laneId`. If the request describes a single actor doing everything, leave `pools` empty and every node's `poolId`/`laneId` null — do not invent participants that were not described.
+8. {POSITION_DISCLAIMER}
 
-Node ids are short lowercase slugs ('check_stock') referenced by flows."""
+Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and lane ids follow the same convention ('customer', 'chef')."""
 
     # ------------------------------------------------------------------
     # Complete system (the primary generation path)
@@ -86,12 +92,28 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows."""
             "following process request and plan it before producing JSON.\n\n"
             f"User Request: {user_request}\n\n"
             "Analyze:\n"
+            "0. Does this involve two or more distinct participants (separate organizations, "
+            "companies, or systems) communicating, or distinct roles/departments within ONE "
+            "organization? If yes, plan the pools (one per participant) and, for role-based "
+            "processes, the lanes inside the relevant pool BEFORE listing nodes — every node "
+            "you write below must then declare which pool/lane it belongs to. If the request "
+            "describes a single actor doing everything, skip pools/lanes entirely.\n"
             "1. What is the trigger (start event)?\n"
-            "2. What are the activities (tasks) and their order?\n"
-            "3. Where are the decisions (exclusive gateways) and what are the conditions?\n"
+            "2. What are the activities (tasks) and their order? For each, who/what "
+            "performs it (a person = user/manual task, a system = service/script task, "
+            "a notification = send/receive task)?\n"
+            "3. Where are the decisions (exclusive gateways) and what are the conditions? "
+            "List EVERY distinct check the request describes as its own gateway — do not "
+            "merge two different checks (e.g. 'validate payment' and 'check stock' are "
+            "TWO gateways, not one) and do not fold a described decision into a plain task.\n"
             "4. Is any work concurrent (parallel gateways)?\n"
-            "5. What are the possible outcomes (end events)?\n\n"
-            "Focus on the SEQUENCE FLOWS — they are the most commonly under-specified part."
+            "5. What are the possible outcomes (end events)? For each negative/exception "
+            "outcome a gateway branch leads to (e.g. 'order cannot be completed'), make sure "
+            "that branch's flow actually reaches the matching end event.\n\n"
+            "Focus on the SEQUENCE FLOWS — they are the most commonly under-specified part. "
+            "Before finalizing, re-read the request once more and check you have not silently "
+            "dropped or merged any step or decision point it mentioned, and that every node "
+            "belonging to a pool/lane you planned actually has that poolId/laneId set."
         )
 
         try:
@@ -169,9 +191,193 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows."""
                 flows.append({"source": last, "target": end_id, "name": ""})
             logger.info("[BPMN] Validation: added missing end event")
 
+        self._connect_orphaned_nodes(nodes, flows)
+        self._normalize_pool_refs(spec, nodes)
+        self._infer_missing_lane_owners(spec, nodes, flows)
+
         spec["nodes"] = nodes
         spec["flows"] = flows
         return spec
+
+    @staticmethod
+    def _normalize_pool_refs(spec: Dict[str, Any], nodes: List[Dict[str, Any]]) -> None:
+        """Drop dangling poolId/laneId references so a malformed pools[] entry
+        (or a typo'd id) never breaks the WME converter's pool/lane layout.
+        Mutates `nodes` in place; also drops lanes with duplicate/empty ids."""
+        pools: List[Dict[str, Any]] = spec.get("pools") or []
+        if not pools:
+            for node in nodes:
+                node["poolId"] = None
+                node["laneId"] = None
+                node["owner"] = None
+            spec["pools"] = []
+            return
+
+        valid_pool_ids = set()
+        lane_ids_by_pool: Dict[str, set] = {}
+        cleaned_pools: List[Dict[str, Any]] = []
+        for pool in pools:
+            pool_id = pool.get("id")
+            if not pool_id or pool_id in valid_pool_ids:
+                continue
+            valid_pool_ids.add(pool_id)
+            lanes = pool.get("lanes") or []
+            seen_lane_ids: set = set()
+            cleaned_lanes = []
+            for lane in lanes:
+                lane_id = lane.get("id")
+                if not lane_id or lane_id in seen_lane_ids:
+                    continue
+                seen_lane_ids.add(lane_id)
+                cleaned_lanes.append(lane)
+            lane_ids_by_pool[pool_id] = seen_lane_ids
+            cleaned_pools.append({**pool, "lanes": cleaned_lanes})
+        spec["pools"] = cleaned_pools
+
+        for node in nodes:
+            pool_id = node.get("poolId")
+            if pool_id not in valid_pool_ids:
+                node["poolId"] = None
+                node["laneId"] = None
+                node["owner"] = None
+                continue
+            lane_id = node.get("laneId")
+            if lane_id and lane_id not in lane_ids_by_pool.get(pool_id, set()):
+                node["laneId"] = None
+                node["owner"] = None
+                continue
+            node["owner"] = lane_id if lane_id else None
+
+    @staticmethod
+    def _infer_missing_lane_owners(
+        spec: Dict[str, Any], nodes: List[Dict[str, Any]], flows: List[Dict[str, Any]]
+    ) -> None:
+        """Backfill laneId/owner for pool-contained nodes when lane membership can
+        be inferred from the validated pool structure and adjacent sequence flows."""
+        pools: List[Dict[str, Any]] = spec.get("pools") or []
+        if not pools:
+            return
+
+        lane_ids_by_pool: Dict[str, set[str]] = {
+            pool["id"]: {
+                lane["id"]
+                for lane in (pool.get("lanes") or [])
+                if lane.get("id")
+            }
+            for pool in pools
+            if pool.get("id")
+        }
+        if not lane_ids_by_pool:
+            return
+
+        nodes_by_id: Dict[str, Dict[str, Any]] = {
+            node["id"]: node
+            for node in nodes
+            if node.get("id")
+        }
+        incoming: Dict[str, List[str]] = {}
+        outgoing: Dict[str, List[str]] = {}
+
+        for flow in flows:
+            source = flow.get("source")
+            target = flow.get("target")
+            if source and target:
+                outgoing.setdefault(source, []).append(target)
+                incoming.setdefault(target, []).append(source)
+
+        for node in nodes:
+            pool_id = node.get("poolId")
+            if not pool_id:
+                node["owner"] = None
+                continue
+
+            valid_lanes = lane_ids_by_pool.get(pool_id, set())
+            if not valid_lanes:
+                node["owner"] = None
+                continue
+
+            lane_id = node.get("laneId")
+            if lane_id in valid_lanes:
+                node["owner"] = lane_id
+                continue
+            if node.get("type") == "task":
+                node["laneId"] = None
+                node["owner"] = None
+                continue
+
+            inferred_lane_ids: set[str] = set()
+            for neighbor_id in incoming.get(node["id"], []) + outgoing.get(node["id"], []):
+                neighbor = nodes_by_id.get(neighbor_id)
+                if not neighbor or neighbor.get("poolId") != pool_id:
+                    continue
+                neighbor_lane_id = neighbor.get("laneId")
+                if neighbor_lane_id in valid_lanes:
+                    inferred_lane_ids.add(neighbor_lane_id)
+
+            inferred_lane_id = None
+            if len(valid_lanes) == 1:
+                inferred_lane_id = next(iter(valid_lanes))
+            elif len(inferred_lane_ids) == 1:
+                inferred_lane_id = next(iter(inferred_lane_ids))
+
+            if inferred_lane_id:
+                node["laneId"] = inferred_lane_id
+                node["owner"] = inferred_lane_id
+            else:
+                node["laneId"] = None
+                node["owner"] = None
+
+    @staticmethod
+    def _connect_orphaned_nodes(nodes: List[Dict[str, Any]], flows: List[Dict[str, Any]]) -> None:
+        """Give every non-start node at least one incoming flow (design rule 5 /
+        BPMNFlowSpec's "every node except the start has an incoming flow").
+
+        The model most commonly drops the flow into a branch target it clearly
+        intended — e.g. a "no" branch off an exclusive gateway that ends up with
+        only one outgoing flow while the matching end event ("Order Cancelled")
+        sits unconnected. Prefer reconnecting from that kind of under-connected
+        gateway (and infer the opposite yes/no label when the gateway's existing
+        branch has one) before falling back to the previous node in generation
+        order, so the graph is always fully reachable. Mutates `flows` in place.
+        """
+        start_id = next((n.get("id") for n in nodes if n.get("type") == "startEvent"), None)
+        targets = {f.get("target") for f in flows}
+
+        outgoing_count: Dict[str, int] = {}
+        outgoing_labels: Dict[str, List[str]] = {}
+        for f in flows:
+            src = f.get("source")
+            outgoing_count[src] = outgoing_count.get(src, 0) + 1
+            outgoing_labels.setdefault(src, []).append((f.get("name") or "").strip().lower())
+
+        gateway_ids = [n.get("id") for n in nodes if n.get("type") == "gateway"]
+        under_connected_gateways = [gid for gid in gateway_ids if outgoing_count.get(gid, 0) < 2]
+
+        for index, node in enumerate(nodes):
+            node_id = node.get("id")
+            if node_id is None or node_id == start_id or node_id in targets:
+                continue
+
+            source_id = None
+            label = ""
+            if under_connected_gateways:
+                source_id = under_connected_gateways.pop(0)
+                existing_labels = outgoing_labels.get(source_id, [])
+                if existing_labels == ["yes"]:
+                    label = "no"
+                elif existing_labels == ["no"]:
+                    label = "yes"
+            elif index > 0:
+                source_id = nodes[index - 1].get("id")
+
+            if source_id and source_id != node_id:
+                flows.append({"source": source_id, "target": node_id, "name": label})
+                targets.add(node_id)
+                outgoing_count[source_id] = outgoing_count.get(source_id, 0) + 1
+                logger.info(
+                    f"[BPMN] Validation: connected orphaned node {node_id!r} from {source_id!r}"
+                    + (f" (label={label!r})" if label else "")
+                )
 
     @staticmethod
     def _unique_id(base: str, existing: set) -> str:
@@ -292,12 +498,16 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows."""
         name = spec.get("systemName") or "process"
         nodes = spec.get("nodes", [])
         flows = spec.get("flows", [])
+        pools = spec.get("pools") or []
         tasks = [n.get("name", "?") for n in nodes if n.get("type") == "task"][:6]
         msg = f"Built the **{name}** process with {len(nodes)} node(s)"
         if tasks:
             msg += f": {', '.join(f'**{t}**' for t in tasks)}"
         if flows:
-            msg += f", connected by {len(flows)} sequence flow(s)"
+            msg += f", connected by {len(flows)} flow(s)"
+        if pools:
+            pool_names = ", ".join(f"**{p.get('name') or p.get('id')}**" for p in pools)
+            msg += f", across {len(pools)} participant(s) ({pool_names})"
         msg += ". Ask me to add steps, rename nodes, or regenerate any time!"
         return msg
 

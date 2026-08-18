@@ -1,10 +1,13 @@
 """Pydantic schemas for BPMN structured outputs.
 
 Field descriptions are used by OpenAI Structured Outputs to guide generation.
-Base BPMN only — start/end events, tasks, gateways, sequence flows.  No pools,
-lanes, or agentic concepts (roles, governance, collaboration, trust).
+Base BPMN plus collaboration diagrams — start/end events, tasks, gateways,
+sequence flows, and optional pools/lanes for multi-participant processes.
+No other agentic concepts (roles, governance, collaboration, trust).
 
-Layout is handled on the WME side; the agent emits no positions.
+Layout is handled on the WME side; the agent emits no positions. Message vs.
+sequence flow type is also derived on the WME side from pool membership, not
+emitted by the agent.
 """
 
 from __future__ import annotations
@@ -62,6 +65,69 @@ class BPMNNodeSpec(BaseModel):
             "more (OR). Default 'exclusive'."
         ),
     )
+    poolId: Optional[str] = Field(
+        default=None,
+        description=(
+            "Id of the pool (participant) this node belongs to, matching one of the "
+            "top-level pools[].id. Leave null for a flat process with no pools (the "
+            "common case)."
+        ),
+    )
+    laneId: Optional[str] = Field(
+        default=None,
+        description=(
+            "Id of the lane (role/department) within poolId this node belongs to, "
+            "matching one of that pool's lanes[].id. Only set when that pool declares "
+            "lanes; leave null otherwise."
+        ),
+    )
+    owner: Optional[str] = Field(
+        default=None,
+        description=(
+            "WME ownership field for lane-contained nodes. When laneId is set and valid, "
+            "the backend normalizes owner to the same lane id so the generated BPMN "
+            "nodes move with their lane and export correctly."
+        ),
+    )
+
+
+class BPMNLaneSpec(BaseModel):
+    id: str = Field(
+        min_length=1,
+        max_length=40,
+        description=(
+            "Short unique slug identifying this lane/role within its pool "
+            "(e.g. 'chef'). Referenced by node laneId. Lowercase, no spaces."
+        ),
+    )
+    name: str = Field(
+        default="",
+        max_length=60,
+        description="Role/department display name (e.g. 'Pizza Chef').",
+    )
+
+
+class BPMNPoolSpec(BaseModel):
+    id: str = Field(
+        min_length=1,
+        max_length=40,
+        description=(
+            "Short unique slug identifying this pool/participant (e.g. 'customer'). "
+            "Referenced by node poolId. Lowercase, no spaces."
+        ),
+    )
+    name: str = Field(
+        default="",
+        max_length=60,
+        description="Participant/organization display name (e.g. 'Customer', 'Warehouse System').",
+    )
+    lanes: List[BPMNLaneSpec] = Field(
+        default_factory=list,
+        description=(
+            "Optional role/department lanes inside this pool. Leave empty if the "
+            "pool is a single undivided participant."
+        ),
+    )
 
 
 class BPMNFlowSpec(BaseModel):
@@ -96,9 +162,21 @@ class SystemBPMNSpec(BaseModel):
     flows: List[BPMNFlowSpec] = Field(
         default_factory=list,
         description=(
-            "Sequence flows connecting the nodes by id. Every node except the "
-            "start has an incoming flow; every node except end events has an "
-            "outgoing flow."
+            "Flows connecting the nodes by id. Every node except the start has "
+            "an incoming flow; every node except end events has an outgoing "
+            "flow. A flow between nodes in different pools is a message flow; "
+            "the WME derives this automatically from poolId, do not set a flow "
+            "type yourself."
+        ),
+    )
+    pools: List[BPMNPoolSpec] = Field(
+        default_factory=list,
+        description=(
+            "Participants/organizations — only when the request involves 2+ "
+            "distinct actors communicating (e.g. customer/vendor, system A/system B) "
+            "or explicit roles within one organization. Each node with a non-null "
+            "poolId must reference one of these pool ids. Leave empty for a "
+            "single-actor flat process (the common case)."
         ),
     )
 
