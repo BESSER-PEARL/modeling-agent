@@ -902,18 +902,20 @@ Examples:
         return "".join(parts)
 
     def _build_system_message(self, spec: Dict[str, Any]) -> str:
-        """Build a descriptive message for a complete class diagram system."""
+        """Build a descriptive message for a complete class diagram spec."""
         system_name = spec.get("systemName", "System")
         classes = spec.get("classes", [])
         rels = spec.get("relationships", [])
-        class_names = [c.get("className", "?") for c in classes[:6]]
-        msg = f"I set up **{system_name}** — {len(classes)} thing(s) it tracks"
+        class_names = [c.get("className", "?") for c in classes[:5]]
+        msg = f"Your **{system_name}** spec is ready"
         if class_names:
-            msg += f": {', '.join(f'**{n}**' for n in class_names)}"
-            if len(classes) > 6:
-                msg += f" (+{len(classes) - 6} more)"
-        if rels:
-            msg += f" and {len(rels)} connection(s) between them"
+            msg += f" — it captures {', '.join(f'**{n}**' for n in class_names)}"
+            if len(classes) > 5:
+                msg += f" and {len(classes) - 5} more"
+            if rels:
+                msg += f", with {len(rels)} relationship(s) linking them"
+        elif rels:
+            msg += f", with {len(rels)} relationship(s) between them"
         constraints = spec.get("constraints") or []
         if constraints:
             # Honest message: the business rules are understood but the editor
@@ -923,7 +925,10 @@ Examples:
                 f". I also noted {len(constraints)} rule(s) you mentioned, though "
                 "they aren't shown on the canvas yet"
             )
-        msg += ". Just tell me what you'd like to change or add!"
+        msg += (
+            ". You've got the spec now — want to review or tweak it, "
+            "or shall I generate the code?"
+        )
         return msg
 
     # ------------------------------------------------------------------

@@ -18,11 +18,13 @@ logger = logging.getLogger(__name__)
 # Pools are ordered by relevance; the engine picks from these based on
 # context and available diagrams.
 
+# The class diagram the agent just built IS "the spec". After creation the
+# user should either move on to code, or review/tweak the spec — not pick
+# among generators. Keep this to a clean two-step choice (+ a free-form tweak).
 _CLASS_DIAGRAM_COMPLETE = [
-    ("Generate a GUI", "create a gui for this system"),
-    ("Generate the backend", "generate the backend"),
-    ("Generate Django app", "generate django"),
-    ("Add a relationship", "add a relationship between classes"),
+    ("Generate the code", "generate the backend"),
+    ("Review the spec", "describe my diagram"),
+    ("Make a change", ""),
 ]
 
 _CLASS_DIAGRAM_SINGLE = [
@@ -295,15 +297,14 @@ def _context_aware_suggestions(
     candidates: List[tuple] = []
 
     if diagram_type == "ClassDiagram":
-        # Lead with turning the model into a running app — after
-        # "create a <X> app" the user wants to BUILD it, not dump raw
-        # Python classes or add an unrelated state machine.
-        if not _has_diagram(available_diagrams, "GUINoCodeDiagram"):
-            candidates.append(("Generate a GUI", "create a gui for this system"))
-        candidates.append(("Generate the backend", "generate the backend"))
-        candidates.append(("Generate Django app", "generate django"))
-        # Secondary: refine the model (only if there's room after the
-        # generation actions, which are capped at 4 below).
+        # The class diagram the agent just built IS "the spec". Frame the
+        # next step as a two-step choice: generate the code, or review the
+        # spec — not a menu of generators.
+        candidates.append(("Generate the code", "generate the backend"))
+        candidates.append(("Review the spec", "describe my diagram"))
+        # Secondary: a context-aware tweak that references the user's own
+        # classes (only if there's room after the two-step choice, capped
+        # at 4 below).
         if relationship_count == 0 and element_count > 1:
             candidates.append(
                 ("Add relationships", "add relationships between my classes")
