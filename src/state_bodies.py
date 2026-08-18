@@ -125,7 +125,8 @@ _QUICK_RESPONSES = {
         "- **GUI / Web UI** — *\"Design a dashboard for my Product class\"*\n"
         "- **Agent Diagrams** — *\"Create a pizza-ordering chatbot agent\"*\n"
         "- **Quantum Circuits** — *\"Create Grover's search algorithm\"*\n"
-        "- **BPMN Diagrams** — *\"Model an order fulfillment process\"*\n\n"
+        "- **BPMN Diagrams** — *\"Model an order fulfillment process\"*\n"
+        "- **User Profiles** — *\"Create a target user profile for elderly users with sight issues\"*\n\n"
         "**Modify diagrams:**\n"
         "- *\"Add email attribute to User\"*, *\"Rename Order to Purchase\"*, *\"Add a transition from Idle to Active\"*\n\n"
         "**Generate code:**\n"
@@ -146,7 +147,8 @@ _QUICK_RESPONSES = {
         "   *Example: \"Generate Django\"* or *\"Generate a web app\"*\n\n"
         "**Tips:**\n"
         "- Be specific about what you want — more detail = better results\n"
-        "- I support 7 diagram types: Class, State Machine, Object, GUI, Agent, Quantum Circuit, and BPMN\n"
+        "- I support 8 diagram types: Class, State Machine, Object, GUI, Agent, "
+        "Quantum Circuit, BPMN, and User Profile\n"
         "- You can switch between diagram types anytime\n"
         "- Ask *\"What can you do?\"* for a full list of capabilities"
     ),
@@ -202,10 +204,11 @@ def global_fallback_body(session: Session):
     try:
         prompt = (
             f"You are a modeling assistant that helps with UML diagrams, quantum circuits, "
-            f"GUI design, agent diagrams, BPMN business-process diagrams, and code generation. "
+            f"GUI design, agent diagrams, BPMN business-process diagrams, user profiles, "
+            f"and code generation. "
             f"The user said: '{user_message}'. "
             "If this is related to any kind of modeling (class diagrams, quantum circuits, "
-            "state machines, GUI design, BPMN processes, etc.), suggest how you can help them. "
+            "state machines, GUI design, BPMN processes, user profiles, etc.), suggest how you can help them. "
             "Otherwise, politely explain your capabilities."
         )
         stream_llm_response(session, ctx.gpt_text, prompt)
