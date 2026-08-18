@@ -24,6 +24,8 @@ import logging
 import threading
 from typing import Any, Dict, Iterator, List, Optional, Type
 
+from agent_config import LLM_MODEL_DEFAULT
+
 from pydantic import BaseModel
 
 from tracking import get_tracker
@@ -42,7 +44,7 @@ class LLMProvider:
     All calls are automatically tracked via the TokenTracker singleton.
     """
 
-    def __init__(self, llm_instance: Any, model_name: str = "gpt-4.1-mini") -> None:
+    def __init__(self, llm_instance: Any, model_name: str = LLM_MODEL_DEFAULT) -> None:
         self._llm = llm_instance
         self._model = model_name
         self.tracker = get_tracker()
@@ -170,7 +172,7 @@ _provider_lock = threading.Lock()
 
 def get_provider(
     llm_instance: Any = None,
-    model_name: str = "gpt-4.1-mini",
+    model_name: str = LLM_MODEL_DEFAULT,
 ) -> Optional[LLMProvider]:
     """Get or create the global LLMProvider singleton.
 

@@ -7,13 +7,14 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from llm.provider import LLMProvider
+from agent_config import LLM_MODEL_DEFAULT
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_mock_llm(name: str = "gpt-4.1-mini", has_client: bool = True) -> MagicMock:
+def _make_mock_llm(name: str = LLM_MODEL_DEFAULT, has_client: bool = True) -> MagicMock:
     """Build a MagicMock that looks like a BESSER LLMOpenAI instance."""
     mock_llm = MagicMock()
     mock_llm.predict.return_value = "test response"
@@ -39,9 +40,12 @@ class TestConstructor:
         assert provider.model_name == "gpt-4o"
 
     def test_default_model_name(self):
+        # Asserts against the configured constant rather than a copy of the
+        # literal, so changing the model in agent_config.py doesn't leave this
+        # test asserting the old name.
         mock_llm = _make_mock_llm()
         provider = LLMProvider(mock_llm)
-        assert provider.model_name == "gpt-4.1-mini"
+        assert provider.model_name == LLM_MODEL_DEFAULT
 
     def test_tracker_is_set(self):
         mock_llm = _make_mock_llm()

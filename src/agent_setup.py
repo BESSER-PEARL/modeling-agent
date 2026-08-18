@@ -18,6 +18,7 @@ from baf.nlp.llm.llm_openai_api import LLMOpenAI
 from baf.nlp.speech2text.openai_speech2text import OpenAISpeech2Text
 
 from agent_config import (
+    LLM_MODEL_DEFAULT,
     LLM_TEMPERATURE,
     LLM_TEXT_TEMPERATURE,
     LLM_MAX_TOKENS_LARGE,
@@ -41,7 +42,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     # execution.py via the ConversationMemory module.
     gpt = LLMOpenAI(
         agent=agent,
-        name='gpt-4.1-mini',
+        name=LLM_MODEL_DEFAULT,
         parameters={
             'temperature': LLM_TEMPERATURE,
             'max_completion_tokens': LLM_MAX_TOKENS_LARGE,
@@ -64,19 +65,19 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     # IMPORTANT: The BESSER framework registers LLMs by name in a dict, and
     # also uses name as the OpenAI model parameter.  Two LLMs with the same
     # name would overwrite each other, leaving the first un-initialised.
-    # We register under a unique key ('gpt-4.1-mini-text') and immediately
+    # We register under a unique key (LLM_MODEL_DEFAULT + '-text') and immediately
     # correct the model name back to the real API model so OpenAI calls work.
     gpt_text = LLMOpenAI(
         agent=agent,
-        name='gpt-4.1-mini-text',
+        name=f'{LLM_MODEL_DEFAULT}-text',
         parameters={
             'temperature': LLM_TEXT_TEMPERATURE,
             'max_completion_tokens': LLM_MAX_TOKENS_TEXT,
         },
         num_previous_messages=20,
     )
-    # Fix the model name used in API calls (registry key stays 'gpt-4.1-mini-text')
-    gpt_text.name = 'gpt-4.1-mini'
+    # Fix the model name used in API calls (registry key keeps the -text suffix)
+    gpt_text.name = LLM_MODEL_DEFAULT
 
     if gpt is None:
         raise RuntimeError("LLM initialization returned None")
@@ -84,14 +85,14 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     # Initialize the LLM provider abstraction (for structured outputs, streaming)
     try:
         from llm import get_provider
-        get_provider(gpt, model_name='gpt-4.1-mini')
+        get_provider(gpt, model_name=LLM_MODEL_DEFAULT)
         logger.info("LLM provider abstraction initialized")
     except Exception as exc:
         logger.warning(f"LLM provider init failed (non-critical): {exc}")
 
     logger.info(
-        f"LLMs initialized: gpt-4.1-mini (json, t={LLM_TEMPERATURE}), "
-        f"gpt-4.1-mini (text, t={LLM_TEXT_TEMPERATURE})"
+        f"LLMs initialized: {LLM_MODEL_DEFAULT} (json, t={LLM_TEMPERATURE}), "
+        f"{LLM_MODEL_DEFAULT} (text, t={LLM_TEXT_TEMPERATURE})"
     )
     return gpt, gpt_text, gpt_predict_json
 
@@ -125,7 +126,7 @@ def init_rag(agent: Agent):
             agent=agent,
             vector_store=vector_store,
             splitter=splitter,
-            llm_name='gpt-4.1-mini',
+            llm_name=LLM_MODEL_DEFAULT,
             k=4,
             num_previous_messages=6,
         )
@@ -171,11 +172,11 @@ def init_diagram_factory(gpt: LLMOpenAI):
 def init_intent_classifier_config() -> LLMIntentClassifierConfiguration:
     """Return the default intent-classifier configuration.
 
-    Uses gpt-4.1-mini. The configuration is designed to leverage
+    Uses LLM_MODEL_DEFAULT. The configuration is designed to leverage
       intent and entity descriptions
     """
     return LLMIntentClassifierConfiguration(
-        llm_name='gpt-4.1-mini',
+        llm_name=LLM_MODEL_DEFAULT,
         parameters={},
         use_intent_descriptions=True,
         use_training_sentences=False,
