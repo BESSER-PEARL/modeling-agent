@@ -261,6 +261,13 @@ Examples:
             # association (or coerce an unknown type to String).
             self._rewrite_class_typed_attributes(system_spec)
 
+            # Guard: no two associations may share the same name. The LLM
+            # sometimes names multiple relationships identically (e.g. two links
+            # both called "task" in a task-management model) — ambiguous on the
+            # canvas and a hard collision when the domain model is built (BUML
+            # association names must be unique). Rename duplicates deterministically.
+            self._dedupe_relationship_names(system_spec)
+
             # Drop any OCL constraint whose context isn't a real class in the
             # spec (the LLM occasionally references a class it didn't create).
             self._validate_constraints(system_spec)
@@ -415,6 +422,62 @@ Examples:
             logger.info(
                 "[ClassDiagram] Enum-relationship guard: rewrote %d, dropped %d",
                 rewritten, dropped,
+            )
+
+    def _dedupe_relationship_names(self, system_spec: Dict[str, Any]) -> None:
+        """Ensure no two relationships share the same name.
+
+        The LLM occasionally gives several associations the same name (e.g. two
+        different links both called "task" in a task-management model). Duplicate
+        names are ambiguous on the canvas and collide when the domain model is
+        built (BUML association names must be unique). Rename each duplicate
+        deterministically — preferring a meaningful ``sourceTarget`` camelCase
+        name, falling back to a numeric suffix. Unnamed associations are left
+        alone (the editor auto-labels them). Mutates *system_spec* in place.
+        """
+        relationships = system_spec.get("relationships")
+        if not isinstance(relationships, list):
+            return
+
+        def _norm(value: Any) -> str:
+            return value.strip().lower() if isinstance(value, str) else ""
+
+        seen: set = set()
+        renamed = 0
+        for rel in relationships:
+            if not isinstance(rel, dict):
+                continue
+            raw = rel.get("name")
+            key = _norm(raw)
+            if not key:
+                continue  # unnamed — the editor auto-labels it, no collision
+            if key not in seen:
+                seen.add(key)
+                continue
+            base = raw.strip() if isinstance(raw, str) else "relationship"
+            source = rel.get("source") if isinstance(rel.get("source"), str) else ""
+            target = rel.get("target") if isinstance(rel.get("target"), str) else ""
+            unique = ""
+            if source and target:
+                derived = source[:1].lower() + source[1:] + target[:1].upper() + target[1:]
+                if _norm(derived) and _norm(derived) not in seen:
+                    unique = derived
+            if not unique:
+                idx = 2
+                while _norm(f"{base}{idx}") in seen:
+                    idx += 1
+                unique = f"{base}{idx}"
+            rel["name"] = unique
+            seen.add(_norm(unique))
+            renamed += 1
+            logger.info(
+                "[ClassDiagram] Renamed duplicate relationship '%s' -> '%s'",
+                base, unique,
+            )
+
+        if renamed:
+            logger.info(
+                "[ClassDiagram] Deduped %d duplicate relationship name(s)", renamed
             )
 
     # Attribute types the deterministic generators accept without an association.
