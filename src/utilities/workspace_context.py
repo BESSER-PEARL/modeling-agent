@@ -153,15 +153,3 @@ def record_session_action(session: Session, action_summary: str) -> None:
     session.set(SESSION_ACTION_HISTORY, history)
 
 
-def build_session_summary(session: Session) -> str:
-    """Build a compact session summary string from recorded actions.
-
-    Returns an empty string if no actions have been recorded yet.
-    """
-    history: List[str] = session.get(SESSION_ACTION_HISTORY) or []
-    if not history:
-        return ""
-    lines = ["Session history (what you've done so far):"]
-    for i, entry in enumerate(history, 1):
-        lines.append(f"  {i}. {entry}")
-    return "\n".join(lines)

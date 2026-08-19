@@ -87,17 +87,6 @@ def _dynamic_canvas_bounds(num_elements: int) -> tuple:
     )
 
 
-def _ideal_grid_shape(n: int) -> tuple:
-    """Return (rows, cols) for an approximately square grid of n elements.
-
-    Prefers slightly wider than taller layouts (cols >= rows).
-    """
-    import math
-    if n <= 0:
-        return (1, 1)
-    cols = math.ceil(math.sqrt(n * 1.4))  # bias toward wider
-    rows = math.ceil(n / cols)
-    return (rows, cols)
 
 
 # ---------------------------------------------------------------------------
@@ -368,115 +357,10 @@ def _nearest_free_grid_cell(
     return (preferred_row, preferred_col)
 
 
-def _nearest_free_cell_below(
-    grid: Dict[Tuple[int, int], str],
-    parent_row: int,
-    parent_col: int,
-) -> Tuple[int, int]:
-    """Find the nearest free grid cell *below* *(parent_row, parent_col)*.
-
-    Scans rows below the parent, preferring the same column and limiting
-    horizontal spread to ±2 columns per row.  For wide inheritance trees
-    (5+ children), this creates a compact 2-row block instead of a long
-    single row.
-    """
-    max_col_spread = 2  # allow up to ±2 columns before moving to next row
-    for row in range(parent_row + 1, parent_row + 10):
-        if (row, parent_col) not in grid:
-            return (row, parent_col)
-        for dc in range(1, max_col_spread + 1):
-            if (row, parent_col + dc) not in grid:
-                return (row, parent_col + dc)
-            if (row, parent_col - dc) not in grid:
-                return (row, parent_col - dc)
-    return (parent_row + 1, parent_col)
 
 
-def _best_neighbor_grid_cell(
-    grid: Dict[Tuple[int, int], str],
-    placed_neighbors: List[Tuple[str, Tuple[int, int]]],
-) -> Tuple[int, int]:
-    """Pick the free grid cell adjacent to *placed_neighbors* that keeps
-    the layout compact.
-
-    Candidates are the four cardinal neighbours of every already-placed
-    neighbour.  They are ranked by:
-
-    1. Manhattan distance to the *neighbour centroid* (keeps related
-       elements close).
-    2. Manhattan distance to the *overall grid centroid* (keeps the whole
-       diagram compact instead of growing in one direction).
-    3. Prefer non-negative row / col (grow right-then-down).
-    4. Deterministic (row, col) tiebreaker.
-    """
-    n_avg_row = sum(pos[0] for _, pos in placed_neighbors) / len(placed_neighbors)
-    n_avg_col = sum(pos[1] for _, pos in placed_neighbors) / len(placed_neighbors)
-
-    all_positions = list(grid.keys())
-    g_avg_row = sum(r for r, _ in all_positions) / len(all_positions)
-    g_avg_col = sum(c for _, c in all_positions) / len(all_positions)
-
-    candidates: Set[Tuple[int, int]] = set()
-    for _, (nr, nc) in placed_neighbors:
-        for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
-            cell = (nr + dr, nc + dc)
-            if cell not in grid:
-                candidates.add(cell)
-
-    if not candidates:
-        # Widen search to radius-2 neighbours before falling back
-        for _, (nr, nc) in placed_neighbors:
-            for dr in range(-2, 3):
-                for dc in range(-2, 3):
-                    if dr == 0 and dc == 0:
-                        continue
-                    cell = (nr + dr, nc + dc)
-                    if cell not in grid:
-                        candidates.add(cell)
-
-    if not candidates:
-        # Last resort: find nearest free cell to the neighbour centroid
-        return _nearest_free_grid_cell(grid, round(n_avg_row), round(n_avg_col))
-
-    def _score(cell: Tuple[int, int]):
-        r, c = cell
-        neighbour_dist = abs(r - n_avg_row) + abs(c - n_avg_col)
-        global_dist = abs(r - g_avg_row) + abs(c - g_avg_col)
-        neg_row = 0 if r >= 0 else 1
-        neg_col = 0 if c >= 0 else 1
-        return (neighbour_dist, global_dist, neg_row, neg_col, r, c)
-
-    return min(candidates, key=_score)
 
 
-def _compact_grid(
-    grid: Dict[Tuple[int, int], str],
-) -> Tuple[Dict[Tuple[int, int], str], Dict[str, Tuple[int, int]]]:
-    """Remove empty rows and columns from the grid.
-
-    Returns a new grid and name_to_grid with consecutive row/col indices.
-    This eliminates gaps that cause unnecessary spread in the pixel layout.
-    """
-    if not grid:
-        return grid, {}
-
-    # Collect used rows and columns in sorted order
-    used_rows = sorted({r for r, _ in grid})
-    used_cols = sorted({c for _, c in grid})
-
-    # Build remapping: old index → new consecutive index
-    row_map = {old: new for new, old in enumerate(used_rows)}
-    col_map = {old: new for new, old in enumerate(used_cols)}
-
-    new_grid: Dict[Tuple[int, int], str] = {}
-    new_name_to_grid: Dict[str, Tuple[int, int]] = {}
-
-    for (r, c), name in grid.items():
-        new_cell = (row_map[r], col_map[c])
-        new_grid[new_cell] = name
-        new_name_to_grid[name] = new_cell
-
-    return new_grid, new_name_to_grid
 
 
 # ---------------------------------------------------------------------------
@@ -552,121 +436,8 @@ def _compute_edge_directions(
 # Shared grid → pixel helpers (used by class, object, state layouts)
 # ---------------------------------------------------------------------------
 
-def _build_edge_pairs(
-    edges: List[Dict[str, Any]],
-    element_lookup: Dict[str, Any],
-) -> Set[Tuple[str, str]]:
-    """Build a set of canonical (name1, name2) pairs from edge dicts.
-
-    Works for relationships, links, and transitions — any dict with
-    ``source`` and ``target`` keys.
-    """
-    pairs: Set[Tuple[str, str]] = set()
-    for edge in edges:
-        src = edge.get("source", "")
-        tgt = edge.get("target", "")
-        if src in element_lookup and tgt in element_lookup:
-            pair = (min(src, tgt), max(src, tgt))
-            pairs.add(pair)
-    return pairs
 
 
-def _grid_to_pixel_positions(
-    grid: Dict[Tuple[int, int], str],
-    sizes: Dict[str, Tuple[int, int]],
-    element_lookup: Dict[str, Dict[str, Any]],
-    occupied: List[Rect],
-    canvas_bounds: Tuple[int, int, int, int],
-    default_size: Tuple[int, int],
-    edge_pairs: Optional[Set[Tuple[str, str]]] = None,
-    n_elements: int = 0,
-) -> None:
-    """Convert logical grid positions to pixel coordinates.
-
-    Mutates each element dict in *element_lookup* by setting its
-    ``position`` key.  Also appends placed :class:`Rect` instances to
-    *occupied* so subsequent single-element placements avoid collisions.
-
-    Parameters
-    ----------
-    grid : dict[(row, col) → element_name]
-    sizes : dict[name → (width, height)]
-    element_lookup : dict[name → element dict]  (mutated: ``position`` set)
-    occupied : list[Rect]  (mutated: new rects appended)
-    canvas_bounds : (min_x, max_x, min_y, max_y)
-    default_size : fallback (width, height)
-    edge_pairs : optional set of connected name pairs (unused for now,
-        reserved for future edge-aware gap adjustment)
-    n_elements : total element count (for future scaling)
-    """
-    if not grid:
-        return
-
-    # --- Grid bounds ---
-    min_row = min(r for r, _ in grid)
-    max_row = max(r for r, _ in grid)
-    min_col = min(c for _, c in grid)
-    max_col = max(c for _, c in grid)
-
-    n_rows = max_row - min_row + 1
-    n_cols = max_col - min_col + 1
-
-    # --- Per-column widths and per-row heights ---
-    col_widths: Dict[int, int] = {}
-    row_heights: Dict[int, int] = {}
-
-    for (r, c), name in grid.items():
-        w, h = sizes.get(name, default_size)
-        col_widths[c] = max(col_widths.get(c, 0), w)
-        row_heights[r] = max(row_heights.get(r, 0), h)
-
-    # --- Compact gap calculation ---
-    h_gap = 60
-    v_gap = 50
-
-    # --- Total layout dimensions ---
-    total_width = sum(col_widths.get(c, default_size[0]) for c in range(min_col, max_col + 1))
-    total_width += h_gap * max(0, n_cols - 1)
-
-    total_height = sum(row_heights.get(r, default_size[1]) for r in range(min_row, max_row + 1))
-    total_height += v_gap * max(0, n_rows - 1)
-
-    # --- Center on origin ---
-    origin_x = _snap(-total_width // 2)
-    origin_y = _snap(-total_height // 2)
-
-    # --- Assign pixel coordinates ---
-    for (r, c), name in grid.items():
-        elem = element_lookup.get(name)
-        if not elem:
-            continue
-
-        w, h = sizes.get(name, default_size)
-
-        # X: sum of column widths + gaps for columns before this one
-        px = origin_x
-        for cc in range(min_col, c):
-            px += col_widths.get(cc, default_size[0]) + h_gap
-
-        # Center element within its column cell
-        col_w = col_widths.get(c, default_size[0])
-        px += (col_w - w) // 2
-
-        # Y: sum of row heights + gaps for rows before this one
-        py = origin_y
-        for rr in range(min_row, r):
-            py += row_heights.get(rr, default_size[1]) + v_gap
-
-        # Center element within its row cell
-        row_h = row_heights.get(r, default_size[1])
-        py += (row_h - h) // 2
-
-        x, y = _find_free_position(w, h, occupied,
-                                    preferred_x=_snap(px),
-                                    preferred_y=_snap(py),
-                                    canvas_bounds=canvas_bounds)
-        elem["position"] = {"x": x, "y": y}
-        occupied.append(Rect(x, y, w, h))
 
 
 # ---------------------------------------------------------------------------

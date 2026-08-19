@@ -233,17 +233,6 @@ def _resolve_color(value: Any) -> Optional[str]:
     return text
 
 
-def _find_page(model: Dict[str, Any], page_name: str) -> Optional[Dict[str, Any]]:
-    target = _clean_text(page_name).lower()
-    pages = model.get("pages") if isinstance(model.get("pages"), list) else []
-    for page in pages:
-        if isinstance(page, dict) and _clean_text(page.get("name")).lower() == target:
-            return page
-    # Fall back to the first page if there is exactly one (common single-page case).
-    real_pages = [p for p in pages if isinstance(p, dict)]
-    if len(real_pages) == 1:
-        return real_pages[0]
-    return None
 
 
 def _iter_section_components(wrapper: Dict[str, Any]):
@@ -1756,28 +1745,6 @@ def _build_class_page(
     }
 
 
-def _build_class_bound_gui(class_metadata: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Build a deterministic, fully class-bound GUI model.
-
-    Creates one page per class — each with a navigation sidebar, data table
-    with auto-generated columns, method buttons, and a chart when numeric
-    attributes exist.  This mirrors the frontend ``autoGenerateGUIFromClassDiagram``
-    but runs entirely server-side.
-    """
-    pages: List[Dict[str, Any]] = []
-    for idx, cls in enumerate(class_metadata):
-        pages.append(_build_class_page(cls, class_metadata, idx))
-
-    if not pages:
-        return _default_gui_model()
-
-    return {
-        "pages": pages,
-        "styles": [],
-        "assets": [],
-        "symbols": [],
-        "version": DEFAULT_GUI_VERSION,
-    }
 
 
 def _legacy_section_component(section_spec: Dict[str, Any], class_metadata: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
