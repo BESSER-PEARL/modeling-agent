@@ -159,8 +159,8 @@ async def _wait_meaningful(ws, timeout):
                         "suggestedActions": m.get("suggestedActions")}
             continue
         if act in ("trigger_generator", "trigger_smart_generator",
-                   "inject_complete_system", "assistant_message",
-                   "agent_error", "error"):
+                   "inject_complete_system", "modify_model", "auto_generate_gui",
+                   "assistant_message", "agent_error", "error"):
             return m
     return {"action": "timeout", "message": ""}
 
