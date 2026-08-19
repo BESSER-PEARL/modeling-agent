@@ -569,6 +569,36 @@ def _resume_remaining_ops(
             from utilities.request_builders import build_generation_request
             from session_helpers import reply_payload
 
+            # "Like the class-diagram flow": after building the app's model AND its
+            # GUI, do NOT auto-run code generation. Stop and invite the user to
+            # review or generate — mirroring how a class-diagram build ends with a
+            # "review the spec, or generate the code?" prompt instead of silently
+            # producing code. The web_app generator always follows a GUI build, so
+            # gating on the just-built diagram being the GUI targets exactly this
+            # web-app auto-chain; explicit "…and generate X" plans (no GUI step)
+            # still run automatically.
+            if stored_diagram_type == 'GUINoCodeDiagram':
+                deferred_gen = remaining_op.get('generatorType') or 'web app'
+                logger.info(
+                    f"[GUIChoice] Deferring '{deferred_gen}' generation — asking the "
+                    f"user to review or generate (matches the class-diagram flow)"
+                )
+                reply_payload(session, {
+                    "action": "assistant_message",
+                    "message": (
+                        "Your app is fully modeled now — the data classes and their "
+                        "screens are both ready. Take a look, and when you're happy "
+                        "with it just say **generate the web app** and I'll build "
+                        "the code."
+                    ),
+                    "suggestedActions": [
+                        {"label": "Generate the web app", "prompt": "generate web app"},
+                        {"label": "Review the spec", "prompt": "describe my diagram"},
+                        {"label": "Make a change", "prompt": ""},
+                    ],
+                })
+                break  # Stop here; the user drives generation explicitly.
+
             gen_type = remaining_op.get('generatorType')
             if isinstance(gen_type, str) and gen_type:
                 gen_req = build_generation_request(

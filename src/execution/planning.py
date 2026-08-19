@@ -220,6 +220,43 @@ def execute_planned_operations(
             continue
 
     # ── Phase 2: Generation operations (always sequential) ───────────
+    # "Like the class-diagram flow": when the plan built a GUI (i.e. a web-app
+    # build), do NOT auto-run the code generation. Stop and let the user review
+    # or generate. This mirrors the gate in confirmation._resume_remaining_ops
+    # and covers the path it can't: when the GUI op did NOT halt for a choice
+    # (e.g. a slow/timeout auto-completion) so execution fell through to this
+    # direct generation loop instead of resuming after a GUI-choice answer.
+    # Explicit non-GUI generations ("create X and generate django") have no
+    # GUINoCodeDiagram model op, so they are unaffected and still run.
+    _plan_built_gui = any(
+        isinstance(op, dict) and op.get("diagramType") == "GUINoCodeDiagram"
+        for op in operations
+    )
+    if _plan_built_gui and gen_ops:
+        _deferred_gen = next(
+            (op.get("generatorType") for op in gen_ops
+             if isinstance(op, dict) and op.get("generatorType")),
+            "web app",
+        )
+        logger.info(
+            f"⏸️ [PlannedOps] Deferring '{_deferred_gen}' generation after a GUI "
+            f"build — asking the user to review or generate (class-diagram flow)"
+        )
+        reply_payload(session, {
+            "action": "assistant_message",
+            "message": (
+                "Your app is fully modeled now — the data classes and their "
+                "screens are both ready. Take a look, and when you're happy "
+                "with it just say **generate the web app** and I'll build the code."
+            ),
+            "suggestedActions": [
+                {"label": "Generate the web app", "prompt": "generate web app"},
+                {"label": "Review the spec", "prompt": "describe my diagram"},
+                {"label": "Make a change", "prompt": ""},
+            ],
+        })
+        return
+
     for operation in gen_ops:
         step_counter += 1
         _report_progress(session, step_counter - 1, total_steps, operation)
