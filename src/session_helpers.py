@@ -196,14 +196,16 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
 
 
 def emit_webapp_generate_prompt(session: Session) -> None:
-    """The web-app pause prompt: after the model + GUI are built, ask the user to
-    review or generate — instead of auto-running code generation. Single source of
-    truth for the prompt (called from every path where a web-app GUI completes)."""
+    """The web-app pause prompt: after the app's spec + screens are built, ask the
+    user to review or generate — instead of auto-running code generation. Single
+    source of truth for the prompt (called from every path where a web-app GUI
+    completes). User-facing copy stays product-friendly (no "model"/"data class"
+    jargon) — the user asked for the app's *spec*, not internal modeling terms."""
     reply_payload(session, {
         "action": "assistant_message",
         "message": (
-            "Your app is fully modeled now — the data classes and their screens "
-            "are both ready. Take a look, and when you're happy with it just say "
+            "Your app's spec is ready — the screens and the data behind them are "
+            "all laid out. Take a look, and when you're happy with it just say "
             "**generate the web app** and I'll build the code."
         ),
         "suggestedActions": [
