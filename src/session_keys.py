@@ -7,6 +7,13 @@ Centralizes magic string keys to prevent typos and enable IDE navigation.
 PENDING_COMPLETE_SYSTEM = "pending_complete_system"
 PENDING_GUI_CHOICE = "pending_gui_choice"
 
+# Web-app pause (bulletproof): set when a "create a web app" plan builds a GUI.
+# The plan's auto-generation op is STRIPPED at the source so nothing can auto-run
+# on any execution path; this flag then drives the "generate the web app?" prompt
+# once the GUI is built. The user triggers generation explicitly afterwards
+# (exactly like the class-diagram flow, which has no generation op in its plan).
+PENDING_WEBAPP_GENERATE = "_pending_webapp_generate"
+
 # Generation pending state
 PENDING_GENERATOR_TYPE = "pending_generator_type"
 PENDING_GENERATOR_CONFIG = "pending_generator_config"

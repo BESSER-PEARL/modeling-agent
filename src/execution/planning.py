@@ -12,13 +12,13 @@ from baf.core.session import Session
 
 import agent_context as ctx
 from protocol.types import AssistantRequest
-from session_helpers import reply_message, reply_payload
+from session_helpers import reply_message, reply_payload, emit_webapp_generate_prompt
 from orchestrator import plan_assistant_operations
 from handlers.generation_handler import handle_generation_request
 from utilities.request_builders import build_request_for_target, build_generation_request
 from suggestions import get_suggested_actions
 from errors import ErrorCode, classify_error, build_error_response
-from session_keys import PENDING_COMPLETE_SYSTEM, PENDING_GUI_CHOICE
+from session_keys import PENDING_COMPLETE_SYSTEM, PENDING_GUI_CHOICE, PENDING_WEBAPP_GENERATE
 
 from .model_operations import execute_model_operation, _collect_available_diagrams
 from .progress import _report_progress
@@ -116,6 +116,26 @@ def execute_planned_operations(
         return
 
     model_groups, gen_ops = _can_run_parallel(operations)
+
+    # ── BULLETPROOF PAUSE ────────────────────────────────────────────
+    # A "create a web app" plan builds the model + GUI and would then auto-run
+    # web_app code generation. STRIP that generation op from the plan at the
+    # source, so there is nothing to auto-run on ANY execution path (this is the
+    # single source of truth — it supersedes the per-path gates). A session flag
+    # then drives the "generate the web app?" prompt once the GUI is built; the
+    # user triggers generation explicitly afterwards. Explicit non-GUI plans
+    # ("create X and generate django") have no GUINoCodeDiagram op, so their
+    # generation is untouched and still runs.
+    _webapp_build = (
+        any(isinstance(op, dict) and op.get("diagramType") == "GUINoCodeDiagram" for op in operations)
+        and any(isinstance(op, dict) and op.get("type") == "generation" for op in operations)
+    )
+    if _webapp_build:
+        gen_ops = []  # nothing auto-runs
+        session.set(PENDING_WEBAPP_GENERATE, True)
+        logger.info("⏸️ [PlannedOps] Web-app build — stripped auto-generation; "
+                    "user will be asked to generate after the GUI is built")
+
     total_steps = sum(len(g) for g in model_groups) + len(gen_ops)
 
     working_request = request
@@ -220,41 +240,15 @@ def execute_planned_operations(
             continue
 
     # ── Phase 2: Generation operations (always sequential) ───────────
-    # "Like the class-diagram flow": when the plan built a GUI (i.e. a web-app
-    # build), do NOT auto-run the code generation. Stop and let the user review
-    # or generate. This mirrors the gate in confirmation._resume_remaining_ops
-    # and covers the path it can't: when the GUI op did NOT halt for a choice
-    # (e.g. a slow/timeout auto-completion) so execution fell through to this
-    # direct generation loop instead of resuming after a GUI-choice answer.
-    # Explicit non-GUI generations ("create X and generate django") have no
-    # GUINoCodeDiagram model op, so they are unaffected and still run.
-    _plan_built_gui = any(
-        isinstance(op, dict) and op.get("diagramType") == "GUINoCodeDiagram"
-        for op in operations
-    )
-    if _plan_built_gui and gen_ops:
-        _deferred_gen = next(
-            (op.get("generatorType") for op in gen_ops
-             if isinstance(op, dict) and op.get("generatorType")),
-            "web app",
-        )
-        logger.info(
-            f"⏸️ [PlannedOps] Deferring '{_deferred_gen}' generation after a GUI "
-            f"build — asking the user to review or generate (class-diagram flow)"
-        )
-        reply_payload(session, {
-            "action": "assistant_message",
-            "message": (
-                "Your app is fully modeled now — the data classes and their "
-                "screens are both ready. Take a look, and when you're happy "
-                "with it just say **generate the web app** and I'll build the code."
-            ),
-            "suggestedActions": [
-                {"label": "Generate the web app", "prompt": "generate web app"},
-                {"label": "Review the spec", "prompt": "describe my diagram"},
-                {"label": "Make a change", "prompt": ""},
-            ],
-        })
+    # Web-app builds had their generation stripped above; show the pause prompt
+    # once the GUI is built. This is the FALL-THROUGH path (the GUI op did NOT
+    # halt for a choice, e.g. a slow/timeout auto-completion, so execution reached
+    # here directly). The GUI-choice path emits the same prompt from
+    # confirmation._resume_remaining_ops. Non-web-app generations still run below.
+    if session.get(PENDING_WEBAPP_GENERATE):
+        session.set(PENDING_WEBAPP_GENERATE, None)
+        logger.info("⏸️ [PlannedOps] Web-app GUI built — asking the user to generate")
+        emit_webapp_generate_prompt(session)
         return
 
     for operation in gen_ops:

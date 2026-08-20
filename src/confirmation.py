@@ -19,13 +19,14 @@ from typing import Any
 from baf.core.session import Session
 
 from protocol.adapters import parse_assistant_request
-from session_helpers import reply_message, reply_payload
+from session_helpers import reply_message, reply_payload, emit_webapp_generate_prompt
 from model_utils import model_has_elements  # noqa: F401  (re-export for backward compat)
 from session_keys import (
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
     PENDING_SMART_GEN_INSTRUCTIONS,
     PENDING_SMART_GEN_PROVIDER,
+    PENDING_WEBAPP_GENERATE,
 )
 from execution import execute_model_operation
 
@@ -569,34 +570,14 @@ def _resume_remaining_ops(
             from utilities.request_builders import build_generation_request
             from session_helpers import reply_payload
 
-            # "Like the class-diagram flow": after building the app's model AND its
-            # GUI, do NOT auto-run code generation. Stop and invite the user to
-            # review or generate — mirroring how a class-diagram build ends with a
-            # "review the spec, or generate the code?" prompt instead of silently
-            # producing code. The web_app generator always follows a GUI build, so
-            # gating on the just-built diagram being the GUI targets exactly this
-            # web-app auto-chain; explicit "…and generate X" plans (no GUI step)
-            # still run automatically.
+            # Defensive net: a web-app plan's generation is normally STRIPPED at
+            # the source (planning.execute_planned_operations), so a generation op
+            # rarely survives into a post-GUI resume. But if one ever does, defer
+            # it — never auto-run generation right after a GUI build.
             if stored_diagram_type == 'GUINoCodeDiagram':
-                deferred_gen = remaining_op.get('generatorType') or 'web app'
-                logger.info(
-                    f"[GUIChoice] Deferring '{deferred_gen}' generation — asking the "
-                    f"user to review or generate (matches the class-diagram flow)"
-                )
-                reply_payload(session, {
-                    "action": "assistant_message",
-                    "message": (
-                        "Your app is fully modeled now — the data classes and their "
-                        "screens are both ready. Take a look, and when you're happy "
-                        "with it just say **generate the web app** and I'll build "
-                        "the code."
-                    ),
-                    "suggestedActions": [
-                        {"label": "Generate the web app", "prompt": "generate web app"},
-                        {"label": "Review the spec", "prompt": "describe my diagram"},
-                        {"label": "Make a change", "prompt": ""},
-                    ],
-                })
+                logger.info("[GUIChoice] Deferring web-app generation — asking the user to generate")
+                session.set(PENDING_WEBAPP_GENERATE, None)
+                emit_webapp_generate_prompt(session)
                 break  # Stop here; the user drives generation explicitly.
 
             gen_type = remaining_op.get('generatorType')
@@ -620,3 +601,11 @@ def _resume_remaining_ops(
                         "Something went wrong while running code generation. "
                         "Please try again.",
                     )
+
+    # Web-app pause (GUI-choice path): the GUI was just built and its generation
+    # was stripped at the plan source, so show the "generate the web app?" prompt
+    # here — the single place this path emits it. Non-web-app resumes leave the
+    # flag unset and skip this.
+    if session.get(PENDING_WEBAPP_GENERATE):
+        session.set(PENDING_WEBAPP_GENERATE, None)
+        emit_webapp_generate_prompt(session)

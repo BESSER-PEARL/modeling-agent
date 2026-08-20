@@ -195,6 +195,25 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
         _record_assistant_response(session, message)
 
 
+def emit_webapp_generate_prompt(session: Session) -> None:
+    """The web-app pause prompt: after the model + GUI are built, ask the user to
+    review or generate — instead of auto-running code generation. Single source of
+    truth for the prompt (called from every path where a web-app GUI completes)."""
+    reply_payload(session, {
+        "action": "assistant_message",
+        "message": (
+            "Your app is fully modeled now — the data classes and their screens "
+            "are both ready. Take a look, and when you're happy with it just say "
+            "**generate the web app** and I'll build the code."
+        ),
+        "suggestedActions": [
+            {"label": "Generate the web app", "prompt": "generate web app"},
+            {"label": "Review the spec", "prompt": "describe my diagram"},
+            {"label": "Make a change", "prompt": ""},
+        ],
+    })
+
+
 def _send_to_session(session: Session, payload: Dict[str, Any]):
     """Low-level helper: serialize *payload* as JSON and send it via the session.
 
