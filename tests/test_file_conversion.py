@@ -757,6 +757,35 @@ class TestBpmnConversion:
         assert {p["id"] for p in pools} == {"customer", "vendor"}
         assert "2 pool" in result["message"]
 
+    def test_bpmn_with_lane_sets_owner(self):
+        def mock_lane_process(prompt: str) -> str:
+            return json.dumps({
+                "diagramType": "BPMN",
+                "nodes": [
+                    {"id": "start", "name": "Order Received", "type": "startEvent", "poolId": "vendor", "laneId": "clerk"},
+                    {"id": "bake", "name": "Bake Pizza", "type": "task", "taskType": "manual", "poolId": "vendor", "laneId": "chef"},
+                ],
+                "flows": [
+                    {"source": "start", "target": "bake", "name": ""},
+                ],
+                "pools": [
+                    {"id": "vendor", "name": "Pizza Vendor", "lanes": [
+                        {"id": "clerk", "name": "Clerk"},
+                        {"id": "chef", "name": "Chef"},
+                    ]},
+                ],
+            })
+
+        result = convert_file_to_diagram_spec(
+            file_content_b64=_make_b64("Vendor clerk receives an order and the chef bakes the pizza."),
+            filename="process.txt",
+            llm_predict=mock_lane_process,
+        )
+
+        nodes = {node["id"]: node for node in result["systemSpec"]["nodes"]}
+        assert nodes["start"]["owner"] == "clerk"
+        assert nodes["bake"]["owner"] == "chef"
+
     def test_bpmn_empty_nodes_error(self):
         def mock_empty_nodes(prompt: str) -> str:
             return json.dumps({"diagramType": "BPMN", "nodes": [], "flows": [], "pools": []})

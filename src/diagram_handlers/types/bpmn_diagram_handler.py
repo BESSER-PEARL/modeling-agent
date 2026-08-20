@@ -193,6 +193,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
 
         self._connect_orphaned_nodes(nodes, flows)
         self._normalize_pool_refs(spec, nodes)
+        self._infer_missing_lane_owners(spec, nodes, flows)
 
         spec["nodes"] = nodes
         spec["flows"] = flows
@@ -208,6 +209,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
             for node in nodes:
                 node["poolId"] = None
                 node["laneId"] = None
+                node["owner"] = None
             spec["pools"] = []
             return
 
@@ -237,10 +239,93 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
             if pool_id not in valid_pool_ids:
                 node["poolId"] = None
                 node["laneId"] = None
+                node["owner"] = None
                 continue
             lane_id = node.get("laneId")
             if lane_id and lane_id not in lane_ids_by_pool.get(pool_id, set()):
                 node["laneId"] = None
+                node["owner"] = None
+                continue
+            node["owner"] = lane_id if lane_id else None
+
+    @staticmethod
+    def _infer_missing_lane_owners(
+        spec: Dict[str, Any], nodes: List[Dict[str, Any]], flows: List[Dict[str, Any]]
+    ) -> None:
+        """Backfill laneId/owner for pool-contained nodes when lane membership can
+        be inferred from the validated pool structure and adjacent sequence flows."""
+        pools: List[Dict[str, Any]] = spec.get("pools") or []
+        if not pools:
+            return
+
+        lane_ids_by_pool: Dict[str, set[str]] = {
+            pool["id"]: {
+                lane["id"]
+                for lane in (pool.get("lanes") or [])
+                if lane.get("id")
+            }
+            for pool in pools
+            if pool.get("id")
+        }
+        if not lane_ids_by_pool:
+            return
+
+        nodes_by_id: Dict[str, Dict[str, Any]] = {
+            node["id"]: node
+            for node in nodes
+            if node.get("id")
+        }
+        incoming: Dict[str, List[str]] = {}
+        outgoing: Dict[str, List[str]] = {}
+
+        for flow in flows:
+            source = flow.get("source")
+            target = flow.get("target")
+            if source and target:
+                outgoing.setdefault(source, []).append(target)
+                incoming.setdefault(target, []).append(source)
+
+        for node in nodes:
+            pool_id = node.get("poolId")
+            if not pool_id:
+                node["owner"] = None
+                continue
+
+            valid_lanes = lane_ids_by_pool.get(pool_id, set())
+            if not valid_lanes:
+                node["owner"] = None
+                continue
+
+            lane_id = node.get("laneId")
+            if lane_id in valid_lanes:
+                node["owner"] = lane_id
+                continue
+            if node.get("type") == "task":
+                node["laneId"] = None
+                node["owner"] = None
+                continue
+
+            inferred_lane_ids: set[str] = set()
+            for neighbor_id in incoming.get(node["id"], []) + outgoing.get(node["id"], []):
+                neighbor = nodes_by_id.get(neighbor_id)
+                if not neighbor or neighbor.get("poolId") != pool_id:
+                    continue
+                neighbor_lane_id = neighbor.get("laneId")
+                if neighbor_lane_id in valid_lanes:
+                    inferred_lane_ids.add(neighbor_lane_id)
+
+            inferred_lane_id = None
+            if len(valid_lanes) == 1:
+                inferred_lane_id = next(iter(valid_lanes))
+            elif len(inferred_lane_ids) == 1:
+                inferred_lane_id = next(iter(inferred_lane_ids))
+
+            if inferred_lane_id:
+                node["laneId"] = inferred_lane_id
+                node["owner"] = inferred_lane_id
+            else:
+                node["laneId"] = None
+                node["owner"] = None
 
     @staticmethod
     def _connect_orphaned_nodes(nodes: List[Dict[str, Any]], flows: List[Dict[str, Any]]) -> None:
