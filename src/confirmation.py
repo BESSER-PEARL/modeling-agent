@@ -127,6 +127,22 @@ def _build_auto_gui_message(request: Any) -> str:
     )
 
 
+def _maybe_emit_webapp_prompt(session: Session) -> None:
+    """Show the "generate the web app?" nudge if a web-app plan is awaiting it.
+
+    A "create a web app" plan builds the model + GUI, then has its generation op
+    STRIPPED at the plan source (planning.execute_planned_operations), which sets
+    PENDING_WEBAPP_GENERATE. Because the generation op is gone, the GUI-choice's
+    stored ``remaining_operations`` is empty and ``_resume_remaining_ops`` never
+    runs — so whichever path finishes the GUI must consume the flag here and emit
+    the prompt. Idempotent: the flag is cleared on the first emit, so calling this
+    from both the resume tail and the GUI-choice tail is safe.
+    """
+    if session.get(PENDING_WEBAPP_GENERATE):
+        session.set(PENDING_WEBAPP_GENERATE, None)
+        emit_webapp_generate_prompt(session)
+
+
 def handle_pending_gui_choice(session: Session) -> bool:
     """Process a pending GUI generation-mode choice, if one exists.
 
@@ -181,6 +197,9 @@ def handle_pending_gui_choice(session: Session) -> bool:
                 'GUINoCodeDiagram', 'complete_system',
                 pending.get('operation_request', ''), pending,
             )
+        # Web-app plans strip their generation op, leaving remaining_ops empty —
+        # so the resume above never runs. Show the generate nudge here instead.
+        _maybe_emit_webapp_prompt(session)
         return True
 
     # LLM-driven path
@@ -224,6 +243,9 @@ def handle_pending_gui_choice(session: Session) -> bool:
             pending.get('operation_request', ''), pending,
         )
 
+    # Same web-app nudge as the auto path: the stripped generation leaves
+    # remaining_ops empty, so emit the "generate the web app?" prompt here.
+    _maybe_emit_webapp_prompt(session)
     return True
 
 
@@ -604,8 +626,5 @@ def _resume_remaining_ops(
 
     # Web-app pause (GUI-choice path): the GUI was just built and its generation
     # was stripped at the plan source, so show the "generate the web app?" prompt
-    # here — the single place this path emits it. Non-web-app resumes leave the
-    # flag unset and skip this.
-    if session.get(PENDING_WEBAPP_GENERATE):
-        session.set(PENDING_WEBAPP_GENERATE, None)
-        emit_webapp_generate_prompt(session)
+    # here. Non-web-app resumes leave the flag unset and skip this.
+    _maybe_emit_webapp_prompt(session)

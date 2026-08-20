@@ -76,3 +76,55 @@ def test_explicit_non_gui_generation_still_runs():
     gen, prompt = _run(plan)
     assert gen.called          # django generation runs (not gated)
     assert not prompt.called   # no web-app pause
+
+
+# ---------------------------------------------------------------------------
+# GUI-choice path: the pause nudge must survive the "auto"/"llm" answer.
+#
+# Because the generation op is stripped at the plan source, the GUI-choice's
+# stored ``remaining_operations`` is EMPTY — so ``_resume_remaining_ops`` (which
+# also emits the prompt) never runs. The choice handler must still show the
+# "generate the web app?" nudge from its own tail. This is the exact gap a live
+# probe caught: the GUI built, then went silent.
+# ---------------------------------------------------------------------------
+
+import confirmation  # noqa: E402
+from session_keys import PENDING_GUI_CHOICE, PENDING_WEBAPP_GENERATE  # noqa: E402
+
+
+def _run_gui_choice(answer):
+    """Drive handle_pending_gui_choice with a web-app pause flag already set.
+
+    Simulates the post-strip state: a GUI choice is pending with EMPTY
+    remaining_operations (generation was stripped) and PENDING_WEBAPP_GENERATE
+    is set. Returns the emit_webapp_generate_prompt mock and the session.
+    """
+    session = _FakeSession()
+    session.set(PENDING_GUI_CHOICE, {"remaining_operations": [], "operation_request": "create a web app"})
+    session.set(PENDING_WEBAPP_GENERATE, True)
+    req = MagicMock()
+    req.message = answer
+    emit = MagicMock()
+    with patch.object(confirmation, "parse_assistant_request", return_value=req), \
+         patch.object(confirmation, "reply_payload"), \
+         patch.object(confirmation, "reply_message"), \
+         patch.object(confirmation, "replace", lambda obj, **kw: obj), \
+         patch.object(confirmation, "execute_model_operation", return_value="Diagram"), \
+         patch.object(confirmation, "_build_auto_gui_message", return_value="screens ready"), \
+         patch.object(confirmation, "emit_webapp_generate_prompt", emit):
+        handled = confirmation.handle_pending_gui_choice(session)
+    return handled, emit, session
+
+
+def test_gui_choice_auto_still_shows_generate_prompt():
+    handled, emit, session = _run_gui_choice("auto")
+    assert handled                                       # the choice was consumed
+    assert emit.called                                   # the generate nudge fired
+    assert session.get(PENDING_WEBAPP_GENERATE) is None   # flag cleared (no re-emit)
+
+
+def test_gui_choice_llm_still_shows_generate_prompt():
+    handled, emit, session = _run_gui_choice("llm")
+    assert handled
+    assert emit.called
+    assert session.get(PENDING_WEBAPP_GENERATE) is None
