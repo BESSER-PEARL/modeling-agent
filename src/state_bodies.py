@@ -9,6 +9,7 @@ and intents have been created.
 """
 
 import logging
+import re
 from typing import Any, Dict, Optional
 
 from baf.core.session import Session
@@ -357,6 +358,29 @@ def greetings_body(session: Session):
 # Shared modeling-state body
 # ------------------------------------------------------------------
 
+# Filler words stripped when checking whether a "create …" request actually
+# names a domain to model. If nothing substantive remains, the request is too
+# vague to build from ("create", "make an app") and we ask what to build instead
+# of hallucinating a default model. Intentionally conservative: any real domain
+# noun ("hospital", "task", "library") survives and the request proceeds.
+_CREATE_FILLER = frozenset({
+    "create", "make", "build", "design", "generate", "add", "new", "start",
+    "a", "an", "the", "some", "any", "please", "for", "me", "us", "my", "our",
+    "app", "application", "web", "webapp", "site", "website", "system", "software",
+    "program", "project", "thing", "something", "stuff", "model", "diagram",
+    "can", "you", "could", "would", "will", "i", "we", "want", "need", "like",
+    "to", "of", "with", "and", "it", "this", "that", "help",
+})
+
+
+def _create_request_is_too_vague(message: str) -> bool:
+    """True when a create request has NO domain content after stripping filler."""
+    words = re.findall(r"[a-zA-Z]+", (message or "").lower())
+    core = [w for w in words if w not in _CREATE_FILLER]
+    # Nothing substantive to model (e.g. "create", "make an app", "build a system").
+    return sum(len(w) for w in core) < 3
+
+
 def _modeling_state_body(session: Session, intent_name: str, default_mode: str, empty_msg: str):
     """Unified handler for all modeling operations (system creation, modification)."""
     request = _common_preamble(session)
@@ -366,6 +390,16 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
     session.set(LAST_MATCHED_INTENT, intent_name)
 
     if not request.message:
+        reply_message(session, empty_msg)
+        return
+
+    # Over-eagerness guard (create path only): if the user only typed filler
+    # ("create", "make an app") with no domain, ASK what to build instead of
+    # guessing a default model. Modify requests are unaffected (they operate on
+    # an existing model where terse phrasing is normal).
+    if (intent_name == 'create_complete_system_intent'
+            and _create_request_is_too_vague(request.message)):
+        logger.info("[Modeling] Create request too vague to model — asking for a domain")
         reply_message(session, empty_msg)
         return
 
