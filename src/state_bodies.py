@@ -381,6 +381,44 @@ def _create_request_is_too_vague(message: str) -> bool:
     return sum(len(w) for w in core) < 3
 
 
+# Unambiguous prompt-subversion / non-modeling phrases. Each has ZERO legitimate
+# use in a "model my X" request, so when one appears we decline in prose and
+# redirect — instead of over-eagerly modeling the injection text (a class diagram
+# of "RefusalNotice", a "Pirate" class, etc.). Security is already enforced
+# elsewhere (we never *execute* such instructions or leak the prompt); this guard
+# just stops the agent from BUILDING a model out of them. Deliberately high-
+# precision: only patterns that never occur in a real modeling request, so real
+# work ("delete the Doctor class", "make it bigger") is never caught.
+_NON_MODELING_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
+    r"ignore\s+(?:all\s+|any\s+|the\s+)?(?:previous|prior|earlier|above)\s+"
+    r"(?:instruction|prompt|rule|direction|message)",
+    r"disregard\s+(?:your|all|the|any|these|previous|prior)\s+"
+    r"(?:rule|instruction|guardrail|previous|prior|direction)",
+    r"(?:reveal|show|print|expose|repeat|leak)\s+(?:me\s+)?(?:your|the)\s+"
+    r"(?:system\s+)?(?:prompt|instruction|rule)",
+    r"\byou\s+are\s+now\s+(?:a|an)\b",
+    r"\bpretend\s+(?:to\s+be|you\s+are|that\s+you)\b",
+    r"(?:cat|less|head|tail|nano|vim)\s+/etc/\w+",   # shell exfil attempts
+    r"\brm\s+-rf\b",
+    r"/etc/passwd",
+))
+
+
+def _request_is_non_modeling(message: str) -> bool:
+    """True when the message is a prompt-injection / rule-subversion attempt with
+    no legitimate modeling intent (persona hijack, "reveal your prompt", shell
+    commands). Such input is declined in prose, not modeled."""
+    text = message or ""
+    return any(p.search(text) for p in _NON_MODELING_PATTERNS)
+
+
+_NON_MODELING_DECLINE = (
+    "I'm a modeling assistant, so I can't take on other instructions or share how "
+    "I work — but I'm glad to help you design a diagram. What would you like to "
+    "model? For example: *Create a library management system*."
+)
+
+
 def _modeling_state_body(session: Session, intent_name: str, default_mode: str, empty_msg: str):
     """Unified handler for all modeling operations (system creation, modification)."""
     request = _common_preamble(session)
@@ -391,6 +429,16 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
 
     if not request.message:
         reply_message(session, empty_msg)
+        return
+
+    # Injection / non-modeling guard (create AND modify): a prompt-subversion
+    # attempt ("ignore previous instructions", "you are now a pirate", "reveal
+    # your prompt", shell commands) carries no modeling intent — decline in prose
+    # and redirect, rather than over-modeling the injection text. The agent never
+    # executes such instructions; this just stops it from BUILDING a model of them.
+    if _request_is_non_modeling(request.message):
+        logger.info("[Modeling] Non-modeling/injection input — declining and redirecting")
+        reply_message(session, _NON_MODELING_DECLINE)
         return
 
     # Over-eagerness guard (create path only): if the user only typed filler
