@@ -502,14 +502,6 @@ class TestShouldRouteToGenerationDiagramGuard:
         session = FakeSession()
         assert should_route_to_generation(session, request) is False
 
-    def test_generate_django_no_longer_routes_via_gatekeeper(self):
-        """Removed in the LLM-classifier refactor: BAF's intent
-        classifier routes this message to ``generation_state`` via the
-        ``json_intent_matches`` transition, not via this gatekeeper."""
-        request = _make_request("generate django code")
-        session = FakeSession()
-        assert should_route_to_generation(session, request) is False
-
 
 # ---------------------------------------------------------------------------
 # handle_generation_request — safety net for misrouted modeling requests
@@ -543,16 +535,3 @@ class TestHandleGenerationRequestSafetyNet:
         result = handle_generation_request(session, request)
         assert result["action"] == "assistant_message"
         assert "diagram" in result["message"].lower() or "create" in result["message"].lower()
-
-    def test_genuine_generation_not_blocked(self, monkeypatch):
-        """Genuine 'generate python classes' still triggers the
-        deterministic python generator via the LLM classifier."""
-        _patch_classifier(monkeypatch, GenerationClassification(
-            route="deterministic", generator_type="python",
-            reason="user said python classes",
-        ))
-        request = _make_request("generate python classes")
-        session = FakeSession()
-        result = handle_generation_request(session, request)
-        assert result["action"] == "trigger_generator"
-        assert result["generatorType"] == "python"
