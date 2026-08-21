@@ -1062,15 +1062,32 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
 
         if classification.route == "modeling":
             _clear_pending_state(session)
-            return {
-                "action": "assistant_message",
-                "message": (
-                    "It looks like you want to **create a diagram or design a system**, "
-                    "not generate code from an existing model. Try rephrasing as: "
-                    '**"create a class diagram for …"** or **"design a system for …"** '
-                    "so I can build the model first."
-                ),
-            }
+            # The request is really "create/design a system" (e.g. "Build a
+            # library app to track books and loans"), not code-gen. Build the
+            # model directly instead of bouncing the user with a "rephrase"
+            # message — classification is non-deterministic, so this makes the
+            # outcome CONSISTENT regardless of which path the message took.
+            # execute_planned_operations sends the inject_complete_system reply
+            # itself; return None so the caller adds nothing more (deferred
+            # import avoids a module-load cycle).
+            try:
+                from execution import execute_planned_operations
+                execute_planned_operations(
+                    session=session,
+                    request=request,
+                    default_mode="complete_system",
+                    matched_intent="create_complete_system_intent",
+                )
+                return None
+            except Exception as exc:
+                logger.error(f"[GenRedirect] modeling build failed: {exc}", exc_info=True)
+                return {
+                    "action": "assistant_message",
+                    "message": (
+                        "It looks like you want to design a system. Try "
+                        '**"create a class diagram for a library"**.'
+                    ),
+                }
 
         if classification.route == "other":
             _clear_pending_state(session)

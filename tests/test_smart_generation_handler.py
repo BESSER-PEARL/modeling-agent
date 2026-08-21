@@ -306,16 +306,25 @@ class TestHandleGenerationRequest:
         assert result["action"] == "assistant_message"
         assert "available options" in result["message"].lower()
 
-    def test_modeling_route_redirects_to_modeling(self, monkeypatch):
+    def test_modeling_route_builds_the_model(self, monkeypatch):
+        """A ``route='modeling'`` verdict now BUILDS the model inline instead
+        of bouncing with a 'rephrase' message (returns None, reply sent)."""
         self._patch_provider(monkeypatch, GenerationClassification(
             route="modeling",
             reason="user asked for a class diagram",
         ))
+        import execution
+        called = {}
+        monkeypatch.setattr(
+            execution, "execute_planned_operations",
+            lambda **kw: called.update(kw) or None,
+            raising=False,
+        )
         session = FakeSession()
         request = _make_request("generate a class diagram for a library")
         result = handle_generation_request(session, request)
-        assert result["action"] == "assistant_message"
-        assert "create a diagram" in result["message"].lower()
+        assert result is None
+        assert called.get("matched_intent") == "create_complete_system_intent"
 
     def test_other_route_returns_helpful_message(self, monkeypatch):
         self._patch_provider(monkeypatch, GenerationClassification(

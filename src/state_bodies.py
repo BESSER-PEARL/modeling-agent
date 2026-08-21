@@ -866,6 +866,11 @@ def generation_body(session: Session):
             "retryable": True,
         }
 
+    if response_payload is None:
+        # Already handled — e.g. a "generate" that was really a "create/design
+        # a system" request got redirected and built the model inline, sending
+        # its own reply. Nothing more to send.
+        return
     if not isinstance(response_payload, dict):
         reply_message(session, "I could not process your generation request.")
         return
@@ -1166,6 +1171,9 @@ def workflow_body(session: Session):
             "retryable": True,
         }
 
+    if response_payload is None:
+        # Redirected to modeling and built inline (reply already sent).
+        return
     if isinstance(response_payload, dict):
         # Add a completion summary to the payload message
         original_message = response_payload.get("message", "")

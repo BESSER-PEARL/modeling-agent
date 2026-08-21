@@ -508,30 +508,46 @@ class TestShouldRouteToGenerationDiagramGuard:
 # ---------------------------------------------------------------------------
 
 class TestHandleGenerationRequestSafetyNet:
-    def test_modeling_request_redirected(self, monkeypatch):
+    def test_modeling_request_builds_the_model(self, monkeypatch):
         """If BAF misclassifies 'create a web app for hotel booking' as
-        generation, the LLM classifier inside ``generation_state``
-        should catch it and return ``route='modeling'`` — then the
-        handler redirects instead of triggering web_app generator."""
+        generation, the LLM classifier returns ``route='modeling'`` — the
+        handler now BUILDS the model inline (instead of bouncing the user
+        with a 'rephrase' message) and returns None (reply already sent)."""
         _patch_classifier(monkeypatch, GenerationClassification(
             route="modeling",
             reason="user wants a new diagram, not code",
         ))
+        import execution
+        called = {}
+        monkeypatch.setattr(
+            execution, "execute_planned_operations",
+            lambda **kw: called.update(kw) or None,
+            raising=False,
+        )
         request = _make_request("create a web app for hotel booking")
         session = FakeSession()
         result = handle_generation_request(session, request)
-        assert result["action"] == "assistant_message"
-        assert "design" in result["message"].lower() or "create" in result["message"].lower()
+        # No rephrase message — the model is built inline and None returned.
+        assert result is None
+        assert called.get("default_mode") == "complete_system"
+        assert called.get("matched_intent") == "create_complete_system_intent"
 
-    def test_diagram_creation_redirected(self, monkeypatch):
-        """'generate a class diagram' landing in generation handler
-        must be redirected via the LLM classifier's ``modeling`` route."""
+    def test_diagram_creation_builds_the_model(self, monkeypatch):
+        """'generate a class diagram' landing here via ``route='modeling'``
+        must build the model inline, not ask the user to rephrase."""
         _patch_classifier(monkeypatch, GenerationClassification(
             route="modeling",
             reason="user wants a class diagram",
         ))
+        import execution
+        built = {"n": 0}
+        monkeypatch.setattr(
+            execution, "execute_planned_operations",
+            lambda **kw: built.update(n=built["n"] + 1) or None,
+            raising=False,
+        )
         request = _make_request("generate a class diagram for a library")
         session = FakeSession()
         result = handle_generation_request(session, request)
-        assert result["action"] == "assistant_message"
-        assert "diagram" in result["message"].lower() or "create" in result["message"].lower()
+        assert result is None
+        assert built["n"] == 1
