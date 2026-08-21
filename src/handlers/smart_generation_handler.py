@@ -340,20 +340,14 @@ def build_trigger_smart_generator_payload(
     provider = classification.provider or "anthropic"
     llm_model = _DEFAULT_SMART_GEN_MODEL_BY_PROVIDER.get(provider, "claude-sonnet-4-6")
 
-    parenthetical = f" _({classification.reason})_" if classification.reason else ""
-    if reason_prefix:
-        parenthetical = f" _({reason_prefix}; {classification.reason})_" if classification.reason else f" _({reason_prefix})_"
-
+    # Short, neutral run banner. The provider/free-tier choice and the BYOK
+    # option were already conveyed by the confirmation copy shown before this
+    # run (see ``_build_smart_gen_confirmation``), so this mid-run line stays
+    # minimal instead of repeating the API-key explanation.
     return {
         "action": "trigger_smart_generator",
         "instructions": instructions,
         "provider": provider,
         "llmModel": llm_model,
-        "message": (
-            "I'll hand this off to the Spec-Driven Agent so it can build a "
-            "customised codebase from your model." + parenthetical + " "
-            "If this is the first time you're using it, you'll be asked to "
-            "paste your own API key (OpenAI, Anthropic, or Mistral) — it stays "
-            "in your browser and is sent only with this single request."
-        ),
+        "message": "Generating your application from the spec…",
     }

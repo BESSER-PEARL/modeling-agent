@@ -275,7 +275,6 @@ def emit_webapp_generate_prompt(session: Session) -> None:
         "suggestedActions": [
             {"label": "Generate the web app", "prompt": "generate web app"},
             {"label": "Review the spec", "prompt": "describe my diagram"},
-            {"label": "Make a change", "prompt": ""},
         ],
     })
 

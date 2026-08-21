@@ -220,30 +220,32 @@ def _build_smart_gen_confirmation(
     provider = provider or "anthropic"
     _stash_smart_gen(session, refined, provider)
 
-    summary = refined if len(refined) <= 600 else refined[:600] + "…"
     prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
 
-    # NOTE: deliberately does NOT name a model/provider here. The actual run
-    # uses whatever provider+model the user saved with their BYOK key in the
-    # browser, which the agent never sees — naming a guess (e.g. "gpt-4o via
-    # openai") contradicted runs on a different saved provider (e.g. Mistral).
+    # The instructions are NOT echoed back to the user: showing the LLM's
+    # refined instructions read as fabricated requirements the user never
+    # wrote. The run still uses the stashed ``refined`` instructions above.
+    # The ``[provide your own API key](wme:add-key)`` link is intercepted by
+    # the frontend markdown renderer (dispatches ``wme:smartgen-open-byok``)
+    # to open the BYOK dialog — it never navigates.
     return {
         "action": "assistant_message",
         "message": (
-            f"{prefix}Ready to run the **Spec-Driven Agent**. It builds a "
-            f"customised codebase from your model **using your own API key** — "
-            f"the key stays in your browser and is sent only with this run, and "
-            f"the run uses the provider and model you've configured for the "
-            f"generator.\n\n"
-            f"**It will follow these instructions:**\n> {summary}\n\n"
-            f"Run it now?"
+            f"{prefix}BESSER will generate your application from the "
+            f"specification using its built-in generators. If some of your "
+            f"requirements are not supported by these generators, BESSER can "
+            f"use an LLM to handle them.\n\n"
+            f"BESSER uses Qwen as the default free model. You can also "
+            f"[provide your own API key](wme:add-key) to use a different "
+            f"provider or model.\n\n"
+            f"Do you want to continue?"
         ),
         # Cancel action removed per product decision — the proposition offers
         # only Run; the user can simply not click it (or type another request)
         # to not proceed.
         "suggestedActions": [
             {
-                "label": "Run Spec-Driven Agent (uses your API key)",
+                "label": "Run Spec-Driven Agent",
                 "prompt": "generate anyway with my current model",
             },
         ],

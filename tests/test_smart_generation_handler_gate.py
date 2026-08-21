@@ -96,7 +96,12 @@ def test_smart_route_stashes_and_asks_instead_of_firing(monkeypatch):
     # Never trigger_smart_generator on first contact
     assert result["action"] == "assistant_message"
     assert "API key" in result["message"]
-    assert "Rails" in result["message"]  # refined instructions summarized
+    # The refined instructions are deliberately NOT echoed into the message
+    # (they read as fabricated requirements). The new confirmation copy
+    # describes the spec-driven flow instead; the instructions live in the
+    # stash (asserted below).
+    assert "built-in generators" in result["message"]
+    assert "Rails" not in result["message"]
 
     actions = result["suggestedActions"]
     assert all(isinstance(a, dict) and {"label", "prompt"} <= set(a) for a in actions)

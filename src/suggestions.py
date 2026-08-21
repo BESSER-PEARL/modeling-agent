@@ -19,12 +19,20 @@ logger = logging.getLogger(__name__)
 # context and available diagrams.
 
 # The class diagram the agent just built IS "the spec". After creation the
-# user should either move on to code, or review/tweak the spec — not pick
-# among generators. Keep this to a clean two-step choice (+ a free-form tweak).
+# user should either move on to code, or review the spec — not pick among
+# generators. Keep this to a clean two-step choice.
+#
+# - "generate the code" routes into the Spec-Driven (smart) generation flow,
+#   which builds the app FROM THE SPEC (deterministic generators + LLM for
+#   gaps) without inventing requirements. It deliberately does NOT say
+#   "generate the backend" (that mapped to the backend-only deterministic
+#   generator and made the agent fabricate requirements).
+# - "Review the spec" sends the ``wme:review-spec`` sentinel, which the
+#   frontend intercepts to CLOSE the assistant drawer so the user sees the
+#   diagram on the canvas — it is never relayed to the agent.
 _CLASS_DIAGRAM_COMPLETE = [
-    ("Generate the code", "generate the backend"),
-    ("Review the spec", "describe my diagram"),
-    ("Make a change", ""),
+    ("Generate the code", "generate the application"),
+    ("Review the spec", "wme:review-spec"),
 ]
 
 _CLASS_DIAGRAM_SINGLE = [
@@ -299,9 +307,12 @@ def _context_aware_suggestions(
     if diagram_type == "ClassDiagram":
         # The class diagram the agent just built IS "the spec". Frame the
         # next step as a two-step choice: generate the code, or review the
-        # spec — not a menu of generators.
-        candidates.append(("Generate the code", "generate the backend"))
-        candidates.append(("Review the spec", "describe my diagram"))
+        # spec — not a menu of generators. "generate the application" routes
+        # into the Spec-Driven (smart) flow and builds the app from the spec;
+        # "wme:review-spec" is a frontend sentinel that closes the drawer so
+        # the user sees the diagram (never relayed to the agent).
+        candidates.append(("Generate the code", "generate the application"))
+        candidates.append(("Review the spec", "wme:review-spec"))
         # Secondary: a context-aware tweak that references the user's own
         # classes (only if there's room after the two-step choice, capped
         # at 4 below).

@@ -175,8 +175,15 @@ def detect_generator(reply: dict) -> str:
     if act == "inject_complete_system":
         return "modeling"
     text = (reply.get("message") or "").lower()
-    # Smart-gen confirmation.
-    if "spec-driven" in text or "ready to run" in text:
+    # Smart-gen confirmation. The current copy no longer says "ready to run";
+    # it describes generating the application from the specification with
+    # BESSER's built-in generators (+ an LLM for gaps).
+    if (
+        "spec-driven" in text
+        or "ready to run" in text
+        or "from the specification" in text
+        or "built-in generators" in text
+    ):
         return "smart"
     # Config-collection prompts (GENERATOR_REQUIRED_FIELDS).
     if "django project" in text or ("project name" in text and "django" in text):
