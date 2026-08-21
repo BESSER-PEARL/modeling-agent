@@ -225,9 +225,8 @@ def _build_smart_gen_confirmation(
     # The instructions are NOT echoed back to the user: showing the LLM's
     # refined instructions read as fabricated requirements the user never
     # wrote. The run still uses the stashed ``refined`` instructions above.
-    # The ``[provide your own API key](wme:add-key)`` link is intercepted by
-    # the frontend markdown renderer (dispatches ``wme:smartgen-open-byok``)
-    # to open the BYOK dialog — it never navigates.
+    # Plain text (no clickable key link): the user can set up their own key
+    # from the assistant's key settings when they want a different provider.
     return {
         "action": "assistant_message",
         "message": (
@@ -235,9 +234,8 @@ def _build_smart_gen_confirmation(
             f"specification using its built-in generators. If some of your "
             f"requirements are not supported by these generators, BESSER can "
             f"use an LLM to handle them.\n\n"
-            f"BESSER uses Qwen as the default free model. You can also "
-            f"[provide your own API key](wme:add-key) to use a different "
-            f"provider or model.\n\n"
+            f"BESSER uses Qwen as the default free model. You can also set up "
+            f"your own API key to use a different provider or model.\n\n"
             f"Do you want to continue?"
         ),
         # Cancel action removed per product decision — the proposition offers
