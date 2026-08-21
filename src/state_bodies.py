@@ -25,6 +25,7 @@ from session_helpers import (
     get_user_message,
     reply_message,
     reply_payload,
+    replay_last_reply,
     stream_llm_response,
     json_intent_matches,
     json_no_intent_matched,
@@ -90,6 +91,9 @@ def _ensure_unified_classification(session: Session) -> bool:
         return False
     try:
         request = parse_assistant_request(session)
+        # Reconnect-recovery control message — never classify it.
+        if getattr(request, "action", None) == "replay_last_response":
+            return False
         # frontend_event callbacks may carry an empty message but must
         # still be classified (deterministically — see get_or_classify)
         # so the transition routes them to the generation handler.
@@ -117,6 +121,14 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     handled normally, or ``None`` if a pending flow or file attachment
     already consumed it.
     """
+    # Reconnect recovery: the frontend re-requests its last completed reply after
+    # a mid-generation WebSocket reconnect dropped it. Re-send the buffered reply
+    # and stop — never re-run generation or consume a pending flow.
+    _replay_req = parse_assistant_request(session)
+    if getattr(_replay_req, "action", None) == "replay_last_response":
+        replay_last_reply(session, _replay_req)
+        return None
+
     if handle_pending_gui_choice(session):
         return None
     if handle_pending_system_confirmation(session):

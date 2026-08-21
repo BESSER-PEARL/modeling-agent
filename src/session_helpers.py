@@ -10,6 +10,7 @@ they only use the ``session`` object and the protocol adapters.
 import json
 import logging
 import uuid
+from collections import OrderedDict
 from typing import Any, Dict, Optional
 
 from baf.core.session import Session
@@ -152,6 +153,59 @@ def json_no_intent_matched(session: Session) -> bool:
 
 
 # ------------------------------------------------------------------
+# Reconnect recovery: buffer the last completed reply per session
+# ------------------------------------------------------------------
+# A long generation can outlive its WebSocket connection: the socket reconnects
+# mid-flight and BAF routes the final reply to the now-dead connection, so the
+# frontend never sees it and stays stuck on "still working…". We remember the
+# last TERMINAL reply per STABLE session key (which survives reconnects — see
+# ``memory_session_key``) and re-send it when the frontend asks, via a
+# ``replay_last_response`` control message it fires on reconnect-while-waiting.
+_TERMINAL_REPLY_ACTIONS = frozenset({
+    "inject_complete_system", "modify_model", "auto_generate_gui",
+    "trigger_generator", "assistant_message",
+})
+_REPLY_BUFFER_MAX = 200
+_last_reply_buffer: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+
+
+def _buffer_terminal_reply(session: Session, payload: Dict[str, Any]) -> None:
+    """Remember this session's last terminal reply so a reconnect that dropped
+    it can replay it. Best-effort — never breaks the actual reply. Bounded LRU
+    so it can't grow without limit."""
+    try:
+        if payload.get("action") not in _TERMINAL_REPLY_ACTIONS:
+            return
+        key = memory_session_key(session)
+        _last_reply_buffer[key] = payload
+        _last_reply_buffer.move_to_end(key)
+        while len(_last_reply_buffer) > _REPLY_BUFFER_MAX:
+            _last_reply_buffer.popitem(last=False)
+    except Exception as exc:
+        logger.debug(f"[ReplayBuffer] store failed (best-effort): {exc}")
+
+
+def replay_last_reply(session: Session, request: Any = None) -> bool:
+    """Re-send this session's last buffered terminal reply (reconnect recovery).
+
+    Sends to the session's CURRENT live connection (the heartbeat/slot-reclaim
+    has already rebound it). Returns True when a reply was replayed; safe no-op
+    when nothing is buffered. Never re-runs generation."""
+    try:
+        key = memory_session_key(session, request)
+        payload = _last_reply_buffer.get(key)
+        if payload is None:
+            logger.info("[Replay] no buffered reply for this session — nothing to replay")
+            return False
+        logger.info(f"[Replay] re-sending last '{payload.get('action')}' reply after reconnect")
+        _send_to_session(session, payload)
+        return True
+    except Exception as exc:
+        logger.debug(f"[Replay] failed (best-effort): {exc}")
+        return False
+
+
+# ------------------------------------------------------------------
 # Reply helpers
 # ------------------------------------------------------------------
 
@@ -173,6 +227,13 @@ def reply_message(session: Session, message: str):
     # Record in conversation memory
     _record_assistant_response(session, message)
 
+    # Buffer for reconnect recovery — assistant_message is the v2 terminal reply.
+    try:
+        if request.is_v2:
+            _buffer_terminal_reply(session, {"action": "assistant_message", "message": message})
+    except Exception:
+        pass
+
 
 def reply_payload(session: Session, payload: Dict[str, Any]):
     """Send JSON payload response for both protocol versions."""
@@ -193,6 +254,9 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
     message = payload.get('message', '')
     if message:
         _record_assistant_response(session, message)
+
+    # Buffer for reconnect recovery so a dropped terminal reply can be replayed.
+    _buffer_terminal_reply(session, payload)
 
 
 def emit_webapp_generate_prompt(session: Session) -> None:
