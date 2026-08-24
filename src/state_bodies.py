@@ -328,19 +328,16 @@ def global_fallback_body(session: Session):
 def greetings_body(session: Session):
     """Send a greeting message when the user first connects or says hello."""
     greeting_message = (
-        "Hey there! I'm your modeling assistant.\n\n"
-        "Here's what I can do:\n"
-        "- **Create elements**: *\"Create a User class with name, email, and role\"*\n"
-        "- **Build full systems**: *\"Design a library management system\"*\n"
-        "- **Design chatbots**: *\"Create a pizza-ordering agent\"*\n"
-        "- **Build UIs**: *\"Create a dashboard for my Product class\"*\n"
-        "- **Quantum circuits**: *\"Create Grover's search algorithm\"* or *\"Build a Bell state circuit\"*\n"
-        "- **Modify diagrams**: *\"Add a phone attribute to the Customer class\"*\n"
-        "- **Describe models**: *\"What does my circuit do?\"* or *\"Describe my class diagram\"*\n"
-        "- **Generate code**: *\"Generate SQLAlchemy\"* or *\"Generate Django\"*\n"
-        "- **Model help**: *\"Explain Grover's algorithm\"* or *\"What is composition?\"*\n"
-        "- **Import from files**: Attach a PlantUML, Knowledge Graph, or diagram image\n\n"
-        "What would you like to create?"
+        "Hi! I'm your BESSER assistant. Tell me what you want to build in plain "
+        "words and I'll create the model, the screens, and the code for you.\n\n"
+        "Try something like:\n"
+        "- *\"a library app to track books and loans\"*\n"
+        "- *\"a pizza-ordering chatbot\"*\n"
+        "- *\"a dashboard for my Product class\"*\n\n"
+        "I can also modify your diagrams, generate code (SQL, Django, FastAPI, "
+        "SQLAlchemy…), describe a model, design a quantum circuit, or import a "
+        "PlantUML / diagram image.\n\n"
+        "What would you like to create today?"
     )
 
     if session.event is None:

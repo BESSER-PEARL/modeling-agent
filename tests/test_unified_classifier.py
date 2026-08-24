@@ -119,6 +119,53 @@ class TestClassifyMessage:
         )
         assert result.intent == "fallback_intent"
 
+    def test_unsupported_language_c_forced_to_smart(self):
+        # The LLM maps "c classes" to deterministic/java (no C generator exists);
+        # the guard must force the smart / from-scratch route instead.
+        bad = UnifiedClassification(
+            intent="generation_intent",
+            generation_route="deterministic",
+            generator_type="java",
+            reason="llm picked java for c",
+        )
+        result = classify_message(
+            _make_request("generate now a c classes from my spec"),
+            llm_provider=_FakeProvider(bad),
+        )
+        assert result.generation_route == "smart"
+        assert result.generator_type is None
+        assert (result.refined_instructions or "").strip()
+
+    def test_unsupported_language_cpp_forced_to_smart(self):
+        # "c++ classes" was mapped to deterministic/python — force smart.
+        bad = UnifiedClassification(
+            intent="generation_intent",
+            generation_route="deterministic",
+            generator_type="python",
+            reason="llm picked python for c++",
+        )
+        result = classify_message(
+            _make_request("generate c++ classes from my specs"),
+            llm_provider=_FakeProvider(bad),
+        )
+        assert result.generation_route == "smart"
+        assert result.generator_type is None
+
+    def test_supported_language_java_left_deterministic(self):
+        # Java IS a BESSER generator — the guard must not hijack it.
+        good = UnifiedClassification(
+            intent="generation_intent",
+            generation_route="deterministic",
+            generator_type="java",
+            reason="java is supported",
+        )
+        result = classify_message(
+            _make_request("generate java classes"),
+            llm_provider=_FakeProvider(good),
+        )
+        assert result.generation_route == "deterministic"
+        assert result.generator_type == "java"
+
     def test_every_intent_name_accepted_by_schema(self):
         intents = [
             "hello_intent", "create_complete_system_intent",

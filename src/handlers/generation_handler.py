@@ -243,7 +243,7 @@ def _build_smart_gen_confirmation(
         # to not proceed.
         "suggestedActions": [
             {
-                "label": "Run Spec-Driven Agent",
+                "label": "Continue",
                 "prompt": "generate anyway with my current model",
             },
         ],
@@ -795,6 +795,30 @@ def _normalize_defaults(generator_type: str, request: AssistantRequest, config: 
     return config
 
 
+# Friendly, generator-specific completion lines for a deterministic run. The
+# browser already shows a result card (generator, "0 tokens", Download), so the
+# agent's reply is just one confirming sentence under it — worded for what was
+# actually built rather than a generic "generation completed".
+_GENERATOR_DONE_MESSAGES: Dict[str, str] = {
+    "generate_sql": "Your database schema is generated and ready to download.",
+    "generate_sqlalchemy": "Your SQLAlchemy models are generated and ready to download.",
+    "generate_django": "Your Django project is generated and ready to download.",
+    "generate_fastapi_backend": "Your FastAPI backend is generated and ready to download.",
+    "generate_backend": "Your backend is generated and ready to download.",
+    "generate_web_app": "Your web app is generated and ready to download.",
+    "generate_python": "Your Python classes are generated and ready to download.",
+    "generate_java": "Your Java classes are generated and ready to download.",
+    "generate_pydantic": "Your Pydantic models are generated and ready to download.",
+    "generate_json_object": "Your JSON objects are generated and ready to download.",
+    "generate_json_schema": "Your JSON Schema is generated and ready to download.",
+    "generate_pytorch": "Your PyTorch model is generated and ready to download.",
+    "generate_tensorflow": "Your TensorFlow model is generated and ready to download.",
+    "generate_bpmn": "Your BPMN process is generated and ready to download.",
+    "generate_qiskit": "Your quantum circuit code is generated and ready to download.",
+    "generate_supabase": "Your Supabase schema is generated and ready to download.",
+}
+
+
 def _handle_frontend_event(request: AssistantRequest, session=None) -> Dict[str, Any]:
     event_type = request.raw_payload.get("eventType")
     if event_type == "generator_result":
@@ -803,11 +827,16 @@ def _handle_frontend_event(request: AssistantRequest, session=None) -> Dict[str,
         metadata = request.raw_payload.get("metadata")
         if isinstance(metadata, dict) and metadata.get("smart"):
             return _handle_smart_generator_result(ok, message, metadata, session)
-        result_message = message if isinstance(message, str) and message.strip() else (
-            "Generation completed successfully." if ok else "Generation failed."
-        )
-        if isinstance(metadata, dict) and metadata.get("filename"):
-            result_message = f"{result_message} File: {metadata['filename']}"
+        if ok:
+            # One generator-appropriate confirmation under the card. Do NOT
+            # re-echo the "Generating…" trigger text (it reads as "starting"
+            # AFTER completion) or append the filename (the card already has it).
+            gen = metadata.get("generatorType") if isinstance(metadata, dict) else None
+            result_message = _GENERATOR_DONE_MESSAGES.get(
+                gen, "Your code is generated and ready to download."
+            )
+        else:
+            result_message = message if isinstance(message, str) and message.strip() else "Generation failed."
         return {"action": "assistant_message", "message": result_message}
     return {
         "action": "assistant_message",

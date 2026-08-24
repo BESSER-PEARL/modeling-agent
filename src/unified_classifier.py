@@ -93,6 +93,41 @@ _DETERMINISTIC_GENERATOR_TYPES = Literal[
 ]
 
 
+# Languages / frameworks BESSER has NO deterministic generator for. Its built-in
+# language generators are only Python and Java (plus SQL / Django / FastAPI /
+# SQLAlchemy / Pydantic / …). An explicit request for anything else must go the
+# smart (from-scratch, LLM-written) route — the LLM classifier is unreliable
+# here, mapping "c classes" -> java and "c++ classes" -> python. Distinctive
+# tokens are matched on a word boundary; ambiguous single words ("c", "go") only
+# count when a language noun follows.
+_UNSUPPORTED_STACK_RE = re.compile(
+    r"\b(rust|kotlin|swift|scala|elixir|golang|ruby|php|dart|perl|haskell|zig|"
+    r"nim|crystal|cpp|csharp|dotnet|fsharp|rails|nestjs|nextjs|express|"
+    r"springboot|spring|laravel|symfony|angular|vue|svelte|nuxt|flutter|"
+    r"objective-?c)\b",
+    re.I,
+)
+_UNSUPPORTED_STACK_LITERALS = ("c++", "c#", ".net", "f#")
+_BARE_LANG_RE = re.compile(
+    r"\b(?:c|go)\b[\s\-]{0,3}(?:classes|class|code|program|programs|language|"
+    r"structs?|headers?|files?|app|application)\b",
+    re.I,
+)
+
+
+def _names_unsupported_stack(message: str) -> bool:
+    """True when the message explicitly names a language/stack BESSER can't
+    generate deterministically (so it belongs on the smart/from-scratch route)."""
+    low = (message or "").lower()
+    if any(tok in low for tok in _UNSUPPORTED_STACK_LITERALS):
+        return True
+    if _UNSUPPORTED_STACK_RE.search(low):
+        return True
+    if _BARE_LANG_RE.search(low):
+        return True
+    return False
+
+
 # Which diagram the user is talking about, for create_complete_system /
 # modify_model / describe_model routes.
 _TARGET_DIAGRAM_TYPES = Literal[
@@ -1042,6 +1077,30 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
     worse one.
     """
     if result.intent == "generation_intent":
+        # Unsupported-language guard (see _names_unsupported_stack): BESSER's
+        # deterministic generators only cover Python/Java (+ SQL/Django/...).
+        # When the user explicitly asks for a language BESSER can't generate
+        # (C, C++, Rust, Kotlin, Go, ...), the LLM maps it to the nearest
+        # built-in (c->java, c++->python). Force the smart / from-scratch route
+        # so the LLM writes the actual language instead.
+        if (
+            result.generation_route in ("deterministic", "smart")
+            and result.generator_type not in ("export", "deploy")
+            and _names_unsupported_stack(message or "")
+        ):
+            if result.generation_route != "smart":
+                logger.warning(
+                    "Request names a language/stack with no BESSER generator; "
+                    "forcing smart/from-scratch (was route=%s type=%s)",
+                    result.generation_route,
+                    result.generator_type,
+                )
+            result.generation_route = "smart"
+            result.generator_type = None
+            if not (result.refined_instructions or "").strip():
+                result.refined_instructions = (message or "").strip() or (
+                    "Generate the requested code from the current model."
+                )
         if result.generation_route is None:
             logger.warning(
                 "LLM returned generation_intent with no generation_route; "
