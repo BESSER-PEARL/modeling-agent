@@ -186,6 +186,23 @@ def _fallback_diagram_from_context(request: AssistantRequest, last_intent: Optio
         if active_type:
             return active_type
 
+    # For a fresh *creation* with no diagram-type signal at all (no explicit
+    # keyword matched, no discriminating pattern matched), default to the
+    # structural ClassDiagram rather than inheriting whatever tab happens to be
+    # active. "create a model about a library" is a structural request; if the
+    # user were sitting on the GUINoCodeDiagram tab left over from an earlier
+    # web-app flow, inheriting it silently routed the request into GUI
+    # generation and reused the *old* class diagram instead of building the new
+    # model (the "why didn't it create a new model?" bug). Genuine GUI / BPMN /
+    # state-machine / … creations carry their own vocabulary and are resolved by
+    # the keyword/pattern layer *before* ever reaching this fallback, and each
+    # operation in a multi-diagram web-app plan carries its own explicit
+    # ``diagramType`` — so this only affects the otherwise-ambiguous generic
+    # "create a <model/system/app>" case, where the class diagram is the correct
+    # backbone to build first.
+    if last_intent == "create_complete_system_intent":
+        return "ClassDiagram"
+
     active_type = _normalize_context_type(request.context.active_diagram_type)
     if active_type:
         return active_type

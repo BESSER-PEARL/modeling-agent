@@ -106,6 +106,41 @@ class TestDetermineTargetDiagramType:
         assert len(targets) >= 2
         assert "ClassDiagram" in targets
 
+    def test_generic_create_on_gui_tab_defaults_to_class_diagram(self):
+        """Regression: a generic "create a model about X" while the GUI tab is
+        active (e.g. left over from a prior web-app flow) must build a NEW class
+        diagram, not inherit the GUINoCodeDiagram tab and reuse the old model."""
+        request = _make_request(
+            "create a model about a library",
+            active_diagram_type="GUINoCodeDiagram",
+        )
+        result = determine_target_diagram_type(
+            request, last_intent="create_complete_system_intent"
+        )
+        assert result == "ClassDiagram"
+
+    def test_generic_create_on_bpmn_tab_defaults_to_class_diagram(self):
+        request = _make_request(
+            "build me a system for tracking books and loans",
+            active_diagram_type="BPMN",
+        )
+        result = determine_target_diagram_type(
+            request, last_intent="create_complete_system_intent"
+        )
+        assert result == "ClassDiagram"
+
+    def test_explicit_gui_create_still_wins_over_class_default(self):
+        """The create-intent ClassDiagram default must NOT swallow a genuine GUI
+        creation — GUI vocabulary is resolved by the pattern layer first."""
+        request = _make_request(
+            "create screens and pages for the products",
+            active_diagram_type="ClassDiagram",
+        )
+        result = determine_target_diagram_type(
+            request, last_intent="create_complete_system_intent"
+        )
+        assert result == "GUINoCodeDiagram"
+
 
 # ---------------------------------------------------------------------------
 # resolve_diagram_id
