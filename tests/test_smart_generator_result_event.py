@@ -120,19 +120,39 @@ def test_smart_cancelled_is_not_an_error_tone():
     assert "stopped" in result["message"].lower()
 
 
-def test_non_smart_generator_result_keeps_legacy_shape():
+def test_non_smart_generator_result_uses_generator_confirmation():
+    """A non-smart generator_result yields a clean, generator-appropriate
+    confirmation keyed off ``generatorType`` — it no longer re-echoes the
+    frontend message or appends the filename (the download card shows those)."""
     request = _FakeRequest(
         {
             "eventType": "generator_result",
             "ok": True,
             "message": "Generated Django app.",
-            "metadata": {"filename": "django.zip"},
+            "metadata": {"generatorType": "generate_django", "filename": "django.zip"},
         }
     )
     result = _handle_frontend_event(request, None)
     assert result == {
         "action": "assistant_message",
-        "message": "Generated Django app. File: django.zip",
+        "message": "Your Django project is generated and ready to download.",
+    }
+
+
+def test_non_smart_generator_result_falls_back_without_type():
+    """With no generatorType, a generic 'code is generated' confirmation."""
+    request = _FakeRequest(
+        {
+            "eventType": "generator_result",
+            "ok": True,
+            "message": "Generated something.",
+            "metadata": {"filename": "out.zip"},
+        }
+    )
+    result = _handle_frontend_event(request, None)
+    assert result == {
+        "action": "assistant_message",
+        "message": "Your code is generated and ready to download.",
     }
 
 

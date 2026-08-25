@@ -390,6 +390,32 @@ def _create_request_is_too_vague(message: str) -> bool:
     return sum(len(w) for w in core) < 3
 
 
+# A create request that negates the very content it asks to create — a
+# degenerate "empty model" ask. Building a token 1-class model reads as the
+# agent ignoring the request, so we clarify instead. Deliberately high-precision:
+# only STRUCTURAL self-negation (classes/elements/nodes/entities/attributes),
+# so real, positive requests like "a shop with no online payments" or "no user
+# accounts, just products" are never caught.
+_SELF_CONTRADICTORY_CREATE_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
+    r"\b(?:with|having|contain(?:s|ing)?)\s+(?:absolutely\s+|exactly\s+)?"
+    r"(?:no|zero|0)\s+(?:class(?:es)?|element(?:s)?|node(?:s)?|entit(?:y|ies)|attribute(?:s)?)\b",
+    r"\bwithout\s+(?:any\s+)?(?:class(?:es)?|element(?:s)?|node(?:s)?|entit(?:y|ies)|attribute(?:s)?)\b",
+    # "don't model anything" / "model nothing at all" — verb-anchored and
+    # requiring "anything"/"nothing at all" so "add nothing fancy" is NOT caught.
+    r"\b(?:don'?t|do\s+not|never)\s+(?:model|add|include|create|design)\s+"
+    r"(?:anything|any\s+(?:class|element|node|entit))",
+    r"\bmodel\s+nothing\b(?!\s+(?:fancy|special|extra|too|but))",
+    r"\bempty\s+(?:class\s+|object\s+|state\s+(?:machine\s+)?|agent\s+)?diagram\b",
+))
+
+
+def _create_is_self_contradictory(message: str) -> bool:
+    """True when a CREATE request negates the content it asks to create
+    ("a class diagram with no classes", "model nothing", "an empty diagram")."""
+    text = message or ""
+    return any(p.search(text) for p in _SELF_CONTRADICTORY_CREATE_PATTERNS)
+
+
 # Unambiguous prompt-subversion / non-modeling phrases. Each has ZERO legitimate
 # use in a "model my X" request, so when one appears we decline in prose and
 # redirect — instead of over-eagerly modeling the injection text (a class diagram
@@ -454,6 +480,13 @@ _DECLINE_ACK = (
 )
 
 
+_CONTRADICTORY_CREATE_CLARIFY = (
+    "A diagram needs at least something to show, so I can't build an empty one. "
+    "What would you like it to include? For example: *a Library with Book, "
+    "Member and Loan classes*."
+)
+
+
 def _modeling_state_body(session: Session, intent_name: str, default_mode: str, empty_msg: str):
     """Unified handler for all modeling operations (system creation, modification)."""
     request = _common_preamble(session)
@@ -482,6 +515,16 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
     if _request_is_decline(request.message):
         logger.info("[Modeling] Decline/no-op input — acknowledging, no model change")
         reply_message(session, _DECLINE_ACK)
+        return
+
+    # Self-contradiction guard (create path only): a request that negates the
+    # content it asks to create ("a class diagram with no classes", "model
+    # nothing", "an empty diagram") can't be satisfied by a real model. Building
+    # a token 1-class model reads as ignoring the user — clarify instead.
+    if (intent_name == 'create_complete_system_intent'
+            and _create_is_self_contradictory(request.message)):
+        logger.info("[Modeling] Self-contradictory create — asking what to include")
+        reply_message(session, _CONTRADICTORY_CREATE_CLARIFY)
         return
 
     # Over-eagerness guard (create path only): if the user only typed filler

@@ -310,6 +310,9 @@ class TestHandleGenerationRequest:
         assert "available" in msg or "options" in msg or "supported" in msg or "tell me" in msg
 
     def test_frontend_event_result(self):
+        """A successful generator_result yields a clean 'generated and ready'
+        confirmation — the frontend's raw message is not echoed (the download
+        card already shows the details)."""
         request = _make_request("", action="frontend_event")
         request.raw_payload = {
             "eventType": "generator_result",
@@ -319,7 +322,7 @@ class TestHandleGenerationRequest:
         session = FakeSession()
         result = handle_generation_request(session, request)
         assert result["action"] == "assistant_message"
-        assert "Done!" in result["message"]
+        assert "generated and ready to download" in result["message"].lower()
 
     def test_backend_generator_trigger(self, monkeypatch):
         _patch_classifier(monkeypatch, GenerationClassification(
