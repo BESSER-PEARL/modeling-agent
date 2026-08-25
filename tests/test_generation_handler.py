@@ -576,6 +576,8 @@ class TestMismatchRegenChain:
         session.set(PENDING_SMART_GEN_PROVIDER, "anthropic")
         session.set(PENDING_SMART_GEN_TIMESTAMP, _t.time())
 
+    _REBUILD_PROMPT = "create a class diagram for a hotel booking system"
+
     def test_mismatch_confirmation_arms_the_flag(self):
         from handlers.generation_handler import _build_mismatch_confirmation
         from session_keys import (
@@ -587,13 +589,14 @@ class TestMismatchRegenChain:
             refined_instructions="build a hotel booking app", provider="anthropic",
         )
         payload = _build_mismatch_confirmation(session, classification, "a hotel booking system")
-        assert session.get(MISMATCH_REGEN_PENDING) is True
+        # Flag stores the EXACT rebuild prompt, matching the action's prompt.
+        assert session.get(MISMATCH_REGEN_PENDING) == self._REBUILD_PROMPT
         assert session.get(PENDING_SMART_GEN_INSTRUCTIONS) == "build a hotel booking app"
-        labels = [a["label"] for a in payload["suggestedActions"]]
-        assert "Update model + generate" in labels
+        upd = next(a for a in payload["suggestedActions"] if a["label"] == "Update model + generate")
+        assert upd["prompt"] == self._REBUILD_PROMPT
 
-    def test_rebuild_preserves_stash_when_flag_set(self, monkeypatch):
-        """With the flag set, the rebuild request does NOT clear the stash."""
+    def test_rebuild_preserves_stash_on_matching_prompt(self, monkeypatch):
+        """The stashed rebuild prompt survives when THIS message equals it."""
         from session_keys import (
             MISMATCH_REGEN_PENDING,
             PENDING_SMART_GEN_INSTRUCTIONS,
@@ -608,11 +611,34 @@ class TestMismatchRegenChain:
         )
         session = FakeSession()
         self._arm(session)
-        session.set(MISMATCH_REGEN_PENDING, True)
-        handle_generation_request(session, _make_request("create a class diagram for a hotel booking system"))
+        session.set(MISMATCH_REGEN_PENDING, self._REBUILD_PROMPT)
+        handle_generation_request(session, _make_request(self._REBUILD_PROMPT))
         # Guard held: stash + flag survive into the build for the resume hook.
         assert session.get(PENDING_SMART_GEN_INSTRUCTIONS) == "build a hotel booking app"
-        assert session.get(MISMATCH_REGEN_PENDING) is True
+        assert session.get(MISMATCH_REGEN_PENDING) == self._REBUILD_PROMPT
+
+    def test_different_create_after_mismatch_abandons_stash(self, monkeypatch):
+        """A DIFFERENT create typed after a mismatch (not the button prompt)
+        must abandon the stash — no spurious resume of the old domain."""
+        from session_keys import (
+            MISMATCH_REGEN_PENDING,
+            PENDING_SMART_GEN_INSTRUCTIONS,
+        )
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="modeling", reason="a different modeling request",
+        ))
+        import execution
+        monkeypatch.setattr(
+            execution, "execute_planned_operations",
+            lambda **kw: None, raising=False,
+        )
+        session = FakeSession()
+        self._arm(session)
+        session.set(MISMATCH_REGEN_PENDING, self._REBUILD_PROMPT)  # armed for "hotel"
+        # …but the user creates a ZOO instead of clicking the button.
+        handle_generation_request(session, _make_request("create a class diagram for a zoo with animals and keepers"))
+        assert not session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+        assert not session.get(MISMATCH_REGEN_PENDING)
 
     def test_rebuild_clears_stash_without_flag(self, monkeypatch):
         """Without the flag, an unrelated request still abandons the stash
@@ -628,5 +654,5 @@ class TestMismatchRegenChain:
         )
         session = FakeSession()
         self._arm(session)  # no MISMATCH_REGEN_PENDING
-        handle_generation_request(session, _make_request("create a class diagram for a hotel booking system"))
+        handle_generation_request(session, _make_request(self._REBUILD_PROMPT))
         assert not session.get(PENDING_SMART_GEN_INSTRUCTIONS)

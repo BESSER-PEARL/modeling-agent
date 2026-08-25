@@ -134,6 +134,11 @@ def _smart_gen_confirmation_decision(message: str) -> Optional[str]:
     return None
 
 
+def _norm_prompt(message: str) -> str:
+    """Normalize a message for exact-prompt matching (mismatch-regen chain)."""
+    return " ".join((message or "").strip().lower().split())
+
+
 def _iter_models_of_type(context: Any, diagram_type: str):
     """Yield active and snapshot models for one diagram type."""
     seen: set[int] = set()
@@ -266,12 +271,15 @@ def _build_mismatch_confirmation(session: Session, classification, suggested: st
     """
     refined = (classification.refined_instructions or "").strip()
     provider = classification.provider or "anthropic"
+    rebuild_prompt = f"create a class diagram for {suggested}"
     _stash_smart_gen(session, refined, provider)
-    # Arm the one-shot resume: the "Update model + generate" action rebuilds
-    # the model via a plain create, and the create choke point
-    # (execution.model_operations.execute_model_operation) consumes this flag
-    # to fire the stashed smart-gen right after the rebuild.
-    session.set(MISMATCH_REGEN_PENDING, True)
+    # Arm the one-shot resume with the EXACT rebuild prompt the button sends.
+    # The guard below and the create choke point
+    # (execution.model_operations.execute_model_operation) only keep the stash
+    # / fire the resume when the incoming message equals this prompt — so a
+    # DIFFERENT create typed right after a mismatch abandons normally instead
+    # of spuriously resuming the old domain's smart-gen.
+    session.set(MISMATCH_REGEN_PENDING, rebuild_prompt)
 
     return {
         "action": "assistant_message",
@@ -292,11 +300,11 @@ def _build_mismatch_confirmation(session: Session, classification, suggested: st
                 "label": "Update model + generate",
                 # Route this to a pure CREATE (not the smart/generation route,
                 # which would re-run this very mismatch check and loop). The
-                # create rebuilds the new domain model; the MISMATCH_REGEN_PENDING
-                # flag set above then makes the create choke point resume the
-                # stashed smart-gen right after the rebuild, so "+ generate"
-                # actually runs.
-                "prompt": f"create a class diagram for {suggested}",
+                # create rebuilds the new domain model; because this exact prompt
+                # was stashed in MISMATCH_REGEN_PENDING above, the create choke
+                # point recognizes it and resumes the stashed smart-gen right
+                # after the rebuild, so "+ generate" actually runs.
+                "prompt": rebuild_prompt,
             },
             {
                 "label": "Generate anyway",
@@ -1015,14 +1023,18 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             )
         # Fall through to normal classification if the stash was empty.
 
-    if has_pending_smart_gen and not session.get(MISMATCH_REGEN_PENDING):
+    _regen_prompt = session.get(MISMATCH_REGEN_PENDING)
+    _is_regen_rebuild = (
+        isinstance(_regen_prompt, str)
+        and _norm_prompt(request.message) == _norm_prompt(_regen_prompt)
+    )
+    if has_pending_smart_gen and not _is_regen_rebuild:
         # A different request abandons this confirmation. Clearing the stash
         # prevents a later generic "yes" from spending against an old run.
-        # EXCEPTION: the domain-mismatch "Update model + generate" chain arms
-        # MISMATCH_REGEN_PENDING and deliberately keeps the stash alive across
-        # the model rebuild — the create that follows this message is the
-        # intended continuation, and execute_model_operation resumes the
-        # stashed smart-gen once the new model is built.
+        # EXCEPTION: the domain-mismatch "Update model + generate" chain only
+        # keeps the stash alive when THIS message is exactly the stashed rebuild
+        # prompt — the intended continuation. A different create typed after a
+        # mismatch falls through here and abandons normally (no spurious resume).
         _clear_pending_smart_gen(session)
 
     pending_generator, pending_config = _get_pending_state(session)

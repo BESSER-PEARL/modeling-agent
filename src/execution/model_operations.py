@@ -917,14 +917,21 @@ def execute_model_operation(
     # "Update model + generate" quick action, fire the stashed Spec-Driven
     # handoff now so the "+ generate" half is actually honored — otherwise
     # the user is left to click "Generate application" again (the button
-    # over-promises). One-shot: the flag is consumed here regardless, so an
-    # ordinary create never triggers this. Still freshness-gated, and skipped
-    # on an explicit "keep" (which deliberately preserves the old model).
+    # over-promises). Gated on the incoming message EQUALLING the exact rebuild
+    # prompt stashed in MISMATCH_REGEN_PENDING, so a different create typed
+    # after a mismatch never triggers this. Skipped on an explicit "keep".
+    _regen_prompt = session.get(MISMATCH_REGEN_PENDING)
+    _regen_msg = " ".join((getattr(request, "message", "") or "").strip().lower().split())
+    _regen_expect = (
+        " ".join(_regen_prompt.strip().lower().split())
+        if isinstance(_regen_prompt, str) else None
+    )
     if (
         operation_mode == "complete_system"
         and result.get("action") == "inject_complete_system"
         and _replace_existing is not False
-        and bool(session.get(MISMATCH_REGEN_PENDING))
+        and _regen_expect is not None
+        and _regen_msg == _regen_expect
     ):
         session.delete(MISMATCH_REGEN_PENDING)  # consume once
         try:
