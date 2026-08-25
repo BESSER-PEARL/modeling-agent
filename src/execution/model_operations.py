@@ -30,8 +30,12 @@ from suggestions import get_suggested_actions, get_artifact_label, get_post_spec
 from session_keys import (
     LAST_EXECUTED_DIAGRAM_TYPE,
     LAST_MATCHED_INTENT,
+    MISMATCH_REGEN_PENDING,
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
+    PENDING_SMART_GEN_INSTRUCTIONS,
+    PENDING_SMART_GEN_PROVIDER,
+    PENDING_SMART_GEN_TIMESTAMP,
 )
 
 logger = logging.getLogger(__name__)
@@ -907,6 +911,42 @@ def execute_model_operation(
         )
 
     session.set(LAST_EXECUTED_DIAGRAM_TYPE, target_diagram_type)
+
+    # ── Mismatch "Update model + generate" resume ────────────────────────
+    # When this build is the model-rebuild half of the domain-mismatch
+    # "Update model + generate" quick action, fire the stashed Spec-Driven
+    # handoff now so the "+ generate" half is actually honored — otherwise
+    # the user is left to click "Generate application" again (the button
+    # over-promises). One-shot: the flag is consumed here regardless, so an
+    # ordinary create never triggers this. Still freshness-gated, and skipped
+    # on an explicit "keep" (which deliberately preserves the old model).
+    if (
+        operation_mode == "complete_system"
+        and result.get("action") == "inject_complete_system"
+        and _replace_existing is not False
+        and bool(session.get(MISMATCH_REGEN_PENDING))
+    ):
+        session.delete(MISMATCH_REGEN_PENDING)  # consume once
+        try:
+            from handlers.generation_handler import (
+                _build_smart_gen_confirmation,
+                _smart_gen_stash_is_fresh,
+            )
+
+            _stash = session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+            _fresh = _smart_gen_stash_is_fresh(session.get(PENDING_SMART_GEN_TIMESTAMP))
+            if isinstance(_stash, str) and _stash.strip() and _fresh:
+                logger.info("[ModelOp] Resuming stashed smart-gen after mismatch rebuild")
+                _payload = _build_smart_gen_confirmation(
+                    session,
+                    _stash,
+                    session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic",
+                    reason_prefix="Model rebuilt and ready.",
+                )
+                if isinstance(_payload, dict):
+                    reply_payload(session, _payload)
+        except Exception:
+            logger.exception("[ModelOp] mismatch smart-gen resume failed")
 
     action_label = result.get("action", "unknown")
     record_session_action(

@@ -13,6 +13,7 @@ from protocol.types import AssistantRequest
 from utilities.model_context import is_diagram_nontrivial
 from session_keys import (
     CONFIG_PROMPT_ATTEMPTS,
+    MISMATCH_REGEN_PENDING,
     PENDING_GENERATOR_CONFIG,
     PENDING_GENERATOR_TYPE,
     PENDING_SMART_GEN_INSTRUCTIONS,
@@ -266,6 +267,11 @@ def _build_mismatch_confirmation(session: Session, classification, suggested: st
     refined = (classification.refined_instructions or "").strip()
     provider = classification.provider or "anthropic"
     _stash_smart_gen(session, refined, provider)
+    # Arm the one-shot resume: the "Update model + generate" action rebuilds
+    # the model via a plain create, and the create choke point
+    # (execution.model_operations.execute_model_operation) consumes this flag
+    # to fire the stashed smart-gen right after the rebuild.
+    session.set(MISMATCH_REGEN_PENDING, True)
 
     return {
         "action": "assistant_message",
@@ -286,8 +292,10 @@ def _build_mismatch_confirmation(session: Session, classification, suggested: st
                 "label": "Update model + generate",
                 # Route this to a pure CREATE (not the smart/generation route,
                 # which would re-run this very mismatch check and loop). The
-                # create builds the new domain model; choosing "replace" then
-                # fires the stashed smart-gen via _resume_smart_gen_after_replace.
+                # create rebuilds the new domain model; the MISMATCH_REGEN_PENDING
+                # flag set above then makes the create choke point resume the
+                # stashed smart-gen right after the rebuild, so "+ generate"
+                # actually runs.
                 "prompt": f"create a class diagram for {suggested}",
             },
             {
@@ -706,6 +714,7 @@ def _clear_pending_smart_gen(session: Session) -> None:
         PENDING_SMART_GEN_PROVIDER,
         PENDING_SMART_GEN_TIMESTAMP,
         SKIP_MISMATCH_CHECK_ONCE,
+        MISMATCH_REGEN_PENDING,
     ):
         if isinstance(session_data, dict) and key in session_data:
             session.delete(key)
@@ -1006,9 +1015,14 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             )
         # Fall through to normal classification if the stash was empty.
 
-    if has_pending_smart_gen:
+    if has_pending_smart_gen and not session.get(MISMATCH_REGEN_PENDING):
         # A different request abandons this confirmation. Clearing the stash
         # prevents a later generic "yes" from spending against an old run.
+        # EXCEPTION: the domain-mismatch "Update model + generate" chain arms
+        # MISMATCH_REGEN_PENDING and deliberately keeps the stash alive across
+        # the model rebuild — the create that follows this message is the
+        # intended continuation, and execute_model_operation resumes the
+        # stashed smart-gen once the new model is built.
         _clear_pending_smart_gen(session)
 
     pending_generator, pending_config = _get_pending_state(session)

@@ -551,3 +551,82 @@ class TestHandleGenerationRequestSafetyNet:
         result = handle_generation_request(session, request)
         assert result is None
         assert built["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Domain-mismatch "Update model + generate" → smart-gen resume chain
+# ---------------------------------------------------------------------------
+
+class TestMismatchRegenChain:
+    """The mismatch quick action "Update model + generate" sends a plain
+    'create a class diagram for X'. Because a stashed smart-gen keeps that
+    message pinned in generation_state, it reaches handle_generation_request,
+    which normally clears the stash as an 'abandoned confirmation'. The
+    MISMATCH_REGEN_PENDING flag must exempt this chain so the stash survives
+    the rebuild for execute_model_operation to resume."""
+
+    def _arm(self, session):
+        import time as _t
+        from session_keys import (
+            PENDING_SMART_GEN_INSTRUCTIONS,
+            PENDING_SMART_GEN_PROVIDER,
+            PENDING_SMART_GEN_TIMESTAMP,
+        )
+        session.set(PENDING_SMART_GEN_INSTRUCTIONS, "build a hotel booking app")
+        session.set(PENDING_SMART_GEN_PROVIDER, "anthropic")
+        session.set(PENDING_SMART_GEN_TIMESTAMP, _t.time())
+
+    def test_mismatch_confirmation_arms_the_flag(self):
+        from handlers.generation_handler import _build_mismatch_confirmation
+        from session_keys import (
+            MISMATCH_REGEN_PENDING,
+            PENDING_SMART_GEN_INSTRUCTIONS,
+        )
+        session = FakeSession()
+        classification = types.SimpleNamespace(
+            refined_instructions="build a hotel booking app", provider="anthropic",
+        )
+        payload = _build_mismatch_confirmation(session, classification, "a hotel booking system")
+        assert session.get(MISMATCH_REGEN_PENDING) is True
+        assert session.get(PENDING_SMART_GEN_INSTRUCTIONS) == "build a hotel booking app"
+        labels = [a["label"] for a in payload["suggestedActions"]]
+        assert "Update model + generate" in labels
+
+    def test_rebuild_preserves_stash_when_flag_set(self, monkeypatch):
+        """With the flag set, the rebuild request does NOT clear the stash."""
+        from session_keys import (
+            MISMATCH_REGEN_PENDING,
+            PENDING_SMART_GEN_INSTRUCTIONS,
+        )
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="modeling", reason="rebuild the model for a hotel",
+        ))
+        import execution
+        monkeypatch.setattr(
+            execution, "execute_planned_operations",
+            lambda **kw: None, raising=False,
+        )
+        session = FakeSession()
+        self._arm(session)
+        session.set(MISMATCH_REGEN_PENDING, True)
+        handle_generation_request(session, _make_request("create a class diagram for a hotel booking system"))
+        # Guard held: stash + flag survive into the build for the resume hook.
+        assert session.get(PENDING_SMART_GEN_INSTRUCTIONS) == "build a hotel booking app"
+        assert session.get(MISMATCH_REGEN_PENDING) is True
+
+    def test_rebuild_clears_stash_without_flag(self, monkeypatch):
+        """Without the flag, an unrelated request still abandons the stash
+        (the pre-existing safety behavior is unchanged)."""
+        from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="modeling", reason="a different modeling request",
+        ))
+        import execution
+        monkeypatch.setattr(
+            execution, "execute_planned_operations",
+            lambda **kw: None, raising=False,
+        )
+        session = FakeSession()
+        self._arm(session)  # no MISMATCH_REGEN_PENDING
+        handle_generation_request(session, _make_request("create a class diagram for a hotel booking system"))
+        assert not session.get(PENDING_SMART_GEN_INSTRUCTIONS)

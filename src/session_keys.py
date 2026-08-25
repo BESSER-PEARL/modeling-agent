@@ -46,6 +46,13 @@ PENDING_SMART_GEN_TIMESTAMP = "_pending_smart_gen_timestamp"
 # domain-mismatch guard. Used by the "Generate anyway" path so the same
 # request (or its resend) doesn't loop on the confirmation question.
 SKIP_MISMATCH_CHECK_ONCE = "_skip_mismatch_check_once"
+# One-shot flag set when the domain-mismatch "Update model + generate"
+# quick action is offered. That action rebuilds the class diagram via a
+# plain create; this flag tells the model-build choke point to resume the
+# stashed smart-gen handoff right after the rebuild (so "+ generate" is
+# honored instead of leaving the user to click "Generate application"
+# again). Consumed once, at the next complete-system build.
+MISMATCH_REGEN_PENDING = "_mismatch_regen_pending"
 
 # Voice context
 VOICE_CONTEXT = "_voice_context"
