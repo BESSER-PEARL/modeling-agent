@@ -83,6 +83,7 @@ modeling_help_state = agent.new_state("modeling_help_state")
 describe_model_state = agent.new_state("describe_model_state")
 uml_rag_state = agent.new_state("uml_rag_state")
 generation_state = agent.new_state("generation_state")
+decline_state = agent.new_state("decline_state")
 
 # ── Intents ──────────────────────────────────────────────────────────────
 #
@@ -109,6 +110,19 @@ hello_intent = agent.new_intent(
         "good morning",
         "hello assistant",
         "hi, are you there",
+    ],
+)
+decline_intent = agent.new_intent(
+    name="decline_intent",
+    description="User declines / opts out / says they want nothing right now.",
+    training_sentences=[
+        "nothing",
+        "no thanks",
+        "never mind",
+        "nah I'm good",
+        "not right now",
+        "that's all for now",
+        "I think that's it",
     ],
 )
 create_complete_system_intent = agent.new_intent(
@@ -195,9 +209,11 @@ register_all(
         "describe_model": describe_model_state,
         "uml_rag": uml_rag_state,
         "generation": generation_state,
+        "decline": decline_state,
     },
     intents={
         "hello": hello_intent,
+        "decline": decline_intent,
         "create_complete_system": create_complete_system_intent,
         "modify_model": modify_model_intent,
         "modeling_help": modeling_help_intent,

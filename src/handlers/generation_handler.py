@@ -284,7 +284,11 @@ def _build_mismatch_confirmation(session: Session, classification, suggested: st
         "suggestedActions": [
             {
                 "label": "Update model + generate",
-                "prompt": f"create a complete {suggested} system and generate the code",
+                # Route this to a pure CREATE (not the smart/generation route,
+                # which would re-run this very mismatch check and loop). The
+                # create builds the new domain model; choosing "replace" then
+                # fires the stashed smart-gen via _resume_smart_gen_after_replace.
+                "prompt": f"create a class diagram for {suggested}",
             },
             {
                 "label": "Generate anyway",

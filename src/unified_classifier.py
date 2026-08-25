@@ -64,6 +64,9 @@ _INTENT_NAMES = Literal[
     "describe_model_intent",
     "uml_spec_intent",
     "generation_intent",
+    # User declines / opts out ("nothing", "no thanks", "never mind",
+    # "I'm good") — acknowledge, do NOT build or modify anything.
+    "decline_intent",
     # Catch-all — BAF's own fallback state body runs when nothing
     # matches. Routed to whatever state fallback the current state
     # has (typically modeling_help_state).
@@ -218,6 +221,12 @@ class UnifiedClassification(BaseModel):
             "it responsive') is generation_intent with "
             "generation_route='smart' (reuse_for_generation) — the frontend "
             "re-runs the vibe generator in incremental modify mode.\n"
+            "  'decline_intent'                  — the user DECLINES / opts out "
+            "/ says they want nothing right now ('nothing', 'no', 'no thanks', "
+            "'never mind', \"I'm good\", 'not now', \"that's all\"). A polite "
+            "no-op — acknowledge; do NOT create, modify, generate, or re-ask. A "
+            "message that merely CONTAINS such a word alongside a real request "
+            "('nothing fancy, a todo app') is NOT decline_intent.\n"
             "  'fallback_intent'                — none of the above fit cleanly."
         ),
     )

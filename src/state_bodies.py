@@ -1271,6 +1271,18 @@ def uml_rag_body(session: Session):
 # Transition wiring
 # ------------------------------------------------------------------
 
+def decline_body(session: Session):
+    """The user declined / opted out (decline_intent) — acknowledge and build
+    nothing. The deterministic guard in _modeling_state_body still covers the
+    bare-phrase cases; this state catches the ones the classifier routes here
+    (including novel phrasings like "nah I'm good")."""
+    request = _common_preamble(session)
+    if request is None:
+        return
+    session.set(LAST_MATCHED_INTENT, 'decline_intent')
+    reply_message(session, _DECLINE_ACK)
+
+
 def add_unified_transitions(state, intents_map, fallback_state, generation_state):
     """Add both text and JSON event transitions for a state.
 
@@ -1332,6 +1344,7 @@ def register_all(*, agent, states, intents):
     states['describe_model'].set_body(describe_model_body)
     states['generation'].set_body(generation_body)
     states['uml_rag'].set_body(uml_rag_body)
+    states['decline'].set_body(decline_body)
 
     # -- Wire transitions --
     intent_map = {
@@ -1342,6 +1355,7 @@ def register_all(*, agent, states, intents):
         intents['uml_spec']: states['uml_rag'],
         intents['generation']: states['generation'],
         intents['hello']: states['greetings'],
+        intents['decline']: states['decline'],
     }
 
     generation_st = states['generation']
@@ -1354,6 +1368,7 @@ def register_all(*, agent, states, intents):
         ('describe_model', 'describe_model'),
         ('uml_rag', 'greetings'),
         ('generation', 'generation'),
+        ('decline', 'greetings'),
     ]:
         add_unified_transitions(
             states[state_name], intent_map, states[fallback_name], generation_st,
