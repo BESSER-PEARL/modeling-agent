@@ -428,6 +428,32 @@ _NON_MODELING_DECLINE = (
 )
 
 
+_DECLINE_PHRASES = {
+    "nothing", "nothing thanks", "nothing for now", "nothing right now",
+    "nothing else", "no", "nope", "nah", "no thanks", "no thank you",
+    "nvm", "never mind", "nevermind", "not now", "maybe later", "later",
+    "stop", "cancel", "quit", "exit", "im done", "i'm done", "all done",
+    "that's all", "thats all",
+}
+
+
+def _request_is_decline(message: str) -> bool:
+    """True when the WHOLE message is a bare decline / no-op ("nothing", "no",
+    "never mind"). Such a reply means the user is opting out — not asking to
+    build — so it must not be routed into a create (which would pop the
+    replace/keep-existing prompt on their model). A message that merely contains
+    one of these words ("nothing fancy, a todo app") is NOT a decline."""
+    normalized = re.sub(r"[^\w\s']", " ", (message or "").lower())
+    normalized = " ".join(normalized.split())
+    return normalized in _DECLINE_PHRASES
+
+
+_DECLINE_ACK = (
+    "No problem — I'm here whenever you'd like to build or change something. "
+    "Just tell me what you have in mind."
+)
+
+
 def _modeling_state_body(session: Session, intent_name: str, default_mode: str, empty_msg: str):
     """Unified handler for all modeling operations (system creation, modification)."""
     request = _common_preamble(session)
@@ -448,6 +474,14 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
     if _request_is_non_modeling(request.message):
         logger.info("[Modeling] Non-modeling/injection input — declining and redirecting")
         reply_message(session, _NON_MODELING_DECLINE)
+        return
+
+    # Decline / no-op guard: a bare "nothing" / "no" / "never mind" means the
+    # user is opting out, not asking to build. Acknowledge instead of routing it
+    # into a create (which pops the replace/keep prompt on their existing model).
+    if _request_is_decline(request.message):
+        logger.info("[Modeling] Decline/no-op input — acknowledging, no model change")
+        reply_message(session, _DECLINE_ACK)
         return
 
     # Over-eagerness guard (create path only): if the user only typed filler
