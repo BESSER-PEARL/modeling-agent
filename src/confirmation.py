@@ -14,7 +14,7 @@ state body.
 import logging
 import re
 from dataclasses import replace
-from typing import Any
+from typing import Any, Optional
 
 from baf.core.session import Session
 
@@ -82,7 +82,7 @@ _AUTO_KEYWORDS = ['auto', '1', 'deterministic', 'fast', 'standard', 'default', '
 _LLM_KEYWORDS = ['llm', '2', 'personali', 'ai', 'experimental', 'custom', 'design']
 
 
-def _build_auto_gui_message(request: Any) -> str:
+def _build_auto_gui_message(request: Any, detected_gen: Optional[str] = None) -> str:
     """Build the auto-generate GUI success message, naming the pages created.
 
     The deterministic ("auto") path builds one page per class on the frontend.
@@ -93,7 +93,17 @@ def _build_auto_gui_message(request: Any) -> str:
     Falls back to a generic completion message if the class diagram can't be
     resolved (the frontend still generates the GUI; we just can't name pages).
     """
-    done_intro = "Your app's screens are ready. "
+    from handlers.generation_handler import detect_generator_type
+    from suggestions import get_artifact_label
+
+    if detected_gen is None:
+        detected_gen = detect_generator_type(getattr(request, "message", "") or "")
+    _artifact = get_artifact_label(detected_gen)
+    _follow_up = (
+        f"\n\nYou can now review or refine the specification, or continue "
+        f"with generating your {_artifact}. What would you like to do?"
+    )
+
     try:
         from utilities.model_resolution import resolve_class_diagram
         from utilities.class_metadata import extract_class_metadata
@@ -110,10 +120,8 @@ def _build_auto_gui_message(request: Any) -> str:
 
     if not page_names:
         return (
-            done_intro
-            + "Every part of your app now has its own screen with a data view and "
-            "quick action buttons. Just tell me if you'd like to tweak any screen "
-            "or add more!"
+            "Every part of your app now has its own screen with a data view and "
+            "quick action buttons." + _follow_up
         )
 
     shown = page_names[:6]
@@ -122,8 +130,7 @@ def _build_auto_gui_message(request: Any) -> str:
         names_str += f" (+{len(page_names) - 6} more)"
     return (
         f"I built **{len(page_names)}** screen(s) for your app — {names_str}. "
-        "Each one shows its data with quick action buttons. "
-        "Just tell me if you'd like to tweak any screen or add more!"
+        "Each one shows its data with quick action buttons." + _follow_up
     )
 
 
@@ -177,17 +184,24 @@ def handle_pending_gui_choice(session: Session) -> bool:
         return False  # Let normal state body handle the new request
 
     if wants_auto:
+        from handlers.generation_handler import detect_generator_type
+        from suggestions import get_post_spec_suggestions
+
         remaining_ops = pending.get('remaining_operations')
         session.set(PENDING_GUI_CHOICE, None)
         logger.info("🔄 [GUIChoice] User chose AUTO-GENERATE (deterministic)")
+        # Use the original request text (not the GUI-choice reply "1"/"auto") so
+        # detect_generator_type can see keywords like "web application" or "database".
+        _original_msg = pending.get('operation_request', '') or getattr(request, "message", "") or ""
+        _detected_gen = detect_generator_type(_original_msg)
         reply_payload(session, {
             "action": "auto_generate_gui",
             "diagramType": "GUINoCodeDiagram",
             # Frontend builds one page per class via autoGenerateGUIFromClassDiagram.
-            # We resolve the class diagram here so the message CONFIRMS completion
-            # naming the pages that were created (#3) \u2014 the auto path previously
-            # only said "Generating\u2026" and never reported it was done.
-            "message": _build_auto_gui_message(request),
+            # The message CONFIRMS completion naming the pages that were created.
+            # suggestedActions give the user their next step (generate or review).
+            "message": _build_auto_gui_message(request, detected_gen=_detected_gen),
+            "suggestedActions": get_post_spec_suggestions(_detected_gen or "web_app"),
         })
         # Resume any remaining operations from the original plan
         if isinstance(remaining_ops, list) and remaining_ops:
@@ -197,9 +211,9 @@ def handle_pending_gui_choice(session: Session) -> bool:
                 'GUINoCodeDiagram', 'complete_system',
                 pending.get('operation_request', ''), pending,
             )
-        # Web-app plans strip their generation op, leaving remaining_ops empty —
-        # so the resume above never runs. Show the generate nudge here instead.
-        _maybe_emit_webapp_prompt(session)
+        # Note: _maybe_emit_webapp_prompt is intentionally NOT called here.
+        # The artifact-aware follow-up is already embedded in the auto_generate_gui
+        # message above, so a separate prompt would be premature and redundant.
         return True
 
     # LLM-driven path

@@ -263,19 +263,15 @@ def emit_webapp_generate_prompt(session: Session) -> None:
     """The web-app pause prompt: after the app's spec + screens are built, ask the
     user to review or generate — instead of auto-running code generation. Single
     source of truth for the prompt (called from every path where a web-app GUI
-    completes). User-facing copy stays product-friendly (no "model"/"data class"
-    jargon) — the user asked for the app's *spec*, not internal modeling terms."""
+    completes)."""
+    from suggestions import get_post_spec_suggestions
     reply_payload(session, {
         "action": "assistant_message",
         "message": (
-            "Your app's spec is ready — the screens and the data behind them are "
-            "all laid out. Take a look, and when you're happy with it just say "
-            "**generate the web app** and I'll build the code."
+            "Your screens are ready. You can now review or refine the specification, "
+            "or continue with generating your web app. What would you like to do?"
         ),
-        "suggestedActions": [
-            {"label": "Generate the web app", "prompt": "generate web app"},
-            {"label": "Review the spec", "prompt": "describe my diagram"},
-        ],
+        "suggestedActions": get_post_spec_suggestions("web_app"),
     })
 
 

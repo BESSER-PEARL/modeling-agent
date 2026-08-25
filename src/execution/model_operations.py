@@ -554,13 +554,13 @@ def execute_model_operation(
                 "action": "assistant_message",
                 "message": (
                     "How would you like me to generate the GUI?\n\n"
-                    "1️⃣ **Auto-generate** — Fast & deterministic. Creates one page per class "
+                    "1️⃣ **Fast & deterministic** - Creates one page per class "
                     "with data tables and method buttons.\n"
                     "2️⃣ **AI-generated** *(experimental)* — AI-designed layout with "
                     "personalized pages, navigation, and styling."
                 ),
                 "suggestedActions": [
-                    {"label": "Auto-generate", "prompt": "auto"},
+                    {"label": "Fast & deterministic", "prompt": "Fast & deterministic"},
                     {"label": "AI-generated (experimental)", "prompt": "llm"},
                 ],
             })
@@ -859,15 +859,18 @@ def execute_model_operation(
     # For complete-system creations, detect the intended artifact type from the
     # original user message and append an artifact-aware follow-up sentence +
     # replace the generic buttons with artifact-specific ones.
+    # Skip for web_app: the GUI-choice flow runs next and emit_webapp_generate_prompt
+    # shows its own artifact-aware follow-up after the screens are built.
     if operation_mode == "complete_system" and isinstance(result.get("message"), str):
         from handlers.generation_handler import detect_generator_type  # lazy to avoid circular import
         _detected_gen = detect_generator_type(request.message)
-        _artifact = get_artifact_label(_detected_gen)
-        result["message"] += (
-            f"\n\nYou can now review or refine the specification, or continue "
-            f"with generating your {_artifact}. What would you like to do?"
-        )
-        result["suggestedActions"] = get_post_spec_suggestions(_detected_gen)
+        if _detected_gen != "web_app":
+            _artifact = get_artifact_label(_detected_gen)
+            result["message"] += (
+                f"\n\nYou can now review or refine the specification, or continue "
+                f"with generating your {_artifact}. What would you like to do?"
+            )
+            result["suggestedActions"] = get_post_spec_suggestions(_detected_gen)
 
     # ── Destructive modify-model guard ───────────────────────────────────
     # Block a modify_model plan whose net effect would delete most/all of

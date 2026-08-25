@@ -342,7 +342,6 @@ _AWAITING_SELECTION = "_awaiting_selection"
 
 GENERATOR_KEYWORDS: Dict[str, List[str]] = {
     "django": ["django"],
-    "backend": ["full backend", "backend"],
     "web_app": [
         "web app",
         "web application",
@@ -355,6 +354,7 @@ GENERATOR_KEYWORDS: Dict[str, List[str]] = {
         "generate gui",
         "grapesjs",
     ],
+    "backend": ["full backend", "backend"],
     "sqlalchemy": ["sqlalchemy", "sql alchemy"],
     "sql": ["database", "relational database", "db schema", "sql ddl", "sql schema", "generate sql", "sql"],
     "python": ["python classes", "generate python"],
