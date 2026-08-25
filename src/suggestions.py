@@ -95,6 +95,47 @@ _GENERATION_SUGGESTIONS = [
     ("Describe my diagram", "describe my diagram"),
 ]
 
+# Maps generator keys to friendly artifact display names (used in post-spec messages
+# and button labels).
+GENERATOR_ARTIFACT_LABELS: Dict[str, str] = {
+    "sql": "database",
+    "sqlalchemy": "database",
+    "web_app": "web app",
+    "django": "Django app",
+    "backend": "backend",
+    "rest_api": "REST API",
+    "python": "Python classes",
+    "java": "Java classes",
+    "pydantic": "Pydantic models",
+    "jsonschema": "JSON Schema",
+    "smartdata": "Smart Data model",
+    "rdf": "RDF vocabulary",
+    "agent": "BESSER agent",
+    "qiskit": "Qiskit circuit",
+    "react": "React frontend",
+    "flutter": "Flutter app",
+}
+
+# Maps generator keys to the prompt that reliably routes back into that generator.
+_GENERATOR_PROMPTS: Dict[str, str] = {
+    "sql": "generate sql",
+    "sqlalchemy": "generate sqlalchemy",
+    "web_app": "generate web app",
+    "django": "generate django",
+    "backend": "generate backend",
+    "rest_api": "generate rest api",
+    "python": "generate python",
+    "java": "generate java",
+    "pydantic": "generate pydantic",
+    "jsonschema": "generate json schema",
+    "smartdata": "generate smartdata",
+    "rdf": "generate rdf",
+    "agent": "generate agent",
+    "qiskit": "generate qiskit",
+    "react": "generate react",
+    "flutter": "generate flutter",
+}
+
 
 # ------------------------------------------------------------------
 # Helpers
@@ -118,6 +159,26 @@ def _build_actions(candidates: List[tuple], limit: int = 4) -> List[Dict[str, st
 # ------------------------------------------------------------------
 # Public API
 # ------------------------------------------------------------------
+
+def get_artifact_label(detected_generator: Optional[str]) -> str:
+    """Return the friendly artifact label for a generator type (e.g. 'sql' → 'database')."""
+    return GENERATOR_ARTIFACT_LABELS.get(detected_generator, "application") if detected_generator else "application"
+
+
+def get_post_spec_suggestions(detected_generator: Optional[str]) -> List[Dict[str, str]]:
+    """Artifact-aware buttons shown after a complete spec is built.
+
+    When the original prompt signals a specific generator (e.g. 'database' → sql),
+    the primary button names that artifact. Falls back to 'application' when no
+    generator was detected.
+    """
+    label = get_artifact_label(detected_generator)
+    prompt = _GENERATOR_PROMPTS.get(detected_generator, "generate the application") if detected_generator else "generate the application"
+    return [
+        {"label": f"Generate {label}", "prompt": prompt},
+        {"label": "Review the spec", "prompt": "wme:review-spec"},
+    ]
+
 
 def get_suggested_actions(
     diagram_type: str,

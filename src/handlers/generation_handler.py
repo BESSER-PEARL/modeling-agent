@@ -336,7 +336,7 @@ GENERATOR_KEYWORDS: Dict[str, List[str]] = {
         "grapesjs",
     ],
     "sqlalchemy": ["sqlalchemy", "sql alchemy"],
-    "sql": ["sql ddl", "sql schema", "generate sql", "sql"],
+    "sql": ["database", "relational database", "db schema", "sql ddl", "sql schema", "generate sql", "sql"],
     "python": ["python classes", "generate python"],
     "java": ["java classes", "generate java"],
     "pydantic": ["pydantic"],

@@ -26,7 +26,7 @@ from utilities.model_resolution import (
 from utilities.workspace_context import build_workspace_context_block, record_session_action
 from utilities.class_metadata import extract_class_metadata
 from utilities.model_context import is_diagram_nontrivial
-from suggestions import get_suggested_actions
+from suggestions import get_suggested_actions, get_artifact_label, get_post_spec_suggestions
 from session_keys import (
     LAST_EXECUTED_DIAGRAM_TYPE,
     LAST_MATCHED_INTENT,
@@ -851,6 +851,19 @@ def execute_model_operation(
     )
     if suggestions:
         result["suggestedActions"] = suggestions
+
+    # For complete-system creations, detect the intended artifact type from the
+    # original user message and append an artifact-aware follow-up sentence +
+    # replace the generic buttons with artifact-specific ones.
+    if operation_mode == "complete_system" and isinstance(result.get("message"), str):
+        from handlers.generation_handler import detect_generator_type  # lazy to avoid circular import
+        _detected_gen = detect_generator_type(request.message)
+        _artifact = get_artifact_label(_detected_gen)
+        result["message"] += (
+            f"\n\nYou can now review or refine the specification, or continue "
+            f"with generating your {_artifact}. What would you like to do?"
+        )
+        result["suggestedActions"] = get_post_spec_suggestions(_detected_gen)
 
     # ── Destructive modify-model guard ───────────────────────────────────
     # Block a modify_model plan whose net effect would delete most/all of

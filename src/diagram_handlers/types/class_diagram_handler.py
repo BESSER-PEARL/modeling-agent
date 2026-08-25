@@ -988,10 +988,7 @@ Examples:
                 f". I also noted {len(constraints)} rule(s) you mentioned, though "
                 "they aren't shown on the canvas yet"
             )
-        msg += (
-            ". You've got the spec now — want to review or tweak it, "
-            "or shall I generate the code?"
-        )
+        msg += "."
         return msg
 
     # ------------------------------------------------------------------
