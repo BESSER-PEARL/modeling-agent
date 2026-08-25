@@ -60,7 +60,9 @@ _DRIVER = textwrap.dedent(
     else:
         mr.resolve_class_diagram = lambda request: MODEL
 
-    msg = confirmation._build_auto_gui_message(request=MagicMock())
+    # Production always passes an AssistantRequest whose ``.message`` is a real
+    # string; give the mock one so detect_generator_type() gets a str, not a Mock.
+    msg = confirmation._build_auto_gui_message(request=MagicMock(message=""))
     print("===MSG===" + msg)
     """
 )

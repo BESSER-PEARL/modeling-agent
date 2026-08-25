@@ -105,26 +105,45 @@ def _run_gui_choice(answer):
     req = MagicMock()
     req.message = answer
     emit = MagicMock()
+    payloads = []
     with patch.object(confirmation, "parse_assistant_request", return_value=req), \
-         patch.object(confirmation, "reply_payload"), \
+         patch.object(confirmation, "reply_payload", side_effect=lambda _s, p: payloads.append(p)), \
          patch.object(confirmation, "reply_message"), \
          patch.object(confirmation, "replace", lambda obj, **kw: obj), \
          patch.object(confirmation, "execute_model_operation", return_value="Diagram"), \
          patch.object(confirmation, "_build_auto_gui_message", return_value="screens ready"), \
          patch.object(confirmation, "emit_webapp_generate_prompt", emit):
         handled = confirmation.handle_pending_gui_choice(session)
-    return handled, emit, session
+    return handled, emit, session, payloads
+
+
+def _nudges_generation(payloads, emit):
+    """True when the user was prompted to generate — either the standalone
+    emit_webapp_generate_prompt fired (LLM path) or the reply carries a
+    'Generate …' suggested action (auto path embeds the nudge in-message)."""
+    if emit.called:
+        return True
+    for p in payloads:
+        labels = " ".join(a.get("label", "") for a in (p.get("suggestedActions") or []))
+        if "Generate" in labels:
+            return True
+    return False
+
+
+def _auto_ran_generation(payloads):
+    return any(p.get("action") in ("trigger_generator", "trigger_smart_generator")
+              for p in payloads)
 
 
 def test_gui_choice_auto_still_shows_generate_prompt():
-    handled, emit, session = _run_gui_choice("auto")
-    assert handled                                       # the choice was consumed
-    assert emit.called                                   # the generate nudge fired
-    assert session.get(PENDING_WEBAPP_GENERATE) is None   # flag cleared (no re-emit)
+    handled, emit, session, payloads = _run_gui_choice("auto")
+    assert handled                              # the choice was consumed
+    assert _nudges_generation(payloads, emit)   # the generate nudge is shown
+    assert not _auto_ran_generation(payloads)   # and code-gen did NOT auto-run
 
 
 def test_gui_choice_llm_still_shows_generate_prompt():
-    handled, emit, session = _run_gui_choice("llm")
+    handled, emit, session, payloads = _run_gui_choice("llm")
     assert handled
-    assert emit.called
-    assert session.get(PENDING_WEBAPP_GENERATE) is None
+    assert _nudges_generation(payloads, emit)
+    assert not _auto_ran_generation(payloads)
