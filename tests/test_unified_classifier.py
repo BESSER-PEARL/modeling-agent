@@ -363,6 +363,15 @@ class TestSmartGenFollowUpRouting:
         # ...and calls out the exact production bug (UserAccountSystem class).
         assert "UserAccountSystem" in prompt
 
+    def test_prompt_excludes_bare_builtins_from_smart_followup(self):
+        """A bare 'generate a rest api' must stay deterministic even right
+        after a smart run — the recency signal was pulling it to the smart
+        route (live flip-flop: smart/deterministic/smart on three sends)."""
+        prompt = _SYSTEM_PROMPT
+        assert "NAMES a BESSER built-in generator" in prompt
+        assert "even minutes after a smart run" in prompt
+        assert "NOT a follow-up to the smart app" in prompt
+
     def test_prompt_keeps_genuine_model_edits_on_modify(self):
         # The discriminator examples for real model edits must survive so
         # 'add a Payment class' etc. stay on modify_model_intent.
