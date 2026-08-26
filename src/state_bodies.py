@@ -454,6 +454,49 @@ _NON_MODELING_DECLINE = (
 )
 
 
+# Out-of-scope: the user asks the assistant to PRODUCE a non-software artifact —
+# an actual image/picture, creative writing, a joke — rather than model a
+# software system. Building a diagram OF the request ("generate a picture of a
+# cat" → a 13-class CatImageGenerationSystem) reads as the agent not
+# understanding what it does. Deliberately high-precision: only explicit
+# artifact-production phrasings, so a real modeling request whose DOMAIN happens
+# to involve these ("model a photo-sharing app", "design a system for a poetry
+# contest") is NOT caught.
+_OUT_OF_SCOPE_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
+    # an actual image/picture (not a UML/software diagram)
+    r"\b(?:generate|draw|create|make|paint|render|give\s+me)\s+"
+    r"(?:me\s+)?(?:a|an|some|the)?\s*"
+    r"(?:picture|image|photo|photograph|drawing|painting|illustration|logo|"
+    r"icon|avatar|sketch|portrait|artwork|wallpaper|meme|gif|emoji)s?\s+of\b",
+    # creative writing / entertainment. 'create' is excluded (too modeling-heavy)
+    # and a negative lookahead drops software nouns so "write a story app" or
+    # "make a song-request system" stay real modeling requests.
+    r"\b(?:write|compose|make|give\s+me)\s+(?:me\s+)?(?:a|an|some)?\s*"
+    r"(?:poem|story|short\s+story|song|haiku|joke|novel|screenplay|"
+    r"lyric|lyrics|rap|limerick|sonnet|tale)s?\b"
+    r"(?!\s*[-\s]?(?:app|application|system|platform|tool|manager|management|"
+    r"tracker|service|api|database|website|site|portal|generator|editor|"
+    r"builder|feature|module|dashboard|request))",
+    r"\btell\s+me\s+a\s+(?:joke|story|riddle)\b",
+))
+
+
+def _request_is_out_of_scope(message: str) -> bool:
+    """True when the user asks the assistant to PRODUCE something outside
+    software modeling / code generation (an actual image, creative writing, a
+    joke). Redirect instead of building a diagram of it."""
+    text = message or ""
+    return any(p.search(text) for p in _OUT_OF_SCOPE_PATTERNS)
+
+
+_OUT_OF_SCOPE_REDIRECT = (
+    "That's a bit outside what I do — I model **software systems** (class "
+    "diagrams, state machines, BPMN, agents, and more) and generate code from "
+    "them. What would you like to model? For example: *Create a library "
+    "management system*."
+)
+
+
 _DECLINE_PHRASES = {
     "nothing", "nothing thanks", "nothing for now", "nothing right now",
     "nothing else", "no", "nope", "nah", "no thanks", "no thank you",
@@ -507,6 +550,15 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
     if _request_is_non_modeling(request.message):
         logger.info("[Modeling] Non-modeling/injection input — declining and redirecting")
         reply_message(session, _NON_MODELING_DECLINE)
+        return
+
+    # Out-of-scope guard: the user asks for a non-software artifact (an actual
+    # picture, a poem, a joke). Redirect to what the assistant does instead of
+    # modeling a diagram OF the request ("generate a picture of a cat" must not
+    # become a CatImageGenerationSystem class diagram).
+    if _request_is_out_of_scope(request.message):
+        logger.info("[Modeling] Out-of-scope artifact request — redirecting to modeling")
+        reply_message(session, _OUT_OF_SCOPE_REDIRECT)
         return
 
     # Decline / no-op guard: a bare "nothing" / "no" / "never mind" means the
@@ -1326,6 +1378,19 @@ def decline_body(session: Session):
     reply_message(session, _DECLINE_ACK)
 
 
+def out_of_scope_body(session: Session):
+    """The user asked for a non-software artifact (out_of_scope_intent) — an
+    actual image, creative writing, a joke. Redirect to modeling instead of
+    building a diagram OF the request. The deterministic guard in
+    _modeling_state_body covers the clearest phrasings; this state catches the
+    ones the classifier routes here."""
+    request = _common_preamble(session)
+    if request is None:
+        return
+    session.set(LAST_MATCHED_INTENT, 'out_of_scope_intent')
+    reply_message(session, _OUT_OF_SCOPE_REDIRECT)
+
+
 def add_unified_transitions(state, intents_map, fallback_state, generation_state):
     """Add both text and JSON event transitions for a state.
 
@@ -1388,6 +1453,7 @@ def register_all(*, agent, states, intents):
     states['generation'].set_body(generation_body)
     states['uml_rag'].set_body(uml_rag_body)
     states['decline'].set_body(decline_body)
+    states['out_of_scope'].set_body(out_of_scope_body)
 
     # -- Wire transitions --
     intent_map = {
@@ -1399,6 +1465,7 @@ def register_all(*, agent, states, intents):
         intents['generation']: states['generation'],
         intents['hello']: states['greetings'],
         intents['decline']: states['decline'],
+        intents['out_of_scope']: states['out_of_scope'],
     }
 
     generation_st = states['generation']
@@ -1412,6 +1479,7 @@ def register_all(*, agent, states, intents):
         ('uml_rag', 'greetings'),
         ('generation', 'generation'),
         ('decline', 'greetings'),
+        ('out_of_scope', 'greetings'),
     ]:
         add_unified_transitions(
             states[state_name], intent_map, states[fallback_name], generation_st,

@@ -93,6 +93,14 @@ SCENARIOS = [
      "accept": {"django"}, "forbid": set()},
     {"name": "pydantic", "msg": "generate pydantic classes",
      "accept": {"pydantic"}, "forbid": set()},
+    # rest_api / backend are DETERMINISTIC BESSER built-ins that emit real,
+    # runnable code — a BARE request for one must route deterministically and
+    # must NEVER escalate to the smart (spec-driven LLM) path, which is slower,
+    # spends the user's key, and can ship non-runnable code.
+    {"name": "rest_api_bare", "msg": "generate rest api",
+     "accept": {"rest_api", "backend"}, "forbid": {"smart"}},
+    {"name": "backend_bare", "msg": "generate the backend",
+     "accept": {"backend", "rest_api"}, "forbid": {"smart"}},
 ]
 
 # Fraction of REPEATS that must land in ``accept`` for a scenario to pass.

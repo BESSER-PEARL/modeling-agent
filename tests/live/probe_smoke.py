@@ -134,6 +134,10 @@ async def c_contradiction():
     return await _no_build("create a class diagram with absolutely no classes")
 
 
+async def c_out_of_scope():
+    return await _no_build("generate a picture of a cat")
+
+
 async def c_modify():
     async with _connect() as ws:
         sid = "s_" + uuid.uuid4().hex[:6]
@@ -167,7 +171,8 @@ async def c_mismatch():
 
 CRITICAL = [
     ("create", c_create), ("decline", c_decline), ("injection", c_injection),
-    ("vague", c_vague), ("contradiction", c_contradiction), ("modify", c_modify),
+    ("vague", c_vague), ("contradiction", c_contradiction),
+    ("out_of_scope", c_out_of_scope), ("modify", c_modify),
     ("mismatch", c_mismatch),
 ]
 

@@ -67,6 +67,9 @@ _INTENT_NAMES = Literal[
     # User declines / opts out ("nothing", "no thanks", "never mind",
     # "I'm good") — acknowledge, do NOT build or modify anything.
     "decline_intent",
+    # User asks for a non-software artifact (an actual image/picture, a poem,
+    # a joke, general chit-chat) — redirect, do NOT model a diagram of it.
+    "out_of_scope_intent",
     # Catch-all — BAF's own fallback state body runs when nothing
     # matches. Routed to whatever state fallback the current state
     # has (typically modeling_help_state).
@@ -227,6 +230,16 @@ class UnifiedClassification(BaseModel):
             "no-op — acknowledge; do NOT create, modify, generate, or re-ask. A "
             "message that merely CONTAINS such a word alongside a real request "
             "('nothing fancy, a todo app') is NOT decline_intent.\n"
+            "  'out_of_scope_intent'              — the user asks the assistant "
+            "to PRODUCE a NON-SOFTWARE artifact: an actual image/picture "
+            "('generate a picture of a cat', 'draw a sunset', 'make a logo of "
+            "X'), creative writing ('write me a poem/story/song', 'tell me a "
+            "joke'), a translation, a general-knowledge or math answer, or "
+            "chit-chat. Redirect to modeling; do NOT build a diagram OF the "
+            "request. IMPORTANT: a request to MODEL a software system whose "
+            "DOMAIN involves these ('model a photo-sharing app', 'design a "
+            "system for a poetry contest', 'a CRM for an art gallery') is a "
+            "NORMAL create_complete_system_intent, NOT out_of_scope_intent.\n"
             "  'fallback_intent'                — none of the above fit cleanly."
         ),
     )
@@ -533,9 +546,18 @@ _SYSTEM_PROMPT = (
     "scaffold of a single named BESSER generator with NO added "
     "behavior. Decide on the MEANING of the request, NOT on whether a "
     "specific adjective/stack keyword appears. When genuinely torn "
-    "between smart and deterministic, prefer 'smart' — it produces a "
-    "real working app, whereas deterministic only emits an empty "
-    "scaffold. These are ALL 'smart': 'a web app for managing my "
+    "between smart and deterministic, tie-break on WHAT the user named, "
+    "NOT on how 'app-like' the domain sounds: a bare BESSER CODE "
+    "generator (rest_api, backend, sql, sqlalchemy, django, pydantic, "
+    "python, java, jsonschema, rdf, smartdata, qiskit) emits REAL, "
+    "runnable output — a working FastAPI REST API, real SQLAlchemy "
+    "models, a real Django project, etc., NOT an empty scaffold — so a "
+    "bare request for one STAYS 'deterministic' even when the domain "
+    "sounds like a full app ('a REST API for customers and orders', "
+    "'a backend for my shop'). Only 'web_app' (the GUI generator) emits "
+    "a bare generic CRUD scaffold, so escalate to 'smart' only for "
+    "genuine custom behavior (rule 3) or a full web app / GUI (rule 2b). "
+    "These are ALL 'smart': 'a web app for managing my "
     "inventory', 'a site where customers can browse and order', 'make "
     "it production-ready', 'only admins can edit records', 'let users "
     "log in', 'vibe-code me something cool from my model', 'turn this "

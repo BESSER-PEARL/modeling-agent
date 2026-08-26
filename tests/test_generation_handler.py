@@ -659,3 +659,54 @@ class TestMismatchRegenChain:
         self._arm(session)  # no MISMATCH_REGEN_PENDING
         handle_generation_request(session, _make_request(self._REBUILD_PROMPT))
         assert not session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+
+
+# ---------------------------------------------------------------------------
+# Bare-built-in override — a plain "generate a rest api" must NOT go smart
+# ---------------------------------------------------------------------------
+
+class TestBareBuiltinOverride:
+    """The LLM classifier over-picks 'smart' for a plain built-in request
+    against an existing model. When the request names a BESSER built-in code
+    generator with no custom-behavior extras, the handler forces it back to the
+    fast, free deterministic generator (same as 'generate sql' already does)."""
+
+    def _smart(self, gen):
+        return GenerationClassification(
+            route="smart", generator_type=gen,
+            refined_instructions=f"generate {gen}", reason="reads like a real app",
+        )
+
+    def _is_smart_confirmation(self, result):
+        if not isinstance(result, dict):
+            return False
+        if result.get("action") == "trigger_smart_generator":
+            return True
+        msg = (result.get("message") or "").lower()
+        return "from the specification" in msg or "built-in generators" in msg
+
+    def test_bare_rest_api_downgraded_to_deterministic(self, monkeypatch):
+        _patch_classifier(monkeypatch, self._smart("rest_api"))
+        result = handle_generation_request(FakeSession(), _make_request("generate a rest api"))
+        assert not self._is_smart_confirmation(result), result
+
+    def test_bare_backend_downgraded_to_deterministic(self, monkeypatch):
+        _patch_classifier(monkeypatch, self._smart("backend"))
+        result = handle_generation_request(FakeSession(), _make_request("generate the backend"))
+        assert not self._is_smart_confirmation(result), result
+
+    def test_rest_api_with_auth_stays_smart(self, monkeypatch):
+        """A genuine extra (authentication) keeps the smart path."""
+        _patch_classifier(monkeypatch, self._smart("rest_api"))
+        result = handle_generation_request(
+            FakeSession(), _make_request("generate a rest api with user authentication"))
+        assert self._is_smart_confirmation(result), result
+
+    def test_custom_stack_stays_smart(self, monkeypatch):
+        """A non-BESSER stack (no built-in generator_type) is untouched."""
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="smart", generator_type=None,
+            refined_instructions="a rust web service", reason="non-BESSER stack"))
+        result = handle_generation_request(
+            FakeSession(), _make_request("build me a rust web service"))
+        assert self._is_smart_confirmation(result), result
