@@ -303,6 +303,12 @@ def global_fallback_body(session: Session):
         reply_message(session, quick)
         return
 
+    # Value-proposition / capability questions get a crisp canned answer.
+    _meta = _meta_question_answer(user_message)
+    if _meta:
+        reply_message(session, _meta)
+        return
+
     try:
         prompt = (
             f"You are a modeling assistant that helps with UML diagrams, quantum circuits, "
@@ -346,6 +352,14 @@ def greetings_body(session: Session):
 
     request = _common_preamble(session)
     if request is None:
+        return
+
+    # A value-prop / capability question ("why use you instead of Claude?") that
+    # landed here gets a real answer, not the generic greeting.
+    _meta = _meta_question_answer(request.message)
+    if _meta:
+        reply_message(session, _meta)
+        session.set(HAS_GREETED, True)
         return
 
     is_hello_intent = False
@@ -498,6 +512,55 @@ _OUT_OF_SCOPE_REDIRECT = (
 )
 
 
+# Meta / value-proposition questions the assistant should ANSWER conversationally
+# rather than route into a build ("do you also generate websites?" used to kick
+# off a full system; "why use you instead of Claude/GPT?" used to get a generic
+# greeting).
+_VALUE_PROP_RE = re.compile(
+    r"\bwhy\s+(should\s+i\s+|would\s+i\s+|do\s+i\s+)?use\s+you\b"
+    r"|\bwhy\s+you\b"
+    r"|\bwhat\s+makes\s+you\s+(different|better|special|unique)\b"
+    r"|\bwhy\s+besser\b"
+    r"|\bwhy\s+not\s+(just\s+)?(use\s+)?(claude|gpt|chat\s?gpt)\b"
+    r"|\b(you|besser)\s+(vs\.?|versus|instead\s+of|rather\s+than|over)\s+"
+    r"(claude|gpt|chat\s?gpt|an?\s+llm|openai|a\s+chatbot)\b"
+    r"|\binstead\s+of\s+(using\s+)?(claude|gpt|chat\s?gpt)\b",
+    re.IGNORECASE,
+)
+_CAPABILITY_Q_RE = re.compile(
+    r"\bdo\s+you\s+(also\s+)?(generate|make|create|build|produce|support|handle|offer|do)\b",
+    re.IGNORECASE,
+)
+
+_VALUE_PROP_ANSWER = (
+    "Great question. Unlike a general chatbot, I don't just hand you a block of "
+    "code — I turn your idea into a real, editable **model** (a class diagram you "
+    "can see and refine), then generate **consistent, runnable code** from it with "
+    "BESSER's built-in generators: a full web app (React + FastAPI), plus SQL, "
+    "Django, Pydantic, SQLAlchemy, REST APIs, and more. So you get a single source "
+    "of truth you can evolve and regenerate — not one-shot code that drifts. Tell "
+    "me what you'd like to build and I'll show you."
+)
+_CAPABILITY_ANSWER = (
+    "Yes! From a plain description I build the **model** and generate working "
+    "code — a full **web app** (React + FastAPI), plus SQL, Django, Pydantic, "
+    "SQLAlchemy, REST APIs, JSON Schema, and more. I can also modify your diagram, "
+    "describe it, or import a PlantUML / diagram image. What would you like to build?"
+)
+
+
+def _meta_question_answer(message):
+    """Return a canned answer for a value-proposition / capability QUESTION, or
+    None. Lets the assistant answer 'why use you?' / 'do you generate websites?'
+    instead of routing them into a build or a generic greeting."""
+    text = message or ""
+    if _VALUE_PROP_RE.search(text):
+        return _VALUE_PROP_ANSWER
+    if _CAPABILITY_Q_RE.search(text):
+        return _CAPABILITY_ANSWER
+    return None
+
+
 _DECLINE_PHRASES = {
     "nothing", "nothing thanks", "nothing for now", "nothing right now",
     "nothing else", "no", "nope", "nah", "no thanks", "no thank you",
@@ -594,6 +657,15 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
     if _request_is_out_of_scope(request.message):
         logger.info("[Modeling] Out-of-scope artifact request — redirecting to modeling")
         reply_message(session, _OUT_OF_SCOPE_REDIRECT)
+        return
+
+    # Meta-question guard: "do you also generate websites?" / "why use you?" is a
+    # QUESTION about capabilities, not a build request — answer it instead of
+    # kicking off a full system.
+    _meta = _meta_question_answer(request.message)
+    if _meta:
+        logger.info("[Modeling] Meta/value-prop question — answering, not building")
+        reply_message(session, _meta)
         return
 
     # Decline / no-op guard: a bare "nothing" / "no" / "never mind" means the
