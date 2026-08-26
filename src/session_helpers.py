@@ -35,6 +35,7 @@ from session_keys import (
     PENDING_SMART_GEN_INSTRUCTIONS,
     UNIFIED_CLASSIFICATION,
 )
+from unified_classifier import _pending_flow_context
 
 logger = logging.getLogger(__name__)
 
@@ -94,36 +95,19 @@ def json_intent_matches(session: Session, params: Dict[str, Any]) -> bool:
     in the current state so ``_common_preamble`` can handle it, instead
     of being misrouted by the intent classifier.
     """
-    # If awaiting generator selection, suppress intent matching so the
-    # route_to_generation condition (next priority) can capture the reply.
-    pending = session.get(PENDING_GENERATOR_TYPE)
-    if pending == "_awaiting_selection":
-        return False
-    if pending:
-        # A REAL config-collection flow is in progress (e.g. the Django
-        # project-name Q&A). Keep ANSWERS in generation_state — a terse reply
-        # like "no docker" classifies as decline/fallback and used to route
-        # AWAY, orphaning the flow. Suppress only when the unified verdict is
-        # generation / decline / undecided (i.e. it is, or looks like, an
-        # answer); a clear pivot to another intent (modify/create/describe…)
-        # still routes normally, exactly as before. Interim until pending
-        # flows are first-class (ActiveFlow).
-        uc = session.get(UNIFIED_CLASSIFICATION)
-        uc_intent = getattr(uc, "intent", None)
-        if uc_intent in (None, "generation_intent", "fallback_intent",
-                         "decline_intent"):
+    # Pending-flow gate (ActiveFlow): when the assistant is awaiting a reply
+    # to a question (replace/keep, GUI choice, smart-gen confirmation,
+    # generator menu/config), the CLASSIFIER decides — with the pending
+    # question in its context — whether this message ANSWERS it or is a NEW
+    # REQUEST. Answers (and no-verdict, conservatively) stay in the current
+    # state for the flow handler to consume; a new_request routes NORMALLY,
+    # so it can never land in the wrong state again. (The old unconditional
+    # suppression was the root cause of that whole bug class: modifies
+    # trapped in the create state, declines trapped in config flows, …)
+    if _pending_flow_context(session) is not None:
+        _uc_flow = session.get(UNIFIED_CLASSIFICATION)
+        if getattr(_uc_flow, "pending_flow_action", None) != "new_request":
             return False
-
-    # If a pending confirmation or GUI choice is active, suppress intent
-    # matching so the message stays in the current state and _common_preamble
-    # handles it.  This prevents "replace"/"keep"/"auto"/"llm" from being
-    # misclassified as modify_model_intent or fallback_intent.
-    if session.get(PENDING_COMPLETE_SYSTEM):
-        return False
-    if session.get(PENDING_GUI_CHOICE):
-        return False
-    if session.get(PENDING_SMART_GEN_INSTRUCTIONS):
-        return False
 
     target_intent_name = params.get('intent_name')
     if not target_intent_name:
@@ -154,12 +138,10 @@ def json_no_intent_matched(session: Session) -> bool:
     Also returns True when a pending confirmation suppressed intent matching,
     so the message stays in the current state for _common_preamble to handle.
     """
-    if (
-        session.get(PENDING_COMPLETE_SYSTEM)
-        or session.get(PENDING_GUI_CHOICE)
-        or session.get(PENDING_SMART_GEN_INSTRUCTIONS)
-    ):
-        return True
+    if _pending_flow_context(session) is not None:
+        _uc_flow = session.get(UNIFIED_CLASSIFICATION)
+        if getattr(_uc_flow, "pending_flow_action", None) != "new_request":
+            return True
     if hasattr(session.event, 'predicted_intent') and session.event.predicted_intent:
         matched_intent = session.event.predicted_intent.intent
         return matched_intent.name == 'fallback_intent'

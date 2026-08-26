@@ -80,15 +80,12 @@ def _ensure_unified_classification(session: Session) -> bool:
     subsequent ``json_intent_matches`` transitions read our classifier's
     verdict instead of BAF's description-based one.
 
-    Skips the call for pending-confirmation / pending-GUI flows — those
-    replies stay in the current state and intent classification doesn't
-    apply. Also skips when the session already has a cached
-    classification for this event id (multiple transitions re-use).
+    Runs for pending-flow replies TOO (ActiveFlow): the classifier sees
+    the pending question in its context and judges answer-vs-new-request
+    — that verdict is what lets ``json_intent_matches`` route a pivot
+    normally instead of trapping it in the asking state. Skips only when
+    the session already has a cached classification for this event id.
     """
-    # Skip for confirmation replies — they stay in the current state
-    # regardless of any intent classification.
-    if session.get(PENDING_COMPLETE_SYSTEM) or session.get(PENDING_GUI_CHOICE):
-        return False
     try:
         request = parse_assistant_request(session)
         # Reconnect-recovery control message — never classify it.

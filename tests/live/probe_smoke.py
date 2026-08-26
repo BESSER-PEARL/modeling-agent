@@ -11,6 +11,8 @@ Checks are deterministic-ish behaviors (NOT generation fidelity):
   out_of_scope  "picture of a cat" redirects, never builds        (classifier-routed)
   meta          "why use you vs claude?" answers, never builds    (classifier-routed)
   modify        an edit applies to an existing model
+  flow_pivot    a modify typed at the replace/keep prompt MODIFIES     (ActiveFlow)
+  flow_answer   "replace" at the replace/keep prompt still replaces    (ActiveFlow)
   mismatch      "Update model + generate" breaks the loop AND resumes smart-gen
 
 Usage (run after ./deploy.sh agent):  python tests/live/probe_smoke.py
@@ -156,6 +158,42 @@ async def c_modify():
         return (ok, "modified" if ok else f"NOT modified ({[x[0] for x in f]})")
 
 
+async def c_flow_pivot():
+    """The 'add Death to PetStatus' bug class: a MODIFY typed at the
+    replace/keep prompt must MODIFY, not be eaten by the confirmation."""
+    async with _connect() as ws:
+        sid = "s_" + uuid.uuid4().hex[:6]
+        await _send(ws, sid, "create a class diagram for a shop with products and orders")
+        if not _built(await _collect(ws)):
+            return (False, "seed-failed")
+        await _send(ws, sid, "create a class diagram for a shop with products and orders")
+        f1 = await _collect(ws)
+        asked = any("replace" in (t or "").lower() for _a, t, _l in f1)
+        if not asked:
+            return (False, f"no replace prompt ({[x[0] for x in f1]})")
+        await _send(ws, sid, "add a price attribute to Product")
+        f2 = await _collect(ws)
+        ok = any(x[0] in ("modify_model", "inject_complete_system") for x in f2)
+        return (ok, "pivot modified" if ok else f"pivot NOT modified ({[x[0] for x in f2]})")
+
+
+async def c_flow_answer():
+    """And the mirror: an actual ANSWER at the prompt must still work."""
+    async with _connect() as ws:
+        sid = "s_" + uuid.uuid4().hex[:6]
+        await _send(ws, sid, "create a class diagram for a shop with products and orders")
+        if not _built(await _collect(ws)):
+            return (False, "seed-failed")
+        await _send(ws, sid, "create a class diagram for a shop with products and orders")
+        f1 = await _collect(ws)
+        if not any("replace" in (t or "").lower() for _a, t, _l in f1):
+            return (False, f"no replace prompt ({[x[0] for x in f1]})")
+        await _send(ws, sid, "replace")
+        f2 = await _collect(ws)
+        ok = _built(f2)
+        return (ok, "answer replaced" if ok else f"answer NOT executed ({[x[0] for x in f2]})")
+
+
 async def c_mismatch():
     async with _connect() as ws:
         sid = "s_" + uuid.uuid4().hex[:6]
@@ -179,6 +217,7 @@ CRITICAL = [
     ("create", c_create), ("decline", c_decline), ("injection", c_injection),
     ("vague", c_vague), ("contradiction", c_contradiction),
     ("out_of_scope", c_out_of_scope), ("meta", c_meta), ("modify", c_modify),
+    ("flow_pivot", c_flow_pivot), ("flow_answer", c_flow_answer),
     ("mismatch", c_mismatch),
 ]
 

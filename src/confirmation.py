@@ -27,6 +27,7 @@ from session_keys import (
     PENDING_SMART_GEN_INSTRUCTIONS,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_WEBAPP_GENERATE,
+    UNIFIED_CLASSIFICATION,
 )
 from execution import execute_model_operation
 
@@ -171,14 +172,28 @@ def handle_pending_gui_choice(session: Session) -> bool:
     request = parse_assistant_request(session)
     user_msg = (request.message or '').lower().strip()
 
-    wants_cancel = any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
+    # ActiveFlow: classifier verdict primary, keywords as outage fallback.
+    _uc = session.get(UNIFIED_CLASSIFICATION)
+    _flow_action = getattr(_uc, "pending_flow_action", None)
+    _flow_answer = getattr(_uc, "pending_flow_answer", None)
+    _verdict_usable = _flow_action == "answer" and _flow_answer in (
+        "auto", "llm", "cancel")
+
+    if _verdict_usable:
+        wants_cancel = _flow_answer == "cancel"
+    else:
+        wants_cancel = any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
     if wants_cancel:
         session.set(PENDING_GUI_CHOICE, None)
         reply_message(session, "Cancelled. No GUI was generated.")
         return True
 
-    wants_auto = any(keyword_matches(w, user_msg) for w in _AUTO_KEYWORDS)
-    wants_llm = any(keyword_matches(w, user_msg) for w in _LLM_KEYWORDS)
+    if _verdict_usable:
+        wants_auto = _flow_answer == "auto"
+        wants_llm = _flow_answer == "llm"
+    else:
+        wants_auto = any(keyword_matches(w, user_msg) for w in _AUTO_KEYWORDS)
+        wants_llm = any(keyword_matches(w, user_msg) for w in _LLM_KEYWORDS)
 
     if not wants_auto and not wants_llm:
         # The user's message doesn't look like a GUI choice answer.
@@ -294,28 +309,52 @@ def handle_pending_system_confirmation(session: Session) -> bool:
     request = parse_assistant_request(session)
     user_msg = (request.message or '').lower().strip()
 
-    wants_cancel = any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
+    # ActiveFlow: the classifier judged this message WITH the pending question
+    # in its context. Its verdict is PRIMARY; the keyword parsing below is the
+    # LLM-outage fallback (verdict missing or unusable).
+    _uc = session.get(UNIFIED_CLASSIFICATION)
+    _flow_action = getattr(_uc, "pending_flow_action", None)
+    _flow_answer = getattr(_uc, "pending_flow_answer", None)
+    if _flow_action == "new_request":
+        logger.info(
+            "[PendingConfirm] Classifier: message is a NEW REQUEST — "
+            "abandoning the confirmation")
+        session.set(PENDING_COMPLETE_SYSTEM, None)
+        return False  # Let normal routing handle the new request
+    _verdict_usable = _flow_action == "answer" and _flow_answer in (
+        "replace", "keep", "new_tab", "confirm", "cancel")
+
+    if _verdict_usable:
+        wants_cancel = _flow_answer == "cancel"
+    else:
+        wants_cancel = any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
     if wants_cancel:
         session.set(PENDING_COMPLETE_SYSTEM, None)
         reply_message(session, "Cancelled. Your existing model is unchanged.")
         return True
 
-    wants_new_tab = pending.get('can_add_tab', False) and any(keyword_matches(w, user_msg) for w in NEW_TAB_KEYWORDS)
-    wants_replace = any(keyword_matches(w, user_msg) for w in REPLACE_KEYWORDS)
-    wants_keep = any(keyword_matches(w, user_msg) for w in KEEP_KEYWORDS)
-    if not wants_keep and len(user_msg.split()) <= _WEAK_KEEP_MAX_WORDS:
-        # Short, confirmation-shaped replies ("no", "no thanks") count as keep;
-        # a long message containing 'no' is a new request, not an answer.
-        wants_keep = any(keyword_matches(w, user_msg) for w in _WEAK_KEEP_KEYWORDS)
+    if _verdict_usable:
+        wants_new_tab = (_flow_answer == "new_tab"
+                         and pending.get('can_add_tab', False))
+        wants_replace = _flow_answer in ("replace", "confirm")
+        wants_keep = _flow_answer == "keep"
+    else:
+        wants_new_tab = pending.get('can_add_tab', False) and any(keyword_matches(w, user_msg) for w in NEW_TAB_KEYWORDS)
+        wants_replace = any(keyword_matches(w, user_msg) for w in REPLACE_KEYWORDS)
+        wants_keep = any(keyword_matches(w, user_msg) for w in KEEP_KEYWORDS)
+        if not wants_keep and len(user_msg.split()) <= _WEAK_KEEP_MAX_WORDS:
+            # Short, confirmation-shaped replies ("no", "no thanks") count as
+            # keep; a long message containing 'no' is a new request.
+            wants_keep = any(keyword_matches(w, user_msg) for w in _WEAK_KEEP_KEYWORDS)
 
-    # BLOCKER safety guard: replacing DESTROYS the user's existing model, so
-    # only do it on an UNAMBIGUOUS replace. Any keep signal, or any negation
-    # ("no, keep my model, do not replace it"), downgrades to keep. This stops
-    # the confirmed silent data loss where a keep/negation reply still wiped
-    # the model because 'replace' precedence beat 'keep'.
-    if wants_replace and (wants_keep or _NEGATION_RE.search(user_msg)):
-        wants_replace = False
-        wants_keep = True
+        # BLOCKER safety guard (keyword path only — the classifier reads
+        # negation natively): replacing DESTROYS the user's existing model, so
+        # only do it on an UNAMBIGUOUS replace. Any keep signal, or any
+        # negation ("no, keep my model, do not replace it"), downgrades to
+        # keep.
+        if wants_replace and (wants_keep or _NEGATION_RE.search(user_msg)):
+            wants_replace = False
+            wants_keep = True
 
     if not wants_replace and not wants_keep and not wants_new_tab:
         # The user's message doesn't look like a confirmation answer.

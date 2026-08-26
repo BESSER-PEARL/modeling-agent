@@ -44,6 +44,10 @@ from pydantic import BaseModel, Field
 from protocol.types import AssistantRequest
 from session_keys import (
     LAST_SMART_GEN_AT,
+    PENDING_COMPLETE_SYSTEM,
+    PENDING_GENERATOR_TYPE,
+    PENDING_GUI_CHOICE,
+    PENDING_SMART_GEN_INSTRUCTIONS,
     UNIFIED_CLASSIFICATION,
     UNIFIED_CLASSIFICATION_EVENT_ID,
 )
@@ -314,6 +318,30 @@ class UnifiedClassification(BaseModel):
         ),
     )
 
+    # --- Pending-flow fields (populated when the user block carries a
+    # PENDING QUESTION — i.e. the assistant just asked something) ---
+
+    pending_flow_action: Optional[Literal["answer", "new_request"]] = Field(
+        default=None,
+        description=(
+            "REQUIRED when the user block contains a PENDING QUESTION: "
+            "'answer' if the USER MESSAGE replies to that question (however "
+            "phrased); 'new_request' if it is an unrelated instruction or "
+            "request. None when no question is pending."
+        ),
+    )
+    pending_flow_answer: Optional[Literal[
+        "replace", "keep", "new_tab", "auto", "llm", "confirm", "cancel",
+        "other_answer",
+    ]] = Field(
+        default=None,
+        description=(
+            "When pending_flow_action='answer': the VALID ANSWER the message "
+            "maps to (listed with the question). 'other_answer' for free-form "
+            "values such as configuration input."
+        ),
+    )
+
     reason: str = Field(
         ...,
         description=(
@@ -498,6 +526,28 @@ _SYSTEM_PROMPT = (
     "app', 'make a website for a bakery') is NOT this — classify it as "
     "the create/generation request it is.\n\n"
     "fallback_intent: none of the above fits cleanly.\n\n"
+    "=== PENDING QUESTION HANDLING ===\n\n"
+    "When the user block contains a PENDING QUESTION (something the "
+    "assistant just asked and is awaiting a reply to), FIRST decide "
+    "pending_flow_action:\n"
+    "  'answer' — the USER MESSAGE replies to that question, in any "
+    "phrasing: direct ('replace', 'keep it', 'cancel', 'the second "
+    "option', '1', 'yes please'), negated ('no, keep my model, do not "
+    "replace it' answers a replace question with keep; 'no docker' "
+    "answers a containerization question), or free-form values for a "
+    "configuration question ('project name is shop'). Set "
+    "pending_flow_answer to the closest VALID ANSWER listed with the "
+    "question ('other_answer' for free-form values).\n"
+    "  'new_request' — the message IGNORES the question and asks for "
+    "something else ('add an email attribute to Customer' while a "
+    "replace question is pending; 'generate sql' while a GUI question "
+    "is pending). The pending question will be abandoned and the "
+    "message routed by its own intent — so ALWAYS also classify the "
+    "intent fields normally.\n"
+    "When in doubt between answer and new_request, prefer 'answer' only "
+    "when the message plausibly maps to a VALID ANSWER; a message that "
+    "names classes/attributes/generators or gives a build instruction "
+    "is a new_request.\n\n"
     "=== GENERATION SUB-ROUTING (populate when intent='generation_intent') ===\n\n"
     "CRITICAL BACKGROUND: BESSER has two generation paths.\n"
     "  * 'deterministic' = pure scaffolding from a template. No auth, "
@@ -733,6 +783,7 @@ def classify_message(
     llm_provider: Any,
     history: Optional[list] = None,
     recent_smart_gen: bool = False,
+    pending_flow: Optional[dict] = None,
 ) -> UnifiedClassification:
     """Classify a user message into a state-level intent + sub-routing fields.
 
@@ -759,7 +810,7 @@ def classify_message(
     try:
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": _build_user_block(request, history, recent_smart_gen)},
+            {"role": "user", "content": _build_user_block(request, history, recent_smart_gen, pending_flow)},
         ]
         # Reasoning models (gpt-5* / o-series) burn hidden reasoning tokens
         # from the SAME completion budget. With only 800 tokens the visible
@@ -782,6 +833,83 @@ def classify_message(
     except Exception:
         logger.exception("classify_message failed; falling back to fallback_intent")
         return _safe_fallback("LLM classifier failed")
+
+
+def _pending_flow_context(session: Any) -> Optional[dict]:
+    """Describe the question the assistant is currently awaiting an answer
+    to, derived from the existing pending-flow session keys (no storage
+    migration). Returns ``{kind, question, valid_answers}`` or ``None``.
+
+    Order mirrors _common_preamble's handling order (GUI choice first).
+    """
+    try:
+        if session.get(PENDING_GUI_CHOICE):
+            return {
+                "kind": "gui_choice",
+                "question": (
+                    "How should I generate the GUI — 1 fast & deterministic "
+                    "(one page per class), or 2 AI-generated (experimental)?"
+                ),
+                "valid_answers": ["auto", "llm", "cancel"],
+            }
+        pending_cs = session.get(PENDING_COMPLETE_SYSTEM)
+        if pending_cs:
+            if isinstance(pending_cs, dict) and pending_cs.get("destructive_modify"):
+                return {
+                    "kind": "destructive_confirm",
+                    "question": (
+                        "This modification would delete most or all of the "
+                        "existing model — do you want to proceed?"
+                    ),
+                    # 'confirm' maps to proceeding; 'replace' tolerated as a
+                    # synonym by the handler.
+                    "valid_answers": ["confirm", "cancel"],
+                }
+            _can_tab = bool(isinstance(pending_cs, dict) and pending_cs.get("can_add_tab"))
+            return {
+                "kind": "replace_confirm",
+                "question": (
+                    "A model already exists for this diagram — should I "
+                    "replace it, keep it and add alongside"
+                    + (", create it in a new tab" if _can_tab else "")
+                    + ", or cancel?"
+                ),
+                "valid_answers": (
+                    ["replace", "keep", "new_tab", "cancel"] if _can_tab
+                    else ["replace", "keep", "cancel"]
+                ),
+            }
+        if session.get(PENDING_SMART_GEN_INSTRUCTIONS):
+            return {
+                "kind": "smart_confirm",
+                "question": (
+                    "Do you want me to continue and run the Spec-Driven "
+                    "generator on your model?"
+                ),
+                "valid_answers": ["confirm", "cancel"],
+            }
+        pending_gen = session.get(PENDING_GENERATOR_TYPE)
+        if pending_gen == "_awaiting_selection":
+            return {
+                "kind": "generator_menu",
+                "question": (
+                    "Which code generator should I run? (I listed the "
+                    "available options.)"
+                ),
+                "valid_answers": ["other_answer", "cancel"],
+            }
+        if pending_gen:
+            return {
+                "kind": "generator_config",
+                "question": (
+                    f"I asked for the {pending_gen} generator's remaining "
+                    "configuration (e.g. project name / dialect / options)."
+                ),
+                "valid_answers": ["other_answer", "cancel"],
+            }
+    except Exception:  # pragma: no cover — a session stub without .get
+        return None
+    return None
 
 
 def get_or_classify(
@@ -822,6 +950,7 @@ def get_or_classify(
             reason="frontend_event callback — routed deterministically, no LLM call",
         )
     else:
+        _pending_flow = _pending_flow_context(session)
         _smart_at = session.get(LAST_SMART_GEN_AT)
         _recent_smart = (
             isinstance(_smart_at, (int, float))
@@ -831,6 +960,7 @@ def get_or_classify(
         result = classify_message(
             request, llm_provider, _recent_history(session, request),
             recent_smart_gen=_recent_smart,
+            pending_flow=_pending_flow,
         )
         _log_classification(request, result)
     if event_id is not None:
@@ -918,9 +1048,26 @@ def _history_lines(history: Optional[list]) -> list:
 def _build_user_block(
     request: AssistantRequest, history: Optional[list] = None,
     recent_smart_gen: bool = False,
+    pending_flow: Optional[dict] = None,
 ) -> str:
     """Compose the user message + recent conversation + workspace context."""
     lines = ["USER MESSAGE:", request.message or ""]
+
+    if pending_flow:
+        # The assistant is awaiting a reply — see PENDING QUESTION HANDLING
+        # in the system prompt.
+        lines.append("")
+        lines.append(
+            "PENDING QUESTION (the assistant just asked this and is awaiting "
+            "a reply):"
+        )
+        lines.append(f"\u00ab{pending_flow.get('question', '')}\u00bb")
+        lines.append(
+            "VALID ANSWERS: "
+            + ", ".join(pending_flow.get("valid_answers", []))
+            + "  (set pending_flow_action='new_request' if the message is "
+            "not a reply to this)"
+        )
 
     if recent_smart_gen:
         # Structured recency signal (set when a smart generation completes) —

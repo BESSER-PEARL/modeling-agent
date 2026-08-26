@@ -38,8 +38,11 @@ from protocol.types import AssistantRequest, WorkspaceContext
 from tests.conftest import FakeSession
 
 
-def _uc(intent):
-    return UnifiedClassification(intent=intent, reason="stub")
+def _uc(intent, flow_action=None, flow_answer=None):
+    return UnifiedClassification(
+        intent=intent, reason="stub",
+        pending_flow_action=flow_action, pending_flow_answer=flow_answer,
+    )
 
 
 def _req(message):
@@ -99,42 +102,154 @@ class TestConfirmationPivots:
 # Config-flow suppression in json_intent_matches
 # ---------------------------------------------------------------------
 
-class TestConfigFlowSuppression:
-    def _session(self, pending, cached_intent):
+class TestPendingFlowGate:
+    """ActiveFlow: while a question is pending, the CLASSIFIER decides
+    answer-vs-new-request (with the question in its context). Answers and
+    no-verdict stay in the asking state; an explicit new_request routes
+    normally — so pivots can never land in the wrong state."""
+
+    def _session(self, pending, uc):
         session = FakeSession()
         if pending is not None:
             session.set(PENDING_GENERATOR_TYPE, pending)
-        if cached_intent is not None:
-            session.set(UNIFIED_CLASSIFICATION, _uc(cached_intent))
+        if uc is not None:
+            session.set(UNIFIED_CLASSIFICATION, uc)
         return session
 
-    def test_answer_shaped_decline_stays_in_generation_state(self):
-        """'no docker' mid-config classifies as decline — must NOT route away."""
-        session = self._session("django", "decline_intent")
+    def test_answer_stays_in_the_asking_state(self):
+        """'no docker' mid-config → verdict answer → stays for the flow."""
+        session = self._session(
+            "django", _uc("decline_intent", "answer", "other_answer"))
         assert json_intent_matches(
             session, {"intent_name": "decline_intent"}) is False
 
-    def test_undecided_stays_in_generation_state(self):
+    def test_no_verdict_stays_conservatively(self):
         session = self._session("django", None)
         assert json_intent_matches(
             session, {"intent_name": "modify_model_intent"}) is False
 
-    def test_clear_pivot_to_modify_still_routes(self):
-        session = self._session("django", "modify_model_intent")
+    def test_new_request_routes_normally(self):
+        """'add a Payment class' mid-config → new_request → routes to modify."""
+        session = self._session(
+            "django", _uc("modify_model_intent", "new_request"))
         assert json_intent_matches(
             session, {"intent_name": "modify_model_intent"}) is True
 
-    def test_awaiting_selection_always_suppresses(self):
-        session = self._session("_awaiting_selection", "modify_model_intent")
+    def test_new_request_verdict_frees_replace_confirmations_too(self):
+        """The 'add Death to PetStatus' class of bug: a modify typed at the
+        replace/keep prompt routes to modify_model_state — never trapped."""
+        session = FakeSession()
+        session.set(PENDING_COMPLETE_SYSTEM, {"operation_request": "create x"})
+        session.set(UNIFIED_CLASSIFICATION,
+                    _uc("modify_model_intent", "new_request"))
+        assert json_intent_matches(
+            session, {"intent_name": "modify_model_intent"}) is True
+
+    def test_answer_at_replace_confirmation_stays(self):
+        session = FakeSession()
+        session.set(PENDING_COMPLETE_SYSTEM, {"operation_request": "create x"})
+        session.set(UNIFIED_CLASSIFICATION,
+                    _uc("fallback_intent", "answer", "replace"))
+        assert json_intent_matches(
+            session, {"intent_name": "modify_model_intent"}) is False
+
+    def test_awaiting_selection_without_verdict_suppresses(self):
+        session = self._session("_awaiting_selection", _uc("modify_model_intent"))
         assert json_intent_matches(
             session, {"intent_name": "modify_model_intent"}) is False
 
     def test_no_pending_flow_matches_normally(self):
-        session = self._session(None, "modify_model_intent")
+        session = self._session(None, _uc("modify_model_intent"))
         assert json_intent_matches(
             session, {"intent_name": "modify_model_intent"}) is True
         assert json_intent_matches(
             session, {"intent_name": "create_complete_system_intent"}) is False
+
+
+class TestPendingFlowContext:
+    """_pending_flow_context derives the pending question from the existing
+    session keys (no storage migration) with the preamble's precedence."""
+
+    def test_kinds_and_precedence(self):
+        from unified_classifier import _pending_flow_context
+        from session_keys import (
+            PENDING_GUI_CHOICE, PENDING_SMART_GEN_INSTRUCTIONS,
+        )
+        s = FakeSession()
+        assert _pending_flow_context(s) is None
+        s.set(PENDING_GENERATOR_TYPE, "django")
+        assert _pending_flow_context(s)["kind"] == "generator_config"
+        s.set(PENDING_GENERATOR_TYPE, "_awaiting_selection")
+        assert _pending_flow_context(s)["kind"] == "generator_menu"
+        s.set(PENDING_SMART_GEN_INSTRUCTIONS, "build x")
+        assert _pending_flow_context(s)["kind"] == "smart_confirm"
+        s.set(PENDING_COMPLETE_SYSTEM, {"can_add_tab": True})
+        flow = _pending_flow_context(s)
+        assert flow["kind"] == "replace_confirm"
+        assert "new_tab" in flow["valid_answers"]
+        s.set(PENDING_COMPLETE_SYSTEM, {"destructive_modify": True})
+        assert _pending_flow_context(s)["kind"] == "destructive_confirm"
+        s.set(PENDING_GUI_CHOICE, {"remaining_operations": []})
+        assert _pending_flow_context(s)["kind"] == "gui_choice"  # highest
+
+    def test_user_block_renders_pending_question(self):
+        flow = {"kind": "replace_confirm",
+                "question": "Replace it, keep it, or cancel?",
+                "valid_answers": ["replace", "keep", "cancel"]}
+        block = _build_user_block(_req("add a Payment class"), None,
+                                  pending_flow=flow)
+        assert "PENDING QUESTION" in block
+        assert "Replace it, keep it, or cancel?" in block
+        assert "replace, keep, cancel" in block
+
+
+class TestVerdictPrimaryConfirmation:
+    """handle_pending_system_confirmation consumes the classifier verdict
+    first; keywords remain only as the LLM-outage fallback."""
+
+    def _run(self, message, uc):
+        session = FakeSession()
+        session.set(PENDING_COMPLETE_SYSTEM, dict(_PENDING))
+        if uc is not None:
+            session.set(UNIFIED_CLASSIFICATION, uc)
+        executed = {}
+        with patch.object(confirmation, "parse_assistant_request",
+                          return_value=_req(message)), \
+             patch.object(confirmation, "reply_message"), \
+             patch.object(confirmation, "reply_payload"), \
+             patch.object(confirmation, "execute_model_operation",
+                          side_effect=lambda **kw: executed.update(kw) or None):
+            handled = handle_pending_system_confirmation(session)
+        return handled, executed, session
+
+    def test_verdict_new_request_abandons(self):
+        handled, executed, session = self._run(
+            "can you add Death to the PetStatus enum",
+            _uc("modify_model_intent", "new_request"))
+        assert handled is False
+        assert executed == {}
+        assert not session.get(PENDING_COMPLETE_SYSTEM)
+
+    def test_verdict_keep_wins_over_keyword_noise(self):
+        # Long negated phrasing the keyword path needed guards for — the
+        # classifier just says keep.
+        handled, executed, _ = self._run(
+            "hmm no rather not, I prefer keeping what I already built",
+            _uc("fallback_intent", "answer", "keep"))
+        assert handled is True
+        assert executed.get("_replace_existing") is False
+
+    def test_verdict_replace_executes_replace(self):
+        handled, executed, _ = self._run(
+            "sure, wipe it and start over",
+            _uc("fallback_intent", "answer", "replace"))
+        assert handled is True
+        assert executed.get("_replace_existing") is True
+
+    def test_no_verdict_falls_back_to_keywords(self):
+        handled, executed, _ = self._run("replace", None)
+        assert handled is True
+        assert executed.get("_replace_existing") is True
 
 
 # ---------------------------------------------------------------------

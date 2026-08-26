@@ -1042,6 +1042,15 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     smart_gen_decision = (
         _smart_gen_confirmation_decision(msg_lower) if has_pending_smart_gen else None
     )
+    if has_pending_smart_gen and smart_gen_decision is None:
+        # ActiveFlow: the exact-phrase sets miss novel phrasings ("sure, go
+        # for it", "rather not") — the classifier judged the message with the
+        # pending confirmation in context; use its verdict.
+        _uc_sc = session.get(UNIFIED_CLASSIFICATION)
+        if getattr(_uc_sc, "pending_flow_action", None) == "answer":
+            _sc_answer = getattr(_uc_sc, "pending_flow_answer", None)
+            if _sc_answer in ("confirm", "cancel"):
+                smart_gen_decision = _sc_answer
 
     if smart_gen_decision == "cancel":
         _clear_pending_smart_gen(session)
@@ -1134,10 +1143,12 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         # must EXIT the flow. Without this, the reply looped the config
         # prompt and the CONFIG_PROMPT_ATTEMPTS >= 3 branch auto-filled
         # defaults and generated the very thing the user was refusing.
+        _uc_cfg = session.get(UNIFIED_CLASSIFICATION)
         if (
             _norm_prompt(request.message) in _CONFIG_CANCEL_PHRASES
-            or getattr(session.get(UNIFIED_CLASSIFICATION), "intent", None)
-            == "decline_intent"
+            or getattr(_uc_cfg, "intent", None) == "decline_intent"
+            or (getattr(_uc_cfg, "pending_flow_action", None) == "answer"
+                and getattr(_uc_cfg, "pending_flow_answer", None) == "cancel")
         ):
             logger.info(
                 "[Generation] Pending '%s' config flow cancelled by the user",
