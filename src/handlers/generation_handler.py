@@ -69,26 +69,6 @@ def _read_unified_mismatch_info(session: Session) -> Tuple[bool, Optional[str]]:
 # BYOK-spending run days later (B-2 stale-stash fix).
 _SMART_GEN_STASH_TTL_SECONDS = 30 * 60
 
-# Built-in generators that emit real, runnable output on the DETERMINISTIC path
-# (web_app is excluded — its deterministic output is a bare GUI scaffold, so the
-# smart path is genuinely better there). A bare request for one of these should
-# use the fast, free deterministic generator, not the smart/LLM path.
-_DETERMINISTIC_CODE_GENERATORS = frozenset({
-    "rest_api", "backend", "sql", "sqlalchemy", "django", "pydantic",
-    "python", "java", "jsonschema", "smartdata", "rdf", "qiskit",
-})
-
-# Custom-behavior signals that genuinely need the smart (LLM-augmented) path even
-# when the request names a built-in — anything a plain template can't express.
-_SMART_ONLY_SIGNALS = re.compile(
-    r"\b(auth|authentication|log\s?in|login|sign\s?up|signup|signin|jwt|oauth|"
-    r"role|permission|access\s+control|only\s+admins?|dashboard|docker|"
-    r"container|deploy|migration|middleware|cors|rate.?limit|full[\s-]?stack|"
-    r"full\s+app|web\s?app|website|frontend|responsive|production|"
-    r"business\s+rule|integration)\b",
-    re.IGNORECASE,
-)
-
 
 # Generator prerequisites are shared with the request planner. Keeping the
 # contract here lets both direct generation and multi-step plans validate the
@@ -1122,24 +1102,6 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             "generation sub-route: route=%s generator_type=%s reason=%s",
             classification.route, classification.generator_type, classification.reason,
         )
-
-        # Bare-built-in override: the LLM classifier over-picks 'smart' for a
-        # plain "generate a rest api" / "generate the backend" against an
-        # existing model (it reads the domain as "a real app"). When the request
-        # names a BESSER built-in code generator and carries NONE of the
-        # custom-behavior signals that truly need smart, honor the fast, free
-        # deterministic generator. This just enforces the classifier's own rule
-        # deterministically, so routing can't slip to the slow/paid path.
-        if (
-            classification.route == "smart"
-            and classification.generator_type in _DETERMINISTIC_CODE_GENERATORS
-            and not _SMART_ONLY_SIGNALS.search(request.message or "")
-        ):
-            logger.info(
-                "[Generation] Bare built-in '%s' — overriding smart -> deterministic",
-                classification.generator_type,
-            )
-            classification.route = "deterministic"
 
         if classification.route == "smart":
             _clear_pending_state(session)

@@ -56,6 +56,7 @@ from session_keys import (
     PENDING_SMART_GEN_INSTRUCTIONS,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
+    UNIFIED_CLASSIFICATION,
     WORKFLOW_PENDING_GENERATOR,
 )
 from unified_classifier import get_or_classify
@@ -530,11 +531,45 @@ _CONTRADICTORY_CREATE_CLARIFY = (
 )
 
 
+# The unified classifier is the authoritative create-vs-modify router; the state
+# body's own (intent, mode) is the fallback used only when they agree.
+_INTENT_TO_MODE = {
+    "modify_model_intent": ("modify_model_intent", "modify_model"),
+    "create_complete_system_intent": ("create_complete_system_intent", "complete_system"),
+}
+
+
+def _reconcile_intent(intent_name: str, default_mode: str, unified_intent):
+    """Return the (intent, mode) to execute with. Honors the unified classifier's
+    create/modify verdict over the state default — they differ only when a pending
+    flow suppressed intent routing and the message landed in the wrong state."""
+    if unified_intent in _INTENT_TO_MODE and unified_intent != intent_name:
+        return _INTENT_TO_MODE[unified_intent]
+    return intent_name, default_mode
+
+
 def _modeling_state_body(session: Session, intent_name: str, default_mode: str, empty_msg: str):
     """Unified handler for all modeling operations (system creation, modification)."""
     request = _common_preamble(session)
     if request is None:
         return
+
+    # Honor the unified classifier's verdict over the state's default. Normally
+    # they agree (routing is driven by the classifier), but a pending flow — e.g.
+    # a GUI-choice prompt — suppresses intent routing (json_intent_matches), so a
+    # follow-up modify can land in the CREATE state and get executed as a full
+    # rebuild. Reconcile so "add Death to the PetStatus enum" modifies instead of
+    # popping the replace/keep prompt.
+    _uc = session.get(UNIFIED_CLASSIFICATION)
+    _reconciled_intent, default_mode = _reconcile_intent(
+        intent_name, default_mode, getattr(_uc, "intent", None),
+    )
+    if _reconciled_intent != intent_name:
+        logger.info(
+            "[Modeling] Reconciling state default '%s' -> unified intent '%s'",
+            intent_name, _reconciled_intent,
+        )
+        intent_name = _reconciled_intent
 
     session.set(LAST_MATCHED_INTENT, intent_name)
 
