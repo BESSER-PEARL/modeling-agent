@@ -181,6 +181,10 @@ def handle_pending_gui_choice(session: Session) -> bool:
             "treating as new request, clearing pending state"
         )
         session.set(PENDING_GUI_CHOICE, None)
+        # Also drop the web-app pause flag: the user broke out of the GUI flow
+        # (e.g. a modify), so the next execute_planned_operations must NOT fire
+        # the "Your screens are ready" prompt — the screens were never generated.
+        session.set(PENDING_WEBAPP_GENERATE, None)
         return False  # Let normal state body handle the new request
 
     if wants_auto:
