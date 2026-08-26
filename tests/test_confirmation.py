@@ -263,7 +263,15 @@ class TestKeywordListsNonEmpty:
 
     def test_known_keep_keywords_present(self):
         assert "keep" in KEEP_KEYWORDS
-        assert "no" in KEEP_KEYWORDS
+        # 'no' moved to the WEAK tier (short-message-only) and 'add' was
+        # removed outright: both consumed real pivot messages like
+        # "no, just add an email attribute to Customer" as a KEEP answer,
+        # discarding the user's actual instruction.
+        from confirmation import _WEAK_KEEP_KEYWORDS, _WEAK_KEEP_MAX_WORDS
+        assert "no" not in KEEP_KEYWORDS
+        assert "add" not in KEEP_KEYWORDS
+        assert "no" in _WEAK_KEEP_KEYWORDS
+        assert _WEAK_KEEP_MAX_WORDS <= 5
 
     def test_known_cancel_keywords_present(self):
         assert "cancel" in CANCEL_KEYWORDS

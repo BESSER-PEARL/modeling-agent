@@ -99,6 +99,20 @@ def json_intent_matches(session: Session, params: Dict[str, Any]) -> bool:
     pending = session.get(PENDING_GENERATOR_TYPE)
     if pending == "_awaiting_selection":
         return False
+    if pending:
+        # A REAL config-collection flow is in progress (e.g. the Django
+        # project-name Q&A). Keep ANSWERS in generation_state — a terse reply
+        # like "no docker" classifies as decline/fallback and used to route
+        # AWAY, orphaning the flow. Suppress only when the unified verdict is
+        # generation / decline / undecided (i.e. it is, or looks like, an
+        # answer); a clear pivot to another intent (modify/create/describe…)
+        # still routes normally, exactly as before. Interim until pending
+        # flows are first-class (ActiveFlow).
+        uc = session.get(UNIFIED_CLASSIFICATION)
+        uc_intent = getattr(uc, "intent", None)
+        if uc_intent in (None, "generation_intent", "fallback_intent",
+                         "decline_intent"):
+            return False
 
     # If a pending confirmation or GUI choice is active, suppress intent
     # matching so the message stays in the current state and _common_preamble

@@ -36,12 +36,14 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 from protocol.types import AssistantRequest
 from session_keys import (
+    LAST_SMART_GEN_AT,
     UNIFIED_CLASSIFICATION,
     UNIFIED_CLASSIFICATION_EVENT_ID,
 )
@@ -70,6 +72,10 @@ _INTENT_NAMES = Literal[
     # User asks for a non-software artifact (an actual image/picture, a poem,
     # a joke, general chit-chat) — redirect, do NOT model a diagram of it.
     "out_of_scope_intent",
+    # User asks about the ASSISTANT itself — capabilities ("do you generate
+    # websites?", "what can you do") or value ("why use you instead of
+    # Claude/GPT?") — answer the pitch, do NOT build anything.
+    "meta_question_intent",
     # Catch-all — BAF's own fallback state body runs when nothing
     # matches. Routed to whatever state fallback the current state
     # has (typically modeling_help_state).
@@ -153,94 +159,19 @@ class UnifiedClassification(BaseModel):
     intent: _INTENT_NAMES = Field(
         ...,
         description=(
-            "State-level intent. Pick exactly one:\n"
-            "  'hello_intent'                   — an ACTUAL greeting / "
-            "small-talk FROM the user (e.g. 'hi', 'hello there', 'thanks'). "
-            "A QUESTION that merely QUOTES a greeting word is NOT a greeting: "
-            "'which intent handles the user saying hello', 'what happens when "
-            "the user says hi', 'does my bot greet people' are questions "
-            "ABOUT the model → describe_model_intent, not hello_intent.\n"
-            "  'create_complete_system_intent'  — user wants a NEW diagram or "
-            "complete system FROM SCRATCH (e.g. 'create a class diagram for a "
-            "library', 'model a booking system', 'build a Grover algorithm "
-            "circuit'). Also: adding an AGENT / CHATBOT / conversational "
-            "assistant / bot to an app or project (set "
-            "target_diagram_type='AgentDiagram') — that means a NEW agent "
-            "diagram, not a class.\n"
-            "  'modify_model_intent'            — user wants to ADD / REMOVE / "
-            "CHANGE elements in an EXISTING diagram (e.g. 'add a class called "
-            "User', 'remove the Book class', 'connect Author and Book'). This "
-            "ALSO covers INDIRECT requests that express a wish for the model "
-            "to CAPTURE / TRACK / STORE / RECORD / REMEMBER a piece of DATA "
-            "about an existing entity — e.g. 'it would help to know when each "
-            "order was placed' (→ add a date attribute to Order), 'I'd like "
-            "to keep track of each customer's address', 'we should remember "
-            "the shipping date', 'every product needs a price'. The user is "
-            "asking you to MODEL that data, not asking a question — route "
-            "modify_model_intent and let the modify step add the "
-            "attribute/relationship. BUT a QUESTION asking for your advice "
-            "about WHETHER or HOW to change the model ('do I need an Address "
-            "class?', 'how would you improve this?', 'what should I add?') is "
-            "NOT a modify command — it is describe_model_intent (analyze + "
-            "advise). Route modify_model_intent only for a STATEMENT/COMMAND "
-            "of a concrete change ('add a price to Product', 'every product "
-            "needs a price', 'connect Customer and Order'), never for an "
-            "open question seeking your recommendation. ALSO NOT a model "
-            "edit: after a recent smart/vibe generation, a request to add a "
-            "FEATURE to the generated app/code ('add authentication to it', "
-            "'add a login page', 'make it responsive') is generation_intent "
-            "(smart), not modify_model_intent — see the SMART-GEN FOLLOW-UP "
-            "rule in the system prompt.\n"
-            "  'describe_model_intent'          — user is asking ABOUT their "
-            "current diagram, wanting to KNOW/SEE what ALREADY exists (e.g. "
-            "'what classes do I have?', 'list all states', 'is X connected to "
-            "Y?'). This ALSO covers EVALUATIVE / ADVISORY questions that ask "
-            "for your OPINION, RECOMMENDATION, or CRITIQUE of the existing "
-            "model — 'is my model any good?', 'how would you improve this "
-            "design?', 'what would you add?', 'what am I missing?', 'do I "
-            "need a separate Address class?', 'are there problems with my "
-            "design?', 'what should I change?', 'is this a good way to model "
-            "X?'. These ask you to ANALYZE and ADVISE (and you SHOULD answer "
-            "with grounded, specific suggestions about THEIR classes) — they "
-            "are NOT commands to make a change, so do NOT route them to "
-            "modify_model_intent and do NOT set needs_clarification. NOT a "
-            "request to add new data — if the user wants the model to start "
-            "holding a NEW piece of information, that is modify_model_intent.\n"
-            "  'modeling_help_intent'           — user asks for CONCEPTUAL "
-            "help (e.g. 'how do I model inheritance?', 'explain UML "
-            "composition')\n"
-            "  'uml_spec_intent'                — user asks about the formal "
-            "UML specification\n"
-            "  'generation_intent'              — user wants SOURCE CODE in ANY "
-            "language or stack, or to EXPORT / DEPLOY. Includes BESSER built-ins "
-            "(django, pydantic, sql, ...) AND any other language (rails, rust, "
-            "kotlin, next.js, go, ...). A request to CREATE/design a NEW model "
-            "AND generate code from it in one message (e.g. 'create a booking "
-            "system and generate django') is create_complete_system_intent, "
-            "NOT generation_intent — build the model first; the agent offers to "
-            "generate afterward. After a recent smart/vibe generation, a "
-            "follow-up asking to add/change a FEATURE of the generated "
-            "app/code ('add auth to it', 'add a dashboard to the app', 'make "
-            "it responsive') is generation_intent with "
-            "generation_route='smart' (reuse_for_generation) — the frontend "
-            "re-runs the vibe generator in incremental modify mode.\n"
-            "  'decline_intent'                  — the user DECLINES / opts out "
-            "/ says they want nothing right now ('nothing', 'no', 'no thanks', "
-            "'never mind', \"I'm good\", 'not now', \"that's all\"). A polite "
-            "no-op — acknowledge; do NOT create, modify, generate, or re-ask. A "
-            "message that merely CONTAINS such a word alongside a real request "
-            "('nothing fancy, a todo app') is NOT decline_intent.\n"
-            "  'out_of_scope_intent'              — the user asks the assistant "
-            "to PRODUCE a NON-SOFTWARE artifact: an actual image/picture "
-            "('generate a picture of a cat', 'draw a sunset', 'make a logo of "
-            "X'), creative writing ('write me a poem/story/song', 'tell me a "
-            "joke'), a translation, a general-knowledge or math answer, or "
-            "chit-chat. Redirect to modeling; do NOT build a diagram OF the "
-            "request. IMPORTANT: a request to MODEL a software system whose "
-            "DOMAIN involves these ('model a photo-sharing app', 'design a "
-            "system for a poetry contest', 'a CRM for an art gallery') is a "
-            "NORMAL create_complete_system_intent, NOT out_of_scope_intent.\n"
-            "  'fallback_intent'                — none of the above fit cleanly."
+            "State-level intent — pick exactly one. The SYSTEM PROMPT is the "
+            "authoritative rulebook (single source of truth); one-line "
+            "summaries: hello_intent = greeting/small-talk/thanks; "
+            "create_complete_system_intent = new diagram or system from "
+            "scratch; modify_model_intent = add/remove/change elements of an "
+            "existing diagram; describe_model_intent = question or advice "
+            "about the current diagram; modeling_help_intent = conceptual "
+            "help, or how to run already-generated code; uml_spec_intent = "
+            "formal UML specification; generation_intent = source code / "
+            "export / deploy; decline_intent = user opts out ('nothing', 'no "
+            "thanks'); out_of_scope_intent = wants a non-software artifact "
+            "(picture/poem/joke); meta_question_intent = asks what the "
+            "assistant can do or why to use it; fallback_intent = none fit."
         ),
     )
 
@@ -398,11 +329,15 @@ _SYSTEM_PROMPT = (
     "sub-routing fields. Return the structured classification only — "
     "no prose, no questions, no follow-ups.\n\n"
     "=== TOP-LEVEL INTENT RULES (pick one) ===\n\n"
-    "hello_intent: greetings, small-talk, capability questions "
-    "('what can you do'), thanks, acknowledgements. A question about "
-    "the user's OWN model or app is NEVER hello — in particular "
-    "'where is the app?', 'how do I run / try / see / use it?', "
-    "'can I try it?' are generation_intent, not hello.\n\n"
+    "hello_intent: an ACTUAL greeting / small-talk / thanks FROM the "
+    "user ('hi', 'hello there', 'thanks'). Questions about what the "
+    "ASSISTANT can do are meta_question_intent, not hello. A question "
+    "that merely QUOTES a greeting word ('which intent handles the user "
+    "saying hello', 'does my bot greet people') is ABOUT the model → "
+    "describe_model_intent. A question about the user's OWN model or app "
+    "is NEVER hello — in particular 'where is the app?', 'how do I run / "
+    "try / see / use it?', 'can I try it?' are generation_intent, not "
+    "hello.\n\n"
     "create_complete_system_intent: user wants a NEW diagram or "
     "complete system from scratch. Keywords that trigger this: "
     "'create a class diagram for', 'design a system', 'model a', "
@@ -444,7 +379,16 @@ _SYSTEM_PROMPT = (
     "'add a dashboard to the app'), that is generation_intent (smart), "
     "NOT a model edit — see the SMART-GEN FOLLOW-UP rule below. Route "
     "here only when the user changes an actual class / attribute / "
-    "relationship of the DOMAIN MODEL.\n\n"
+    "relationship of the DOMAIN MODEL. ALSO modify_model_intent: INDIRECT "
+    "requests expressing a wish for the model to CAPTURE / TRACK / STORE / "
+    "REMEMBER a piece of DATA about an existing entity — 'it would help to "
+    "know when each order was placed' (→ add a date attribute to Order), "
+    "'I'd like to keep track of each customer's address', 'every product "
+    "needs a price'. The user is asking you to MODEL that data. BUT a "
+    "QUESTION seeking your advice about WHETHER or HOW to change the model "
+    "('do I need an Address class?', 'what should I add?', 'how would you "
+    "improve this?') is describe_model_intent (analyze + advise), never a "
+    "modify command.\n\n"
     "describe_model_intent: user asks QUESTIONS about their CURRENT "
     "diagram. 'how many classes', 'what attributes', 'list all', "
     "'tell me about my model', 'describe', 'summarize', 'what does "
@@ -455,7 +399,12 @@ _SYSTEM_PROMPT = (
     "statements', 'what would the Django models look like?') is "
     "generation_intent, NOT describe_model_intent — even though phrased "
     "as a question, the user wants the generator's OUTPUT in that "
-    "format, not a description of the classes/attributes.\n\n"
+    "format, not a description of the classes/attributes. ALSO "
+    "describe_model_intent: EVALUATIVE / ADVISORY questions asking for "
+    "your OPINION or CRITIQUE of the existing model — 'is my model any "
+    "good?', 'what am I missing?', 'what would you add?', 'do I need a "
+    "separate Address class?'. Analyze and advise with grounded, specific "
+    "suggestions about THEIR classes; these are NOT modify commands.\n\n"
     "modeling_help_intent: conceptual help, explanations, best "
     "practices. 'how do I', 'explain', 'what is', 'how does X work', "
     "'what are best practices for'. Conceptual, not about their "
@@ -499,7 +448,8 @@ _SYSTEM_PROMPT = (
     "end-to-end intent.\n\n"
     "SMART-GEN FOLLOW-UP (add/change a FEATURE of the just-generated "
     "app) — READ THIS BEFORE choosing modify_model_intent: when the "
-    "RECENT CONVERSATION shows the agent JUST ran the smart / Spec-Driven "
+    "user block carries a 'RECENT SMART GENERATION' line, OR the RECENT "
+    "CONVERSATION shows the agent JUST ran the smart / Spec-Driven "
     "generator (a turn mentioning 'Spec-Driven Agent', 'Smart "
     "generation', or '[smart-generation outcome]') AND the new message "
     "asks to ADD or CHANGE a FEATURE of the GENERATED APP / CODE, that is "
@@ -525,6 +475,28 @@ _SYSTEM_PROMPT = (
     "'connect Order to Customer') stays modify_model_intent EVEN right "
     "after a generation. If there was NO recent smart generation in the "
     "conversation, classify 'add X' by its normal meaning.\n\n"
+    "decline_intent: the user DECLINES / opts out / wants nothing right "
+    "now — 'nothing', 'no', 'no thanks', 'never mind', \"I'm good\", 'not "
+    "now', \"that's all\". A polite no-op: acknowledge; do NOT create, "
+    "modify, generate, or re-ask. A message that merely CONTAINS such a "
+    "word alongside a real request ('nothing fancy, a todo app') is NOT "
+    "decline_intent.\n\n"
+    "out_of_scope_intent: the user asks the assistant to PRODUCE a "
+    "NON-SOFTWARE artifact — an actual image/picture ('generate a picture "
+    "of a cat', 'draw a sunset', 'make a logo of X'), creative writing "
+    "('write me a poem/story/song', 'tell me a joke'), a translation, or "
+    "a general-knowledge/math answer. Redirect to modeling; do NOT build "
+    "a diagram OF the request. A request to MODEL a software system whose "
+    "DOMAIN involves these ('model a photo-sharing app', 'design a system "
+    "for a poetry contest') is a NORMAL create_complete_system_intent.\n\n"
+    "meta_question_intent: the user asks about the ASSISTANT ITSELF — "
+    "what it can do ('what can you do', 'do you also generate websites?', "
+    "'do you support django?') or why to use it ('why should I use you "
+    "instead of Claude or GPT?', 'what makes you different?', 'why "
+    "BESSER?'). Answer the capability/value pitch; do NOT build anything. "
+    "A request to actually BUILD something ('can you build me a shop "
+    "app', 'make a website for a bakery') is NOT this — classify it as "
+    "the create/generation request it is.\n\n"
     "fallback_intent: none of the above fits cleanly.\n\n"
     "=== GENERATION SUB-ROUTING (populate when intent='generation_intent') ===\n\n"
     "CRITICAL BACKGROUND: BESSER has two generation paths.\n"
@@ -760,6 +732,7 @@ def classify_message(
     request: AssistantRequest,
     llm_provider: Any,
     history: Optional[list] = None,
+    recent_smart_gen: bool = False,
 ) -> UnifiedClassification:
     """Classify a user message into a state-level intent + sub-routing fields.
 
@@ -786,7 +759,7 @@ def classify_message(
     try:
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": _build_user_block(request, history)},
+            {"role": "user", "content": _build_user_block(request, history, recent_smart_gen)},
         ]
         # Reasoning models (gpt-5* / o-series) burn hidden reasoning tokens
         # from the SAME completion budget. With only 800 tokens the visible
@@ -849,8 +822,15 @@ def get_or_classify(
             reason="frontend_event callback — routed deterministically, no LLM call",
         )
     else:
+        _smart_at = session.get(LAST_SMART_GEN_AT)
+        _recent_smart = (
+            isinstance(_smart_at, (int, float))
+            and not isinstance(_smart_at, bool)
+            and (time.time() - _smart_at) <= 15 * 60
+        )
         result = classify_message(
-            request, llm_provider, _recent_history(session, request)
+            request, llm_provider, _recent_history(session, request),
+            recent_smart_gen=_recent_smart,
         )
         _log_classification(request, result)
     if event_id is not None:
@@ -936,10 +916,21 @@ def _history_lines(history: Optional[list]) -> list:
 
 
 def _build_user_block(
-    request: AssistantRequest, history: Optional[list] = None
+    request: AssistantRequest, history: Optional[list] = None,
+    recent_smart_gen: bool = False,
 ) -> str:
     """Compose the user message + recent conversation + workspace context."""
     lines = ["USER MESSAGE:", request.message or ""]
+
+    if recent_smart_gen:
+        # Structured recency signal (set when a smart generation completes) —
+        # the primary cue for the SMART-GEN FOLLOW-UP rule, robust against
+        # reply-copy rewording in the history snippets below.
+        lines.append("")
+        lines.append(
+            "RECENT SMART GENERATION: a smart / Spec-Driven generation "
+            "completed in this conversation within the last few minutes."
+        )
 
     # Recent conversation turns so the classifier can resolve referents
     # ("the same", "continue", "do that for all", "it", "that one")

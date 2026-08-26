@@ -12,6 +12,7 @@ from protocol.types import AssistantRequest
 from utilities.model_context import is_diagram_nontrivial
 from session_keys import (
     CONFIG_PROMPT_ATTEMPTS,
+    LAST_SMART_GEN_AT,
     MISMATCH_REGEN_PENDING,
     PENDING_GENERATOR_CONFIG,
     PENDING_GENERATOR_TYPE,
@@ -967,6 +968,9 @@ def _handle_smart_generator_result(
             session_id = memory_session_key(session)
             mem = get_memory(session_id)
             mem.add_assistant(f"[smart-generation outcome] {result_message}"[:500])
+            # Structured recency signal for the classifier's SMART-GEN
+            # FOLLOW-UP rule (robust against reply-copy rewording).
+            session.set(LAST_SMART_GEN_AT, time.time())
         except Exception:  # pragma: no cover - defensive
             logger.debug("Could not record smart-gen outcome in memory", exc_info=True)
 
@@ -991,18 +995,6 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     """
     if request.action == "frontend_event":
         return _handle_frontend_event(request, session)
-
-    # Out-of-scope guard: "generate a picture of a cat" / "write me a poem"
-    # carries the word "generate" but is NOT a code-generation request. Redirect
-    # instead of routing it to a generator or (via route='modeling') building a
-    # diagram OF it. Lazy import avoids a module-load cycle with state_bodies.
-    try:
-        from state_bodies import _request_is_out_of_scope, _OUT_OF_SCOPE_REDIRECT
-        if _request_is_out_of_scope(request.message or ""):
-            logger.info("[Generation] Out-of-scope artifact request — redirecting to modeling")
-            return {"action": "assistant_message", "message": _OUT_OF_SCOPE_REDIRECT}
-    except ImportError:  # pragma: no cover — defensive
-        pass
 
     # Pending smart-generation confirmation: short-circuit the classifier only
     # for an unambiguous whole yes/no/cancel reply. Qualified or mixed replies

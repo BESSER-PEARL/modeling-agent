@@ -49,10 +49,18 @@ REPLACE_KEYWORDS = [
     # replace synonym for the plain complete_system confirmation.
     'confirm',
 ]
+# NOTE: 'add' was removed for the same reason as 'delete'/'remove' above — it
+# is an ordinary edit verb, so a pivot like "no, just add an email attribute to
+# Customer" was consumed as a KEEP answer and the user's actual instruction
+# discarded. 'no' moved to the WEAK tier: it only counts as a keep answer when
+# the whole message is short and confirmation-shaped ("no", "no thanks") — in a
+# longer message it is treated as a new request instead.
 KEEP_KEYWORDS = [
-    'keep', 'no', 'add', 'both', 'alongside', 'merge',
+    'keep', 'both', 'alongside', 'merge',
     "don't remove", 'do not remove',
 ]
+_WEAK_KEEP_KEYWORDS = ['no']
+_WEAK_KEEP_MAX_WORDS = 4
 CANCEL_KEYWORDS = ['cancel', 'never mind', 'forget', 'stop', 'abort']
 NEW_TAB_KEYWORDS = [
     'new tab', 'new diagram', 'another tab', 'separate', 'own tab',
@@ -295,6 +303,10 @@ def handle_pending_system_confirmation(session: Session) -> bool:
     wants_new_tab = pending.get('can_add_tab', False) and any(keyword_matches(w, user_msg) for w in NEW_TAB_KEYWORDS)
     wants_replace = any(keyword_matches(w, user_msg) for w in REPLACE_KEYWORDS)
     wants_keep = any(keyword_matches(w, user_msg) for w in KEEP_KEYWORDS)
+    if not wants_keep and len(user_msg.split()) <= _WEAK_KEEP_MAX_WORDS:
+        # Short, confirmation-shaped replies ("no", "no thanks") count as keep;
+        # a long message containing 'no' is a new request, not an answer.
+        wants_keep = any(keyword_matches(w, user_msg) for w in _WEAK_KEEP_KEYWORDS)
 
     # BLOCKER safety guard: replacing DESTROYS the user's existing model, so
     # only do it on an UNAMBIGUOUS replace. Any keep signal, or any negation

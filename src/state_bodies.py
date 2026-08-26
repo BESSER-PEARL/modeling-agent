@@ -297,12 +297,6 @@ def global_fallback_body(session: Session):
         reply_message(session, quick)
         return
 
-    # Value-proposition / capability questions get a crisp canned answer.
-    _meta = _meta_question_answer(user_message)
-    if _meta:
-        reply_message(session, _meta)
-        return
-
     try:
         prompt = (
             f"You are a modeling assistant that helps with UML diagrams, quantum circuits, "
@@ -348,28 +342,24 @@ def greetings_body(session: Session):
     if request is None:
         return
 
-    # A value-prop / capability question ("why use you instead of Claude?") that
-    # landed here gets a real answer, not the generic greeting.
-    _meta = _meta_question_answer(request.message)
-    if _meta:
-        reply_message(session, _meta)
+    # "What can you do?"-style questions get the rich capability answer
+    # (mirrors global_fallback_body's ordering).
+    quick = _check_quick_response(request.message or "")
+    if quick:
+        reply_message(session, quick)
         session.set(HAS_GREETED, True)
         return
 
-    is_hello_intent = False
-    if hasattr(session.event, 'predicted_intent') and session.event.predicted_intent:
-        is_hello_intent = session.event.predicted_intent.intent.name == 'hello_intent'
-
-    # Always send greeting on first connection, regardless of whether an intent
-    # was classified (on initial connect there is no predicted_intent yet).
+    # First contact: full greeting. Afterwards: ALWAYS reply — this body used
+    # to gate the "welcome back" on BAF's event.predicted_intent, which JSON
+    # events routed by the unified classifier never carry, so a message could
+    # end here with NO reply at all (silent no-response bug).
     if not session.get(HAS_GREETED):
         reply_message(session, greeting_message)
         session.set(HAS_GREETED, True)
         return
 
-    if is_hello_intent:
-        reply_message(session, "Welcome back! What would you like to work on?")
-        return
+    reply_message(session, "Welcome back! What would you like to work on?")
 
 
 # ------------------------------------------------------------------
@@ -463,41 +453,9 @@ _NON_MODELING_DECLINE = (
 )
 
 
-# Out-of-scope: the user asks the assistant to PRODUCE a non-software artifact —
-# an actual image/picture, creative writing, a joke — rather than model a
-# software system. Building a diagram OF the request ("generate a picture of a
-# cat" → a 13-class CatImageGenerationSystem) reads as the agent not
-# understanding what it does. Deliberately high-precision: only explicit
-# artifact-production phrasings, so a real modeling request whose DOMAIN happens
-# to involve these ("model a photo-sharing app", "design a system for a poetry
-# contest") is NOT caught.
-_OUT_OF_SCOPE_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
-    # an actual image/picture (not a UML/software diagram)
-    r"\b(?:generate|draw|create|make|paint|render|give\s+me)\s+"
-    r"(?:me\s+)?(?:a|an|some|the)?\s*"
-    r"(?:picture|image|photo|photograph|drawing|painting|illustration|logo|"
-    r"icon|avatar|sketch|portrait|artwork|wallpaper|meme|gif|emoji)s?\s+of\b",
-    # creative writing / entertainment. 'create' is excluded (too modeling-heavy)
-    # and a negative lookahead drops software nouns so "write a story app" or
-    # "make a song-request system" stay real modeling requests.
-    r"\b(?:write|compose|make|give\s+me)\s+(?:me\s+)?(?:a|an|some)?\s*"
-    r"(?:poem|story|short\s+story|song|haiku|joke|novel|screenplay|"
-    r"lyric|lyrics|rap|limerick|sonnet|tale)s?\b"
-    r"(?!\s*[-\s]?(?:app|application|system|platform|tool|manager|management|"
-    r"tracker|service|api|database|website|site|portal|generator|editor|"
-    r"builder|feature|module|dashboard|request))",
-    r"\btell\s+me\s+a\s+(?:joke|story|riddle)\b",
-))
-
-
-def _request_is_out_of_scope(message: str) -> bool:
-    """True when the user asks the assistant to PRODUCE something outside
-    software modeling / code generation (an actual image, creative writing, a
-    joke). Redirect instead of building a diagram of it."""
-    text = message or ""
-    return any(p.search(text) for p in _OUT_OF_SCOPE_PATTERNS)
-
-
+# Reply copy for out_of_scope_intent — DETECTION is the unified classifier's
+# job (LLM-first): the out_of_scope_intent rule in its system prompt routes
+# picture/poem/joke requests to out_of_scope_state, whose body sends this.
 _OUT_OF_SCOPE_REDIRECT = (
     "That's a bit outside what I do — I model **software systems** (class "
     "diagrams, state machines, BPMN, agents, and more) and generate code from "
@@ -506,75 +464,24 @@ _OUT_OF_SCOPE_REDIRECT = (
 )
 
 
-# Meta / value-proposition questions the assistant should ANSWER conversationally
-# rather than route into a build ("do you also generate websites?" used to kick
-# off a full system; "why use you instead of Claude/GPT?" used to get a generic
-# greeting).
-_VALUE_PROP_RE = re.compile(
-    r"\bwhy\s+(should\s+i\s+|would\s+i\s+|do\s+i\s+)?use\s+you\b"
-    r"|\bwhy\s+you\b"
-    r"|\bwhat\s+makes\s+you\s+(different|better|special|unique)\b"
-    r"|\bwhy\s+besser\b"
-    r"|\bwhy\s+not\s+(just\s+)?(use\s+)?(claude|gpt|chat\s?gpt)\b"
-    r"|\b(you|besser)\s+(vs\.?|versus|instead\s+of|rather\s+than|over)\s+"
-    r"(claude|gpt|chat\s?gpt|an?\s+llm|openai|a\s+chatbot)\b"
-    r"|\binstead\s+of\s+(using\s+)?(claude|gpt|chat\s?gpt)\b",
-    re.IGNORECASE,
-)
-_CAPABILITY_Q_RE = re.compile(
-    r"\bdo\s+you\s+(also\s+)?(generate|make|create|build|produce|support|handle|offer|do)\b",
-    re.IGNORECASE,
-)
-
-_VALUE_PROP_ANSWER = (
-    "Great question. Unlike a general chatbot, I don't just hand you a block of "
-    "code — I turn your idea into a real, editable **model** (a class diagram you "
-    "can see and refine), then generate **consistent, runnable code** from it with "
-    "BESSER's built-in generators: a full web app (React + FastAPI), plus SQL, "
-    "Django, Pydantic, SQLAlchemy, REST APIs, and more. So you get a single source "
-    "of truth you can evolve and regenerate — not one-shot code that drifts. Tell "
-    "me what you'd like to build and I'll show you."
-)
-_CAPABILITY_ANSWER = (
-    "Yes! From a plain description I build the **model** and generate working "
-    "code — a full **web app** (React + FastAPI), plus SQL, Django, Pydantic, "
-    "SQLAlchemy, REST APIs, JSON Schema, and more. I can also modify your diagram, "
-    "describe it, or import a PlantUML / diagram image. What would you like to build?"
+# Reply copy for meta_question_intent (capability / value-proposition
+# questions like "do you also generate websites?" or "why use you instead
+# of Claude/GPT?"). Detection is the unified classifier's job.
+_META_ANSWER = (
+    "Here's what I do: describe what you want in plain words and I turn it "
+    "into a real, editable **model** (a class diagram you can see and refine "
+    "on the canvas), then generate **consistent, runnable code** from it "
+    "with BESSER's generators — a full web app (React + FastAPI), SQL, "
+    "Django, Pydantic, SQLAlchemy, REST APIs, JSON Schema, and more. Unlike "
+    "a general chatbot, the model stays your single source of truth: evolve "
+    "it and regenerate any time instead of ending up with one-shot code "
+    "that drifts. I also modify and describe diagrams, design state "
+    "machines, BPMN processes, agents, and quantum circuits, and import "
+    "PlantUML or diagram images.\n\nWhat would you like to build?"
 )
 
 
-def _meta_question_answer(message):
-    """Return a canned answer for a value-proposition / capability QUESTION, or
-    None. Lets the assistant answer 'why use you?' / 'do you generate websites?'
-    instead of routing them into a build or a generic greeting."""
-    text = message or ""
-    if _VALUE_PROP_RE.search(text):
-        return _VALUE_PROP_ANSWER
-    if _CAPABILITY_Q_RE.search(text):
-        return _CAPABILITY_ANSWER
-    return None
-
-
-_DECLINE_PHRASES = {
-    "nothing", "nothing thanks", "nothing for now", "nothing right now",
-    "nothing else", "no", "nope", "nah", "no thanks", "no thank you",
-    "nvm", "never mind", "nevermind", "not now", "maybe later", "later",
-    "stop", "cancel", "quit", "exit", "im done", "i'm done", "all done",
-    "that's all", "thats all",
-}
-
-
-def _request_is_decline(message: str) -> bool:
-    """True when the WHOLE message is a bare decline / no-op ("nothing", "no",
-    "never mind"). Such a reply means the user is opting out — not asking to
-    build — so it must not be routed into a create (which would pop the
-    replace/keep-existing prompt on their model). A message that merely contains
-    one of these words ("nothing fancy, a todo app") is NOT a decline."""
-    normalized = re.sub(r"[^\w\s']", " ", (message or "").lower())
-    normalized = " ".join(normalized.split())
-    return normalized in _DECLINE_PHRASES
-
-
+# Reply copy for decline_intent — detection is the unified classifier's job.
 _DECLINE_ACK = (
     "No problem — I'm here whenever you'd like to build or change something. "
     "Just tell me what you have in mind."
@@ -642,32 +549,6 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
     if _request_is_non_modeling(request.message):
         logger.info("[Modeling] Non-modeling/injection input — declining and redirecting")
         reply_message(session, _NON_MODELING_DECLINE)
-        return
-
-    # Out-of-scope guard: the user asks for a non-software artifact (an actual
-    # picture, a poem, a joke). Redirect to what the assistant does instead of
-    # modeling a diagram OF the request ("generate a picture of a cat" must not
-    # become a CatImageGenerationSystem class diagram).
-    if _request_is_out_of_scope(request.message):
-        logger.info("[Modeling] Out-of-scope artifact request — redirecting to modeling")
-        reply_message(session, _OUT_OF_SCOPE_REDIRECT)
-        return
-
-    # Meta-question guard: "do you also generate websites?" / "why use you?" is a
-    # QUESTION about capabilities, not a build request — answer it instead of
-    # kicking off a full system.
-    _meta = _meta_question_answer(request.message)
-    if _meta:
-        logger.info("[Modeling] Meta/value-prop question — answering, not building")
-        reply_message(session, _meta)
-        return
-
-    # Decline / no-op guard: a bare "nothing" / "no" / "never mind" means the
-    # user is opting out, not asking to build. Acknowledge instead of routing it
-    # into a create (which pops the replace/keep prompt on their existing model).
-    if _request_is_decline(request.message):
-        logger.info("[Modeling] Decline/no-op input — acknowledging, no model change")
-        reply_message(session, _DECLINE_ACK)
         return
 
     # Self-contradiction guard (create path only): a request that negates the
@@ -1190,14 +1071,23 @@ def decline_body(session: Session):
 def out_of_scope_body(session: Session):
     """The user asked for a non-software artifact (out_of_scope_intent) — an
     actual image, creative writing, a joke. Redirect to modeling instead of
-    building a diagram OF the request. The deterministic guard in
-    _modeling_state_body covers the clearest phrasings; this state catches the
-    ones the classifier routes here."""
+    building a diagram OF the request."""
     request = _common_preamble(session)
     if request is None:
         return
     session.set(LAST_MATCHED_INTENT, 'out_of_scope_intent')
     reply_message(session, _OUT_OF_SCOPE_REDIRECT)
+
+
+def meta_question_body(session: Session):
+    """The user asked about the assistant itself (meta_question_intent) —
+    capabilities ("do you also generate websites?") or value proposition
+    ("why use you instead of Claude/GPT?"). Answer the pitch; build nothing."""
+    request = _common_preamble(session)
+    if request is None:
+        return
+    session.set(LAST_MATCHED_INTENT, 'meta_question_intent')
+    reply_message(session, _META_ANSWER)
 
 
 def add_unified_transitions(state, intents_map, fallback_state, generation_state):
@@ -1263,6 +1153,7 @@ def register_all(*, agent, states, intents):
     states['uml_rag'].set_body(uml_rag_body)
     states['decline'].set_body(decline_body)
     states['out_of_scope'].set_body(out_of_scope_body)
+    states['meta_question'].set_body(meta_question_body)
 
     # -- Wire transitions --
     intent_map = {
@@ -1275,6 +1166,7 @@ def register_all(*, agent, states, intents):
         intents['hello']: states['greetings'],
         intents['decline']: states['decline'],
         intents['out_of_scope']: states['out_of_scope'],
+        intents['meta_question']: states['meta_question'],
     }
 
     generation_st = states['generation']
@@ -1289,6 +1181,7 @@ def register_all(*, agent, states, intents):
         ('generation', 'generation'),
         ('decline', 'greetings'),
         ('out_of_scope', 'greetings'),
+        ('meta_question', 'greetings'),
     ]:
         add_unified_transitions(
             states[state_name], intent_map, states[fallback_name], generation_st,

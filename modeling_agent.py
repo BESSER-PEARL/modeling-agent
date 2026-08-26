@@ -85,6 +85,7 @@ uml_rag_state = agent.new_state("uml_rag_state")
 generation_state = agent.new_state("generation_state")
 decline_state = agent.new_state("decline_state")
 out_of_scope_state = agent.new_state("out_of_scope_state")
+meta_question_state = agent.new_state("meta_question_state")
 
 # ── Intents ──────────────────────────────────────────────────────────────
 #
@@ -139,6 +140,19 @@ out_of_scope_intent = agent.new_intent(
         "compose a song about summer",
         "make me a logo of a dragon",
         "write a short story about robots",
+    ],
+)
+meta_question_intent = agent.new_intent(
+    name="meta_question_intent",
+    description="User asks about the assistant itself — what it can do or why "
+    "to use it over a general chatbot.",
+    training_sentences=[
+        "what can you do",
+        "do you also generate websites",
+        "do you support django",
+        "why should I use you instead of chatgpt",
+        "what makes you different from claude",
+        "why besser",
     ],
 )
 create_complete_system_intent = agent.new_intent(
@@ -227,11 +241,13 @@ register_all(
         "generation": generation_state,
         "decline": decline_state,
         "out_of_scope": out_of_scope_state,
+        "meta_question": meta_question_state,
     },
     intents={
         "hello": hello_intent,
         "decline": decline_intent,
         "out_of_scope": out_of_scope_intent,
+        "meta_question": meta_question_intent,
         "create_complete_system": create_complete_system_intent,
         "modify_model": modify_model_intent,
         "modeling_help": modeling_help_intent,

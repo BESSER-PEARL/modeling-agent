@@ -8,6 +8,8 @@ Checks are deterministic-ish behaviors (NOT generation fidelity):
   injection     a prompt-injection is declined, never built       (security)
   vague         "make an app" clarifies, never builds
   contradiction "a class diagram with no classes" clarifies        (self-contradiction guard)
+  out_of_scope  "picture of a cat" redirects, never builds        (classifier-routed)
+  meta          "why use you vs claude?" answers, never builds    (classifier-routed)
   modify        an edit applies to an existing model
   mismatch      "Update model + generate" breaks the loop AND resumes smart-gen
 
@@ -138,6 +140,10 @@ async def c_out_of_scope():
     return await _no_build("generate a picture of a cat")
 
 
+async def c_meta():
+    return await _no_build("why should I use you instead of claude or gpt?")
+
+
 async def c_modify():
     async with _connect() as ws:
         sid = "s_" + uuid.uuid4().hex[:6]
@@ -172,7 +178,7 @@ async def c_mismatch():
 CRITICAL = [
     ("create", c_create), ("decline", c_decline), ("injection", c_injection),
     ("vague", c_vague), ("contradiction", c_contradiction),
-    ("out_of_scope", c_out_of_scope), ("modify", c_modify),
+    ("out_of_scope", c_out_of_scope), ("meta", c_meta), ("modify", c_modify),
     ("mismatch", c_mismatch),
 ]
 

@@ -40,6 +40,11 @@ PENDING_SMART_GEN_PROVIDER = "_pending_smart_gen_provider"
 # than the TTL are rejected so an abandoned flow can never hijack a
 # later, unrelated request (B-2 stale-stash fix).
 PENDING_SMART_GEN_TIMESTAMP = "_pending_smart_gen_timestamp"
+# Unix timestamp of the most recent COMPLETED smart/Spec-Driven generation.
+# The unified classifier reads this (freshness-gated) to apply its SMART-GEN
+# FOLLOW-UP rule from a structured signal instead of grepping reply copy out
+# of the conversation history.
+LAST_SMART_GEN_AT = "_last_smart_gen_at"
 # When set to True, the next smart-route classification skips the
 # domain-mismatch guard. Used by the "Generate anyway" path so the same
 # request (or its resend) doesn't loop on the confirmation question.
