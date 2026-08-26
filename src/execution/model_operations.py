@@ -872,6 +872,21 @@ def execute_model_operation(
             )
             result["suggestedActions"] = get_post_spec_suggestions(_detected_gen)
 
+    # After a MODIFY, keep the conversation flowing toward generation instead of
+    # showing the generic "Generate Python code / Describe my diagram" buttons:
+    # acknowledge the change and offer to continue generating, mirroring the
+    # create flow above. (web_app is left to the GUI-choice flow's own prompt.)
+    if operation_mode == "modify_model" and isinstance(result.get("message"), str):
+        from handlers.generation_handler import detect_generator_type  # lazy import
+        _detected_gen = detect_generator_type(request.message)
+        if _detected_gen != "web_app":
+            _artifact = get_artifact_label(_detected_gen)
+            result["message"] += (
+                f"\n\nWant to keep refining, or continue with generating your "
+                f"{_artifact}?"
+            )
+            result["suggestedActions"] = get_post_spec_suggestions(_detected_gen)
+
     # ── Destructive modify-model guard ───────────────────────────────────
     # Block a modify_model plan whose net effect would delete most/all of
     # the existing top-level elements (see the guard section above); ask
