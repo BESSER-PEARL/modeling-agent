@@ -27,7 +27,7 @@ the :class:`GenerationClassification` dispatch schema and assembles the
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, Field
 

@@ -22,9 +22,10 @@ from session_keys import (
     SKIP_MISMATCH_CHECK_ONCE,
     UNIFIED_CLASSIFICATION,
 )
+from reply_copy import OUT_OF_SCOPE_REDIRECT
 from unified_classifier import (
     UnifiedClassification,
-    get_or_classify as _unified_get_or_classify,
+    classify_message as _unified_classify_message,
 )
 
 try:
@@ -55,11 +56,15 @@ def _classification_to_legacy(cls_obj: UnifiedClassification):
             "create_complete_system_intent", "modify_model_intent",
         ):
             route = "modeling"
-        elif cls_obj.intent in ("generation_intent", "fallback_intent"):
-            # fallback_intent = the classifier was unavailable or undecided.
-            # 'deterministic' with no generator_type shows the generator MENU
-            # — the resilient pre-LLM behavior, so an LLM outage still lets
-            # the user proceed by picking a generator by name.
+        elif cls_obj.intent == "generation_intent":
+            route = "deterministic"
+        elif cls_obj.intent == "fallback_intent" and (
+            cls_obj.reason or ""
+        ).startswith("[classifier-error]"):
+            # ERROR fallback (LLM down / parse failure — _safe_fallback tags
+            # these): 'deterministic' with no generator_type shows the
+            # generator MENU, the resilient pre-LLM behavior. A DELIBERATE
+            # none-of-the-above verdict falls through to 'other' instead.
             route = "deterministic"
         else:
             route = "other"
@@ -136,6 +141,15 @@ _SMART_GEN_CONFIRM_PHRASES = {
     "yes", "yes please", "confirm", "confirm it", "run it", "run it now",
     "please run it", "go ahead", "proceed", "start it", "start the generation",
     "generate anyway", "generate anyway with my current model",
+}
+# Whole-message phrases that EXIT a pending config-collection flow. Bare "no"
+# is deliberately absent: mid-config it is usually a field answer ("Docker?"
+# -> "no"); classifier decline verdicts cover the novel opt-out phrasings.
+_CONFIG_CANCEL_PHRASES = {
+    "cancel", "cancel it", "cancel that", "cancel generation",
+    "cancel the generation", "stop", "stop it", "abort", "quit",
+    "never mind", "nevermind", "forget it", "don't generate",
+    "do not generate",
 }
 _SMART_GEN_CANCEL_PHRASES = {
     "no", "no thanks", "cancel", "cancel it", "cancel generation",
@@ -341,9 +355,10 @@ def _build_mismatch_confirmation(session: Session, classification, suggested: st
 
 
 def _get_classification_from_cache_or_classify(session, request):
-    """Read the unified classifier's cached verdict, classifying on the
-    fly only when the cache is empty (paths that bypass the state-machine
-    hook — direct calls, some tests).
+    """Adapt the unified classifier's verdict for generation dispatch.
+
+    The per-event cache is trusted only for GENERATION verdicts; anything
+    else re-classifies this request's own text (see inline comment).
 
     The unified classifier is the SINGLE rulebook for generation
     sub-routing. The legacy generation-only classifier (a second prompt
@@ -352,10 +367,19 @@ def _get_classification_from_cache_or_classify(session, request):
     unified call decided is adapted via ``_classification_to_legacy``.
     """
     cached: Optional[UnifiedClassification] = session.get(UNIFIED_CLASSIFICATION)
-    if cached is None:
-        llm_provider = _get_llm_provider() if _get_llm_provider else None
-        cached = _unified_get_or_classify(session, request, llm_provider)
-    return _classification_to_legacy(cached)
+    if cached is not None and cached.intent == "generation_intent":
+        return _classification_to_legacy(cached)
+    # Empty or NON-generation cache: the per-event cache belongs to the
+    # ORIGINAL user message, and internally synthesized sub-requests (the
+    # planner's Phase-2 "generate django" step of a compound "create X and
+    # generate Y" plan) share that event — adapting the original create
+    # verdict for them routed the generation back into modeling and RECURSED
+    # instead of generating. Classify THIS request's own text directly
+    # (uncached; same classifier-tier cost the retired legacy sub-router
+    # paid in exactly these situations).
+    llm_provider = _get_llm_provider() if _get_llm_provider else None
+    return _classification_to_legacy(
+        _unified_classify_message(request, llm_provider))
 
 logger = logging.getLogger(__name__)
 
@@ -961,6 +985,13 @@ def _handle_smart_generator_result(
     # "run it again") have context. Best-effort — memory failures must
     # never break the reply.
     if session is not None:
+        if ok:
+            # Structured recency signal for the classifier's SMART-GEN
+            # FOLLOW-UP rule. Outside the memory try/except on purpose: it
+            # must survive memory failures, and only SUCCESSFUL runs count —
+            # "add auth to it" after a FAILED run is not a follow-up to
+            # reuse-for-generation.
+            session.set(LAST_SMART_GEN_AT, time.time())
         try:
             from memory import get_memory, memory_session_key
 
@@ -968,9 +999,6 @@ def _handle_smart_generator_result(
             session_id = memory_session_key(session)
             mem = get_memory(session_id)
             mem.add_assistant(f"[smart-generation outcome] {result_message}"[:500])
-            # Structured recency signal for the classifier's SMART-GEN
-            # FOLLOW-UP rule (robust against reply-copy rewording).
-            session.set(LAST_SMART_GEN_AT, time.time())
         except Exception:  # pragma: no cover - defensive
             logger.debug("Could not record smart-gen outcome in memory", exc_info=True)
 
@@ -1054,6 +1082,21 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         and _norm_prompt(request.message) == _norm_prompt(_regen_prompt)
     )
     if has_pending_smart_gen and not _is_regen_rebuild:
+        _stash_intent = getattr(
+            session.get(UNIFIED_CLASSIFICATION), "intent", None)
+        if _stash_intent == "out_of_scope_intent":
+            # Off-topic interjection ("draw me a cat") at the confirmation:
+            # answer it and KEEP the prepared run so "Continue" still works.
+            # (out_of_scope_state is unreachable here — the pending stash
+            # suppresses intent routing.)
+            return {"action": "assistant_message",
+                    "message": OUT_OF_SCOPE_REDIRECT}
+        if _stash_intent == "decline_intent":
+            # A decline at the confirmation IS the answer: cancel cleanly.
+            _clear_pending_smart_gen(session)
+            _clear_pending_state(session)
+            return {"action": "assistant_message",
+                    "message": "Cancelled. Your model is unchanged."}
         # A different request abandons this confirmation. Clearing the stash
         # prevents a later generic "yes" from spending against an old run.
         # EXCEPTION: the domain-mismatch "Update model + generate" chain only
@@ -1077,6 +1120,25 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     # empty we simply don't pivot and continue the pending flow.
     classification = None
     if _use_pending:
+        # Opt-out FIRST: an explicit cancel or a decline verdict mid-config
+        # must EXIT the flow. Without this, the reply looped the config
+        # prompt and the CONFIG_PROMPT_ATTEMPTS >= 3 branch auto-filled
+        # defaults and generated the very thing the user was refusing.
+        if (
+            _norm_prompt(request.message) in _CONFIG_CANCEL_PHRASES
+            or getattr(session.get(UNIFIED_CLASSIFICATION), "intent", None)
+            == "decline_intent"
+        ):
+            logger.info(
+                "[Generation] Pending '%s' config flow cancelled by the user",
+                pending_generator,
+            )
+            _clear_pending_state(session)
+            session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+            return {
+                "action": "assistant_message",
+                "message": "Cancelled — no code was generated. Your model is unchanged.",
+            }
         _cached = session.get(UNIFIED_CLASSIFICATION)
         if _cached is not None and getattr(_cached, "intent", None) == "generation_intent":
             _fresh = _classification_to_legacy(_cached)

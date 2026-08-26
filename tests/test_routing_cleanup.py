@@ -183,3 +183,185 @@ class TestGeneratorRegistrySync:
             "have drifted — update both (they carry 'must stay in sync' "
             "comments) or extract a shared registry"
         )
+
+
+# ---------------------------------------------------------------------
+# Adversarial-review fixes (post-cleanup)
+# ---------------------------------------------------------------------
+
+class _CountingProvider:
+    def __init__(self, result):
+        self.result = result
+        self.calls = 0
+
+    def parse(self, *, messages, schema, temperature, max_tokens):
+        self.calls += 1
+        return self.result
+
+
+class TestSyntheticSubRequestClassification:
+    """A compound "create X and generate Y" plan dispatches a synthetic
+    'generate django' sub-request that SHARES the original message's cached
+    create verdict. Adapting that verdict routed the generation back into
+    modeling (recursion); the cache must only be trusted for GENERATION
+    verdicts — anything else re-classifies the sub-request's own text."""
+
+    def test_non_generation_cache_triggers_fresh_classification(self, monkeypatch):
+        import handlers.generation_handler as gen_mod
+        from handlers.generation_handler import (
+            _get_classification_from_cache_or_classify,
+        )
+        session = FakeSession()
+        session.set(UNIFIED_CLASSIFICATION, _uc("create_complete_system_intent"))
+        provider = _CountingProvider(UnifiedClassification(
+            intent="generation_intent", generation_route="deterministic",
+            generator_type="django", reason="fresh sub-request verdict",
+        ))
+        monkeypatch.setattr(gen_mod, "_get_llm_provider", lambda: provider,
+                            raising=False)
+        result = _get_classification_from_cache_or_classify(
+            session, _req("generate django"))
+        assert provider.calls == 1            # fresh classify, not the cache
+        assert result.route == "deterministic"
+        assert result.generator_type == "django"
+
+    def test_generation_cache_is_used_without_llm_call(self, monkeypatch):
+        import handlers.generation_handler as gen_mod
+        from handlers.generation_handler import (
+            _get_classification_from_cache_or_classify,
+        )
+        session = FakeSession()
+        session.set(UNIFIED_CLASSIFICATION, UnifiedClassification(
+            intent="generation_intent", generation_route="deterministic",
+            generator_type="sql", reason="cached"))
+        provider = _CountingProvider(None)
+        monkeypatch.setattr(gen_mod, "_get_llm_provider", lambda: provider,
+                            raising=False)
+        result = _get_classification_from_cache_or_classify(
+            session, _req("generate sql"))
+        assert provider.calls == 0
+        assert result.generator_type == "sql"
+
+
+class TestConfigFlowCancel:
+    """Declining / cancelling mid config-collection must EXIT the flow —
+    previously the reply looped the prompt and the third attempt auto-filled
+    defaults and generated the very thing the user was refusing."""
+
+    def _run(self, message, cached_intent=None):
+        from handlers.generation_handler import handle_generation_request
+        from session_keys import CONFIG_PROMPT_ATTEMPTS
+        session = FakeSession()
+        session.set(PENDING_GENERATOR_TYPE, "django")
+        session.set(CONFIG_PROMPT_ATTEMPTS, 2)
+        if cached_intent:
+            session.set(UNIFIED_CLASSIFICATION, _uc(cached_intent))
+        result = handle_generation_request(session, _req(message))
+        return result, session
+
+    def test_explicit_cancel_exits_the_flow(self):
+        result, session = self._run("cancel")
+        assert "cancelled" in result["message"].lower()
+        assert not session.get(PENDING_GENERATOR_TYPE)
+
+    def test_decline_verdict_exits_the_flow(self):
+        result, session = self._run("nah forget this whole thing",
+                                    cached_intent="decline_intent")
+        assert "cancelled" in result["message"].lower()
+        assert not session.get(PENDING_GENERATOR_TYPE)
+
+    def test_config_answer_continues_the_flow(self):
+        # A real config answer must NOT be treated as a cancel. (Needs a class
+        # model in context or the prerequisite check ends the flow first.)
+        from handlers.generation_handler import handle_generation_request
+        from session_keys import CONFIG_PROMPT_ATTEMPTS
+        model = {"elements": {"c1": {"type": "Class", "name": "Book"}},
+                 "relationships": {}}
+        request = AssistantRequest(
+            message="project_name=shop",
+            context=WorkspaceContext(
+                active_diagram_type="ClassDiagram", active_model=model,
+                project_snapshot={"name": "P",
+                                  "diagrams": {"ClassDiagram": [{"model": model}]}},
+            ),
+        )
+        session = FakeSession()
+        session.set(PENDING_GENERATOR_TYPE, "django")
+        session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+        result = handle_generation_request(session, request)
+        # Continues the flow: either re-prompts for the missing fields
+        # (pending kept) or, once satisfied, triggers the generator.
+        assert session.get(PENDING_GENERATOR_TYPE) or (
+            result.get("action") == "trigger_generator")
+        assert "cancelled" not in (result.get("message") or "").lower()
+
+
+class TestPendingStashInterjections:
+    """Interjections at the smart-gen confirmation ("Do you want to
+    continue?") must not silently kill the prepared run with a wrong reply."""
+
+    def _session_with_stash(self, cached_intent):
+        import time as _t
+        from session_keys import (
+            PENDING_SMART_GEN_INSTRUCTIONS,
+            PENDING_SMART_GEN_PROVIDER,
+            PENDING_SMART_GEN_TIMESTAMP,
+        )
+        session = FakeSession()
+        session.set(PENDING_SMART_GEN_INSTRUCTIONS, "build a shop app")
+        session.set(PENDING_SMART_GEN_PROVIDER, "anthropic")
+        session.set(PENDING_SMART_GEN_TIMESTAMP, _t.time())
+        session.set(UNIFIED_CLASSIFICATION, _uc(cached_intent))
+        return session
+
+    def test_out_of_scope_interjection_answers_and_keeps_stash(self):
+        from handlers.generation_handler import handle_generation_request
+        from reply_copy import OUT_OF_SCOPE_REDIRECT
+        from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+        session = self._session_with_stash("out_of_scope_intent")
+        result = handle_generation_request(session, _req("draw me a cat"))
+        assert result["message"] == OUT_OF_SCOPE_REDIRECT
+        assert session.get(PENDING_SMART_GEN_INSTRUCTIONS)  # stash survives
+
+    def test_decline_at_confirmation_cancels_cleanly(self):
+        from handlers.generation_handler import handle_generation_request
+        from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+        session = self._session_with_stash("decline_intent")
+        result = handle_generation_request(session, _req("nah, I am good"))
+        assert "cancelled" in result["message"].lower()
+        assert not session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+
+
+class TestErrorFallbackMarker:
+    """_safe_fallback tags ERROR fallbacks so the generation adapter can show
+    the resilient generator MENU on outages while a DELIBERATE none-fit
+    verdict gets the clarify reply."""
+
+    def test_safe_fallback_is_tagged(self):
+        from unified_classifier import classify_message
+        result = classify_message(_req("generate django"), llm_provider=None)
+        assert result.intent == "fallback_intent"
+        assert result.reason.startswith("[classifier-error]")
+
+    def test_adapter_menu_on_error_but_other_on_deliberate(self):
+        from handlers.generation_handler import _classification_to_legacy
+        error = UnifiedClassification(
+            intent="fallback_intent", reason="[classifier-error] LLM down")
+        assert _classification_to_legacy(error).route == "deterministic"
+        deliberate = UnifiedClassification(
+            intent="fallback_intent", reason="none of the intents fit")
+        assert _classification_to_legacy(deliberate).route == "other"
+
+
+class TestOutageNetPins:
+    """The classifier-outage net in _modeling_state_body exists and is scoped
+    to bare phrases / explicit artifact asks (never real requests)."""
+
+    def test_phrase_set_and_pattern(self):
+        from state_bodies import _OUTAGE_DECLINE_PHRASES, _OUTAGE_ARTIFACT_RE
+        assert "nothing" in _OUTAGE_DECLINE_PHRASES
+        assert "never mind" in _OUTAGE_DECLINE_PHRASES
+        assert _OUTAGE_ARTIFACT_RE.search("generate a picture of a cat")
+        assert _OUTAGE_ARTIFACT_RE.search("tell me a joke")
+        assert not _OUTAGE_ARTIFACT_RE.search("create a photo-sharing app")
+        assert not _OUTAGE_ARTIFACT_RE.search("a library with books and loans")

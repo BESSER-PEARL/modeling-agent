@@ -128,7 +128,8 @@ has **no** skip/xfail markers.
 | File | ~Funcs | What it verifies |
 | --- | --- | --- |
 | `test_generation_handler.py` | 59 (param) | `generation_handler` — `detect_generator_type`, config parse/prompt, `should_route_to_generation` gatekeeper, dispatch, Django→SQL pivot-mid-config fix. |
-| `test_smart_generation_handler.py` | 23 (param) | Smart / Spec-Driven classifier — `classify_generation_request` (safe fallbacks, verbatim passthrough), `build_trigger_smart_generator_payload`, dispatch. |
+| `test_smart_generation_handler.py` | 17 (param) | Generation sub-routing via the unified classifier (fallback safety, dispatch) and `build_trigger_smart_generator_payload`. |
+| `test_routing_cleanup.py` | ~ | Behavioral pins for the routing cleanup: confirmation pivots, config-flow suppression + cancel, structured smart-gen recency, generator-registry sync. |
 | `test_smart_generation_handler_gate.py` | 10 (param) | The B-2 "confirm-before-smart" gate — never fires on first contact; stashes with a 30-min TTL; explicit/natural confirm fires, cancel/mixed never do. |
 | `test_smart_generator_result_event.py` | 6 | `generator_result` frontend event with `metadata.smart=True` — hides cost/internal name, records outcome to memory, maps error codes to tone. |
 | `test_webapp_generation_gate.py` | 4 | The web-app auto-generation **pause** — a GUI-create + `web_app` plan has the generation op stripped at source (`execution/planning.py`) and shows a generate nudge. Distinct from the smart-gen gate. |

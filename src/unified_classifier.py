@@ -5,9 +5,9 @@ Before this module:
   * BAF's ``predict_intent`` fired on every message (LLM call #1),
     picking which *state* to transition to based on long ``description=``
     keyword blobs embedded in each intent declaration.
-  * Inside ``generation_state``, ``classify_generation_request`` fired
-    a second LLM call (#2) to pick smart vs deterministic and extract
-    generator_type / refined_instructions.
+  * Inside ``generation_state``, a second sub-router prompt (since
+    retired) fired another LLM call to pick smart vs deterministic and
+    extract generator_type / refined_instructions.
 
 This module collapses both into a single structured-output call that
 returns EVERY field any downstream state body needs, cached per-message
@@ -1223,7 +1223,11 @@ def _safe_fallback(reason: str) -> UnifiedClassification:
     fallback state body. This is the pre-LLM-classifier behaviour —
     user gets a helpful message asking them to rephrase.
     """
-    return UnifiedClassification(intent="fallback_intent", reason=reason)
+    # The "[classifier-error]" tag lets downstream adapters distinguish an
+    # ERROR fallback (this function) from the LLM's deliberate
+    # none-of-the-above verdict — see _classification_to_legacy.
+    return UnifiedClassification(
+        intent="fallback_intent", reason=f"[classifier-error] {reason}")
 
 
 def _current_event_id(session: Any) -> Optional[str]:

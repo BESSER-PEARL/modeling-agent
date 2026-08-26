@@ -55,6 +55,15 @@ class _FakeRequest:
 class _FakeSession:
     id = "session-smart-test"
 
+    def __init__(self):
+        self._data = {}
+
+    def set(self, key, value):
+        self._data[key] = value
+
+    def get(self, key):
+        return self._data.get(key)
+
 
 def _smart_event(ok, metadata=None, message=None):
     payload = {
@@ -163,8 +172,13 @@ def test_memory_failure_never_breaks_the_reply(monkeypatch):
         raise RuntimeError("memory backend down")
 
     monkeypatch.setattr(memory, "get_memory", _boom)
+    session = _FakeSession()
     result = _handle_frontend_event(
         _smart_event(True, {"costUsd": 0.1}),
-        _FakeSession(),
+        session,
     )
     assert result["action"] == "assistant_message"
+    # The structured recency signal must survive a memory-stack failure —
+    # it is set OUTSIDE the memory try/except precisely for this.
+    from session_keys import LAST_SMART_GEN_AT
+    assert session.get(LAST_SMART_GEN_AT) is not None

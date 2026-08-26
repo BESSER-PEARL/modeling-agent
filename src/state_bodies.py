@@ -53,6 +53,11 @@ from session_keys import (
     PENDING_GUI_CHOICE,
     UNIFIED_CLASSIFICATION,
 )
+from reply_copy import (
+    DECLINE_ACK as _DECLINE_ACK,
+    META_ANSWER as _META_ANSWER,
+    OUT_OF_SCOPE_REDIRECT as _OUT_OF_SCOPE_REDIRECT,
+)
 from unified_classifier import get_or_classify
 
 try:
@@ -283,6 +288,28 @@ def _check_quick_response(message: str) -> Optional[str]:
 # Global fallback
 # ------------------------------------------------------------------
 
+def _fallback_llm_reply(session: Session, user_message: str) -> None:
+    """LLM answer for an unclassifiable message. Shared by the global fallback
+    and by greetings_body when it receives another state's fallback traffic."""
+    try:
+        prompt = (
+            f"You are a modeling assistant that helps with UML diagrams, quantum circuits, "
+            f"GUI design, agent diagrams, BPMN business-process diagrams, and code generation. "
+            f"The user said: '{user_message}'. "
+            "If this is related to any kind of modeling (class diagrams, quantum circuits, "
+            "state machines, GUI design, BPMN processes, etc.), suggest how you can help them. "
+            "Otherwise, politely explain your capabilities."
+        )
+        stream_llm_response(session, ctx.gpt_text, prompt)
+    except Exception as e:
+        logger.error(f"❌ Error in fallback LLM reply: {e}")
+        reply_message(
+            session,
+            "I'm not sure how to help with that. Try asking me to create a class, "
+            "design a system, build a quantum circuit, or modify your diagram.",
+        )
+
+
 def global_fallback_body(session: Session):
     """Handle unrecognized messages."""
     request = _common_preamble(session)
@@ -297,23 +324,7 @@ def global_fallback_body(session: Session):
         reply_message(session, quick)
         return
 
-    try:
-        prompt = (
-            f"You are a modeling assistant that helps with UML diagrams, quantum circuits, "
-            f"GUI design, agent diagrams, BPMN business-process diagrams, and code generation. "
-            f"The user said: '{user_message}'. "
-            "If this is related to any kind of modeling (class diagrams, quantum circuits, "
-            "state machines, GUI design, BPMN processes, etc.), suggest how you can help them. "
-            "Otherwise, politely explain your capabilities."
-        )
-        stream_llm_response(session, ctx.gpt_text, prompt)
-    except Exception as e:
-        logger.error(f"❌ Error in global_fallback_body: {e}")
-        reply_message(
-            session,
-            "I'm not sure how to help with that. Try asking me to create a class, "
-            "design a system, build a quantum circuit, or modify your diagram.",
-        )
+    _fallback_llm_reply(session, user_message)
 
 
 # ------------------------------------------------------------------
@@ -357,6 +368,14 @@ def greetings_body(session: Session):
     if not session.get(HAS_GREETED):
         reply_message(session, greeting_message)
         session.set(HAS_GREETED, True)
+        return
+
+    _uc = session.get(UNIFIED_CLASSIFICATION)
+    if getattr(_uc, "intent", None) == "fallback_intent":
+        # This state is also the JSON-fallback DESTINATION for the uml_rag /
+        # decline / out_of_scope / meta states: an unclassifiable message
+        # lands here, and "Welcome back!" would be a non-sequitur — answer it.
+        _fallback_llm_reply(session, request.message or "your message")
         return
 
     reply_message(session, "Welcome back! What would you like to work on?")
@@ -453,39 +472,25 @@ _NON_MODELING_DECLINE = (
 )
 
 
-# Reply copy for out_of_scope_intent — DETECTION is the unified classifier's
-# job (LLM-first): the out_of_scope_intent rule in its system prompt routes
-# picture/poem/joke requests to out_of_scope_state, whose body sends this.
-_OUT_OF_SCOPE_REDIRECT = (
-    "That's a bit outside what I do — I model **software systems** (class "
-    "diagrams, state machines, BPMN, agents, and more) and generate code from "
-    "them. What would you like to model? For example: *Create a library "
-    "management system*."
+# Classifier-OUTAGE net (see _modeling_state_body). LLM-first stands: these
+# fire ONLY when the unified classifier reached NO verdict (provider down /
+# parse failure -> fallback_intent), where the modeling states fall back to
+# THEMSELVES and would otherwise run a full create on "nothing" or "draw me a
+# cat". With a real verdict they never run.
+_OUTAGE_DECLINE_PHRASES = {
+    "nothing", "no", "nope", "nah", "no thanks", "no thank you",
+    "never mind", "nevermind", "nvm", "not now", "stop", "cancel",
+    "that's all", "thats all", "i'm good", "im good",
+}
+_OUTAGE_ARTIFACT_RE = re.compile(
+    r"\b(?:picture|image|photo|drawing|painting|logo|poem|story|song|joke)s?\s+"
+    r"(?:of|about)\b|\btell\s+me\s+a\s+(?:joke|story)\b",
+    re.IGNORECASE,
 )
 
 
-# Reply copy for meta_question_intent (capability / value-proposition
-# questions like "do you also generate websites?" or "why use you instead
-# of Claude/GPT?"). Detection is the unified classifier's job.
-_META_ANSWER = (
-    "Here's what I do: describe what you want in plain words and I turn it "
-    "into a real, editable **model** (a class diagram you can see and refine "
-    "on the canvas), then generate **consistent, runnable code** from it "
-    "with BESSER's generators — a full web app (React + FastAPI), SQL, "
-    "Django, Pydantic, SQLAlchemy, REST APIs, JSON Schema, and more. Unlike "
-    "a general chatbot, the model stays your single source of truth: evolve "
-    "it and regenerate any time instead of ending up with one-shot code "
-    "that drifts. I also modify and describe diagrams, design state "
-    "machines, BPMN processes, agents, and quantum circuits, and import "
-    "PlantUML or diagram images.\n\nWhat would you like to build?"
-)
-
-
-# Reply copy for decline_intent — detection is the unified classifier's job.
-_DECLINE_ACK = (
-    "No problem — I'm here whenever you'd like to build or change something. "
-    "Just tell me what you have in mind."
-)
+# Reply copy for the decline / out-of-scope / meta states lives in
+# reply_copy.py (imported above); detection is the unified classifier's job.
 
 
 _CONTRADICTORY_CREATE_CLARIFY = (
@@ -550,6 +555,21 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
         logger.info("[Modeling] Non-modeling/injection input — declining and redirecting")
         reply_message(session, _NON_MODELING_DECLINE)
         return
+
+    # Classifier-outage net: only when there is NO usable verdict (the
+    # classifier is exactly the component that is down in this mode).
+    _uc_net = session.get(UNIFIED_CLASSIFICATION)
+    if _uc_net is None or getattr(_uc_net, "intent", None) == "fallback_intent":
+        _normalized = " ".join(
+            re.sub(r"[^\w\s']", " ", request.message.lower()).split())
+        if _normalized in _OUTAGE_DECLINE_PHRASES:
+            logger.info("[Modeling] Outage net: decline phrase — acknowledging")
+            reply_message(session, _DECLINE_ACK)
+            return
+        if _OUTAGE_ARTIFACT_RE.search(request.message):
+            logger.info("[Modeling] Outage net: non-software artifact — redirecting")
+            reply_message(session, _OUT_OF_SCOPE_REDIRECT)
+            return
 
     # Self-contradiction guard (create path only): a request that negates the
     # content it asks to create ("a class diagram with no classes", "model
@@ -1058,9 +1078,9 @@ def uml_rag_body(session: Session):
 
 def decline_body(session: Session):
     """The user declined / opted out (decline_intent) — acknowledge and build
-    nothing. The deterministic guard in _modeling_state_body still covers the
-    bare-phrase cases; this state catches the ones the classifier routes here
-    (including novel phrasings like "nah I'm good")."""
+    nothing. Detection is the unified classifier's (it handles novel phrasings
+    like "nah I'm good"); _modeling_state_body keeps only a classifier-OUTAGE
+    net for the bare phrases."""
     request = _common_preamble(session)
     if request is None:
         return
@@ -1087,7 +1107,10 @@ def meta_question_body(session: Session):
     if request is None:
         return
     session.set(LAST_MATCHED_INTENT, 'meta_question_intent')
-    reply_message(session, _META_ANSWER)
+    # A direct "do you …?" capability question deserves an explicit yes before
+    # the pitch (presentation only — routing stays with the classifier).
+    _prefix = "Yes. " if re.search(r"\bdo\s+you\b", request.message or "", re.IGNORECASE) else ""
+    reply_message(session, _prefix + _META_ANSWER)
 
 
 def add_unified_transitions(state, intents_map, fallback_state, generation_state):
