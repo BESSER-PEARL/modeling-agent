@@ -225,6 +225,18 @@ class TestSyntheticSubRequestClassification:
         assert result.route == "deterministic"
         assert result.generator_type == "django"
 
+    def test_create_verdict_with_noise_route_goes_to_modeling(self, monkeypatch):
+        """The LLM fills generation_route='other' even on CREATE verdicts —
+        that noise must not hijack the route (live regression: the mismatch
+        rebuild got the 'didn't catch a code-generation request' reply)."""
+        from handlers.generation_handler import _classification_to_legacy
+        noisy = UnifiedClassification(
+            intent="create_complete_system_intent",
+            generation_route="other",       # schema noise, not a real verdict
+            reason="user wants a new class diagram",
+        )
+        assert _classification_to_legacy(noisy).route == "modeling"
+
     def test_generation_cache_is_used_without_llm_call(self, monkeypatch):
         import handlers.generation_handler as gen_mod
         from handlers.generation_handler import (

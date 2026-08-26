@@ -50,7 +50,17 @@ def _classification_to_legacy(cls_obj: UnifiedClassification):
     intent), everything else gets the 'other' clarify reply.
     """
     from handlers.smart_generation_handler import GenerationClassification
-    route = cls_obj.generation_route
+    # generation_route is only MEANINGFUL on generation verdicts (the schema
+    # says "REQUIRED when intent='generation_intent'") — but the LLM often
+    # fills it as 'other' on non-generation intents too. Trusting that noise
+    # sent a mismatch-rebuild ("create a class diagram for a hotel…",
+    # intent=create, generation_route='other') to the clarify reply instead
+    # of the modeling branch. Ignore the field unless the verdict is a
+    # generation one; derive the route from the intent otherwise.
+    route = (
+        cls_obj.generation_route
+        if cls_obj.intent == "generation_intent" else None
+    )
     if not route:
         if cls_obj.intent in (
             "create_complete_system_intent", "modify_model_intent",
