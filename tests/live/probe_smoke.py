@@ -44,9 +44,28 @@ BUILD = {"inject_complete_system", "modify_model", "auto_generate_gui", "inject_
 TERMINAL = BUILD | {"trigger_generator", "trigger_smart_generator", "trigger_export"}
 
 
-async def _send(ws, sid, text):
+# A canned non-trivial class model for scenarios that need an EXISTING model
+# in the workspace context (the real frontend always sends one; probes that
+# omit it can never trigger the replace/keep confirmation).
+_SHOP_MODEL = {
+    "elements": {
+        "c1": {"id": "c1", "name": "Product", "type": "Class"},
+        "c2": {"id": "c2", "name": "Order", "type": "Class"},
+    },
+    "relationships": {},
+}
+
+
+async def _send(ws, sid, text, model=None):
+    context = {"activeDiagramType": "ClassDiagram"}
+    if model is not None:
+        context["activeModel"] = model
+        context["projectSnapshot"] = {
+            "name": "SmokeProject",
+            "diagrams": {"ClassDiagram": [{"model": model}]},
+        }
     inner = {"action": "user_message", "protocolVersion": "2.0", "clientMode": "widget",
-             "sessionId": sid, "message": text, "context": {"activeDiagramType": "ClassDiagram"}}
+             "sessionId": sid, "message": text, "context": context}
     await ws.send(json.dumps({"action": "user_message", "user_id": sid,
                               "message": json.dumps(inner)}))
 
@@ -160,18 +179,18 @@ async def c_modify():
 
 async def c_flow_pivot():
     """The 'add Death to PetStatus' bug class: a MODIFY typed at the
-    replace/keep prompt must MODIFY, not be eaten by the confirmation."""
+    replace/keep prompt must MODIFY, not be eaten by the confirmation. An
+    existing model rides in the workspace context (as the frontend sends it),
+    so the create triggers the replace/keep confirmation."""
     async with _connect() as ws:
         sid = "s_" + uuid.uuid4().hex[:6]
-        await _send(ws, sid, "create a class diagram for a shop with products and orders")
-        if not _built(await _collect(ws)):
-            return (False, "seed-failed")
-        await _send(ws, sid, "create a class diagram for a shop with products and orders")
+        await _send(ws, sid, "create a class diagram for a shop with products and orders",
+                    model=_SHOP_MODEL)
         f1 = await _collect(ws)
         asked = any("replace" in (t or "").lower() for _a, t, _l in f1)
         if not asked:
             return (False, f"no replace prompt ({[x[0] for x in f1]})")
-        await _send(ws, sid, "add a price attribute to Product")
+        await _send(ws, sid, "add a price attribute to Product", model=_SHOP_MODEL)
         f2 = await _collect(ws)
         ok = any(x[0] in ("modify_model", "inject_complete_system") for x in f2)
         return (ok, "pivot modified" if ok else f"pivot NOT modified ({[x[0] for x in f2]})")
@@ -181,14 +200,12 @@ async def c_flow_answer():
     """And the mirror: an actual ANSWER at the prompt must still work."""
     async with _connect() as ws:
         sid = "s_" + uuid.uuid4().hex[:6]
-        await _send(ws, sid, "create a class diagram for a shop with products and orders")
-        if not _built(await _collect(ws)):
-            return (False, "seed-failed")
-        await _send(ws, sid, "create a class diagram for a shop with products and orders")
+        await _send(ws, sid, "create a class diagram for a shop with products and orders",
+                    model=_SHOP_MODEL)
         f1 = await _collect(ws)
         if not any("replace" in (t or "").lower() for _a, t, _l in f1):
             return (False, f"no replace prompt ({[x[0] for x in f1]})")
-        await _send(ws, sid, "replace")
+        await _send(ws, sid, "replace", model=_SHOP_MODEL)
         f2 = await _collect(ws)
         ok = _built(f2)
         return (ok, "answer replaced" if ok else f"answer NOT executed ({[x[0] for x in f2]})")

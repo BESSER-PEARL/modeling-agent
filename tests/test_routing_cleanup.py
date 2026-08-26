@@ -450,6 +450,32 @@ class TestPendingStashInterjections:
         assert result["message"] == OUT_OF_SCOPE_REDIRECT
         assert session.get(PENDING_SMART_GEN_INSTRUCTIONS)  # stash survives
 
+    def test_verdict_confirm_never_fires_the_spend(self):
+        """B-2: the smart generator SPENDS a run, so an LLM verdict of
+        'confirm' must NOT fire it — confirmation stays exact-phrase/button
+        only. (Live regression: "fast", meant for the GUI choice, was read
+        as an eager confirm and fired an unwanted run.)"""
+        from handlers.generation_handler import handle_generation_request
+        session = self._session_with_stash("generation_intent")
+        uc = session.get(UNIFIED_CLASSIFICATION)
+        session.set(UNIFIED_CLASSIFICATION, UnifiedClassification(
+            intent="generation_intent", generation_route="smart",
+            refined_instructions="build a shop app", reason="stub",
+            pending_flow_action="answer", pending_flow_answer="confirm"))
+        result = handle_generation_request(session, _req("fast"))
+        assert result.get("action") != "trigger_smart_generator"
+
+    def test_verdict_cancel_still_cancels(self):
+        from handlers.generation_handler import handle_generation_request
+        from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+        session = self._session_with_stash("generation_intent")
+        session.set(UNIFIED_CLASSIFICATION, UnifiedClassification(
+            intent="generation_intent", reason="stub",
+            pending_flow_action="answer", pending_flow_answer="cancel"))
+        result = handle_generation_request(session, _req("hmm rather not actually"))
+        assert "cancelled" in (result.get("message") or "").lower()
+        assert not session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+
     def test_decline_at_confirmation_cancels_cleanly(self):
         from handlers.generation_handler import handle_generation_request
         from session_keys import PENDING_SMART_GEN_INSTRUCTIONS

@@ -1043,14 +1043,17 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         _smart_gen_confirmation_decision(msg_lower) if has_pending_smart_gen else None
     )
     if has_pending_smart_gen and smart_gen_decision is None:
-        # ActiveFlow: the exact-phrase sets miss novel phrasings ("sure, go
-        # for it", "rather not") — the classifier judged the message with the
-        # pending confirmation in context; use its verdict.
+        # ActiveFlow: the classifier may CANCEL on the user's behalf (novel
+        # phrasings like "rather not" — cancelling is always safe) but must
+        # NEVER CONFIRM: firing the generator SPENDS a run (the user's own
+        # API key on BYOK), so confirmation stays exact-phrase/button-only
+        # (B-2). Live lesson: "fast" — meant for the GUI choice — was read
+        # by the LLM as an eager confirm and fired a run the user never
+        # asked for.
         _uc_sc = session.get(UNIFIED_CLASSIFICATION)
-        if getattr(_uc_sc, "pending_flow_action", None) == "answer":
-            _sc_answer = getattr(_uc_sc, "pending_flow_answer", None)
-            if _sc_answer in ("confirm", "cancel"):
-                smart_gen_decision = _sc_answer
+        if (getattr(_uc_sc, "pending_flow_action", None) == "answer"
+                and getattr(_uc_sc, "pending_flow_answer", None) == "cancel"):
+            smart_gen_decision = "cancel"
 
     if smart_gen_decision == "cancel":
         _clear_pending_smart_gen(session)
