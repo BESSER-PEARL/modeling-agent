@@ -41,7 +41,6 @@ Core Runtime Modules
   - ``describe_model_body(session)`` — Model summarization
   - ``uml_rag_body(session)`` — RAG query handler
   - ``generation_body(session)`` — Code generation routing
-  - ``workflow_body(session)`` — Multi-step workflow orchestration
 
 ``src/execution/`` (package)
   Operation execution engine:

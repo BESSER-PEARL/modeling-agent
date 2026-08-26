@@ -45,11 +45,25 @@ def _make_request(message: str, action: str = "user_message") -> AssistantReques
     )
 
 
+def _to_unified(decision: GenerationClassification):
+    """Adapt a legacy-shaped stub into the unified classifier's output —
+    what a real ``provider.parse`` returns on the retired-legacy path."""
+    from unified_classifier import UnifiedClassification
+    return UnifiedClassification(
+        intent="generation_intent",
+        generation_route=decision.route,
+        generator_type=decision.generator_type,
+        refined_instructions=decision.refined_instructions,
+        provider=decision.provider,
+        reason=decision.reason,
+    )
+
+
 class _FakeLLMProvider:
-    """Minimal provider stub that returns a fixed classification."""
+    """Minimal provider stub that returns a fixed unified classification."""
 
     def __init__(self, decision: GenerationClassification):
-        self.decision = decision
+        self.decision = _to_unified(decision)
 
     def parse(self, *, messages, schema, temperature, max_tokens):
         return self.decision

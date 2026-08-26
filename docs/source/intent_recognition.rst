@@ -128,7 +128,8 @@ Logic (in order):
 
 1. Frontend events → always route to generation
 2. Pending generator state → route to generation (user is in a config flow)
-3. Mixed request (modeling + generation) → do NOT route (handled by workflow)
+3. Mixed request (modeling + generation) → handled inside the generation body
+   via the modeling pipeline
 4. Modeling request → do NOT route
 5. Diagram creation request → do NOT route
 6. Generator keyword detected → route to generation
@@ -188,9 +189,6 @@ The 8 Intents
      - generation
      - Generate source code, export, or deploy from an **existing** model.
        **Excludes** "generate a class diagram" (that's creation, not generation).
-   * - ``workflow_intent``
-     - workflow
-     - Complete end-to-end workflow: model → validate → generate
 
 **Intent Definition Location:** ``modeling_agent.py`` (lines 87–224)
 
@@ -320,7 +318,8 @@ These are the known ambiguous patterns and how the pipeline handles them:
      - Intent description explicitly maps "also want"/"also store" to ``modify_model``
    * - ``"create a class diagram and generate django"``
      - Mixed modeling + generation
-     - ``_looks_like_mixed_modeling_and_generation()`` detects it → workflow state
+     - ``_looks_like_mixed_modeling_and_generation()`` detects it → the generation
+       body runs the modeling pipeline first
 
 
 Debugging Intent Recognition

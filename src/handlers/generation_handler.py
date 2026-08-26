@@ -7,7 +7,6 @@ from baf.core.session import Session
 
 from handlers.smart_generation_handler import (
     build_trigger_smart_generator_payload,
-    classify_generation_request,
 )
 from protocol.types import AssistantRequest
 from utilities.model_context import is_diagram_nontrivial
@@ -24,7 +23,7 @@ from session_keys import (
 )
 from unified_classifier import (
     UnifiedClassification,
-    classify_message as _unified_classify_message,
+    get_or_classify as _unified_get_or_classify,
 )
 
 try:
@@ -36,14 +35,35 @@ except ImportError:  # pragma: no cover — keeps the module importable in
 
 
 def _classification_to_legacy(cls_obj: UnifiedClassification):
-    """Adapt a :class:`UnifiedClassification` to the legacy
-    :class:`GenerationClassification` API the dispatch code below
-    expects. Returns an object with the same attributes
-    ``route / generator_type / refined_instructions / provider / reason``.
+    """Adapt a :class:`UnifiedClassification` to the
+    :class:`GenerationClassification` shape the dispatch code below
+    expects (attributes ``route / generator_type / refined_instructions /
+    provider / reason``).
+
+    Non-generation verdicts can still reach the generation handler
+    (keyword-routed messages, pending flows). Rather than second-guessing
+    the unified classifier with another LLM call, honor its verdict:
+    modeling intents run the modeling pipeline (create OR modify — see the
+    ``route == "modeling"`` branch, which picks the mode from the cached
+    intent), everything else gets the 'other' clarify reply.
     """
     from handlers.smart_generation_handler import GenerationClassification
+    route = cls_obj.generation_route
+    if not route:
+        if cls_obj.intent in (
+            "create_complete_system_intent", "modify_model_intent",
+        ):
+            route = "modeling"
+        elif cls_obj.intent in ("generation_intent", "fallback_intent"):
+            # fallback_intent = the classifier was unavailable or undecided.
+            # 'deterministic' with no generator_type shows the generator MENU
+            # — the resilient pre-LLM behavior, so an LLM outage still lets
+            # the user proceed by picking a generator by name.
+            route = "deterministic"
+        else:
+            route = "other"
     return GenerationClassification(
-        route=cls_obj.generation_route or "deterministic",
+        route=route,
         generator_type=cls_obj.generator_type,
         refined_instructions=cls_obj.refined_instructions,
         provider=cls_obj.provider,
@@ -263,7 +283,8 @@ def _build_mismatch_confirmation(session: Session, classification, suggested: st
     their existing class diagram. The user picks one of three quick
     actions and the agent reroutes accordingly:
 
-    * "Update model + generate" → workflow_body picks up the stashed
+    * "Update model + generate" → the create choke point in
+      execution.model_operations picks up the stashed
       instructions and runs smart-gen after the new model is built.
     * "Generate anyway"         → ``SKIP_MISMATCH_CHECK_ONCE`` is set so
       the next pass through this handler skips this guard.
@@ -319,20 +340,21 @@ def _build_mismatch_confirmation(session: Session, classification, suggested: st
 
 
 def _get_classification_from_cache_or_classify(session, request):
-    """Read the unified classifier's cached result, or classify on the fly.
+    """Read the unified classifier's cached verdict, classifying on the
+    fly only when the cache is empty (paths that bypass the state-machine
+    hook — direct calls, some tests).
 
-    Prefers the per-message cache (populated by the priority-0 hook in
-    ``state_bodies.add_unified_transitions``). Falls back to a direct
-    LLM call only when the cache is empty — which happens in tests and
-    in code paths that bypass the state-machine transitions.
+    The unified classifier is the SINGLE rulebook for generation
+    sub-routing. The legacy generation-only classifier (a second prompt
+    that had drifted out of sync — e.g. it contradicted the SQL-dialect
+    and rest_api/backend deterministic rules) is retired; whatever the
+    unified call decided is adapted via ``_classification_to_legacy``.
     """
     cached: Optional[UnifiedClassification] = session.get(UNIFIED_CLASSIFICATION)
-    if cached is not None and cached.intent == "generation_intent":
-        return _classification_to_legacy(cached)
-    # Fallback: call the legacy sub-router (one LLM call). Only reached
-    # when the unified hook didn't run — typically tests.
-    llm_provider = _get_llm_provider() if _get_llm_provider else None
-    return classify_generation_request(request, llm_provider)
+    if cached is None:
+        llm_provider = _get_llm_provider() if _get_llm_provider else None
+        cached = _unified_get_or_classify(session, request, llm_provider)
+    return _classification_to_legacy(cached)
 
 logger = logging.getLogger(__name__)
 
@@ -708,7 +730,7 @@ def _clear_pending_smart_gen(session: Session) -> None:
     """Clear stashed smart-gen instructions and the skip-mismatch flag.
 
     Called after the user resolves a mismatch confirmation (via Generate
-    Anyway, Cancel, or after the workflow_body completes a chained run)
+    Anyway, Cancel, or after a chained mismatch-regen run completes)
     so a stale stash doesn't leak into a future unrelated request.
     """
     try:
@@ -766,8 +788,8 @@ def should_route_to_generation(session: Session, request: AssistantRequest) -> b
          this is a generation request. Its ``json_intent_matches``
          transition routes to ``generation_state`` on its own.
       2. Inside ``generation_state``, ``handle_generation_request`` calls
-         :func:`classify_generation_request` — ONE structured-output
-         LLM call — for the smart-vs-deterministic sub-routing.
+         the unified classifier's cached verdict (no extra LLM
+         call) for the smart-vs-deterministic sub-routing.
 
     The only jobs of this function are the two non-intent signals BAF's
     classifier can't see:
@@ -963,10 +985,9 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     BESSER's deterministic generators (django / pydantic / sql / …) vs
     redirect-to-modeling (if BAF misclassified).
 
-    We make ONE LLM call via :func:`classify_generation_request` that
-    returns route + generator_type + refined_instructions all at once —
-    replacing what used to be three calls + a pile of keyword
-    heuristics.
+    The sub-routing verdict (route + generator_type +
+    refined_instructions) comes from the unified classifier's cached
+    per-message classification — one rulebook, zero extra LLM calls.
     """
     if request.action == "frontend_event":
         return _handle_frontend_event(request, session)
@@ -1131,21 +1152,28 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
 
         if classification.route == "modeling":
             _clear_pending_state(session)
-            # The request is really "create/design a system" (e.g. "Build a
-            # library app to track books and loans"), not code-gen. Build the
-            # model directly instead of bouncing the user with a "rephrase"
-            # message — classification is non-deterministic, so this makes the
-            # outcome CONSISTENT regardless of which path the message took.
-            # execute_planned_operations sends the inject_complete_system reply
-            # itself; return None so the caller adds nothing more (deferred
-            # import avoids a module-load cycle).
+            # The request is really a modeling request (create OR modify),
+            # not code-gen. Build/edit the model directly instead of bouncing
+            # the user with a "rephrase" message — classification is
+            # non-deterministic, so this makes the outcome CONSISTENT
+            # regardless of which path the message took. The MODE comes from
+            # the unified verdict: a modify-shaped message ("add a Payment
+            # class and regenerate") must MODIFY, not rebuild from scratch.
+            # execute_planned_operations sends the reply itself; return None
+            # so the caller adds nothing more (deferred import avoids a
+            # module-load cycle).
+            _uc = session.get(UNIFIED_CLASSIFICATION)
+            if getattr(_uc, "intent", None) == "modify_model_intent":
+                _mode, _intent = "modify_model", "modify_model_intent"
+            else:
+                _mode, _intent = "complete_system", "create_complete_system_intent"
             try:
                 from execution import execute_planned_operations
                 execute_planned_operations(
                     session=session,
                     request=request,
-                    default_mode="complete_system",
-                    matched_intent="create_complete_system_intent",
+                    default_mode=_mode,
+                    matched_intent=_intent,
                 )
                 return None
             except Exception as exc:

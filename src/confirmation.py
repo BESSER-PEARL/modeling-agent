@@ -483,7 +483,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
 
     # ── Resume smart-gen handoff if a mismatch chain was pending ─────
     # When the user reached this confirmation via the "Update model +
-    # generate" mismatch quick action, the workflow stashed smart-gen
+    # generate" mismatch quick action, the mismatch handler stashed smart-gen
     # instructions in the session and paused waiting for this answer.
     # Now that the model has been replaced (the only path that makes
     # sense to chain — keeping the old model would defeat the point of

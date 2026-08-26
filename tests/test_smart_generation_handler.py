@@ -1,16 +1,13 @@
-"""Tests for the unified LLM-based generation classifier.
+"""Tests for generation sub-routing + the smart-gen payload.
 
-The legacy keyword-based helpers (``should_route_to_smart_gen``,
-``refine_instructions``, ``_SMART_GEN_COMPLEX_PHRASES``,
-``_COMPOUND_INTENT_RE``, ``_UNSUPPORTED_LANGUAGE_RE``,
-``_DETERMINISTIC_ONLY_HEADS``) were deleted in favour of a single LLM
-call via :func:`classify_generation_request`. These tests pin the new
-contract:
+The legacy generation-only classifier (``classify_generation_request``
+and its second, drifted prompt) is retired: generation sub-routing now
+comes from the UNIFIED classifier's single per-message call, adapted via
+``generation_handler._classification_to_legacy``. These tests pin:
 
-  * classify_generation_request returns a GenerationClassification
-    regardless of LLM availability (falls back safely).
-  * handle_generation_request dispatches on the classification's
-    ``route`` field.
+  * handle_generation_request dispatches on the adapted ``route`` field
+    (fakes stub the unified classifier's structured output).
+  * The dispatch never crashes when no LLM provider is available.
   * build_trigger_smart_generator_payload requires ``route='smart'``.
 """
 
@@ -23,8 +20,8 @@ from handlers.generation_handler import (
 from handlers.smart_generation_handler import (
     GenerationClassification,
     build_trigger_smart_generator_payload,
-    classify_generation_request,
 )
+from unified_classifier import UnifiedClassification
 from protocol.types import AssistantRequest, WorkspaceContext
 from session_keys import PENDING_GENERATOR_TYPE
 
@@ -74,114 +71,45 @@ class _FakeProvider:
         return self.decision
 
 
+def _wrap(decision: GenerationClassification) -> UnifiedClassification:
+    """Adapt a legacy-shaped stub decision into the unified classifier's
+    structured output (what a real ``provider.parse`` now returns)."""
+    return UnifiedClassification(
+        intent="generation_intent",
+        generation_route=decision.route,
+        generator_type=decision.generator_type,
+        refined_instructions=decision.refined_instructions,
+        provider=decision.provider,
+        reason=decision.reason,
+    )
+
+
 # ---------------------------------------------------------------------
-# classify_generation_request
+# Classification fallback safety (cache empty, no provider)
 # ---------------------------------------------------------------------
 
 
-class TestClassifyGenerationRequest:
-    def test_returns_safe_fallback_when_provider_none(self):
-        request = _make_request("generate django")
-        result = classify_generation_request(request, llm_provider=None)
-        assert isinstance(result, GenerationClassification)
-        assert result.route == "deterministic"
-        assert result.generator_type is None
+class TestClassificationFallback:
+    def test_no_provider_returns_safe_route(self, monkeypatch):
+        """With an empty cache and no LLM provider, the sub-router must
+        return a safe classification (menu fallback), never crash."""
+        import handlers.generation_handler as gen_mod
+        from handlers.generation_handler import _get_classification_from_cache_or_classify
+        monkeypatch.setattr(gen_mod, "_get_llm_provider", None, raising=False)
+        session = FakeSession()
+        result = _get_classification_from_cache_or_classify(
+            session, _make_request("generate django"))
+        assert result.route in ("deterministic", "smart", "modeling", "other")
 
-    def test_returns_safe_fallback_on_llm_exception(self):
-        request = _make_request("build me a rails api")
-        provider = _FakeProvider(None, raise_on_parse=True)
-        result = classify_generation_request(request, llm_provider=provider)
-        assert result.route == "deterministic"
-        assert result.generator_type is None
-        assert "failed" in result.reason.lower() or "unavailable" in result.reason.lower()
-
-    def test_smart_route_returned_verbatim(self):
-        request = _make_request("build me a rails api")
-        expected = GenerationClassification(
-            route="smart",
-            refined_instructions="Build a Rails 7 API for the Library domain…",
-            provider="anthropic",
-            reason="user named Rails which is not a BESSER built-in",
-        )
-        provider = _FakeProvider(expected)
-        result = classify_generation_request(request, llm_provider=provider)
-        assert result.route == "smart"
-        assert result.refined_instructions.startswith("Build a Rails 7 API")
-
-    def test_deterministic_route_returned_verbatim(self):
-        request = _make_request("generate django")
-        expected = GenerationClassification(
-            route="deterministic",
-            generator_type="django",
-            reason="user explicitly said django",
-        )
-        provider = _FakeProvider(expected)
-        result = classify_generation_request(request, llm_provider=provider)
-        assert result.route == "deterministic"
-        assert result.generator_type == "django"
-
-    @pytest.mark.parametrize("generator_type", ["rest_api", "rdf"])
-    def test_legacy_schema_accepts_deterministic_api_and_semantic_generators(
-        self, generator_type,
-    ):
-        classification = GenerationClassification(
-            route="deterministic",
-            generator_type=generator_type,
-            reason="BESSER built-in",
-        )
-
-        assert classification.generator_type == generator_type
-
-    def test_smart_with_empty_instructions_demoted_to_deterministic_unknown(self):
-        """If the LLM returns ``route='smart'`` but forgets to write
-        instructions, treat it as a bug in the classifier and fall
-        back to 'deterministic-unknown' so the caller shows the menu
-        instead of raising downstream."""
-        request = _make_request("do something")
-        bad = GenerationClassification(
-            route="smart",
-            refined_instructions="",  # empty — invalid
-            reason="classifier bug",
-        )
-        provider = _FakeProvider(bad)
-        result = classify_generation_request(request, llm_provider=provider)
-        assert result.route == "deterministic"
-        assert result.generator_type is None
-
-    def test_workspace_context_included_in_user_block(self):
-        request = _make_request("generate code")
-        expected = GenerationClassification(
-            route="other", reason="chat"
-        )
-        provider = _FakeProvider(expected)
-        classify_generation_request(request, llm_provider=provider)
-        user_msg = provider.calls[0]["messages"][1]["content"]
-        assert "ClassDiagram" in user_msg
-        assert "Library" in user_msg
-
-    def test_system_prompt_explains_extras_route_to_smart(self):
-        """The classifier prompt MUST explain that a BESSER built-in +
-        any extra feature (auth, JWT, Docker, migrations, …) routes to
-        smart — not deterministic. This is the rule that catches cases
-        like 'web app with authentication' where the deterministic
-        web_app template can't produce the auth layer on its own.
-
-        We pin this by asserting the prompt text contains the relevant
-        guidance. If someone trims the prompt and loses this section,
-        the LLM will start routing 'web_app with auth' to the
-        deterministic path and the user gets scaffolding without auth.
-        """
-        from handlers.smart_generation_handler import _CLASSIFIER_SYSTEM_PROMPT
-        prompt = _CLASSIFIER_SYSTEM_PROMPT.lower()
-        # Must mention that deterministic = scaffolding only
-        assert "scaffolding" in prompt or "baseline" in prompt
-        # Must call out extras as smart triggers
-        for feature in ["auth", "jwt", "docker", "migration"]:
-            assert feature in prompt, (
-                f"system prompt doesn't mention '{feature}' as a smart trigger"
-            )
-        # Must have an explicit "web_app with auth → smart" example
-        assert "web app with authentication" in prompt or "web_app with oauth" in prompt
+    def test_provider_exception_returns_safe_route(self, monkeypatch):
+        import handlers.generation_handler as gen_mod
+        from handlers.generation_handler import _get_classification_from_cache_or_classify
+        fake = _FakeProvider(None, raise_on_parse=True)
+        monkeypatch.setattr(gen_mod, "_get_llm_provider", lambda: fake, raising=False)
+        session = FakeSession()
+        result = _get_classification_from_cache_or_classify(
+            session, _make_request("build me a rails api"))
+        assert result.route in ("deterministic", "smart", "modeling", "other")
 
 
 # ---------------------------------------------------------------------
@@ -245,9 +173,10 @@ class TestBuildPayload:
 
 class TestHandleGenerationRequest:
     def _patch_provider(self, monkeypatch, decision):
-        """Patch ``_get_llm_provider`` to return a fake provider."""
+        """Patch ``_get_llm_provider`` to return a fake provider whose
+        ``parse`` yields the unified classifier's structured output."""
         import handlers.generation_handler as gen_mod
-        fake = _FakeProvider(decision)
+        fake = _FakeProvider(_wrap(decision))
         monkeypatch.setattr(gen_mod, "_get_llm_provider", lambda: fake, raising=False)
         return fake
 

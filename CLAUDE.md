@@ -34,7 +34,8 @@ WebSocket message
   → BAF's LLM intent classifier                (modeling_agent.py intent descriptions)
       decides WHICH STATE handles this message:
       create_complete_system_state / modify_model_state / modeling_help_state /
-      describe_model_state / generation_state / workflow_state / greetings_state
+      describe_model_state / generation_state / greetings_state /
+      decline_state / out_of_scope_state
       — or falls through to global_fallback_body (src/state_bodies.py) if no
         intent matches confidently.
   → state_bodies.py's state body for the matched intent

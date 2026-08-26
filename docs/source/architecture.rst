@@ -186,9 +186,6 @@ performed by the BESSER framework using LLM-based description matching.
    * - ``generation_intent``
      - ``generation_state``
      - Code generation routing
-   * - ``workflow_intent``
-     - ``workflow_state``
-     - Multi-step workflow orchestration (model + generate)
 
 Both modeling states (``create_complete_system``, ``modify_model``) share the
 same body function ``_modeling_state_body()`` with different ``default_mode``

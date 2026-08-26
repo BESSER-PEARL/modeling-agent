@@ -157,10 +157,20 @@ class TestSnapshotBridgeHelper:
 
 def _patch_classifier(monkeypatch, decision: GenerationClassification):
     import handlers.generation_handler as gen_mod
+    from unified_classifier import UnifiedClassification
+
+    unified = UnifiedClassification(
+        intent="generation_intent",
+        generation_route=decision.route,
+        generator_type=decision.generator_type,
+        refined_instructions=decision.refined_instructions,
+        provider=decision.provider,
+        reason=decision.reason,
+    )
 
     class _FakeProvider:
         def parse(self, *, messages, schema, temperature, max_tokens):
-            return decision
+            return unified
 
     monkeypatch.setattr(
         gen_mod, "_get_llm_provider", lambda: _FakeProvider(), raising=False,

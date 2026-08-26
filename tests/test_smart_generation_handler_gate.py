@@ -68,10 +68,20 @@ def _smart_classification():
 
 def _patch_provider(monkeypatch, decision):
     gen_mod = _gen_handler()
+    from unified_classifier import UnifiedClassification
+
+    unified = UnifiedClassification(
+        intent="generation_intent",
+        generation_route=decision.route,
+        generator_type=decision.generator_type,
+        refined_instructions=decision.refined_instructions,
+        provider=decision.provider,
+        reason=decision.reason,
+    )
 
     class _FakeProvider:
         def parse(self, *, messages, schema, temperature, max_tokens):
-            return decision
+            return unified
 
     monkeypatch.setattr(gen_mod, "_get_llm_provider", lambda: _FakeProvider(), raising=False)
 
