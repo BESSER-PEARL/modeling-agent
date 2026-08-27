@@ -1,0 +1,1265 @@
+{
+  "meta": {
+    "date": "2026-08-26 14:49:37",
+    "repo": "C:\\Users\\sulejmani\\Desktop\\BESSER-Experimental\\modeling-agent",
+    "baseline_model": "gpt-5-mini",
+    "alt_model": "gpt-4o-mini",
+    "max_completion_tokens": 8192,
+    "temperature_when_supported": 0.2,
+    "reasoning_effort_default": "low",
+    "schema": "SystemClassSpec",
+    "note": "Replica of base_handler.predict_structured fast path; api key sourced from config.yaml/env, never persisted."
+  },
+  "calls": [
+    {
+      "config": "baseline",
+      "kind": "structured",
+      "model": "gpt-5-mini",
+      "domain": "library",
+      "request": "a library with books, members and loans",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low",
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5246
+          },
+          {
+            "role": "user",
+            "content_chars": 53
+          }
+        ]
+      },
+      "wall_s": 54.93,
+      "finish_reason": "stop",
+      "prompt_tokens": 2546,
+      "completion_tokens": 3941,
+      "reasoning_tokens": 896,
+      "class_names": [
+        "Book",
+        "BookCopy",
+        "Author",
+        "Member",
+        "Loan",
+        "Library",
+        "LoanStatus",
+        "BookFormat"
+      ],
+      "n_classes": 8,
+      "n_relationships": 7,
+      "n_methods_total": 5,
+      "n_attributes_total": 44,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "baseline",
+      "kind": "structured",
+      "model": "gpt-5-mini",
+      "domain": "ecommerce",
+      "request": "an e-commerce shop with products, orders and payments",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low",
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5246
+          },
+          {
+            "role": "user",
+            "content_chars": 67
+          }
+        ]
+      },
+      "wall_s": 44.75,
+      "finish_reason": "stop",
+      "prompt_tokens": 2548,
+      "completion_tokens": 3674,
+      "reasoning_tokens": 256,
+      "class_names": [
+        "Product",
+        "Category",
+        "Customer",
+        "Order",
+        "OrderItem",
+        "Payment",
+        "Address",
+        "OrderStatus",
+        "PaymentStatus",
+        "PaymentMethod"
+      ],
+      "n_classes": 10,
+      "n_relationships": 7,
+      "n_methods_total": 2,
+      "n_attributes_total": 54,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "baseline",
+      "kind": "structured",
+      "model": "gpt-5-mini",
+      "domain": "hospital",
+      "request": "a hospital with patients, doctors and appointments",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low",
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5246
+          },
+          {
+            "role": "user",
+            "content_chars": 64
+          }
+        ]
+      },
+      "wall_s": 48.67,
+      "finish_reason": "stop",
+      "prompt_tokens": 2546,
+      "completion_tokens": 3845,
+      "reasoning_tokens": 128,
+      "class_names": [
+        "Patient",
+        "Doctor",
+        "Appointment",
+        "MedicalRecord",
+        "Department",
+        "ContactInfo",
+        "AppointmentStatus",
+        "Gender",
+        "DoctorRole"
+      ],
+      "n_classes": 9,
+      "n_relationships": 9,
+      "n_methods_total": 5,
+      "n_attributes_total": 53,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "baseline",
+      "kind": "structured",
+      "model": "gpt-5-mini",
+      "domain": "hotel",
+      "request": "a hotel booking system",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low",
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5246
+          },
+          {
+            "role": "user",
+            "content_chars": 36
+          }
+        ]
+      },
+      "wall_s": 60.41,
+      "finish_reason": "stop",
+      "prompt_tokens": 2542,
+      "completion_tokens": 4454,
+      "reasoning_tokens": 192,
+      "class_names": [
+        "Hotel",
+        "Address",
+        "Room",
+        "RoomType",
+        "Guest",
+        "Booking",
+        "Payment",
+        "Rate",
+        "BookingStatus",
+        "PaymentStatus",
+        "PaymentMethod",
+        "RoomStatus"
+      ],
+      "n_classes": 12,
+      "n_relationships": 9,
+      "n_methods_total": 6,
+      "n_attributes_total": 62,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "baseline",
+      "kind": "structured",
+      "model": "gpt-5-mini",
+      "domain": "tracker",
+      "request": "a project tracker with teams, issues and sprints",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low",
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5246
+          },
+          {
+            "role": "user",
+            "content_chars": 62
+          }
+        ]
+      },
+      "wall_s": 70.38,
+      "finish_reason": "stop",
+      "prompt_tokens": 2548,
+      "completion_tokens": 5404,
+      "reasoning_tokens": 320,
+      "class_names": [
+        "Project",
+        "Team",
+        "User",
+        "Issue",
+        "Sprint",
+        "Comment",
+        "Attachment",
+        "Label",
+        "IssueStatus",
+        "IssuePriority",
+        "IssueType",
+        "SprintStatus",
+        "Role"
+      ],
+      "n_classes": 13,
+      "n_relationships": 13,
+      "n_methods_total": 11,
+      "n_attributes_total": 67,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "economy",
+      "kind": "structured",
+      "model": "gpt-5-mini",
+      "domain": "library",
+      "request": "a library with books, members and loans",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low",
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5510
+          },
+          {
+            "role": "user",
+            "content_chars": 53
+          }
+        ]
+      },
+      "wall_s": 62.19,
+      "finish_reason": "stop",
+      "prompt_tokens": 2600,
+      "completion_tokens": 3262,
+      "reasoning_tokens": 128,
+      "class_names": [
+        "Library",
+        "Book",
+        "BookCopy",
+        "Member",
+        "Loan",
+        "BookCopyStatus",
+        "MemberStatus",
+        "LoanStatus"
+      ],
+      "n_classes": 8,
+      "n_relationships": 8,
+      "n_methods_total": 6,
+      "n_attributes_total": 43,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "economy",
+      "kind": "structured",
+      "model": "gpt-5-mini",
+      "domain": "ecommerce",
+      "request": "an e-commerce shop with products, orders and payments",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low",
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5510
+          },
+          {
+            "role": "user",
+            "content_chars": 67
+          }
+        ]
+      },
+      "wall_s": 41.18,
+      "finish_reason": "stop",
+      "prompt_tokens": 2602,
+      "completion_tokens": 3517,
+      "reasoning_tokens": 320,
+      "class_names": [
+        "Product",
+        "Category",
+        "Customer",
+        "Address",
+        "Order",
+        "OrderItem",
+        "Payment",
+        "OrderStatus",
+        "PaymentStatus",
+        "PaymentMethod"
+      ],
+      "n_classes": 10,
+      "n_relationships": 8,
+      "n_methods_total": 2,
+      "n_attributes_total": 48,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "economy",
+      "kind": "structured",
+      "model": "gpt-5-mini",
+      "domain": "hospital",
+      "request": "a hospital with patients, doctors and appointments",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low",
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5510
+          },
+          {
+            "role": "user",
+            "content_chars": 64
+          }
+        ]
+      },
+      "wall_s": 37.12,
+      "finish_reason": "stop",
+      "prompt_tokens": 2600,
+      "completion_tokens": 3366,
+      "reasoning_tokens": 128,
+      "class_names": [
+        "Person",
+        "Patient",
+        "Doctor",
+        "Appointment",
+        "Department",
+        "Room",
+        "ContactInfo",
+        "AppointmentStatus",
+        "PatientStatus",
+        "Specialty"
+      ],
+      "n_classes": 10,
+      "n_relationships": 9,
+      "n_methods_total": 4,
+      "n_attributes_total": 44,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "economy",
+      "kind": "structured",
+      "model": "gpt-5-mini",
+      "domain": "hotel",
+      "request": "a hotel booking system",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low",
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5510
+          },
+          {
+            "role": "user",
+            "content_chars": 36
+          }
+        ]
+      },
+      "wall_s": 54.93,
+      "finish_reason": "stop",
+      "prompt_tokens": 2596,
+      "completion_tokens": 4272,
+      "reasoning_tokens": 320,
+      "class_names": [
+        "Customer",
+        "Hotel",
+        "Address",
+        "Room",
+        "Booking",
+        "Payment",
+        "RoomType",
+        "BookingStatus",
+        "RoomStatus",
+        "PaymentStatus"
+      ],
+      "n_classes": 10,
+      "n_relationships": 8,
+      "n_methods_total": 6,
+      "n_attributes_total": 59,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "economy",
+      "kind": "structured",
+      "model": "gpt-5-mini",
+      "domain": "tracker",
+      "request": "a project tracker with teams, issues and sprints",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low",
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5510
+          },
+          {
+            "role": "user",
+            "content_chars": 62
+          }
+        ]
+      },
+      "wall_s": 53.41,
+      "finish_reason": "stop",
+      "prompt_tokens": 2602,
+      "completion_tokens": 4649,
+      "reasoning_tokens": 256,
+      "class_names": [
+        "Project",
+        "Team",
+        "User",
+        "Sprint",
+        "Issue",
+        "Story",
+        "Bug",
+        "Task",
+        "Comment",
+        "Label",
+        "IssueStatus",
+        "Priority",
+        "SprintStatus",
+        "TeamRole"
+      ],
+      "n_classes": 14,
+      "n_relationships": 12,
+      "n_methods_total": 8,
+      "n_attributes_total": 57,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "alt-model",
+      "kind": "structured",
+      "model": "gpt-4o-mini",
+      "domain": "library",
+      "request": "a library with books, members and loans",
+      "request_kwargs": {
+        "model": "gpt-4o-mini",
+        "max_completion_tokens": 8192,
+        "temperature": 0.2,
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5246
+          },
+          {
+            "role": "user",
+            "content_chars": 53
+          }
+        ]
+      },
+      "wall_s": 6.14,
+      "finish_reason": "stop",
+      "prompt_tokens": 2549,
+      "completion_tokens": 527,
+      "reasoning_tokens": 0,
+      "class_names": [
+        "Book",
+        "Member",
+        "Loan"
+      ],
+      "n_classes": 3,
+      "n_relationships": 2,
+      "n_methods_total": 0,
+      "n_attributes_total": 14,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "alt-model",
+      "kind": "structured",
+      "model": "gpt-4o-mini",
+      "domain": "ecommerce",
+      "request": "an e-commerce shop with products, orders and payments",
+      "request_kwargs": {
+        "model": "gpt-4o-mini",
+        "max_completion_tokens": 8192,
+        "temperature": 0.2,
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5246
+          },
+          {
+            "role": "user",
+            "content_chars": 67
+          }
+        ]
+      },
+      "wall_s": 8.0,
+      "finish_reason": "stop",
+      "prompt_tokens": 2551,
+      "completion_tokens": 748,
+      "reasoning_tokens": 0,
+      "class_names": [
+        "User",
+        "Product",
+        "Order",
+        "Payment"
+      ],
+      "n_classes": 4,
+      "n_relationships": 3,
+      "n_methods_total": 0,
+      "n_attributes_total": 20,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "alt-model",
+      "kind": "structured",
+      "model": "gpt-4o-mini",
+      "domain": "hospital",
+      "request": "a hospital with patients, doctors and appointments",
+      "request_kwargs": {
+        "model": "gpt-4o-mini",
+        "max_completion_tokens": 8192,
+        "temperature": 0.2,
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5246
+          },
+          {
+            "role": "user",
+            "content_chars": 64
+          }
+        ]
+      },
+      "wall_s": 6.22,
+      "finish_reason": "stop",
+      "prompt_tokens": 2549,
+      "completion_tokens": 555,
+      "reasoning_tokens": 0,
+      "class_names": [
+        "Patient",
+        "Doctor",
+        "Appointment"
+      ],
+      "n_classes": 3,
+      "n_relationships": 2,
+      "n_methods_total": 0,
+      "n_attributes_total": 15,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "alt-model",
+      "kind": "structured",
+      "model": "gpt-4o-mini",
+      "domain": "hotel",
+      "request": "a hotel booking system",
+      "request_kwargs": {
+        "model": "gpt-4o-mini",
+        "max_completion_tokens": 8192,
+        "temperature": 0.2,
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5246
+          },
+          {
+            "role": "user",
+            "content_chars": 36
+          }
+        ]
+      },
+      "wall_s": 9.16,
+      "finish_reason": "stop",
+      "prompt_tokens": 2545,
+      "completion_tokens": 938,
+      "reasoning_tokens": 0,
+      "class_names": [
+        "Hotel",
+        "Room",
+        "Customer",
+        "Booking",
+        "Payment"
+      ],
+      "n_classes": 5,
+      "n_relationships": 4,
+      "n_methods_total": 0,
+      "n_attributes_total": 25,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "alt-model",
+      "kind": "structured",
+      "model": "gpt-4o-mini",
+      "domain": "tracker",
+      "request": "a project tracker with teams, issues and sprints",
+      "request_kwargs": {
+        "model": "gpt-4o-mini",
+        "max_completion_tokens": 8192,
+        "temperature": 0.2,
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5246
+          },
+          {
+            "role": "user",
+            "content_chars": 62
+          }
+        ]
+      },
+      "wall_s": 7.34,
+      "finish_reason": "stop",
+      "prompt_tokens": 2551,
+      "completion_tokens": 772,
+      "reasoning_tokens": 0,
+      "class_names": [
+        "Team",
+        "Issue",
+        "Sprint",
+        "Project"
+      ],
+      "n_classes": 4,
+      "n_relationships": 4,
+      "n_methods_total": 0,
+      "n_attributes_total": 20,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "minimal-effort",
+      "kind": "structured",
+      "model": "gpt-5-mini",
+      "domain": "library",
+      "request": "a library with books, members and loans",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "minimal",
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5246
+          },
+          {
+            "role": "user",
+            "content_chars": 53
+          }
+        ]
+      },
+      "wall_s": 47.31,
+      "finish_reason": "stop",
+      "prompt_tokens": 2546,
+      "completion_tokens": 2867,
+      "reasoning_tokens": 0,
+      "class_names": [
+        "Book",
+        "Author",
+        "Member",
+        "Loan",
+        "Copy",
+        "Category",
+        "BookStatus",
+        "LoanStatus",
+        "MembershipStatus"
+      ],
+      "n_classes": 9,
+      "n_relationships": 6,
+      "n_methods_total": 3,
+      "n_attributes_total": 43,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "minimal-effort",
+      "kind": "structured",
+      "model": "gpt-5-mini",
+      "domain": "ecommerce",
+      "request": "an e-commerce shop with products, orders and payments",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "minimal",
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5246
+          },
+          {
+            "role": "user",
+            "content_chars": 67
+          }
+        ]
+      },
+      "wall_s": 79.48,
+      "finish_reason": "stop",
+      "prompt_tokens": 2548,
+      "completion_tokens": 5820,
+      "reasoning_tokens": 0,
+      "class_names": [
+        "Product",
+        "Customer",
+        "Order",
+        "OrderItem",
+        "Payment",
+        "Invoice",
+        "Cart",
+        "Address",
+        "Discount",
+        "PaymentProvider",
+        "ProductStatus",
+        "OrderStatus",
+        "PaymentStatus",
+        "PaymentMethod",
+        "InvoiceStatus",
+        "CartStatus",
+        "CustomerStatus",
+        "DiscountStatus"
+      ],
+      "n_classes": 18,
+      "n_relationships": 10,
+      "n_methods_total": 3,
+      "n_attributes_total": 93,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "minimal-effort",
+      "kind": "structured",
+      "model": "gpt-5-mini",
+      "domain": "hospital",
+      "request": "a hospital with patients, doctors and appointments",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "minimal",
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5246
+          },
+          {
+            "role": "user",
+            "content_chars": 64
+          }
+        ]
+      },
+      "wall_s": 49.14,
+      "finish_reason": "stop",
+      "prompt_tokens": 2546,
+      "completion_tokens": 4030,
+      "reasoning_tokens": 0,
+      "class_names": [
+        "Person",
+        "Patient",
+        "Doctor",
+        "Appointment",
+        "Clinic",
+        "Room",
+        "AppointmentReminder",
+        "AppointmentStatus",
+        "PatientStatus",
+        "DoctorStatus",
+        "RoomStatus",
+        "ReminderMethod",
+        "ReminderStatus"
+      ],
+      "n_classes": 13,
+      "n_relationships": 9,
+      "n_methods_total": 3,
+      "n_attributes_total": 61,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "minimal-effort",
+      "kind": "structured",
+      "model": "gpt-5-mini",
+      "domain": "hotel",
+      "request": "a hotel booking system",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "minimal",
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5246
+          },
+          {
+            "role": "user",
+            "content_chars": 36
+          }
+        ]
+      },
+      "wall_s": 57.49,
+      "finish_reason": "stop",
+      "prompt_tokens": 2542,
+      "completion_tokens": 4458,
+      "reasoning_tokens": 0,
+      "class_names": [
+        "Hotel",
+        "Room",
+        "Guest",
+        "Booking",
+        "Payment",
+        "RoomType",
+        "RatePlan",
+        "Address",
+        "RoomInventory",
+        "Invoice",
+        "PaymentMethodDetails"
+      ],
+      "n_classes": 11,
+      "n_relationships": 13,
+      "n_methods_total": 2,
+      "n_attributes_total": 68,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "minimal-effort",
+      "kind": "structured",
+      "model": "gpt-5-mini",
+      "domain": "tracker",
+      "request": "a project tracker with teams, issues and sprints",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "minimal",
+        "response_format": "SystemClassSpec",
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5246
+          },
+          {
+            "role": "user",
+            "content_chars": 62
+          }
+        ]
+      },
+      "wall_s": 65.51,
+      "finish_reason": "stop",
+      "prompt_tokens": 2548,
+      "completion_tokens": 5175,
+      "reasoning_tokens": 0,
+      "class_names": [
+        "User",
+        "Team",
+        "Project",
+        "Sprint",
+        "Issue",
+        "Comment",
+        "IssueLink",
+        "AuditEntry",
+        "UserRole",
+        "IssueType",
+        "IssueStatus",
+        "Priority",
+        "SprintStatus",
+        "IssueLinkType"
+      ],
+      "n_classes": 14,
+      "n_relationships": 11,
+      "n_methods_total": 5,
+      "n_attributes_total": 78,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "compact-text",
+      "kind": "plain",
+      "model": "gpt-5-mini",
+      "domain": "library",
+      "request": "a library with books, members and loans",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low",
+        "response_format": null,
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5698
+          },
+          {
+            "role": "user",
+            "content_chars": 53
+          }
+        ]
+      },
+      "wall_s": 16.06,
+      "finish_reason": "stop",
+      "prompt_tokens": 1305,
+      "completion_tokens": 1218,
+      "reasoning_tokens": 768,
+      "class_names": [
+        "Library",
+        "Book",
+        "Author",
+        "BookCopy",
+        "Member",
+        "Loan",
+        "LoanStatus",
+        "CopyStatus",
+        "MemberStatus"
+      ],
+      "n_classes": 9,
+      "n_relationships": 10,
+      "plausible_plantuml": true,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "compact-text",
+      "kind": "plain",
+      "model": "gpt-5-mini",
+      "domain": "ecommerce",
+      "request": "an e-commerce shop with products, orders and payments",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low",
+        "response_format": null,
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5698
+          },
+          {
+            "role": "user",
+            "content_chars": 67
+          }
+        ]
+      },
+      "wall_s": 14.36,
+      "finish_reason": "stop",
+      "prompt_tokens": 1307,
+      "completion_tokens": 1134,
+      "reasoning_tokens": 576,
+      "class_names": [
+        "OrderStatus",
+        "PaymentStatus",
+        "PaymentMethod",
+        "ProductStatus",
+        "CustomerStatus",
+        "Product",
+        "Category",
+        "Customer",
+        "Order",
+        "OrderItem",
+        "Payment",
+        "CardPayment",
+        "Address"
+      ],
+      "n_classes": 13,
+      "n_relationships": 9,
+      "plausible_plantuml": true,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "compact-text",
+      "kind": "plain",
+      "model": "gpt-5-mini",
+      "domain": "hospital",
+      "request": "a hospital with patients, doctors and appointments",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low",
+        "response_format": null,
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5698
+          },
+          {
+            "role": "user",
+            "content_chars": 64
+          }
+        ]
+      },
+      "wall_s": 17.95,
+      "finish_reason": "stop",
+      "prompt_tokens": 1305,
+      "completion_tokens": 1552,
+      "reasoning_tokens": 1024,
+      "class_names": [
+        "Person",
+        "Patient",
+        "Doctor",
+        "Appointment",
+        "MedicalRecord",
+        "Department",
+        "Gender",
+        "AppointmentStatus",
+        "DoctorSpecialty"
+      ],
+      "n_classes": 9,
+      "n_relationships": 10,
+      "plausible_plantuml": true,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "compact-text",
+      "kind": "plain",
+      "model": "gpt-5-mini",
+      "domain": "hotel",
+      "request": "a hotel booking system",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low",
+        "response_format": null,
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5698
+          },
+          {
+            "role": "user",
+            "content_chars": 36
+          }
+        ]
+      },
+      "wall_s": 24.23,
+      "finish_reason": "stop",
+      "prompt_tokens": 1301,
+      "completion_tokens": 2113,
+      "reasoning_tokens": 1536,
+      "class_names": [
+        "Hotel",
+        "Address",
+        "Room",
+        "RoomType",
+        "Guest",
+        "Reservation",
+        "Payment",
+        "RatePlan",
+        "ReservationStatus",
+        "PaymentStatus",
+        "PaymentMethod",
+        "RoomStatus"
+      ],
+      "n_classes": 12,
+      "n_relationships": 11,
+      "plausible_plantuml": true,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    },
+    {
+      "config": "compact-text",
+      "kind": "plain",
+      "model": "gpt-5-mini",
+      "domain": "tracker",
+      "request": "a project tracker with teams, issues and sprints",
+      "request_kwargs": {
+        "model": "gpt-5-mini",
+        "max_completion_tokens": 8192,
+        "reasoning_effort": "low",
+        "response_format": null,
+        "messages": [
+          {
+            "role": "system",
+            "content_chars": 5698
+          },
+          {
+            "role": "user",
+            "content_chars": 62
+          }
+        ]
+      },
+      "wall_s": 23.83,
+      "finish_reason": "stop",
+      "prompt_tokens": 1307,
+      "completion_tokens": 2135,
+      "reasoning_tokens": 1472,
+      "class_names": [
+        "IssueStatus",
+        "IssuePriority",
+        "IssueType",
+        "SprintStatus",
+        "UserRole",
+        "Project",
+        "Team",
+        "User",
+        "Sprint",
+        "Issue",
+        "Comment",
+        "Attachment"
+      ],
+      "n_classes": 12,
+      "n_relationships": 13,
+      "plausible_plantuml": true,
+      "fidelity_hits": 3,
+      "fidelity_expected": 3,
+      "ok": true,
+      "error": null
+    }
+  ],
+  "summary": {
+    "compact-text": {
+      "n_calls": 5,
+      "n_ok": 5,
+      "mean_wall_s": 19.29,
+      "mean_prompt_tokens": 1305,
+      "mean_completion_tokens": 1630.4,
+      "mean_reasoning_tokens": 1075.2,
+      "mean_classes": 11,
+      "mean_relationships": 10.6,
+      "fidelity_hit_rate": 1.0,
+      "errors": []
+    },
+    "minimal-effort": {
+      "n_calls": 5,
+      "n_ok": 5,
+      "mean_wall_s": 59.79,
+      "mean_prompt_tokens": 2546,
+      "mean_completion_tokens": 4470,
+      "mean_reasoning_tokens": 0,
+      "mean_classes": 13,
+      "mean_relationships": 9.8,
+      "fidelity_hit_rate": 1.0,
+      "errors": []
+    },
+    "alt-model": {
+      "n_calls": 5,
+      "n_ok": 5,
+      "mean_wall_s": 7.37,
+      "mean_prompt_tokens": 2549,
+      "mean_completion_tokens": 708,
+      "mean_reasoning_tokens": 0,
+      "mean_classes": 3.8,
+      "mean_relationships": 3,
+      "fidelity_hit_rate": 1.0,
+      "errors": []
+    },
+    "baseline": {
+      "n_calls": 5,
+      "n_ok": 5,
+      "mean_wall_s": 55.83,
+      "mean_prompt_tokens": 2546,
+      "mean_completion_tokens": 4263.6,
+      "mean_reasoning_tokens": 358.4,
+      "mean_classes": 10.4,
+      "mean_relationships": 9,
+      "fidelity_hit_rate": 1.0,
+      "errors": []
+    },
+    "economy": {
+      "n_calls": 5,
+      "n_ok": 5,
+      "mean_wall_s": 49.77,
+      "mean_prompt_tokens": 2600,
+      "mean_completion_tokens": 3813.2,
+      "mean_reasoning_tokens": 230.4,
+      "mean_classes": 10.4,
+      "mean_relationships": 9,
+      "fidelity_hit_rate": 1.0,
+      "errors": []
+    }
+  }
+}
