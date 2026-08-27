@@ -20,6 +20,18 @@ import sys
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _canonical_schema(monkeypatch):
+    """These tests pin two-pass / guard MECHANICS with fixtures that emit the
+    canonical SystemClassSpec wire shape. Force the canonical schema so the
+    compact-output flag (BESSER_AGENT_COMPACT_SPEC) doesn't change the wire
+    format under them — the compact chain has its own tests in
+    test_compact_spec.py."""
+    import diagram_handlers.types.class_diagram_handler as _m
+    monkeypatch.setattr(_m, "COMPACT_SPEC_ENABLED", False, raising=True)
+
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from schemas import SystemClassSpec, OCLConstraintSpec

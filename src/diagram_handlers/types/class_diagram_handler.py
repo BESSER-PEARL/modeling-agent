@@ -4,6 +4,7 @@ Handles generation of UML Class Diagrams
 """
 
 import logging
+import os
 import re
 from typing import Dict, Any, List, Optional
 
@@ -31,9 +32,20 @@ from ..core.prompt_fragments import (
 )
 from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
 from schemas import SingleClassSpec, SystemClassSpec, ClassModificationResponse
+from schemas.compact_class_diagram import (
+    COMPACT_ENCODING_RULES,
+    CompactSystemClassSpec,
+    expand_compact_spec,
+)
 from utilities.model_context import detailed_model_summary
 
 logger = logging.getLogger(__name__)
+
+# Compact structured output for complete-system generation: same model, same
+# modeling rules, ~2.4x faster (measured live — see
+# schemas/compact_class_diagram.py). Kill switch for rollback without a code
+# change: BESSER_AGENT_COMPACT_SPEC=0.
+COMPACT_SPEC_ENABLED = os.environ.get("BESSER_AGENT_COMPACT_SPEC", "1") != "0"
 
 
 _CLASS_ACTIONS_BLOCK = """COMMON ACTIONS:
@@ -238,15 +250,29 @@ Examples:
 
             # Complete-system generation is where diagram quality is the
             # product → LARGE tier; reasoning pass on the REASONING tier.
-            parsed = self.predict_two_pass_structured(
-                user_request=user_request,
-                system_prompt=system_prompt,
-                reasoning_prompt=reasoning_prompt,
-                response_schema=SystemClassSpec,
-                raw_request=raw_request,
-                model=MODEL_GENERATION_LARGE,
-                reasoning_model=MODEL_REASONING,
-            )
+            if COMPACT_SPEC_ENABLED:
+                parsed = self.predict_two_pass_structured(
+                    user_request=user_request,
+                    system_prompt=system_prompt + COMPACT_ENCODING_RULES,
+                    reasoning_prompt=reasoning_prompt,
+                    response_schema=CompactSystemClassSpec,
+                    raw_request=raw_request,
+                    model=MODEL_GENERATION_LARGE,
+                    reasoning_model=MODEL_REASONING,
+                )
+                # Deterministic expansion back to the canonical spec — guards,
+                # layout, and the frontend payload below are untouched.
+                parsed = expand_compact_spec(parsed)
+            else:
+                parsed = self.predict_two_pass_structured(
+                    user_request=user_request,
+                    system_prompt=system_prompt,
+                    reasoning_prompt=reasoning_prompt,
+                    response_schema=SystemClassSpec,
+                    raw_request=raw_request,
+                    model=MODEL_GENERATION_LARGE,
+                    reasoning_model=MODEL_REASONING,
+                )
             system_spec = parsed.model_dump()
 
             # Guard: never ship a relationship whose endpoint is an enumeration.
@@ -267,6 +293,21 @@ Examples:
             # canvas and a hard collision when the domain model is built (BUML
             # association names must be unique). Rename duplicates deterministically.
             self._dedupe_relationship_names(system_spec)
+
+            # Guard: a subclass must not redefine an attribute an ancestor
+            # already declares (BUML validates attribute shadowing; the LLM
+            # loves stamping id/createdAt/updatedAt on EVERY class, including
+            # subclasses of a base that already has them). Strip the shadowed
+            # copies deterministically. Method OVERRIDES are left alone —
+            # overriding is legitimate OO.
+            self._strip_shadowed_attributes(system_spec)
+
+            # Guard: BUML rejects decorated type tokens the LLM sometimes
+            # emits ('str?', 'int?'). Normalize them: on an attribute the '?'
+            # means optional (strip it, set isOptional); on a parameter or
+            # return type it is stripped outright — the metamodel has no
+            # optional parameters.
+            self._sanitize_member_types(system_spec)
 
             # Drop any OCL constraint whose context isn't a real class in the
             # spec (the LLM occasionally references a class it didn't create).
@@ -422,6 +463,110 @@ Examples:
             logger.info(
                 "[ClassDiagram] Enum-relationship guard: rewrote %d, dropped %d",
                 rewritten, dropped,
+            )
+
+    def _strip_shadowed_attributes(self, system_spec: Dict[str, Any]) -> None:
+        """Remove subclass attributes whose name an ancestor already defines.
+
+        Walks Inheritance relationships (source = subclass, target =
+        superclass) transitively, so multi-level chains are covered and a
+        cycle cannot loop. Purely deterministic — no LLM round-trip.
+        """
+        classes = {
+            c.get("className"): c
+            for c in system_spec.get("classes", [])
+            if isinstance(c, dict) and c.get("className")
+        }
+        parent_of: Dict[str, str] = {}
+        for rel in system_spec.get("relationships", []):
+            if not isinstance(rel, dict) or rel.get("type") != "Inheritance":
+                continue
+            child, parent = rel.get("source"), rel.get("target")
+            if child in classes and parent in classes and child != parent:
+                parent_of[child] = parent
+
+        if not parent_of:
+            return
+
+        # Snapshot BEFORE any stripping: inherited sets must come from the
+        # original declarations, not from classes already mutated this pass
+        # (matters for chains where an ancestor is itself stripped, and for
+        # degenerate LLM-emitted inheritance cycles).
+        original_attrs = {
+            name: {
+                a.get("name")
+                for a in cls.get("attributes", [])
+                if isinstance(a, dict) and a.get("name")
+            }
+            for name, cls in classes.items()
+        }
+
+        def _ancestor_attribute_names(name: str) -> set:
+            names: set = set()
+            seen: set = {name}
+            parent = parent_of.get(name)
+            while parent and parent not in seen:
+                seen.add(parent)
+                names.update(original_attrs.get(parent, set()))
+                parent = parent_of.get(parent)
+            return names
+
+        for name, cls in classes.items():
+            inherited = _ancestor_attribute_names(name)
+            if not inherited:
+                continue
+            attributes = cls.get("attributes", [])
+            kept = [
+                a for a in attributes
+                if not (isinstance(a, dict) and a.get("name") in inherited)
+            ]
+            if len(kept) != len(attributes):
+                logger.info(
+                    "[ClassDiagram] Stripped %d shadowed attribute(s) from "
+                    "'%s' — already defined in an ancestor",
+                    len(attributes) - len(kept), name,
+                )
+                cls["attributes"] = kept
+
+    def _sanitize_member_types(self, system_spec: Dict[str, Any]) -> None:
+        """Normalize decorated type tokens BUML would reject (e.g. 'str?').
+
+        The LLM sometimes carries the optional marker into the type itself
+        ('description: str?'). On attributes '?' has a real meaning — strip it
+        and set isOptional. On method parameters and return types the
+        metamodel has no optionality, so the marker is just stripped.
+        Purely deterministic — no LLM round-trip.
+        """
+        fixed = 0
+
+        def _clean(token: Any) -> Any:
+            nonlocal fixed
+            if isinstance(token, str) and token.rstrip().endswith("?"):
+                fixed += 1
+                return token.rstrip().rstrip("?").strip()
+            return token
+
+        for cls in system_spec.get("classes", []):
+            if not isinstance(cls, dict):
+                continue
+            for attr in cls.get("attributes", []):
+                if not isinstance(attr, dict):
+                    continue
+                cleaned = _clean(attr.get("type"))
+                if cleaned != attr.get("type"):
+                    attr["type"] = cleaned or None
+                    attr["isOptional"] = True
+            for method in cls.get("methods", []):
+                if not isinstance(method, dict):
+                    continue
+                method["returnType"] = _clean(method.get("returnType"))
+                for param in method.get("parameters", []):
+                    if isinstance(param, dict):
+                        param["type"] = _clean(param.get("type"))
+        if fixed:
+            logger.info(
+                "[ClassDiagram] Sanitized %d decorated type token(s) "
+                "('type?' → 'type')", fixed,
             )
 
     def _dedupe_relationship_names(self, system_spec: Dict[str, Any]) -> None:
