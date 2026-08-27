@@ -785,6 +785,15 @@ _SYSTEM_PROMPT = (
 # ---------------------------------------------------------------------
 
 
+# Protocol marker stamped by the editor's post-injection validation loop
+# (frontend useAssistantLogic): after an agent model lands on the canvas the
+# frontend validates it against the backend and, on errors, sends ONE
+# machine-generated repair request prefixed with this marker. It is not
+# natural language, so it is routed deterministically — no classifier call,
+# and the repair loop keeps working even during an LLM outage.
+AUTO_FIX_PREFIX = "[auto-fix]"
+
+
 def classify_message(
     request: AssistantRequest,
     llm_provider: Any,
@@ -813,6 +822,16 @@ def classify_message(
     message = (request.message or "").strip()
     if not message:
         return _safe_fallback("empty message")
+
+    if message.startswith(AUTO_FIX_PREFIX):
+        return UnifiedClassification(
+            intent="modify_model_intent",
+            model_disposition="extend_existing",
+            # Never interpret a machine repair request as an answer to a
+            # pending question the assistant happened to be asking.
+            pending_flow_action="new_request",
+            reason="Editor validation repair ([auto-fix] marker) — deterministic modify route",
+        )
 
     try:
         messages = [
