@@ -51,6 +51,7 @@ from session_keys import (
     LAST_MATCHED_INTENT,
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
+    PENDING_GENERATOR_TYPE,
     UNIFIED_CLASSIFICATION,
 )
 from reply_copy import (
@@ -1080,6 +1081,13 @@ def decline_body(session: Session):
     net for the bare phrases."""
     request = _common_preamble(session)
     if request is None:
+        return
+    # If a config-collection flow is in progress (e.g. the user answered
+    # "regular" to the JSON-schema mode prompt), the intent classifier may
+    # misread the short answer as a decline. Route to the generation handler
+    # so the pending flow can consume the answer instead of abandoning it.
+    if session.get(PENDING_GENERATOR_TYPE):
+        generation_body(session)
         return
     session.set(LAST_MATCHED_INTENT, 'decline_intent')
     reply_message(session, _DECLINE_ACK)
