@@ -448,7 +448,7 @@ GENERATOR_KEYWORDS: Dict[str, List[str]] = {
 }
 
 GENERATOR_REQUIRED_FIELDS: Dict[str, List[str]] = {
-    "django": ["project_name", "app_name", "containerization"],
+    "django": [],
     "backend": [],
     "sql": ["dialect"],
     "sqlalchemy": ["dbms"],
@@ -856,7 +856,7 @@ def _normalize_defaults(generator_type: str, request: AssistantRequest, config: 
         if config.get("project_name") == app_name:
             app_name = f"{app_name}_app"
         config.setdefault("app_name", app_name)
-        config.setdefault("containerization", False)
+        config.setdefault("containerization", True)
     elif generator_type == "sql":
         config.setdefault("dialect", "sqlite")
     elif generator_type == "sqlalchemy":
