@@ -97,6 +97,42 @@ class TestConfirmationPivots:
         assert handled is True
         assert executed.get("_replace_existing") is False
 
+    def _run_with_verdict(self, message, uc):
+        session = FakeSession()
+        session.set(PENDING_COMPLETE_SYSTEM, dict(_PENDING))
+        session.set(UNIFIED_CLASSIFICATION, uc)
+        executed = {}
+        with patch.object(confirmation, "parse_assistant_request",
+                          return_value=_req(message)),              patch.object(confirmation, "reply_message"),              patch.object(confirmation, "reply_payload"),              patch.object(confirmation, "execute_model_operation",
+                          side_effect=lambda **kw: executed.update(kw) or None):
+            handled = handle_pending_system_confirmation(session)
+        return handled, executed, session
+
+    def test_modify_intent_verdict_beats_keep_answer_label(self):
+        """Marathon 4/4 destructive bug: the classifier labelled 'add a
+        Member class' at the replace/keep prompt as answer='keep' while its
+        own intent verdict said modify — and KEEP resumed the stashed create,
+        burying the user's edit. The intent verdict must win: pivot."""
+        for msg in ("add a Member class",
+                    "actually just add a Member class to my current model"):
+            handled, executed, session = self._run_with_verdict(
+                msg, _uc("modify_model_intent", "answer", "keep"))
+            assert handled is False, msg     # falls through to modify routing
+            assert executed == {}, msg       # stored create NOT executed
+            assert not session.get(PENDING_COMPLETE_SYSTEM), msg
+
+    def test_plain_keep_answer_still_honored(self):
+        handled, executed, session = self._run_with_verdict(
+            "keep it", _uc("fallback_intent", "answer", "keep"))
+        assert handled is True
+        assert executed.get("_replace_existing") is False
+
+    def test_replace_answer_still_honored(self):
+        handled, executed, session = self._run_with_verdict(
+            "replace it", _uc("create_complete_system_intent", "answer", "replace"))
+        assert handled is True
+        assert executed.get("_replace_existing") is True
+
 
 # ---------------------------------------------------------------------
 # Config-flow suppression in json_intent_matches
@@ -518,3 +554,46 @@ class TestOutageNetPins:
         assert _OUTAGE_ARTIFACT_RE.search("tell me a joke")
         assert not _OUTAGE_ARTIFACT_RE.search("create a photo-sharing app")
         assert not _OUTAGE_ARTIFACT_RE.search("a library with books and loans")
+
+
+class TestMismatchRegenFixes:
+    """Full-coverage sweep bugs: (a) the mismatch rebuild prompt must skip
+    the replace/keep re-ask (context-only models hit it and derailed the
+    resume); (b) a TYPED "Update model + generate" label must act like the
+    button instead of looping the mismatch question."""
+
+    def test_regen_prompt_matcher(self):
+        from execution.model_operations import _matches_regen_prompt
+        from session_keys import MISMATCH_REGEN_PENDING
+        session = FakeSession()
+        req = _req("Create a class diagram   for a SHOE store")
+        assert _matches_regen_prompt(session, req) is False  # nothing stashed
+        session.set(MISMATCH_REGEN_PENDING, "create a class diagram for a shoe store")
+        assert _matches_regen_prompt(session, req) is True   # case/space-insensitive
+        assert _matches_regen_prompt(session, _req("create a class diagram for a hat store")) is False
+
+    def test_typed_label_dispatches_stashed_rebuild(self):
+        import handlers.generation_handler as gh
+        from session_keys import MISMATCH_REGEN_PENDING
+        session = FakeSession()
+        session.set(MISMATCH_REGEN_PENDING, "create a class diagram for a shoe store")
+        req = _req("Update model + generate")
+        dispatched = {}
+        import execution
+        with patch.object(execution, "execute_planned_operations",
+                          side_effect=lambda **kw: dispatched.update(kw)):
+            result = gh.handle_generation_request(session, req)
+        assert result is None
+        assert dispatched.get("default_mode") == "complete_system"
+        # The request now carries the REBUILD prompt, not the label text.
+        assert dispatched["request"].message == "create a class diagram for a shoe store"
+
+    def test_label_without_stash_is_untouched(self):
+        import handlers.generation_handler as gh
+        assert "update model + generate" in gh._MISMATCH_LABEL_ALIASES
+        session = FakeSession()  # no stash
+        req = _req("Update model + generate")
+        import execution
+        with patch.object(execution, "execute_planned_operations") as ep:
+            gh.handle_generation_request(session, req)
+        ep.assert_not_called()

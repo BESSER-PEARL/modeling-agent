@@ -791,7 +791,7 @@ def _parse_llm_response(
         logger.error(f"[FileConversion] Failed to parse LLM JSON for {source_label}: {e}")
         logger.debug(f"[FileConversion] Raw response: {raw_response[:500]!r}")
         return _error_response(
-            f"The AI couldn't produce a valid specification from the {source_label} file. "
+            f"The AI couldn't extract a valid model from the {source_label} file. "
             "Please try again or simplify the input."
         )
 

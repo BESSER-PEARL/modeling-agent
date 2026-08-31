@@ -1439,18 +1439,50 @@ Examples:
                 handler._rewrite_enum_relationship_mods(spec, current_model)
                 return spec
 
-            modification_spec = self._execute_modification(
-                user_prompt, system_prompt, ClassModificationResponse,
-                post_processor=_strip_spurious_relationship_mods,
-                spec_processor=_expand_refactoring,
-            )
+            # Up to TWO samples: when EVERY op targets something absent from
+            # the model, the parse was almost certainly a sampling glitch
+            # (live case from the test sweep: a remove target came back as
+            # the garbled token 'id่อยl' — the identical retry succeeded).
+            # A fresh sample is cheap on the SMALL tier and turns that class
+            # of flake into a non-event; a second total whiff reports
+            # honestly as before.
+            not_found_notes: List[str] = []
+            prior_notes: List[str] = []
+            modification_spec: Dict[str, Any] = {}
+            for attempt in (1, 2):
+                modification_spec = self._execute_modification(
+                    user_prompt, system_prompt, ClassModificationResponse,
+                    post_processor=_strip_spurious_relationship_mods,
+                    spec_processor=_expand_refactoring,
+                )
+                if modification_spec.get("action") != "modify_model":
+                    break  # element-not-found short-circuit etc. — not a whiff
 
-            # Deterministic missing-target validation: drop any removal/edit op
-            # whose named target doesn't exist in the model, and tell the user
-            # what couldn't be found. Previously these were silently dropped —
-            # e.g. "remove priority" on a model with no priority field applied
-            # the add half and quietly discarded the remove with zero feedback.
-            not_found_notes = self._drop_phantom_target_ops(modification_spec, current_model)
+                # Deterministic missing-target validation: drop any removal/
+                # edit op whose named target doesn't exist in the model, and
+                # tell the user what couldn't be found. Previously these were
+                # silently dropped — e.g. "remove priority" on a model with no
+                # priority field applied the add half and quietly discarded
+                # the remove with zero feedback.
+                not_found_notes = self._drop_phantom_target_ops(modification_spec, current_model)
+                remaining = (
+                    modification_spec.get("modification")
+                    or modification_spec.get("modifications")
+                )
+                if remaining or not not_found_notes:
+                    # A retry that came back with nothing at all keeps the
+                    # first attempt's diagnosis instead of shipping an empty
+                    # modification with no explanation.
+                    if not remaining and not not_found_notes and prior_notes:
+                        not_found_notes = prior_notes
+                    break
+                prior_notes = not_found_notes
+                if attempt == 1:
+                    logger.warning(
+                        "[ClassDiagram] Every modification op had a phantom "
+                        "target (%s) — retrying once with a fresh sample",
+                        " / ".join(not_found_notes)[:200],
+                    )
 
             # If every op was a phantom-target removal/edit, nothing remains to
             # apply — surface the not-found note(s) as a plain message rather

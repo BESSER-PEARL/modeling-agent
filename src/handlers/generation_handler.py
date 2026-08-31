@@ -281,8 +281,8 @@ def _build_smart_gen_confirmation(
     return {
         "action": "assistant_message",
         "message": (
-            f"{prefix}BESSER will generate your application from the "
-            f"specification using its built-in generators. If some of your "
+            f"{prefix}BESSER will generate your application from your "
+            f"model using its built-in generators. If some of your "
             f"requirements are not supported by these generators, BESSER can "
             f"use an LLM to handle them.\n\n"
             f"BESSER uses Qwen as the default free model. You can also set up "
@@ -1018,6 +1018,18 @@ def _handle_smart_generator_result(
     return payload
 
 
+# Normalized spellings of the mismatch quick-action label a user might TYPE
+# instead of clicking. Matched only while a mismatch rebuild is stashed.
+_MISMATCH_LABEL_ALIASES = {
+    "update model + generate",
+    "update model and generate",
+    "update the model + generate",
+    "update the model and generate",
+    "update model plus generate",
+    "update model generate",
+}
+
+
 def handle_generation_request(session: Session, request: AssistantRequest) -> Dict[str, Any]:
     """Route a generation-state request to smart-gen, deterministic, or menu.
 
@@ -1097,6 +1109,35 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 reason_prefix="generating with current model",
             )
         # Fall through to normal classification if the stash was empty.
+
+    # Typed "Update model + generate": users sometimes TYPE the mismatch
+    # button's label instead of clicking it. The raw label re-classified as a
+    # fresh smart-gen request and re-showed the mismatch question in a loop
+    # (and, below, would have cleared the stashed run as a "different
+    # request"). Treat any label alias as the button press: dispatch the
+    # stashed rebuild prompt to the modeling path — the create choke point
+    # then resumes the stashed smart-gen exactly like the real button.
+    _regen_stash_alias = session.get(MISMATCH_REGEN_PENDING)
+    if (
+        isinstance(_regen_stash_alias, str) and _regen_stash_alias.strip()
+        and _norm_prompt(request.message) in _MISMATCH_LABEL_ALIASES
+    ):
+        logger.info(
+            "[Generation] Typed mismatch-button label — dispatching the "
+            "stashed rebuild prompt"
+        )
+        request.message = _regen_stash_alias
+        try:
+            from execution import execute_planned_operations
+            execute_planned_operations(
+                session=session,
+                request=request,
+                default_mode="complete_system",
+                matched_intent="create_complete_system_intent",
+            )
+            return None
+        except Exception:
+            logger.exception("[Generation] mismatch label dispatch failed")
 
     _regen_prompt = session.get(MISMATCH_REGEN_PENDING)
     _is_regen_rebuild = (

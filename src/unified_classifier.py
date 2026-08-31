@@ -374,6 +374,16 @@ _SYSTEM_PROMPT = (
     "'e-commerce', 'hotel booking') and ask for a diagram or system, "
     "it's this. CRITICAL: 'generate a class diagram' is this intent, "
     "NOT generation_intent — they want a DIAGRAM, not source code.\n"
+    "CRITICAL (GUI): 'generate the GUI', 'generate the GUI model', "
+    "'create the screens', 'generate the UI / interface / pages (for "
+    "my model)' means building the GUI DIAGRAM (screens on the canvas) "
+    "— create_complete_system_intent with "
+    "target_diagram_type='GUINoCodeDiagram' — NOT generation_intent, "
+    "and NEVER the web-app code generator. This holds even minutes "
+    "after a smart run or while a generation confirmation is pending "
+    "(then it is pending_flow_action='new_request'). Only an explicit "
+    "'generate the web app / the application code / the app from the "
+    "spec' is generation_intent.\n"
     "CRITICAL (AGENT / CHATBOT): a request to ADD or CREATE an AGENT, "
     "CHATBOT, conversational assistant, virtual assistant, or bot — "
     "whether 'to the app', 'to my project', 'to the website', or "
@@ -393,7 +403,10 @@ _SYSTEM_PROMPT = (
     "Book class', 'rename', 'delete', 'connect', 'add an attribute', "
     "'modify method', 'I also want to include', 'extend with', 'add "
     "a gate to the circuit'. Also single-element creation: 'create "
-    "a class called User', 'make a state'. EXCEPTION: adding an "
+    "a class called User', 'make a state'. GUI PAGES: 'add a Reports "
+    "page', 'remove the Settings screen', 'rename the Home page' edit "
+    "the GUI DIAGRAM — modify_model_intent with "
+    "target_diagram_type='GUINoCodeDiagram', NEVER generation_intent. EXCEPTION: adding an "
     "agent / chatbot / conversational assistant / bot is NOT this "
     "intent — see the AGENT / CHATBOT rule above (it means a new "
     "AgentDiagram). But a class that merely HAS the word 'agent' in "
@@ -545,7 +558,12 @@ _SYSTEM_PROMPT = (
     "  'new_request' — the message IGNORES the question and asks for "
     "something else ('add an email attribute to Customer' while a "
     "replace question is pending; 'generate sql' while a GUI question "
-    "is pending). The pending question will be abandoned and the "
+    "is pending). CRITICAL: an EDIT instruction at a replace/keep "
+    "question ('add a Member class', 'actually just add X to my "
+    "current model') is ALWAYS 'new_request' with "
+    "modify_model_intent — NEVER answer='keep': the user is pivoting "
+    "to edit their existing model, not choosing how to apply the "
+    "pending creation. The pending question will be abandoned and the "
     "message routed by its own intent — so ALWAYS also classify the "
     "intent fields normally.\n"
     "When in doubt between answer and new_request, prefer 'answer' only "
@@ -1285,6 +1303,54 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
     worse one.
     """
     if result.intent == "generation_intent":
+        # GUI-diagram guard (live bug): "generate the GUI (model) / the
+        # screens / the UI" means building the GUI DIAGRAM, but the LLM
+        # sometimes reads it as web-app code generation — which then stashes
+        # a smart-gen confirmation that re-creates itself on every retry
+        # ("no, generate the gui model" loops the same prompt). Naming the
+        # gui/screens/ui WITHOUT naming an app/code artifact is a modeling
+        # request, deterministically.
+        _low = (message or "").lower()
+        if (
+            re.search(r"\b(gui|screens?|user interface|\bui\b)\b", _low)
+            and re.search(r"\b(generate|create|build|make|design)\b", _low)
+            and not re.search(
+                r"\b(web ?app|application|app\b|code|backend|frontend|"
+                r"django|sql|api)\b", _low)
+        ):
+            logger.warning(
+                "Request asks for the GUI diagram, not code; rerouting "
+                "generation_intent -> create_complete_system_intent (GUI)"
+            )
+            return UnifiedClassification(
+                intent="create_complete_system_intent",
+                target_diagram_type="GUINoCodeDiagram",
+                model_disposition=result.model_disposition,
+                pending_flow_action="new_request",
+                reason="GUI-diagram guard: 'generate the gui/screens' is modeling, not code generation",
+            )
+        # Same guard, EDIT form (live bug: "add a Reports page" with an
+        # existing GUI stashed a spec-driven web-app confirmation). Adding/
+        # removing/renaming a page or screen edits the GUI DIAGRAM — it is
+        # never a code-generation request.
+        if (
+            re.search(r"\b(pages?|screens?)\b", _low)
+            and re.search(r"\b(add|insert|remove|delete|rename)\b", _low)
+            and not re.search(
+                r"\b(web ?app|application|code|backend|frontend|"
+                r"django|sql|api)\b", _low)
+        ):
+            logger.warning(
+                "Request edits GUI pages, not code; rerouting "
+                "generation_intent -> modify_model_intent (GUI)"
+            )
+            return UnifiedClassification(
+                intent="modify_model_intent",
+                target_diagram_type="GUINoCodeDiagram",
+                model_disposition="extend_existing",
+                pending_flow_action="new_request",
+                reason="GUI-diagram guard: adding/removing a page edits the GUI diagram, not code",
+            )
         # Unsupported-language guard (see _names_unsupported_stack): BESSER's
         # deterministic generators only cover Python/Java (+ SQL/Django/...).
         # When the user explicitly asks for a language BESSER can't generate

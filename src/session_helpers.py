@@ -264,7 +264,7 @@ def emit_webapp_generate_prompt(session: Session) -> None:
     reply_payload(session, {
         "action": "assistant_message",
         "message": (
-            "Your screens are ready. You can now review or refine the specification, "
+            "Your screens are ready. You can now review or refine your model, "
             "or continue with generating your web app. What would you like to do?"
         ),
         "suggestedActions": get_post_spec_suggestions("web_app"),
@@ -443,14 +443,23 @@ def _stream_openai(
     # fluid streaming without overwhelming the connection.
     _BUFFER_THRESHOLD = STREAM_BUFFER_THRESHOLD
 
-    stream = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=LLM_TEXT_TEMPERATURE,
-        max_completion_tokens=LLM_MAX_TOKENS_TEXT,
-        stream=True,
-        stream_options={"include_usage": True},
-    )
+    # Reasoning-family models (gpt-5*) reject ANY non-default temperature
+    # with a 400 — which surfaced to users as "The generated model had
+    # structural issues" on EVERY describe-my-model call (the streaming
+    # error handler's canned text). Only pass temperature to models that
+    # accept a custom one.
+    from model_config import supports_custom_temperature
+    stream_kwargs: dict = {
+        "model": model,
+        "messages": messages,
+        "max_completion_tokens": LLM_MAX_TOKENS_TEXT,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    if supports_custom_temperature(model):
+        stream_kwargs["temperature"] = LLM_TEXT_TEMPERATURE
+
+    stream = client.chat.completions.create(**stream_kwargs)
 
     usage = None
     try:

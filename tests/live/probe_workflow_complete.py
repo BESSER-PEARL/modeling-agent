@@ -164,7 +164,7 @@ async def _mismatch_resume(sem, trigger):
                         break
                     if a == "assistant_message":
                         t = _txt(r).lower()
-                        if ("spec-driven" in t or "from the specification" in t
+                        if ("spec-driven" in t or "from the specification" in t or "from your model" in t
                                 or "built-in generators" in t or "generate the app" in t
                                 or "ready" in t):
                             resumed = "smart-gen-confirmation"

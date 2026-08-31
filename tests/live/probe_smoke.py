@@ -108,6 +108,7 @@ def _is_resume(frames):
         low = (t or "").lower()
         if a == "assistant_message" and ("model rebuilt and ready" in low
                                          or "from the specification" in low
+                                         or "from your model" in low
                                          or "built-in generators" in low):
             return True
     return False
@@ -190,10 +191,14 @@ async def c_flow_pivot():
         asked = any("replace" in (t or "").lower() for _a, t, _l in f1)
         if not asked:
             return (False, f"no replace prompt ({[x[0] for x in f1]})")
-        await _send(ws, sid, "add a price attribute to Product", model=_SHOP_MODEL)
+        # STRICTLY modify_model: the marathon's 4/4 destructive bug (the
+        # confirmation read 'add a Member class' as KEEP and resumed the
+        # stashed create) PASSED the old lenient check, because the wrongly
+        # resumed create also arrived as inject_complete_system.
+        await _send(ws, sid, "add a Member class", model=_SHOP_MODEL)
         f2 = await _collect(ws)
-        ok = any(x[0] in ("modify_model", "inject_complete_system") for x in f2)
-        return (ok, "pivot modified" if ok else f"pivot NOT modified ({[x[0] for x in f2]})")
+        ok = any(x[0] == "modify_model" for x in f2)
+        return (ok, "pivot modified" if ok else f"pivot NOT modify_model ({[x[0] for x in f2]})")
 
 
 async def c_flow_answer():

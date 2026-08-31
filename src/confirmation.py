@@ -109,7 +109,7 @@ def _build_auto_gui_message(request: Any, detected_gen: Optional[str] = None) ->
         detected_gen = detect_generator_type(getattr(request, "message", "") or "")
     _artifact = get_artifact_label(detected_gen)
     _follow_up = (
-        f"\n\nYou can now review or refine the specification, or continue "
+        f"\n\nYou can now review or refine your model, or continue "
         f"with generating your {_artifact}. What would you like to do?"
     )
 
@@ -321,6 +321,21 @@ def handle_pending_system_confirmation(session: Session) -> bool:
             "abandoning the confirmation")
         session.set(PENDING_COMPLETE_SYSTEM, None)
         return False  # Let normal routing handle the new request
+
+    # PIVOT GUARD (live 4/4 destructive bug): "add a Member class" typed at
+    # the replace/keep prompt was labelled answer='keep' by the classifier
+    # ("they want to keep the model…") while its own INTENT verdict correctly
+    # said modify_model_intent — and honoring 'keep' RESUMED THE STASHED
+    # CREATE, burying the user's edit under a brand-new system. An edit
+    # instruction is a PIVOT, never an answer: the intent verdict wins over
+    # the answer label. Abandon the confirmation and let the modify route
+    # normally. Deterministic — phrasing cannot re-trigger the bug.
+    if _flow_action == "answer" and getattr(_uc, "intent", None) == "modify_model_intent":
+        logger.info(
+            "[PendingConfirm] Modify-intent verdict at the replace/keep "
+            "prompt — treating as a PIVOT, abandoning the confirmation")
+        session.set(PENDING_COMPLETE_SYSTEM, None)
+        return False
     _verdict_usable = _flow_action == "answer" and _flow_answer in (
         "replace", "keep", "new_tab", "confirm", "cancel")
 

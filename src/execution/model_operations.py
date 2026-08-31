@@ -193,6 +193,15 @@ def _record_created_model_in_snapshot(
 # Shared confirmation flow for existing-model guard
 # ------------------------------------------------------------------
 
+def _matches_regen_prompt(session: Session, request: AssistantRequest) -> bool:
+    """True when this message IS the stashed mismatch rebuild prompt."""
+    _regen_prompt = session.get(MISMATCH_REGEN_PENDING)
+    if not isinstance(_regen_prompt, str) or not _regen_prompt.strip():
+        return False
+    msg = " ".join((getattr(request, "message", "") or "").strip().lower().split())
+    return msg == " ".join(_regen_prompt.strip().lower().split())
+
+
 def _build_existing_model_confirmation(
     session: Session,
     request: AssistantRequest,
@@ -491,30 +500,43 @@ def execute_model_operation(
         not _skip_existing_check
         and operation_mode == 'complete_system'
     ):
-        existing_model = resolve_target_model(request, target_diagram_type)
-        if model_has_elements(existing_model):
-            from utilities.model_context import compact_model_summary
-
-            summary = compact_model_summary(existing_model, target_diagram_type)
-            stored_operation = {**operation, 'mode': operation_mode}
-
-            _build_existing_model_confirmation(
-                session=session,
-                request=request,
-                target_diagram_type=target_diagram_type,
-                existing_summary=summary,
-                pending_data={
-                    'message': operation_request,
-                    'diagram_type': target_diagram_type,
-                    'operation': stored_operation,
-                    'default_mode': default_mode,
-                },
-                source_description=f"I can create a new {target_diagram_type}",
-            )
+        # Mismatch "Update model + generate" rebuild: the user ALREADY chose
+        # to replace their model at the mismatch question. Re-asking replace/
+        # keep here derailed the resume for users whose model arrived via
+        # workspace context only (a fresh session on a loaded project) — the
+        # in-session case never hit this ask because the flow_answer path had
+        # consumed it. One consistent rule: the stashed rebuild prompt
+        # proceeds directly, replace semantics, no second question.
+        if _matches_regen_prompt(session, request):
             logger.info(
-                f"[ModelOp] Asked user to confirm replace/keep for existing {target_diagram_type}"
+                "[ModelOp] Mismatch rebuild prompt — skipping the replace/"
+                "keep re-ask (user already chose replace at the mismatch question)"
             )
-            return None
+        else:
+            existing_model = resolve_target_model(request, target_diagram_type)
+            if model_has_elements(existing_model):
+                from utilities.model_context import compact_model_summary
+
+                summary = compact_model_summary(existing_model, target_diagram_type)
+                stored_operation = {**operation, 'mode': operation_mode}
+
+                _build_existing_model_confirmation(
+                    session=session,
+                    request=request,
+                    target_diagram_type=target_diagram_type,
+                    existing_summary=summary,
+                    pending_data={
+                        'message': operation_request,
+                        'diagram_type': target_diagram_type,
+                        'operation': stored_operation,
+                        'default_mode': default_mode,
+                    },
+                    source_description=f"I can create a new {target_diagram_type}",
+                )
+                logger.info(
+                    f"[ModelOp] Asked user to confirm replace/keep for existing {target_diagram_type}"
+                )
+                return None
 
     # ── GUI generation-mode choice ───────────────────────────────────────
     # NOTE: pure scoping/filler words ("only", "just") and over-generic ones
@@ -867,7 +889,7 @@ def execute_model_operation(
         if _detected_gen != "web_app":
             _artifact = get_artifact_label(_detected_gen)
             result["message"] += (
-                f"\n\nYou can now review or refine the specification, or continue "
+                f"\n\nYou can now review or refine your model, or continue "
                 f"with generating your {_artifact}. What would you like to do?"
             )
             result["suggestedActions"] = get_post_spec_suggestions(_detected_gen)

@@ -89,6 +89,7 @@ def _is_resume(frames):
         if a == "assistant_message" and (
             "model rebuilt and ready" in low
             or "from the specification" in low
+            or "from your model" in low
             or "built-in generators" in low
         ):
             return True
@@ -167,7 +168,7 @@ async def generate_anyway(ws, sid):
     if _built(r2):
         return ("generate_anyway", "REBUILT (should keep current)", "UNEXPECTED_REBUILD")
     reached = _is_resume(r2) or _has_action(r2, "trigger_smart_generator") or \
-        any("from the specification" in (t or "").lower() or "generate" in (t or "").lower()
+        any("from the specification" in (t or "").lower() or "from your model" in (t or "").lower() or "generate" in (t or "").lower()
             for _a, t, _l in r2)
     return ("generate_anyway", f"no-rebuild, smart-path={reached}", None if reached else "NO_SMART_PATH")
 

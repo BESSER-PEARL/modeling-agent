@@ -169,5 +169,5 @@ def build_trigger_smart_generator_payload(
         "instructions": instructions,
         "provider": provider,
         "llmModel": llm_model,
-        "message": "Generating your application from the spec…",
+        "message": "Generating your application from your model…",
     }

@@ -141,3 +141,65 @@ class TestSanitizeMemberTypes:
         before = [dict(a) for a in spec["classes"][0]["attributes"]]
         ClassDiagramHandler(None)._sanitize_member_types(spec)
         assert spec["classes"][0]["attributes"] == before
+
+
+class TestPhantomWhiffRetry:
+    """A batch where EVERY op targets a nonexistent name (e.g. a garbled
+    sampling token) retries ONCE with a fresh sample before reporting."""
+
+    def _model(self):
+        return {"elements": {
+            "c1": {"id": "c1", "name": "Person", "type": "Class",
+                   "attributes": ["a1"], "methods": []},
+            "a1": {"id": "a1", "name": "id", "type": "ClassAttribute",
+                   "owner": "c1"},
+        }, "relationships": {}}
+
+    def _spec(self, attr):
+        return {
+            "action": "modify_model",
+            "modification": {
+                "action": "remove_element",
+                "target": {"className": "Person", "attributeName": attr},
+            },
+            "message": "Removed.",
+        }
+
+    def test_garbled_target_retries_and_succeeds(self, monkeypatch):
+        handler = ClassDiagramHandler(None)
+        calls = {"n": 0}
+
+        def fake_execute(*args, **kwargs):
+            calls["n"] += 1
+            # First sample garbled (live flake), second sample clean.
+            return self._spec("id่อยl" if calls["n"] == 1 else "id")
+
+        monkeypatch.setattr(handler, "_execute_modification", fake_execute)
+        result = handler.generate_modification("remove the id attribute",
+                                               current_model=self._model())
+        assert calls["n"] == 2
+        assert result["action"] == "modify_model"
+        assert result["modification"]["target"]["attributeName"] == "id"
+
+    def test_double_whiff_reports_honestly(self, monkeypatch):
+        handler = ClassDiagramHandler(None)
+        monkeypatch.setattr(handler, "_execute_modification",
+                            lambda *a, **k: self._spec("nonexistent"))
+        result = handler.generate_modification("remove the nonexistent attribute",
+                                               current_model=self._model())
+        assert result["action"] == "assistant_message"
+        assert "couldn't find" in result["message"]
+
+    def test_clean_first_sample_never_retries(self, monkeypatch):
+        handler = ClassDiagramHandler(None)
+        calls = {"n": 0}
+
+        def fake_execute(*args, **kwargs):
+            calls["n"] += 1
+            return self._spec("id")
+
+        monkeypatch.setattr(handler, "_execute_modification", fake_execute)
+        result = handler.generate_modification("remove the id attribute",
+                                               current_model=self._model())
+        assert calls["n"] == 1
+        assert result["action"] == "modify_model"

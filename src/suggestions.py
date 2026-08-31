@@ -27,12 +27,12 @@ logger = logging.getLogger(__name__)
 #   gaps) without inventing requirements. It deliberately does NOT say
 #   "generate the backend" (that mapped to the backend-only deterministic
 #   generator and made the agent fabricate requirements).
-# - "Review the spec" sends the ``wme:review-spec`` sentinel, which the
+# - "Review the model" sends the ``wme:review-spec`` sentinel, which the
 #   frontend intercepts to CLOSE the assistant drawer so the user sees the
 #   diagram on the canvas — it is never relayed to the agent.
 _CLASS_DIAGRAM_COMPLETE = [
     ("Generate the code", "generate the application"),
-    ("Review the spec", "wme:review-spec"),
+    ("Review the model", "wme:review-spec"),
 ]
 
 _CLASS_DIAGRAM_SINGLE = [
@@ -176,7 +176,7 @@ def get_post_spec_suggestions(detected_generator: Optional[str]) -> List[Dict[st
     prompt = _GENERATOR_PROMPTS.get(detected_generator, "generate the application") if detected_generator else "generate the application"
     return [
         {"label": f"Generate {label}", "prompt": prompt},
-        {"label": "Review the spec", "prompt": "wme:review-spec"},
+        {"label": "Review the model", "prompt": "wme:review-spec"},
     ]
 
 
@@ -373,7 +373,7 @@ def _context_aware_suggestions(
         # "wme:review-spec" is a frontend sentinel that closes the drawer so
         # the user sees the diagram (never relayed to the agent).
         candidates.append(("Generate the code", "generate the application"))
-        candidates.append(("Review the spec", "wme:review-spec"))
+        candidates.append(("Review the model", "wme:review-spec"))
         # Secondary: a context-aware tweak that references the user's own
         # classes (only if there's room after the two-step choice, capped
         # at 4 below).
