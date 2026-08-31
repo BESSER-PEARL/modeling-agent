@@ -575,15 +575,15 @@ def execute_model_operation(
             reply_payload(session, {
                 "action": "assistant_message",
                 "message": (
-                    "How would you like me to generate the GUI?\n\n"
-                    "1️⃣ **Fast & deterministic** - Creates one page per class "
+                    "How would you like me to create your screens?\n\n"
+                    "1️⃣ **Fast & deterministic** - One screen per class "
                     "with data tables and method buttons.\n"
-                    "2️⃣ **AI-generated** *(experimental)* — AI-designed layout with "
-                    "personalized pages, navigation, and styling."
+                    "2️⃣ **AI-designed** *(experimental)* — personalized screens "
+                    "with navigation, styling, and realistic content."
                 ),
                 "suggestedActions": [
                     {"label": "Fast & deterministic", "prompt": "Fast & deterministic"},
-                    {"label": "AI-generated (experimental)", "prompt": "llm"},
+                    {"label": "AI-designed (experimental)", "prompt": "llm"},
                 ],
             })
             logger.info("[ModelOp] Asked user to choose GUI generation mode")

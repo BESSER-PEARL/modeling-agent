@@ -891,7 +891,7 @@ def _pending_flow_context(session: Any) -> Optional[dict]:
             return {
                 "kind": "gui_choice",
                 "question": (
-                    "How should I generate the GUI — 1 fast & deterministic "
+                    "How should I create your screens — 1 fast & deterministic "
                     "(one page per class), or 2 AI-generated (experimental)?"
                 ),
                 "valid_answers": ["auto", "llm", "cancel"],
