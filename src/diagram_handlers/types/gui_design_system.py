@@ -45,14 +45,14 @@ from typing import Dict, List
 # ---------------------------------------------------------------------------
 
 _SANS = (
-    "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, "
-    "sans-serif"
+    "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, "
+    "Helvetica, Arial, sans-serif"
 )
 _UI = (
-    "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, "
-    "'Helvetica Neue', Arial, sans-serif"
+    "'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', "
+    "Roboto, 'Helvetica Neue', Arial, sans-serif"
 )
-_SERIF = "Georgia, Cambria, 'Times New Roman', Times, serif"
+_SERIF = "'Fraunces', Georgia, Cambria, 'Times New Roman', Times, serif"
 _MONO = (
     "ui-monospace, SFMono-Regular, 'SF Mono', Consolas, 'Liberation Mono', "
     "Menlo, monospace"
@@ -86,8 +86,8 @@ THEMES: Dict[str, Dict] = {
             "border": "#c8d1da",
         },
         "type_scale": {
-            "h1": {"size": "2rem", "weight": "700"},
-            "h2": {"size": "1.5rem", "weight": "700"},
+            "h1": {"size": "2.5rem", "weight": "700"},
+            "h2": {"size": "1.75rem", "weight": "700"},
             "h3": {"size": "1.125rem", "weight": "600"},
             "body": {"size": "1rem", "weight": "400"},
             "small": {"size": "0.8125rem", "weight": "400"},
@@ -121,8 +121,8 @@ THEMES: Dict[str, Dict] = {
             "border": "#d3d9d6",
         },
         "type_scale": {
-            "h1": {"size": "1.875rem", "weight": "700"},
-            "h2": {"size": "1.375rem", "weight": "600"},
+            "h1": {"size": "2.25rem", "weight": "700"},
+            "h2": {"size": "1.625rem", "weight": "650"},
             "h3": {"size": "1.0625rem", "weight": "600"},
             "body": {"size": "0.9375rem", "weight": "400"},
             "small": {"size": "0.8125rem", "weight": "500"},
@@ -156,8 +156,8 @@ THEMES: Dict[str, Dict] = {
             "border": "#d3e6e5",
         },
         "type_scale": {
-            "h1": {"size": "2.5rem", "weight": "600"},
-            "h2": {"size": "1.75rem", "weight": "600"},
+            "h1": {"size": "2.85rem", "weight": "600"},
+            "h2": {"size": "2rem", "weight": "600"},
             "h3": {"size": "1.25rem", "weight": "500"},
             "body": {"size": "1.0625rem", "weight": "400"},
             "small": {"size": "0.875rem", "weight": "400"},
@@ -226,8 +226,8 @@ THEMES: Dict[str, Dict] = {
             "border": "#e2e8f0",
         },
         "type_scale": {
-            "h1": {"size": "2.25rem", "weight": "700"},
-            "h2": {"size": "1.5rem", "weight": "600"},
+            "h1": {"size": "2.75rem", "weight": "750"},
+            "h2": {"size": "1.875rem", "weight": "650"},
             "h3": {"size": "1.25rem", "weight": "600"},
             "body": {"size": "1rem", "weight": "400"},
             "small": {"size": "0.875rem", "weight": "400"},
@@ -363,6 +363,44 @@ def _hex_to_rgba(hex_color: str, alpha: float) -> str:
     return f"rgba({r}, {g}, {b}, {alpha})"
 
 
+# CSS-value sanitizer for LLM-supplied theme overrides: colors, gradients and
+# lengths only — anything with braces/semicolons/urls is rejected outright.
+_SAFE_CSS_VALUE_RE = re.compile(r"^[#a-zA-Z0-9(),.%\s/+-]{1,120}$")
+
+
+def _safe_css_value(value) -> str:
+    v = str(value or "").strip()
+    if not v or "url" in v.lower() or not _SAFE_CSS_VALUE_RE.match(v):
+        return ""
+    return v
+
+
+def merge_theme_overrides(domain: str, overrides: Dict) -> Dict:
+    """Merge LLM-supplied token overrides onto a domain preset's tokens.
+
+    The preset supplies everything not overridden, so a partial override
+    ('make it dark green') still yields a complete, coherent theme. Every
+    value passes the CSS sanitizer; empty/invalid overrides are ignored.
+    """
+    t = theme_tokens(domain)
+    palette_keys = ("primary", "secondary", "accent", "surface", "background",
+                    "text", "muted", "border")
+    for key in palette_keys:
+        v = _safe_css_value(overrides.get(key))
+        if v:
+            t["palette"][key] = v
+    radius = _safe_css_value(overrides.get("radius"))
+    if radius:
+        t["radius"] = radius
+    hero_bg = _safe_css_value(overrides.get("heroBackground"))
+    if hero_bg:
+        t["hero_bg"] = hero_bg
+    hero_text = _safe_css_value(overrides.get("heroText"))
+    if hero_text:
+        t["hero_text"] = hero_text
+    return t
+
+
 def stylesheet_rules(domain: str) -> List[Dict]:
     """Return the full GrapesJS ``styles[]`` rule list for ``domain``.
 
@@ -370,7 +408,15 @@ def stylesheet_rules(domain: str) -> List[Dict]:
     properties) and every ``.ds-*`` component class, all derived from the
     domain's tokens. Drop the result straight into ``model["styles"]``.
     """
-    t = theme_tokens(domain)
+    return stylesheet_rules_from_tokens(theme_tokens(domain))
+
+
+def stylesheet_rules_from_tokens(t: Dict) -> List[Dict]:
+    """Build the ``.ds-*`` stylesheet from an explicit token bundle.
+
+    Same output as :func:`stylesheet_rules` but for merged/custom tokens
+    (see :func:`merge_theme_overrides`) — this is what makes the theme a
+    starting point rather than a cage."""
     p = t["palette"]
     sp = t["spacing"]
     ts = t["type_scale"]
@@ -461,17 +507,40 @@ def stylesheet_rules(domain: str) -> List[Dict]:
         "font-family": t["font_heading"],
         "font-size": ts["h2"]["size"],
         "font-weight": ts["h2"]["weight"],
-        "line-height": "1.2",
+        "line-height": "1.15",
+        "letter-spacing": "-0.02em",
         "color": p["text"],
+    }))
+    # Hero headings jump to display scale — size contrast is what separates a
+    # designed page from a wireframe with colors.
+    rules.append(_raw_rule(".ds-hero h1.ds-heading, .ds-hero .ds-heading", {
+        "font-size": ts["h1"]["size"],
+        "font-weight": ts["h1"]["weight"],
+        "letter-spacing": "-0.03em",
+        "line-height": "1.08",
+        "max-width": "22ch",
     }))
 
     # --- Card ------------------------------------------------------------
+    layered_shadow = (
+        f"0 1px 2px {_hex_to_rgba(p['text'], 0.05)}, "
+        f"0 4px 16px {_hex_to_rgba(p['text'], 0.06)}"
+    )
+    raised_shadow = (
+        f"0 2px 4px {_hex_to_rgba(p['text'], 0.06)}, "
+        f"0 12px 32px {_hex_to_rgba(p['text'], 0.10)}"
+    )
     rules.append(_class_rule("ds-card", {
         "background-color": p["surface"],
         "border": f"1px solid {p['border']}",
         "border-radius": radius,
         "padding": sp["lg"],
-        "box-shadow": shadow,
+        "box-shadow": layered_shadow,
+        "transition": "box-shadow .2s ease, transform .2s ease",
+    }))
+    rules.append(_raw_rule(".ds-card:hover", {
+        "box-shadow": raised_shadow,
+        "transform": "translateY(-1px)",
     }))
 
     # --- Responsive grids ------------------------------------------------
@@ -499,13 +568,19 @@ def stylesheet_rules(domain: str) -> List[Dict]:
         "border": f"1px solid {p['border']}",
         "border-radius": radius,
         "padding": sp["lg"],
-        "box-shadow": shadow,
+        "box-shadow": layered_shadow,
+        "transition": "box-shadow .2s ease, transform .2s ease",
+    }))
+    rules.append(_raw_rule(".ds-kpi:hover", {
+        "box-shadow": raised_shadow,
+        "transform": "translateY(-1px)",
     }))
     rules.append(_class_rule("ds-kpi-value", {
-        "font-family": t["font_mono"] if domain == "finance" else t["font_heading"],
+        "font-family": t["font_mono"] if t.get("name") == "finance" else t["font_heading"],
         "font-size": ts["h1"]["size"],
         "font-weight": "700",
-        "line-height": "1.1",
+        "line-height": "1.05",
+        "letter-spacing": "-0.02em",
         "color": p["primary"],
     }))
     rules.append(_class_rule("ds-kpi-label", {
@@ -570,11 +645,22 @@ def stylesheet_rules(domain: str) -> List[Dict]:
         "font-weight": "600",
         "text-decoration": "none",
         "cursor": "pointer",
+        "transition": "background-color .15s ease, border-color .15s ease, "
+                      "filter .15s ease, transform .15s ease",
+    }))
+    rules.append(_raw_rule(".ds-btn:hover", {
+        "border-color": p["muted"],
+        "background-color": p["background"],
     }))
     rules.append(_class_rule("ds-btn-primary", {
         "background": btn_primary_bg,
         "border-color": p["primary"],
         "color": "#ffffff",
+    }))
+    rules.append(_raw_rule(".ds-btn-primary:hover", {
+        "filter": "brightness(1.08)",
+        "background-color": "transparent",
+        "transform": "translateY(-1px)",
     }))
 
     # --- Notice / alert banner ------------------------------------------

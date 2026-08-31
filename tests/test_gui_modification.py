@@ -276,11 +276,14 @@ class TestModificationSafety:
     def test_llm_spec_path_applies_change(self, handler, model):
         class _Parsed:
             def model_dump(self):
+                # The modify path now consumes a BATCH of operations.
                 return {
-                    "operation": "rename_section",
-                    "pageName": "Page Management",
-                    "sectionTitle": "Recent edits",
-                    "newSectionTitle": "Latest",
+                    "operations": [{
+                        "operation": "rename_section",
+                        "pageName": "Page Management",
+                        "sectionTitle": "Recent edits",
+                        "newSectionTitle": "Latest",
+                    }],
                 }
 
         handler.predict_structured = lambda *a, **k: _Parsed()

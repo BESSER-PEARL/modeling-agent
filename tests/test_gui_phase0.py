@@ -102,26 +102,38 @@ def test_salvage_returns_none_when_nothing_recoverable():
     assert _salvage_truncated_system("not json at all") is None
 
 
-def test_complete_system_salvages_instead_of_welcome_stub(handler, monkeypatch):
-    """End-to-end: a truncated two_pass response keeps its pages, not the stub."""
-    handler.predict_two_pass = lambda **kwargs: TRUNCATED_SYSTEM_JSON
+def test_complete_system_failure_never_injects_welcome_stub(handler, monkeypatch):
+    """The structured create path errors NON-DESTRUCTIVELY on failure.
+
+    The old free-text path truncated mid-JSON and (in the worst case) replaced
+    the user's screens with a Welcome stub presented as success. Structured
+    output can't emit malformed JSON, and a hard failure now returns a plain
+    error message with NO model payload — the existing screens are untouched.
+    """
+    def _boom(**kwargs):
+        raise RuntimeError("provider exploded")
+
+    handler.predict_two_pass_structured = _boom
 
     result = handler.generate_complete_system("Build a big library app")
 
-    assert result["action"] == "inject_complete_system"
-    page_names = [p["name"] for p in result["model"]["pages"]]
-    assert page_names == ["Catalog", "Members"]
-    # The Welcome stub is a single "Home" page — make sure we did NOT collapse.
-    assert page_names != ["Home"]
-    assert "Welcome" not in result["message"]
+    assert result["action"] == "assistant_message"
+    assert result.get("error") is True
+    assert "model" not in result
 
 
-def test_complete_system_falls_back_to_stub_when_unrecoverable(handler, monkeypatch):
-    handler.predict_two_pass = lambda **kwargs: '{"projectName": "X", "pages": [ {"na'
+def test_complete_system_minimal_structured_spec_still_injects(handler, monkeypatch):
+    from schemas import AuthoredSystemGUISpec
+
+    handler.predict_two_pass_structured = lambda **kwargs: AuthoredSystemGUISpec(
+        projectName="X",
+        pages=[{"name": "Home", "sections": [
+            {"html": "<section class='ds-section'><h2 class='ds-heading'>Hi</h2></section>"},
+        ]}],
+    )
 
     result = handler.generate_complete_system("Build something")
 
-    # Nothing salvageable → the Welcome stub is the correct last resort.
     assert result["action"] == "inject_complete_system"
     assert [p["name"] for p in result["model"]["pages"]] == ["Home"]
 

@@ -20,11 +20,20 @@ from .gui_html_converter import (
 )
 from .gui_design_system import (
     stylesheet_rules,
+    stylesheet_rules_from_tokens,
+    merge_theme_overrides,
+    theme_tokens,
     block_exemplars,
     pick_domain,
+    _hex_to_rgba,
 )
 from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
-from schemas import SingleGUIElementSpec, GUIModificationSpec
+from schemas import (
+    AuthoredSystemGUISpec,
+    GUIModificationBatchSpec,
+    GUIModificationSpec,
+    SingleGUIElementSpec,
+)
 from utilities.class_metadata import format_class_metadata_for_prompt
 
 logger = logging.getLogger(__name__)
@@ -115,13 +124,80 @@ def _main_container(children: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def _default_wrapper_component() -> Dict[str, Any]:
+_CSS_BLOCK_RE = re.compile(r"([^{}]+)\{([^{}]*)\}")
+_SAFE_SELECTOR_RE = re.compile(r"^[.#a-zA-Z][-\w\s.,:#>()\[\]='\"*+~^$|]*$")
+_MAX_LLM_CSS_RULES = 160
+
+
+def _parse_llm_css(css: Any) -> List[Dict[str, Any]]:
+    """Parse an LLM-authored stylesheet into GrapesJS style-rule dicts.
+
+    Supports plain rules and single-level @media blocks. The stylesheet is the
+    LLM's creative escape hatch beyond the ds-* kit; safety comes first — one
+    forbidden token (@import / url() / expression / javascript:) voids the
+    WHOLE sheet (the ds baseline still styles the page), and malformed pieces
+    are silently dropped, never raised.
+    """
+    rules: List[Dict[str, Any]] = []
+    if not isinstance(css, str) or not css.strip():
+        return rules
+    text = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+    if re.search(r"@import|url\s*\(|expression\s*\(|javascript:|</", text, re.IGNORECASE):
+        logger.warning("[GUINoCode] LLM stylesheet rejected (forbidden token)")
+        return rules
+
+    def parse_decls(body: str) -> Dict[str, str]:
+        style: Dict[str, str] = {}
+        for decl in body.split(";"):
+            if ":" not in decl:
+                continue
+            prop, _, value = decl.partition(":")
+            prop, value = prop.strip(), value.strip()
+            if prop and value and re.match(r"^[-a-zA-Z]+$", prop):
+                style[prop] = value
+        return style
+
+    def add_rule(selector: str, body: str, media: Optional[str] = None) -> None:
+        selector = selector.strip()
+        if not selector or not _SAFE_SELECTOR_RE.match(selector):
+            return
+        style = parse_decls(body)
+        if not style or len(rules) >= _MAX_LLM_CSS_RULES:
+            return
+        rule: Dict[str, Any] = {"selectors": [], "selectorsAdd": selector, "style": style}
+        if media:
+            rule["atRuleType"] = "media"
+            rule["mediaText"] = media
+        rules.append(rule)
+
+    media_re = re.compile(r"@media([^{]+)\{((?:[^{}]*\{[^{}]*\})*)\s*\}", re.DOTALL)
+
+    def handle_media(match: "re.Match") -> str:
+        media_text = match.group(1).strip()
+        for sel, body in _CSS_BLOCK_RE.findall(match.group(2)):
+            add_rule(sel, body, media=media_text)
+        return ""
+
+    text = media_re.sub(handle_media, text)
+    for sel, body in _CSS_BLOCK_RE.findall(text):
+        if sel.strip().startswith("@"):
+            continue
+        add_rule(sel, body)
+    return rules
+
+
+def _default_wrapper_component(tokens: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    # The page canvas takes its ground from the THEME, not from constants —
+    # a teal app must not sit on a foreign gray/Inter base.
+    palette = (tokens or {}).get("palette", {})
     return {
         "type": "wrapper",
         "style": {
-            "background-color": "#f8fafc",
-            "font-family": "'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif",
-            "color": "#1e293b",
+            "background-color": palette.get("background", "#f8fafc"),
+            "font-family": (tokens or {}).get(
+                "font", "'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif"
+            ),
+            "color": palette.get("text", "#1e293b"),
             "min-height": "100vh",
         },
         "stylable": [
@@ -1520,6 +1596,7 @@ def _nav_header_component(
     page_names: List[str],
     active_page: str = "",
     project_name: str = "BESSER",
+    tokens: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a horizontal navigation header bar with links to all pages.
 
@@ -1527,6 +1604,16 @@ def _nav_header_component(
     navigate between pages.  The active page link is visually highlighted.
     Uses a clean white design with subtle accents.
     """
+    # Theme-aware: the nav is part of the app, so it wears the app's tokens —
+    # the old hardcoded blue/Inter header visibly clashed with themed pages.
+    t = tokens or theme_tokens("default")
+    palette = t.get("palette", {})
+    primary = palette.get("primary", "#2563eb")
+    try:
+        active_bg = _hex_to_rgba(primary, 0.10)
+    except Exception:
+        active_bg = "transparent"
+
     nav_links: List[Dict[str, Any]] = []
     for name in page_names:
         route = f"/{re.sub(r'[^a-z0-9-]+', '-', name.lower()).strip('-') or 'page'}"
@@ -1538,13 +1625,13 @@ def _nav_header_component(
                 "data-navigate-to": name.lower().replace(" ", "-"),
             },
             "style": {
-                "color": "#2563eb" if is_active else "#64748b",
+                "color": primary if is_active else palette.get("muted", "#64748b"),
                 "text-decoration": "none",
                 "font-weight": "600" if is_active else "500",
                 "font-size": "0.9rem",
                 "padding": "8px 16px",
-                "border-radius": "8px",
-                "background-color": "#eff6ff" if is_active else "transparent",
+                "border-radius": t.get("radius", "8px"),
+                "background-color": active_bg if is_active else "transparent",
                 "transition": "all 0.2s",
             },
             "components": [{"type": "textnode", "content": name}],
@@ -1554,15 +1641,15 @@ def _nav_header_component(
         "tagName": "nav",
         "attributes": {"class": "assistant-nav-header"},
         "style": {
-            "background-color": "#ffffff",
+            "background-color": palette.get("surface", "#ffffff"),
             "padding": "0 32px",
             "height": "64px",
             "display": "flex",
             "justify-content": "space-between",
             "align-items": "center",
-            "font-family": "'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif",
+            "font-family": t.get("font", "'Segoe UI', system-ui, sans-serif"),
             "box-shadow": "0 1px 3px rgba(0,0,0,0.06)",
-            "border-bottom": "1px solid #e2e8f0",
+            "border-bottom": f"1px solid {palette.get('border', '#e2e8f0')}",
             "position": "sticky",
             "top": "0",
             "z-index": "50",
@@ -1573,7 +1660,7 @@ def _nav_header_component(
                 "style": {
                     "font-size": "1.25rem",
                     "font-weight": "700",
-                    "color": "#0f172a",
+                    "color": palette.get("text", "#0f172a"),
                     "letter-spacing": "-0.01em",
                 },
                 "components": [{"type": "textnode", "content": project_name}],
@@ -2250,12 +2337,13 @@ Rules:
         class_metadata: Optional[List[Dict[str, Any]]] = None,
         all_page_names: Optional[List[str]] = None,
         project_name: str = "BESSER",
+        tokens: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         page_name = _sanitize_page_name(spec.get("name"), fallback="Page")
         raw_sections = spec.get("sections") if isinstance(spec.get("sections"), list) else []
         sections = [item for item in raw_sections if isinstance(item, dict)]
 
-        wrapper = _default_wrapper_component()
+        wrapper = _default_wrapper_component(tokens)
 
         # Inject a navigation header bar at the top of every page
         page_components: List[Dict[str, Any]] = []
@@ -2265,6 +2353,7 @@ Rules:
                     page_names=all_page_names,
                     active_page=page_name,
                     project_name=project_name,
+                    tokens=tokens,
                 )
             )
 
@@ -2394,6 +2483,14 @@ Rules:
         except Exception:
             return self.generate_fallback_element(user_request)
 
+    def _structured_max_tokens(self, response_schema) -> int:
+        # Multi-page authored GUIs (and batches carrying authored HTML) need
+        # the same extended budget the free-text path used — the shared LARGE
+        # tier truncates real multi-page apps.
+        if response_schema.__name__ in ("AuthoredSystemGUISpec", "GUIModificationBatchSpec"):
+            return GUI_COMPLETE_SYSTEM_MAX_TOKENS
+        return super()._structured_max_tokens(response_schema)
+
     def generate_complete_system(
         self,
         user_request: str,
@@ -2423,6 +2520,7 @@ Return ONLY JSON with this shape:
 {{
   "projectName": "App name",
   "domain": "{domain}",
+  "css": "YOUR stylesheet — you own the visual design of this app (see DESIGN OWNERSHIP below)",
   "pages": [
     {{
       "name": "Home",
@@ -2438,7 +2536,7 @@ Each section is EXACTLY ONE of these two shapes:
   "html": "<section class='ds-section'><h2 class='ds-heading'>Section title</h2> ...rich content using .ds-* classes + semantic tags... </section>"
 }}
    - It MUST start with a heading (h1-h6) and its ROOT element MUST carry a stable class (e.g. ds-section, ds-hero, ds-footer).
-   - Use ONLY the .ds-* component classes listed below and semantic tags: h1-h6, p, span, a, ul, li, button, img (data-URI or no src), svg, and plain table markup.
+   - YOU are the designer. Write your own markup with your own class names, styled in the top-level "css" stylesheet — the .ds-* utility classes below are optional helpers (fastest for widget chrome), never a limit. Allowed tags: h1-h6, p, span, a, div, section, header, footer, ul, li, button, img (data-URI or no src), svg, plain table markup, form/label/input. Inline style attributes are fine for one-off accents.
    - NO <script>/<style>, NO external URLs, NO webfonts (blocked by CSP). NO lorem ipsum, NO empty placeholders.
 
 (b) DATA section — LLM-authored chrome + a real, live, data-bound widget:
@@ -2458,13 +2556,18 @@ Each section is EXACTLY ONE of these two shapes:
    - Whatever widget you place, populate it or it renders empty: a table needs "columns" + "rows" ("cells" aligned 1:1 to "columns"); a chart needs "sampleData" (name + numeric value; pie adds a "color" hex).
    - Pick the widget that fits the content: a table suits tabular records (orders, bookings, transactions, inventory); a card grid (below) usually reads better for listings of people / products / profiles / features. Use your judgment.
 
-Design-system classes (styled automatically for the {domain} theme — just use the names):
+Utility classes, pre-styled for the {domain} theme (OPTIONAL helpers — reach for them for speed and widget chrome, not as your design ceiling):
   ds-page, ds-container, ds-section, ds-hero, ds-heading, ds-card, ds-grid-2, ds-grid-3,
   ds-kpi, ds-kpi-value, ds-kpi-label, ds-table-wrap, ds-btn, ds-btn-primary, ds-notice,
   ds-badge, ds-field, ds-label, ds-input, ds-nav, ds-footer.
 
 Proven, editable-safe block patterns for the {domain} domain — COMPOSE from these and REUSE their .ds-* classes:
 {exemplars_block}
+
+DESIGN OWNERSHIP — you are a world-class product designer and the look of this app is YOURS. The {domain} preset is only the floor:
+- When the user asks for a specific look (dark mode, brand colors, pastel, corporate navy, ...), emit a top-level "theme" object overriding ONLY the tokens that must change (primary/secondary/accent/background/surface/text/muted/border/radius/heroBackground/heroText) — the whole design system re-derives from them coherently.
+- Otherwise OMIT "theme" entirely and let the domain preset style everything.
+- Author the top-level "css" stylesheet for EVERY app: a complete design — layout systems, gradients, hover/focus states, responsive rules — plain CSS only (class rules + @media; no @import/url()/webfonts). Your class names are yours (avoid the ds- prefix). The auto-added navigation header carries the class assistant-nav-header — restyle it in your css if your design wants a different top bar. The ONLY predefined CSS variables are the --ds-* tokens (var(--ds-primary), var(--ds-accent), var(--ds-border), ...) — never reference variables that do not exist. Typefaces available: 'Inter' (UI) and 'Fraunces' (display serif) — you may use font-family with these names in your css.
 
 Realism directives (this is what makes the result credible, not generic):
 - Reproduce the SPECIFIC real-world artifact the request implies, with its real structure. E.g. a government service page has an official header, an eligibility notice, an applicant-identity fieldset, a multi-step application form, a document upload, declarations/consent checkboxes, and a submit + application tracker — NOT a generic marketing page.
@@ -2487,8 +2590,10 @@ Design judgment — build what THIS request actually needs; do not pad or force 
 3. Full-width sections (ds-hero, ds-footer, ds-nav) span the page; other sections sit in cards inside a centered container.
 4. Close with a ds-footer when it suits the page (most marketing/landing pages); an app/data screen may not need one.
 5. Populate every widget you place, and give each page enough real copy to read as finished — but include only what the request calls for, not filler.
-6. Keep an entity's field names IDENTICAL across every section it appears in.
-7. Return JSON only.{class_block}"""
+6. VISUAL HIERARCHY: open every page with a page-header moment (title + one-line subtitle + the page's primary action). Vary the rhythm — full-width bands, grids, cards, accent moments — generous whitespace; NEVER a monotone stack of identical white cards. Commit ONE signature visual moment per page (a gradient band, an oversized stat, a colored panel) — safe-but-flat everywhere is a failure.
+7. SAMPLE DATA REALISM: figures must be plausible and VARIED — a chart where every value is 1 (or several series with identical data) is a FAILURE. Write numbers a real business would show; one meaningful series unless comparing series is the point. A section whose heading promises a chart / distribution / trend / breakdown MUST be a DATA section with a chart bind carrying that varied sampleData — never a table and never plain html. Headings are never generic labels like 'Table' or 'Section'.
+8. Keep an entity's field names IDENTICAL across every section it appears in.
+9. Return JSON only.{class_block}"""
 
         logger.info(f"[GUINoCode] generate_complete_system called with: {user_request[:120]!r}")
 
@@ -2530,23 +2635,29 @@ Design judgment — build what THIS request actually needs; do not pad or force 
 
             # Complete-system generation → LARGE tier; reasoning pass on
             # the REASONING tier (see model_config).
-            response = self.predict_two_pass(
+            parsed = self.predict_two_pass_structured(
                 user_request=user_request,
                 system_prompt=system_prompt,
                 reasoning_prompt=reasoning_prompt,
+                response_schema=AuthoredSystemGUISpec,
                 model=MODEL_GENERATION_LARGE,
                 reasoning_model=MODEL_REASONING,
-                max_tokens=GUI_COMPLETE_SYSTEM_MAX_TOKENS,
             )
-            cleaned = self.clean_json_response(response or "")
-            spec = self.parse_json_safely(cleaned)
-            if not isinstance(spec, dict):
-                # The big multi-page JSON was likely truncated mid-stream —
-                # try to keep the pages that were fully emitted rather than
-                # dropping the entire app to the Welcome stub.
-                spec = _salvage_truncated_system(cleaned)
-            if not isinstance(spec, dict):
-                raise ValueError("Invalid system spec")
+            spec = parsed.model_dump()
+            # Schema enforcement replaces the old clean/parse/salvage chain.
+            # Drop any section carrying neither authored html nor a binding.
+            for page in spec.get("pages", []):
+                page["sections"] = [
+                    sc for sc in page.get("sections", [])
+                    if isinstance(sc, dict)
+                    and (
+                        _clean_text(sc.get("html"))
+                        or (
+                            isinstance(sc.get("bind"), dict)
+                            and _clean_text((sc.get("bind") or {}).get("kind"))
+                        )
+                    )
+                ]
 
             pages_spec = spec.get("pages") if isinstance(spec.get("pages"), list) else []
             project_name = spec.get("projectName", "App")
@@ -2555,31 +2666,55 @@ Design judgment — build what THIS request actually needs; do not pad or force 
                 for i, p in enumerate(pages_spec, 1)
                 if isinstance(p, dict)
             ]
+
+            # Resolve the theme FIRST — the nav header and page wrapper are
+            # assembled from these tokens, so the whole page (not just the
+            # ds-* sections) wears the app's actual identity.
+            spec_domain = _clean_text(spec.get("domain")) or domain
+            theme_overrides = spec.get("theme") if isinstance(spec.get("theme"), dict) else None
+            try:
+                if theme_overrides and any(theme_overrides.values()):
+                    tokens = merge_theme_overrides(spec_domain, theme_overrides)
+                else:
+                    tokens = theme_tokens(spec_domain)
+                styles = stylesheet_rules_from_tokens(tokens)
+            except Exception:
+                logger.warning(
+                    "[GUINoCode] stylesheet_rules failed; falling back to empty styles",
+                    exc_info=True,
+                )
+                tokens = None
+                styles = []
+
+            # The LLM's own stylesheet (custom app-* classes) layers on top of
+            # the design-system baseline — its creative freedom beyond the kit.
+            try:
+                llm_rules = _parse_llm_css(spec.get("css"))
+                if llm_rules:
+                    styles = styles + llm_rules
+                    logger.info(
+                        "[GUINoCode] LLM stylesheet accepted (%d rules)", len(llm_rules)
+                    )
+            except Exception:
+                logger.warning("[GUINoCode] LLM stylesheet parse failed", exc_info=True)
+
             pages = [
                 self._parse_page_spec(
                     page,
                     class_metadata,
                     all_page_names=all_page_names,
                     project_name=project_name,
+                    tokens=tokens,
                 )
                 for page in pages_spec
                 if isinstance(page, dict)
             ]
             if not pages:
-                fallback = self.generate_fallback_system()
-                return fallback
-
-            # The domain drives the whole visual identity: the LLM may override
-            # the heuristic pick via a top-level "domain" field, else we keep it.
-            spec_domain = _clean_text(spec.get("domain")) or domain
-            try:
-                styles = stylesheet_rules(spec_domain)
-            except Exception:
-                logger.warning(
-                    "[GUINoCode] stylesheet_rules failed; falling back to empty styles",
-                    exc_info=True,
+                return self._error_response(
+                    "I couldn't produce any pages for that request — your "
+                    "current screens are untouched. Try describing the app "
+                    "again with a bit more detail."
                 )
-                styles = []
 
             model = {
                 "pages": pages,
@@ -2599,7 +2734,13 @@ Design judgment — build what THIS request actually needs; do not pad or force 
             logger.error("[GUINoCode] generate_complete_system LLM FAILED", exc_info=True)
             return self._error_response("I couldn't generate that GUI. Please try again or rephrase your request.")
         except Exception:
-            return self.generate_fallback_system()
+            logger.error(
+                "[GUINoCode] generate_complete_system assembly FAILED", exc_info=True
+            )
+            return self._error_response(
+                "Something went wrong while assembling that GUI — your current "
+                "screens are untouched. Please try again."
+            )
 
     def generate_modification(
         self,
@@ -2643,54 +2784,66 @@ Design judgment — build what THIS request actually needs; do not pad or force 
             logger.warning("[GUINoCode] deterministic modify fast-path failed", exc_info=True)
 
         # ── 2. LLM-structured path ──────────────────────────────────────────
-        prompt = f"""You are a UI modeling assistant that edits an existing GUI.
+        outline = self._page_outline(model)
+        prompt = f"""You are the design agent for an existing web GUI. Apply the user's requested edit(s) precisely and surgically — change ONLY what they asked for.
 
-Pick the single operation that best matches the user's request and return ONLY JSON:
-{{
-  "operation": "append_section|remove_section|rename_page|add_page|remove_page|rename_section|recolor_section|recolor_page|reorder_section",
-  "pageName": "Target page (use an existing page name when possible)",
-  "newPageName": "New page name (rename_page / add_page)",
-  "sectionTitle": "Heading or type of the section to act on (rename_section / recolor_section / remove_section / reorder_section)",
-  "newSectionTitle": "New heading (rename_section)",
-  "color": "Color name or CSS value (recolor_section / recolor_page)",
-  "position": "top|bottom|up|down (reorder_section)",
-  "section": {{
-    "type": "hero|feature_list|content|form|table|bar_chart|pie_chart|line_chart|radar_chart|dashboard|metric_card|stats_grid|footer|two_column",
-    "title": "Section title",
-    "body": "Optional text",
-    "items": ["Optional item"],
-    "fields": ["Optional field"],
-    "ctaLabel": "Optional CTA",
-    "className": "Optional class name to bind data to",
-    "sampleData": [
-      {{"name": "Realistic label from domain", "value": "42"}}
-    ]
-  }}
-}}
+CURRENT APP (pages with their sections, in order):
+{outline}
+
+Emit 1-5 operations — ONE per distinct edit in the request (most requests need exactly one):
+- rename_page / add_page / remove_page
+- rename_section / recolor_section / recolor_page / reorder_section / remove_section
+- append_section — add a NEW section to a page (author it in "section")
+- edit_section — REWRITE an existing section's content in place: target it with "sectionTitle" (its heading as listed above) and author the full replacement in "section"
+
+For append_section / edit_section / add_page, author "section" in the app's design system:
+  PREFERRED — rich themed HTML: {{"html": "<section class='ds-section'><h2 class='ds-heading'>Title</h2> ...concrete content... </section>"}}
+   - Root element carries a stable class; use ONLY .ds-* classes + semantic tags (h1-h6, p, span, a, ul, li, button, svg, plain tables). No scripts/styles/external URLs. Real copy, never placeholders.
+  DATA — a live bound widget: {{"bind": {{"kind": "table|bar_chart|pie_chart|line_chart|radar_chart|metric_card|form|dashboard", "className": "Entity from the class diagram", "columns": [...], "rows": [{{"cells": [...]}}], "sampleData": [{{"name": "...", "value": 42}}]}}, "html": "<section class='ds-section'><h3 class='ds-heading'>Title</h3><div class='ds-card'><!--WIDGET:kind--></div></section>"}}
+   - Populate the widget (columns+rows for tables, sampleData for charts) or it renders empty.
+Design-system classes: ds-section, ds-hero, ds-heading, ds-card, ds-grid-2, ds-grid-3, ds-kpi, ds-kpi-value, ds-kpi-label, ds-table-wrap, ds-btn, ds-btn-primary, ds-notice, ds-badge, ds-field, ds-label, ds-input, ds-container, ds-footer.
 
 Rules:
-1. Choose the most specific operation. Do NOT append a section for a rename/recolor/reorder/remove request.
-2. Use existing page names when possible: {pages_hint}.
-3. ``section`` is only needed for append_section / add_page.
-4. For table/chart/dashboard sections, include a "sampleData" array (4-6 rows). Chart values are STRINGS (e.g. "42").
-5. Return JSON only.{class_block}"""
+1. Choose the most specific operation — never append_section for a rename/recolor/reorder/remove/edit request.
+2. Use page names and section headings EXACTLY as listed above.
+3. edit_section replaces the WHOLE section: carry over what should stay, change what was asked.
+4. Keep an entity's field names identical to how they appear elsewhere in the app.{class_block}"""
 
         try:
-            user_prompt = f"Available pages: {pages_hint}\n\nUser Request: {raw_request}"
-            # Modification → SMALL generation tier (latency-sensitive).
+            user_prompt = f"User Request: {raw_request}"
+            # Modification → SMALL generation tier (latency-sensitive); the
+            # batch schema rides the LARGE token budget for authored HTML.
             parsed = self.predict_structured(
-                user_prompt, GUIModificationSpec, system_prompt=prompt,
+                user_prompt, GUIModificationBatchSpec, system_prompt=prompt,
                 model=MODEL_GENERATION_SMALL,
             )
-            spec = parsed.model_dump()
-            applied_model, message = self._apply_modification_spec(
-                model, spec, page_names, class_metadata,
+            operations = parsed.model_dump().get("operations") or []
+            messages: List[str] = []
+            for op in operations[:5]:
+                if not isinstance(op, dict):
+                    continue
+                # Recompute page names between ops — an earlier add/rename
+                # must be visible to the next op in the same batch.
+                page_names = [
+                    _clean_text(page.get("name"))
+                    for page in model.get("pages", [])
+                    if isinstance(page, dict) and _clean_text(page.get("name"))
+                ]
+                model, message = self._apply_modification_spec(
+                    model, op, page_names, class_metadata,
+                )
+                messages.append(message)
+            if not messages:
+                raise ValueError("empty modification batch")
+            combined = (
+                messages[0] if len(messages) == 1
+                else "\n".join(f"- {m}" for m in messages)
             )
             return {
                 "action": "modify_model",
                 "diagramType": self.get_diagram_type(),
-                "model": applied_model,
-                "message": message,
+                "model": model,
+                "message": combined,
             }
         except LLMPredictionError:
             logger.error("[GUINoCode] generate_modification LLM FAILED", exc_info=True)
@@ -2910,6 +3063,27 @@ Rules:
                     return True
         return False
 
+    def _page_outline(self, model: Dict[str, Any]) -> str:
+        """Human-readable page/section outline for the modify prompt.
+
+        Gives the LLM exact targets ('Home: Hero | Recent records | Footer')
+        so edits land on the right section instead of a guessed one.
+        """
+        lines: List[str] = []
+        for page in model.get("pages", []):
+            if not isinstance(page, dict):
+                continue
+            name = _clean_text(page.get("name")) or "Page"
+            labels: List[str] = []
+            try:
+                wrapper = _ensure_page_wrapper(page)
+                for _parent, _idx, comp in _iter_section_components(wrapper):
+                    labels.append(_section_label(comp))
+            except Exception:
+                pass
+            lines.append(f"- {name}: " + (" | ".join(labels) if labels else "(empty)"))
+        return "\n".join(lines) if lines else "- Home: (empty)"
+
     def _apply_modification_spec(
         self,
         model: Dict[str, Any],
@@ -3005,6 +3179,24 @@ Rules:
                 return model, f"Moved the **{query}** section to the **{position}** of the page."
             return model, (
                 f"I couldn't find a section matching **{query or 'that'}** to move. "
+                "Your GUI is unchanged."
+            )
+
+        if operation == "edit_section":
+            query = _clean_text(spec.get("sectionTitle"))
+            section_spec = spec.get("section") if isinstance(spec.get("section"), dict) else None
+            if query and section_spec:
+                replacement = _build_section_component(section_spec, class_metadata)
+                for page in model.get("pages", []):
+                    if not isinstance(page, dict):
+                        continue
+                    wrapper = _ensure_page_wrapper(page)
+                    for parent, idx, comp in _iter_section_components(wrapper):
+                        if _match_section(comp, query):
+                            parent[idx] = replacement
+                            return model, f"Updated the **{query}** section."
+            return model, (
+                f"I couldn't find a section matching **{query or 'that'}** to edit. "
                 "Your GUI is unchanged."
             )
 

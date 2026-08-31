@@ -217,6 +217,109 @@ class SystemGUISpec(BaseModel):
     )
 
 
+# -- Complete-system wire schema (Phase 3 authoring) --
+
+class AuthoredGUISectionSpec(BaseModel):
+    """One authored section of a generated page — the structured mirror of the
+    authoring prompt's two shapes: rich themed HTML, or a data binding with
+    optional HTML chrome. Both fields optional so OpenAI strict structured
+    output validates; the handler drops a section carrying neither.
+    """
+    html: Optional[str] = Field(
+        default=None,
+        description=(
+            "Rich themed HTML for this section using ONLY the .ds-* design-"
+            "system classes and semantic tags (h1-h6, p, span, a, ul, li, "
+            "button, img with data: URI or no src, svg, plain table markup). "
+            "MUST start with a heading and carry a stable class on its root "
+            "element. No <script>/<style>, no external URLs, no lorem ipsum. "
+            "For a DATA section, embed a <!--WIDGET:kind--> comment where the "
+            "bound widget splices in."
+        ),
+    )
+    bind: Optional[GUIBindSpec] = Field(
+        default=None,
+        description=(
+            "Structured data binding for a DATA section (a live table/chart/"
+            "form/metric widget). Populate it — columns+rows for tables, "
+            "sampleData for charts — or the widget renders empty."
+        ),
+    )
+
+
+class AuthoredGUIPageSpec(BaseModel):
+    name: str = Field(
+        min_length=1,
+        description="Unique display name for this page (e.g. 'Home', 'Bookings').",
+    )
+    sections: List[AuthoredGUISectionSpec] = Field(
+        default_factory=list,
+        description="Ordered sections that make up this page.",
+    )
+
+
+class GUIThemeSpec(BaseModel):
+    """Custom design-token overrides — the escape hatch from the preset themes.
+
+    When the user asks for a specific look ('dark mode', 'our brand green',
+    'pastel and playful'), fill only the tokens that should change; the full
+    .ds-* stylesheet is regenerated from the merged tokens, so the result
+    stays coherent. Omit entirely to use the domain preset.
+    """
+    primary: Optional[str] = Field(default=None, description="Primary brand color (CSS color).")
+    secondary: Optional[str] = Field(default=None, description="Secondary color (CSS color).")
+    accent: Optional[str] = Field(default=None, description="Accent color (CSS color).")
+    background: Optional[str] = Field(default=None, description="Page background color.")
+    surface: Optional[str] = Field(default=None, description="Card/surface color.")
+    text: Optional[str] = Field(default=None, description="Main text color.")
+    muted: Optional[str] = Field(default=None, description="Muted/secondary text color.")
+    border: Optional[str] = Field(default=None, description="Border color.")
+    radius: Optional[str] = Field(default=None, description="Corner radius (e.g. '0px', '12px').")
+    heroBackground: Optional[str] = Field(
+        default=None,
+        description="Hero band background (color or CSS gradient).",
+    )
+    heroText: Optional[str] = Field(default=None, description="Hero band text color.")
+
+
+class AuthoredSystemGUISpec(BaseModel):
+    """Wire schema for complete-GUI generation (structured output).
+
+    Replaces the former free-text JSON contract 1:1 (same keys), so the
+    downstream page assembly is untouched — but the output is now schema-
+    enforced: no truncated JSON, no parse-and-salvage, no malformed specs.
+    """
+    projectName: str = Field(default="App", description="Application name.")
+    domain: Optional[Literal[
+        "government", "finance", "health", "startup", "default",
+    ]] = Field(
+        default=None,
+        description="Design domain driving the visual theme.",
+    )
+    theme: Optional[GUIThemeSpec] = Field(
+        default=None,
+        description=(
+            "Custom design-token overrides for a user-requested look. Fill "
+            "ONLY when the request implies a specific style the domain preset "
+            "doesn't deliver; omit otherwise."
+        ),
+    )
+    css: Optional[str] = Field(
+        default=None,
+        description=(
+            "OPTIONAL app-level stylesheet for your own custom classes "
+            "(prefix them app-) used in section html — plain CSS with class "
+            "rules and @media blocks only. No @import, no url(), no "
+            "webfonts, no scripts. Use it for gradients, feature layouts, "
+            "hover states — real visual identity beyond the ds-* kit."
+        ),
+    )
+    pages: List[AuthoredGUIPageSpec] = Field(
+        min_length=1,
+        description="Pages of the app (at least one).",
+    )
+
+
 # -- Modification schema --
 
 class GUIModificationSpec(BaseModel):
@@ -228,6 +331,7 @@ class GUIModificationSpec(BaseModel):
     """
     operation: Literal[
         "append_section",
+        "edit_section",
         "remove_section",
         "rename_page",
         "add_page",
@@ -243,6 +347,8 @@ class GUIModificationSpec(BaseModel):
             "rename_section to rename/retitle a section, recolor_section or "
             "recolor_page to change colors, reorder_section to move a section "
             "up/down, append_section/remove_section to add or delete a section, "
+            "edit_section to REWRITE an existing section's content in place "
+            "(target via sectionTitle, replacement in 'section'), "
             "add_page/remove_page to add or delete a page."
         ),
     )
@@ -281,7 +387,27 @@ class GUIModificationSpec(BaseModel):
     )
     section: Optional[GUISectionSpec] = Field(
         default=None,
-        description="Section to append (used with 'append_section' / 'add_page').",
+        description=(
+            "Section payload (used with 'append_section' / 'edit_section' / "
+            "'add_page'). Prefer the authored shapes: 'html' (rich themed "
+            ".ds-* markup) or 'bind' (a populated data widget, optionally "
+            "with 'html' chrome around a <!--WIDGET:kind--> slot)."
+        ),
+    )
+
+
+class GUIModificationBatchSpec(BaseModel):
+    """A user request may bundle several edits ('rename Home to Overview and
+    make the hero red') — the batch applies them in order, each one a
+    :class:`GUIModificationSpec`.
+    """
+    operations: List[GUIModificationSpec] = Field(
+        min_length=1,
+        max_length=5,
+        description=(
+            "The edit operations to apply, in order — ONE per distinct edit "
+            "the user asked for. Most requests need exactly one."
+        ),
     )
 
 

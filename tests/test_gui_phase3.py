@@ -51,6 +51,16 @@ def handler() -> GUINoCodeDiagramHandler:
 # Class metadata in the shape ``_resolve_class_binding`` / the typed builders
 # expect. Includes ``type`` so it also survives ``format_class_metadata_for_prompt``
 # on the complete-system path.
+from schemas import AuthoredSystemGUISpec
+
+
+def _stub_structured(handler, payload):
+    """Stub the STRUCTURED create path (the free-text path is retired)."""
+    handler.predict_two_pass_structured = (
+        lambda **kw: AuthoredSystemGUISpec(**payload)
+    )
+
+
 BOOK_METADATA = [
     {
         "id": "cls-book",
@@ -219,7 +229,7 @@ def test_bind_chrome_without_slot_still_renders_widget():
 # ---------------------------------------------------------------------------
 
 def test_complete_system_populates_domain_styles(handler):
-    handler.predict_two_pass = lambda **kw: json.dumps(
+    _stub_structured(handler, 
         {
             "projectName": "Residency Portal",
             "domain": "government",
@@ -258,7 +268,7 @@ def test_complete_system_populates_domain_styles(handler):
 
 def test_domain_falls_back_to_pick_domain_when_spec_omits_it(handler):
     # Spec has no top-level "domain" -> assembly derives it from the request text.
-    handler.predict_two_pass = lambda **kw: json.dumps(
+    _stub_structured(handler, 
         {"projectName": "Bank", "pages": [{"name": "H", "sections": [
             {"html": "<section class='ds-section'><h2 class='ds-heading'>Accounts</h2></section>"}]}]}
     )
@@ -369,7 +379,7 @@ def test_legacy_no_type_defaults_to_content():
 # ---------------------------------------------------------------------------
 
 def test_end_to_end_html_and_bind_system(handler):
-    handler.predict_two_pass = lambda **kw: json.dumps(
+    _stub_structured(handler, 
         {
             "projectName": "Care Portal",
             "domain": "health",

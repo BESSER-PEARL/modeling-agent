@@ -662,6 +662,16 @@ class BaseDiagramHandler(ABC):
     _SMALL_OUTPUT_MAX_TOKENS = LLM_MAX_TOKENS_SMALL
     _LARGE_OUTPUT_MAX_TOKENS = LLM_MAX_TOKENS_LARGE
 
+    def _structured_max_tokens(self, response_schema: Type[BaseModel]) -> int:
+        """Completion budget for a structured call, chosen per schema.
+
+        Handlers whose outputs exceed the shared LARGE tier (e.g. multi-page
+        GUI authoring) override this for their schemas.
+        """
+        if response_schema.__name__ in self._SMALL_OUTPUT_SCHEMAS:
+            return self._SMALL_OUTPUT_MAX_TOKENS
+        return self._LARGE_OUTPUT_MAX_TOKENS
+
     def predict_structured(
         self,
         prompt: str,
@@ -759,11 +769,7 @@ class BaseDiagramHandler(ABC):
                             break
 
             try:
-                max_tokens = (
-                    self._SMALL_OUTPUT_MAX_TOKENS
-                    if response_schema.__name__ in self._SMALL_OUTPUT_SCHEMAS
-                    else self._LARGE_OUTPUT_MAX_TOKENS
-                )
+                max_tokens = self._structured_max_tokens(response_schema)
                 logger.info(
                     f"🤖 [{self.get_diagram_type()}] Structured LLM call started "
                     f"(attempt {attempt + 1}/{total_attempts}, "
