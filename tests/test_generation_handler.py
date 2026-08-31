@@ -170,9 +170,9 @@ class TestRequiredMissing:
         }) == []
 
     def test_some_missing(self):
-        missing = _required_missing("django", {"project_name": "p"})
-        assert "app_name" in missing
-        assert "containerization" in missing
+        # Django asks for NOTHING since the default-params decision — every
+        # field is defaulted, so a partial config is never "missing".
+        assert _required_missing("django", {"project_name": "p"}) == []
 
     def test_no_required_fields(self):
         assert _required_missing("python", {}) == []
@@ -194,7 +194,8 @@ class TestNormalizeDefaults:
         config = _normalize_defaults("django", request, {})
         assert config["project_name"] == "testproject"  # sanitized from TestProject
         assert "app_name" in config
-        assert config["containerization"] is False
+        # Containerization defaults ON since the default-params decision.
+        assert config["containerization"] is True
 
     def test_sql_defaults(self):
         request = _make_request("")
