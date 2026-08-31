@@ -673,11 +673,25 @@ def execute_model_operation(
     def _timed_progress():
         steps = []
         if operation_mode == "complete_system":
-            steps = [
-                (8, "Generating classes and relationships..."),
-                (20, "Building attributes and methods..."),
-                (35, "Almost there..."),
-            ]
+            if target_diagram_type == "GUINoCodeDiagram":
+                # An AI-designed GUI legitimately takes ~2 minutes (reasoning
+                # pass + a large structured pass). The old generic steps ended
+                # at 35s, leaving the longest stretch silent — pace the story
+                # across the REAL duration and set the expectation up front.
+                steps = [
+                    (3, "Designing your screens — this takes about two minutes…"),
+                    (25, "Laying out the pages and navigation…"),
+                    (55, "Writing the styles and the copy…"),
+                    (90, "Binding your data to tables and charts…"),
+                    (120, "Assembling the final pages…"),
+                    (160, "Still working — larger apps take a little longer…"),
+                ]
+            else:
+                steps = [
+                    (8, "Generating classes and relationships..."),
+                    (20, "Building attributes and methods..."),
+                    (35, "Almost there..."),
+                ]
         elif operation_mode == "modify_model":
             steps = [
                 (4, "Updating model..."),

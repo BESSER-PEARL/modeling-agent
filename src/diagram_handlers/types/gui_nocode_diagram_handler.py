@@ -27,7 +27,12 @@ from .gui_design_system import (
     pick_domain,
     _hex_to_rgba,
 )
-from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
+from model_config import (
+    MODEL_GENERATION_GUI,
+    MODEL_GENERATION_LARGE,
+    MODEL_GENERATION_SMALL,
+    MODEL_REASONING,
+)
 from schemas import (
     AuthoredSystemGUISpec,
     GUIModificationBatchSpec,
@@ -2640,7 +2645,7 @@ Design judgment — build what THIS request actually needs; do not pad or force 
                 system_prompt=system_prompt,
                 reasoning_prompt=reasoning_prompt,
                 response_schema=AuthoredSystemGUISpec,
-                model=MODEL_GENERATION_LARGE,
+                model=MODEL_GENERATION_GUI,
                 reasoning_model=MODEL_REASONING,
             )
             spec = parsed.model_dump()
