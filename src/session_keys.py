@@ -45,6 +45,11 @@ PENDING_SMART_GEN_TIMESTAMP = "_pending_smart_gen_timestamp"
 # FOLLOW-UP rule from a structured signal instead of grepping reply copy out
 # of the conversation history.
 LAST_SMART_GEN_AT = "_last_smart_gen_at"
+# Human-readable one-paragraph summary of the last completed smart run
+# (outcome + file summary). Lets a follow-up QUESTION about the finished
+# run ("what we generated?") be ANSWERED instead of re-arming a brand-new
+# generation confirmation (live bug 2026-09-01).
+LAST_SMART_GEN_SUMMARY = "_last_smart_gen_summary"
 # When set to True, the next smart-route classification skips the
 # domain-mismatch guard. Used by the "Generate anyway" path so the same
 # request (or its resend) doesn't loop on the confirmation question.

@@ -676,3 +676,56 @@ class TestMismatchRegenChain:
         assert not session.get(PENDING_SMART_GEN_INSTRUCTIONS)
 
 
+
+
+# ----------------------------------------------------------------------
+# Past-generation QUESTION guard (live bug 2026-09-01): "What we
+# generated" after a finished smart run must be ANSWERED from the stashed
+# outcome, never re-arm a new generation confirmation.
+# ----------------------------------------------------------------------
+
+
+def _fresh_run_session():
+    import time as _time
+    from session_keys import LAST_SMART_GEN_AT, LAST_SMART_GEN_SUMMARY
+    session = FakeSession()
+    session.set(LAST_SMART_GEN_AT, _time.time())
+    session.set(LAST_SMART_GEN_SUMMARY, "Smart generation finished successfully.")
+    return session
+
+
+@pytest.mark.parametrize("message", [
+    "What we generated",
+    "what did we generate?",
+    "show me what you generated",
+    "tell me what was built",
+])
+def test_past_generation_question_is_answered_not_rearmed(message):
+    session = _fresh_run_session()
+    result = handle_generation_request(session, _make_request(message))
+    assert result["action"] == "assistant_message"
+    assert "finished successfully" in result["message"]
+    assert "Do you want to continue" not in result["message"]
+
+
+def test_past_generation_question_without_fresh_run_falls_through():
+    """No stashed run -> normal routing (whatever it is, not the stash reply)."""
+    session = FakeSession()
+    result = handle_generation_request(session, _make_request("What we generated"))
+    assert "finished successfully" not in (result.get("message") or "")
+
+
+def test_future_directed_generation_question_falls_through():
+    """'what should we generate next' is not a question about the past run."""
+    session = _fresh_run_session()
+    result = handle_generation_request(
+        session, _make_request("what should we generate next?")
+    )
+    assert "finished successfully" not in (result.get("message") or "")
+
+
+def test_imperative_generate_request_unaffected_by_stash():
+    """'generate rust classes' must still route as a generation request."""
+    session = _fresh_run_session()
+    result = handle_generation_request(session, _make_request("generate rust classes"))
+    assert "finished successfully" not in (result.get("message") or "")

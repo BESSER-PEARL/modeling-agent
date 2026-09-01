@@ -13,6 +13,7 @@ from utilities.model_context import is_diagram_nontrivial
 from session_keys import (
     CONFIG_PROMPT_ATTEMPTS,
     LAST_SMART_GEN_AT,
+    LAST_SMART_GEN_SUMMARY,
     MISMATCH_REGEN_PENDING,
     PENDING_GENERATOR_CONFIG,
     PENDING_GENERATOR_TYPE,
@@ -1002,6 +1003,10 @@ def _handle_smart_generator_result(
             # "add auth to it" after a FAILED run is not a follow-up to
             # reuse-for-generation.
             session.set(LAST_SMART_GEN_AT, time.time())
+        # Stash the outcome (success OR failure) so a follow-up QUESTION
+        # about the finished run ("what we generated?") can be answered
+        # from here instead of re-arming a new generation confirmation.
+        session.set(LAST_SMART_GEN_SUMMARY, result_message)
         try:
             from memory import get_memory, memory_session_key
 
@@ -1017,6 +1022,22 @@ def _handle_smart_generator_result(
         payload["suggestedActions"] = suggestions
     return payload
 
+
+# A question ABOUT a past generation: interrogative opener + a
+# generated/built/created reference within the same short message, or the
+# bare "what did/have/was ... generate(d)" forms. Precision-first — an
+# imperative like "generate rust classes" never matches (no interrogative
+# opener), and future-directed questions are excluded separately.
+_PAST_GEN_QUESTION_RE = re.compile(
+    r"^(what|which|show|tell|list|describe|explain)\b.{0,60}\b(generat|built|created|produced)",
+    re.IGNORECASE,
+)
+# Future-directed words that turn "what ... generate" into a request for
+# options/capabilities or a NEW run — those keep the normal routing.
+_FUTURE_GEN_WORDS_RE = re.compile(
+    r"\b(should|shall|can|could|would|will|next|now|again|regenerate|new)\b",
+    re.IGNORECASE,
+)
 
 # Normalized spellings of the mismatch quick-action label a user might TYPE
 # instead of clicking. Matched only while a mismatch rebuild is stashed.
@@ -1045,6 +1066,30 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     """
     if request.action == "frontend_event":
         return _handle_frontend_event(request, session)
+
+    # Past-generation QUESTION guard (live bug 2026-09-01): after a smart
+    # run finished, "What we generated" classified as generation_intent and
+    # re-armed the whole smart-gen confirmation instead of being answered.
+    # A past-tense/interrogative reference to the finished run — with no
+    # future-directed word — is a question about the outcome, never a new
+    # run. Deterministic, and only fires while a completed run is fresh.
+    _msg = (request.message or "").strip()
+    if _PAST_GEN_QUESTION_RE.search(_msg) and not _FUTURE_GEN_WORDS_RE.search(_msg):
+        _summary = session.get(LAST_SMART_GEN_SUMMARY)
+        _at = session.get(LAST_SMART_GEN_AT) or 0
+        if _summary and (time.time() - float(_at)) < 1800:
+            logger.info(
+                "Past-generation question answered from stashed outcome "
+                "(no new run armed): %r", _msg[:80],
+            )
+            return {
+                "action": "assistant_message",
+                "message": (
+                    f"{_summary} Use the **Download** button on the run card "
+                    "to save the files, or tell me what to change and I'll "
+                    "modify the generated app."
+                ),
+            }
 
     # Pending smart-generation confirmation: short-circuit the classifier only
     # for an unambiguous whole yes/no/cancel reply. Qualified or mixed replies
