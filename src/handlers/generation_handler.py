@@ -1039,6 +1039,139 @@ _FUTURE_GEN_WORDS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# --- Continue-from-GitHub guard ------------------------------------------
+# Chat path for resuming a PAST generation that was pushed to GitHub:
+# "continue from github.com/owner/repo" must hand the frontend a
+# trigger_github_import action (the frontend calls the backend import
+# endpoint, loads the returned project, and arms the modify machinery —
+# the agent itself never touches GitHub or any HTTP endpoint).
+# Deterministic and precision-first, like the past-generation guard above:
+# an LLM verdict is never allowed to invent, miss, or swallow an import.
+#
+# URL form — unambiguous on its own: github.com/{owner}/{repo} with an
+# optional scheme, optional ".git" suffix (stripped in the extractor) and
+# optional /tree/{branch} segment. The repo pattern is dotted-segment
+# shaped so a trailing sentence period is NOT swallowed
+# ("...from github.com/x/y." → repo "y") while dotted repo names and
+# ".git" still match. The lookbehind rejects lookalike hosts
+# ("mygithub.com", "api.github.com").
+_GITHUB_URL_RE = re.compile(
+    r"(?<![A-Za-z0-9.-])(?:www\.)?github\.com/"
+    r"(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?)/"
+    r"(?P<repo>[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)"
+    r"(?:/tree/(?P<branch>[^\s?#]+))?",
+    re.IGNORECASE,
+)
+# Continuation verbs (EN + FR "reprendre" forms) — the bare owner/repo
+# form fires ONLY alongside one of these, and the classifier-side reroute
+# (unified_classifier._post_validate) requires one even for URLs, so a
+# "create a diagram like github.com/x/y" style request is never hijacked.
+_GITHUB_CONTINUE_VERB_RE = re.compile(
+    r"\b(?:continue|continuing|continues|resume|resuming|resumes|"
+    r"load|loading|loads|import|importing|imports|"
+    r"open|opening|opens|reprend\w*|reprise)\b",
+    re.IGNORECASE,
+)
+# The word that makes a bare "owner/repo" mean a REPOSITORY. Without it
+# (plus a continuation verb) a slash pair in ordinary prose
+# ("src/handlers", "1/2") must never fire.
+_GITHUB_REPO_WORD_RE = re.compile(
+    r"\b(?:repos?|repository|repositories|github)\b", re.IGNORECASE,
+)
+# Bare {owner}/{repo}: same owner/repo shapes as the URL form; the
+# lookarounds keep it from matching inside a longer path or URL.
+_BARE_OWNER_REPO_RE = re.compile(
+    r"(?<![\w./@-])"
+    r"(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?)/"
+    r"(?P<repo>[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)"
+    r"(?![\w/-])",
+)
+# "branch <name>" / "branche <name>" (FR) named in the message text — used
+# only when the URL carried no /tree/<branch> segment.
+_GITHUB_BRANCH_WORD_RE = re.compile(
+    r"\bbranche?\s+[\"'`]?"
+    r"(?P<branch>[A-Za-z0-9_/-]+(?:\.[A-Za-z0-9_/-]+)*)",
+    re.IGNORECASE,
+)
+
+
+def _extract_github_reference(
+    message: str,
+) -> Optional[Tuple[str, str, Optional[str]]]:
+    """Extract ``(owner, repo, branch)`` from a GitHub reference in *message*.
+
+    Two accepted shapes, precision-first (never fires on arbitrary "a/b"
+    prose):
+
+    * a github.com URL (scheme optional, ``.git`` and ``/tree/{branch}``
+      suffixes optional) — unambiguous on its own;
+    * a bare ``owner/repo`` — ONLY when the message ALSO contains a
+      continuation verb (continue / resume / load / import / open /
+      reprend…) AND a repo word (repo / repository / github).
+
+    ``branch`` comes from the URL's ``/tree/<branch>`` segment, else a
+    "branch <name>" phrase in the message, else ``None`` (the backend
+    then uses the repo's default branch). Returns ``None`` when the
+    message carries no GitHub reference.
+    """
+    msg = message or ""
+    owner = repo = branch = None
+    url_match = _GITHUB_URL_RE.search(msg)
+    if url_match:
+        owner = url_match.group("owner")
+        repo = url_match.group("repo")
+        branch = url_match.group("branch")
+    elif _GITHUB_CONTINUE_VERB_RE.search(msg) and _GITHUB_REPO_WORD_RE.search(msg):
+        bare_match = _BARE_OWNER_REPO_RE.search(msg)
+        if bare_match:
+            owner = bare_match.group("owner")
+            repo = bare_match.group("repo")
+    if not owner or not repo:
+        return None
+    if repo.lower().endswith(".git"):
+        repo = repo[: -len(".git")]
+    if not repo:
+        return None
+    if not re.search(r"[A-Za-z]", owner + repo):
+        # Digits-only pairs ("1/2", "3/4") are prose — fractions or dates —
+        # not a plausible GitHub reference.
+        return None
+    if branch:
+        # A /tree/<branch> segment is greedy up to whitespace so slashed
+        # branch names ("feature/login") survive; trim sentence punctuation.
+        branch = branch.rstrip(".,;:!?)'\"/")
+    if not branch:
+        word_match = _GITHUB_BRANCH_WORD_RE.search(msg)
+        if word_match:
+            branch = word_match.group("branch")
+    return owner, repo, branch or None
+
+
+def _build_github_import_payload(
+    owner: str, repo: str, branch: Optional[str],
+) -> Dict[str, Any]:
+    """Build the ``trigger_github_import`` action payload.
+
+    The frontend handles the action: it calls the backend's GitHub import
+    endpoint, loads the returned project into the editor, and arms the
+    incremental-modify machinery. ``branch`` is ``None`` when the user
+    named none (the backend then uses the repo's default branch).
+    """
+    branch_part = f" on branch {branch}" if branch else ""
+    return {
+        "action": "trigger_github_import",
+        "owner": owner,
+        "repo": repo,
+        "branch": branch,
+        "message": (
+            f"Importing **{owner}/{repo}**{branch_part} from GitHub — I'll "
+            "load the project and you can continue modifying it from here. "
+            "If the repo wasn't created by BESSER (no model inside), I'll "
+            "ask you to open it in the editor first."
+        ),
+    }
+
+
 # Normalized spellings of the mismatch quick-action label a user might TYPE
 # instead of clicking. Matched only while a mismatch rebuild is stashed.
 _MISMATCH_LABEL_ALIASES = {
@@ -1090,6 +1223,28 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                     "modify the generated app."
                 ),
             }
+
+    # Continue-from-GitHub guard: "continue from github.com/x/y" (or
+    # "continue from my repo x/y") means resuming a PAST generation that was
+    # pushed to GitHub. Deterministic and terminal: extract owner/repo/branch
+    # and hand the frontend a trigger_github_import action — it calls the
+    # backend import endpoint, loads the project, and arms the modify
+    # machinery. Runs BEFORE sub-route dispatch so no LLM verdict (smart /
+    # deterministic / modeling) can swallow the import into a fresh run.
+    _gh_ref = _extract_github_reference(_msg)
+    if _gh_ref is not None:
+        _gh_owner, _gh_repo, _gh_branch = _gh_ref
+        # An import loads a DIFFERENT project: abandon any pending generator
+        # config / smart-gen confirmation, exactly as the "different request
+        # abandons this confirmation" path below would — so a later generic
+        # "yes" can never spend against a stale pre-import run (B-2).
+        _clear_pending_smart_gen(session)
+        _clear_pending_state(session)
+        logger.info(
+            "Continue-from-GitHub: importing %s/%s (branch=%s)",
+            _gh_owner, _gh_repo, _gh_branch,
+        )
+        return _build_github_import_payload(_gh_owner, _gh_repo, _gh_branch)
 
     # Pending smart-generation confirmation: short-circuit the classifier only
     # for an unambiguous whole yes/no/cancel reply. Qualified or mixed replies

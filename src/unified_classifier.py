@@ -1302,6 +1302,37 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
     bugs. Repairs them in place rather than collapsing a valid intent to a
     worse one.
     """
+    # Continue-from-GitHub guard (chat path for "continue from a repo"):
+    # "continue from github.com/x/y" carries no modeling vocabulary, so the
+    # LLM parks it in fallback ("none fit") or reads "continue" as a modify
+    # of the current model — either way it never reaches the generation
+    # handler, whose own deterministic guard emits the trigger_github_import
+    # action. A message naming BOTH a GitHub repo reference AND a
+    # continuation verb is unambiguous; reroute it deterministically. The
+    # verb requirement keeps e.g. "create a diagram like github.com/x/y"
+    # on its classified intent. pending_flow_action='new_request' frees the
+    # message from any pending question's answer gate (deferred import: the
+    # detection lives with the emitting guard in generation_handler, which
+    # imports this module at load time — importing it back lazily here
+    # avoids the cycle).
+    if result.intent != "generation_intent":
+        from handlers.generation_handler import (
+            _GITHUB_CONTINUE_VERB_RE,
+            _extract_github_reference,
+        )
+        if _GITHUB_CONTINUE_VERB_RE.search(message or "") and (
+            _extract_github_reference(message or "") is not None
+        ):
+            logger.warning(
+                "Continue-from-GitHub message classified as %s; rerouting to "
+                "generation_intent for the github-import guard", result.intent,
+            )
+            return UnifiedClassification(
+                intent="generation_intent",
+                generation_route="other",
+                pending_flow_action="new_request",
+                reason="GitHub-continuation guard: continue-from-repo routes to the generation handler",
+            )
     if result.intent == "generation_intent":
         # GUI-diagram guard (live bug): "generate the GUI (model) / the
         # screens / the UI" means building the GUI DIAGRAM, but the LLM
