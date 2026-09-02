@@ -961,7 +961,7 @@ def _handle_smart_generator_result(
             parts.append(f"File: {metadata.get('filename') or metadata.get('fileName')}")
         if incomplete:
             parts.append(
-                "You can resume the run to finish the remaining changes."
+                "You can run the generation again to finish the remaining changes."
             )
         result_message = " ".join(parts)
         suggestions = None
