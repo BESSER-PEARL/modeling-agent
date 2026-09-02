@@ -359,8 +359,11 @@ def _summarize_agent_diagram(model: Dict[str, Any]) -> List[str]:
             state_str += f" …+{len(states) - 10} more"
         lines.append(f"States: {state_str}")
 
-    intents = [e.get("name") for e in elements.values()
-               if isinstance(e, dict) and e.get("type") == "AgentIntent" and e.get("name")]
+    components = model.get("components")
+    intents: List[str] = []
+    if isinstance(components, dict):
+        intents = [e.get("name") for e in components.values()
+                   if isinstance(e, dict) and e.get("type") == "AgentIntent" and e.get("name")]
     if intents:
         intent_str = ', '.join(intents[:10])
         if len(intents) > 10:
