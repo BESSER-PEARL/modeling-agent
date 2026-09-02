@@ -157,11 +157,22 @@ async def _run_webapp(sem, label, domain):
                             or "web_app code generation" in low or "downloadurl" in low):
                         auto_ran = True
                         break
-                    if "generate the web app" in low:
+                    if ("generate the web app" in low
+                            or "continue with generating your" in low):
+                        # 2026-08 model-first copy. Two emit paths, two
+                        # variants: "…continue with generating your web app"
+                        # (emit_webapp_generate_prompt) and "…generating your
+                        # application" (the screens-built _follow_up).
                         deferred = True
                         break
-                    if "generate the gui" in low and not answered:
-                        await _send(ws, sid, "auto")
+                    if not answered and ("generate the gui" in low
+                                        or "create your screens" in low
+                                        or "fast & deterministic" in low):
+                        # Screens-first flow (2026-08): the agent asks HOW to
+                        # create the screens before the defer message appears.
+                        await _send(ws, sid, "fast & deterministic"
+                                    if "screens" in low or "deterministic" in low
+                                    else "auto")
                         answered = True
                 flaws = []
                 if auto_ran:
