@@ -231,7 +231,7 @@ _PRIMARY_ELEMENT_TYPES: Dict[str, Set[str]] = {
 
 _CHILD_ELEMENT_TYPES: Set[str] = {
     "ClassAttribute", "ClassMethod",
-    "AgentStateBody", "AgentStateFallbackBody", "AgentIntentBody",
+    "AgentStateBody", "AgentStateFallbackBody",
 }
 
 
