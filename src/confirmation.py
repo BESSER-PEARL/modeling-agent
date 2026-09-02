@@ -107,11 +107,9 @@ def _build_auto_gui_message(request: Any, detected_gen: Optional[str] = None) ->
 
     if detected_gen is None:
         detected_gen = detect_generator_type(getattr(request, "message", "") or "")
+    from reply_copy import continue_generating_prompt
     _artifact = get_artifact_label(detected_gen)
-    _follow_up = (
-        f"\n\nYou can now review or refine your model, or continue "
-        f"with generating your {_artifact}. What would you like to do?"
-    )
+    _follow_up = "\n\n" + continue_generating_prompt(_artifact)
 
     try:
         from utilities.model_resolution import resolve_class_diagram
@@ -227,7 +225,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
             # Frontend builds one page per class via autoGenerateGUIFromClassDiagram.
             # The message CONFIRMS completion naming the pages that were created.
             # suggestedActions give the user their next step (generate or review).
-            "message": _build_auto_gui_message(request, detected_gen=_detected_gen),
+            "message": _build_auto_gui_message(request, detected_gen=_detected_gen or "web_app"),
             "suggestedActions": get_post_spec_suggestions(_detected_gen or "web_app"),
         })
         # Resume any remaining operations from the original plan

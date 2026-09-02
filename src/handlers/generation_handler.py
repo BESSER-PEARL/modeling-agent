@@ -23,7 +23,7 @@ from session_keys import (
     SKIP_MISMATCH_CHECK_ONCE,
     UNIFIED_CLASSIFICATION,
 )
-from reply_copy import OUT_OF_SCOPE_REDIRECT
+from reply_copy import OUT_OF_SCOPE_REDIRECT, SPEC_DRIVEN_NAME
 from unified_classifier import (
     UnifiedClassification,
     classify_message as _unified_classify_message,
@@ -949,14 +949,14 @@ def _handle_smart_generator_result(
         incomplete_reason = metadata.get("incompleteReason")
         if incomplete:
             head = (
-                "Smart generation produced output, but the run stopped early "
+                f"The {SPEC_DRIVEN_NAME} produced output, but the run stopped early "
                 "so it may be incomplete"
             )
             if incomplete_reason:
                 head += f": {incomplete_reason}"
             parts = [head + cost_text + "."]
         else:
-            parts = ["Smart generation finished successfully" + cost_text + "."]
+            parts = [f"{SPEC_DRIVEN_NAME} generation finished successfully" + cost_text + "."]
         if metadata.get("filename") or metadata.get("fileName"):
             parts.append(f"File: {metadata.get('filename') or metadata.get('fileName')}")
         if incomplete:
@@ -967,25 +967,25 @@ def _handle_smart_generator_result(
         suggestions = None
     elif error_code == "COST_CAP":
         result_message = (
-            "The smart-generation run hit its cost cap before finishing"
+            f"The {SPEC_DRIVEN_NAME} run hit its cost cap before finishing"
             + cost_text
             + ". You can retry with a larger budget, or narrow the "
             "instructions so less code needs to be generated."
         )
         suggestions = ["Retry with refined instructions"]
     elif error_code == "CANCELLED":
-        result_message = "The smart-generation run was stopped" + cost_text + "."
+        result_message = f"The {SPEC_DRIVEN_NAME} run was stopped" + cost_text + "."
         suggestions = ["Retry the generation"]
     elif error_code == "INVALID_KEY":
         result_message = (
-            "Smart generation failed: the provider rejected the API key. "
+            f"{SPEC_DRIVEN_NAME} generation failed: the provider rejected the API key. "
             "Check the key in the AI settings and try again."
         )
         suggestions = None
     else:
         detail = message if isinstance(message, str) and message.strip() else None
         result_message = (
-            "Smart generation failed"
+            f"{SPEC_DRIVEN_NAME} generation failed"
             + (f" ({error_code})" if error_code else "")
             + cost_text
             + ("." if not detail else f": {detail}")

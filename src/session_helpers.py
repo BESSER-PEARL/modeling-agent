@@ -261,11 +261,11 @@ def emit_webapp_generate_prompt(session: Session) -> None:
     source of truth for the prompt (called from every path where a web-app GUI
     completes)."""
     from suggestions import get_post_spec_suggestions
+    from reply_copy import continue_generating_prompt
     reply_payload(session, {
         "action": "assistant_message",
         "message": (
-            "Your screens are ready. You can now review or refine your model, "
-            "or continue with generating your web app. What would you like to do?"
+            "Your screens are ready. " + continue_generating_prompt("web app")
         ),
         "suggestedActions": get_post_spec_suggestions("web_app"),
     })
