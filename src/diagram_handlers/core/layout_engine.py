@@ -225,13 +225,13 @@ _PRIMARY_ELEMENT_TYPES: Dict[str, Set[str]] = {
     "ClassDiagram": {"Class"},
     "ObjectDiagram": {"Object"},
     "StateMachineDiagram": {"State", "StateInitialNode", "StateFinalNode"},
-    "AgentDiagram": {"AgentState", "AgentIntent", "StateInitialNode"},
+    "AgentDiagram": {"AgentState", "StateInitialNode"},
     "UserDiagram": {"UserModelName"},
 }
 
 _CHILD_ELEMENT_TYPES: Set[str] = {
     "ClassAttribute", "ClassMethod",
-    "AgentStateBody", "AgentStateFallbackBody", "AgentIntentBody",
+    "AgentStateBody", "AgentStateFallbackBody",
 }
 
 

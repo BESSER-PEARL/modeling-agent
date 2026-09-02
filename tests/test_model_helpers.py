@@ -445,13 +445,15 @@ class TestDetailedModelSummaryGUI:
 
 AGENT_MODEL = {
     "elements": {
-        "s1": {"type": "AgentState", "name": "Greeting"},
-        "s2": {"type": "AgentState", "name": "Farewell"},
-        "i1": {"type": "AgentIntent", "name": "say_hello"},
-        "i2": {"type": "AgentIntent", "name": "say_bye"},
+        "s1": {"type": "AgentState", "name": "Greeting", "stateType": "standard"},
+        "s2": {"type": "AgentState", "name": "Farewell", "stateType": "standard"},
     },
     "relationships": {
         "t1": {"type": "AgentTransition", "source": "s1", "target": "s2"},
+    },
+    "components": {
+        "i1": {"type": "AgentIntent", "name": "say_hello"},
+        "i2": {"type": "AgentIntent", "name": "say_bye"},
     },
 }
 
