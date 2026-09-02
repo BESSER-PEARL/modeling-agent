@@ -597,3 +597,51 @@ class TestMismatchRegenFixes:
         with patch.object(execution, "execute_planned_operations") as ep:
             gh.handle_generation_request(session, req)
         ep.assert_not_called()
+
+
+class TestBareAnswerTokensNeverPivot:
+    """Live loop (2026-09-02): the classifier stamped the literal answers
+    'replace'/'confirm' with modify_model_intent; the pivot guard then
+    abandoned the confirmation and EXECUTED the word 'confirm' as a modify
+    request — destructive re-plan, re-block, endless re-ask. A bare answer
+    token is always an ANSWER."""
+
+    def _run_with_verdict(self, message, uc):
+        session = FakeSession()
+        session.set(PENDING_COMPLETE_SYSTEM, dict(_PENDING))
+        session.set(UNIFIED_CLASSIFICATION, uc)
+        executed = {}
+        with patch.object(confirmation, "parse_assistant_request",
+                          return_value=_req(message)), \
+             patch.object(confirmation, "reply_message"), \
+             patch.object(confirmation, "reply_payload"), \
+             patch.object(confirmation, "execute_model_operation",
+                          side_effect=lambda **kw: executed.update(kw) or None):
+            handled = handle_pending_system_confirmation(session)
+        return handled, executed, session
+
+    def test_bare_replace_is_consumed_as_replace(self):
+        handled, executed, _ = self._run_with_verdict(
+            "replace", _uc("modify_model_intent", "answer", "replace"))
+        assert handled is True
+        assert executed.get("_replace_existing") is True
+
+    def test_bare_confirm_is_consumed_as_replace(self):
+        handled, executed, _ = self._run_with_verdict(
+            "confirm", _uc("modify_model_intent", "answer", "confirm"))
+        assert handled is True
+        assert executed.get("_replace_existing") is True
+
+    def test_confirm_button_label_is_consumed(self):
+        handled, executed, _ = self._run_with_verdict(
+            "Confirm — apply the change",
+            _uc("modify_model_intent", "answer", "confirm"))
+        assert handled is True
+        assert executed.get("_replace_existing") is True
+
+    def test_real_modify_pivot_still_pivots(self):
+        handled, executed, session = self._run_with_verdict(
+            "add a Member class", _uc("modify_model_intent", "answer", "keep"))
+        assert handled is False
+        assert executed == {}
+        assert not session.get(PENDING_COMPLETE_SYSTEM)

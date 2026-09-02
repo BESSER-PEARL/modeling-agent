@@ -157,6 +157,24 @@ def _maybe_emit_webapp_prompt(session: Session) -> None:
         emit_webapp_generate_prompt(session)
 
 
+# Bare flow-control tokens a user types (or a quick-action button sends) to
+# ANSWER a pending confirmation. A message that normalizes to one of these
+# is always an answer — never a pivot — regardless of the intent label the
+# classifier stamped on it.
+_FLOW_ANSWER_TOKENS = {
+    "replace", "replace it", "keep", "keep it", "keep both",
+    "keep it and add alongside", "add alongside", "new tab",
+    "create in a new tab", "confirm", "confirm apply the change",
+    "apply the change", "go ahead", "yes", "no", "cancel", "ok",
+}
+
+
+def _normalize_flow_token(message: str) -> str:
+    """Lowercase, strip punctuation/dashes, collapse whitespace."""
+    cleaned = re.sub(r"[^\w\s]", " ", (message or "").lower())
+    return " ".join(cleaned.split())
+
+
 def handle_pending_gui_choice(session: Session) -> bool:
     """Process a pending GUI generation-mode choice, if one exists.
 
@@ -328,7 +346,20 @@ def handle_pending_system_confirmation(session: Session) -> bool:
     # instruction is a PIVOT, never an answer: the intent verdict wins over
     # the answer label. Abandon the confirmation and let the modify route
     # normally. Deterministic — phrasing cannot re-trigger the bug.
-    if _flow_action == "answer" and getattr(_uc, "intent", None) == "modify_model_intent":
+    #
+    # EXCEPT for bare flow-control tokens (live loop, 2026-09-02): the
+    # classifier labels the literal answers "replace"/"confirm" as
+    # modify_model_intent too, and the guard then abandoned the
+    # confirmation and EXECUTED the word "confirm" as a modify request —
+    # which re-planned a destructive change, re-blocked, and re-asked in
+    # an endless loop. A message that IS an answer token can never be a
+    # pivot, whatever intent the classifier stamped on it.
+    _bare_answer = _normalize_flow_token(user_msg) in _FLOW_ANSWER_TOKENS
+    if (
+        _flow_action == "answer"
+        and getattr(_uc, "intent", None) == "modify_model_intent"
+        and not _bare_answer
+    ):
         logger.info(
             "[PendingConfirm] Modify-intent verdict at the replace/keep "
             "prompt — treating as a PIVOT, abandoning the confirmation")
