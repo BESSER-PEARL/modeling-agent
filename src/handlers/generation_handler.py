@@ -286,8 +286,9 @@ def _build_smart_gen_confirmation(
             f"model using its built-in generators. If some of your "
             f"requirements are not supported by these generators, BESSER can "
             f"use an LLM to handle them.\n\n"
-            f"BESSER uses Qwen as the default free model. You can also set up "
-            f"your own API key to use a different provider or model.\n\n"
+            f"BESSER includes a free model by default, so you can generate at "
+            f"no cost. For higher-quality results, you can set up your own "
+            f"API key and use a stronger provider or model.\n\n"
             f"Do you want to continue?"
         ),
         # Cancel action removed per product decision — the proposition offers
