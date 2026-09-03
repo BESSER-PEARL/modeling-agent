@@ -49,6 +49,28 @@ def test_terminal_reply_is_buffered_and_replays_on_a_reconnected_session():
     assert reconnected.sent[-1]["systemSpec"]["classes"][0]["className"] == "Menu"
 
 
+def test_trigger_github_import_is_a_terminal_reply_and_replays():
+    """The continue-from-GitHub action is the turn's terminal reply — a
+    reconnect that drops it must be able to replay it, exactly like
+    trigger_generator (live bug class 2026-09-03)."""
+    _reset()
+    session = _FakeSession()
+    payload = {"action": "trigger_github_import", "owner": "armen",
+               "repo": "hotel-app", "branch": None, "message": "Importing…"}
+    with patch.object(sh, "memory_session_key", return_value="sess-gh"), \
+         patch.object(sh, "_record_assistant_response"):
+        sh.reply_payload(session, payload)
+
+    assert sh._last_reply_buffer.get("sess-gh")["action"] == "trigger_github_import"
+
+    reconnected = _FakeSession()
+    with patch.object(sh, "memory_session_key", return_value="sess-gh"):
+        did = sh.replay_last_reply(reconnected, request=None)
+    assert did is True
+    assert reconnected.sent[-1]["owner"] == "armen"
+    assert reconnected.sent[-1]["repo"] == "hotel-app"
+
+
 def test_non_terminal_frames_are_not_buffered():
     _reset()
     session = _FakeSession()

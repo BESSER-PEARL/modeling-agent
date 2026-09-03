@@ -159,7 +159,7 @@ def json_no_intent_matched(session: Session) -> bool:
 # ``replay_last_response`` control message it fires on reconnect-while-waiting.
 _TERMINAL_REPLY_ACTIONS = frozenset({
     "inject_complete_system", "modify_model", "auto_generate_gui",
-    "trigger_generator", "assistant_message",
+    "trigger_generator", "trigger_github_import", "assistant_message",
 })
 _REPLY_BUFFER_MAX = 200
 _last_reply_buffer: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
