@@ -152,6 +152,8 @@ _SMART_GEN_CONFIRM_PHRASES = {
     "yes", "yes please", "confirm", "confirm it", "run it", "run it now",
     "please run it", "go ahead", "proceed", "start it", "start the generation",
     "generate anyway", "generate anyway with my current model",
+    "continue", "please continue", "yes continue", "ok", "ok go ahead",
+    "sure", "sure go ahead", "continue please",
 }
 # Whole-message phrases that EXIT a pending config-collection flow. Bare "no"
 # is deliberately absent: mid-config it is usually a field answer ("Docker?"
@@ -785,6 +787,75 @@ def _clear_pending_smart_gen(session: Session) -> None:
     ):
         if isinstance(session_data, dict) and key in session_data:
             session.delete(key)
+
+
+def handle_pending_smart_gen_confirmation(session: Session) -> bool:
+    """Intercept a pending smart-gen confirm/cancel before intent routing.
+
+    Called from _common_preamble (before any state body runs) so that a plain
+    "yes" / "continue" typed at the "Do you want to continue?" prompt is caught
+    regardless of which intent the classifier picks for the message.
+
+    Returns True when the confirmation was handled (caller must return).
+    Returns False when no pending confirmation exists or the message is not an
+    unambiguous answer (the normal routing pipeline should handle it).
+    """
+    if not session.get(PENDING_SMART_GEN_INSTRUCTIONS):
+        return False
+
+    from protocol.adapters import parse_assistant_request
+    from session_helpers import reply_message, reply_payload
+
+    request = parse_assistant_request(session)
+    msg_lower = (request.message or "").strip().lower()
+
+    decision = _smart_gen_confirmation_decision(msg_lower)
+
+    if decision is None:
+        # Allow the classifier to cancel on the user's behalf (novel phrasings
+        # like "rather not"), but NEVER confirm: firing the generator spends a
+        # run on the user's API key, so confirmation must come from the
+        # exact-phrase list only (B-2).
+        _uc = session.get(UNIFIED_CLASSIFICATION)
+        if (getattr(_uc, "pending_flow_action", None) == "answer"
+                and getattr(_uc, "pending_flow_answer", None) == "cancel"):
+            decision = "cancel"
+
+    if decision == "cancel":
+        _clear_pending_smart_gen(session)
+        _clear_pending_state(session)
+        reply_message(session, "Cancelled. Your model is unchanged.")
+        return True
+
+    if decision == "confirm":
+        from handlers.smart_generation_handler import GenerationClassification
+        stashed_instructions = session.get(PENDING_SMART_GEN_INSTRUCTIONS) or ""
+        stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic"
+        stashed_ts = session.get(PENDING_SMART_GEN_TIMESTAMP)
+        if not _smart_gen_stash_is_fresh(stashed_ts):
+            _clear_pending_smart_gen(session)
+            _clear_pending_state(session)
+            reply_message(
+                session,
+                "That generation request expired — please ask again "
+                "and I'll prepare a fresh run.",
+            )
+            return True
+        _clear_pending_smart_gen(session)
+        if stashed_instructions.strip():
+            payload = build_trigger_smart_generator_payload(
+                GenerationClassification(
+                    route="smart",
+                    refined_instructions=stashed_instructions,
+                    provider=stashed_provider,
+                    reason="user confirmed the run",
+                ),
+                reason_prefix="generating with current model",
+            )
+            reply_payload(session, payload)
+            return True
+
+    return False
 
 
 def _looks_like_mixed_modeling_and_generation(message: str) -> bool:

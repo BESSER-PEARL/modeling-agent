@@ -40,6 +40,7 @@ from suggestions import get_suggested_actions, format_suggestions_as_text
 from diagram_handlers.registry.metadata import get_diagram_type_info
 from handlers.generation_handler import (
     handle_generation_request,
+    handle_pending_smart_gen_confirmation,
     _looks_like_mixed_modeling_and_generation,
 )
 from orchestrator import determine_target_diagram_type
@@ -130,6 +131,8 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     if handle_pending_gui_choice(session):
         return None
     if handle_pending_system_confirmation(session):
+        return None
+    if handle_pending_smart_gen_confirmation(session):
         return None
 
     request = parse_assistant_request(session)
