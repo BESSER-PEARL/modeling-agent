@@ -224,6 +224,7 @@ RULES:
 11. Methods default to implementationType "none" (UML signature only, no code). ONLY generate code in the 'code' field when the user explicitly asks for it. Supported types: 'code' for Python (e.g., "implement in Python", "add Python code"), 'bal' for BESSER Action Language (e.g., "implement in BAL", "use action language"). BAL syntax: def method_name(param: type) -> return_type {{ statements; }}. Python syntax: standard def with self parameter.
 12. ENUMERATIONS ARE NEVER RELATED. A relationship (in the relationships list) must connect two real classes — NEVER an enumeration. If a class has an enum-valued property (status, priority, type, role, category, etc.), model it as an ATTRIBUTE on that class whose type is the enum's PascalCase name — do NOT emit a relationship pointing at the enum. There must be ZERO relationships whose source or target is an isEnumeration=true class.
 14. ATTRIBUTE TYPES ARE PRIMITIVES OR ENUMS — NEVER ANOTHER CLASS. An attribute's type must be a primitive (String, int, bool, float, Date, datetime, time) or an enumeration name. If a class "has a" another class you also model (a PointOfInterest has a Location, an Order has a Customer, a Trip has a start Location and an end Location), express it as a RELATIONSHIP (Association) between the two classes — give the relationship a role name (e.g. startLocation, endLocation) to distinguish multiple links to the same class. NEVER put the class's name in an attribute's "type". Value objects you define (Location, Address, Money, Coordinates, TimeRange) are classes: connect them with relationships, don't use them as attribute types.
+15. PARALLEL ASSOCIATIONS NEED DISTINCT NAMES. When the same two classes are connected by MORE THAN ONE relationship (e.g. a Doctor "works in" a Department AND "heads" a Department), give EACH of those relationships a distinct, meaningful name ("worksIn", "heads") — never leave two relationships between the same pair of classes unnamed or identically named. The relationship name becomes the association end's role name; missing or duplicate names collide into the same role and fail validation.
 13. CONSTRAINTS (OCL): if the user EXPLICITLY states a business rule that multiplicities and attribute types cannot express — uniqueness ("emails must be unique"), a limit beyond cardinality ("a speaker presents at most one session per time slot"), or a value range ("age must be at least 18") — capture it in the "constraints" list as an OCL invariant in B-OCL syntax: context <ClassName> inv <name>: <expression>. The context MUST be one of the classes you created. Examples: "context Account inv positiveBalance: self.balance >= 0"; "context Speaker inv oneSessionPerSlot: self.sessions->forAll(s1, s2 | s1 <> s2 implies s1.timeSlot <> s2.timeSlot)". CRITICAL: capture ONLY rules the user actually stated. If the user stated no such rule, leave "constraints" EMPTY — NEVER invent constraints.
 
 Examples:
@@ -267,7 +268,9 @@ Examples:
                 "asks for a comprehensive/complete system or names many entities.\n"
                 "2. What attributes does each class need? (be thorough)\n"
                 "3. What relationships connect these classes? What type (Association, "
-                "Composition, Aggregation, Inheritance)? What multiplicities?\n"
+                "Composition, Aggregation, Inheritance)? What multiplicities? If the "
+                "same two classes need MORE THAN ONE relationship, plan a distinct, "
+                "meaningful name for each (e.g. 'worksIn' vs 'heads').\n"
                 "4. Are there any association classes needed (e.g., Enrollment between "
                 "Student and Course with grade)?\n"
                 "5. Is there any inheritance hierarchy that makes sense?\n"
@@ -324,6 +327,13 @@ Examples:
             # canvas and a hard collision when the domain model is built (BUML
             # association names must be unique). Rename duplicates deterministically.
             self._dedupe_relationship_names(system_spec)
+
+            # Guard: no class may end up with two association ends of the same
+            # name once this spec is injected (the recurring "cannot have two
+            # association ends with the same name" validation error on rich
+            # models). Reorients/renames colliding relationships using the
+            # exact end-name derivation the validator applies.
+            self._ensure_unique_association_ends(system_spec)
 
             # Guard: a subclass must not redefine an attribute an ancestor
             # already declares (BUML validates attribute shadowing; the LLM
@@ -654,6 +664,231 @@ Examples:
         if renamed:
             logger.info(
                 "[ClassDiagram] Deduped %d duplicate relationship name(s)", renamed
+            )
+
+    # ------------------------------------------------------------------
+    # Association-end uniqueness at CREATION time (spec-level guard)
+    # ------------------------------------------------------------------
+    # The frontend converter (ClassDiagramConverter.convertCompleteSystem)
+    # injects every spec relationship with ``source.role = ''`` and
+    # ``target.role = rel.name || ''``, and the validator derives each end's
+    # name as "explicit role, else lowercased endpoint-class name". So for a
+    # spec relationship S→T:
+    #   * S's navigable end (the target endpoint) is named rel.name or
+    #     lower(T)  — addressable via the relationship NAME;
+    #   * T's navigable end (the source endpoint) is ALWAYS named lower(S)
+    #     — addressable only by flipping the relationship's orientation.
+    # Two same-orientation associations between one pair therefore give the
+    # shared target class two identical ends NO naming can fix — which is why
+    # the guard first alternates orientations (plain Associations only, the
+    # bidirectional type where direction is not semantic) and then assigns
+    # unique names.
+
+    # Spec relationship types that create NO association ends once injected
+    # (the converter maps them to ClassInheritance). Everything else —
+    # including Realization/Dependency, which fall through to
+    # ClassBidirectional — produces two role-bearing endpoints.
+    _SPEC_NON_END_REL_TYPES = frozenset({"inheritance", "generalization"})
+
+    @staticmethod
+    def _spec_rel_type(rel: Dict[str, Any]) -> str:
+        value = rel.get("type")
+        return value.strip().lower() if isinstance(value, str) else "association"
+
+    @staticmethod
+    def _reach_over_edges(edges: List[tuple], seeds: set) -> set:
+        """Seeds plus everything reachable following the directed edges BOTH
+        ways (ancestors ∪ descendants — never siblings), matching the
+        duplicate-end repair's inheritance-closure semantics."""
+        def _reach(forward: bool) -> set:
+            reached = set(seeds)
+            frontier = set(seeds)
+            while frontier:
+                nxt = set()
+                for a, b in edges:
+                    if forward and a in frontier and b not in reached:
+                        nxt.add(b)
+                    elif not forward and b in frontier and a not in reached:
+                        nxt.add(a)
+                reached |= nxt
+                frontier = nxt
+            return reached
+
+        return _reach(True) | _reach(False)
+
+    def _ensure_unique_association_ends(self, system_spec: Dict[str, Any]) -> None:
+        """Make every class's association-end names unique in the spec.
+
+        Computes each class's navigable end names with the same derivation
+        the validator uses on the injected model (explicit role — i.e. the
+        relationship name on the target endpoint — else the lowercased
+        endpoint-class name), counting ends inherited across the class's
+        generalization chain. Duplicates are resolved deterministically:
+
+        1. ORIENTATION: a later same-direction parallel Association between
+           an already-connected pair is flipped (endpoints + multiplicities
+           swapped — direction is not semantic for a plain bidirectional
+           Association), turning its un-nameable source-derived end into a
+           nameable one. Compositions/aggregations are never flipped.
+        2. NAMING: later duplicates that sit on a nameable (target) endpoint
+           get a unique relationship name — the existing label suffixed if
+           one exists, else the lowercased target-class name, with the same
+           ``_1``/``_2`` convention the backend converter and the repair
+           flow use. New names also stay unique among relationship labels.
+
+        Mutates *system_spec* in place; no-op for already-clean specs.
+        """
+        relationships = system_spec.get("relationships")
+        if not isinstance(relationships, list) or not relationships:
+            return
+        classes = system_spec.get("classes")
+
+        def _is_end_creating(rel: Any) -> bool:
+            return (
+                isinstance(rel, dict)
+                and self._spec_rel_type(rel) not in self._SPEC_NON_END_REL_TYPES
+                and isinstance(rel.get("source"), str) and rel.get("source")
+                and isinstance(rel.get("target"), str) and rel.get("target")
+            )
+
+        # ── Phase 1: alternate orientations of parallel Associations ──
+        pair_direction_counts: Dict[tuple, int] = {}
+        for rel in relationships:
+            if _is_end_creating(rel):
+                key = (rel["source"], rel["target"])
+                pair_direction_counts[key] = pair_direction_counts.get(key, 0) + 1
+        for rel in relationships:
+            if not _is_end_creating(rel) or rel["source"] == rel["target"]:
+                continue
+            src, tgt = rel["source"], rel["target"]
+            if (
+                pair_direction_counts.get((src, tgt), 0) > 1
+                and pair_direction_counts.get((tgt, src), 0) == 0
+                and self._spec_rel_type(rel) == "association"
+            ):
+                # Prefer flipping an UNNAMED parallel (no label semantics to
+                # disturb); flip a named one only when no unnamed candidate
+                # exists in the same direction group.
+                group = [
+                    r for r in relationships
+                    if _is_end_creating(r)
+                    and (r["source"], r["target"]) == (src, tgt)
+                    and self._spec_rel_type(r) == "association"
+                ]
+                unnamed = [
+                    r for r in group
+                    if not (isinstance(r.get("name"), str) and r["name"].strip())
+                ]
+                candidate = (unnamed or group)[-1]
+                candidate["source"], candidate["target"] = tgt, src
+                candidate["sourceMultiplicity"], candidate["targetMultiplicity"] = (
+                    candidate.get("targetMultiplicity"),
+                    candidate.get("sourceMultiplicity"),
+                )
+                pair_direction_counts[(src, tgt)] -= 1
+                pair_direction_counts[(tgt, src)] = 1
+                logger.info(
+                    "[ClassDiagram] Reoriented a parallel %s–%s association so "
+                    "both classes' end names stay addressable", src, tgt,
+                )
+
+        # ── Phase 2: unique end names per class (chain-aware) ──
+        inheritance_edges = [
+            (rel["source"], rel["target"])
+            for rel in relationships
+            if isinstance(rel, dict)
+            and self._spec_rel_type(rel) in self._SPEC_NON_END_REL_TYPES
+            and isinstance(rel.get("source"), str)
+            and isinstance(rel.get("target"), str)
+        ]
+
+        def _collect_entries() -> List[Dict[str, Any]]:
+            """One entry per (relationship, owning class) in document order."""
+            entries: List[Dict[str, Any]] = []
+            for rel in relationships:
+                if not _is_end_creating(rel):
+                    continue
+                raw_name = rel.get("name")
+                label = raw_name.strip() if isinstance(raw_name, str) else ""
+                entries.append({
+                    "rel": rel, "owner": rel["source"], "fixable": True,
+                    "name": label or rel["target"].lower(),
+                })
+                entries.append({
+                    "rel": rel, "owner": rel["target"], "fixable": False,
+                    "name": rel["source"].lower(),
+                })
+            return entries
+
+        taken_labels = {
+            rel["name"].strip().lower()
+            for rel in relationships
+            if isinstance(rel, dict) and isinstance(rel.get("name"), str)
+            and rel["name"].strip()
+        }
+
+        class_order: List[str] = []
+        if isinstance(classes, list):
+            for cls in classes:
+                if isinstance(cls, dict) and isinstance(cls.get("className"), str):
+                    class_order.append(cls["className"])
+        for entry in _collect_entries():
+            if entry["owner"] not in class_order:
+                class_order.append(entry["owner"])
+
+        renamed = 0
+        for cls_name in class_order:
+            entries = _collect_entries()  # recompute after prior mutations
+            chain = self._reach_over_edges(inheritance_edges, {cls_name})
+            owned = [e for e in entries if e["owner"] in chain]
+            taken_ends = {e["name"] for e in owned}
+            by_name: Dict[str, List[Dict[str, Any]]] = {}
+            for e in owned:
+                by_name.setdefault(e["name"], []).append(e)
+            for end_name, group in by_name.items():
+                if len(group) < 2:
+                    continue
+                unfixable = [e for e in group if not e["fixable"]]
+                kept = unfixable[0] if unfixable else group[0]
+                for e in group:
+                    if e is kept:
+                        continue
+                    if not e["fixable"]:
+                        logger.warning(
+                            "[ClassDiagram] Class '%s' keeps duplicate end "
+                            "'%s' (source-side of a non-reorientable "
+                            "relationship) — left for downstream repair",
+                            cls_name, end_name,
+                        )
+                        continue
+                    rel = e["rel"]
+                    raw_name = rel.get("name")
+                    base = (
+                        raw_name.strip()
+                        if isinstance(raw_name, str) and raw_name.strip()
+                        else rel["target"].lower()
+                    )
+                    counter = 1
+                    while (
+                        f"{base}_{counter}" in taken_ends
+                        or f"{base}_{counter}".lower() in taken_labels
+                    ):
+                        counter += 1
+                    unique = f"{base}_{counter}"
+                    rel["name"] = unique
+                    taken_ends.add(unique)
+                    taken_labels.add(unique.lower())
+                    renamed += 1
+                    logger.info(
+                        "[ClassDiagram] Named the %s–%s association '%s' so "
+                        "'%s' has no duplicate '%s' end",
+                        rel["source"], rel["target"], unique, cls_name, end_name,
+                    )
+
+        if renamed:
+            logger.info(
+                "[ClassDiagram] Assigned %d unique association-end name(s)",
+                renamed,
             )
 
     # Attribute types the deterministic generators accept without an association.
@@ -1686,6 +1921,191 @@ Examples:
             spec["message"] = f"{existing_msg}\n\n{notes}".strip() if existing_msg else notes
         return spec
 
+    def _ensure_unique_ends_for_added_relationships(
+        self,
+        spec: Dict[str, Any],
+        current_model: Optional[Dict[str, Any]],
+    ) -> None:
+        """Prevent NEW duplicate association ends from ``add_relationship`` mods.
+
+        The frontend's ``addRelationship`` builds the new relationship with
+        ``target.role = changes.name || …`` and ``source.role = ''`` — the
+        same shape as complete-system injection — so adding a second link
+        between an already-connected pair reproduces the duplicate-end
+        validation error. For each add (in batch order, against the current
+        model's ends plus earlier adds in the batch):
+
+        * a plain Association whose fixed (source-derived) end would collide
+          is FLIPPED to the opposite orientation (endpoints + multiplicities
+          swapped);
+        * if the flipped source-derived end still collides with an existing
+          end that sits on a renameable (target) endpoint, a companion
+          ``modify_relationship`` + ``roleName`` mod renames the existing end
+          (reusing the repair-flow mechanism);
+        * the nameable side then gets a unique ``changes.name`` when needed
+          (same ``_1``/``_2`` convention as everywhere else).
+
+        Mutates *spec* in place; silent no-op when nothing would collide.
+        """
+        if not isinstance(spec, dict) or spec.get("action") != "modify_model":
+            return
+        mods = spec.get("modifications")
+        single = None
+        if not isinstance(mods, list):
+            single = spec.get("modification")
+            mods = [single] if isinstance(single, dict) else []
+        adds = [
+            m for m in mods
+            if isinstance(m, dict) and m.get("action") == "add_relationship"
+        ]
+        if not adds or not isinstance(current_model, dict):
+            return
+
+        ids_by_name = self._class_ids_by_name(current_model)
+        name_by_id = {
+            eid: name for name, eids in ids_by_name.items() for eid in eids
+        }
+
+        def _model_ends(cls_name: str) -> List[Dict[str, Any]]:
+            seeds = ids_by_name.get(cls_name, set())
+            if not seeds:
+                return []
+            owners = self._inheritance_closure(current_model, seeds)
+            return self._collect_owned_ends(current_model, owners, name_by_id)
+
+        pending: Dict[str, set] = {}
+        appended: List[Dict[str, Any]] = []
+
+        def _taken(cls_name: str) -> set:
+            return (
+                {e["name"] for e in _model_ends(cls_name)}
+                | pending.get(cls_name, set())
+            )
+
+        for mod in adds:
+            target = mod.get("target") if isinstance(mod.get("target"), dict) else {}
+            changes = mod.get("changes") if isinstance(mod.get("changes"), dict) else {}
+            src = target.get("sourceClass")
+            tgt = target.get("targetClass")
+            if not (isinstance(src, str) and src and isinstance(tgt, str) and tgt):
+                continue
+            rel_type = str(changes.get("relationshipType") or "Association").strip().lower()
+            if rel_type in ("inheritance", "generalization", "realization", "dependency"):
+                continue
+
+            label = ""
+            for key_source, key in ((changes, "name"), (changes, "roleName"),
+                                    (target, "relationshipName")):
+                value = key_source.get(key)
+                if isinstance(value, str) and value.strip():
+                    label = value.strip()
+                    break
+
+            def _repairable(cls_name: str, end_name: str) -> bool:
+                """True when every existing end of *cls_name* named *end_name*
+                sits on a renameable (target) endpoint — i.e. a companion
+                roleName mod can clear the collision."""
+                if end_name in pending.get(cls_name, set()):
+                    return False  # batch-added fixed ends have no rename lever
+                colliding_ends = [
+                    e for e in _model_ends(cls_name) if e["name"] == end_name
+                ]
+                return bool(colliding_ends) and all(
+                    e["side"] == "target" for e in colliding_ends
+                )
+
+            # Fixed (source-derived) end placement: flip a plain Association
+            # when the flipped orientation is clean — or when only the
+            # flipped orientation's residual collision is repairable via a
+            # companion roleName rename of the existing end.
+            if src != tgt and rel_type == "association":
+                orig_fixed_collides = src.lower() in _taken(tgt)
+                flip_fixed_collides = tgt.lower() in _taken(src)
+                should_flip = orig_fixed_collides and (
+                    not flip_fixed_collides
+                    or (
+                        not _repairable(tgt, src.lower())
+                        and _repairable(src, tgt.lower())
+                    )
+                )
+                if should_flip:
+                    target["sourceClass"], target["targetClass"] = tgt, src
+                    # Materialize defaults before swapping so the rendered
+                    # multiplicities keep their original meaning.
+                    src_mult = changes.get("sourceMultiplicity") or "1"
+                    tgt_mult = changes.get("targetMultiplicity") or "*"
+                    if not isinstance(mod.get("changes"), dict):
+                        mod["changes"] = changes
+                    changes["sourceMultiplicity"], changes["targetMultiplicity"] = (
+                        tgt_mult, src_mult,
+                    )
+                    src, tgt = tgt, src
+                    logger.info(
+                        "[ClassDiagram] Reoriented new %s–%s association to "
+                        "avoid a duplicate association end", tgt, src,
+                    )
+
+            # Fixed end still colliding: rename the EXISTING colliding end
+            # when it sits on a renameable (target) endpoint.
+            fixed_end = src.lower()
+            if src != tgt and fixed_end in _taken(tgt):
+                colliding = [
+                    e for e in _model_ends(tgt)
+                    if e["name"] == fixed_end and e["side"] == "target"
+                ]
+                if colliding:
+                    existing = colliding[0]
+                    taken = _taken(tgt) | {fixed_end}
+                    counter = 1
+                    while f"{fixed_end}_{counter}" in taken:
+                        counter += 1
+                    new_role = f"{fixed_end}_{counter}"
+                    appended.append({
+                        "action": "modify_relationship",
+                        "target": {
+                            "relationshipId": existing["rel_id"],
+                            "sourceClass": existing["source_class"],
+                            "targetClass": existing["target_class"],
+                        },
+                        "changes": {"roleName": new_role},
+                    })
+                    pending.setdefault(tgt, set()).add(new_role)
+                    logger.info(
+                        "[ClassDiagram] Renamed existing '%s' end on '%s' to "
+                        "'%s' to make room for the new association",
+                        fixed_end, tgt, new_role,
+                    )
+                else:
+                    logger.warning(
+                        "[ClassDiagram] New %s–%s association leaves '%s' with "
+                        "a duplicate '%s' end (not renameable) — left for "
+                        "downstream repair", src, tgt, tgt, fixed_end,
+                    )
+
+            # Nameable side on the SOURCE class.
+            nameable_end = label or tgt.lower()
+            if nameable_end in _taken(src):
+                base = label or tgt.lower()
+                taken = _taken(src) | {nameable_end}
+                counter = 1
+                while f"{base}_{counter}" in taken:
+                    counter += 1
+                nameable_end = f"{base}_{counter}"
+                if not isinstance(mod.get("changes"), dict):
+                    mod["changes"] = changes
+                changes["name"] = nameable_end
+                logger.info(
+                    "[ClassDiagram] Named the new %s–%s association '%s' to "
+                    "keep '%s' end names unique", src, tgt, nameable_end, src,
+                )
+            pending.setdefault(src, set()).add(nameable_end)
+            pending.setdefault(tgt, set()).add(fixed_end)
+
+        if appended:
+            all_mods = mods + appended
+            spec.pop("modification", None)
+            spec["modifications"] = all_mods
+
     def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate modifications for existing class diagram elements.
 
@@ -1892,6 +2312,13 @@ Examples:
                 modification_spec = self._apply_duplicate_end_post_guard(
                     modification_spec, _dup_errors, current_model,
                 )
+
+            # Prevention: a NEW add_relationship must not introduce a
+            # duplicate association end (same derivation as the creation
+            # guard; reuses the repair helpers for the current model's ends).
+            self._ensure_unique_ends_for_added_relationships(
+                modification_spec, current_model,
+            )
 
             logger.info(
                 f"[ClassDiagram] Modification spec: "

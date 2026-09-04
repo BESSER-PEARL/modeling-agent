@@ -953,8 +953,10 @@ def _pending_flow_context(session: Any) -> Optional[dict]:
                 return {
                     "kind": "generate_confirm",
                     "question": (
-                        f"The model is ready — I asked whether to review/refine "
-                        f"it or continue with {pending_gen} code generation."
+                        f"The model is ready — I asked whether to continue "
+                        f"with {pending_gen} code generation or keep refining "
+                        "the model. A bare acknowledgment ('ok', 'sure', "
+                        "'go ahead') means continue with generation."
                     ),
                     "valid_answers": ["confirm", "cancel"],
                 }

@@ -40,6 +40,7 @@ from suggestions import get_suggested_actions, format_suggestions_as_text
 from diagram_handlers.registry.metadata import get_diagram_type_info
 from handlers.generation_handler import (
     handle_generation_request,
+    handle_pending_plan_generation_confirmation,
     handle_pending_smart_gen_confirmation,
     _looks_like_mixed_modeling_and_generation,
 )
@@ -133,6 +134,13 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     if handle_pending_system_confirmation(session):
         return None
     if handle_pending_smart_gen_confirmation(session):
+        return None
+    # Plan-paused generation: an EXACT yes/ok/generate/no typed at the
+    # "review or continue with generating?" question is consumed here so it
+    # fires (or cancels) the stashed generator no matter which state the
+    # intent classifier routed the message to — the classifier stamps short
+    # answers like a bare "ok" as decline_intent (live bug).
+    if handle_pending_plan_generation_confirmation(session):
         return None
 
     request = parse_assistant_request(session)

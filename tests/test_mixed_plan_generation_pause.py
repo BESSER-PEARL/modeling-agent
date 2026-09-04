@@ -25,9 +25,10 @@ from session_keys import (
     PENDING_GENERATOR_TYPE,
     PLAN_GENERATION_CONFIRM_FLAG,
     UNIFIED_CLASSIFICATION,
+    UNIFIED_CLASSIFICATION_EVENT_ID,
 )
 
-from tests.conftest import FakeSession
+from tests.conftest import FakeSession, MINIMAL_CLASS_MODEL, make_session
 
 
 _CLASS_MODEL = {
@@ -36,6 +37,36 @@ _CLASS_MODEL = {
     },
     "relationships": {},
 }
+
+
+def _cache_verdict(
+    session,
+    intent,
+    *,
+    flow_action=None,
+    flow_answer=None,
+    generation_route=None,
+    generator_type=None,
+):
+    """Populate the per-message unified-classification cache the way the
+    state_bodies priority-0 hook does in production (verdict + event id, so
+    ``get_or_classify`` treats it as this message's classification)."""
+    session.set(UNIFIED_CLASSIFICATION, types.SimpleNamespace(
+        intent=intent,
+        generation_route=generation_route,
+        generator_type=generator_type,
+        refined_instructions=None,
+        provider="anthropic",
+        reason="cached",
+        domain_mismatch=False,
+        suggested_new_domain=None,
+        pending_flow_action=flow_action,
+        pending_flow_answer=flow_answer,
+    ))
+    from unified_classifier import _current_event_id
+    event_id = _current_event_id(session)
+    if event_id is not None:
+        session.set(UNIFIED_CLASSIFICATION_EVENT_ID, event_id)
 
 
 def _make_request(message: str) -> AssistantRequest:
@@ -142,18 +173,8 @@ class TestMixedPlanPause:
 
 class TestPausedGenerationConfirmation:
     def _cache_intent(self, session, intent, flow_action=None, flow_answer=None):
-        session.set(UNIFIED_CLASSIFICATION, types.SimpleNamespace(
-            intent=intent,
-            generation_route=None,
-            generator_type=None,
-            refined_instructions=None,
-            provider="anthropic",
-            reason="cached",
-            domain_mismatch=False,
-            suggested_new_domain=None,
-            pending_flow_action=flow_action,
-            pending_flow_answer=flow_answer,
-        ))
+        _cache_verdict(session, intent,
+                       flow_action=flow_action, flow_answer=flow_answer)
 
     def test_yes_fires_the_paused_generator(self):
         session = FakeSession()
@@ -243,3 +264,136 @@ class TestPausedGenerationConfirmation:
         assert session.get(PENDING_GENERATOR_TYPE) == "sql"
         stored = session.get(PENDING_GENERATOR_CONFIG)
         assert PLAN_GENERATION_CONFIRM_FLAG not in (stored or {})
+
+
+# ---------------------------------------------------------------------------
+# Live-divergence regression (deployed defect, 2026-09-04): the unified
+# classifier stamps short answers as decline_intent — a literal "ok" at the
+# pause was labelled a decline, and the mid-config opt-out check downstream
+# of the gate re-consulted that verdict and CANCELLED a deterministically
+# confirmed run. Precedence contract: exact affirmative phrases confirm
+# FIRST, exact declines cancel, the classifier only judges novel phrasings —
+# and a resolved answer is never re-litigated by later checks.
+# ---------------------------------------------------------------------------
+
+class TestClassifierMisreadPrecedence:
+    def test_ok_fires_even_when_classifier_says_decline(self):
+        """The deployed defect, exactly: literal "ok" stamped decline_intent."""
+        session = FakeSession()
+        _arm_paused_generation(session, "pydantic")
+        _cache_verdict(session, "decline_intent", flow_action="answer")
+        result = handle_generation_request(session, _make_request("ok"))
+        assert result["action"] == "trigger_generator"
+        assert result["generatorType"] == "pydantic"
+        assert session.get(PENDING_GENERATOR_TYPE) is None
+
+    def test_yes_fires_even_when_classifier_says_flow_cancel(self):
+        session = FakeSession()
+        _arm_paused_generation(session, "pydantic")
+        _cache_verdict(session, "decline_intent",
+                       flow_action="answer", flow_answer="cancel")
+        result = handle_generation_request(session, _make_request("yes"))
+        assert result["action"] == "trigger_generator"
+        assert result["generatorType"] == "pydantic"
+
+    def test_generate_fires_even_when_classifier_says_decline(self):
+        session = FakeSession()
+        _arm_paused_generation(session, "pydantic")
+        _cache_verdict(session, "decline_intent")
+        result = handle_generation_request(session, _make_request("generate"))
+        assert result["action"] == "trigger_generator"
+        assert result["generatorType"] == "pydantic"
+
+    def test_ok_ignores_spurious_generator_guess(self):
+        """An exact affirmative means the STASHED generator — a generator the
+        classifier hallucinated for the bare "ok" must not trigger a pivot."""
+        session = FakeSession()
+        _arm_paused_generation(session, "pydantic")
+        _cache_verdict(session, "generation_intent",
+                       generation_route="deterministic", generator_type="sql")
+        result = handle_generation_request(session, _make_request("ok"))
+        assert result["action"] == "trigger_generator"
+        assert result["generatorType"] == "pydantic"
+
+    def test_exact_no_cancels_even_when_classifier_says_confirm(self):
+        """Symmetric precedence: an exact decline beats a confirm verdict."""
+        session = FakeSession()
+        _arm_paused_generation(session, "pydantic")
+        _cache_verdict(session, "generation_intent",
+                       flow_action="answer", flow_answer="confirm")
+        result = handle_generation_request(session, _make_request("no"))
+        assert result["action"] == "assistant_message"
+        assert "won't run code generation" in result["message"]
+        assert session.get(PENDING_GENERATOR_TYPE) is None
+
+
+# ---------------------------------------------------------------------------
+# Real routing funnel: genuine wire payload → parse_assistant_request →
+# _common_preamble intercept → generation handler. The live "ok" reached
+# decline_state (decline_intent verdict); the preamble intercept must resolve
+# the exact answer from ANY state body, mirroring the smart-gen intercept.
+# ---------------------------------------------------------------------------
+
+class TestRealRoutingFunnel:
+    def _funnel_session(self, message):
+        session = make_session(
+            message,
+            active_model=MINIMAL_CLASS_MODEL,
+            project_snapshot={
+                "name": "Hospital",
+                "diagrams": {"ClassDiagram": [{"model": MINIMAL_CLASS_MODEL}]},
+            },
+        )
+        _arm_paused_generation(session, "pydantic")
+        return session
+
+    def test_ok_through_decline_state_fires_generation(self):
+        """The exact live route: "ok" stamped decline_intent as a new
+        request lands in decline_state — the stashed generator must fire."""
+        import state_bodies
+        session = self._funnel_session("ok")
+        _cache_verdict(session, "decline_intent", flow_action="new_request")
+        state_bodies.decline_body(session)
+        reply = session.last_reply_json()
+        assert reply is not None
+        assert reply["action"] == "trigger_generator"
+        assert reply["generatorType"] == "pydantic"
+        assert session.get(PENDING_GENERATOR_TYPE) is None
+
+    def test_ok_through_generation_state_fires_generation(self):
+        """The suppressed-intent route: an "answer" verdict keeps the message
+        in the flow and route_to_generation delivers it to generation_body."""
+        import state_bodies
+        session = self._funnel_session("ok")
+        _cache_verdict(session, "decline_intent", flow_action="answer")
+        state_bodies.generation_body(session)
+        reply = session.last_reply_json()
+        assert reply is not None
+        assert reply["action"] == "trigger_generator"
+        assert reply["generatorType"] == "pydantic"
+
+    def test_no_through_decline_state_cancels(self):
+        import state_bodies
+        session = self._funnel_session("no")
+        _cache_verdict(session, "decline_intent", flow_action="new_request")
+        state_bodies.decline_body(session)
+        reply = session.last_reply_json()
+        assert reply is not None
+        assert reply["action"] == "assistant_message"
+        assert "won't run code generation" in reply["message"]
+        assert session.get(PENDING_GENERATOR_TYPE) is None
+
+    def test_novel_phrasing_still_routes_normally(self):
+        """A non-exact message is NOT consumed by the preamble intercept —
+        decline_body's own pending-generator reroute then lets the in-handler
+        gate judge it with the classifier verdict (decline → cancel)."""
+        import state_bodies
+        session = self._funnel_session("nah, I'd rather not")
+        _cache_verdict(session, "decline_intent", flow_action="answer",
+                       flow_answer="cancel")
+        state_bodies.decline_body(session)
+        reply = session.last_reply_json()
+        assert reply is not None
+        assert reply["action"] == "assistant_message"
+        assert "won't run code generation" in reply["message"]
+        assert session.get(PENDING_GENERATOR_TYPE) is None

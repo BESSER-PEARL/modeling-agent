@@ -194,6 +194,27 @@ def _smart_gen_confirmation_decision(message: str) -> Optional[str]:
     return None
 
 
+def _plan_pause_exact_decision(message: str) -> Optional[str]:
+    """Deterministic whole-message answer to the plan-pause question.
+
+    Exact confirm phrases (the shared smart-gen list plus the plan-only
+    extras) return ``confirm``; exact cancel phrases return ``cancel``;
+    anything else returns ``None``. This list takes PRECEDENCE over any
+    classifier verdict: the live classifier stamps short acknowledgments
+    like a literal "ok" as ``decline_intent`` (a known short-answer misread
+    — see ``decline_body``), and that verdict must never override a
+    deterministic affirmative.
+    """
+    decision = _smart_gen_confirmation_decision(message)
+    if decision is not None:
+        return decision
+    normalized = re.sub(r"[,.!?]+", " ", (message or "").strip().lower())
+    normalized = " ".join(normalized.split())
+    if normalized in _PLAN_GEN_CONFIRM_PHRASES:
+        return "confirm"
+    return None
+
+
 def _norm_prompt(message: str) -> str:
     """Normalize a message for exact-prompt matching (mismatch-regen chain)."""
     return " ".join((message or "").strip().lower().split())
@@ -870,6 +891,50 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
     return False
 
 
+def handle_pending_plan_generation_confirmation(session: Session) -> bool:
+    """Intercept an exact answer to the plan-pause question before intent
+    routing (mirrors :func:`handle_pending_smart_gen_confirmation`).
+
+    A mixed "design X and generate Y" plan pauses with the generator stashed
+    under ``PLAN_GENERATION_CONFIRM_FLAG``. The intent classifier misreads
+    short answers — a literal "ok" has been stamped ``decline_intent`` live —
+    so an EXACT yes/ok/generate/no is consumed here, from ``_common_preamble``,
+    before intent routing can carry it into a state that never reaches the
+    generation handler. Non-exact messages return ``False`` and route
+    normally; the plan-pause gate inside :func:`handle_generation_request`
+    then judges them with the classifier verdict.
+
+    Returns ``True`` when the answer was handled (caller must return).
+    """
+    pending_generator, pending_config = _get_pending_state(session)
+    if not (
+        pending_generator
+        and pending_generator != _AWAITING_SELECTION
+        and isinstance(pending_config, dict)
+        and pending_config.get(PLAN_GENERATION_CONFIRM_FLAG)
+    ):
+        return False
+
+    from protocol.adapters import parse_assistant_request
+    from session_helpers import reply_message, reply_payload
+
+    request = parse_assistant_request(session)
+    if getattr(request, "action", None) == "frontend_event":
+        return False
+    if _plan_pause_exact_decision((request.message or "").strip().lower()) is None:
+        return False
+
+    # Delegate to the generation handler: its plan-pause gate resolves the
+    # exact answer deterministically (one decision point, no duplication) and
+    # dispatches or cancels accordingly.
+    payload = handle_generation_request(session, request)
+    if isinstance(payload, dict):
+        reply_payload(session, payload)
+    elif isinstance(payload, str):
+        reply_message(session, payload)
+    return True
+
+
 def _looks_like_mixed_modeling_and_generation(message: str) -> bool:
     lower = (message or "").lower()
     if not detect_generator_type(lower):
@@ -1468,6 +1533,14 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         and isinstance(pending_config, dict)
         and bool(pending_config.get(PLAN_GENERATION_CONFIRM_FLAG))
     )
+    # Set when the gate below resolves this message as a CONFIRM. The
+    # mid-config opt-out and pivot checks further down re-consult the
+    # classifier verdict for the SAME message; a resolved confirmation must
+    # never be re-litigated there. (Live bug: the classifier stamped a
+    # literal "ok" as decline_intent — the known short-answer misread — and
+    # the opt-out then cancelled a deterministically confirmed run.)
+    _plan_pause_confirmed = False
+    _plan_pause_exact_confirm = False
     if _plan_confirm_pending:
         # The internal marker must never leak into a generator config payload.
         pending_config = {
@@ -1476,12 +1549,11 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         }
         _uc_pause = session.get(UNIFIED_CLASSIFICATION)
         _pause_intent = getattr(_uc_pause, "intent", None)
-        _decision = _smart_gen_confirmation_decision(msg_lower)
-        _normalized_pause_msg = " ".join(
-            re.sub(r"[,.!?]+", " ", msg_lower).split()
-        )
-        if _decision is None and _normalized_pause_msg in _PLAN_GEN_CONFIRM_PHRASES:
-            _decision = "confirm"
+        # PRECEDENCE: exact affirmative phrases confirm deterministically
+        # FIRST, exact declines cancel; the classifier verdict is consulted
+        # only for novel phrasings.
+        _decision = _plan_pause_exact_decision(msg_lower)
+        _plan_pause_exact_confirm = _decision == "confirm"
         if _decision is None:
             _flow_act = getattr(_uc_pause, "pending_flow_action", None)
             _flow_ans = getattr(_uc_pause, "pending_flow_answer", None)
@@ -1507,6 +1579,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             # Continue with the paused generator: persist the stash without
             # the marker and fall through to the normal pending-flow handling
             # below (config parsing, pivot detection, dispatch).
+            _plan_pause_confirmed = True
             _set_pending_state(session, pending_generator, pending_config)
             logger.info(
                 "▶️ [Generation] Plan-paused '%s' generation confirmed by the user",
@@ -1539,12 +1612,18 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         # must EXIT the flow. Without this, the reply looped the config
         # prompt and the CONFIG_PROMPT_ATTEMPTS >= 3 branch auto-filled
         # defaults and generated the very thing the user was refusing.
+        # SKIPPED for a message the plan-pause gate above already resolved as
+        # a confirmation: the classifier's decline/cancel misread of a bare
+        # "ok"/"yes" must not override the deterministic answer (live bug).
         _uc_cfg = session.get(UNIFIED_CLASSIFICATION)
         if (
-            _norm_prompt(request.message) in _CONFIG_CANCEL_PHRASES
-            or getattr(_uc_cfg, "intent", None) == "decline_intent"
-            or (getattr(_uc_cfg, "pending_flow_action", None) == "answer"
-                and getattr(_uc_cfg, "pending_flow_answer", None) == "cancel")
+            not _plan_pause_confirmed
+            and (
+                _norm_prompt(request.message) in _CONFIG_CANCEL_PHRASES
+                or getattr(_uc_cfg, "intent", None) == "decline_intent"
+                or (getattr(_uc_cfg, "pending_flow_action", None) == "answer"
+                    and getattr(_uc_cfg, "pending_flow_answer", None) == "cancel")
+            )
         ):
             logger.info(
                 "[Generation] Pending '%s' config flow cancelled by the user",
@@ -1557,7 +1636,16 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 "message": "Cancelled — no code was generated. Your model is unchanged.",
             }
         _cached = session.get(UNIFIED_CLASSIFICATION)
-        if _cached is not None and getattr(_cached, "intent", None) == "generation_intent":
+        # The pivot check is likewise skipped after an EXACT-phrase confirm:
+        # "ok" / "generate" means the STASHED generator, whatever generator
+        # the classifier happened to guess for the bare acknowledgment.
+        # Classifier-driven confirms keep the pivot so "generate sql
+        # instead" typed at the pause still reroutes.
+        if (
+            not _plan_pause_exact_confirm
+            and _cached is not None
+            and getattr(_cached, "intent", None) == "generation_intent"
+        ):
             _fresh = _classification_to_legacy(_cached)
             pivoted = _fresh.route == "smart" or (
                 _fresh.route == "deterministic"
