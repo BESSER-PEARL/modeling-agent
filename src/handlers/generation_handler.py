@@ -282,8 +282,8 @@ def _build_smart_gen_confirmation(
     return {
         "action": "assistant_message",
         "message": (
-            f"{prefix}BESSER will generate your application from your "
-            f"model using its built-in generators. If some of your "
+            f"{prefix}BESSER will generate your application from the "
+            f"designed specs using its built-in generators. If some of your "
             f"requirements are not supported by these generators, BESSER can "
             f"use an LLM to handle them.\n\n"
             f"BESSER includes a free model by default, so you can generate at "
