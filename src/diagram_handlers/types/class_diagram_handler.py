@@ -1115,7 +1115,7 @@ Examples:
         classes = spec.get("classes", [])
         rels = spec.get("relationships", [])
         class_names = [c.get("className", "?") for c in classes[:5]]
-        msg = f"Your **{system_name}** model is ready"
+        msg = f"Your **{system_name}** spec is ready"
         if class_names:
             msg += f" — it captures {', '.join(f'**{n}**' for n in class_names)}"
             if len(classes) > 5:
