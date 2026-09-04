@@ -29,6 +29,10 @@ class WorkspaceContext:
     project_snapshot: Optional[Dict[str, Any]] = None
     diagram_summaries: List[Dict[str, Any]] = field(default_factory=list)
     current_diagram_indices: Optional[Dict[str, int]] = None
+    # Pilot-experiment participant label (e.g. "P3"). Present only when the
+    # tab was opened through a facilitator's ``?pilot=`` link; drives the
+    # research-telemetry "prompt" events. Never a name or email.
+    pilot_participant: Optional[str] = None
 
     def get_active_index(self, diagram_type: str) -> int:
         """Return the active tab index for the given diagram type (default 0)."""
@@ -100,6 +104,10 @@ class AssistantRequest:
     context: WorkspaceContext = field(default_factory=WorkspaceContext)
     raw_payload: Dict[str, Any] = field(default_factory=dict)
     attachments: List[FileAttachment] = field(default_factory=list)
+    # Pilot-experiment participant label — mirror of
+    # ``context.pilot_participant`` for convenient access at the reply
+    # choke point (see ``session_helpers._emit_prompt_telemetry``).
+    pilot_participant: Optional[str] = None
 
     @property
     def is_v2(self) -> bool:

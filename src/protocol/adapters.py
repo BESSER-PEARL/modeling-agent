@@ -26,6 +26,18 @@ logger = logging.getLogger(__name__)
 
 DIAGRAM_PREFIX_PATTERN = re.compile(r"^\[DIAGRAM_TYPE:(\w+)\]\s*(.+)$", re.DOTALL)
 
+# Pilot-experiment participant labels (P1…Pn style). Mirrors the telemetry
+# collector's contract; anything else is dropped at the protocol boundary.
+PILOT_PARTICIPANT_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,16}$")
+
+
+def _parse_pilot_participant(context_payload: Dict[str, Any]) -> Optional[str]:
+    """Validate the optional ``context.pilotParticipant`` label (or drop it)."""
+    candidate = context_payload.get("pilotParticipant")
+    if isinstance(candidate, str) and PILOT_PARTICIPANT_PATTERN.match(candidate):
+        return candidate
+    return None
+
 
 def safe_json_loads(value: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(value, str):
@@ -245,6 +257,8 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
     raw_indices = context_payload.get("currentDiagramIndices")
     current_diagram_indices = raw_indices if isinstance(raw_indices, dict) else None
 
+    pilot_participant = _parse_pilot_participant(context_payload)
+
     context = WorkspaceContext(
         active_diagram_type=active_diagram_type,
         active_diagram_id=context_payload.get("activeDiagramId"),
@@ -252,6 +266,7 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         project_snapshot=project_snapshot,
         diagram_summaries=diagram_summaries,
         current_diagram_indices=current_diagram_indices,
+        pilot_participant=pilot_participant,
     )
 
     # ── Parse file attachments ──
@@ -284,6 +299,7 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         context=context,
         raw_payload=raw_payload,
         attachments=attachments,
+        pilot_participant=pilot_participant,
     )
 
 

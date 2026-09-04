@@ -70,6 +70,11 @@ VOICE_CONTEXT = "_voice_context"
 PARSED_ASSISTANT_REQUEST = "_parsed_assistant_request"
 PARSED_REQUEST_EVENT_ID = "_parsed_request_event_id"
 
+# Pilot telemetry: id of the incoming event a "prompt" telemetry event was
+# already emitted for, so one user message never produces two events even
+# when several replies flow out (see session_helpers._emit_prompt_telemetry).
+TELEMETRY_EMITTED_EVENT_ID = "_telemetry_emitted_event_id"
+
 # Session history
 SESSION_ACTION_HISTORY = "_session_action_history"
 

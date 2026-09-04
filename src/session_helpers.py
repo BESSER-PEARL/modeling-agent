@@ -33,8 +33,10 @@ from session_keys import (
     PENDING_GUI_CHOICE,
     PENDING_GENERATOR_TYPE,
     PENDING_SMART_GEN_INSTRUCTIONS,
+    TELEMETRY_EMITTED_EVENT_ID,
     UNIFIED_CLASSIFICATION,
 )
+from telemetry import emit_prompt_event
 from unified_classifier import _pending_flow_context
 
 logger = logging.getLogger(__name__)
@@ -59,6 +61,9 @@ def get_user_message(session: Session) -> str:
             f"Your message was quite long ({original_len:,} characters) and has been "
             f"trimmed to {MAX_USER_MESSAGE_CHARS:,} characters. If important details "
             "were near the end, consider splitting your request into smaller parts.",
+            # Mid-turn notice, not the turn's reply \u2014 must not claim the
+            # turn's single telemetry event before the real handler runs.
+            telemetry_exempt=True,
         )
     return message
 
@@ -202,10 +207,50 @@ def replay_last_reply(session: Session, request: Any = None) -> bool:
 
 
 # ------------------------------------------------------------------
+# Pilot telemetry (research data collection)
+# ------------------------------------------------------------------
+
+def _emit_prompt_telemetry(session: Session, action: str) -> None:
+    """Record what the user asked and what the agent did with it.
+
+    Called from the reply choke points (``reply_message`` / ``reply_payload``
+    / ``reply_stream_done``) — the single funnel every terminal reply flows
+    through — instead of instrumenting individual handlers. Emits at most ONE
+    ``prompt`` event per incoming user message (first reply wins, keyed on the
+    event identity like the request-parse cache), and only when the request
+    carries a pilot participant label — regular sessions never produce
+    telemetry. Best-effort by contract: any failure is swallowed and logged
+    at debug level so telemetry can never delay or break a reply.
+    """
+    try:
+        request = parse_assistant_request(session)
+        participant = getattr(request, "pilot_participant", None)
+        session_id = getattr(request, "session_id", None)
+        if not participant or not session_id:
+            return
+        event_id = id(session.event) if session and session.event else None
+        if event_id is not None and session.get(TELEMETRY_EMITTED_EVENT_ID) == event_id:
+            return
+        try:
+            session.set(TELEMETRY_EMITTED_EVENT_ID, event_id)
+        except Exception:
+            pass
+        emit_prompt_event(
+            session_id=session_id,
+            participant=participant,
+            text=request.message or "",
+            action_taken=action,
+            diagram_type=getattr(request, "diagram_type", None),
+        )
+    except Exception as exc:
+        logger.debug(f"[Telemetry] reply hook failed (best-effort): {exc}")
+
+
+# ------------------------------------------------------------------
 # Reply helpers
 # ------------------------------------------------------------------
 
-def reply_message(session: Session, message: str):
+def reply_message(session: Session, message: str, *, telemetry_exempt: bool = False):
     """Send assistant message, wrapped for v2 protocol clients."""
     try:
         request = parse_assistant_request(session)
@@ -230,6 +275,12 @@ def reply_message(session: Session, message: str):
     except Exception:
         pass
 
+    # Pilot telemetry: a plain message is an "assistant_message" reply.
+    # ``telemetry_exempt`` marks the rare mid-turn notice (e.g. the long-
+    # message truncation warning) that must not claim the turn's one event.
+    if not telemetry_exempt:
+        _emit_prompt_telemetry(session, "assistant_message")
+
 
 def reply_payload(session: Session, payload: Dict[str, Any]):
     """Send JSON payload response for both protocol versions."""
@@ -253,6 +304,12 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
 
     # Buffer for reconnect recovery so a dropped terminal reply can be replayed.
     _buffer_terminal_reply(session, payload)
+
+    # Pilot telemetry: record the reply's action as what the agent did with
+    # the user's message (progress keep-alives are not the reply).
+    action = payload.get('action')
+    if isinstance(action, str) and action != 'progress':
+        _emit_prompt_telemetry(session, action)
 
 
 def emit_webapp_generate_prompt(session: Session) -> None:
@@ -330,6 +387,10 @@ def reply_stream_done(session: Session, stream_id: str, full_text: str = ""):
         "done": True,
     }
     _send_to_session(session, payload)
+
+    # Pilot telemetry: a completed stream is a conversational reply — the
+    # frontend renders it as an assistant message, so record it as one.
+    _emit_prompt_telemetry(session, "assistant_message")
 
 
 def reply_progress(session: Session, message: str, step: int = 0, total: int = 0):
