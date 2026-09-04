@@ -18,7 +18,14 @@ from handlers.generation_handler import handle_generation_request
 from utilities.request_builders import build_request_for_target, build_generation_request
 from suggestions import get_suggested_actions
 from errors import ErrorCode, classify_error, build_error_response
-from session_keys import PENDING_COMPLETE_SYSTEM, PENDING_GUI_CHOICE, PENDING_WEBAPP_GENERATE
+from session_keys import (
+    PENDING_COMPLETE_SYSTEM,
+    PENDING_GENERATOR_CONFIG,
+    PENDING_GENERATOR_TYPE,
+    PENDING_GUI_CHOICE,
+    PENDING_WEBAPP_GENERATE,
+    PLAN_GENERATION_CONFIRM_FLAG,
+)
 
 from .model_operations import execute_model_operation, _collect_available_diagrams
 from .progress import _report_progress
@@ -46,6 +53,20 @@ def _build_error_payload(operation: dict, error: Exception, error_code: str = "u
 def _classify_error(error: Exception) -> str:
     """Map an exception to a structured error code string."""
     return classify_error(error).value
+
+
+def _clear_paused_plan_generation(session: Session) -> None:
+    """Drop a plan-paused generation stash after a model-op failure.
+
+    Only clears the pending-generation state when it carries the plan-pause
+    marker — a user-driven config flow (no marker) is never touched. A
+    broken build must never leave a generator armed to fire on a later,
+    unrelated affirmative."""
+    config = session.get(PENDING_GENERATOR_CONFIG)
+    if isinstance(config, dict) and config.get(PLAN_GENERATION_CONFIRM_FLAG):
+        session.set(PENDING_GENERATOR_TYPE, None)
+        session.set(PENDING_GENERATOR_CONFIG, None)
+        logger.info("[PlannedOps] Cleared paused generation after a model-op failure")
 
 
 # ------------------------------------------------------------------
@@ -136,6 +157,52 @@ def execute_planned_operations(
         logger.info("⏸️ [PlannedOps] Web-app build — stripped auto-generation; "
                     "user will be asked to generate after the GUI is built")
 
+    # ── GENERALIZED PAUSE (every other generator) ────────────────────
+    # A mixed "design X and generate Y" plan would auto-run generation the
+    # moment the model lands — while the injection message is literally
+    # asking "review or continue with generating?", self-answering its own
+    # question. Extend the web-app pause to ALL generator types: strip the
+    # generation op(s) from the plan and stash the first one in the existing
+    # pending-generation state (PENDING_GENERATOR_TYPE / _CONFIG), marked as
+    # awaiting confirmation. The injected model's follow-up question and
+    # quick actions then let the user decide; an affirmative answer fires
+    # the stashed generator through handle_generation_request's pending
+    # path. A DIRECT generation request (no model op in the plan) is
+    # untouched and still runs immediately.
+    _mixed_plan = (
+        bool(gen_ops)
+        and not _webapp_build
+        and any(isinstance(op, dict) and op.get("type") == "model" for op in operations)
+    )
+    if _mixed_plan:
+        _paused_op = next(
+            (op for op in gen_ops
+             if isinstance(op.get("generatorType"), str) and op.get("generatorType")),
+            None,
+        )
+        if _paused_op is not None:
+            if len(gen_ops) > 1:
+                logger.info(
+                    "⏸️ [PlannedOps] Mixed plan carried %d generation ops — "
+                    "stashing the first (%s); the user drives the rest explicitly",
+                    len(gen_ops), _paused_op.get("generatorType"),
+                )
+            _paused_config = (
+                _paused_op.get("config")
+                if isinstance(_paused_op.get("config"), dict) else {}
+            )
+            session.set(PENDING_GENERATOR_TYPE, _paused_op["generatorType"])
+            session.set(
+                PENDING_GENERATOR_CONFIG,
+                {**_paused_config, PLAN_GENERATION_CONFIRM_FLAG: True},
+            )
+            gen_ops = []  # nothing auto-runs
+            logger.info(
+                "⏸️ [PlannedOps] Mixed modeling+generation plan — paused '%s' "
+                "generation until the user confirms",
+                _paused_op["generatorType"],
+            )
+
     total_steps = sum(len(g) for g in model_groups) + len(gen_ops)
 
     working_request = request
@@ -180,6 +247,7 @@ def execute_planned_operations(
                         error_payload = _build_error_payload(op, exc, error_code)
                         reply_payload(session, error_payload)
                         logger.error(f"❌ [PlannedOps] Parallel group error: {exc}")
+                    _clear_paused_plan_generation(session)
                     continue
 
                 for op, executed_target, error in group_results:
@@ -190,6 +258,7 @@ def execute_planned_operations(
                         error_code = _classify_error(error)
                         error_payload = _build_error_payload(op, error, error_code)
                         reply_payload(session, error_payload)
+                        _clear_paused_plan_generation(session)
                         logger.error(f"❌ [PlannedOps] Model op error: {error}")
                         continue
 
@@ -236,6 +305,7 @@ def execute_planned_operations(
                 for key in (PENDING_COMPLETE_SYSTEM, PENDING_GUI_CHOICE):
                     if session.get(key):
                         session.set(key, None)
+                _clear_paused_plan_generation(session)
                 logger.error(f"❌ [PlannedOps] Model op error ({error_code}): {error}")
             continue
 

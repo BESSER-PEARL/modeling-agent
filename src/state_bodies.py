@@ -965,12 +965,14 @@ def generation_body(session: Session):
     session.set(LAST_MATCHED_INTENT, GENERATION_INTENT_NAME)
 
     # If the request mixes modeling + generation ("create a class diagram and generate Django"),
-    # route through the modeling pipeline first — it will handle both steps via the orchestrator.
+    # route through the modeling pipeline first — the orchestrator builds the model and then
+    # PAUSES for the user's go-ahead before generating (see execution/planning.py).
     if _looks_like_mixed_modeling_and_generation(request.message or ""):
         logger.info("[GenerationBody] Mixed request detected — routing through modeling pipeline")
         reply_message(
             session,
-            "I'll **create the diagram first**, then **generate the code**. Let me handle both steps.",
+            "I'll **create the diagram first** — once it's ready, you can review it "
+            "or tell me to continue with **code generation**.",
         )
         try:
             execute_planned_operations(

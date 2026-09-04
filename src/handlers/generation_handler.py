@@ -20,6 +20,7 @@ from session_keys import (
     PENDING_SMART_GEN_INSTRUCTIONS,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
+    PLAN_GENERATION_CONFIRM_FLAG,
     SKIP_MISMATCH_CHECK_ONCE,
     UNIFIED_CLASSIFICATION,
 )
@@ -168,6 +169,17 @@ _SMART_GEN_CANCEL_PHRASES = {
     "no", "no thanks", "cancel", "cancel it", "cancel generation",
     "cancel the generation", "stop", "stop it", "abort", "never mind",
     "do not run it", "don't run it",
+}
+
+# Extra whole-message affirmatives accepted ONLY for a plan-paused built-in
+# generator (see PLAN_GENERATION_CONFIRM_FLAG). Deliberately NOT merged into
+# _SMART_GEN_CONFIRM_PHRASES: a bare "generate" must never auto-confirm a
+# smart-gen run (which spends the user's own API key — B-2), but it is an
+# unambiguous answer to "continue with generating your <artifact>?" for the
+# free built-in generators.
+_PLAN_GEN_CONFIRM_PHRASES = {
+    "generate", "generate it", "generate now", "generate the code",
+    "yes generate", "yes generate it", "do it", "go for it",
 }
 
 
@@ -1442,6 +1454,74 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
 
     pending_generator, pending_config = _get_pending_state(session)
     _use_pending = bool(pending_generator and pending_generator != _AWAITING_SELECTION)
+
+    # ── Plan-paused generation confirmation ──────────────────────────────
+    # A mixed "design X and generate Y" plan paused after the model step
+    # (execution/planning.py) and stashed the generator here, marked with
+    # PLAN_GENERATION_CONFIRM_FLAG. Unlike a mid-config flow, the stashed
+    # generator must ONLY fire on an affirmative answer to the "review or
+    # continue with generating?" question — any other message abandons the
+    # pause and is routed on its own merits (mirroring how a different
+    # request abandons a smart-gen confirmation).
+    _plan_confirm_pending = (
+        _use_pending
+        and isinstance(pending_config, dict)
+        and bool(pending_config.get(PLAN_GENERATION_CONFIRM_FLAG))
+    )
+    if _plan_confirm_pending:
+        # The internal marker must never leak into a generator config payload.
+        pending_config = {
+            k: v for k, v in pending_config.items()
+            if k != PLAN_GENERATION_CONFIRM_FLAG
+        }
+        _uc_pause = session.get(UNIFIED_CLASSIFICATION)
+        _pause_intent = getattr(_uc_pause, "intent", None)
+        _decision = _smart_gen_confirmation_decision(msg_lower)
+        _normalized_pause_msg = " ".join(
+            re.sub(r"[,.!?]+", " ", msg_lower).split()
+        )
+        if _decision is None and _normalized_pause_msg in _PLAN_GEN_CONFIRM_PHRASES:
+            _decision = "confirm"
+        if _decision is None:
+            _flow_act = getattr(_uc_pause, "pending_flow_action", None)
+            _flow_ans = getattr(_uc_pause, "pending_flow_answer", None)
+            if _flow_act == "answer" and _flow_ans == "confirm":
+                _decision = "confirm"
+            elif (
+                (_flow_act == "answer" and _flow_ans == "cancel")
+                or _pause_intent == "decline_intent"
+            ):
+                _decision = "cancel"
+
+        if _decision == "cancel":
+            _clear_pending_state(session)
+            session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+            return {
+                "action": "assistant_message",
+                "message": (
+                    "Understood — I won't run code generation. Your model is "
+                    "ready whenever you'd like to continue."
+                ),
+            }
+        if _decision == "confirm" or _pause_intent == "generation_intent":
+            # Continue with the paused generator: persist the stash without
+            # the marker and fall through to the normal pending-flow handling
+            # below (config parsing, pivot detection, dispatch).
+            _set_pending_state(session, pending_generator, pending_config)
+            logger.info(
+                "▶️ [Generation] Plan-paused '%s' generation confirmed by the user",
+                pending_generator,
+            )
+        else:
+            # Not an answer to the pause question — abandon the paused
+            # generation and let this message classify normally.
+            logger.info(
+                "[Generation] Plan-paused '%s' generation abandoned — message "
+                "is not a confirmation", pending_generator,
+            )
+            _clear_pending_state(session)
+            session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+            _use_pending = False
 
     # When a config-collection flow is pending (e.g. we asked for the Django
     # project name), the user may PIVOT instead of answering — "generate the

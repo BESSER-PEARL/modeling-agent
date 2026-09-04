@@ -102,6 +102,37 @@ MODIFY_SYSTEM_PROMPT_CLASS = "\n\n".join([
 ])
 
 
+# ---------------------------------------------------------------------------
+# Duplicate association-end repair (deterministic — no LLM)
+# ---------------------------------------------------------------------------
+# The BESSER metamodel rejects a class with two association ends of the same
+# name; the editor's validate-and-repair loop forwards that error verbatim in
+# an "[auto-fix]" repair request. The LLM modification schema historically had
+# no field for END/role names, so the model "fixed" it by renaming the
+# relationship LABEL — a no-op for validation — and then claimed success.
+# These constants + the ClassDiagramHandler._*duplicate_end* helpers repair the
+# duplicate deterministically in the diagram-JSON shape the frontend applies
+# (modify_relationship + changes.roleName → rel.target.role).
+
+# Matches the metamodel's exact error copy (structural.py raises it; the
+# validation endpoint and the editor forward it unchanged).
+_DUP_END_ERROR_RE = re.compile(
+    r"[Tt]he class '(?P<cls>[^']+)' cannot have two association ends "
+    r"with the same name: '(?P<end>[^']+)'"
+)
+
+# Editor relationship types that create association ends (mirror of the
+# backend converter's handling in class_diagram_processor.py).
+_ASSOCIATION_END_REL_TYPES = frozenset({
+    "ClassBidirectional", "ClassUnidirectional",
+    "ClassComposition", "ClassAggregation",
+})
+_INHERITANCE_REL_TYPES = frozenset({"ClassInheritance"})
+
+# Editor element types that can own association ends.
+_CLASS_ELEMENT_TYPES = frozenset({"Class", "AbstractClass", "Interface"})
+
+
 class ClassDiagramHandler(BaseDiagramHandler):
     """Handler for Class Diagram generation"""
 
@@ -1320,6 +1351,341 @@ Examples:
     # Modification Support (Existing - Updated for new architecture)
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Duplicate association-end repair (deterministic — no LLM round-trip)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _detect_duplicate_end_errors(user_request: str) -> tuple:
+        """Parse duplicate-association-end validation errors out of a request.
+
+        Returns ``(dup_errors, pure)`` where ``dup_errors`` is a list of
+        ``(class_name, end_name)`` tuples and ``pure`` is True when the
+        request contains no OTHER bulleted validation errors (i.e. the
+        whole repair can be handled deterministically without an LLM call).
+        """
+        text = user_request or ""
+        dup_errors = [
+            (m.group("cls"), m.group("end"))
+            for m in _DUP_END_ERROR_RE.finditer(text)
+        ]
+        if not dup_errors:
+            return [], False
+        bullet_lines = [
+            line.strip() for line in text.splitlines()
+            if line.strip().startswith("- ")
+        ]
+        other_bullets = [
+            line for line in bullet_lines if not _DUP_END_ERROR_RE.search(line)
+        ]
+        return dup_errors, not other_bullets
+
+    @staticmethod
+    def _effective_end_name(endpoint: Dict[str, Any], name_by_id: Dict[str, str]) -> str:
+        """The association-end name the validator sees for one JSON endpoint:
+        the explicit role, else the endpoint class's lowercased name (the
+        backend converter's fallback)."""
+        role = endpoint.get("role") if isinstance(endpoint, dict) else None
+        if isinstance(role, str) and role.strip():
+            return role.strip()
+        cls_name = name_by_id.get(endpoint.get("element")) if isinstance(endpoint, dict) else None
+        return cls_name.lower() if isinstance(cls_name, str) else ""
+
+    @classmethod
+    def _class_ids_by_name(cls, model: Dict[str, Any]) -> Dict[str, set]:
+        """Map class name → set of element ids (class-like elements only)."""
+        ids: Dict[str, set] = {}
+        elements = model.get("elements")
+        if not isinstance(elements, dict):
+            return ids
+        for eid, el in elements.items():
+            if not isinstance(el, dict):
+                continue
+            el_type = el.get("type")
+            name = el.get("name")
+            if isinstance(name, str) and name and el_type in _CLASS_ELEMENT_TYPES:
+                ids.setdefault(name, set()).add(eid)
+        return ids
+
+    @classmethod
+    def _inheritance_closure(cls, model: Dict[str, Any], seed_ids: set) -> set:
+        """Seed ids plus every ancestor/descendant reachable over inheritance
+        links (both directions — inherited ends collide across the chain).
+        Siblings are excluded: chains are followed one direction at a time."""
+        relationships = model.get("relationships")
+        if not isinstance(relationships, dict):
+            return set(seed_ids)
+        edges = []
+        for rel in relationships.values():
+            if not isinstance(rel, dict) or rel.get("type") not in _INHERITANCE_REL_TYPES:
+                continue
+            src = (rel.get("source") or {}).get("element")
+            tgt = (rel.get("target") or {}).get("element")
+            if src and tgt:
+                edges.append((src, tgt))
+
+        def _reach(seeds: set, forward: bool) -> set:
+            reached = set(seeds)
+            frontier = set(seeds)
+            while frontier:
+                nxt = set()
+                for a, b in edges:
+                    if forward and a in frontier and b not in reached:
+                        nxt.add(b)
+                    elif not forward and b in frontier and a not in reached:
+                        nxt.add(a)
+                reached |= nxt
+                frontier = nxt
+            return reached
+
+        return _reach(set(seed_ids), True) | _reach(set(seed_ids), False)
+
+    def _collect_owned_ends(
+        self, model: Dict[str, Any], owner_ids: set, name_by_id: Dict[str, str],
+    ) -> List[Dict[str, Any]]:
+        """Association ends OWNED by the given class ids, in document order.
+
+        A class navigates via the end on the OPPOSITE side of each
+        association it participates in, so when the class is the JSON
+        ``source`` its end is the ``target`` endpoint and vice versa
+        (a self-association contributes both)."""
+        ends: List[Dict[str, Any]] = []
+        relationships = model.get("relationships")
+        if not isinstance(relationships, dict):
+            return ends
+        for rel_id, rel in relationships.items():
+            if not isinstance(rel, dict) or rel.get("type") not in _ASSOCIATION_END_REL_TYPES:
+                continue
+            source = rel.get("source") if isinstance(rel.get("source"), dict) else {}
+            target = rel.get("target") if isinstance(rel.get("target"), dict) else {}
+            src_el, tgt_el = source.get("element"), target.get("element")
+            src_name = name_by_id.get(src_el, "")
+            tgt_name = name_by_id.get(tgt_el, "")
+            if src_el in owner_ids:
+                ends.append({
+                    "rel_id": rel_id, "side": "target",
+                    "name": self._effective_end_name(target, name_by_id),
+                    "source_class": src_name, "target_class": tgt_name,
+                    "rel_name": rel.get("name") or "",
+                })
+            if tgt_el in owner_ids:
+                ends.append({
+                    "rel_id": rel_id, "side": "source",
+                    "name": self._effective_end_name(source, name_by_id),
+                    "source_class": src_name, "target_class": tgt_name,
+                    "rel_name": rel.get("name") or "",
+                })
+        return ends
+
+    def _build_duplicate_end_fixes(
+        self,
+        current_model: Optional[Dict[str, Any]],
+        dup_errors: List[tuple],
+    ) -> tuple:
+        """Build deterministic role-rename modifications for duplicate ends.
+
+        Returns ``(mods, rename_notes, unfixable_notes, dup_pairs)``:
+
+        * ``mods`` — ``modify_relationship`` dicts (addressed by
+          ``relationshipId``) whose ``changes.roleName`` gives the duplicate
+          end a unique name, in the shape the frontend modifier applies.
+        * ``rename_notes`` / ``unfixable_notes`` — user-facing sentences.
+        * ``dup_pairs`` — ``frozenset({sourceClass, targetClass})`` keys of
+          the duplicated relationships (lowercased), so callers can strip
+          conflicting LLM-authored edits of the same relationships.
+
+        Uniqueness is guaranteed by construction: new names are chosen
+        against every end name the affected class (and its inheritance
+        chain) already navigates, plus names assigned earlier in the batch —
+        the same ``name_1`` / ``name_2`` convention the backend converter
+        uses. The frontend's ``changes.roleName`` only reaches the TARGET
+        endpoint of a relationship, so a duplicate that lives on a JSON
+        ``source`` endpoint is reported as unfixable instead of being
+        "fixed" with a no-op.
+        """
+        mods: List[Dict[str, Any]] = []
+        rename_notes: List[str] = []
+        unfixable_notes: List[str] = []
+        dup_pairs: set = set()
+
+        if not isinstance(current_model, dict):
+            for cls_name, end_name in dup_errors:
+                unfixable_notes.append(
+                    f"I couldn't locate the associations of '{cls_name}' to rename "
+                    f"the duplicate '{end_name}' end automatically — please rename "
+                    f"one of the role names on its associations in the editor "
+                    f"(for example to '{end_name}_1')."
+                )
+            return mods, rename_notes, unfixable_notes, dup_pairs
+
+        ids_by_name = self._class_ids_by_name(current_model)
+        name_by_id: Dict[str, str] = {
+            eid: name for name, eids in ids_by_name.items() for eid in eids
+        }
+
+        for cls_name, end_name in dup_errors:
+            seed_ids = ids_by_name.get(cls_name, set())
+            if not seed_ids:
+                unfixable_notes.append(
+                    f"I couldn't find the class '{cls_name}' in the diagram to "
+                    f"repair its duplicate '{end_name}' association end."
+                )
+                continue
+            owner_ids = self._inheritance_closure(current_model, seed_ids)
+            ends = self._collect_owned_ends(current_model, owner_ids, name_by_id)
+            dupes = [e for e in ends if e["name"] == end_name]
+            if len(dupes) < 2:
+                unfixable_notes.append(
+                    f"I couldn't locate two '{end_name}' association ends on "
+                    f"'{cls_name}' to repair — please check the role names on its "
+                    f"associations in the editor."
+                )
+                continue
+
+            # Names already in use by this class's ends, plus names assigned
+            # earlier in this batch (never introduce a fresh collision).
+            taken = {e["name"] for e in ends}
+            taken.update(
+                m["changes"]["roleName"] for m in mods
+                if isinstance(m.get("changes"), dict) and m["changes"].get("roleName")
+            )
+
+            # Keep one duplicate as-is; prefer keeping an end the frontend
+            # cannot rename (a JSON source endpoint) so every renameable
+            # duplicate gets a unique name.
+            source_side = [e for e in dupes if e["side"] == "source"]
+            kept = source_side[0] if source_side else dupes[0]
+            to_rename = [e for e in dupes if e is not kept and e["side"] == "target"]
+            leftover = [e for e in dupes if e is not kept and e["side"] == "source"]
+
+            for entry in to_rename:
+                counter = 1
+                while f"{end_name}_{counter}" in taken:
+                    counter += 1
+                new_name = f"{end_name}_{counter}"
+                taken.add(new_name)
+                mods.append({
+                    "action": "modify_relationship",
+                    "target": {
+                        "relationshipId": entry["rel_id"],
+                        "sourceClass": entry["source_class"],
+                        "targetClass": entry["target_class"],
+                    },
+                    "changes": {"roleName": new_name},
+                })
+                dup_pairs.add(frozenset({
+                    (entry["source_class"] or "").lower(),
+                    (entry["target_class"] or "").lower(),
+                }))
+                pair_label = (
+                    f"{entry['source_class']}–{entry['target_class']}"
+                    if entry["source_class"] and entry["target_class"]
+                    else cls_name
+                )
+                rename_notes.append(
+                    f"Renamed the duplicate association end '{end_name}' on "
+                    f"'{cls_name}' to '{new_name}' (on the {pair_label} "
+                    f"association) so each end name is unique."
+                )
+
+            if leftover:
+                # Deterministic honesty check: the duplicate set could not be
+                # fully resolved, so the validation error will persist for the
+                # remaining ends — say so instead of claiming success.
+                unfixable_notes.append(
+                    f"'{cls_name}' still has more than one association end named "
+                    f"'{end_name}' that I couldn't rename automatically — please "
+                    f"rename one of the role names on its associations in the "
+                    f"editor (for example to '{end_name}_{len(mods) + 1}')."
+                )
+
+        return mods, rename_notes, unfixable_notes, dup_pairs
+
+    def _repair_duplicate_ends(
+        self,
+        current_model: Optional[Dict[str, Any]],
+        dup_errors: List[tuple],
+    ) -> Dict[str, Any]:
+        """Fully deterministic repair path for duplicate-end-only requests."""
+        mods, rename_notes, unfixable_notes, _pairs = self._build_duplicate_end_fixes(
+            current_model, dup_errors,
+        )
+        if not mods:
+            return {
+                "action": "assistant_message",
+                "message": " ".join(
+                    ["I couldn't apply this fix automatically."] + unfixable_notes
+                ).strip(),
+            }
+        spec: Dict[str, Any] = {
+            "action": "modify_model",
+            "diagramType": self.get_diagram_type(),
+            "message": " ".join(rename_notes + unfixable_notes),
+        }
+        if len(mods) == 1:
+            spec["modification"] = mods[0]
+        else:
+            spec["modifications"] = mods
+        logger.info(
+            "[ClassDiagram] Deterministic duplicate-end repair: %d rename(s), "
+            "%d unfixable", len(mods), len(unfixable_notes),
+        )
+        return spec
+
+    def _apply_duplicate_end_post_guard(
+        self,
+        spec: Dict[str, Any],
+        dup_errors: List[tuple],
+        current_model: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Guarantee end-name uniqueness on a mixed (LLM-handled) repair.
+
+        Strips LLM-authored ``modify_relationship`` edits of the duplicated
+        relationships (a label rename does not fix an end-name collision and
+        would fight the deterministic rename) and appends the deterministic
+        role renames, updating the user-facing message honestly.
+        """
+        if not isinstance(spec, dict) or spec.get("action") != "modify_model":
+            return spec
+        mods, rename_notes, unfixable_notes, dup_pairs = self._build_duplicate_end_fixes(
+            current_model, dup_errors,
+        )
+        if not mods and not unfixable_notes:
+            return spec
+
+        existing = spec.get("modifications")
+        if not isinstance(existing, list):
+            single = spec.get("modification")
+            existing = [single] if isinstance(single, dict) else []
+            spec.pop("modification", None)
+
+        def _touches_dup_pair(mod: Dict[str, Any]) -> bool:
+            # Any LLM-authored modify_relationship on a duplicated pair is
+            # superseded by the deterministic renames below (label renames are
+            # validation no-ops; a second roleName writer would conflict).
+            if mod.get("action") != "modify_relationship":
+                return False
+            target = mod.get("target") if isinstance(mod.get("target"), dict) else {}
+            pair = frozenset({
+                (target.get("sourceClass") or "").lower(),
+                (target.get("targetClass") or "").lower(),
+            })
+            return pair in dup_pairs
+
+        kept_mods = [
+            m for m in existing
+            if isinstance(m, dict) and not _touches_dup_pair(m)
+        ]
+        spec["modifications"] = kept_mods + mods
+        if len(spec["modifications"]) == 1:
+            spec["modification"] = spec.pop("modifications")[0]
+
+        notes = " ".join(rename_notes + unfixable_notes)
+        if notes:
+            existing_msg = spec.get("message") or ""
+            spec["message"] = f"{existing_msg}\n\n{notes}".strip() if existing_msg else notes
+        return spec
+
     def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate modifications for existing class diagram elements.
 
@@ -1327,6 +1693,15 @@ Examples:
         the LLM is informed of dependent relationships so it can cascade
         changes appropriately.
         """
+        # Duplicate association-end repair: the metamodel's "two association
+        # ends with the same name" error is repaired DETERMINISTICALLY — the
+        # LLM historically renamed the relationship label (a validation no-op)
+        # and claimed success. When the request carries only this error class,
+        # skip the LLM entirely; when it is mixed with other errors, run the
+        # normal path and enforce uniqueness in a post-guard below.
+        _dup_errors, _dup_pure = self._detect_duplicate_end_errors(user_request)
+        if _dup_errors and _dup_pure:
+            return self._repair_duplicate_ends(current_model, _dup_errors)
         # Build impact context for modifications that affect relationships
         impact_context = self._build_impact_context(current_model)
 
@@ -1508,6 +1883,14 @@ Examples:
                 joined = " ".join(not_found_notes)
                 modification_spec["message"] = (
                     f"{existing}\n\n{joined}".strip() if existing else joined
+                )
+
+            # Mixed repair request (duplicate-end error alongside other
+            # validation errors): the LLM handled the rest — enforce end-name
+            # uniqueness deterministically on top of its output.
+            if _dup_errors:
+                modification_spec = self._apply_duplicate_end_post_guard(
+                    modification_spec, _dup_errors, current_model,
                 )
 
             logger.info(

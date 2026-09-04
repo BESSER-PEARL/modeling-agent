@@ -45,9 +45,11 @@ from protocol.types import AssistantRequest
 from session_keys import (
     LAST_SMART_GEN_AT,
     PENDING_COMPLETE_SYSTEM,
+    PENDING_GENERATOR_CONFIG,
     PENDING_GENERATOR_TYPE,
     PENDING_GUI_CHOICE,
     PENDING_SMART_GEN_INSTRUCTIONS,
+    PLAN_GENERATION_CONFIRM_FLAG,
     UNIFIED_CLASSIFICATION,
     UNIFIED_CLASSIFICATION_EVENT_ID,
 )
@@ -943,6 +945,19 @@ def _pending_flow_context(session: Any) -> Optional[dict]:
                 "valid_answers": ["other_answer", "cancel"],
             }
         if pending_gen:
+            _gen_cfg = session.get(PENDING_GENERATOR_CONFIG)
+            if isinstance(_gen_cfg, dict) and _gen_cfg.get(PLAN_GENERATION_CONFIRM_FLAG):
+                # Mixed-plan pause: the model was just built and the user was
+                # asked whether to review/refine it or continue with the
+                # planned code generation (see execution/planning.py).
+                return {
+                    "kind": "generate_confirm",
+                    "question": (
+                        f"The model is ready — I asked whether to review/refine "
+                        f"it or continue with {pending_gen} code generation."
+                    ),
+                    "valid_answers": ["confirm", "cancel"],
+                }
             return {
                 "kind": "generator_config",
                 "question": (

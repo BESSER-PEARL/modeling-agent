@@ -200,6 +200,16 @@ class ClassModificationChanges(BaseModel):
     ]] = None
     sourceMultiplicity: Optional[str] = None
     targetMultiplicity: Optional[str] = None
+    roleName: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "New name for the association END at the TARGET class side (the "
+            "role/end name, e.g. 'headedDepartment') for modify_relationship. "
+            "Use this — NOT 'name' — when renaming an association end or role; "
+            "'name' renames the relationship label itself."
+        ),
+    )
     className: Optional[str] = Field(default=None, max_length=30, description="Class name in PascalCase for add_class action (ONE word only, e.g. User, Order)")
     attributes: Optional[List[AttributeSpec]] = Field(default=None, description="Attributes for add_class action")
     methods: Optional[List[MethodSpec]] = Field(default=None, description="Methods for add_class action")

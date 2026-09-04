@@ -18,6 +18,15 @@ PENDING_WEBAPP_GENERATE = "_pending_webapp_generate"
 PENDING_GENERATOR_TYPE = "pending_generator_type"
 PENDING_GENERATOR_CONFIG = "pending_generator_config"
 CONFIG_PROMPT_ATTEMPTS = "_config_prompt_attempts"
+# Marker key stored INSIDE the PENDING_GENERATOR_CONFIG dict (not a session
+# key itself) when a mixed "design X and generate Y" plan pauses after the
+# model step. It flags that the stashed generator is awaiting the user's
+# explicit go-ahead to the injection message's "review or continue with
+# generating?" question — handle_generation_request only dispatches it on an
+# affirmative answer, and strips the marker so it never reaches a
+# trigger_generator config payload. Generalizes the web-app pause
+# (PENDING_WEBAPP_GENERATE) to every generator type.
+PLAN_GENERATION_CONFIRM_FLAG = "_awaiting_generation_confirmation"
 
 # Diagram tracking
 LAST_EXECUTED_DIAGRAM_TYPE = "_last_executed_diagram_type"
