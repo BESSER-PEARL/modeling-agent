@@ -917,7 +917,7 @@ def _pending_flow_context(session: Any) -> Optional[dict]:
                 "question": (
                     "A model already exists for this diagram — should I "
                     "replace it, keep it and add alongside"
-                    + (", create it in a new tab" if _can_tab else "")
+                    + (", create it in a new diagram tab" if _can_tab else "")
                     + ", or cancel?"
                 ),
                 "valid_answers": (

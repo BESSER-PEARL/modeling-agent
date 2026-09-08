@@ -289,12 +289,55 @@ def _missing_generator_prerequisites(context: Any, generator_type: str) -> List[
     ]
 
 
+# Signals that a smart-gen request is a FIX / MODIFY of an app that already
+# exists rather than a first-time from-scratch build. Used only to frame the
+# confirmation copy honestly (pilot P2: the from-scratch wording read wrong
+# when the user just pasted a traceback / asked for a fix). Strong, unambiguous
+# fix/error vocabulary only — plus HTTP 4xx/5xx status codes.
+_FIX_INTENT_RE = re.compile(
+    r"\b(?:fix|fixes|fixed|fixing|"
+    r"error|errors|traceback|stack\s?trace|exception|"
+    r"bug|bugs|broken|crash(?:es|ed|ing)?|"
+    r"fails?|failing|failed|"
+    r"not\s+working|does(?:n['’]?t| not)\s+work|"
+    r"update\s+the\s+code|re-?generate|re-?run)\b"
+    r"|\b[45]\d{2}\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_fix_request(
+    session: Session, instructions: str, user_message: Optional[str],
+) -> bool:
+    """True when the pending smart-gen run edits an app that ALREADY exists
+    (a fix / modify) rather than building one from scratch.
+
+    Both signals are cleanly available at this point:
+
+    * **Message text (primary):** fix/error vocabulary in the user's message
+      or the refined instructions.
+    * **Prior run this session:** a smart-gen run completed within the last
+      30 min (``LAST_SMART_GEN_AT``) — a follow-up smart-gen request then edits
+      that app in place, mirroring the frontend's incremental vibe-modify
+      (which reuses the last run as its base).
+    """
+    if _FIX_INTENT_RE.search(user_message or "") or _FIX_INTENT_RE.search(instructions or ""):
+        return True
+    ts = session.get(LAST_SMART_GEN_AT)
+    return (
+        isinstance(ts, (int, float))
+        and not isinstance(ts, bool)
+        and (time.time() - ts) <= 30 * 60
+    )
+
+
 def _build_smart_gen_confirmation(
     session: Session,
     instructions: str,
     provider: str,
     *,
     reason_prefix: str = "",
+    user_message: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Stash the smart-gen payload and ask for explicit confirmation.
 
@@ -302,6 +345,15 @@ def _build_smart_gen_confirmation(
     never start without an explicit confirmation — with a stored key the
     run would otherwise begin silently (B-2). The confirm/cancel phrases
     are handled at the top of :func:`handle_generation_request`.
+
+    The copy is CONTEXT-AWARE: a first build gets from-scratch wording +
+    a "Continue" button; a fix / modify of an already-generated app gets
+    fix-framing + a "Fix it" button (pilot P2 — the from-scratch wording
+    read wrong when the user only wanted a fix). Both branches keep the
+    same confirm token so the confirm gate fires identically, and both keep
+    the clickable API-key link. The fix branch is gated to the direct path
+    (no ``reason_prefix``): the mismatch/rebuild resumes always produce a
+    freshly rebuilt model, which is a from-scratch build by definition.
     """
     refined = (instructions or "").strip()
     provider = provider or "anthropic"
@@ -309,29 +361,50 @@ def _build_smart_gen_confirmation(
 
     prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
 
+    is_fix = (not reason_prefix) and _looks_like_fix_request(
+        session, refined, user_message,
+    )
+
     # The instructions are NOT echoed back to the user: showing the LLM's
     # refined instructions read as fabricated requirements the user never
     # wrote. The run still uses the stashed ``refined`` instructions above.
-    # Plain text (no clickable key link): the user can set up their own key
-    # from the assistant's key settings when they want a different provider.
-    return {
-        "action": "assistant_message",
-        "message": (
+    # "set up your own API key" is a clickable markdown link
+    # (``[...](wme:add-key)``) that the frontend markdown renderer intercepts
+    # to open the BYOK key dialog (see markdown-renderer.tsx — it dispatches
+    # ``wme:specdriven-open-byok``); it never navigates anywhere.
+    if is_fix:
+        message = (
+            f"{prefix}I'll update your existing app to make that change. "
+            f"It uses the free model by default — "
+            f"[set up your own API key](wme:add-key) for higher quality.\n\n"
+            f"Do you want to continue?"
+        )
+        confirm_label = "Fix it"
+    else:
+        message = (
             f"{prefix}BESSER will generate your application from the "
             f"designed specs using its built-in generators. If some of your "
             f"requirements are not supported by these generators, BESSER can "
             f"use an LLM to handle them.\n\n"
             f"BESSER includes a free model by default, so you can generate at "
-            f"no cost. For higher-quality results, you can set up your own "
-            f"API key and use a stronger provider or model.\n\n"
+            f"no cost. For higher-quality results, you can "
+            f"[set up your own API key](wme:add-key) and use a stronger "
+            f"provider or model.\n\n"
             f"Do you want to continue?"
-        ),
+        )
+        confirm_label = "Continue"
+
+    return {
+        "action": "assistant_message",
+        "message": message,
         # Cancel action removed per product decision — the proposition offers
         # only Run; the user can simply not click it (or type another request)
-        # to not proceed.
+        # to not proceed. The confirm PROMPT is identical in both branches so
+        # the existing confirm gate (``_SMART_GEN_CONFIRM_PHRASES``) fires the
+        # same way whether the button says "Continue" or "Fix it".
         "suggestedActions": [
             {
-                "label": "Continue",
+                "label": confirm_label,
                 "prompt": "generate anyway with my current model",
             },
         ],
@@ -1703,10 +1776,13 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
 
             # Never fire directly: the smart generator spends the user's
             # own API key, so stash + ask for explicit confirmation (B-2).
+            # Pass the user's own message so the confirmation copy can tell a
+            # fix/modify apart from a first build (pilot P2).
             return _build_smart_gen_confirmation(
                 session,
                 classification.refined_instructions or "",
                 classification.provider or "anthropic",
+                user_message=getattr(request, "message", None),
             )
 
         if classification.route == "modeling":

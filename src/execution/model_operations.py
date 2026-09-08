@@ -226,7 +226,10 @@ def _build_existing_model_confirmation(
         {"label": "Keep and add alongside", "prompt": "keep"},
     ]
     if can_add_tab:
-        confirmation_actions.append({"label": "Create in new tab", "prompt": "new tab"})
+        # "new diagram tab" disambiguates from a browser tab. The prompt stays
+        # "new tab" so the existing NEW_TAB_KEYWORDS / classifier routing is
+        # unchanged — only the user-visible label is clearer.
+        confirmation_actions.append({"label": "Create in a new diagram tab", "prompt": "new tab"})
 
     # Store pending state
     pending_data['can_add_tab'] = can_add_tab
@@ -242,7 +245,7 @@ def _build_existing_model_confirmation(
     confirmation_msg = (
         f"{source_description}, but you already have a model ({existing_summary}). "
         f"Would you like me to **replace** it, **keep** it and add alongside"
-        + (f", or create in a **new tab**? {tab_info}" if can_add_tab else f"? {tab_info}")
+        + (f", or create it in a **new diagram tab**? {tab_info}" if can_add_tab else f"? {tab_info}")
     )
 
     reply_payload(session, {
@@ -578,12 +581,18 @@ def execute_model_operation(
                     "How would you like me to create your screens?\n\n"
                     "1️⃣ **Fast & deterministic** - One screen per class "
                     "with data tables and method buttons.\n"
-                    "2️⃣ **AI-designed** *(experimental)* — personalized screens "
+                    "2️⃣ **AI-Generated** *(experimental)* — personalized screens "
                     "with navigation, styling, and realistic content."
                 ),
+                # Neither option is pre-selected: the user actively picks one.
+                # The AI-Generated button sends the human-meaningful phrase
+                # "AI-Generated (experimental)" (NOT the opaque "llm" token that
+                # used to show up as a cryptic user turn in the chat). The
+                # pending-GUI-choice handler still routes that phrase to the same
+                # AI-GUI generation path — see confirmation.handle_pending_gui_choice.
                 "suggestedActions": [
                     {"label": "Fast & deterministic", "prompt": "Fast & deterministic"},
-                    {"label": "AI-designed (experimental)", "prompt": "llm"},
+                    {"label": "AI-Generated (experimental)", "prompt": "AI-Generated (experimental)"},
                 ],
             })
             logger.info("[ModelOp] Asked user to choose GUI generation mode")
