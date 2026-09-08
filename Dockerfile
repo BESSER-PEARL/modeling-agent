@@ -66,7 +66,9 @@ platforms:\n\
 EOF\n\
 \n\
 echo "✅ config.yaml created successfully"\n\
-cat /app/config.yaml\n\
+# Print the config for debugging but NEVER the API key: redact the\n\
+# api_key line so the OpenAI key does not land in the container logs.\n\
+sed "s/\\(api_key:\\).*/\\1 [REDACTED]/" /app/config.yaml\n\
 \n\
 # Run the modeling agent\n\
 exec python modeling_agent.py\n\
