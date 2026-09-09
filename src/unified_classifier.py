@@ -1350,6 +1350,37 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
                 pending_flow_action="new_request",
                 reason="GitHub-continuation guard: continue-from-repo routes to the generation handler",
             )
+    # Data-model-first guard (live bug): "model a library system" while sitting
+    # on the GUINoCodeDiagram tab classifies as create_complete_system with
+    # target=GUINoCodeDiagram (the LLM inherits the active tab), so it jumps
+    # straight to the "how should I build your screens?" prompt instead of
+    # building the data model — surprising when the user just said "model X".
+    # A from-scratch "model X" with NO explicit GUI/screens/UI/web-app/app
+    # vocabulary is a STRUCTURAL request: build the ClassDiagram first. Screens
+    # come only when the user actually asks for them (gui/screens/app/…), which
+    # keeps that path on GUINoCodeDiagram via the negative lookahead below.
+    if (
+        result.intent == "create_complete_system_intent"
+        and result.target_diagram_type == "GUINoCodeDiagram"
+        and result.model_disposition == "new_from_scratch"
+        and not re.search(
+            r"\b(gui|screens?|ui|user interface|web ?app|webapp|"
+            r"application|app|dashboard|pages?|frontend|front-end)\b",
+            (message or "").lower(),
+        )
+    ):
+        logger.warning(
+            "Data-model-first guard: from-scratch 'model X' with no GUI/app "
+            "vocabulary — retargeting create_complete_system "
+            "GUINoCodeDiagram -> ClassDiagram (build the data model, not screens)"
+        )
+        return UnifiedClassification(
+            intent="create_complete_system_intent",
+            target_diagram_type="ClassDiagram",
+            model_disposition=result.model_disposition,
+            pending_flow_action=result.pending_flow_action,
+            reason="Data-model-first: a from-scratch 'model X' builds the ClassDiagram; screens only on explicit request",
+        )
     if result.intent == "generation_intent":
         # GUI-diagram guard (live bug): "generate the GUI (model) / the
         # screens / the UI" means building the GUI DIAGRAM, but the LLM

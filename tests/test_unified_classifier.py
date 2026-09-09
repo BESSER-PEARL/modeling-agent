@@ -166,6 +166,40 @@ class TestClassifyMessage:
         assert result.generation_route == "deterministic"
         assert result.generator_type == "java"
 
+    def test_model_x_from_scratch_retargets_to_class_diagram(self):
+        # Live bug: "model a library system" on the GUI tab classifies as
+        # create_complete_system with target=GUINoCodeDiagram (inheriting the
+        # active tab) and jumps to the "how should I build your screens?"
+        # prompt. A from-scratch "model X" with no GUI/app vocabulary must
+        # build the data model (ClassDiagram) first.
+        gui = UnifiedClassification(
+            intent="create_complete_system_intent",
+            target_diagram_type="GUINoCodeDiagram",
+            model_disposition="new_from_scratch",
+            reason="llm inherited the active GUI tab",
+        )
+        result = classify_message(
+            _make_request("model a library system"),
+            llm_provider=_FakeProvider(gui),
+        )
+        assert result.intent == "create_complete_system_intent"
+        assert result.target_diagram_type == "ClassDiagram"
+
+    def test_explicit_app_or_gui_request_stays_gui(self):
+        # The guard must NOT hijack a genuine app/screens request.
+        for msg in ("build a library app", "create screens for the library",
+                    "model a dashboard for the library"):
+            gui = UnifiedClassification(
+                intent="create_complete_system_intent",
+                target_diagram_type="GUINoCodeDiagram",
+                model_disposition="new_from_scratch",
+                reason="explicit app/gui",
+            )
+            result = classify_message(
+                _make_request(msg), llm_provider=_FakeProvider(gui),
+            )
+            assert result.target_diagram_type == "GUINoCodeDiagram", msg
+
     def test_every_intent_name_accepted_by_schema(self):
         intents = [
             "hello_intent", "create_complete_system_intent",
