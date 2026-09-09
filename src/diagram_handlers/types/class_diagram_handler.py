@@ -132,6 +132,16 @@ _INHERITANCE_REL_TYPES = frozenset({"ClassInheritance"})
 # Editor element types that can own association ends.
 _CLASS_ELEMENT_TYPES = frozenset({"Class", "AbstractClass", "Interface"})
 
+# A name that is safe as a BUML / generated-code identifier: it starts with a
+# letter or underscore and contains only letters, digits, and underscores.
+# Anything else — hyphens, spaces, dots, slashes — makes the metamodel reject
+# the element during validation. For a CLASS name that rejection is
+# unrecoverable for the editor's auto-fix loop: it emits a "rename X" repair,
+# but X was never accepted as a class, so the modify handler can't find it and
+# the loop spins (observed: a pilot user stuck for ~25 min on an app named with
+# hyphens). Sanitizing the name before it reaches the canvas prevents the loop.
+_VALID_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 
 class ClassDiagramHandler(BaseDiagramHandler):
     """Handler for Class Diagram generation"""
@@ -308,6 +318,14 @@ Examples:
                     reasoning_model=MODEL_REASONING,
                 )
             system_spec = parsed.model_dump()
+
+            # Guard (runs first): rewrite any class/enum/member name that isn't a
+            # valid identifier (hyphens, spaces, …). An invalid CLASS name fails
+            # metamodel validation and sends the editor's auto-fix loop into an
+            # unrecoverable spin (it can't rename a class that was never accepted).
+            # Fixing names here — and every reference to them — keeps the rest of
+            # the pipeline and the injected model clean.
+            self._sanitize_identifier_names(system_spec)
 
             # Guard: never ship a relationship whose endpoint is an enumeration.
             # Rewrite any such relationship into an enum-typed attribute on the
@@ -568,6 +586,113 @@ Examples:
                     len(attributes) - len(kept), name,
                 )
                 cls["attributes"] = kept
+
+    @staticmethod
+    def _to_identifier(raw: str, *, pascal: bool) -> str:
+        """Coerce an arbitrary string into a safe identifier.
+
+        Splits on any run of non-alphanumeric characters and rejoins the parts.
+        ``pascal=True`` PascalCases every part (for class/enum names);
+        ``pascal=False`` keeps the first part's case and camelCases the rest
+        (for attribute/method/parameter names). A leading digit is prefixed with
+        an underscore. Returns ``""`` when *raw* has no usable characters, so
+        the caller can decide to leave the original alone.
+        """
+        parts = [p for p in re.split(r"[^A-Za-z0-9]+", raw or "") if p]
+        if not parts:
+            return ""
+        if pascal:
+            ident = "".join(p[:1].upper() + p[1:] for p in parts)
+        else:
+            ident = parts[0] + "".join(p[:1].upper() + p[1:] for p in parts[1:])
+        if ident and ident[0].isdigit():
+            ident = "_" + ident
+        return ident
+
+    def _sanitize_identifier_names(self, system_spec: Dict[str, Any]) -> None:
+        """Rewrite class/enum/member names that aren't valid identifiers.
+
+        A class named with hyphens or spaces (e.g. ``risk-awareness-recommendation``)
+        is rejected by BUML validation, and the editor's auto-fix loop can never
+        repair it — it tries to *rename* a class that was never accepted, spins,
+        and burns turns (a real pilot incident). Fixing the name here, before the
+        spec is injected, removes the failure at its source.
+
+        Class/enum names are PascalCased and every reference to them — relationship
+        ``source``/``target``, class-typed attribute ``type``, and OCL constraint
+        ``context`` — is rewritten with the same mapping so the spec stays
+        internally consistent. Attribute/method/parameter names are fixed in place
+        (nothing references them by name). Mutates *system_spec* in place.
+        """
+        classes = system_spec.get("classes")
+        rename_map: Dict[str, str] = {}
+
+        def _needs_fix(value: Any) -> bool:
+            return (
+                isinstance(value, str)
+                and value.strip() != ""
+                and _VALID_IDENTIFIER_RE.match(value.strip()) is None
+            )
+
+        if isinstance(classes, list):
+            for cls in classes:
+                if not isinstance(cls, dict):
+                    continue
+                old = cls.get("className")
+                if _needs_fix(old):
+                    new = self._to_identifier(old, pascal=True)
+                    if new and new != old:
+                        cls["className"] = new
+                        rename_map[old] = new
+                for attr in cls.get("attributes", []) or []:
+                    if isinstance(attr, dict) and _needs_fix(attr.get("name")):
+                        fixed = self._to_identifier(attr["name"], pascal=False)
+                        if fixed:
+                            attr["name"] = fixed
+                for method in cls.get("methods", []) or []:
+                    if not isinstance(method, dict):
+                        continue
+                    if _needs_fix(method.get("name")):
+                        fixed = self._to_identifier(method["name"], pascal=False)
+                        if fixed:
+                            method["name"] = fixed
+                    for param in method.get("parameters", []) or []:
+                        if isinstance(param, dict) and _needs_fix(param.get("name")):
+                            fixed = self._to_identifier(param["name"], pascal=False)
+                            if fixed:
+                                param["name"] = fixed
+
+        if not rename_map:
+            return
+
+        relationships = system_spec.get("relationships")
+        if isinstance(relationships, list):
+            for rel in relationships:
+                if not isinstance(rel, dict):
+                    continue
+                for key in ("source", "target"):
+                    if rel.get(key) in rename_map:
+                        rel[key] = rename_map[rel[key]]
+
+        if isinstance(classes, list):
+            for cls in classes:
+                if not isinstance(cls, dict):
+                    continue
+                for attr in cls.get("attributes", []) or []:
+                    if isinstance(attr, dict) and attr.get("type") in rename_map:
+                        attr["type"] = rename_map[attr["type"]]
+
+        constraints = system_spec.get("constraints")
+        if isinstance(constraints, list):
+            for con in constraints:
+                if isinstance(con, dict) and con.get("context") in rename_map:
+                    con["context"] = rename_map[con["context"]]
+
+        logger.info(
+            "[ClassDiagram] Sanitized %d invalid identifier name(s): %s",
+            len(rename_map),
+            ", ".join(f"{k!r}->{v!r}" for k, v in rename_map.items())[:200],
+        )
 
     def _sanitize_member_types(self, system_spec: Dict[str, Any]) -> None:
         """Normalize decorated type tokens BUML would reject (e.g. 'str?').
