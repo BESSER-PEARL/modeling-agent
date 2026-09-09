@@ -185,15 +185,47 @@ class TestClassifyMessage:
         assert result.intent == "create_complete_system_intent"
         assert result.target_diagram_type == "ClassDiagram"
 
-    def test_explicit_app_or_gui_request_stays_gui(self):
-        # The guard must NOT hijack a genuine app/screens request.
-        for msg in ("build a library app", "create screens for the library",
-                    "model a dashboard for the library"):
+    def test_app_request_builds_data_model_first(self):
+        # Pilot regression: a from-scratch APPLICATION request ("todo app",
+        # "webapp", "dashboard", "a system to track X") was jumping straight to
+        # AI-generated screens on an empty data model — no specs, no class
+        # diagram, and no deterministic-vs-AI choice. An application is
+        # data-first: build the ClassDiagram (the specs) first; screens come as
+        # an explicit next step.
+        for msg in (
+            "I want a todo app",
+            "build me a library webapp",
+            "a dashboard to track my expenses",
+            "something cool to track my friends on google",
+            "create an application for managing orders",
+        ):
             gui = UnifiedClassification(
                 intent="create_complete_system_intent",
                 target_diagram_type="GUINoCodeDiagram",
                 model_disposition="new_from_scratch",
-                reason="explicit app/gui",
+                generation_route="smart",
+                generator_type="web_app",
+                reason="llm read 'app' as screens",
+            )
+            result = classify_message(
+                _make_request(msg), llm_provider=_FakeProvider(gui),
+            )
+            assert result.target_diagram_type == "ClassDiagram", msg
+            assert result.intent == "create_complete_system_intent", msg
+
+    def test_explicit_screen_request_stays_gui(self):
+        # Only an EXPLICIT screen/GUI/UI/pages request goes straight to the GUI
+        # diagram — the user actually asked for screens, not a data model.
+        for msg in ("create screens for the library",
+                    "design the GUI for my app",
+                    "build the UI",
+                    "add pages for the user profile",
+                    "make a wireframe of the dashboard"):
+            gui = UnifiedClassification(
+                intent="create_complete_system_intent",
+                target_diagram_type="GUINoCodeDiagram",
+                model_disposition="new_from_scratch",
+                reason="explicit screens/gui",
             )
             result = classify_message(
                 _make_request(msg), llm_provider=_FakeProvider(gui),
