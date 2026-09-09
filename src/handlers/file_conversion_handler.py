@@ -704,6 +704,8 @@ def _convert_image(
     # image frequently succeeds on a retry. So retry a few times on empty content
     # before giving up, and log finish_reason/refusal so the cause is diagnosable.
     raw_text = None
+    last_refusal = None
+    last_finish_reason = None
     for attempt in range(3):
         try:
             response = http_requests.post(
@@ -720,11 +722,15 @@ def _convert_image(
             raw_text = choice["message"].get("content")
             if raw_text:
                 break
+            last_finish_reason = choice.get("finish_reason")
+            refusal = choice["message"].get("refusal")
+            if isinstance(refusal, str) and refusal.strip():
+                last_refusal = refusal.strip()
             logger.warning(
                 "[FileConversion] Vision returned null content "
                 "(attempt %d/3, model=%s, finish=%s, refusal=%s) for %s",
-                attempt + 1, MODEL_VISION, choice.get("finish_reason"),
-                choice["message"].get("refusal"), filename,
+                attempt + 1, MODEL_VISION, last_finish_reason,
+                last_refusal, filename,
             )
         except Exception as e:
             logger.error(
@@ -735,6 +741,22 @@ def _convert_image(
                     "Failed to process the image. Please make sure the image contains "
                     "a clear UML diagram or UI mockup."
                 )
+
+    # A refusal (or a content-filter stop) is NOT the same as an empty reply:
+    # the model actively declined, and retrying the identical request won't help.
+    # Say so honestly — the old path flattened this into "returned no content",
+    # which misled a pilot user whose perfectly benign mockup was refused.
+    if not raw_text and (last_refusal or last_finish_reason == "content_filter"):
+        logger.warning(
+            "[FileConversion] Vision declined the image (model=%s, finish=%s) for %s",
+            MODEL_VISION, last_finish_reason, filename,
+        )
+        return _error_response(
+            "The AI model declined to read this image. This can happen with photos "
+            "or busy screenshots even when they're harmless. Try a clearer, cropped "
+            "image showing just the diagram or UI mockup — or describe the page you "
+            "want and I'll model it from your description."
+        )
 
     return _parse_llm_response(raw_text, filename, "image", expected_type=None)
 
