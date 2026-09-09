@@ -176,6 +176,18 @@ def get_post_spec_suggestions(detected_generator: Optional[str]) -> List[Dict[st
     prompt = _GENERATOR_PROMPTS.get(detected_generator, "generate the application") if detected_generator else "generate the application"
     return [
         {"label": f"Generate {label}", "prompt": prompt},
+        {
+            "label": "Explain the specs",
+            # Relayed to the agent like any chip; the wording routes to
+            # describe_model, which streams a plain-language overview of the
+            # model (entities + relationships in words). Same request the
+            # assistant's "explain" affordance sends.
+            "prompt": (
+                "Give me a plain-language overview of my current model — the "
+                "main entities and how they relate, in plain words (no "
+                "multiplicity jargon)."
+            ),
+        },
         {"label": "Review the model", "prompt": "wme:review-spec"},
     ]
 
