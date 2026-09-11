@@ -460,3 +460,38 @@ def test_failed_run_does_not_mark_the_project_as_generated():
     )
     _handle_frontend_event(failure, session)
     assert session.get(LAST_SMART_GEN_PROJECT_ID) is None
+
+def test_legacy_run_without_a_project_id_still_counts_as_an_app():
+    """Regression, live 2026-09-11: project attribution shipped mid-day, so runs
+    that had already finished carried only LAST_SMART_GEN_AT. Failing closed on
+    those silenced the SMART-GEN FOLLOW-UP signal, and "fix my app" started
+    getting prose instead of a fix run."""
+    from handlers.generation_handler import _smart_gen_project_has_app
+    from session_keys import LAST_SMART_GEN_AT
+    import time as _t
+
+    session = make_session("fix my app", project_snapshot={"id": "proj-A"})
+    session.set(LAST_SMART_GEN_AT, _t.time())
+    # No LAST_SMART_GEN_PROJECT_ID at all — the pre-attribution shape.
+    assert _smart_gen_project_has_app(session, "proj-A") is True
+
+
+def test_a_recorded_project_id_that_mismatches_still_fails_closed():
+    """The allowance must NOT weaken the actual fix: once a project id exists,
+    a different project gets no app."""
+    from handlers.generation_handler import _smart_gen_project_has_app
+    from session_keys import LAST_SMART_GEN_AT, LAST_SMART_GEN_PROJECT_ID
+    import time as _t
+
+    session = make_session("fix my app", project_snapshot={"id": "proj-B"})
+    session.set(LAST_SMART_GEN_AT, _t.time())
+    session.set(LAST_SMART_GEN_PROJECT_ID, "proj-A")
+    assert _smart_gen_project_has_app(session, "proj-B") is False
+
+
+def test_no_run_at_all_is_still_no_app():
+    """The allowance is keyed on a timestamp EXISTING — an untouched session
+    must not inherit an app."""
+    from handlers.generation_handler import _smart_gen_project_has_app
+    session = make_session("fix my app", project_snapshot={"id": "proj-A"})
+    assert _smart_gen_project_has_app(session, "proj-A") is False
