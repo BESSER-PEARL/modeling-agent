@@ -23,6 +23,7 @@ generate, convert) over WebSocket-compatible payloads.
 | `GUINoCodeDiagram` | Yes | Yes | Yes |
 | `QuantumCircuitDiagram` | Yes | Yes | Yes |
 | `BPMNDiagram` | Yes | Yes | Yes |
+| `UserDiagram` | Yes | Yes | Yes |
 
 ## Supported Generators
 

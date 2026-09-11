@@ -221,3 +221,36 @@ def test_zero_tokens(tracker):
     assert s["total_tokens"] == 0
     assert s["estimated_cost_usd"] == 0.0
     assert s["call_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Cost-table coverage
+#
+# A model with no _COST_PER_1K entry still records tokens but prices them from
+# a placeholder, so every reported cost for it is wrong without any error. The
+# configured models must therefore always be present in the table.
+# ---------------------------------------------------------------------------
+
+def test_configured_models_have_cost_entries():
+    from agent_config import LLM_MODEL_DEFAULT, LLM_MODEL_VISION
+    from tracking.token_tracker import _COST_PER_1K
+
+    for model in (LLM_MODEL_DEFAULT, LLM_MODEL_VISION):
+        assert model in _COST_PER_1K, (
+            f"{model!r} is configured in agent_config.py but has no _COST_PER_1K "
+            f"entry, so its reported costs would silently use placeholder pricing"
+        )
+
+
+def test_unknown_model_warns_once(caplog):
+    import logging
+    from tracking import token_tracker as tt
+
+    tt._unknown_models_seen.discard("totally-made-up-model")
+    tracker = tt.get_tracker()
+    with caplog.at_level(logging.WARNING):
+        tracker.record(prompt_tokens=10, completion_tokens=5, model="totally-made-up-model")
+        tracker.record(prompt_tokens=10, completion_tokens=5, model="totally-made-up-model")
+
+    warnings = [r for r in caplog.records if "totally-made-up-model" in r.getMessage()]
+    assert len(warnings) == 1, f"expected exactly one warning, got {len(warnings)}"

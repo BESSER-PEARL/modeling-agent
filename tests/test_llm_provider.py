@@ -7,13 +7,14 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from llm.provider import LLMProvider
+from agent_config import LLM_MODEL_DEFAULT
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_mock_llm(name: str = "gpt-4.1-mini", has_client: bool = True) -> MagicMock:
+def _make_mock_llm(name: str = LLM_MODEL_DEFAULT, has_client: bool = True) -> MagicMock:
     """Build a MagicMock that looks like a BESSER LLMOpenAI instance."""
     mock_llm = MagicMock()
     mock_llm.predict.return_value = "test response"

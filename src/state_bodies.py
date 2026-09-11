@@ -46,6 +46,12 @@ from handlers.generation_handler import (
 )
 from orchestrator import determine_target_diagram_type
 from utilities.model_context import detailed_model_summary, is_diagram_nontrivial
+from utilities.model_context import detailed_model_summary
+from utilities.user_metamodel import (
+    build_user_profile_help_prompt,
+    format_user_metamodel_guide,
+    is_user_profile_help,
+)
 from routing.intents import GENERATION_INTENT_NAME
 from session_keys import (
     HAS_GREETED,
@@ -213,7 +219,8 @@ _QUICK_RESPONSES = {
         "- **GUI / Web UI** — *\"Design a dashboard for my Product class\"*\n"
         "- **Agent Diagrams** — *\"Create a pizza-ordering chatbot agent\"*\n"
         "- **Quantum Circuits** — *\"Create Grover's search algorithm\"*\n"
-        "- **BPMN Diagrams** — *\"Model an order fulfillment process\"*\n\n"
+        "- **BPMN Diagrams** — *\"Model an order fulfillment process\"*\n"
+        "- **User Profiles** — *\"Create a target user profile for elderly users with sight issues\"*\n\n"
         "**Modify diagrams:**\n"
         "- *\"Add email attribute to User\"*, *\"Rename Order to Purchase\"*, *\"Add a transition from Idle to Active\"*\n\n"
         "**Generate code:**\n"
@@ -234,7 +241,8 @@ _QUICK_RESPONSES = {
         "   *Example: \"Generate Django\"* or *\"Generate a web app\"*\n\n"
         "**Tips:**\n"
         "- Be specific about what you want — more detail = better results\n"
-        "- I support 7 diagram types: Class, State Machine, Object, GUI, Agent, Quantum Circuit, and BPMN\n"
+        "- I support 8 diagram types: Class, State Machine, Object, GUI, Agent, "
+        "Quantum Circuit, BPMN, and User Profile\n"
         "- You can switch between diagram types anytime\n"
         "- Ask *\"What can you do?\"* for a full list of capabilities"
     ),
@@ -303,10 +311,12 @@ def _fallback_llm_reply(session: Session, user_message: str) -> None:
     try:
         prompt = (
             f"You are a modeling assistant that helps with UML diagrams, quantum circuits, "
-            f"GUI design, agent diagrams, BPMN business-process diagrams, and code generation. "
+            f"GUI design, agent diagrams, BPMN business-process diagrams, user profiles, "
+            f"and code generation. "
             f"The user said: '{user_message}'. "
             "If this is related to any kind of modeling (class diagrams, quantum circuits, "
-            "state machines, GUI design, BPMN processes, etc.), suggest how you can help them. "
+            "state machines, GUI design, BPMN processes, user profiles, etc.), suggest how "
+            "you can help them. "
             "Otherwise, politely explain your capabilities."
         )
         stream_llm_response(session, ctx.gpt_text, prompt)
@@ -698,6 +708,10 @@ def modeling_help_body(session: Session):
             "tell them they can ask you to create it (e.g., 'Create a Grover\\'s search circuit').\n\n"
             "Keep your response conversational, encouraging, and technically accurate."
         )
+    elif diagram_type == "UserDiagram" or is_user_profile_help(request.message):
+        # Explain the user-profile modeling environment (elements, attributes,
+        # enum values, how they connect) grounded in the bundled metamodel.
+        help_prompt = build_user_profile_help_prompt(request.message)
     else:
         help_prompt = (
             f'You are an expert modeling assistant working with {diagram_info["name"]}. '
@@ -914,14 +928,33 @@ def describe_model_body(session: Session):
         else ""
     )
 
+    # For User Profile projects, add the metamodel semantics so the assistant
+    # can explain what the boxes on the canvas (Accessibility, Disability, …)
+    # actually mean — the model itself carries only names and criteria.
+    active_dt = request.context.active_diagram_type or request.diagram_type
+    include_user_guide = active_dt == "UserDiagram" or is_user_profile_help(request.message)
+    if not include_user_guide:
+        snapshot = request.context.project_snapshot
+        if isinstance(snapshot, dict):
+            diagrams = snapshot.get("diagrams")
+            if isinstance(diagrams, dict) and "UserDiagram" in diagrams:
+                include_user_guide = True
+    user_guide_block = (
+        f"\n\nReference — the User Profile metamodel these elements are drawn from "
+        f"(use it to explain what an element or attribute means):\n\n{format_user_metamodel_guide()}\n"
+        if include_user_guide
+        else ""
+    )
+
     qa_prompt = (
         "You are an expert assistant for the BESSER Web Modeling Editor. "
         "The user has a project that may contain multiple diagrams "
-        "(class, state machine, object, GUI, quantum circuit, agent).\n\n"
+        "(class, state machine, object, GUI, quantum circuit, agent, user profile).\n\n"
         f"Here is a detailed summary of their project \u2014 note that empty or "
         f"default-seed diagrams have already been filtered out, so describe "
         f"ONLY the diagrams listed below:\n\n"
-        f"{full_summary}\n\n"
+        f"{full_summary}\n"
+        f"{user_guide_block}\n"
         f"{history_section}"
         f"The user asks: \"{request.message}\"\n\n"
         "Answer their question accurately based ONLY on the project data above. "
