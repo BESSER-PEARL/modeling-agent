@@ -17,7 +17,7 @@ Checks are deterministic-ish behaviors (NOT generation fidelity):
 
 Usage (run after ./deploy.sh agent):  python tests/live/probe_smoke.py
   AGENT_WS_URL   default wss://experimental.besser-pearl.org/agent
-  BOOT_WAIT      seconds to keep retrying the first connection (default 180)
+  BOOT_WAIT      seconds to keep retrying the first connection (default 360)
 Exit 0 = every critical invariant holds; 1 = a regression (details printed).
 """
 import asyncio
@@ -39,7 +39,10 @@ import websockets  # noqa: E402
 from test_nl_generation_scenarios import _unwrap, AGENT_WS_URL  # noqa: E402
 
 TIMEOUT = int(os.environ.get("GEN_TIMEOUT", "160"))
-BOOT_WAIT = int(os.environ.get("BOOT_WAIT", "180"))
+# 180s was under the real boot time, so a healthy deploy failed the gate.
+# Measured 2026-09-11: 3m38s from container start to a listening WebSocket
+# (NER + one intent classifier per state, trained before the socket opens).
+BOOT_WAIT = int(os.environ.get("BOOT_WAIT", "360"))
 BUILD = {"inject_complete_system", "modify_model", "auto_generate_gui", "inject_element"}
 TERMINAL = BUILD | {"trigger_generator", "trigger_smart_generator", "trigger_export"}
 

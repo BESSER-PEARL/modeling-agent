@@ -75,7 +75,13 @@ exec python modeling_agent.py\n\
 ' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+# start-period must cover the FULL boot, not just process start: BAF trains a
+# NER model plus one intent classifier per state (~20s each, 10 states) and
+# only then opens the WebSocket. Measured 2026-09-11: container start to
+# listening socket was 3m38s. At the previous 40s every agent deploy reported
+# FAIL and sat `unhealthy` for three minutes while being perfectly fine, which
+# is how a REAL failure gets waved off as "probably just the slow boot".
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
     CMD python -c "import socket; s=socket.socket(); s.connect(('localhost', 8765)); s.close()" || exit 1
 
 # Run the entrypoint script
