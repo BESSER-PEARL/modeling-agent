@@ -13,6 +13,7 @@ from utilities.model_context import is_diagram_nontrivial
 from session_keys import (
     CONFIG_PROMPT_ATTEMPTS,
     LAST_SMART_GEN_AT,
+    LAST_SMART_GEN_PROJECT_ID,
     LAST_SMART_GEN_SUMMARY,
     MISMATCH_REGEN_PENDING,
     PENDING_GENERATOR_CONFIG,
@@ -22,6 +23,7 @@ from session_keys import (
     PENDING_SMART_GEN_TIMESTAMP,
     PLAN_GENERATION_CONFIRM_FLAG,
     SKIP_MISMATCH_CHECK_ONCE,
+    SMART_GEN_ARMED_PROJECT_ID,
     UNIFIED_CLASSIFICATION,
 )
 from reply_copy import OUT_OF_SCOPE_REDIRECT, SPEC_DRIVEN_NAME
@@ -142,11 +144,50 @@ def _smart_gen_stash_is_fresh(timestamp: Any) -> bool:
     return (time.time() - timestamp) <= _SMART_GEN_STASH_TTL_SECONDS
 
 
+def _active_project_id(session: Session) -> Optional[str]:
+    """Id of the project currently open in the workspace, or ``None``.
+
+    The frontend sends the whole project object as
+    ``context.projectSnapshot``, and ``BesserProject.id`` survives the
+    client-side context compaction, so the id is available on every
+    ``user_message`` turn. It is NOT available on ``frontend_event``
+    callbacks — those carry no ``context`` at all — which is why a run's
+    project is recorded when the run is ARMED rather than when it completes.
+
+    Returns ``None`` whenever the id cannot be seen (older frontend, widget
+    mode, voice context without a snapshot). Callers must treat ``None`` as
+    "no project identity" and fail CLOSED, never as a wildcard match.
+    """
+    # Deferred import: protocol.adapters is cycle-free from here and the
+    # parse is cached on the session event, so this is ~free per turn.
+    from protocol.adapters import parse_assistant_request
+
+    try:
+        request = parse_assistant_request(session)
+    except Exception:  # pragma: no cover — defensive; copy must never crash
+        logger.debug("Could not resolve the active project id", exc_info=True)
+        return None
+    snapshot = getattr(getattr(request, "context", None), "project_snapshot", None)
+    candidate = snapshot.get("id") if isinstance(snapshot, dict) else None
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+    return None
+
+
 def _stash_smart_gen(session: Session, instructions: str, provider: str) -> None:
-    """Stash a smart-gen payload with a fresh timestamp (see TTL above)."""
+    """Stash a smart-gen payload with a fresh timestamp (see TTL above).
+
+    Also records the project the run is being armed in. A run can ONLY start
+    from a confirmation built on top of this stash, so this is the single
+    choke point where the project behind a future run is observable — the
+    completion callback (``_handle_smart_generator_result``) arrives as a
+    context-free ``frontend_event`` and promotes this id once the run
+    succeeds.
+    """
     session.set(PENDING_SMART_GEN_INSTRUCTIONS, instructions)
     session.set(PENDING_SMART_GEN_PROVIDER, provider)
     session.set(PENDING_SMART_GEN_TIMESTAMP, time.time())
+    session.set(SMART_GEN_ARMED_PROJECT_ID, _active_project_id(session))
 
 
 _SMART_GEN_CONFIRM_PHRASES = {
@@ -289,11 +330,16 @@ def _missing_generator_prerequisites(context: Any, generator_type: str) -> List[
     ]
 
 
-# Signals that a smart-gen request is a FIX / MODIFY of an app that already
-# exists rather than a first-time from-scratch build. Used only to frame the
+# Fix/error vocabulary in the USER'S OWN words. Used only to frame the
 # confirmation copy honestly (pilot P2: the from-scratch wording read wrong
 # when the user just pasted a traceback / asked for a fix). Strong, unambiguous
 # fix/error vocabulary only — plus HTTP 4xx/5xx status codes.
+#
+# NOT matched against the classifier's refined instructions any more: those are
+# machine-written feature prose, and a perfectly ordinary first build ("I want
+# a todo app") refines into sentences like "show clear error messages on
+# invalid input" or "return 404 for unknown tasks" — both of which match here
+# and flipped a from-scratch build to the fix copy.
 _FIX_INTENT_RE = re.compile(
     r"\b(?:fix|fixes|fixed|fixing|"
     r"error|errors|traceback|stack\s?trace|exception|"
@@ -306,22 +352,80 @@ _FIX_INTENT_RE = re.compile(
 )
 
 
+def _smart_gen_project_has_app(session: Session, project_id: Optional[str]) -> bool:
+    """True when a smart-gen run SUCCEEDED for the project now open.
+
+    This is the only admissible evidence that there is an app to fix. It fails
+    CLOSED: an unknown project id (``None`` on either side) never matches, so
+    a workspace the agent cannot identify is treated as "no app yet" rather
+    than as a wildcard.
+
+    Note what is deliberately NOT evidence: a model/spec having been designed
+    in this project (that produces no code), and a stashed pending smart-gen
+    (an armed run is not a finished one).
+    """
+    if not project_id:
+        return False
+    return session.get(LAST_SMART_GEN_PROJECT_ID) == project_id
+
+
+def recent_smart_gen_for_project(session: Session, window_seconds: float) -> bool:
+    """True when a smart-gen run succeeded for the CURRENTLY OPEN project
+    within ``window_seconds``.
+
+    ``LAST_SMART_GEN_AT`` on its own is not usable for this: the BAF session is
+    keyed on the stable per-browser user_id and survives a project switch (the
+    frontend only rotates the payload sessionId, which scopes conversation
+    memory), so the bare timestamp means "something was generated recently
+    somewhere", not "this project has an app". Pair it with the project the run
+    was attributed to — see ``LAST_SMART_GEN_PROJECT_ID``.
+    """
+    project_id = _active_project_id(session)
+    if not _smart_gen_project_has_app(session, project_id):
+        return False
+    ts = session.get(LAST_SMART_GEN_AT)
+    return (
+        isinstance(ts, (int, float))
+        and not isinstance(ts, bool)
+        and (time.time() - ts) <= window_seconds
+    )
+
+
 def _looks_like_fix_request(
-    session: Session, instructions: str, user_message: Optional[str],
+    session: Session,
+    user_message: Optional[str],
+    project_id: Optional[str],
 ) -> bool:
     """True when the pending smart-gen run edits an app that ALREADY exists
     (a fix / modify) rather than building one from scratch.
 
-    Both signals are cleanly available at this point:
+    INVARIANT: this can only return True when a smart-gen run has SUCCEEDED
+    for ``project_id`` — the project the user is looking at right now. There is
+    no path to the fix copy for a project that has never produced an app.
 
-    * **Message text (primary):** fix/error vocabulary in the user's message
-      or the refined instructions.
-    * **Prior run this session:** a smart-gen run completed within the last
-      30 min (``LAST_SMART_GEN_AT``) — a follow-up smart-gen request then edits
-      that app in place, mirroring the frontend's incremental vibe-modify
-      (which reuses the last run as its base).
+    Observed failure that motivated the scoping (2026-09-11): in a brand-new
+    project the very first message, "I want a todo app", was answered with
+    "I'll update your existing app to make that change" + a "Fix it" button,
+    and so was "generate the application" after the user had modelled a fresh
+    system in that project. Both signals were project-blind — the 30-min
+    recency check only asked "did a run finish in this SESSION", which was
+    still true from a run in a PREVIOUS project, and the vocabulary check also
+    read the classifier's machine-written refined instructions.
+
+    With the project gate necessary, the two signals now only choose WHICH
+    flavour of fix framing applies:
+
+    * **Fresh run for this project** (within 30 min) — the next smart-gen
+      request edits that app in place, mirroring the frontend's incremental
+      vibe-modify (which reuses the last run as its base), whether or not the
+      user used fix words.
+    * **Older run for this project** — only fix/error vocabulary in the
+      user's OWN message still reads as a fix; anything else gets the
+      neutral from-scratch copy.
     """
-    if _FIX_INTENT_RE.search(user_message or "") or _FIX_INTENT_RE.search(instructions or ""):
+    if not _smart_gen_project_has_app(session, project_id):
+        return False
+    if _FIX_INTENT_RE.search(user_message or ""):
         return True
     ts = session.get(LAST_SMART_GEN_AT)
     return (
@@ -353,16 +457,22 @@ def _build_smart_gen_confirmation(
     same confirm token so the confirm gate fires identically, and both keep
     the clickable API-key link. The fix branch is gated to the direct path
     (no ``reason_prefix``): the mismatch/rebuild resumes always produce a
-    freshly rebuilt model, which is a from-scratch build by definition.
+    freshly rebuilt model, which is a from-scratch build by definition — and,
+    per ``_looks_like_fix_request``, to projects that have actually produced
+    an app before.
     """
     refined = (instructions or "").strip()
     provider = provider or "anthropic"
+    # Resolve the open project BEFORE stashing: _stash_smart_gen records the
+    # armed project too, and the fix decision must never read state this very
+    # call wrote.
+    project_id = _active_project_id(session)
     _stash_smart_gen(session, refined, provider)
 
     prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
 
     is_fix = (not reason_prefix) and _looks_like_fix_request(
-        session, refined, user_message,
+        session, user_message, project_id,
     )
 
     # The instructions are NOT echoed back to the user: showing the LLM's
@@ -1225,6 +1335,17 @@ def _handle_smart_generator_result(
             # "add auth to it" after a FAILED run is not a follow-up to
             # reuse-for-generation.
             session.set(LAST_SMART_GEN_AT, time.time())
+            # Attribute the run to its project. This callback is a
+            # ``frontend_event`` and carries NO workspace context, so the id
+            # comes from where the run was armed (_stash_smart_gen). Without
+            # it the timestamp is project-blind and leaks into the next
+            # project the user opens in the same session — which is exactly
+            # how a brand-new project's first request got answered with
+            # "I'll update your existing app".
+            session.set(
+                LAST_SMART_GEN_PROJECT_ID,
+                session.get(SMART_GEN_ARMED_PROJECT_ID),
+            )
         # Stash the outcome (success OR failure) so a follow-up QUESTION
         # about the finished run ("what we generated?") can be answered
         # from here instead of re-arming a new generation confirmation.

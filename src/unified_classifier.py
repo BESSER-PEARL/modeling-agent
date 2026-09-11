@@ -36,14 +36,12 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 from protocol.types import AssistantRequest
 from session_keys import (
-    LAST_SMART_GEN_AT,
     PENDING_COMPLETE_SYSTEM,
     PENDING_GENERATOR_CONFIG,
     PENDING_GENERATOR_TYPE,
@@ -1012,12 +1010,15 @@ def get_or_classify(
         )
     else:
         _pending_flow = _pending_flow_context(session)
-        _smart_at = session.get(LAST_SMART_GEN_AT)
-        _recent_smart = (
-            isinstance(_smart_at, (int, float))
-            and not isinstance(_smart_at, bool)
-            and (time.time() - _smart_at) <= 15 * 60
-        )
+        # Project-scoped: the SMART-GEN FOLLOW-UP rule is about the app in the
+        # project the user is looking at. LAST_SMART_GEN_AT alone survives a
+        # project switch (the BAF session is keyed on the per-browser user_id),
+        # so using it raw told the classifier "you just generated an app" in a
+        # brand-new project. Deferred import — generation_handler owns both
+        # ends of that signal and imports this module at load time.
+        from handlers.generation_handler import recent_smart_gen_for_project
+
+        _recent_smart = recent_smart_gen_for_project(session, 15 * 60)
         result = classify_message(
             request, llm_provider, _recent_history(session, request),
             recent_smart_gen=_recent_smart,

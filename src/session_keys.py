@@ -54,6 +54,25 @@ PENDING_SMART_GEN_TIMESTAMP = "_pending_smart_gen_timestamp"
 # FOLLOW-UP rule from a structured signal instead of grepping reply copy out
 # of the conversation history.
 LAST_SMART_GEN_AT = "_last_smart_gen_at"
+# Project id (``BesserProject.id``) the run recorded in LAST_SMART_GEN_AT
+# belonged to. The BAF session is keyed on the stable per-browser user_id and
+# SURVIVES a project switch (the frontend only rotates the payload sessionId,
+# which scopes conversation memory — see AssistantClient.resetSession), so the
+# timestamp alone says "some app was generated recently", NOT "an app exists
+# for the project you are looking at". Observed failure: a brand-new project
+# + "I want a todo app" got the fix/modify confirmation copy ("I'll update
+# your existing app") because a run in a PREVIOUS project was still within
+# the 30-min window. Every consumer of LAST_SMART_GEN_AT must pair it with
+# this id (see generation_handler.recent_smart_gen_for_project).
+LAST_SMART_GEN_PROJECT_ID = "_last_smart_gen_project_id"
+# Project id observed when a smart-gen run was ARMED (the stash was created).
+# Promoted to LAST_SMART_GEN_PROJECT_ID when the run reports success. Arm time
+# is the only place the project is knowable: the completion callback arrives as
+# a ``frontend_event``, which carries no workspace context at all (see
+# AssistantClient.sendFrontendEvent). Deliberately NOT part of the pending
+# stash tuple, so _clear_pending_smart_gen (which runs just before the run
+# fires) doesn't wipe the attribution.
+SMART_GEN_ARMED_PROJECT_ID = "_smart_gen_armed_project_id"
 # Human-readable one-paragraph summary of the last completed smart run
 # (outcome + file summary). Lets a follow-up QUESTION about the finished
 # run ("what we generated?") be ANSWERED instead of re-arming a brand-new
