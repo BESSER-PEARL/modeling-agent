@@ -13,16 +13,25 @@ code-generation triggers via
 
 Key capabilities:
 
-- UML diagram creation and modification via natural language.
+- Diagram creation and modification via natural language.
 - Multi-operation orchestration (modeling + generation in a single request).
+- Code generation: BESSER's deterministic generators, plus an LLM-authored
+  **smart** path for stacks BESSER has no built-in generator for.
+- Bring-your-own-key routing, so generation can run on the user's own OpenAI,
+  Anthropic or Mistral key. See :doc:`configuration`.
 - UML specification Q&A with RAG (Retrieval-Augmented Generation) over the OMG
   UML 2.5.1 specification. See :doc:`configuration` for RAG setup.
-- File conversion from PlantUML, knowledge-graph files, images, and plain text.
+- File conversion from PlantUML, knowledge-graph files, XMI, PDFs, images, and
+  plain text.
+- Voice input via OpenAI speech-to-text.
 
 For a detailed walkthrough of the request lifecycle, see :doc:`end_to_end_flow`.
 
 Supported Diagram Types
 -----------------------
+
+The identifier is the token the protocol uses — see :doc:`diagram_handlers` for
+why two of them do not end in ``Diagram``.
 
 .. list-table::
    :header-rows: 1
@@ -49,12 +58,21 @@ Supported Diagram Types
    * - ``QuantumCircuitDiagram``
      - Quantum circuit diagrams
      - Quirk-format JSON
+   * - ``BPMN``
+     - BPMN process diagrams, with optional pools and lanes
+     - BPMN node/flow spec (the editor lays it out)
+   * - ``UserDiagram``
+     - BESSER user-profile models — a target user as attribute-matching
+       criteria drawn from a bundled metamodel
+     - Object-diagram-shaped spec with comparison operators
 
 Prerequisites
 -------------
 
-- Python 3.11+ (3.10 minimum).
-- OpenAI API key with GPT-4.1-mini access.
+- Python 3.11 (3.10 minimum).
+- An OpenAI API key. The default model tiers are ``gpt-4o-mini`` for routing
+  and the gpt-5.6 family for generation — all env-overridable, see
+  :doc:`configuration`.
 
 Install
 -------
@@ -93,10 +111,14 @@ Run
    python modeling_agent.py
 
 Default host/port are configured in ``config.yaml`` under ``platforms.websocket``.
-The agent listens on ``ws://localhost:8765`` by default. You should see output
-like::
+The agent listens on ``ws://localhost:8765`` by default.
 
-   WebSocket server started on ws://localhost:8765
+.. note::
+
+   **Startup is slow.** Before the WebSocket opens, BAF trains a NER model plus
+   one local intent classifier per state (10 states). On the production image
+   this was measured at 3m38s from container start to a listening socket. A
+   first run that seems to hang is usually just this.
 
 If you see an ``OPENAI_API_KEY`` error, check your ``config.yaml`` or ``.env``
 file. See :doc:`configuration` for details.
