@@ -154,6 +154,13 @@ _TARGET_DIAGRAM_TYPES = Literal[
     "GUINoCodeDiagram",
     "QuantumCircuitDiagram",
     "BPMN",
+    # Step 4 of the add-a-diagram-type checklist was never done for User
+    # Profile: the handler and the rest of the scaffolding existed, but the
+    # classifier could not name this type, so a request only reached the
+    # handler when KEYWORD_TARGETS happened to catch "user profile" /
+    # "persona" / "target user" at layer 2. Phrasing that avoided that exact
+    # vocabulary fell through to the fallback (2026-09-14).
+    "UserDiagram",
 ]
 
 
@@ -766,7 +773,16 @@ _SYSTEM_PROMPT = (
     "target_diagram_type='AgentDiagram' when the user asks to add or "
     "create an agent / chatbot / conversational assistant / bot, even "
     "if they are currently viewing the class diagram or GUI — the new "
-    "agent belongs in its own AgentDiagram.\n\n"
+    "agent belongs in its own AgentDiagram. Set "
+    "target_diagram_type='UserDiagram' when the subject is WHO the "
+    "software is for rather than what it stores: a user profile, "
+    "persona, target user, audience, user group or segment, their "
+    "accessibility needs, disabilities, preferences, skills or "
+    "capabilities. 'a user profile for elderly users with low vision', "
+    "'model our target audience', 'who are the personas for this app' "
+    "are all UserDiagram. Contrast with ClassDiagram: a `User` ENTITY "
+    "with fields the system stores (email, password, role) is a class, "
+    "not a user profile.\n\n"
     "=== model_disposition (use WORKSPACE CONTEXT) ===\n"
     "Read WORKSPACE CONTEXT to see what already exists, then say how the "
     "request relates to it. 'reuse_for_generation' = generate code/an app "
@@ -1198,6 +1214,7 @@ _RELEVANT_DIAGRAM_TYPES = [
     ("GUINoCodeDiagram", "GUI element(s)"),
     ("QuantumCircuitDiagram", "quantum element(s)"),
     ("BPMN", "process element(s)"),
+    ("UserDiagram", "user profile element(s)"),
 ]
 
 
