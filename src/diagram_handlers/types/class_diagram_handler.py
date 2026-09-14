@@ -1540,11 +1540,28 @@ Examples:
 
     @staticmethod
     def _clean_member_name(raw: Optional[str]) -> str:
-        """Strip a visibility prefix (+/-/#/~) and a type suffix from a member name."""
+        """Reduce a displayed member to its bare name.
+
+        Handles both shapes the editor stores:
+
+            "email: str"                -> "email"      (attribute)
+            "+follow(user: User): bool" -> "follow"     (method)
+
+        The parameter list MUST be cut before the ``:`` split. This helper was
+        written for attributes and then reused for methods, where the first
+        ``:`` belongs to a PARAMETER, not a return type -- so
+        ``follow(user: User)`` became ``"follow(user"`` and ``follow()`` stayed
+        ``"follow()"``. Neither ever matched a bare "follow", which made every
+        method lookup fail: any request to update or remove a method answered
+        "I couldn't find a **follow** method", and the validation auto-fix
+        could never repair a method-related error (2026-09-14).
+        """
         name = (raw or "").strip()
         if name and name[0] in "+-#~":
             name = name[1:].strip()
-        if ":" in name:
+        if "(" in name:                       # method: everything before the params
+            name = name.split("(", 1)[0].strip()
+        elif ":" in name:                     # attribute: drop the type suffix
             name = name.split(":", 1)[0].strip()
         return name
 
