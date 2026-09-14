@@ -60,6 +60,18 @@ platforms:\n\
   websocket:\n\
     host: 0.0.0.0\n\
     port: 8765\n\
+    # CORS. BAF passes this to websockets.serve(origins=...); when the key is\n\
+    # ABSENT every origin is accepted. It was absent from every image built\n\
+    # here until 2026-09-14 - config_example.yaml documented it, the generated\n\
+    # config.yaml never contained it - so the agent accepted a socket from\n\
+    # anywhere and nginx was the only gate. Override the two host entries per\n\
+    # deployment; the localhost entries are for local development.\n\
+    origins:\n\
+      - "${BESSER_AGENT_WS_ORIGIN:-https://editor.besser-pearl.org}"\n\
+      - "${BESSER_AGENT_WS_ORIGIN_ALT:-https://experimental.besser-pearl.org}"\n\
+      - "http://localhost:8080"\n\
+      - "http://localhost:5173"\n\
+      - "http://localhost:3000"\n\
     streamlit:\n\
       host: localhost\n\
       port: 5000\n\
