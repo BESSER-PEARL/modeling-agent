@@ -24,7 +24,12 @@ from agent_config import (
     LLM_MAX_TOKENS_TEXT,
     CONVERSATION_HISTORY_DEPTH,
 )
-from model_config import MODEL_CLASSIFIER, MODEL_EMBEDDINGS
+from model_config import (
+    MODEL_CLASSIFIER,
+    MODEL_EMBEDDINGS,
+    reasoning_effort_for,
+    supports_custom_temperature,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,11 +98,30 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     _enable_shared_llm_retry(gpt, label="gpt")
 
     # Thin wrapper that enforces JSON mode for predict() calls only.
-    _gpt_json_params: Dict[str, Any] = {
-        'temperature': LLM_TEMPERATURE,
-        'max_completion_tokens': LLM_MAX_TOKENS_LARGE,
-        'response_format': {'type': 'json_object'},
-    }
+    def _json_params_for(model_name: str) -> Dict[str, Any]:
+        """JSON-mode call parameters valid for *model_name*.
+
+        gpt-5* / o-series models reject an explicit non-default temperature
+        with a 400 ("Only the default (1) value is supported") — send
+        reasoning_effort instead. base_handler already guards its two call
+        sites this way; this one did not, so every file-conversion text
+        request failed once the configured model moved to a gpt-5 tier:
+
+            Failed to process the text file. The AI model encountered an error.
+
+        which is what a user saw after pasting a requirements document.
+        """
+        params: Dict[str, Any] = {
+            'max_completion_tokens': LLM_MAX_TOKENS_LARGE,
+            'response_format': {'type': 'json_object'},
+        }
+        if supports_custom_temperature(model_name):
+            params['temperature'] = LLM_TEMPERATURE
+        else:
+            effort = reasoning_effort_for(model_name)
+            if effort:
+                params['reasoning_effort'] = effort
+        return params
 
     def gpt_predict_json(prompt: str, model: Optional[str] = None) -> str:
         """Call gpt.predict with JSON-object response_format.
@@ -112,7 +136,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
             completion = client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                **_gpt_json_params,
+                **_json_params_for(model),
             )
             usage = getattr(completion, 'usage', None)
             if usage is not None:
@@ -124,7 +148,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
             if not completion.choices:
                 return ""
             return completion.choices[0].message.content or ""
-        return gpt.predict(prompt, parameters=_gpt_json_params)
+        return gpt.predict(prompt, parameters=_json_params_for(MODEL_CLASSIFIER))
 
     # Free-text LLM (help, greetings, RAG fallback) — JSON mode would break.
     # IMPORTANT: The BESSER framework registers LLMs by name in a dict, and
