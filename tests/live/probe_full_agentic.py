@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 os.environ.setdefault("AGENT_WS_URL", "wss://experimental.besser-pearl.org/agent")
 
 import websockets  # noqa: E402
+from _agent_ws import connect as agent_ws_connect  # noqa: E402
 from test_nl_generation_scenarios import _unwrap, AGENT_WS_URL  # noqa: E402
 
 CONC = int(os.environ.get("CONC", "4"))
@@ -119,7 +120,7 @@ CROSSDIAG = [
 async def _run(label, fn):
     async with _SEM:
         try:
-            async with websockets.connect(AGENT_WS_URL, max_size=None, ping_interval=20) as ws:
+            async with agent_ws_connect(AGENT_WS_URL) as ws:
                 sid = "fa_" + uuid.uuid4().hex[:6]
                 return await fn(ws, sid)
         except asyncio.TimeoutError:

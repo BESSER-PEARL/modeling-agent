@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 os.environ.setdefault("AGENT_WS_URL", "wss://experimental.besser-pearl.org/agent")
 
 import websockets  # noqa: E402
+from _agent_ws import connect as agent_ws_connect  # noqa: E402
 from test_nl_generation_scenarios import _unwrap, AGENT_WS_URL  # noqa: E402
 
 TIMEOUT = int(os.environ.get("GEN_TIMEOUT", "160"))
@@ -126,8 +127,11 @@ def _is_mismatch(frames):
 
 def _connect():
     """Return the websockets Connect object (an async context manager AND
-    awaitable) — use as ``async with _connect() as ws`` or ``await _connect()``."""
-    return websockets.connect(AGENT_WS_URL, max_size=None, ping_interval=20)
+    awaitable) — use as ``async with _connect() as ws`` or ``await _connect()``.
+
+    Goes through ``_agent_ws.connect`` so the ``Origin`` header is set; without
+    it the agent answers 403 and no probe can run at all."""
+    return agent_ws_connect(AGENT_WS_URL)
 
 
 # ── critical scenarios: each returns (ok: bool, detail: str) ────────────────
@@ -261,21 +265,47 @@ async def _run_with_retry(name, fn):
 
 
 async def _await_boot():
+    """Wait for the agent's socket, returning (ok, detail).
+
+    Reports WHY it gave up. This used to swallow every exception and print a
+    single "not reachable within boot window", so a 403 from the origin check
+    was indistinguishable from a slow boot — the gate failed on every deploy
+    and BOOT_WAIT was raised twice chasing a boot time that was never the
+    problem.
+
+    A rejection is also not a boot delay: an HTTP status from the upgrade
+    means the server is up and answering, so waiting cannot help. Fail fast
+    and say so.
+    """
     deadline = time.monotonic() + BOOT_WAIT
+    started = time.monotonic()
+    last = "no attempt made"
     while time.monotonic() < deadline:
         try:
             ws = await _connect()
             await ws.close()
-            return True
-        except Exception:
+            waited = time.monotonic() - started
+            return True, f"connected after {waited:.0f}s"
+        except Exception as exc:
+            status = getattr(exc, "status_code", None)
+            last = f"{type(exc).__name__}: {str(exc)[:140]}"
+            if status is not None:
+                return False, (
+                    f"the agent answered HTTP {status} to the WebSocket upgrade — "
+                    f"it is UP but rejecting the connection, so this is not a boot "
+                    f"delay. A 403 here means the Origin header is missing or not "
+                    f"allow-listed. ({last})"
+                )
             await asyncio.sleep(5)
-    return False
+    return False, f"no socket after {BOOT_WAIT}s — last error: {last}"
 
 
 async def main():
     print(f"=== SMOKE GATE against {AGENT_WS_URL} ===", flush=True)
-    if not await _await_boot():
-        print("FAIL: agent WebSocket not reachable within boot window", flush=True)
+    booted, detail = await _await_boot()
+    print(f"  boot: {detail}", flush=True)
+    if not booted:
+        print("FAIL: could not open the agent WebSocket", flush=True)
         return 1
     results = []
     for name, fn in CRITICAL:

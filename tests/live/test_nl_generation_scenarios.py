@@ -43,8 +43,10 @@ import uuid
 
 try:
     import websockets
+    from _agent_ws import connect as agent_ws_connect
 except Exception:  # pragma: no cover - only needed for the live run
     websockets = None
+    agent_ws_connect = None
 
 AGENT_WS_URL = os.environ.get(
     "AGENT_WS_URL", "wss://experimental.besser-pearl.org/agent"
@@ -222,8 +224,7 @@ def detect_generator(reply: dict) -> str:
 
 async def _probe_once(scenario) -> str:
     sid = f"nlprobe_{uuid.uuid4().hex[:8]}"
-    async with websockets.connect(AGENT_WS_URL, max_size=None,
-                                  ping_interval=20) as ws:
+    async with agent_ws_connect(AGENT_WS_URL) as ws:
         # 1. Seed a model so the generation request has something to act on.
         await _send(ws, sid, _SEED_MODEL_REQUEST)
         await _wait_meaningful(ws, BUILD_TIMEOUT)

@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 os.environ.setdefault("AGENT_WS_URL", "wss://experimental.besser-pearl.org/agent")
 
 import websockets  # noqa: E402
+from _agent_ws import connect as agent_ws_connect  # noqa: E402
 from test_nl_generation_scenarios import _send, _wait_meaningful, AGENT_WS_URL  # noqa: E402
 
 CONC = int(os.environ.get("CONC", "4"))
@@ -76,7 +77,7 @@ async def _probe_decline(sem, prompt):
     label = prompt[:32]
     async with sem:
         try:
-            async with websockets.connect(AGENT_WS_URL, max_size=None, ping_interval=20) as ws:
+            async with agent_ws_connect(AGENT_WS_URL) as ws:
                 await _send(ws, "d_" + uuid.uuid4().hex[:6], prompt)
                 r = await _wait_meaningful(ws, TIMEOUT)
                 act = r.get("action") if isinstance(r, dict) else ""
@@ -99,7 +100,7 @@ async def _probe_nondecline(sem, prompt, _kind):
     label = prompt[:32]
     async with sem:
         try:
-            async with websockets.connect(AGENT_WS_URL, max_size=None, ping_interval=20) as ws:
+            async with agent_ws_connect(AGENT_WS_URL) as ws:
                 await _send(ws, "nd_" + uuid.uuid4().hex[:6], prompt)
                 r = await _wait_meaningful(ws, TIMEOUT)
                 act = r.get("action") if isinstance(r, dict) else ""
@@ -131,7 +132,7 @@ async def _probe_mismatch(sem, trigger):
     label = trigger[:34]
     async with sem:
         try:
-            async with websockets.connect(AGENT_WS_URL, max_size=None, ping_interval=20) as ws:
+            async with agent_ws_connect(AGENT_WS_URL) as ws:
                 sid = "mm_" + uuid.uuid4().hex[:6]
                 # Turn 1 — build a library class diagram.
                 await _send(ws, sid, "create a class diagram for a library with books and members")

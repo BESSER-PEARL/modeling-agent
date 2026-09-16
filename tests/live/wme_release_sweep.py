@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 os.environ.setdefault("AGENT_WS_URL", "wss://experimental.besser-pearl.org/agent")
 
 import websockets  # noqa: E402
+from _agent_ws import connect as agent_ws_connect  # noqa: E402
 from test_nl_generation_scenarios import _send, _wait_meaningful, AGENT_WS_URL  # noqa: E402
 
 REPEAT = int(os.environ.get("REPEAT", "1"))
@@ -118,7 +119,7 @@ def _flaws_for_system(spec: dict) -> list:
 async def _run_system(sem, label, prompt):
     async with sem:
         try:
-            async with websockets.connect(AGENT_WS_URL, max_size=None, ping_interval=20) as ws:
+            async with agent_ws_connect(AGENT_WS_URL) as ws:
                 sid = "sweep_" + uuid.uuid4().hex[:6]
                 await _send(ws, sid, f"create {prompt}")
                 reply = await _wait_meaningful(ws, GEN_TIMEOUT)
@@ -142,7 +143,7 @@ async def _run_webapp(sem, label, domain):
     """
     async with sem:
         try:
-            async with websockets.connect(AGENT_WS_URL, max_size=None, ping_interval=20) as ws:
+            async with agent_ws_connect(AGENT_WS_URL) as ws:
                 sid = "sweepwa_" + uuid.uuid4().hex[:6]
                 await _send(ws, sid, f"create a web app for {domain}")
                 deferred = auto_ran = answered = False
@@ -187,7 +188,7 @@ async def _run_webapp(sem, label, domain):
 async def _run_other(sem, label, prompt, expect_hint):
     async with sem:
         try:
-            async with websockets.connect(AGENT_WS_URL, max_size=None, ping_interval=20) as ws:
+            async with agent_ws_connect(AGENT_WS_URL) as ws:
                 sid = "sweepo_" + uuid.uuid4().hex[:6]
                 await _send(ws, sid, prompt)
                 reply = await _wait_meaningful(ws, GEN_TIMEOUT)

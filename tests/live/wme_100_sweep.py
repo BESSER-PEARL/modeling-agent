@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 os.environ.setdefault("AGENT_WS_URL", "wss://experimental.besser-pearl.org/agent")
 
 import websockets  # noqa: E402
+from _agent_ws import connect as agent_ws_connect  # noqa: E402
 from test_nl_generation_scenarios import _send, _wait_meaningful, AGENT_WS_URL  # noqa: E402
 from wme_release_sweep import _flaws_for_system  # noqa: E402  (reuse fidelity checks)
 
@@ -174,7 +175,7 @@ async def _run_system(sem, prompt):
     label = prompt[:36]
     async with sem:
         try:
-            async with websockets.connect(AGENT_WS_URL, max_size=None, ping_interval=20) as ws:
+            async with agent_ws_connect(AGENT_WS_URL) as ws:
                 await _send(ws, "s_" + uuid.uuid4().hex[:6], f"create {prompt}")
                 r = await _wait_meaningful(ws, GEN_TIMEOUT)
                 d = r if isinstance(r, dict) else {}
@@ -192,7 +193,7 @@ async def _run_webapp(sem, domain):
     label = domain[:36]
     async with sem:
         try:
-            async with websockets.connect(AGENT_WS_URL, max_size=None, ping_interval=20) as ws:
+            async with agent_ws_connect(AGENT_WS_URL) as ws:
                 sid = "wa_" + uuid.uuid4().hex[:6]
                 await _send(ws, sid, f"create a web app for {domain}")
                 deferred = auto_ran = answered = False
@@ -221,7 +222,7 @@ async def _run_webapp(sem, domain):
 async def _run_other(sem, kind, prompt):
     async with sem:
         try:
-            async with websockets.connect(AGENT_WS_URL, max_size=None, ping_interval=20) as ws:
+            async with agent_ws_connect(AGENT_WS_URL) as ws:
                 await _send(ws, "o_" + uuid.uuid4().hex[:6], prompt)
                 r = await _wait_meaningful(ws, GEN_TIMEOUT)
                 act = r.get("action") if isinstance(r, dict) else ""
@@ -242,7 +243,7 @@ async def _run_modify(sem, base, edit):
     label = edit[:40]
     async with sem:
         try:
-            async with websockets.connect(AGENT_WS_URL, max_size=None, ping_interval=20) as ws:
+            async with agent_ws_connect(AGENT_WS_URL) as ws:
                 sid = "m_" + uuid.uuid4().hex[:6]
                 await _send(ws, sid, f"create {base}")
                 r0 = await _wait_meaningful(ws, GEN_TIMEOUT)
@@ -268,7 +269,7 @@ async def _run_generate(sem, base, ask):
     label = ask[:40]
     async with sem:
         try:
-            async with websockets.connect(AGENT_WS_URL, max_size=None, ping_interval=20) as ws:
+            async with agent_ws_connect(AGENT_WS_URL) as ws:
                 sid = "g_" + uuid.uuid4().hex[:6]
                 await _send(ws, sid, f"create {base}")
                 r0 = await _wait_meaningful(ws, GEN_TIMEOUT)
@@ -291,7 +292,7 @@ async def _run_vague(sem, prompt):
     label = prompt[:36]
     async with sem:
         try:
-            async with websockets.connect(AGENT_WS_URL, max_size=None, ping_interval=20) as ws:
+            async with agent_ws_connect(AGENT_WS_URL) as ws:
                 await _send(ws, "v_" + uuid.uuid4().hex[:6], prompt)
                 r = await _wait_meaningful(ws, GEN_TIMEOUT)
                 act = r.get("action") if isinstance(r, dict) else ""
@@ -306,7 +307,7 @@ async def _run_edge(sem, cat, prompt, should_build):
     label = (prompt[:34] + "…") if len(prompt) > 35 else (prompt or "<empty>")
     async with sem:
         try:
-            async with websockets.connect(AGENT_WS_URL, max_size=None, ping_interval=20) as ws:
+            async with agent_ws_connect(AGENT_WS_URL) as ws:
                 await _send(ws, "e_" + uuid.uuid4().hex[:6], prompt)
                 r = await _wait_meaningful(ws, GEN_TIMEOUT)
                 act = r.get("action") if isinstance(r, dict) else ""
@@ -333,7 +334,7 @@ async def _run_edge(sem, cat, prompt, should_build):
 async def _run_meta(sem, kind, prompt):
     async with sem:
         try:
-            async with websockets.connect(AGENT_WS_URL, max_size=None, ping_interval=20) as ws:
+            async with agent_ws_connect(AGENT_WS_URL) as ws:
                 await _send(ws, "meta_" + uuid.uuid4().hex[:6], prompt)
                 r = await _wait_meaningful(ws, GEN_TIMEOUT)
                 act = r.get("action") if isinstance(r, dict) else ""
