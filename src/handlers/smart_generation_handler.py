@@ -144,10 +144,21 @@ _DEFAULT_SMART_GEN_MODEL_BY_PROVIDER: Dict[str, str] = {
 def build_trigger_smart_generator_payload(
     classification: GenerationClassification,
     reason_prefix: str = "",
+    original_request: str = "",
 ) -> Dict[str, Any]:
     """Assemble the WebSocket ``trigger_smart_generator`` action payload.
 
     Requires a classification whose ``route == 'smart'``.
+
+    ``original_request`` is the user's verbatim app description. It is
+    appended because ``refined_instructions`` is a 1-3 paragraph summary,
+    and the run's gap analyser diffs the request against the model: on the
+    2026-09-17 hotel run it recovered the check-in/check-out methods from
+    the phrase "stay management" but could not see the two status
+    vocabularies or the four business rules, whose sentences the summary
+    had dropped. It also attributed a JWT task to "personalized screens
+    and navigation" — assistant flow wording the summary had absorbed,
+    which the user never wrote.
     """
     if classification.route != "smart":
         raise ValueError(
@@ -156,6 +167,16 @@ def build_trigger_smart_generator_payload(
     instructions = (classification.refined_instructions or "").strip()
     if not instructions:
         raise ValueError("smart classification has no refined_instructions")
+
+    original = (original_request or "").strip()
+    if original and original not in instructions:
+        instructions = (
+            f"{instructions}\n\n"
+            "## The user's original request, verbatim\n\n"
+            "This is the authority. Where the summary above is shorter or "
+            "differs, this text wins.\n\n"
+            f"{original}"
+        )
 
     provider = classification.provider or "anthropic"
     llm_model = _DEFAULT_SMART_GEN_MODEL_BY_PROVIDER.get(provider, "claude-sonnet-4-6")

@@ -33,12 +33,17 @@ from session_keys import (
     MISMATCH_REGEN_PENDING,
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
+    ORIGINAL_APP_REQUEST,
     PENDING_SMART_GEN_INSTRUCTIONS,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
 )
 
 logger = logging.getLogger(__name__)
+
+# Below this, a request is a one-liner ('make a hotel app'), not a spec worth
+# carrying verbatim into the run.
+_ORIGINAL_REQUEST_MIN_CHARS = 200
 
 
 # ------------------------------------------------------------------
@@ -54,7 +59,6 @@ logger = logging.getLogger(__name__)
 # back into the working request's project snapshot so a later generate step can
 # validate its diagram prerequisites. The frontend remains authoritative.
 # ------------------------------------------------------------------
-
 def _elements_from_result(
     result_payload: Any,
     diagram_type: Optional[str] = None,
@@ -497,6 +501,17 @@ def execute_model_operation(
         f"⚙️ [ModelOp] Executing: diagram={target_diagram_type}, mode={operation_mode}, "
         f"request={operation_request[:120]!r}"
     )
+
+    # The request that builds the class diagram IS the app description. Keep it
+    # verbatim so the smart-gen run can diff it against the model later; the
+    # refined_instructions summary drops the sentences that name status values,
+    # actions and business rules.
+    if (
+        operation_mode == "complete_system"
+        and target_diagram_type == "ClassDiagram"
+        and len(operation_request) >= _ORIGINAL_REQUEST_MIN_CHARS
+    ):
+        session.set(ORIGINAL_APP_REQUEST, operation_request)
 
     # ── Existing-model guard for complete_system ─────────────────────────
     if (

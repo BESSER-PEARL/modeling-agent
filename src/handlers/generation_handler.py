@@ -18,6 +18,7 @@ from session_keys import (
     MISMATCH_REGEN_PENDING,
     PENDING_GENERATOR_CONFIG,
     PENDING_GENERATOR_TYPE,
+    ORIGINAL_APP_REQUEST,
     PENDING_SMART_GEN_INSTRUCTIONS,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
@@ -1084,6 +1085,7 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
                     reason="user confirmed the run",
                 ),
                 reason_prefix="generating with current model",
+                original_request=session.get(ORIGINAL_APP_REQUEST) or "",
             )
             reply_payload(session, payload)
             return True
@@ -1667,6 +1669,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                     reason="user confirmed the run",
                 ),
                 reason_prefix="generating with current model",
+                original_request=session.get(ORIGINAL_APP_REQUEST) or "",
             )
         # Fall through to normal classification if the stash was empty.
 

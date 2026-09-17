@@ -112,3 +112,10 @@ SESSION_ACTION_HISTORY = "_session_action_history"
 # the same message share one LLM call.
 UNIFIED_CLASSIFICATION = "_unified_classification"
 UNIFIED_CLASSIFICATION_EVENT_ID = "_unified_classification_event_id"
+
+# The user's verbatim app description, captured when the class diagram was
+# built from it. The smart-gen payload carries only ``refined_instructions``
+# — an LLM summary of 1-3 paragraphs — so the gap analyser downstream never
+# saw the sentences stating status vocabularies, named actions or business
+# rules, and could not diff them against the model.
+ORIGINAL_APP_REQUEST = "_original_app_request"
