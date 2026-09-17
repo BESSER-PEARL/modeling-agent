@@ -36,10 +36,53 @@ TIMEOUT = int(os.environ.get("GEN_TIMEOUT", "180"))
 TERMINAL = {"trigger_generator", "trigger_smart_generator", "inject_complete_system",
             "auto_generate_gui"}
 
+# Actions that actually RUN a generator. Distinct from TERMINAL, which also
+# contains model-building actions that are a legitimate first step.
+_CODE_GEN_ACTIONS = {"trigger_generator", "trigger_smart_generator"}
 
-async def _send(ws, sid, text, ctx="ClassDiagram"):
+
+# A canned non-trivial model, as the editor would hold and resend every turn.
+# Without it the agent answers "your workspace looks empty - <stack> generation
+# requires Class Diagram", which this probe used to misread as a config prompt:
+# it answered that "prompt", the agent took the answer as a description and
+# BUILT a model, and the flow was reported as after-config:inject_complete_system
+# (NO_TRIGGER). Every gen:* flaw was this, not an agent regression.
+_SHOP_MODEL = {
+    "version": "3.0.0",
+    "type": "ClassDiagram",
+    "size": {"width": 1200, "height": 800},
+    "elements": {
+        "c1": {"id": "c1", "name": "Product", "type": "Class", "owner": None,
+               "bounds": {"x": 0, "y": 0, "width": 200, "height": 100},
+               "attributes": ["a1"], "methods": []},
+        "a1": {"id": "a1", "name": "price: float", "type": "ClassAttribute",
+               "owner": "c1", "bounds": {"x": 0, "y": 40, "width": 200, "height": 30}},
+        "c2": {"id": "c2", "name": "Order", "type": "Class", "owner": None,
+               "bounds": {"x": 300, "y": 0, "width": 200, "height": 100},
+               "attributes": ["a2"], "methods": []},
+        "a2": {"id": "a2", "name": "placedAt: datetime", "type": "ClassAttribute",
+               "owner": "c2", "bounds": {"x": 300, "y": 40, "width": 200, "height": 30}},
+    },
+    "relationships": {
+        "r1": {"id": "r1", "name": "items", "type": "ClassBidirectional", "owner": None,
+               "source": {"element": "c2", "direction": "Right"},
+               "target": {"element": "c1", "direction": "Left"}},
+    },
+    "interactive": {"elements": {}, "relationships": {}},
+    "assessments": {},
+}
+
+
+async def _send(ws, sid, text, ctx="ClassDiagram", model=None):
+    context = {"activeDiagramType": ctx}
+    if model is not None:
+        context["activeModel"] = model
+        context["projectSnapshot"] = {
+            "name": "WorkflowProbe",
+            "diagrams": {ctx: [{"model": model}]},
+        }
     inner = {"action": "user_message", "protocolVersion": "2.0", "clientMode": "widget",
-             "sessionId": sid, "message": text, "context": {"activeDiagramType": ctx}}
+             "sessionId": sid, "message": text, "context": context}
     await ws.send(json.dumps({"action": "user_message", "user_id": sid,
                               "message": json.dumps(inner)}))
 
@@ -106,20 +149,20 @@ async def _gen_complete(sem, stack, seed="a shop with products, orders and custo
                 r0 = await _turn(ws, TIMEOUT)
                 if r0.get("action") != "inject_complete_system":
                     return (label, f"seed-failed({r0.get('action')})", "SEED_FAILED")
-                await _send(ws, sid, f"generate {stack}")
+                await _send(ws, sid, f"generate {stack}", model=_SHOP_MODEL)
                 r1 = await _turn(ws, TIMEOUT)
                 if r1.get("action") == "trigger_generator":
                     return (label, f"trigger_generator({r1.get('generatorType')})", None)
                 if r1.get("action") == "assistant_message":
                     # config prompt — answer it, expect a trigger next
                     ans = _answer_for(_txt(r1))
-                    await _send(ws, sid, ans)
+                    await _send(ws, sid, ans, model=_SHOP_MODEL)
                     r2 = await _turn(ws, TIMEOUT)
                     if r2.get("action") == "trigger_generator":
                         return (label, f"config->trigger_generator({r2.get('generatorType')})", None)
                     if r2.get("action") == "assistant_message":
                         # maybe a 2nd config field; answer once more
-                        await _send(ws, sid, "yes, use the defaults for everything")
+                        await _send(ws, sid, "yes, use the defaults for everything", model=_SHOP_MODEL)
                         r3 = await _turn(ws, TIMEOUT)
                         if r3.get("action") == "trigger_generator":
                             return (label, f"config2->trigger_generator({r3.get('generatorType')})", None)
@@ -192,7 +235,13 @@ async def _webapp_complete(sem, domain="a recipe sharing app"):
                 for _ in range(4):
                     r = await _turn(ws, TIMEOUT)
                     low = _txt(r).lower()
-                    if r.get("action") in TERMINAL:
+                    # The pause is about not auto-generating CODE. Building the
+                    # class model from "create a web app for X" is the expected
+                    # first step, and tests/test_webapp_generation_gate.py scores
+                    # the invariant on trigger_* alone. Flagging
+                    # inject_complete_system here reported correct behaviour as a
+                    # violation on every run.
+                    if r.get("action") in _CODE_GEN_ACTIONS:
                         return (label, f"AUTO-RAN({r.get('action')})", "AUTO_RAN_BEFORE_CONFIRM")
                     if "generate the web app" in low or ("ready" in low and "web app" in low):
                         deferred = True
