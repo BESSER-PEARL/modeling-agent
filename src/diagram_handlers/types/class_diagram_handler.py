@@ -236,7 +236,7 @@ RULES:
 14. ATTRIBUTE TYPES ARE PRIMITIVES OR ENUMS — NEVER ANOTHER CLASS. An attribute's type must be a primitive (String, int, bool, float, Date, datetime, time) or an enumeration name. If a class "has a" another class you also model (a PointOfInterest has a Location, an Order has a Customer, a Trip has a start Location and an end Location), express it as a RELATIONSHIP (Association) between the two classes — give the relationship a role name (e.g. startLocation, endLocation) to distinguish multiple links to the same class. NEVER put the class's name in an attribute's "type". Value objects you define (Location, Address, Money, Coordinates, TimeRange) are classes: connect them with relationships, don't use them as attribute types.
 16. STATUS VOCABULARIES ARE THE USER'S WORDS, AND N DIMENSIONS MEANS N ENUMERATIONS. When the user lists the values a status can take, the enumeration's literals are EXACTLY those values — never add a member the user did not name, never rename one, never "improve" the set. And when the user describes TWO OR MORE INDEPENDENT things that vary separately, emit ONE ENUMERATION PER DIMENSION, each with its own attribute on the class — never merge them into a single status. Worked example: "a booking has a commercial status: awaiting payment, confirmed or cancelled. Separately it has a physical status: not arrived, checked in or checked out" => TWO enumerations, BookingCommercialStatus (AWAITING_PAYMENT, CONFIRMED, CANCELLED) and BookingPhysicalStatus (NOT_ARRIVED, CHECKED_IN, CHECKED_OUT), and Booking gets BOTH attributes. Merging them into one BookingStatus is wrong twice over: it makes states that legitimately co-occur (a CONFIRMED booking whose guest has NOT_ARRIVED) unrepresentable, and it forces you to invent members like NO_SHOW or BOOKED that the user never mentioned. Tell-tale wording for a second dimension: "separately", "independently", "as well as", "at the same time", or simply two different sentences each introducing its own list of values.
 17. A FACT THAT BELONGS TO THE LINK, NOT TO EITHER CLASS. When the user describes a value that only makes sense for a specific PAIRING of two objects — "the price actually agreed for that room in that booking, which may differ from the standard price", "the grade the student got in that course", "the quantity of that product in that order" — it belongs to the relationship, NOT to either class. Putting it on Room overwrites it for every other booking; putting it on Booking cannot distinguish two different rooms. Model it by creating a CLASS FOR THE LINK ITSELF, carrying that attribute, associated to both classes: Booking 1 -- 0..* ReservedRoom 0..* -- 1 Room, with ReservedRoom.agreedPrice. Name it after the link (ReservedRoom, Enrollment, OrderLine, Assignment). Tell-tale wording: "for that <A> in that <B>", "may differ from the standard/usual/list <value>", "per <A> per <B>", "the <value> agreed/recorded/charged for each".
-15. PARALLEL ASSOCIATIONS NEED DISTINCT NAMES. When the same two classes are connected by MORE THAN ONE relationship (e.g. a Doctor "works in" a Department AND "heads" a Department), give EACH of those relationships a distinct, meaningful name ("worksIn", "heads") — never leave two relationships between the same pair of classes unnamed or identically named. The relationship name becomes the association end's role name; missing or duplicate names collide into the same role and fail validation.
+15. PARALLEL ASSOCIATIONS NEED DISTINCT NAMES. When the same two classes are connected by MORE THAN ONE relationship (e.g. a Doctor "works in" a Department AND "heads" a Department), give EACH of those relationships a distinct, meaningful name ("worksIn", "heads") — never leave two relationships between the same pair of classes unnamed or identically named. The relationship name becomes the association end's role name; missing or duplicate names collide into the same role and fail validation. NAME BOTH ENDS OF EVERY RELATIONSHIP, ALWAYS. An end you leave blank is not neutral - it defaults to the lowercased class name, and those defaults collide silently ACROSS AN INHERITANCE HIERARCHY. Observed live 2026-09-17, and it aborted the whole generation before a single file was written: Booking(unnamed)->Person[contact] gave Person an end called 'booking', Booking(unnamed)->Employee[handledBy] gave Employee an end called 'booking', Employee inherits Person, and the run died with "The class 'Employee' cannot have two association ends with the same name: 'booking'". Guest had the identical clash. So: whenever a PARENT class and its SUBCLASSES are all associated with the same other class - a Person/Employee/Guest hierarchy that all relate to Booking is the textbook case - every one of those ends needs its own distinct name. Correct: source=Booking role='bookingsAsContact' -> target=Person role='contact'; source=Booking role='bookingsHandled' -> target=Employee role='handledBy'; source=Booking role='bookingsStayedOn' -> target=Guest role='guests'. Check every class, INCLUDING the names it inherits, before you finish.
 13. CONSTRAINTS (OCL): if the user EXPLICITLY states a business rule that multiplicities and attribute types cannot express — uniqueness ("emails must be unique"), a limit beyond cardinality ("a speaker presents at most one session per time slot"), or a value range ("age must be at least 18") — capture it in the "constraints" list as an OCL invariant in B-OCL syntax: context <ClassName> inv <name>: <expression>. The context MUST be one of the classes you created. Examples: "context Account inv positiveBalance: self.balance >= 0"; "context Speaker inv oneSessionPerSlot: self.sessions->forAll(s1, s2 | s1 <> s2 implies s1.timeSlot <> s2.timeSlot)". CRITICAL: capture ONLY rules the user actually stated. If the user stated no such rule, leave "constraints" EMPTY — NEVER invent constraints. BUT "EXPLICITLY STATED" MEANS STATED IN ORDINARY PROSE — a rule does NOT have to be labelled "constraint", "invariant" or "rule", and does NOT have to be written in OCL. Every one of these phrasings is an explicit statement you must capture: "must not exceed", "cannot be more than", "may not overlap", "cannot be double-booked", "must be unique", "must be a valid <X>", "at least", "at most", "must not be before/after", "only if". Worked examples from a hotel request: "the total number of guests must not exceed the combined capacity of the rooms booked" => context Booking inv guestsWithinCapacity: self.guestCount <= self.rooms->collect(capacity)->sum(); "a room cannot be double-booked for overlapping dates" => context Room inv noOverlappingBookings: self.bookings->forAll(b1, b2 | b1 <> b2 implies b1.departureDate <= b2.arrivalDate or b2.departureDate <= b1.arrivalDate); "the arrival date must not be after the departure date" => context Booking inv arrivalBeforeDeparture: self.arrivalDate <= self.departureDate; "email and phone must be valid" => context Guest inv validEmail: self.email.matches('.+@.+\\..+'). Before you finish, re-read the request for these phrasings — four stated rules producing an empty constraints list is a failure, not caution.
 
 Examples:
@@ -843,6 +843,46 @@ Examples:
 
         return _reach(True) | _reach(False)
 
+    def _flip_for_inherited_end_clash(
+        self, rel, owner, collect_entries, inheritance_edges, taken_ends,
+    ) -> bool:
+        """Flip a plain Association so its source-derived end becomes nameable.
+
+        Returns True if the relationship was flipped. Only plain associations
+        are flipped - a composition or aggregation carries direction meaning.
+        The flip is taken only when it is strictly an improvement: the end it
+        creates on the far side must not itself already exist in that class's
+        inheritance chain.
+        """
+        if self._spec_rel_type(rel) != "association":
+            return False
+        src, tgt = rel.get("source"), rel.get("target")
+        if not isinstance(src, str) or not isinstance(tgt, str) or src == tgt:
+            return False
+
+        # After flipping, the OLD source gains a source-derived end named
+        # lower(old target). Refuse if that name is already used anywhere in
+        # the old source's own inheritance chain.
+        src_chain = self._reach_over_edges(inheritance_edges, {src})
+        existing_on_src = {
+            e["name"] for e in collect_entries() if e["owner"] in src_chain
+            and e["rel"] is not rel
+        }
+        if tgt.lower() in existing_on_src:
+            return False
+
+        rel["source"], rel["target"] = tgt, src
+        for a, b in (("sourceMultiplicity", "targetMultiplicity"),
+                     ("sourceRole", "targetRole")):
+            if a in rel or b in rel:
+                rel[a], rel[b] = rel.get(b), rel.get(a)
+        logger.info(
+            "[ClassDiagram] Flipped %s->%s to %s->%s so '%s' stops colliding "
+            "on '%s' through inheritance",
+            src, tgt, tgt, src, src.lower(), owner,
+        )
+        return True
+
     def _ensure_unique_association_ends(self, system_spec: Dict[str, Any]) -> None:
         """Make every class's association-end names unique in the spec.
 
@@ -981,6 +1021,25 @@ Examples:
                     if e is kept:
                         continue
                     if not e["fixable"]:
+                        # A source-derived end cannot be renamed, but a plain
+                        # Association can be FLIPPED, which turns it into a
+                        # nameable one. Phase 1 only flips parallels between
+                        # the identical pair; the collision here comes from
+                        # DIFFERENT pairs that meet through inheritance
+                        # (Booking->Person[contact] and Booking->Employee
+                        # [handledBy] both give their target an end called
+                        # "booking", and Employee inherits Person's). That
+                        # aborted a whole run on 2026-09-17 with "The class
+                        # 'Employee' cannot have two association ends with the
+                        # same name: 'booking'".
+                        rel = e["rel"]
+                        flipped = self._flip_for_inherited_end_clash(
+                            rel, e["owner"], _collect_entries,
+                            inheritance_edges, taken_ends,
+                        )
+                        if flipped:
+                            renamed += 1
+                            continue
                         logger.warning(
                             "[ClassDiagram] Class '%s' keeps duplicate end "
                             "'%s' (source-side of a non-reorientable "
