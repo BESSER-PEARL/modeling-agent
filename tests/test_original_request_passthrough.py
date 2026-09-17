@@ -102,3 +102,62 @@ def test_non_smart_classification_still_rejected():
             GenerationClassification(route="deterministic", reason="x"),
             original_request=SPEC,
         )
+
+
+# ----------------------------------------------------------------------
+# Which text gets stashed
+#
+# The first version of this fix stashed ``operation_request`` and looked
+# correct in every unit test, then captured nothing useful live: the planner
+# had already rewritten the 4,622-character spec into one line.
+# ----------------------------------------------------------------------
+
+from src.execution.model_operations import original_request_to_stash
+
+
+class _Req:
+    def __init__(self, message):
+        self.message = message
+
+
+FULL_SPEC = (
+    "A hotel booking and stay management system. A booking has a commercial "
+    "status: awaiting payment, confirmed, or cancelled. Separately it has a "
+    "physical status: not arrived, checked in, or checked out. A booking "
+    "offers five actions, each of which reports back whether it succeeded."
+)
+
+PLANNER_REWRITE = (
+    "create a hotel booking and stay management system with persons "
+    "(employees and guests), rooms, bookings, billing, and the relationships "
+    "between them, including statuses and the actions a booking supports"
+)
+
+
+def test_stashes_the_user_message_not_the_planner_rewrite():
+    stashed = original_request_to_stash(_Req(FULL_SPEC), "complete_system", "ClassDiagram")
+    assert stashed == FULL_SPEC
+    assert "awaiting payment" in stashed
+    assert stashed != PLANNER_REWRITE
+
+
+def test_planner_rewrite_is_not_what_the_rule_reads():
+    """Both strings clear the length floor, so length alone cannot tell them
+    apart — the rule has to read the right field."""
+    assert len(PLANNER_REWRITE) >= 200
+    stashed = original_request_to_stash(_Req(FULL_SPEC), "complete_system", "ClassDiagram")
+    assert "persons (employees and guests), rooms, bookings" not in stashed
+
+
+def test_only_class_diagram_creation_stashes():
+    assert original_request_to_stash(_Req(FULL_SPEC), "complete_system", "GUINoCodeDiagram") is None
+    assert original_request_to_stash(_Req(FULL_SPEC), "modify_model", "ClassDiagram") is None
+
+
+def test_short_asks_are_not_stashed():
+    assert original_request_to_stash(_Req("make a hotel app"), "complete_system", "ClassDiagram") is None
+    assert original_request_to_stash(_Req(""), "complete_system", "ClassDiagram") is None
+
+
+def test_missing_message_attribute_is_tolerated():
+    assert original_request_to_stash(object(), "complete_system", "ClassDiagram") is None

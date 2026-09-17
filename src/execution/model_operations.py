@@ -46,6 +46,25 @@ logger = logging.getLogger(__name__)
 _ORIGINAL_REQUEST_MIN_CHARS = 200
 
 
+def original_request_to_stash(request, operation_mode, target_diagram_type):
+    """The user's verbatim app description, or None.
+
+    Returns the USER'S OWN message, never the planner's ``operation.request``:
+    the planner rewrites a long spec into a short sub-request, and on the
+    2026-09-17 qwen run that rewrite was all the stash captured --
+    "create a hotel booking and stay management system with persons
+    (employees and guests), rooms, bookings, billing, and the..." -- so the
+    sentences naming the status values, the five booking actions and the
+    four business rules never reached the run's gap analyser.
+    """
+    if operation_mode != "complete_system" or target_diagram_type != "ClassDiagram":
+        return None
+    message = (getattr(request, "message", "") or "").strip()
+    if len(message) < _ORIGINAL_REQUEST_MIN_CHARS:
+        return None
+    return message
+
+
 # ------------------------------------------------------------------
 # In-turn creation → snapshot bridge (empty-workspace guard fix)
 #
@@ -502,16 +521,11 @@ def execute_model_operation(
         f"request={operation_request[:120]!r}"
     )
 
-    # The request that builds the class diagram IS the app description. Keep it
-    # verbatim so the smart-gen run can diff it against the model later; the
-    # refined_instructions summary drops the sentences that name status values,
-    # actions and business rules.
-    if (
-        operation_mode == "complete_system"
-        and target_diagram_type == "ClassDiagram"
-        and len(operation_request) >= _ORIGINAL_REQUEST_MIN_CHARS
-    ):
-        session.set(ORIGINAL_APP_REQUEST, operation_request)
+    spec_to_stash = original_request_to_stash(
+        request, operation_mode, target_diagram_type,
+    )
+    if spec_to_stash:
+        session.set(ORIGINAL_APP_REQUEST, spec_to_stash)
 
     # ── Existing-model guard for complete_system ─────────────────────────
     if (
