@@ -669,7 +669,11 @@ def execute_model_operation(
                 history_lines = []
                 for msg in recent[:-1]:
                     role = msg.get("role", "user")
-                    content = msg.get("content", "")[:200]
+                    # A user turn is often the spec itself; 200 chars cut a
+                    # 4,622-char hotel description off inside its first
+                    # sentence, so the history could not stand in for it either.
+                    limit = 2000 if role == "user" else 300
+                    content = msg.get("content", "")[:limit]
                     history_lines.append(f"  {role}: {content}")
                 if history_lines:
                     blocks.append(
@@ -685,8 +689,28 @@ def execute_model_operation(
         except Exception as exc:
             logger.debug(f"Conversation memory retrieval failed (best-effort): {exc}")
 
+    # The planner rewrites a long spec into a one-line sub-request, and the
+    # conversation fallback clips every message to 200 chars, so a 4,622-char
+    # spec reached the class-diagram generator as "create a hotel booking and
+    # stay management system with persons, rooms, bookings, billing, and the...".
+    # That is why the model carried one merged status enum instead of the two
+    # the user described, two of five named actions, and no constraints.
+    spec_block = ""
+    if spec_to_stash and spec_to_stash not in operation_request:
+        spec_block = (
+            "## The user's request, verbatim - THIS IS THE AUTHORITY\n\n"
+            "Model exactly what it states: every status value it lists, every "
+            "action it names, every rule it gives, every attribute it "
+            "describes. The focused instruction that follows is a planner "
+            "summary of this text, not a replacement for it - where they "
+            "differ, this wins.\n\n"
+            f"{spec_to_stash}\n\n"
+            "## Focused instruction\n\n"
+        )
+
     modeling_prompt = (
         f"{conversation_context}"
+        f"{spec_block}"
         f"{operation_request}\n\n"
         f"{build_workspace_context_block(request, target_diagram_type)}"
     )
