@@ -178,3 +178,38 @@ def test_rules_reach_the_complete_system_prompt_not_just_the_source():
     assert "STATUS VOCABULARIES" in SOURCE
     single = ClassDiagramHandler(None).get_system_prompt()
     assert len(PROMPT) > len(single)
+
+
+# ----------------------------------------------------------------------
+# Padding and invented requirements
+#
+# Measured 2026-09-17 across 8 live runs. Every run's instructions were
+# 54-197 characters; the hotel spec was 4,622. Run 0ceb8611's instructions
+# read "...Include user authentication and a responsive design" for a spec
+# that never mentions users or login, and the run built both. The prompt
+# had asked for auth twice by example ("Devise auth", "JWT"), and the
+# class-diagram prompt demanded status fields unconditionally.
+# ----------------------------------------------------------------------
+
+
+def test_attributes_are_not_padded_when_the_user_listed_them():
+    low = PROMPT.lower()
+    assert "use their list and stop there" in low
+    assert "never padded to hit a count" in low
+
+
+def test_status_fields_are_conditional_not_demanded():
+    """The reasoning prompt used to say, flatly, 'include IDs, timestamps,
+    status fields' — which is why Room and Bill got statuses the spec has
+    no trace of."""
+    low = PROMPT.lower()
+    assert "status field only if that entity" in low
+    assert "include ids, timestamps, status fields." not in low
+
+
+def test_stub_classes_are_still_discouraged_for_bare_names():
+    """Removing the floor outright would make 'make a hotel app' produce
+    two-attribute classes."""
+    low = PROMPT.lower()
+    assert "only named" in low
+    assert "3-5+ attributes" in low

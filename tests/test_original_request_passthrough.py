@@ -161,3 +161,42 @@ def test_short_asks_are_not_stashed():
 
 def test_missing_message_attribute_is_tolerated():
     assert original_request_to_stash(object(), "complete_system", "ClassDiagram") is None
+
+
+# ----------------------------------------------------------------------
+# The summary must not invent requirements
+#
+# Run 0ceb8611's instructions, in full, for a spec that never mentions
+# users or login: "Generate a web app for a hotel booking and stay
+# management system with screens for Dashboard, Bookings, Booking Detail,
+# Guests, Rooms, and more. Include user authentication and a responsive
+# design." The run then built auth. The field description had asked for
+# auth twice by example — "Devise auth" and "JWT".
+# ----------------------------------------------------------------------
+
+
+def _refined_instructions_description() -> str:
+    return GenerationClassification.model_fields["refined_instructions"].description
+
+
+def test_field_description_no_longer_uses_auth_as_an_example():
+    desc = _refined_instructions_description()
+    assert "Devise auth" not in desc
+    # JWT may only appear inside the prohibition, never as a sample to copy.
+    assert "(JWT, Docker, migrations, tests)" not in desc
+
+
+def test_field_description_forbids_inventing_the_usual_web_app_extras():
+    low = _refined_instructions_description().lower()
+    assert "invent nothing" in low
+    for banned in ("authentication", "login", "roles", "jwt",
+                   "responsive design", "styling", "navigation"):
+        assert banned in low, f"{banned!r} is not named as something to not invent"
+
+
+def test_field_description_asks_to_preserve_concrete_nouns():
+    """The other half of the failure: 4,622 characters became 197."""
+    low = _refined_instructions_description().lower()
+    assert "status values" in low
+    assert "named operations" in low
+    assert "stated rules" in low

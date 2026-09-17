@@ -102,10 +102,18 @@ class GenerationClassification(BaseModel):
         description=(
             "REQUIRED when route='smart'. A polished, implementation-focused "
             "prompt for the smart generator: 1-3 short paragraphs naming the "
-            "stack (e.g. 'Ruby on Rails 7, PostgreSQL via Active Record, "
-            "Devise auth'), any explicit non-functional requirements the "
-            "user mentioned (JWT, Docker, migrations, tests), and NO "
-            "invented requirements. Max 2000 chars. LEAVE NULL for "
+            "stack (e.g. 'Ruby on Rails 7, PostgreSQL via Active Record') "
+            "and any non-functional requirements THE USER MENTIONED. "
+            "INVENT NOTHING. Never add authentication, login, sign-up, "
+            "roles, JWT, responsive design, styling or navigation unless "
+            "the user's own words asked for them — writing them here makes "
+            "the generator build them as if they had been requested. "
+            "Measured 2026-09-17: a 4,622-character hotel spec that never "
+            "mentions users or login was summarised as '...Include user "
+            "authentication and a responsive design', and the run duly "
+            "built both. Preserve the user's concrete nouns — status "
+            "values, named operations, stated rules — rather than "
+            "generalising them away. Max 2000 chars. LEAVE NULL for "
             "route != 'smart'."
         ),
     )
