@@ -392,6 +392,15 @@ Examples:
             # optional parameters.
             self._sanitize_member_types(system_spec)
 
+            # Guard: no set of classes may each need the other to exist first.
+            # An "at least one" bound facing a link's mandatory back-reference
+            # (Booking 1..* BookedRoom, BookedRoom 1 Booking) makes both create
+            # schemas demand the other's id, so the generated API can construct
+            # neither. Relax one end per cycle and keep the rule as an OCL
+            # invariant. Runs after the orientation/naming guards so the
+            # invariant navigates the end by its final name.
+            self._break_mandatory_cycles(system_spec)
+
             # Drop any OCL constraint whose context isn't a real class in the
             # spec (the LLM occasionally references a class it didn't create).
             self._validate_constraints(system_spec)
@@ -949,6 +958,21 @@ Examples:
         a, b = roles(first), roles(second)
         return bool(a and b and a == (b[1], b[0]))
 
+    @staticmethod
+    def _is_default_end_name(name: Any, target: Any) -> bool:
+        """True when a label says nothing a missing label would not.
+
+        The converter names an unlabelled end after its class (``booking`` on
+        a link to ``Booking``), so a label that merely repeats the target
+        class — singular or plural, with or without the ``_N`` collision
+        suffix — carries no role information and cannot claim a distinct role.
+        """
+        if not isinstance(name, str) or not isinstance(target, str):
+            return False
+        base = re.sub(r"_\d+$", "", name.strip().lower())
+        cls = target.strip().lower()
+        return bool(cls) and base in (cls, cls + "s", cls + "es")
+
     def _merge_redundant_parallel_associations(self, system_spec: Dict[str, Any]) -> None:
         """Collapse an association the LLM emitted more than once.
 
@@ -965,7 +989,13 @@ Examples:
         told apart by their names: a group whose relationships all carry
         DISTINCT non-empty names is left alone. Any other group — one named and
         one unnamed, all unnamed, or repeated names — is one fact stated twice
-        and is merged into a single relationship.
+        and is merged into a single relationship. A label that merely repeats
+        its target class (``booking`` on a link to ``Booking``) is what the
+        converter derives for a missing label, so it counts as unnamed here:
+        live 2026-09-18 (``4efe04ff``/``9a6063ed``) three pairs were each one
+        fact named after its own target from both sides, slipped past this
+        test, and surfaced downstream as a ``_1``-suffixed duplicate end and
+        a second foreign key.
 
         The survivor keeps the first occurrence's orientation and the first
         non-empty name; each end's multiplicity becomes the union of the
@@ -1001,6 +1031,7 @@ Examples:
                 rel["name"].strip()
                 for rel in group
                 if isinstance(rel.get("name"), str) and rel["name"].strip()
+                and not self._is_default_end_name(rel["name"], rel["target"])
             ]
             all_distinctly_named = (
                 len(names) == len(group) and len(set(names)) == len(group)
@@ -1414,6 +1445,142 @@ Examples:
                 "[ClassDiagram] Class-typed-attribute guard: %d -> association, "
                 "%d -> String", converted, coerced,
             )
+
+    def _break_mandatory_cycles(self, system_spec: Dict[str, Any]) -> None:
+        """Relax one end of every mandatory creation cycle, keeping the rule as OCL.
+
+        Live runs ``4efe04ff`` and ``9a6063ed`` (2026-09-18) rendered "a
+        booking covers at least one room" as ``Booking --[1..*]--> BookedRoom``
+        while the link class kept ``BookedRoom --[1]--> Booking``. Each class
+        then needs an instance of the other to exist first, so the generated
+        ``BookingCreate`` demanded a ``BookedRoom`` id, ``BookedRoomCreate`` a
+        ``Booking`` id, and the shipped API could construct neither (69 routes,
+        2 of 15 workflow checks passed). BESSER's
+        ``DomainModel._validate_mandatory_cycles`` now reports the shape and
+        the Spec-Driven Agent refuses to build on it.
+
+        "At least one" is a business invariant, not a creation-time bound:
+        ``0..*`` plus ``context Booking inv: self.bookedRooms->size() >= 1``
+        states the same rule at the same strength, checked on a complete
+        object instead of at insert time. Dependencies are derived as the
+        validator derives them — an end with ``min >= 1`` means the class at
+        the other end needs this end's type, and a mandatory self-association
+        cycles on its own. Per cycle ONE end is relaxed, chosen by: a
+        many-valued end (``1..*``) over a single-valued one (``1``), which
+        keeps the child's mandatory parent reference — the NOT NULL foreign
+        key — intact; then the target end over the source end (the spec's
+        named, navigable end, so a composition keeps its whole); then document
+        order. Repeats until nothing cycles. The invariant navigates the end
+        by the name the converter will give it (the relationship name on a
+        target end, the lowercased source class on a source end) because B-OCL
+        resolves it against the context class.
+
+        Mutates *system_spec* in place; no-op when nothing cycles.
+        """
+        relationships = system_spec.get("relationships")
+        if not isinstance(relationships, list) or not relationships:
+            return
+        order = {id(rel): i for i, rel in enumerate(relationships)}
+
+        def _mandatory_ends() -> List[Dict[str, Any]]:
+            """One entry per end with min >= 1: the class at the OTHER end
+            (``needer``) cannot be created without this end's type."""
+            ends: List[Dict[str, Any]] = []
+            for rel in relationships:
+                if not isinstance(rel, dict):
+                    continue
+                if self._spec_rel_type(rel) in self._SPEC_NON_END_REL_TYPES:
+                    continue
+                src, tgt = rel.get("source"), rel.get("target")
+                if not isinstance(src, str) or not isinstance(tgt, str):
+                    continue
+                if not src or not tgt:
+                    continue
+                for side, needer, needed in (("target", src, tgt), ("source", tgt, src)):
+                    low, up = self._parse_multiplicity(rel.get(f"{side}Multiplicity"))
+                    if low >= self._SPEC_UNBOUNDED:
+                        low = 0  # a bare "*" parses as (star, star); it means 0..*
+                    if low >= 1:
+                        ends.append({
+                            "rel": rel, "side": side, "needer": needer,
+                            "needed": needed, "min": low, "max": up,
+                        })
+            return ends
+
+        def _find_cycle(ends: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+            needs: Dict[str, List[Dict[str, Any]]] = {}
+            for end in ends:
+                needs.setdefault(end["needer"], []).append(end)
+            for start in needs:
+                stack: List[tuple] = [(start, [])]
+                seen: set = set()
+                while stack:
+                    node, path = stack.pop()
+                    on_path = [start] + [e["needed"] for e in path]
+                    for end in needs.get(node, ()):
+                        if end["needed"] in on_path:
+                            return path[on_path.index(end["needed"]):] + [end]
+                        if end["needed"] not in seen:
+                            seen.add(end["needed"])
+                            stack.append((end["needed"], path + [end]))
+            return None
+
+        constraints = system_spec.get("constraints")
+        if not isinstance(constraints, list):
+            constraints = []
+        taken_names: set = set()
+        for con in constraints:
+            if not isinstance(con, dict):
+                continue
+            if isinstance(con.get("name"), str):
+                taken_names.add(con["name"].strip())
+            match = re.search(r"\binv\s+(\w+)\s*:", str(con.get("expression") or ""))
+            if match:
+                taken_names.add(match.group(1))
+
+        relaxed = 0
+        for _ in range(2 * len(relationships)):  # each pass drops one mandatory end
+            cycle = _find_cycle(_mandatory_ends())
+            if not cycle:
+                break
+            victim = min(cycle, key=lambda e: (
+                e["max"] <= 1, e["side"] != "target", order[id(e["rel"])],
+            ))
+            rel, side = victim["rel"], victim["side"]
+            before = rel.get(f"{side}Multiplicity")
+            rel[f"{side}Multiplicity"] = self._format_multiplicity(0, victim["max"])
+            label = rel.get("name")
+            if side == "target" and isinstance(label, str) and label.strip():
+                end_name = label.strip()
+            else:
+                end_name = rel[side].lower()
+            base = f"{end_name}_at_least_{victim['min']}"
+            name, counter = base, 2
+            while name in taken_names:
+                name = f"{base}_{counter}"
+                counter += 1
+            taken_names.add(name)
+            constraints.append({
+                "context": victim["needer"],
+                "expression": (
+                    f"context {victim['needer']} inv {name}: "
+                    f"self.{end_name}->size() >= {victim['min']}"
+                ),
+                "name": name,
+            })
+            relaxed += 1
+            logger.info(
+                "[ClassDiagram] Relaxed the %s end of %s-%s from %s to %s to break "
+                "the mandatory creation cycle %s; kept the rule as OCL invariant '%s'",
+                side, rel["source"], rel["target"], before,
+                rel[f"{side}Multiplicity"],
+                " -> ".join([cycle[0]["needer"]] + [e["needed"] for e in cycle]),
+                name,
+            )
+
+        if relaxed:
+            system_spec["constraints"] = constraints
+            logger.info("[ClassDiagram] Broke %d mandatory creation cycle(s)", relaxed)
 
     def _validate_constraints(self, system_spec: Dict[str, Any]) -> None:
         """Drop OCL constraints whose context isn't a real class in the spec (#46).

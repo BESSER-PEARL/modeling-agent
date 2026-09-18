@@ -500,3 +500,98 @@ def test_keeping_a_duplicate_is_logged_not_silent(handler, caplog):
     assert len(_rels(spec)) == 2
     assert "Kept 2 parallel" in caplog.text
     assert "homeAddress" in caplog.text and "workAddress" in caplog.text
+
+
+# -- a label that only repeats the target class is not a role -------------
+#    (live 2026-09-18, runs 4efe04ff / 9a6063ed)
+def test_live_pair_named_after_its_own_target_from_both_sides_is_merged(handler):
+    """Booking--reservedRooms-->ReservedRoom beside ReservedRoom--booking-->
+    Booking: 'booking' is what the converter derives for an unlabelled end,
+    so the pair is one fact stated twice. Kept, it surfaced downstream as a
+    'booking_1' end and a second foreign key."""
+    spec = {"relationships": [
+        {"type": "Association", "source": "Booking", "target": "ReservedRoom",
+         "sourceMultiplicity": "1", "targetMultiplicity": "1..*", "name": "reservedRooms"},
+        {"type": "Association", "source": "ReservedRoom", "target": "Booking",
+         "sourceMultiplicity": "1..*", "targetMultiplicity": "1", "name": "booking"},
+    ]}
+    handler._merge_redundant_parallel_associations(spec)
+    assert len(_rels(spec)) == 1
+    rel = _rels(spec)[0]
+    assert (rel["source"], rel["target"]) == ("Booking", "ReservedRoom")
+    assert rel["name"] == "reservedRooms"
+    assert rel["sourceMultiplicity"] == "1"
+    assert rel["targetMultiplicity"] == "1..*"
+
+
+def test_live_room_reservedroom_default_name_is_merged(handler):
+    """ReservedRoom--room-->Room beside Room--reservations-->ReservedRoom
+    (downstream: 'room_1' / 'reservations')."""
+    spec = {"relationships": [
+        {"type": "Association", "source": "ReservedRoom", "target": "Room",
+         "sourceMultiplicity": "0..*", "targetMultiplicity": "1", "name": "room"},
+        {"type": "Association", "source": "Room", "target": "ReservedRoom",
+         "sourceMultiplicity": "1", "targetMultiplicity": "0..*", "name": "reservations"},
+    ]}
+    handler._merge_redundant_parallel_associations(spec)
+    assert len(_rels(spec)) == 1
+    rel = _rels(spec)[0]
+    assert (rel["source"], rel["target"]) == ("ReservedRoom", "Room")
+    assert rel["sourceMultiplicity"] == "0..*"
+    assert rel["targetMultiplicity"] == "1"
+
+
+def test_live_bill_booking_default_names_are_merged(handler):
+    """Booking--bill-->Bill beside Bill--booking-->Booking (downstream:
+    'bill_1' / 'billBooking', the latter minted by the name dedupe)."""
+    spec = {"relationships": [
+        {"type": "Association", "source": "Booking", "target": "Bill",
+         "sourceMultiplicity": "1", "targetMultiplicity": "0..1", "name": "bill"},
+        {"type": "Association", "source": "Bill", "target": "Booking",
+         "sourceMultiplicity": "0..1", "targetMultiplicity": "1", "name": "booking"},
+    ]}
+    handler._merge_redundant_parallel_associations(spec)
+    assert len(_rels(spec)) == 1
+    rel = _rels(spec)[0]
+    assert rel["sourceMultiplicity"] == "1"
+    assert rel["targetMultiplicity"] == "0..1"
+
+
+def test_collision_suffixed_default_name_is_not_a_role(handler):
+    spec = {"relationships": [
+        {"type": "Association", "source": "Booking", "target": "ReservedRoom",
+         "sourceMultiplicity": "1", "targetMultiplicity": "1..*", "name": "reservedRooms"},
+        {"type": "Association", "source": "ReservedRoom", "target": "Booking",
+         "sourceMultiplicity": "1..*", "targetMultiplicity": "1", "name": "booking_1"},
+    ]}
+    handler._merge_redundant_parallel_associations(spec)
+    assert len(_rels(spec)) == 1
+
+
+def test_plural_default_names_on_both_sides_are_merged(handler):
+    spec = {"relationships": [
+        {"type": "Association", "source": "Customer", "target": "Order",
+         "sourceMultiplicity": "1", "targetMultiplicity": "0..*", "name": "orders"},
+        {"type": "Association", "source": "Order", "target": "Customer",
+         "sourceMultiplicity": "0..*", "targetMultiplicity": "1", "name": "customer"},
+    ]}
+    handler._merge_redundant_parallel_associations(spec)
+    assert len(_rels(spec)) == 1
+
+
+@pytest.mark.parametrize("name,target,expected", [
+    ("booking", "Booking", True),
+    ("Booking", "Booking", True),
+    ("bookings", "Booking", True),
+    ("addresses", "Address", True),
+    ("booking_1", "Booking", True),
+    ("reservedRooms", "ReservedRoom", True),
+    ("homeAddress", "Address", False),
+    ("owns", "Car", False),
+    ("contact", "Person", False),
+    ("reservations", "ReservedRoom", False),
+    ("", "Booking", False),
+    (None, "Booking", False),
+])
+def test_default_end_name_helper(handler, name, target, expected):
+    assert handler._is_default_end_name(name, target) is expected
