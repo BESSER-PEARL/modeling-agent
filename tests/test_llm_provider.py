@@ -7,13 +7,14 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from llm.provider import LLMProvider
+from agent_config import LLM_MODEL_DEFAULT
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_mock_llm(name: str = "gpt-4.1-mini", has_client: bool = True) -> MagicMock:
+def _make_mock_llm(name: str = LLM_MODEL_DEFAULT, has_client: bool = True) -> MagicMock:
     """Build a MagicMock that looks like a BESSER LLMOpenAI instance."""
     mock_llm = MagicMock()
     mock_llm.predict.return_value = "test response"
@@ -39,9 +40,12 @@ class TestConstructor:
         assert provider.model_name == "gpt-4o"
 
     def test_default_model_name(self):
+        # The provider default follows the routing table's classifier tier
+        # (env-overridable) instead of a hard-coded literal.
+        from model_config import MODEL_CLASSIFIER
         mock_llm = _make_mock_llm()
         provider = LLMProvider(mock_llm)
-        assert provider.model_name == "gpt-4.1-mini"
+        assert provider.model_name == MODEL_CLASSIFIER
 
     def test_tracker_is_set(self):
         mock_llm = _make_mock_llm()
@@ -132,11 +136,6 @@ class TestClientProperty:
 
 class TestModelNameProperty:
     """model_name returns the configured model string."""
-
-    def test_returns_configured_name(self):
-        mock_llm = _make_mock_llm()
-        provider = LLMProvider(mock_llm, model_name="gpt-4o")
-        assert provider.model_name == "gpt-4o"
 
     def test_different_model_names(self):
         for name in ("gpt-4.1-mini", "gpt-4o-mini", "gpt-4.1", "custom-model"):

@@ -18,11 +18,21 @@ logger = logging.getLogger(__name__)
 # Pools are ordered by relevance; the engine picks from these based on
 # context and available diagrams.
 
+# The class diagram the agent just built IS "the spec". After creation the
+# user should either move on to code, or review the spec — not pick among
+# generators. Keep this to a clean two-step choice.
+#
+# - "generate the code" routes into the Spec-Driven (smart) generation flow,
+#   which builds the app FROM THE SPEC (deterministic generators + LLM for
+#   gaps) without inventing requirements. It deliberately does NOT say
+#   "generate the backend" (that mapped to the backend-only deterministic
+#   generator and made the agent fabricate requirements).
+# - "Review the model" sends the ``wme:review-spec`` sentinel, which the
+#   frontend intercepts to CLOSE the assistant drawer so the user sees the
+#   diagram on the canvas — it is never relayed to the agent.
 _CLASS_DIAGRAM_COMPLETE = [
-    ("Generate Python code", "generate python"),
-    ("Generate Django backend", "generate django"),
-    ("Create a GUI for this system", "create a gui for this system"),
-    ("Add a state machine", "create a state machine for this system"),
+    ("Generate the code", "generate the application"),
+    ("Review the model", "wme:review-spec"),
 ]
 
 _CLASS_DIAGRAM_SINGLE = [
@@ -46,12 +56,12 @@ _STATE_MACHINE_SUGGESTIONS = [
 _GUI_SUGGESTIONS_WITH_CLASS = [
     ("Generate web app", "generate web app"),
     ("Generate React frontend", "generate react"),
-    ("Modify the GUI", ""),
+    ("See GUI", ""),
 ]
 
 _GUI_SUGGESTIONS_WITHOUT_CLASS = [
     ("Create the backend model", "create a class diagram for this GUI"),
-    ("Modify the GUI", ""),
+    ("See GUI", ""),
 ]
 
 _AGENT_SUGGESTIONS = [
@@ -79,11 +89,59 @@ _BPMN_SUGGESTIONS = [
     ("Regenerate with more detail", "Regenerate the current BPMN process with more detail and intermediate steps."),
 ]
 
+_USER_PROFILE_SUGGESTIONS = [
+    ("Add a competence", "add a Language box for French at C1"),
+    ("Refine a criterion", "set the age criterion to >= 21"),
+    ("Add accessibility needs", "add an Accessibility box"),
+    ("Describe my user profile", "describe my user profile"),
+]
+
 _GENERATION_SUGGESTIONS = [
     ("Generate another format", "generate sql"),
     ("Modify the model", ""),
     ("Describe my diagram", "describe my diagram"),
 ]
+
+# Maps generator keys to friendly artifact display names (used in post-spec messages
+# and button labels).
+GENERATOR_ARTIFACT_LABELS: Dict[str, str] = {
+    "sql": "database",
+    "sqlalchemy": "database",
+    "web_app": "web app",
+    "django": "Django app",
+    "backend": "backend",
+    "rest_api": "REST API",
+    "python": "Python classes",
+    "java": "Java classes",
+    "pydantic": "Pydantic models",
+    "jsonschema": "JSON Schema",
+    "smartdata": "Smart Data model",
+    "rdf": "RDF vocabulary",
+    "agent": "BESSER agent",
+    "qiskit": "Qiskit circuit",
+    "react": "React frontend",
+    "flutter": "Flutter app",
+}
+
+# Maps generator keys to the prompt that reliably routes back into that generator.
+_GENERATOR_PROMPTS: Dict[str, str] = {
+    "sql": "generate sql",
+    "sqlalchemy": "generate sqlalchemy",
+    "web_app": "generate web app",
+    "django": "generate django",
+    "backend": "generate backend",
+    "rest_api": "generate rest api",
+    "python": "generate python",
+    "java": "generate java",
+    "pydantic": "generate pydantic",
+    "jsonschema": "generate json schema",
+    "smartdata": "generate smartdata",
+    "rdf": "generate rdf",
+    "agent": "generate agent",
+    "qiskit": "generate qiskit",
+    "react": "generate react",
+    "flutter": "generate flutter",
+}
 
 
 # ------------------------------------------------------------------
@@ -108,6 +166,38 @@ def _build_actions(candidates: List[tuple], limit: int = 4) -> List[Dict[str, st
 # ------------------------------------------------------------------
 # Public API
 # ------------------------------------------------------------------
+
+def get_artifact_label(detected_generator: Optional[str]) -> str:
+    """Return the friendly artifact label for a generator type (e.g. 'sql' → 'database')."""
+    return GENERATOR_ARTIFACT_LABELS.get(detected_generator, "application") if detected_generator else "application"
+
+
+def get_post_spec_suggestions(detected_generator: Optional[str]) -> List[Dict[str, str]]:
+    """Artifact-aware buttons shown after a complete spec is built.
+
+    When the original prompt signals a specific generator (e.g. 'database' → sql),
+    the primary button names that artifact. Falls back to 'application' when no
+    generator was detected.
+    """
+    label = get_artifact_label(detected_generator)
+    prompt = _GENERATOR_PROMPTS.get(detected_generator, "generate the application") if detected_generator else "generate the application"
+    return [
+        {"label": f"Generate {label}", "prompt": prompt},
+        {
+            "label": "Explain the specs",
+            # Relayed to the agent like any chip; the wording routes to
+            # describe_model, which streams a plain-language overview of the
+            # model (entities + relationships in words). Same request the
+            # assistant's "explain" affordance sends.
+            "prompt": (
+                "Give me a plain-language overview of my current model — the "
+                "main entities and how they relate, in plain words (no "
+                "multiplicity jargon)."
+            ),
+        },
+        {"label": "Review the model", "prompt": "wme:review-spec"},
+    ]
+
 
 def get_suggested_actions(
     diagram_type: str,
@@ -225,6 +315,13 @@ def _suggestions_for_bpmn(
     return _build_actions(_BPMN_SUGGESTIONS)
 
 
+def _suggestions_for_user_profile(
+    operation_mode: str,
+    available_diagrams: Optional[List[str]],
+) -> List[Dict[str, str]]:
+    return _build_actions(_USER_PROFILE_SUGGESTIONS)
+
+
 _DIAGRAM_SUGGESTION_HANDLERS = {
     "ClassDiagram": _suggestions_for_class_diagram,
     "StateMachineDiagram": _suggestions_for_state_machine,
@@ -233,6 +330,7 @@ _DIAGRAM_SUGGESTION_HANDLERS = {
     "ObjectDiagram": _suggestions_for_object_diagram,
     "QuantumCircuitDiagram": _suggestions_for_quantum,
     "BPMN": _suggestions_for_bpmn,
+    "UserDiagram": _suggestions_for_user_profile,
 }
 
 
@@ -295,27 +393,26 @@ def _context_aware_suggestions(
     candidates: List[tuple] = []
 
     if diagram_type == "ClassDiagram":
-        # Suggest adding attributes to a specific class
-        if element_names and operation_mode == "complete_system":
+        # The class diagram the agent just built IS "the spec". Frame the
+        # next step as a two-step choice: generate the code, or review the
+        # spec — not a menu of generators. "generate the application" routes
+        # into the Spec-Driven (smart) flow and builds the app from the spec;
+        # "wme:review-spec" is a frontend sentinel that closes the drawer so
+        # the user sees the diagram (never relayed to the agent).
+        candidates.append(("Generate the code", "generate the application"))
+        candidates.append(("Review the model", "wme:review-spec"))
+        # Secondary: a context-aware tweak that references the user's own
+        # classes (only if there's room after the two-step choice, capped
+        # at 4 below).
+        if relationship_count == 0 and element_count > 1:
+            candidates.append(
+                ("Add relationships", "add relationships between my classes")
+            )
+        elif element_names and operation_mode == "complete_system":
             first_class = element_names[0]
             candidates.append(
                 (f"Add attributes to {first_class}", f"add more attributes to {first_class}")
             )
-        # If no relationships, suggest adding some
-        if relationship_count == 0 and element_count > 1:
-            candidates.append(
-                ("Add relationships between classes", "add relationships between my classes")
-            )
-        # Cross-diagram suggestions
-        if not _has_diagram(available_diagrams, "StateMachineDiagram"):
-            candidates.append(
-                ("Add a state machine", "create a state machine for this system")
-            )
-        if not _has_diagram(available_diagrams, "GUINoCodeDiagram"):
-            candidates.append(
-                ("Create a GUI", "create a gui for this system")
-            )
-        candidates.append(("Generate code", "generate python"))
 
     elif diagram_type == "StateMachineDiagram":
         if element_names:

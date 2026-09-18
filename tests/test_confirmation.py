@@ -118,7 +118,16 @@ class TestKeywordMatchesWholeWord:
 
 
 class TestKeywordMatchesPartial:
-    """Keywords NOT in _WHOLE_WORD_KEYWORDS use simple substring 'in' matching."""
+    """All keywords now use whole-word/whole-phrase boundary matching.
+
+    Reconciled to feature behavior (commit 7161fdd, a [BLOCKER] safety fix):
+    keyword_matches() used to substring-match, which read 'replace' inside
+    'do not replace' and let stray edit verbs cause silent data loss during a
+    pending confirmation. It's now always \\b-bounded regex matching — there
+    is no longer a distinct "_WHOLE_WORD_KEYWORDS" subset (that set was
+    removed entirely), so words like "replacement"/"cancellation" no longer
+    match their shorter root keyword.
+    """
 
     def test_replace_standalone(self):
         assert keyword_matches("replace", "replace") is True
@@ -127,8 +136,9 @@ class TestKeywordMatchesPartial:
         assert keyword_matches("replace", "please replace it") is True
 
     def test_replace_as_substring(self):
-        # Substring match: "replace" inside "replacement" matches
-        assert keyword_matches("replace", "replacement needed") is True
+        # Whole-word match: "replace" inside "replacement" no longer matches
+        # (this is the exact false positive the [BLOCKER] fix eliminated).
+        assert keyword_matches("replace", "replacement needed") is False
 
     def test_cancel_standalone(self):
         assert keyword_matches("cancel", "cancel") is True
@@ -137,7 +147,8 @@ class TestKeywordMatchesPartial:
         assert keyword_matches("cancel", "I want to cancel") is True
 
     def test_cancel_as_substring(self):
-        assert keyword_matches("cancel", "cancellation") is True
+        # Whole-word match: "cancel" inside "cancellation" no longer matches.
+        assert keyword_matches("cancel", "cancellation") is False
 
     def test_overwrite_match(self):
         assert keyword_matches("overwrite", "overwrite the old model") is True
@@ -252,7 +263,15 @@ class TestKeywordListsNonEmpty:
 
     def test_known_keep_keywords_present(self):
         assert "keep" in KEEP_KEYWORDS
-        assert "no" in KEEP_KEYWORDS
+        # 'no' moved to the WEAK tier (short-message-only) and 'add' was
+        # removed outright: both consumed real pivot messages like
+        # "no, just add an email attribute to Customer" as a KEEP answer,
+        # discarding the user's actual instruction.
+        from confirmation import _WEAK_KEEP_KEYWORDS, _WEAK_KEEP_MAX_WORDS
+        assert "no" not in KEEP_KEYWORDS
+        assert "add" not in KEEP_KEYWORDS
+        assert "no" in _WEAK_KEEP_KEYWORDS
+        assert _WEAK_KEEP_MAX_WORDS <= 5
 
     def test_known_cancel_keywords_present(self):
         assert "cancel" in CANCEL_KEYWORDS

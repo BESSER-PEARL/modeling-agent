@@ -9,6 +9,7 @@ and intents have been created.
 """
 
 import logging
+import re
 from typing import Any, Dict, Optional
 
 from baf.core.session import Session
@@ -16,13 +17,15 @@ from baf.library.transition.events.base_events import ReceiveJSONEvent
 from baf.nlp.rag.rag import RAGMessage
 
 import agent_context as ctx
+from model_config import MODEL_GENERATION_SMALL
 from protocol.adapters import parse_assistant_request
 from protocol.types import AssistantRequest
-from memory import get_memory
+from memory import get_memory, memory_session_key
 from session_helpers import (
     get_user_message,
     reply_message,
     reply_payload,
+    replay_last_reply,
     stream_llm_response,
     json_intent_matches,
     json_no_intent_matched,
@@ -37,12 +40,18 @@ from suggestions import get_suggested_actions, format_suggestions_as_text
 from diagram_handlers.registry.metadata import get_diagram_type_info
 from handlers.generation_handler import (
     handle_generation_request,
+    handle_pending_plan_generation_confirmation,
+    handle_pending_smart_gen_confirmation,
     _looks_like_mixed_modeling_and_generation,
-    detect_generator_type,
 )
-from handlers.validation_handler import validate_diagram
 from orchestrator import determine_target_diagram_type
+from utilities.model_context import detailed_model_summary, is_diagram_nontrivial
 from utilities.model_context import detailed_model_summary
+from utilities.user_metamodel import (
+    build_user_profile_help_prompt,
+    format_user_metamodel_guide,
+    is_user_profile_help,
+)
 from routing.intents import GENERATION_INTENT_NAME
 from session_keys import (
     HAS_GREETED,
@@ -50,8 +59,20 @@ from session_keys import (
     LAST_MATCHED_INTENT,
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
-    WORKFLOW_PENDING_GENERATOR,
+    PENDING_GENERATOR_TYPE,
+    UNIFIED_CLASSIFICATION,
 )
+from reply_copy import (
+    DECLINE_ACK as _DECLINE_ACK,
+    META_ANSWER as _META_ANSWER,
+    OUT_OF_SCOPE_REDIRECT as _OUT_OF_SCOPE_REDIRECT,
+)
+from unified_classifier import get_or_classify
+
+try:
+    from llm.provider import get_provider as _get_llm_provider
+except ImportError:  # pragma: no cover — test env without BAF stack
+    _get_llm_provider = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +81,45 @@ logger = logging.getLogger(__name__)
 # Common preamble helper
 # ------------------------------------------------------------------
 
+def _ensure_unified_classification(session: Session) -> bool:
+    """Priority-0 transition hook: populates the per-message classifier cache.
+
+    ALWAYS returns False. The purpose is the side effect: one LLM call
+    per message that sets ``session[UNIFIED_CLASSIFICATION]``, so the
+    subsequent ``json_intent_matches`` transitions read our classifier's
+    verdict instead of BAF's description-based one.
+
+    Runs for pending-flow replies TOO (ActiveFlow): the classifier sees
+    the pending question in its context and judges answer-vs-new-request
+    — that verdict is what lets ``json_intent_matches`` route a pivot
+    normally instead of trapping it in the asking state. Skips only when
+    the session already has a cached classification for this event id.
+    """
+    try:
+        request = parse_assistant_request(session)
+        # Reconnect-recovery control message — never classify it.
+        if getattr(request, "action", None) == "replay_last_response":
+            return False
+        # frontend_event callbacks may carry an empty message but must
+        # still be classified (deterministically — see get_or_classify)
+        # so the transition routes them to the generation handler.
+        is_frontend_event = getattr(request, "action", None) == "frontend_event"
+        if not is_frontend_event and not (request.message or "").strip():
+            return False
+        provider = _get_llm_provider() if _get_llm_provider else None
+        classification = get_or_classify(session, request, provider)
+        logger.info(
+            "unified classifier: intent=%s generation_route=%s generator_type=%s reason=%s",
+            classification.intent,
+            classification.generation_route,
+            classification.generator_type,
+            classification.reason,
+        )
+    except Exception:
+        logger.exception("unified classifier hook failed; falling back to BAF")
+    return False
+
+
 def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     """Run the shared preamble checks for every state body.
 
@@ -67,9 +127,26 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     handled normally, or ``None`` if a pending flow or file attachment
     already consumed it.
     """
+    # Reconnect recovery: the frontend re-requests its last completed reply after
+    # a mid-generation WebSocket reconnect dropped it. Re-send the buffered reply
+    # and stop — never re-run generation or consume a pending flow.
+    _replay_req = parse_assistant_request(session)
+    if getattr(_replay_req, "action", None) == "replay_last_response":
+        replay_last_reply(session, _replay_req)
+        return None
+
     if handle_pending_gui_choice(session):
         return None
     if handle_pending_system_confirmation(session):
+        return None
+    if handle_pending_smart_gen_confirmation(session):
+        return None
+    # Plan-paused generation: an EXACT yes/ok/generate/no typed at the
+    # "review or continue with generating?" question is consumed here so it
+    # fires (or cancels) the stashed generator no matter which state the
+    # intent classifier routed the message to — the classifier stamps short
+    # answers like a bare "ok" as decline_intent (live bug).
+    if handle_pending_plan_generation_confirmation(session):
         return None
 
     request = parse_assistant_request(session)
@@ -77,16 +154,38 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     if handle_file_attachments(session, request):
         return None
 
-    # Record user message in conversation memory
+    # Record user message in conversation memory. Keyed on the stable
+    # payload sessionId so memory survives WebSocket reconnects (B-5).
     if request.message:
         try:
-            session_id = getattr(session, 'id', None) or str(id(session))
+            session_id = memory_session_key(session, request)
             summarizer = getattr(ctx, 'gpt_text', None)
             summarize_fn = summarizer.predict if summarizer else None
             mem = get_memory(session_id, summarizer=summarize_fn)
             mem.add_user(request.message)
         except Exception as exc:
             logger.debug(f"Recording user message in memory failed (best-effort): {exc}")
+
+    # Ask-instead-of-guess: when the classifier judges the request genuinely
+    # ambiguous (no resolvable referent, two readings, missing target the
+    # workspace can't supply), stream its clarifying question and stop rather
+    # than guessing a destructive mutation. Conservative by design — the
+    # classifier is told to bias toward acting. Cached classification, so no
+    # extra LLM call. Never fires on frontend_event callbacks; pending flows
+    # were already handled above.
+    if request.message and getattr(request, "action", None) != "frontend_event":
+        try:
+            _uc = get_or_classify(
+                session, request,
+                _get_llm_provider() if _get_llm_provider else None,
+            )
+            if getattr(_uc, "needs_clarification", False):
+                _q = (getattr(_uc, "clarifying_question", None) or "").strip()
+                if _q:
+                    reply_message(session, _q)
+                    return None
+        except Exception as _clarify_err:
+            logger.debug(f"clarify check skipped (best-effort): {_clarify_err}")
 
     return request
 
@@ -120,7 +219,8 @@ _QUICK_RESPONSES = {
         "- **GUI / Web UI** — *\"Design a dashboard for my Product class\"*\n"
         "- **Agent Diagrams** — *\"Create a pizza-ordering chatbot agent\"*\n"
         "- **Quantum Circuits** — *\"Create Grover's search algorithm\"*\n"
-        "- **BPMN Diagrams** — *\"Model an order fulfillment process\"*\n\n"
+        "- **BPMN Diagrams** — *\"Model an order fulfillment process\"*\n"
+        "- **User Profiles** — *\"Create a target user profile for elderly users with sight issues\"*\n\n"
         "**Modify diagrams:**\n"
         "- *\"Add email attribute to User\"*, *\"Rename Order to Purchase\"*, *\"Add a transition from Idle to Active\"*\n\n"
         "**Generate code:**\n"
@@ -141,9 +241,28 @@ _QUICK_RESPONSES = {
         "   *Example: \"Generate Django\"* or *\"Generate a web app\"*\n\n"
         "**Tips:**\n"
         "- Be specific about what you want — more detail = better results\n"
-        "- I support 7 diagram types: Class, State Machine, Object, GUI, Agent, Quantum Circuit, and BPMN\n"
+        "- I support 8 diagram types: Class, State Machine, Object, GUI, Agent, "
+        "Quantum Circuit, BPMN, and User Profile\n"
         "- You can switch between diagram types anytime\n"
         "- Ask *\"What can you do?\"* for a full list of capabilities"
+    ),
+    "how_to_run": (
+        "**Running the app you generated:**\n\n"
+        "1. **Unzip** the download.\n"
+        "2. If it includes a **`docker-compose.yml`** (most web apps do):\n"
+        "   ```\n"
+        "   docker compose up --build\n"
+        "   ```\n"
+        "   then open the URL it prints — usually **http://localhost:8000** "
+        "(backend) or **http://localhost:3000** (frontend).\n\n"
+        "3. Otherwise, by stack:\n"
+        "   - **FastAPI / Python backend** — `pip install -r requirements.txt`, "
+        "then `uvicorn main:app --reload` (or `python main.py`).\n"
+        "   - **Django** — `pip install -r requirements.txt`, "
+        "`python manage.py migrate`, `python manage.py runserver`.\n"
+        "   - **React / Next.js frontend** — `npm install`, then `npm run dev`.\n\n"
+        "The generated project ships a **README** with the exact command — "
+        "check it if you're unsure."
     ),
 }
 
@@ -161,6 +280,12 @@ _QUICK_PATTERNS = [
     (["help me", "i need help", "how does this work", "how do i use",
       "getting started", "quick start", "tutorial", "guide me"],
      "help"),
+    # How do I run the generated/downloaded app?
+    (["how do i run", "how to run", "how do i start", "how do i launch",
+      "run the app", "run the zip", "run the generated", "run the downloaded",
+      "run it on my", "run this on my", "start the backend", "start the generated",
+      "downloaded the zip", "got the zip", "run the code"],
+     "how_to_run"),
 ]
 
 
@@ -180,6 +305,30 @@ def _check_quick_response(message: str) -> Optional[str]:
 # Global fallback
 # ------------------------------------------------------------------
 
+def _fallback_llm_reply(session: Session, user_message: str) -> None:
+    """LLM answer for an unclassifiable message. Shared by the global fallback
+    and by greetings_body when it receives another state's fallback traffic."""
+    try:
+        prompt = (
+            f"You are a modeling assistant that helps with UML diagrams, quantum circuits, "
+            f"GUI design, agent diagrams, BPMN business-process diagrams, user profiles, "
+            f"and code generation. "
+            f"The user said: '{user_message}'. "
+            "If this is related to any kind of modeling (class diagrams, quantum circuits, "
+            "state machines, GUI design, BPMN processes, user profiles, etc.), suggest how "
+            "you can help them. "
+            "Otherwise, politely explain your capabilities."
+        )
+        stream_llm_response(session, ctx.gpt_text, prompt)
+    except Exception as e:
+        logger.error(f"❌ Error in fallback LLM reply: {e}")
+        reply_message(
+            session,
+            "I'm not sure how to help with that. Try asking me to create a class, "
+            "design a system, build a quantum circuit, or modify your diagram.",
+        )
+
+
 def global_fallback_body(session: Session):
     """Handle unrecognized messages."""
     request = _common_preamble(session)
@@ -194,23 +343,7 @@ def global_fallback_body(session: Session):
         reply_message(session, quick)
         return
 
-    try:
-        prompt = (
-            f"You are a modeling assistant that helps with UML diagrams, quantum circuits, "
-            f"GUI design, agent diagrams, BPMN business-process diagrams, and code generation. "
-            f"The user said: '{user_message}'. "
-            "If this is related to any kind of modeling (class diagrams, quantum circuits, "
-            "state machines, GUI design, BPMN processes, etc.), suggest how you can help them. "
-            "Otherwise, politely explain your capabilities."
-        )
-        stream_llm_response(session, ctx.gpt_text, prompt)
-    except Exception as e:
-        logger.error(f"❌ Error in global_fallback_body: {e}")
-        reply_message(
-            session,
-            "I'm not sure how to help with that. Try asking me to create a class, "
-            "design a system, build a quantum circuit, or modify your diagram.",
-        )
+    _fallback_llm_reply(session, user_message)
 
 
 # ------------------------------------------------------------------
@@ -220,19 +353,16 @@ def global_fallback_body(session: Session):
 def greetings_body(session: Session):
     """Send a greeting message when the user first connects or says hello."""
     greeting_message = (
-        "Hey there! I'm your modeling assistant.\n\n"
-        "Here's what I can do:\n"
-        "- **Create elements**: *\"Create a User class with name, email, and role\"*\n"
-        "- **Build full systems**: *\"Design a library management system\"*\n"
-        "- **Design chatbots**: *\"Create a pizza-ordering agent\"*\n"
-        "- **Build UIs**: *\"Create a dashboard for my Product class\"*\n"
-        "- **Quantum circuits**: *\"Create Grover's search algorithm\"* or *\"Build a Bell state circuit\"*\n"
-        "- **Modify diagrams**: *\"Add a phone attribute to the Customer class\"*\n"
-        "- **Describe models**: *\"What does my circuit do?\"* or *\"Describe my class diagram\"*\n"
-        "- **Generate code**: *\"Generate SQLAlchemy\"* or *\"Generate Django\"*\n"
-        "- **Model help**: *\"Explain Grover's algorithm\"* or *\"What is composition?\"*\n"
-        "- **Import from files**: Attach a PlantUML, Knowledge Graph, or diagram image\n\n"
-        "What would you like to create?"
+        "Hi! I'm your BESSER assistant. Tell me what you want to build in plain "
+        "words and I'll create the model, the screens, and the code for you.\n\n"
+        "Try something like:\n"
+        "- *\"a library app to track books and loans\"*\n"
+        "- *\"a pizza-ordering chatbot\"*\n"
+        "- *\"a dashboard for my Product class\"*\n\n"
+        "I can also modify your diagrams, generate code (SQL, Django, FastAPI, "
+        "SQLAlchemy…), describe a model, design a quantum circuit, or import a "
+        "PlantUML / diagram image.\n\n"
+        "What would you like to create today?"
     )
 
     if session.event is None:
@@ -242,23 +372,169 @@ def greetings_body(session: Session):
     if request is None:
         return
 
-    is_hello_intent = False
-    if hasattr(session.event, 'predicted_intent') and session.event.predicted_intent:
-        is_hello_intent = session.event.predicted_intent.intent.name == 'hello_intent'
+    # "What can you do?"-style questions get the rich capability answer
+    # (mirrors global_fallback_body's ordering).
+    quick = _check_quick_response(request.message or "")
+    if quick:
+        reply_message(session, quick)
+        session.set(HAS_GREETED, True)
+        return
 
-    if is_hello_intent and not session.get(HAS_GREETED):
+    # First contact: full greeting. Afterwards: ALWAYS reply — this body used
+    # to gate the "welcome back" on BAF's event.predicted_intent, which JSON
+    # events routed by the unified classifier never carry, so a message could
+    # end here with NO reply at all (silent no-response bug).
+    if not session.get(HAS_GREETED):
         reply_message(session, greeting_message)
         session.set(HAS_GREETED, True)
         return
 
-    if is_hello_intent and session.get(HAS_GREETED):
-        reply_message(session, "Welcome back! What would you like to work on?")
+    _uc = session.get(UNIFIED_CLASSIFICATION)
+    if getattr(_uc, "intent", None) == "fallback_intent":
+        # This state is also the JSON-fallback DESTINATION for the uml_rag /
+        # decline / out_of_scope / meta states: an unclassifiable message
+        # lands here, and "Welcome back!" would be a non-sequitur — answer it.
+        _fallback_llm_reply(session, request.message or "your message")
         return
+
+    reply_message(session, "Welcome back! What would you like to work on?")
 
 
 # ------------------------------------------------------------------
 # Shared modeling-state body
 # ------------------------------------------------------------------
+
+# Filler words stripped when checking whether a "create …" request actually
+# names a domain to model. If nothing substantive remains, the request is too
+# vague to build from ("create", "make an app") and we ask what to build instead
+# of hallucinating a default model. Intentionally conservative: any real domain
+# noun ("hospital", "task", "library") survives and the request proceeds.
+_CREATE_FILLER = frozenset({
+    "create", "make", "build", "design", "generate", "add", "new", "start",
+    "a", "an", "the", "some", "any", "please", "for", "me", "us", "my", "our",
+    "app", "application", "web", "webapp", "site", "website", "system", "software",
+    "program", "project", "thing", "something", "stuff", "model", "diagram",
+    "can", "you", "could", "would", "will", "i", "we", "want", "need", "like",
+    "to", "of", "with", "and", "it", "this", "that", "help",
+})
+
+
+def _create_request_is_too_vague(message: str) -> bool:
+    """True when a create request has NO domain content after stripping filler."""
+    words = re.findall(r"[a-zA-Z]+", (message or "").lower())
+    core = [w for w in words if w not in _CREATE_FILLER]
+    # Nothing substantive to model (e.g. "create", "make an app", "build a system").
+    return sum(len(w) for w in core) < 3
+
+
+# A create request that negates the very content it asks to create — a
+# degenerate "empty model" ask. Building a token 1-class model reads as the
+# agent ignoring the request, so we clarify instead. Deliberately high-precision:
+# only STRUCTURAL self-negation (classes/elements/nodes/entities/attributes),
+# so real, positive requests like "a shop with no online payments" or "no user
+# accounts, just products" are never caught.
+_SELF_CONTRADICTORY_CREATE_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
+    r"\b(?:with|having|contain(?:s|ing)?)\s+(?:absolutely\s+|exactly\s+)?"
+    r"(?:no|zero|0)\s+(?:class(?:es)?|element(?:s)?|node(?:s)?|entit(?:y|ies)|attribute(?:s)?)\b",
+    r"\bwithout\s+(?:any\s+)?(?:class(?:es)?|element(?:s)?|node(?:s)?|entit(?:y|ies)|attribute(?:s)?)\b",
+    # "don't model anything" / "model nothing at all" — verb-anchored and
+    # requiring "anything"/"nothing at all" so "add nothing fancy" is NOT caught.
+    r"\b(?:don'?t|do\s+not|never)\s+(?:model|add|include|create|design)\s+"
+    r"(?:anything|any\s+(?:class|element|node|entit))",
+    r"\bmodel\s+nothing\b(?!\s+(?:fancy|special|extra|too|but))",
+    r"\bempty\s+(?:class\s+|object\s+|state\s+(?:machine\s+)?|agent\s+)?diagram\b",
+))
+
+
+def _create_is_self_contradictory(message: str) -> bool:
+    """True when a CREATE request negates the content it asks to create
+    ("a class diagram with no classes", "model nothing", "an empty diagram")."""
+    text = message or ""
+    return any(p.search(text) for p in _SELF_CONTRADICTORY_CREATE_PATTERNS)
+
+
+# Unambiguous prompt-subversion / non-modeling phrases. Each has ZERO legitimate
+# use in a "model my X" request, so when one appears we decline in prose and
+# redirect — instead of over-eagerly modeling the injection text (a class diagram
+# of "RefusalNotice", a "Pirate" class, etc.). Security is already enforced
+# elsewhere (we never *execute* such instructions or leak the prompt); this guard
+# just stops the agent from BUILDING a model out of them. Deliberately high-
+# precision: only patterns that never occur in a real modeling request, so real
+# work ("delete the Doctor class", "make it bigger") is never caught.
+_NON_MODELING_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
+    r"ignore\s+(?:all\s+|any\s+|the\s+)?(?:previous|prior|earlier|above)\s+"
+    r"(?:instruction|prompt|rule|direction|message)",
+    r"disregard\s+(?:your|all|the|any|these|previous|prior)\s+"
+    r"(?:rule|instruction|guardrail|previous|prior|direction)",
+    r"(?:reveal|show|print|expose|repeat|leak)\s+(?:me\s+)?(?:your|the)\s+"
+    r"(?:system\s+)?(?:prompt|instruction|rule)",
+    r"\byou\s+are\s+now\s+(?:a|an)\b",
+    r"\bpretend\s+(?:to\s+be|you\s+are|that\s+you)\b",
+    r"(?:cat|less|head|tail|nano|vim)\s+/etc/\w+",   # shell exfil attempts
+    r"\brm\s+-rf\b",
+    r"/etc/passwd",
+))
+
+
+def _request_is_non_modeling(message: str) -> bool:
+    """True when the message is a prompt-injection / rule-subversion attempt with
+    no legitimate modeling intent (persona hijack, "reveal your prompt", shell
+    commands). Such input is declined in prose, not modeled."""
+    text = message or ""
+    return any(p.search(text) for p in _NON_MODELING_PATTERNS)
+
+
+_NON_MODELING_DECLINE = (
+    "I'm a modeling assistant, so I can't take on other instructions or share how "
+    "I work — but I'm glad to help you design a diagram. What would you like to "
+    "model? For example: *Create a library management system*."
+)
+
+
+# Classifier-OUTAGE net (see _modeling_state_body). LLM-first stands: these
+# fire ONLY when the unified classifier reached NO verdict (provider down /
+# parse failure -> fallback_intent), where the modeling states fall back to
+# THEMSELVES and would otherwise run a full create on "nothing" or "draw me a
+# cat". With a real verdict they never run.
+_OUTAGE_DECLINE_PHRASES = {
+    "nothing", "no", "nope", "nah", "no thanks", "no thank you",
+    "never mind", "nevermind", "nvm", "not now", "stop", "cancel",
+    "that's all", "thats all", "i'm good", "im good",
+}
+_OUTAGE_ARTIFACT_RE = re.compile(
+    r"\b(?:picture|image|photo|drawing|painting|logo|poem|story|song|joke)s?\s+"
+    r"(?:of|about)\b|\btell\s+me\s+a\s+(?:joke|story)\b",
+    re.IGNORECASE,
+)
+
+
+# Reply copy for the decline / out-of-scope / meta states lives in
+# reply_copy.py (imported above); detection is the unified classifier's job.
+
+
+_CONTRADICTORY_CREATE_CLARIFY = (
+    "A diagram needs at least something to show, so I can't build an empty one. "
+    "What would you like it to include? For example: *a Library with Book, "
+    "Member and Loan classes*."
+)
+
+
+# The unified classifier is the authoritative create-vs-modify router; the state
+# body's own (intent, mode) is the fallback used only when they agree.
+_INTENT_TO_MODE = {
+    "modify_model_intent": ("modify_model_intent", "modify_model"),
+    "create_complete_system_intent": ("create_complete_system_intent", "complete_system"),
+}
+
+
+def _reconcile_intent(intent_name: str, default_mode: str, unified_intent):
+    """Return the (intent, mode) to execute with. Honors the unified classifier's
+    create/modify verdict over the state default — they differ only when a pending
+    flow suppressed intent routing and the message landed in the wrong state."""
+    if unified_intent in _INTENT_TO_MODE and unified_intent != intent_name:
+        return _INTENT_TO_MODE[unified_intent]
+    return intent_name, default_mode
+
 
 def _modeling_state_body(session: Session, intent_name: str, default_mode: str, empty_msg: str):
     """Unified handler for all modeling operations (system creation, modification)."""
@@ -266,9 +542,71 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
     if request is None:
         return
 
+    # Honor the unified classifier's verdict over the state's default. Normally
+    # they agree (routing is driven by the classifier), but a pending flow — e.g.
+    # a GUI-choice prompt — suppresses intent routing (json_intent_matches), so a
+    # follow-up modify can land in the CREATE state and get executed as a full
+    # rebuild. Reconcile so "add Death to the PetStatus enum" modifies instead of
+    # popping the replace/keep prompt.
+    _uc = session.get(UNIFIED_CLASSIFICATION)
+    _reconciled_intent, default_mode = _reconcile_intent(
+        intent_name, default_mode, getattr(_uc, "intent", None),
+    )
+    if _reconciled_intent != intent_name:
+        logger.info(
+            "[Modeling] Reconciling state default '%s' -> unified intent '%s'",
+            intent_name, _reconciled_intent,
+        )
+        intent_name = _reconciled_intent
+
     session.set(LAST_MATCHED_INTENT, intent_name)
 
     if not request.message:
+        reply_message(session, empty_msg)
+        return
+
+    # Injection / non-modeling guard (create AND modify): a prompt-subversion
+    # attempt ("ignore previous instructions", "you are now a pirate", "reveal
+    # your prompt", shell commands) carries no modeling intent — decline in prose
+    # and redirect, rather than over-modeling the injection text. The agent never
+    # executes such instructions; this just stops it from BUILDING a model of them.
+    if _request_is_non_modeling(request.message):
+        logger.info("[Modeling] Non-modeling/injection input — declining and redirecting")
+        reply_message(session, _NON_MODELING_DECLINE)
+        return
+
+    # Classifier-outage net: only when there is NO usable verdict (the
+    # classifier is exactly the component that is down in this mode).
+    _uc_net = session.get(UNIFIED_CLASSIFICATION)
+    if _uc_net is None or getattr(_uc_net, "intent", None) == "fallback_intent":
+        _normalized = " ".join(
+            re.sub(r"[^\w\s']", " ", request.message.lower()).split())
+        if _normalized in _OUTAGE_DECLINE_PHRASES:
+            logger.info("[Modeling] Outage net: decline phrase — acknowledging")
+            reply_message(session, _DECLINE_ACK)
+            return
+        if _OUTAGE_ARTIFACT_RE.search(request.message):
+            logger.info("[Modeling] Outage net: non-software artifact — redirecting")
+            reply_message(session, _OUT_OF_SCOPE_REDIRECT)
+            return
+
+    # Self-contradiction guard (create path only): a request that negates the
+    # content it asks to create ("a class diagram with no classes", "model
+    # nothing", "an empty diagram") can't be satisfied by a real model. Building
+    # a token 1-class model reads as ignoring the user — clarify instead.
+    if (intent_name == 'create_complete_system_intent'
+            and _create_is_self_contradictory(request.message)):
+        logger.info("[Modeling] Self-contradictory create — asking what to include")
+        reply_message(session, _CONTRADICTORY_CREATE_CLARIFY)
+        return
+
+    # Over-eagerness guard (create path only): if the user only typed filler
+    # ("create", "make an app") with no domain, ASK what to build instead of
+    # guessing a default model. Modify requests are unaffected (they operate on
+    # an existing model where terse phrasing is normal).
+    if (intent_name == 'create_complete_system_intent'
+            and _create_request_is_too_vague(request.message)):
+        logger.info("[Modeling] Create request too vague to model — asking for a domain")
         reply_message(session, empty_msg)
         return
 
@@ -370,6 +708,10 @@ def modeling_help_body(session: Session):
             "tell them they can ask you to create it (e.g., 'Create a Grover\\'s search circuit').\n\n"
             "Keep your response conversational, encouraging, and technically accurate."
         )
+    elif diagram_type == "UserDiagram" or is_user_profile_help(request.message):
+        # Explain the user-profile modeling environment (elements, attributes,
+        # enum values, how they connect) grounded in the bundled metamodel.
+        help_prompt = build_user_profile_help_prompt(request.message)
     else:
         help_prompt = (
             f'You are an expert modeling assistant working with {diagram_info["name"]}. '
@@ -393,13 +735,22 @@ def modeling_help_body(session: Session):
 # ------------------------------------------------------------------
 
 def _build_full_project_summary(request: AssistantRequest) -> str:
-    """Build a detailed summary of ALL diagrams in the project.
+    """Build a detailed summary of all *non-trivial* diagrams in the project.
 
-    Combines the active model (always included with full detail) with
-    every other diagram found in the project snapshot so the LLM can
-    answer cross-diagram questions.
+    Empty diagrams (0 elements / 0 pages / 0 gates) and diagrams that only
+    contain the editor's default seed content are skipped — listing them as
+    "X is empty" drowns out the diagrams the user actually built.  See
+    :func:`utilities.model_context.is_diagram_nontrivial` for the per-type
+    rules.
+
+    The active diagram is always included (even if empty) when the user is
+    looking at it, so questions like "what's in my current diagram?" still
+    get a meaningful answer.  A trailing note records any diagram types that
+    were skipped, so the LLM can mention them in one short sentence.
     """
     sections: list[str] = []
+    described_types: set[str] = set()
+    skipped_types: set[str] = set()
 
     # Project metadata
     snapshot = request.context.project_snapshot
@@ -411,19 +762,30 @@ def _build_full_project_summary(request: AssistantRequest) -> str:
     active_dt = request.context.active_diagram_type or request.diagram_type
     active_model = request.context.active_model or request.current_model
 
-    # Track which diagram types we've already summarised (avoid dupes)
+    # Track which diagram types we've already considered (avoid dupes)
     summarised: set[str] = set()
 
-    # 1. Active diagram — always first, always detailed
-    if isinstance(active_model, dict):
+    # 1. Active diagram — always first.  Include it even if "trivial" so the
+    #    user gets a reply when they're staring at an empty tab and ask
+    #    "what's in this?".  But still record triviality for the closing note.
+    if isinstance(active_model, dict) and active_dt:
         active_info = get_diagram_type_info(active_dt)
-        sections.append(
-            f"### Active diagram: {active_info['name']}\n"
-            + detailed_model_summary(active_model, active_dt)
-        )
+        if is_diagram_nontrivial(active_model, active_dt):
+            sections.append(
+                f"### Active diagram: {active_info['name']}\n"
+                + detailed_model_summary(active_model, active_dt)
+            )
+            described_types.add(active_dt)
+        else:
+            # Empty active diagram — still mention it so the LLM doesn't
+            # silently ignore the tab the user is looking at.
+            sections.append(
+                f"### Active diagram: {active_info['name']}\n"
+                f"(This diagram is empty.)"
+            )
         summarised.add(active_dt)
 
-    # 2. All other diagrams from project snapshot
+    # 2. All other diagrams from project snapshot — filter out trivial ones.
     if isinstance(snapshot, dict):
         diagrams = snapshot.get("diagrams")
         if isinstance(diagrams, dict):
@@ -432,12 +794,21 @@ def _build_full_project_summary(request: AssistantRequest) -> str:
                     continue
                 dt_info = get_diagram_type_info(dt)
                 if isinstance(payload, list):
-                    # Multi-tab: summarise each tab that has a model
+                    # Multi-tab: summarise each tab that has *non-trivial* content
                     tabs_with_model = [
                         d for d in payload
                         if isinstance(d, dict) and isinstance(d.get("model"), dict)
                     ]
-                    for i, tab in enumerate(tabs_with_model):
+                    nontrivial_tabs = [
+                        (i, tab) for i, tab in enumerate(tabs_with_model)
+                        if is_diagram_nontrivial(tab["model"], dt)
+                    ]
+                    if not nontrivial_tabs:
+                        if tabs_with_model:
+                            skipped_types.add(dt_info["name"])
+                        summarised.add(dt)
+                        continue
+                    for i, tab in nontrivial_tabs:
                         model = tab["model"]
                         tab_title = tab.get("title", "").strip()
                         summary = detailed_model_summary(model, dt)
@@ -448,19 +819,69 @@ def _build_full_project_summary(request: AssistantRequest) -> str:
                             elif len(tabs_with_model) > 1:
                                 label = f"{dt_info['name']} (tab {i})"
                             sections.append(f"### {label}\n{summary}")
+                            described_types.add(dt)
+                    # If some tabs were trivial and others weren't, don't
+                    # bother flagging the trivial ones — too noisy.
                     summarised.add(dt)
                 elif isinstance(payload, dict):
                     model = payload.get("model")
                     if not isinstance(model, dict):
+                        summarised.add(dt)
+                        continue
+                    if not is_diagram_nontrivial(model, dt):
+                        skipped_types.add(dt_info["name"])
+                        summarised.add(dt)
                         continue
                     summary = detailed_model_summary(model, dt)
                     if summary:
                         sections.append(f"### {dt_info['name']}\n{summary}")
+                        described_types.add(dt)
                     summarised.add(dt)
 
     if not sections:
         return ""
+
+    # Closing note for the LLM about skipped/empty diagrams.  Only emit it
+    # if at least one diagram WAS described — otherwise the regular "I don't
+    # see any diagrams" path handles the empty-project case.
+    if skipped_types and described_types:
+        skipped_list = sorted(skipped_types)
+        sections.append(
+            "_Note: the following diagram types exist in the project but are "
+            "empty or contain only default seed content, so they were not "
+            "described above: "
+            + ", ".join(skipped_list)
+            + "._"
+        )
+
     return "\n\n".join(sections)
+
+
+def _recent_conversation_block(session: Session, request, max_turns: int = 6) -> str:
+    """Recent prior turns as text, so a describe/evaluate answer can resolve
+    referents ("it", "that", "the first one", "those") against what was just
+    asked/answered. ``_common_preamble`` has already recorded the CURRENT user
+    message, so drop that trailing entry — we want the PRIOR context. Never
+    raises."""
+    try:
+        mem = get_memory(memory_session_key(session, request))
+        turns = mem.get_last_n(max_turns + 1)
+    except Exception:
+        return ""
+    cur = (request.message or "").strip()
+    if turns and turns[-1].get("role") == "user" and (turns[-1].get("content") or "").strip() == cur:
+        turns = turns[:-1]
+    turns = turns[-max_turns:]
+    lines = []
+    for t in turns:
+        role = (t.get("role") or "?").strip()
+        content = (t.get("content") or "").strip().replace("\n", " ")
+        if not content:
+            continue
+        if len(content) > 300:
+            content = content[:297].rstrip() + "..."
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
 
 
 def describe_model_body(session: Session):
@@ -491,18 +912,60 @@ def describe_model_body(session: Session):
         )
         return
 
+    # Recent turns so follow-up questions with referents ("it", "the first
+    # one", "those") resolve to the element the user actually means.
+    history_block = _recent_conversation_block(session, request)
+    history_section = (
+        (
+            "RECENT CONVERSATION (older first). Use it to resolve any referent "
+            "in the question below \u2014 \"it\", \"that\", \"the first one\", "
+            "\"those\", \"the second\", etc. \u2014 to the SPECIFIC element the "
+            "user means (based on what was just asked or answered), then answer "
+            "about THAT element, not the whole diagram:\n"
+            f"{history_block}\n\n"
+        )
+        if history_block
+        else ""
+    )
+
+    # For User Profile projects, add the metamodel semantics so the assistant
+    # can explain what the boxes on the canvas (Accessibility, Disability, …)
+    # actually mean — the model itself carries only names and criteria.
+    active_dt = request.context.active_diagram_type or request.diagram_type
+    include_user_guide = active_dt == "UserDiagram" or is_user_profile_help(request.message)
+    if not include_user_guide:
+        snapshot = request.context.project_snapshot
+        if isinstance(snapshot, dict):
+            diagrams = snapshot.get("diagrams")
+            if isinstance(diagrams, dict) and "UserDiagram" in diagrams:
+                include_user_guide = True
+    user_guide_block = (
+        f"\n\nReference — the User Profile metamodel these elements are drawn from "
+        f"(use it to explain what an element or attribute means):\n\n{format_user_metamodel_guide()}\n"
+        if include_user_guide
+        else ""
+    )
+
     qa_prompt = (
         "You are an expert assistant for the BESSER Web Modeling Editor. "
         "The user has a project that may contain multiple diagrams "
-        "(class, state machine, object, GUI, quantum circuit, agent).\n\n"
-        f"Here is a detailed summary of their full project:\n\n"
-        f"{full_summary}\n\n"
+        "(class, state machine, object, GUI, quantum circuit, agent, user profile).\n\n"
+        f"Here is a detailed summary of their project \u2014 note that empty or "
+        f"default-seed diagrams have already been filtered out, so describe "
+        f"ONLY the diagrams listed below:\n\n"
+        f"{full_summary}\n"
+        f"{user_guide_block}\n"
+        f"{history_section}"
         f"The user asks: \"{request.message}\"\n\n"
         "Answer their question accurately based ONLY on the project data above. "
         "If they ask about a specific diagram type, focus on that one. "
-        "If they ask a general question, consider all diagrams. "
-        "Be specific \u2014 reference class names, attribute names, states, pages, "
-        "gates, relationships, etc. by name.\n\n"
+        "If they ask a general question, consider all diagrams that appear "
+        "in the summary. Be specific \u2014 reference class names, attribute "
+        "names, states, pages, gates, relationships, etc. by name.\n\n"
+        "**Do NOT enumerate empty diagrams.** If the summary above ends with "
+        "a note about diagram types that were filtered out, you may close "
+        "with one short sentence such as *\"(Other diagram types are empty.)\"* "
+        "\u2014 but do not list them one by one.\n\n"
         "**For quantum circuits specifically**: when the user asks to 'describe' "
         "or 'explain' a quantum circuit, do more than just list the gates. "
         "Analyze the circuit and explain:\n"
@@ -512,11 +975,16 @@ def describe_model_body(session: Session):
         "- What the expected output/behavior would be\n"
         "- The role of key gates (e.g., 'H creates superposition', "
         "'CNOT entangles qubits')\n\n"
+        "End with the existing helper line *\"If you want, I can help you "
+        "expand any of these...\"*, but tailor it so it only refers to the "
+        "diagrams you actually described.\n\n"
         "Keep the answer concise and well-formatted with Markdown."
     )
 
     try:
-        stream_llm_response(session, ctx.gpt_text, qa_prompt)
+        # Grounded analysis over real model data → SMALL generation tier
+        # (help/fallback streaming stays on the classifier default).
+        stream_llm_response(session, ctx.gpt_text, qa_prompt, model=MODEL_GENERATION_SMALL)
     except Exception as e:
         logger.error(f"❌ Error in describe_model_body: {e}", exc_info=True)
         reply_message(
@@ -538,12 +1006,14 @@ def generation_body(session: Session):
     session.set(LAST_MATCHED_INTENT, GENERATION_INTENT_NAME)
 
     # If the request mixes modeling + generation ("create a class diagram and generate Django"),
-    # route through the modeling pipeline first — it will handle both steps via the orchestrator.
+    # route through the modeling pipeline first — the orchestrator builds the model and then
+    # PAUSES for the user's go-ahead before generating (see execution/planning.py).
     if _looks_like_mixed_modeling_and_generation(request.message or ""):
         logger.info("[GenerationBody] Mixed request detected — routing through modeling pipeline")
         reply_message(
             session,
-            "I'll **create the diagram first**, then **generate the code**. Let me handle both steps.",
+            "I'll **create the diagram first** — once it's ready, you can review it "
+            "or tell me to continue with **code generation**.",
         )
         try:
             execute_planned_operations(
@@ -568,6 +1038,11 @@ def generation_body(session: Session):
             "retryable": True,
         }
 
+    if response_payload is None:
+        # Already handled — e.g. a "generate" that was really a "create/design
+        # a system" request got redirected and built the model inline, sending
+        # its own reply. Nothing more to send.
+        return
     if not isinstance(response_payload, dict):
         reply_message(session, "I could not process your generation request.")
         return
@@ -594,159 +1069,6 @@ def generation_body(session: Session):
         response_payload["suggestedActions"] = gen_suggestions
 
     reply_payload(session, response_payload)
-
-
-# ------------------------------------------------------------------
-# End-to-end workflow: model -> validate -> generate
-# ------------------------------------------------------------------
-
-def workflow_body(session: Session):
-    """End-to-end workflow: create model(s), validate, and generate code in one go."""
-    request = _common_preamble(session)
-    if request is None:
-        return
-
-    session.set(LAST_MATCHED_INTENT, 'workflow_intent')
-
-    if not request.message:
-        reply_message(
-            session,
-            "What would you like me to build end-to-end? For example: "
-            "*\"Create a complete web app for a hotel booking system\"*",
-        )
-        return
-
-    user_message = request.message
-
-    # ── Step 0: Parse generator target from the user message ─────────
-    target_generator = detect_generator_type(user_message)
-    if not target_generator:
-        # Default to web_app for generic "complete application" requests
-        target_generator = "web_app"
-
-    reply_message(
-        session,
-        f"Starting the **end-to-end workflow** for your request. "
-        f"I will create the model(s), validate them, and generate **{target_generator}** code.\n\n"
-        f"**Step 1/3** — Building your model...",
-    )
-
-    # ── Step 1: Create the model(s) via the existing planner ─────────
-    try:
-        execute_planned_operations(
-            session=session,
-            request=request,
-            default_mode="complete_system",
-            matched_intent="workflow_intent",
-        )
-    except Exception as e:
-        logger.error(f"❌ [Workflow] Model creation failed: {e}", exc_info=True)
-        reply_message(
-            session,
-            "Something went wrong while creating the model. "
-            "Could you try rephrasing your request?",
-        )
-        return
-
-    # If there's a pending confirmation (e.g. replace existing model),
-    # we have to stop here — the user needs to respond first.
-    if session.get(PENDING_COMPLETE_SYSTEM) or session.get(PENDING_GUI_CHOICE):
-        logger.info("[Workflow] Paused — waiting for user confirmation before continuing")
-        # Store workflow continuation state so we could resume later
-        session.set(WORKFLOW_PENDING_GENERATOR, target_generator)
-        return
-
-    # ── Step 2: Validate the model ───────────────────────────────────
-    reply_message(session, "**Step 2/3** — Running validation on your model...")
-
-    # Collect the active model from the session context for validation
-    active_model = request.context.active_model or request.current_model
-    active_diagram_type = request.context.active_diagram_type or request.diagram_type
-
-    # Also check the project snapshot for the model we just created
-    snapshot = request.context.project_snapshot
-    if not active_model and isinstance(snapshot, dict):
-        # Prefer ClassDiagram as primary validation target
-        for dt in ["ClassDiagram", active_diagram_type]:
-            diagram = request.context.get_diagram_from_snapshot(dt)
-            if isinstance(diagram, dict):
-                candidate = diagram.get("model")
-                if isinstance(candidate, dict):
-                    active_model = candidate
-                    active_diagram_type = dt
-                    break
-
-    validation_result = {"valid": True, "errors": [], "warnings": []}
-    if isinstance(active_model, dict) and active_model:
-        validation_result = validate_diagram(
-            diagram_json=active_model,
-            diagram_type=active_diagram_type,
-        )
-
-    # Report validation results
-    if validation_result["errors"]:
-        error_list = "\n".join(f"- {err}" for err in validation_result["errors"])
-        warning_section = ""
-        if validation_result["warnings"]:
-            warning_list = "\n".join(f"- {w}" for w in validation_result["warnings"])
-            warning_section = f"\n\n**Warnings:**\n{warning_list}"
-        reply_message(
-            session,
-            f"Validation found **{len(validation_result['errors'])} error(s)**:\n"
-            f"{error_list}{warning_section}\n\n"
-            f"I recommend fixing these issues before generating code. "
-            f"You can say *\"fix the validation errors\"* or modify the model manually.",
-        )
-        return
-
-    # Validation passed
-    warning_msg = ""
-    if validation_result["warnings"]:
-        warning_list = "\n".join(f"- {w}" for w in validation_result["warnings"])
-        warning_msg = f"\n\n**Warnings** (non-blocking):\n{warning_list}"
-
-    reply_message(
-        session,
-        f"Validation **passed** with 0 errors.{warning_msg}\n\n"
-        f"**Step 3/3** — Generating **{target_generator}** code...",
-    )
-
-    # ── Step 3: Trigger code generation ──────────────────────────────
-    from utilities.request_builders import build_generation_request
-
-    generation_request = build_generation_request(
-        request,
-        generator_type=target_generator,
-        config={},
-        message_override=f"generate {target_generator}",
-    )
-
-    try:
-        response_payload = handle_generation_request(session, generation_request)
-    except Exception as error:
-        logger.error(f"❌ [Workflow] Generation failed: {error}", exc_info=True)
-        response_payload = {
-            "action": "agent_error",
-            "code": "generation_handler_error",
-            "message": f"Failed to generate {target_generator} code.",
-            "retryable": True,
-        }
-
-    if isinstance(response_payload, dict):
-        # Add a completion summary to the payload message
-        original_message = response_payload.get("message", "")
-        response_payload["message"] = (
-            f"{original_message}\n\n"
-            f"**Workflow complete!** Your model was created, validated, and "
-            f"**{target_generator}** code has been generated."
-        )
-        reply_payload(session, response_payload)
-    else:
-        reply_message(
-            session,
-            f"Code generation for **{target_generator}** did not return a valid result. "
-            f"You can try again by saying *\"generate {target_generator}\"*.",
-        )
 
 
 # ------------------------------------------------------------------
@@ -798,6 +1120,50 @@ def uml_rag_body(session: Session):
 # Transition wiring
 # ------------------------------------------------------------------
 
+def decline_body(session: Session):
+    """The user declined / opted out (decline_intent) — acknowledge and build
+    nothing. Detection is the unified classifier's (it handles novel phrasings
+    like "nah I'm good"); _modeling_state_body keeps only a classifier-OUTAGE
+    net for the bare phrases."""
+    request = _common_preamble(session)
+    if request is None:
+        return
+    # If a config-collection flow is in progress (e.g. the user answered
+    # "regular" to the JSON-schema mode prompt), the intent classifier may
+    # misread the short answer as a decline. Route to the generation handler
+    # so the pending flow can consume the answer instead of abandoning it.
+    if session.get(PENDING_GENERATOR_TYPE):
+        generation_body(session)
+        return
+    session.set(LAST_MATCHED_INTENT, 'decline_intent')
+    reply_message(session, _DECLINE_ACK)
+
+
+def out_of_scope_body(session: Session):
+    """The user asked for a non-software artifact (out_of_scope_intent) — an
+    actual image, creative writing, a joke. Redirect to modeling instead of
+    building a diagram OF the request."""
+    request = _common_preamble(session)
+    if request is None:
+        return
+    session.set(LAST_MATCHED_INTENT, 'out_of_scope_intent')
+    reply_message(session, _OUT_OF_SCOPE_REDIRECT)
+
+
+def meta_question_body(session: Session):
+    """The user asked about the assistant itself (meta_question_intent) —
+    capabilities ("do you also generate websites?") or value proposition
+    ("why use you instead of Claude/GPT?"). Answer the pitch; build nothing."""
+    request = _common_preamble(session)
+    if request is None:
+        return
+    session.set(LAST_MATCHED_INTENT, 'meta_question_intent')
+    # A direct "do you …?" capability question deserves an explicit yes before
+    # the pitch (presentation only — routing stays with the classifier).
+    _prefix = "Yes. " if re.search(r"\bdo\s+you\b", request.message or "", re.IGNORECASE) else ""
+    reply_message(session, _prefix + _META_ANSWER)
+
+
 def add_unified_transitions(state, intents_map, fallback_state, generation_state):
     """Add both text and JSON event transitions for a state.
 
@@ -810,6 +1176,16 @@ def add_unified_transitions(state, intents_map, fallback_state, generation_state
     3. Text-event intent transitions (backward compatibility).
     4. Fallback transitions.
     """
+    # 0. Unified classifier hook — populates the per-message cache so
+    #    subsequent ``json_intent_matches`` conditions read from our
+    #    classifier's verdict instead of BAF's description-based one.
+    #    The hook NEVER transitions (always returns False); it's a
+    #    pure side-effect condition. One LLM call per message,
+    #    regardless of how many transitions we have.
+    state.when_event(ReceiveJSONEvent()) \
+        .with_condition(_ensure_unified_classification) \
+        .go_to(state)  # unreachable — hook always returns False
+
     # 1. Intent-matched JSON transitions (highest priority for user messages)
     for intent, dest_state in intents_map.items():
         state.when_event(ReceiveJSONEvent()) \
@@ -849,7 +1225,9 @@ def register_all(*, agent, states, intents):
     states['describe_model'].set_body(describe_model_body)
     states['generation'].set_body(generation_body)
     states['uml_rag'].set_body(uml_rag_body)
-    states['workflow'].set_body(workflow_body)
+    states['decline'].set_body(decline_body)
+    states['out_of_scope'].set_body(out_of_scope_body)
+    states['meta_question'].set_body(meta_question_body)
 
     # -- Wire transitions --
     intent_map = {
@@ -860,7 +1238,9 @@ def register_all(*, agent, states, intents):
         intents['uml_spec']: states['uml_rag'],
         intents['generation']: states['generation'],
         intents['hello']: states['greetings'],
-        intents['workflow']: states['workflow'],
+        intents['decline']: states['decline'],
+        intents['out_of_scope']: states['out_of_scope'],
+        intents['meta_question']: states['meta_question'],
     }
 
     generation_st = states['generation']
@@ -873,7 +1253,9 @@ def register_all(*, agent, states, intents):
         ('describe_model', 'describe_model'),
         ('uml_rag', 'greetings'),
         ('generation', 'generation'),
-        ('workflow', 'workflow'),
+        ('decline', 'greetings'),
+        ('out_of_scope', 'greetings'),
+        ('meta_question', 'greetings'),
     ]:
         add_unified_transitions(
             states[state_name], intent_map, states[fallback_name], generation_st,

@@ -50,8 +50,19 @@ def resolve_target_model(
                     return target["model"]
 
     # Last resort: current_model may still be populated by adapters.py from
-    # the snapshot resolution, so honour it as a final fallback.
-    if isinstance(request.current_model, dict):
+    # the snapshot resolution, so honour it as a final fallback — BUT only
+    # when it is actually a model of the REQUESTED type. ``current_model``
+    # holds the ACTIVE diagram's model; returning it for a DIFFERENT target
+    # type makes callers believe that target already exists. Concretely:
+    # asking for a brand-new AgentDiagram while viewing a ClassDiagram used
+    # to return the class model, so the create-guard hallucinated an
+    # "AgentDiagram: 5 element(s)" that doesn't exist and prompted the user
+    # to replace/keep a diagram they never had.
+    active_type = (
+        getattr(request.context, "active_diagram_type", None)
+        or getattr(request, "diagram_type", None)
+    )
+    if active_type == target_diagram_type and isinstance(request.current_model, dict):
         return request.current_model
     return None
 
@@ -112,8 +123,20 @@ def resolve_object_reference_diagram(
     return None
 
 
+# Element types the ObjectDiagram handler can instantiate objects from.
+# Must stay in sync with object_diagram_handler's class extraction guard —
+# counting only "Class" wrongly blocked object-diagram generation for class
+# diagrams made entirely of abstract classes (#54).
+_INSTANTIABLE_CLASS_TYPES = ("Class", "AbstractClass")
+
+
 def count_reference_classes(reference_diagram: Optional[Dict[str, Any]]) -> int:
-    """Count how many Class elements exist in a reference diagram."""
+    """Count how many class-like elements exist in a reference diagram.
+
+    Includes both concrete and abstract classes so a class diagram of only
+    abstract classes is not treated as empty (the ObjectDiagram handler can
+    instantiate objects from either).
+    """
     if not isinstance(reference_diagram, dict):
         return 0
     elements = reference_diagram.get("elements")
@@ -122,7 +145,7 @@ def count_reference_classes(reference_diagram: Optional[Dict[str, Any]]) -> int:
     return sum(
         1
         for element in elements.values()
-        if isinstance(element, dict) and element.get("type") == "Class"
+        if isinstance(element, dict) and element.get("type") in _INSTANTIABLE_CLASS_TYPES
     )
 
 

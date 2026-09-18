@@ -1,5 +1,7 @@
 """Tests for the generation handler (handlers/generation_handler.py)."""
 
+import types
+
 import pytest
 from handlers.generation_handler import (
     detect_generator_type,
@@ -8,15 +10,22 @@ from handlers.generation_handler import (
     _normalize_defaults,
     _build_config_prompt,
     _looks_like_mixed_modeling_and_generation,
-    _is_modeling_request,
-    _is_diagram_creation_request,
     handle_generation_request,
     should_route_to_generation,
     GENERATOR_KEYWORDS,
 )
+from handlers.smart_generation_handler import GenerationClassification
 from protocol.types import AssistantRequest, WorkspaceContext
 
 from tests.conftest import FakeSession
+
+
+_CLASS_MODEL = {
+    "elements": {
+        "class-1": {"type": "Class", "name": "Book"},
+    },
+    "relationships": {},
+}
 
 
 def _make_request(message: str, action: str = "user_message") -> AssistantRequest:
@@ -24,8 +33,49 @@ def _make_request(message: str, action: str = "user_message") -> AssistantReques
         action=action,
         message=message,
         context=WorkspaceContext(
-            project_snapshot={"name": "TestProject", "diagrams": {}},
+            active_diagram_type="ClassDiagram",
+            active_model=_CLASS_MODEL,
+            project_snapshot={
+                "name": "TestProject",
+                "diagrams": {
+                    "ClassDiagram": [{"model": _CLASS_MODEL}],
+                },
+            },
         ),
+    )
+
+
+def _to_unified(decision: GenerationClassification):
+    """Adapt a legacy-shaped stub into the unified classifier's output —
+    what a real ``provider.parse`` returns on the retired-legacy path."""
+    from unified_classifier import UnifiedClassification
+    return UnifiedClassification(
+        intent="generation_intent",
+        generation_route=decision.route,
+        generator_type=decision.generator_type,
+        refined_instructions=decision.refined_instructions,
+        provider=decision.provider,
+        reason=decision.reason,
+    )
+
+
+class _FakeLLMProvider:
+    """Minimal provider stub that returns a fixed unified classification."""
+
+    def __init__(self, decision: GenerationClassification):
+        self.decision = _to_unified(decision)
+
+    def parse(self, *, messages, schema, temperature, max_tokens):
+        return self.decision
+
+
+def _patch_classifier(monkeypatch, decision: GenerationClassification):
+    """Make ``_get_llm_provider()`` return a stub that yields ``decision``."""
+    import handlers.generation_handler as gen_mod
+    monkeypatch.setattr(
+        gen_mod, "_get_llm_provider",
+        lambda: _FakeLLMProvider(decision),
+        raising=False,
     )
 
 
@@ -49,6 +99,10 @@ class TestDetectGeneratorType:
 
     def test_qiskit(self):
         assert detect_generator_type("generate qiskit code") == "qiskit"
+
+    def test_rest_api_and_rdf(self):
+        assert detect_generator_type("generate rest api") == "rest_api"
+        assert detect_generator_type("generate rdf") == "rdf"
 
     def test_none_for_unrelated(self):
         assert detect_generator_type("create a User class") is None
@@ -116,9 +170,9 @@ class TestRequiredMissing:
         }) == []
 
     def test_some_missing(self):
-        missing = _required_missing("django", {"project_name": "p"})
-        assert "app_name" in missing
-        assert "containerization" in missing
+        # Django asks for NOTHING since the default-params decision — every
+        # field is defaulted, so a partial config is never "missing".
+        assert _required_missing("django", {"project_name": "p"}) == []
 
     def test_no_required_fields(self):
         assert _required_missing("python", {}) == []
@@ -140,7 +194,8 @@ class TestNormalizeDefaults:
         config = _normalize_defaults("django", request, {})
         assert config["project_name"] == "testproject"  # sanitized from TestProject
         assert "app_name" in config
-        assert config["containerization"] is False
+        # Containerization defaults ON since the default-params decision.
+        assert config["containerization"] is True
 
     def test_sql_defaults(self):
         request = _make_request("")
@@ -220,10 +275,15 @@ class TestShouldRouteToGeneration:
         session.set("pending_generator_type", "sql")
         assert should_route_to_generation(session, request) is True
 
-    def test_generator_keyword(self):
+    def test_generator_keyword_no_longer_routes_here(self):
+        """The gatekeeper no longer runs text heuristics. BAF's intent
+        classifier handles routing to ``generation_state`` for
+        conversational messages — this gatekeeper only fires for
+        frontend_event callbacks and mid-flow pending-generator state.
+        """
         request = _make_request("generate django code")
         session = FakeSession()
-        assert should_route_to_generation(session, request) is True
+        assert should_route_to_generation(session, request) is False
 
     def test_no_generation(self):
         request = _make_request("create a User class")
@@ -236,7 +296,11 @@ class TestShouldRouteToGeneration:
 # ---------------------------------------------------------------------------
 
 class TestHandleGenerationRequest:
-    def test_trigger_with_defaults(self):
+    def test_trigger_with_defaults(self, monkeypatch):
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="deterministic", generator_type="python",
+            reason="user said python classes",
+        ))
         request = _make_request("generate python classes")
         session = FakeSession()
         result = handle_generation_request(session, request)
@@ -261,6 +325,9 @@ class TestHandleGenerationRequest:
         assert "available" in msg or "options" in msg or "supported" in msg or "tell me" in msg
 
     def test_frontend_event_result(self):
+        """A successful generator_result yields a clean 'generated and ready'
+        confirmation — the frontend's raw message is not echoed (the download
+        card already shows the details)."""
         request = _make_request("", action="frontend_event")
         request.raw_payload = {
             "eventType": "generator_result",
@@ -270,9 +337,13 @@ class TestHandleGenerationRequest:
         session = FakeSession()
         result = handle_generation_request(session, request)
         assert result["action"] == "assistant_message"
-        assert "Done!" in result["message"]
+        assert "generated and ready to download" in result["message"].lower()
 
-    def test_backend_generator_trigger(self):
+    def test_backend_generator_trigger(self, monkeypatch):
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="deterministic", generator_type="backend",
+            reason="user said backend",
+        ))
         request = _make_request("generate a full backend")
         session = FakeSession()
         result = handle_generation_request(session, request)
@@ -280,7 +351,11 @@ class TestHandleGenerationRequest:
         assert result["generatorType"] == "backend"
         assert result["config"]["framework"] == "django"
 
-    def test_smartdata_generator_trigger(self):
+    def test_smartdata_generator_trigger(self, monkeypatch):
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="deterministic", generator_type="smartdata",
+            reason="user said smart data",
+        ))
         request = _make_request("generate smart data output")
         session = FakeSession()
         result = handle_generation_request(session, request)
@@ -288,61 +363,125 @@ class TestHandleGenerationRequest:
         assert result["generatorType"] == "smartdata"
         assert result["config"]["output_format"] == "json"
 
+    @staticmethod
+    def _cache_classification(session, *, route="deterministic",
+                             generator_type=None, refined_instructions=None,
+                             provider="anthropic"):
+        """Populate the per-message unified-classification cache the way the
+        state_bodies priority-0 hook does in production (the pivot check reads
+        it directly — no LLM call)."""
+        from session_keys import UNIFIED_CLASSIFICATION
+        session.set(UNIFIED_CLASSIFICATION, types.SimpleNamespace(
+            intent="generation_intent",
+            generation_route=route,
+            generator_type=generator_type,
+            refined_instructions=refined_instructions,
+            provider=provider,
+            reason="cached",
+            domain_mismatch=False,
+            suggested_new_domain=None,
+        ))
 
-# ---------------------------------------------------------------------------
-# _is_diagram_creation_request — prevents "generate a class diagram" from
-# being treated as code generation
-# ---------------------------------------------------------------------------
+    def test_pivot_from_pending_django_config_to_sql(self, monkeypatch):
+        """Reported bug: while mid-Django-config (we asked for the project
+        name), 'generate the database' must switch to the SQL generator, not
+        keep re-prompting for Django project info."""
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="deterministic", generator_type="sql",
+            reason="user wants a database",
+        ))
+        request = _make_request("generate a sqlite database")
+        session = FakeSession()
+        session.set("pending_generator_type", "django")
+        session.set("pending_generator_config", {})
+        self._cache_classification(session, generator_type="sql")
+        result = handle_generation_request(session, request)
+        # Pivoted to SQL (dialect parsed from the message) — NOT a Django prompt.
+        assert result["action"] == "trigger_generator"
+        assert result["generatorType"] == "sql"
+        assert "django" not in str(result).lower()
 
-class TestIsDiagramCreationRequest:
-    def test_generate_class_diagram(self):
-        assert _is_diagram_creation_request("generate a class diagram") is True
+    def test_pivot_from_pending_django_config_to_smart(self, monkeypatch):
+        """Escalating to the smart generator mid-Django-config must abandon the
+        pending flow (surface confirmation), not re-prompt for Django."""
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="smart",
+            refined_instructions="build a full app with authentication",
+            provider="anthropic", reason="user wants a full app",
+        ))
+        request = _make_request("actually build me a full app with auth")
+        session = FakeSession()
+        session.set("pending_generator_type", "django")
+        session.set("pending_generator_config", {})
+        self._cache_classification(
+            session, route="smart",
+            refined_instructions="build a full app with authentication",
+            provider="anthropic")
+        result = handle_generation_request(session, request)
+        # Not the Django config prompt; the smart flow took over.
+        assert not (
+            result["action"] == "assistant_message"
+            and "project name" in result.get("message", "").lower()
+        )
 
-    def test_generate_class_diagram_for_library(self):
-        assert _is_diagram_creation_request("generate a class diagram for a library system") is True
+    def test_pending_django_config_answer_does_not_pivot(self, monkeypatch):
+        """Guard against over-switching: when the fresh classification still
+        reads as the SAME generator (e.g. a config answer / 'use defaults'),
+        the Django flow must continue, not be abandoned."""
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="deterministic", generator_type="django",
+            reason="continuing django",
+        ))
+        request = _make_request("use defaults")
+        session = FakeSession()
+        session.set("pending_generator_type", "django")
+        session.set("pending_generator_config", {})
+        self._cache_classification(session, generator_type="django")
+        result = handle_generation_request(session, request)
+        # Stayed in the Django flow — never pivoted to another generator.
+        if result["action"] == "trigger_generator":
+            assert result["generatorType"] == "django"
+        else:
+            assert result["action"] == "assistant_message"
 
-    def test_create_state_machine(self):
-        assert _is_diagram_creation_request("create a state machine for order processing") is True
+    @pytest.mark.parametrize("generator_type", ["rest_api", "rdf"])
+    def test_rest_and_rdf_generators_trigger_deterministically(
+        self, monkeypatch, generator_type,
+    ):
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="deterministic",
+            generator_type=generator_type,
+            reason="named built-in generator",
+        ))
+        result = handle_generation_request(
+            FakeSession(), _make_request(f"generate {generator_type}"),
+        )
+        assert result["action"] == "trigger_generator"
+        assert result["generatorType"] == generator_type
 
-    def test_generate_django_not_diagram(self):
-        assert _is_diagram_creation_request("generate django") is False
+    def test_unrelated_model_does_not_satisfy_python_prerequisite(self, monkeypatch):
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="deterministic", generator_type="python", reason="python",
+        ))
+        request = _make_request("generate python")
+        state_model = {
+            "elements": {"state-1": {"type": "State", "name": "Ready"}},
+            "relationships": {},
+        }
+        request.context = WorkspaceContext(
+            active_diagram_type="StateMachineDiagram",
+            active_model=state_model,
+            project_snapshot={
+                "diagrams": {
+                    "StateMachineDiagram": [{"model": state_model}],
+                }
+            },
+        )
 
-    def test_generate_python_code_not_diagram(self):
-        assert _is_diagram_creation_request("generate python code") is False
+        result = handle_generation_request(FakeSession(), request)
 
-    def test_generate_sql_not_diagram(self):
-        assert _is_diagram_creation_request("generate sql from my model") is False
-
-    def test_please_generate_class_diagram(self):
-        assert _is_diagram_creation_request("please generate a class diagram") is True
-
-    def test_i_need_a_class_diagram(self):
-        assert _is_diagram_creation_request("i need a class diagram") is True
-
-    def test_build_quantum_circuit(self):
-        assert _is_diagram_creation_request("build a quantum circuit") is True
-
-
-# ---------------------------------------------------------------------------
-# _is_modeling_request — now includes diagram creation fast path
-# ---------------------------------------------------------------------------
-
-class TestIsModelingRequest:
-    def test_generate_class_diagram_is_modeling(self):
-        """'generate a class diagram' must be caught as modeling, not code gen."""
-        assert _is_modeling_request("generate a class diagram") is True
-
-    def test_generate_class_diagram_for_library_is_modeling(self):
-        assert _is_modeling_request("generate a class diagram for a library") is True
-
-    def test_create_web_app_for_hotel_is_modeling(self):
-        assert _is_modeling_request("create a web app for hotel booking") is True
-
-    def test_generate_django_is_not_modeling(self):
-        assert _is_modeling_request("generate django") is False
-
-    def test_generate_python_code_is_not_modeling(self):
-        assert _is_modeling_request("generate python code") is False
+        assert result["action"] == "assistant_message"
+        assert "Class Diagram" in result["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -381,120 +520,212 @@ class TestShouldRouteToGenerationDiagramGuard:
         session = FakeSession()
         assert should_route_to_generation(session, request) is False
 
-    def test_generate_django_still_routed(self):
-        request = _make_request("generate django code")
-        session = FakeSession()
-        assert should_route_to_generation(session, request) is True
-
 
 # ---------------------------------------------------------------------------
 # handle_generation_request — safety net for misrouted modeling requests
 # ---------------------------------------------------------------------------
 
 class TestHandleGenerationRequestSafetyNet:
-    def test_modeling_request_redirected(self):
-        """If LLM misclassifies 'create a web app for hotel' as generation,
-        the handler should redirect instead of triggering web_app generator."""
+    def test_modeling_request_builds_the_model(self, monkeypatch):
+        """If BAF misclassifies 'create a web app for hotel booking' as
+        generation, the LLM classifier returns ``route='modeling'`` — the
+        handler now BUILDS the model inline (instead of bouncing the user
+        with a 'rephrase' message) and returns None (reply already sent)."""
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="modeling",
+            reason="user wants a new diagram, not code",
+        ))
+        import execution
+        called = {}
+        monkeypatch.setattr(
+            execution, "execute_planned_operations",
+            lambda **kw: called.update(kw) or None,
+            raising=False,
+        )
         request = _make_request("create a web app for hotel booking")
         session = FakeSession()
         result = handle_generation_request(session, request)
-        assert result["action"] == "assistant_message"
-        assert "design" in result["message"].lower() or "create" in result["message"].lower()
+        # No rephrase message — the model is built inline and None returned.
+        assert result is None
+        assert called.get("default_mode") == "complete_system"
+        assert called.get("matched_intent") == "create_complete_system_intent"
 
-    def test_diagram_creation_redirected(self):
-        """'generate a class diagram' landing in generation handler should redirect."""
+    def test_diagram_creation_builds_the_model(self, monkeypatch):
+        """'generate a class diagram' landing here via ``route='modeling'``
+        must build the model inline, not ask the user to rephrase."""
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="modeling",
+            reason="user wants a class diagram",
+        ))
+        import execution
+        built = {"n": 0}
+        monkeypatch.setattr(
+            execution, "execute_planned_operations",
+            lambda **kw: built.update(n=built["n"] + 1) or None,
+            raising=False,
+        )
         request = _make_request("generate a class diagram for a library")
         session = FakeSession()
         result = handle_generation_request(session, request)
-        assert result["action"] == "assistant_message"
-        assert "diagram" in result["message"].lower() or "create" in result["message"].lower()
+        assert result is None
+        assert built["n"] == 1
 
-    def test_genuine_generation_not_blocked(self):
-        """Genuine 'generate python classes' should still trigger the generator."""
-        request = _make_request("generate python classes")
+
+# ---------------------------------------------------------------------------
+# Domain-mismatch "Update model + generate" → smart-gen resume chain
+# ---------------------------------------------------------------------------
+
+class TestMismatchRegenChain:
+    """The mismatch quick action "Update model + generate" sends a plain
+    'create a class diagram for X'. Because a stashed smart-gen keeps that
+    message pinned in generation_state, it reaches handle_generation_request,
+    which normally clears the stash as an 'abandoned confirmation'. The
+    MISMATCH_REGEN_PENDING flag must exempt this chain so the stash survives
+    the rebuild for execute_model_operation to resume."""
+
+    def _arm(self, session):
+        import time as _t
+        from session_keys import (
+            PENDING_SMART_GEN_INSTRUCTIONS,
+            PENDING_SMART_GEN_PROVIDER,
+            PENDING_SMART_GEN_TIMESTAMP,
+        )
+        session.set(PENDING_SMART_GEN_INSTRUCTIONS, "build a hotel booking app")
+        session.set(PENDING_SMART_GEN_PROVIDER, "anthropic")
+        session.set(PENDING_SMART_GEN_TIMESTAMP, _t.time())
+
+    _REBUILD_PROMPT = "create a class diagram for a hotel booking system"
+
+    def test_mismatch_confirmation_arms_the_flag(self):
+        from handlers.generation_handler import _build_mismatch_confirmation
+        from session_keys import (
+            MISMATCH_REGEN_PENDING,
+            PENDING_SMART_GEN_INSTRUCTIONS,
+        )
         session = FakeSession()
-        result = handle_generation_request(session, request)
-        assert result["action"] == "trigger_generator"
-        assert result["generatorType"] == "python"
+        classification = types.SimpleNamespace(
+            refined_instructions="build a hotel booking app", provider="anthropic",
+        )
+        payload = _build_mismatch_confirmation(session, classification, "a hotel booking system")
+        # Flag stores the EXACT rebuild prompt, matching the action's prompt.
+        assert session.get(MISMATCH_REGEN_PENDING) == self._REBUILD_PROMPT
+        assert session.get(PENDING_SMART_GEN_INSTRUCTIONS) == "build a hotel booking app"
+        upd = next(a for a in payload["suggestedActions"] if a["label"] == "Update model + generate")
+        assert upd["prompt"] == self._REBUILD_PROMPT
+
+    def test_rebuild_preserves_stash_on_matching_prompt(self, monkeypatch):
+        """The stashed rebuild prompt survives when THIS message equals it."""
+        from session_keys import (
+            MISMATCH_REGEN_PENDING,
+            PENDING_SMART_GEN_INSTRUCTIONS,
+        )
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="modeling", reason="rebuild the model for a hotel",
+        ))
+        import execution
+        monkeypatch.setattr(
+            execution, "execute_planned_operations",
+            lambda **kw: None, raising=False,
+        )
+        session = FakeSession()
+        self._arm(session)
+        session.set(MISMATCH_REGEN_PENDING, self._REBUILD_PROMPT)
+        handle_generation_request(session, _make_request(self._REBUILD_PROMPT))
+        # Guard held: stash + flag survive into the build for the resume hook.
+        assert session.get(PENDING_SMART_GEN_INSTRUCTIONS) == "build a hotel booking app"
+        assert session.get(MISMATCH_REGEN_PENDING) == self._REBUILD_PROMPT
+
+    def test_different_create_after_mismatch_abandons_stash(self, monkeypatch):
+        """A DIFFERENT create typed after a mismatch (not the button prompt)
+        must abandon the stash — no spurious resume of the old domain."""
+        from session_keys import (
+            MISMATCH_REGEN_PENDING,
+            PENDING_SMART_GEN_INSTRUCTIONS,
+        )
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="modeling", reason="a different modeling request",
+        ))
+        import execution
+        monkeypatch.setattr(
+            execution, "execute_planned_operations",
+            lambda **kw: None, raising=False,
+        )
+        session = FakeSession()
+        self._arm(session)
+        session.set(MISMATCH_REGEN_PENDING, self._REBUILD_PROMPT)  # armed for "hotel"
+        # …but the user creates a ZOO instead of clicking the button.
+        handle_generation_request(session, _make_request("create a class diagram for a zoo with animals and keepers"))
+        assert not session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+        assert not session.get(MISMATCH_REGEN_PENDING)
+
+    def test_rebuild_clears_stash_without_flag(self, monkeypatch):
+        """Without the flag, an unrelated request still abandons the stash
+        (the pre-existing safety behavior is unchanged)."""
+        from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+        _patch_classifier(monkeypatch, GenerationClassification(
+            route="modeling", reason="a different modeling request",
+        ))
+        import execution
+        monkeypatch.setattr(
+            execution, "execute_planned_operations",
+            lambda **kw: None, raising=False,
+        )
+        session = FakeSession()
+        self._arm(session)  # no MISMATCH_REGEN_PENDING
+        handle_generation_request(session, _make_request(self._REBUILD_PROMPT))
+        assert not session.get(PENDING_SMART_GEN_INSTRUCTIONS)
 
 
-# ---------------------------------------------------------------------------
-# _is_modeling_request — pattern-based detection (no hardcoded domain list)
-# ---------------------------------------------------------------------------
-
-class TestIsModelingRequestPatternBased:
-    """Tests for the improved pattern-based _is_modeling_request()."""
-
-    def test_any_domain_with_for(self):
-        """'create a web app for <anything>' should be modeling."""
-        assert _is_modeling_request("create a web app for insurance claims") is True
-
-    def test_novel_domain(self):
-        """Domains not in any hardcoded list should still work."""
-        assert _is_modeling_request("design a platform for cryptocurrency trading") is True
-
-    def test_build_system_for_anything(self):
-        assert _is_modeling_request("build a system for managing wildlife reserves") is True
-
-    def test_model_application_for_domain(self):
-        assert _is_modeling_request("model an application for tracking marine biology data") is True
-
-    def test_create_noun_phrase_3_words(self):
-        """3+ word noun phrases after modeling verb are modeling."""
-        assert _is_modeling_request("create a hotel booking system") is True
-
-    def test_create_noun_phrase_2_words(self):
-        """2-word noun phrases that aren't generator keywords are modeling."""
-        assert _is_modeling_request("create a booking platform") is True
-
-    def test_bare_generator_not_modeling(self):
-        """'generate django' must NOT be caught as modeling."""
-        assert _is_modeling_request("generate django") is False
-
-    def test_bare_python_not_modeling(self):
-        assert _is_modeling_request("generate python") is False
-
-    def test_explicit_code_generation_not_modeling(self):
-        """Explicit 'generate code' phrases override modeling detection."""
-        assert _is_modeling_request("create a system and generate code") is False
-
-    def test_export_not_modeling(self):
-        assert _is_modeling_request("export my model to json") is False
-
-    def test_deploy_not_modeling(self):
-        assert _is_modeling_request("deploy my app to render") is False
-
-    def test_build_me_a_web_app(self):
-        """'build me a web app' with no 'for X' but clear modeling intent."""
-        assert _is_modeling_request("build me a reservation system") is True
-
-    def test_short_generator_only_not_modeling(self):
-        """Two generator-only words should not be modeling."""
-        assert _is_modeling_request("generate sql backend") is False
 
 
-# ---------------------------------------------------------------------------
-# _is_diagram_creation_request — mid-sentence verb detection
-# ---------------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# Past-generation QUESTION guard (live bug 2026-09-01): "What we
+# generated" after a finished smart run must be ANSWERED from the stashed
+# outcome, never re-arm a new generation confirmation.
+# ----------------------------------------------------------------------
 
-class TestIsDiagramCreationRequestMidSentence:
-    """Tests for improved diagram creation detection with mid-sentence verbs."""
 
-    def test_id_like_you_to_generate(self):
-        assert _is_diagram_creation_request("i'd like you to generate a class diagram") is True
+def _fresh_run_session():
+    import time as _time
+    from session_keys import LAST_SMART_GEN_AT, LAST_SMART_GEN_SUMMARY
+    session = FakeSession()
+    session.set(LAST_SMART_GEN_AT, _time.time())
+    session.set(LAST_SMART_GEN_SUMMARY, "Smart generation finished successfully.")
+    return session
 
-    def test_can_we_build(self):
-        assert _is_diagram_creation_request("can we build a state machine for orders") is True
 
-    def test_could_you_create_mid_sentence(self):
-        assert _is_diagram_creation_request("hey could you create an agent diagram") is True
+@pytest.mark.parametrize("message", [
+    "What we generated",
+    "what did we generate?",
+    "show me what you generated",
+    "tell me what was built",
+])
+def test_past_generation_question_is_answered_not_rearmed(message):
+    session = _fresh_run_session()
+    result = handle_generation_request(session, _make_request(message))
+    assert result["action"] == "assistant_message"
+    assert "finished successfully" in result["message"]
+    assert "Do you want to continue" not in result["message"]
 
-    def test_lets_design(self):
-        assert _is_diagram_creation_request("let's design a class diagram for a library") is True
 
-    def test_generate_django_still_false(self):
-        assert _is_diagram_creation_request("generate django code for me") is False
+def test_past_generation_question_without_fresh_run_falls_through():
+    """No stashed run -> normal routing (whatever it is, not the stash reply)."""
+    session = FakeSession()
+    result = handle_generation_request(session, _make_request("What we generated"))
+    assert "finished successfully" not in (result.get("message") or "")
 
-    def test_i_want_to_generate_sql(self):
-        """No diagram type token → False."""
-        assert _is_diagram_creation_request("i want to generate sql") is False
+
+def test_future_directed_generation_question_falls_through():
+    """'what should we generate next' is not a question about the past run."""
+    session = _fresh_run_session()
+    result = handle_generation_request(
+        session, _make_request("what should we generate next?")
+    )
+    assert "finished successfully" not in (result.get("message") or "")
+
+
+def test_imperative_generate_request_unaffected_by_stash():
+    """'generate rust classes' must still route as a generation request."""
+    session = _fresh_run_session()
+    result = handle_generation_request(session, _make_request("generate rust classes"))
+    assert "finished successfully" not in (result.get("message") or "")

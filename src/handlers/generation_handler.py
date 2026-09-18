@@ -1,15 +1,633 @@
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+import time
+from typing import Any, Dict, List, Optional, Tuple  # noqa: F401
 
 from baf.core.session import Session
 
+from handlers.smart_generation_handler import (
+    build_trigger_smart_generator_payload,
+)
 from protocol.types import AssistantRequest
+from utilities.model_context import is_diagram_nontrivial
 from session_keys import (
     CONFIG_PROMPT_ATTEMPTS,
+    LAST_SMART_GEN_AT,
+    LAST_SMART_GEN_PROJECT_ID,
+    LAST_SMART_GEN_SUMMARY,
+    MISMATCH_REGEN_PENDING,
     PENDING_GENERATOR_CONFIG,
     PENDING_GENERATOR_TYPE,
+    ORIGINAL_APP_REQUEST,
+    PENDING_SMART_GEN_INSTRUCTIONS,
+    PENDING_SMART_GEN_PROVIDER,
+    PENDING_SMART_GEN_TIMESTAMP,
+    PLAN_GENERATION_CONFIRM_FLAG,
+    SKIP_MISMATCH_CHECK_ONCE,
+    SMART_GEN_ARMED_PROJECT_ID,
+    UNIFIED_CLASSIFICATION,
 )
+from reply_copy import OUT_OF_SCOPE_REDIRECT, SPEC_DRIVEN_NAME
+from unified_classifier import (
+    UnifiedClassification,
+    classify_message as _unified_classify_message,
+)
+
+try:
+    from llm.provider import get_provider as _get_llm_provider
+except ImportError:  # pragma: no cover — keeps the module importable in
+    # test environments where the BAF stack isn't set up. Non-ImportError
+    # failures (real bugs in llm.provider) are NOT swallowed.
+    _get_llm_provider = None  # type: ignore[assignment]
+
+
+def _classification_to_legacy(cls_obj: UnifiedClassification):
+    """Adapt a :class:`UnifiedClassification` to the
+    :class:`GenerationClassification` shape the dispatch code below
+    expects (attributes ``route / generator_type / refined_instructions /
+    provider / reason``).
+
+    Non-generation verdicts can still reach the generation handler
+    (keyword-routed messages, pending flows). Rather than second-guessing
+    the unified classifier with another LLM call, honor its verdict:
+    modeling intents run the modeling pipeline (create OR modify — see the
+    ``route == "modeling"`` branch, which picks the mode from the cached
+    intent), everything else gets the 'other' clarify reply.
+    """
+    from handlers.smart_generation_handler import GenerationClassification
+    # generation_route is only MEANINGFUL on generation verdicts (the schema
+    # says "REQUIRED when intent='generation_intent'") — but the LLM often
+    # fills it as 'other' on non-generation intents too. Trusting that noise
+    # sent a mismatch-rebuild ("create a class diagram for a hotel…",
+    # intent=create, generation_route='other') to the clarify reply instead
+    # of the modeling branch. Ignore the field unless the verdict is a
+    # generation one; derive the route from the intent otherwise.
+    route = (
+        cls_obj.generation_route
+        if cls_obj.intent == "generation_intent" else None
+    )
+    if not route:
+        if cls_obj.intent in (
+            "create_complete_system_intent", "modify_model_intent",
+        ):
+            route = "modeling"
+        elif cls_obj.intent == "generation_intent":
+            route = "deterministic"
+        elif cls_obj.intent == "fallback_intent" and (
+            cls_obj.reason or ""
+        ).startswith("[classifier-error]"):
+            # ERROR fallback (LLM down / parse failure — _safe_fallback tags
+            # these): 'deterministic' with no generator_type shows the
+            # generator MENU, the resilient pre-LLM behavior. A DELIBERATE
+            # none-of-the-above verdict falls through to 'other' instead.
+            route = "deterministic"
+        else:
+            route = "other"
+    return GenerationClassification(
+        route=route,
+        generator_type=cls_obj.generator_type,
+        refined_instructions=cls_obj.refined_instructions,
+        provider=cls_obj.provider,
+        reason=cls_obj.reason,
+    )
+
+
+def _read_unified_mismatch_info(session: Session) -> Tuple[bool, Optional[str]]:
+    """Read domain_mismatch / suggested_new_domain from the cached
+    unified classification. Returns ``(False, None)`` when the cache is
+    empty or the fields are not populated. Never raises.
+    """
+    cached: Optional[UnifiedClassification] = session.get(UNIFIED_CLASSIFICATION)
+    if cached is None:
+        return False, None
+    is_mismatch = bool(getattr(cached, "domain_mismatch", False))
+    suggested = getattr(cached, "suggested_new_domain", None)
+    return is_mismatch, suggested
+
+
+# Stashed smart-gen payloads expire after this long. The confirm handler
+# rejects anything older so an abandoned dialog can never trigger a
+# BYOK-spending run days later (B-2 stale-stash fix).
+_SMART_GEN_STASH_TTL_SECONDS = 30 * 60
+
+
+# Generator prerequisites are shared with the request planner. Keeping the
+# contract here lets both direct generation and multi-step plans validate the
+# same diagram requirements without a circular import.
+GENERATOR_PREREQUISITES: Dict[str, List[str]] = {
+    "web_app": ["ClassDiagram", "GUINoCodeDiagram"],
+    "react": ["ClassDiagram", "GUINoCodeDiagram"],
+    "flutter": ["ClassDiagram", "GUINoCodeDiagram"],
+    "django": ["ClassDiagram"],
+    "backend": ["ClassDiagram"],
+    "sql": ["ClassDiagram"],
+    "sqlalchemy": ["ClassDiagram"],
+    "python": ["ClassDiagram"],
+    "java": ["ClassDiagram"],
+    "pydantic": ["ClassDiagram"],
+    "jsonschema": ["ClassDiagram"],
+    "smartdata": ["ClassDiagram"],
+    "rest_api": ["ClassDiagram"],
+    "rdf": ["ClassDiagram"],
+    "agent": ["AgentDiagram"],
+    "qiskit": ["QuantumCircuitDiagram"],
+}
+
+
+def _smart_gen_stash_is_fresh(timestamp: Any) -> bool:
+    """True when the stash timestamp exists and is within the TTL.
+
+    Stashes written before the timestamp key existed return False — they
+    are by definition of unknown age and must not fire.
+    """
+    if not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool):
+        return False
+    return (time.time() - timestamp) <= _SMART_GEN_STASH_TTL_SECONDS
+
+
+def _active_project_id(session: Session) -> Optional[str]:
+    """Id of the project currently open in the workspace, or ``None``.
+
+    The frontend sends the whole project object as
+    ``context.projectSnapshot``, and ``BesserProject.id`` survives the
+    client-side context compaction, so the id is available on every
+    ``user_message`` turn. It is NOT available on ``frontend_event``
+    callbacks — those carry no ``context`` at all — which is why a run's
+    project is recorded when the run is ARMED rather than when it completes.
+
+    Returns ``None`` whenever the id cannot be seen (older frontend, widget
+    mode, voice context without a snapshot). Callers must treat ``None`` as
+    "no project identity" and fail CLOSED, never as a wildcard match.
+    """
+    # Deferred import: protocol.adapters is cycle-free from here and the
+    # parse is cached on the session event, so this is ~free per turn.
+    from protocol.adapters import parse_assistant_request
+
+    try:
+        request = parse_assistant_request(session)
+    except Exception:  # pragma: no cover — defensive; copy must never crash
+        logger.debug("Could not resolve the active project id", exc_info=True)
+        return None
+    snapshot = getattr(getattr(request, "context", None), "project_snapshot", None)
+    candidate = snapshot.get("id") if isinstance(snapshot, dict) else None
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+    return None
+
+
+def _stash_smart_gen(session: Session, instructions: str, provider: str) -> None:
+    """Stash a smart-gen payload with a fresh timestamp (see TTL above).
+
+    Also records the project the run is being armed in. A run can ONLY start
+    from a confirmation built on top of this stash, so this is the single
+    choke point where the project behind a future run is observable — the
+    completion callback (``_handle_smart_generator_result``) arrives as a
+    context-free ``frontend_event`` and promotes this id once the run
+    succeeds.
+    """
+    session.set(PENDING_SMART_GEN_INSTRUCTIONS, instructions)
+    session.set(PENDING_SMART_GEN_PROVIDER, provider)
+    session.set(PENDING_SMART_GEN_TIMESTAMP, time.time())
+    session.set(SMART_GEN_ARMED_PROJECT_ID, _active_project_id(session))
+
+
+_SMART_GEN_CONFIRM_PHRASES = {
+    "yes", "yes please", "confirm", "confirm it", "run it", "run it now",
+    "please run it", "go ahead", "proceed", "start it", "start the generation",
+    "generate anyway", "generate anyway with my current model",
+    "continue", "please continue", "yes continue", "ok", "ok go ahead",
+    "sure", "sure go ahead", "continue please",
+}
+# Whole-message phrases that EXIT a pending config-collection flow. Bare "no"
+# is deliberately absent: mid-config it is usually a field answer ("Docker?"
+# -> "no"); classifier decline verdicts cover the novel opt-out phrasings.
+_CONFIG_CANCEL_PHRASES = {
+    "cancel", "cancel it", "cancel that", "cancel generation",
+    "cancel the generation", "stop", "stop it", "abort", "quit",
+    "never mind", "nevermind", "forget it", "don't generate",
+    "do not generate",
+}
+_SMART_GEN_CANCEL_PHRASES = {
+    "no", "no thanks", "cancel", "cancel it", "cancel generation",
+    "cancel the generation", "stop", "stop it", "abort", "never mind",
+    "do not run it", "don't run it",
+}
+
+# Extra whole-message affirmatives accepted ONLY for a plan-paused built-in
+# generator (see PLAN_GENERATION_CONFIRM_FLAG). Deliberately NOT merged into
+# _SMART_GEN_CONFIRM_PHRASES: a bare "generate" must never auto-confirm a
+# smart-gen run (which spends the user's own API key — B-2), but it is an
+# unambiguous answer to "continue with generating your <artifact>?" for the
+# free built-in generators.
+_PLAN_GEN_CONFIRM_PHRASES = {
+    "generate", "generate it", "generate now", "generate the code",
+    "yes generate", "yes generate it", "do it", "go for it",
+}
+
+
+def _smart_gen_confirmation_decision(message: str) -> Optional[str]:
+    """Return ``confirm``/``cancel`` only for an unambiguous whole reply."""
+    normalized = re.sub(r"[,.!?]+", " ", (message or "").strip().lower())
+    normalized = " ".join(normalized.split())
+    if normalized in _SMART_GEN_CONFIRM_PHRASES:
+        return "confirm"
+    if normalized in _SMART_GEN_CANCEL_PHRASES:
+        return "cancel"
+    return None
+
+
+def _plan_pause_exact_decision(message: str) -> Optional[str]:
+    """Deterministic whole-message answer to the plan-pause question.
+
+    Exact confirm phrases (the shared smart-gen list plus the plan-only
+    extras) return ``confirm``; exact cancel phrases return ``cancel``;
+    anything else returns ``None``. This list takes PRECEDENCE over any
+    classifier verdict: the live classifier stamps short acknowledgments
+    like a literal "ok" as ``decline_intent`` (a known short-answer misread
+    — see ``decline_body``), and that verdict must never override a
+    deterministic affirmative.
+    """
+    decision = _smart_gen_confirmation_decision(message)
+    if decision is not None:
+        return decision
+    normalized = re.sub(r"[,.!?]+", " ", (message or "").strip().lower())
+    normalized = " ".join(normalized.split())
+    if normalized in _PLAN_GEN_CONFIRM_PHRASES:
+        return "confirm"
+    return None
+
+
+def _norm_prompt(message: str) -> str:
+    """Normalize a message for exact-prompt matching (mismatch-regen chain)."""
+    return " ".join((message or "").strip().lower().split())
+
+
+def _iter_models_of_type(context: Any, diagram_type: str):
+    """Yield active and snapshot models for one diagram type."""
+    seen: set[int] = set()
+    if getattr(context, "active_diagram_type", None) == diagram_type:
+        active_model = getattr(context, "active_model", None)
+        if isinstance(active_model, dict):
+            seen.add(id(active_model))
+            yield active_model
+
+    snapshot = getattr(context, "project_snapshot", None)
+    diagrams = snapshot.get("diagrams") if isinstance(snapshot, dict) else None
+    target = diagrams.get(diagram_type) if isinstance(diagrams, dict) else None
+    entries = (
+        target
+        if isinstance(target, list)
+        else ([target] if target is not None else [])
+    )
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        model = entry.get("model")
+        if not isinstance(model, dict) and (
+            "elements" in entry or "pages" in entry or "cols" in entry
+        ):
+            model = entry
+        if isinstance(model, dict) and id(model) not in seen:
+            seen.add(id(model))
+            yield model
+
+
+def _project_has_diagram_model(context: Any, diagram_type: str) -> bool:
+    if context is None:
+        return True
+    return any(
+        is_diagram_nontrivial(model, diagram_type)
+        for model in _iter_models_of_type(context, diagram_type)
+    )
+
+
+def _project_has_any_model(context: Any) -> bool:
+    """True if any canonical diagram model has meaningful content."""
+    if context is None:
+        return True
+    diagram_types = {
+        dtype
+        for required in GENERATOR_PREREQUISITES.values()
+        for dtype in required
+    }
+    snapshot = getattr(context, "project_snapshot", None)
+    diagrams = snapshot.get("diagrams") if isinstance(snapshot, dict) else None
+    if isinstance(diagrams, dict):
+        diagram_types.update(key for key in diagrams if isinstance(key, str))
+    active_type = getattr(context, "active_diagram_type", None)
+    if isinstance(active_type, str):
+        diagram_types.add(active_type)
+    return any(_project_has_diagram_model(context, dtype) for dtype in diagram_types)
+
+
+def _missing_generator_prerequisites(context: Any, generator_type: str) -> List[str]:
+    """Return required diagram types that are absent or only seed content."""
+    if context is None:
+        return []
+    return [
+        dtype
+        for dtype in GENERATOR_PREREQUISITES.get(generator_type, [])
+        if not _project_has_diagram_model(context, dtype)
+    ]
+
+
+# Fix/error vocabulary in the USER'S OWN words. Used only to frame the
+# confirmation copy honestly (pilot P2: the from-scratch wording read wrong
+# when the user just pasted a traceback / asked for a fix). Strong, unambiguous
+# fix/error vocabulary only — plus HTTP 4xx/5xx status codes.
+#
+# NOT matched against the classifier's refined instructions any more: those are
+# machine-written feature prose, and a perfectly ordinary first build ("I want
+# a todo app") refines into sentences like "show clear error messages on
+# invalid input" or "return 404 for unknown tasks" — both of which match here
+# and flipped a from-scratch build to the fix copy.
+_FIX_INTENT_RE = re.compile(
+    r"\b(?:fix|fixes|fixed|fixing|"
+    r"error|errors|traceback|stack\s?trace|exception|"
+    r"bug|bugs|broken|crash(?:es|ed|ing)?|"
+    r"fails?|failing|failed|"
+    r"not\s+working|does(?:n['’]?t| not)\s+work|"
+    r"update\s+the\s+code|re-?generate|re-?run)\b"
+    r"|\b[45]\d{2}\b",
+    re.IGNORECASE,
+)
+
+
+def _smart_gen_project_has_app(session: Session, project_id: Optional[str]) -> bool:
+    """True when a smart-gen run SUCCEEDED for the project now open.
+
+    This is the only admissible evidence that there is an app to fix. It fails
+    CLOSED: an unknown project id (``None`` on either side) never matches, so
+    a workspace the agent cannot identify is treated as "no app yet" rather
+    than as a wildcard.
+
+    Note what is deliberately NOT evidence: a model/spec having been designed
+    in this project (that produces no code), and a stashed pending smart-gen
+    (an armed run is not a finished one).
+    """
+    recorded = session.get(LAST_SMART_GEN_PROJECT_ID)
+
+    # MIGRATION ALLOWANCE. Runs that finished before project attribution existed
+    # recorded only LAST_SMART_GEN_AT, with no project id at all. Failing closed
+    # on those is a regression, not safety: a user whose app was generated by the
+    # previous build asks "fix my app" and the SMART-GEN FOLLOW-UP signal goes
+    # dark, so the classifier reads it as a help question and answers with prose
+    # instead of arming a fix (observed live 2026-09-11, minutes after deploy).
+    #
+    # Deliberately narrow and self-healing: it applies ONLY when no project was
+    # ever recorded, and the very next run writes one, after which strict pairing
+    # resumes permanently. The caller's recency window bounds it further. A
+    # recorded id that MISMATCHES still fails closed — that is the actual bug
+    # this gate exists to prevent.
+    if recorded is None and session.get(LAST_SMART_GEN_AT) is not None:
+        return True
+
+    if not project_id:
+        return False
+    return recorded == project_id
+
+
+def recent_smart_gen_for_project(session: Session, window_seconds: float) -> bool:
+    """True when a smart-gen run succeeded for the CURRENTLY OPEN project
+    within ``window_seconds``.
+
+    ``LAST_SMART_GEN_AT`` on its own is not usable for this: the BAF session is
+    keyed on the stable per-browser user_id and survives a project switch (the
+    frontend only rotates the payload sessionId, which scopes conversation
+    memory), so the bare timestamp means "something was generated recently
+    somewhere", not "this project has an app". Pair it with the project the run
+    was attributed to — see ``LAST_SMART_GEN_PROJECT_ID``.
+    """
+    project_id = _active_project_id(session)
+    if not _smart_gen_project_has_app(session, project_id):
+        return False
+    ts = session.get(LAST_SMART_GEN_AT)
+    return (
+        isinstance(ts, (int, float))
+        and not isinstance(ts, bool)
+        and (time.time() - ts) <= window_seconds
+    )
+
+
+def _looks_like_fix_request(
+    session: Session,
+    user_message: Optional[str],
+    project_id: Optional[str],
+) -> bool:
+    """True when the pending smart-gen run edits an app that ALREADY exists
+    (a fix / modify) rather than building one from scratch.
+
+    INVARIANT: this can only return True when a smart-gen run has SUCCEEDED
+    for ``project_id`` — the project the user is looking at right now. There is
+    no path to the fix copy for a project that has never produced an app.
+
+    Observed failure that motivated the scoping (2026-09-11): in a brand-new
+    project the very first message, "I want a todo app", was answered with
+    "I'll update your existing app to make that change" + a "Fix it" button,
+    and so was "generate the application" after the user had modelled a fresh
+    system in that project. Both signals were project-blind — the 30-min
+    recency check only asked "did a run finish in this SESSION", which was
+    still true from a run in a PREVIOUS project, and the vocabulary check also
+    read the classifier's machine-written refined instructions.
+
+    With the project gate necessary, the two signals now only choose WHICH
+    flavour of fix framing applies:
+
+    * **Fresh run for this project** (within 30 min) — the next smart-gen
+      request edits that app in place, mirroring the frontend's incremental
+      vibe-modify (which reuses the last run as its base), whether or not the
+      user used fix words.
+    * **Older run for this project** — only fix/error vocabulary in the
+      user's OWN message still reads as a fix; anything else gets the
+      neutral from-scratch copy.
+    """
+    if not _smart_gen_project_has_app(session, project_id):
+        return False
+    if _FIX_INTENT_RE.search(user_message or ""):
+        return True
+    ts = session.get(LAST_SMART_GEN_AT)
+    return (
+        isinstance(ts, (int, float))
+        and not isinstance(ts, bool)
+        and (time.time() - ts) <= 30 * 60
+    )
+
+
+def _build_smart_gen_confirmation(
+    session: Session,
+    instructions: str,
+    provider: str,
+    *,
+    reason_prefix: str = "",
+    user_message: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Stash the smart-gen payload and ask for explicit confirmation.
+
+    The Spec-Driven Agent runs on the USER'S OWN API key, so it must
+    never start without an explicit confirmation — with a stored key the
+    run would otherwise begin silently (B-2). The confirm/cancel phrases
+    are handled at the top of :func:`handle_generation_request`.
+
+    The copy is CONTEXT-AWARE: a first build gets from-scratch wording +
+    a "Continue" button; a fix / modify of an already-generated app gets
+    fix-framing + a "Fix it" button (pilot P2 — the from-scratch wording
+    read wrong when the user only wanted a fix). Both branches keep the
+    same confirm token so the confirm gate fires identically, and both keep
+    the clickable API-key link. The fix branch is gated to the direct path
+    (no ``reason_prefix``): the mismatch/rebuild resumes always produce a
+    freshly rebuilt model, which is a from-scratch build by definition — and,
+    per ``_looks_like_fix_request``, to projects that have actually produced
+    an app before.
+    """
+    refined = (instructions or "").strip()
+    provider = provider or "anthropic"
+    # Resolve the open project BEFORE stashing: _stash_smart_gen records the
+    # armed project too, and the fix decision must never read state this very
+    # call wrote.
+    project_id = _active_project_id(session)
+    _stash_smart_gen(session, refined, provider)
+
+    prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
+
+    is_fix = (not reason_prefix) and _looks_like_fix_request(
+        session, user_message, project_id,
+    )
+
+    # The instructions are NOT echoed back to the user: showing the LLM's
+    # refined instructions read as fabricated requirements the user never
+    # wrote. The run still uses the stashed ``refined`` instructions above.
+    # "set up your own API key" is a clickable markdown link
+    # (``[...](wme:add-key)``) that the frontend markdown renderer intercepts
+    # to open the BYOK key dialog (see markdown-renderer.tsx — it dispatches
+    # ``wme:specdriven-open-byok``); it never navigates anywhere.
+    if is_fix:
+        message = (
+            f"{prefix}I'll update your existing app to make that change. "
+            f"It uses the free model by default — "
+            f"[set up your own API key](wme:add-key) for higher quality.\n\n"
+            f"Do you want to continue?"
+        )
+        confirm_label = "Fix it"
+    else:
+        message = (
+            f"{prefix}BESSER will generate your application from the "
+            f"designed specs using its built-in generators. If some of your "
+            f"requirements are not supported by these generators, BESSER can "
+            f"use an LLM to handle them.\n\n"
+            f"BESSER includes a free model by default, so you can generate at "
+            f"no cost. For higher-quality results, you can "
+            f"[set up your own API key](wme:add-key) and use a stronger "
+            f"provider or model.\n\n"
+            f"Do you want to continue?"
+        )
+        confirm_label = "Continue"
+
+    return {
+        "action": "assistant_message",
+        "message": message,
+        # Cancel action removed per product decision — the proposition offers
+        # only Run; the user can simply not click it (or type another request)
+        # to not proceed. The confirm PROMPT is identical in both branches so
+        # the existing confirm gate (``_SMART_GEN_CONFIRM_PHRASES``) fires the
+        # same way whether the button says "Continue" or "Fix it".
+        "suggestedActions": [
+            {
+                "label": confirm_label,
+                "prompt": "generate anyway with my current model",
+            },
+        ],
+    }
+
+
+def _build_mismatch_confirmation(session: Session, classification, suggested: str) -> Dict[str, Any]:
+    """Stash the smart-gen instructions and ask the user how to proceed.
+
+    Triggered when the user's request describes a different domain than
+    their existing class diagram. The user picks one of three quick
+    actions and the agent reroutes accordingly:
+
+    * "Update model + generate" → the create choke point in
+      execution.model_operations picks up the stashed
+      instructions and runs smart-gen after the new model is built.
+    * "Generate anyway"         → ``SKIP_MISMATCH_CHECK_ONCE`` is set so
+      the next pass through this handler skips this guard.
+    * "Cancel"                  → clears all stashed state and stops.
+    """
+    refined = (classification.refined_instructions or "").strip()
+    provider = classification.provider or "anthropic"
+    rebuild_prompt = f"create a class diagram for {suggested}"
+    _stash_smart_gen(session, refined, provider)
+    # Arm the one-shot resume with the EXACT rebuild prompt the button sends.
+    # The guard below and the create choke point
+    # (execution.model_operations.execute_model_operation) only keep the stash
+    # / fire the resume when the incoming message equals this prompt — so a
+    # DIFFERENT create typed right after a mismatch abandons normally instead
+    # of spuriously resuming the old domain's smart-gen.
+    session.set(MISMATCH_REGEN_PENDING, rebuild_prompt)
+
+    return {
+        "action": "assistant_message",
+        "message": (
+            f"Your existing class diagram doesn't match **{suggested}**. "
+            f"Pick one:\n\n"
+            f"• **Update model + generate** — I'll redesign the class "
+            f"diagram for {suggested} first, then run the Spec-Driven "
+            f"Generator. Your current classes will be replaced.\n"
+            f"• **Generate anyway** — keep your current model; the "
+            f"generator will produce {suggested} code, but your diagram "
+            f"won't match the generated code.\n"
+            f"• **Cancel** — do nothing; you can edit the model yourself "
+            f"first."
+        ),
+        "suggestedActions": [
+            {
+                "label": "Update model + generate",
+                # Route this to a pure CREATE (not the smart/generation route,
+                # which would re-run this very mismatch check and loop). The
+                # create rebuilds the new domain model; because this exact prompt
+                # was stashed in MISMATCH_REGEN_PENDING above, the create choke
+                # point recognizes it and resumes the stashed smart-gen right
+                # after the rebuild, so "+ generate" actually runs.
+                "prompt": rebuild_prompt,
+            },
+            {
+                "label": "Generate anyway",
+                "prompt": "generate anyway with my current model",
+            },
+            {
+                "label": "Cancel",
+                "prompt": "cancel the generation",
+            },
+        ],
+    }
+
+
+def _get_classification_from_cache_or_classify(session, request):
+    """Adapt the unified classifier's verdict for generation dispatch.
+
+    The per-event cache is trusted only for GENERATION verdicts; anything
+    else re-classifies this request's own text (see inline comment).
+
+    The unified classifier is the SINGLE rulebook for generation
+    sub-routing. The legacy generation-only classifier (a second prompt
+    that had drifted out of sync — e.g. it contradicted the SQL-dialect
+    and rest_api/backend deterministic rules) is retired; whatever the
+    unified call decided is adapted via ``_classification_to_legacy``.
+    """
+    cached: Optional[UnifiedClassification] = session.get(UNIFIED_CLASSIFICATION)
+    if cached is not None and cached.intent == "generation_intent":
+        return _classification_to_legacy(cached)
+    # Empty or NON-generation cache: the per-event cache belongs to the
+    # ORIGINAL user message, and internally synthesized sub-requests (the
+    # planner's Phase-2 "generate django" step of a compound "create X and
+    # generate Y" plan) share that event — adapting the original create
+    # verdict for them routed the generation back into modeling and RECURSED
+    # instead of generating. Classify THIS request's own text directly
+    # (uncached; same classifier-tier cost the retired legacy sub-router
+    # paid in exactly these situations).
+    llm_provider = _get_llm_provider() if _get_llm_provider else None
+    return _classification_to_legacy(
+        _unified_classify_message(request, llm_provider))
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +637,6 @@ _AWAITING_SELECTION = "_awaiting_selection"
 
 GENERATOR_KEYWORDS: Dict[str, List[str]] = {
     "django": ["django"],
-    "backend": ["full backend", "backend"],
     "web_app": [
         "web app",
         "web application",
@@ -32,8 +649,9 @@ GENERATOR_KEYWORDS: Dict[str, List[str]] = {
         "generate gui",
         "grapesjs",
     ],
+    "backend": ["full backend", "backend"],
     "sqlalchemy": ["sqlalchemy", "sql alchemy"],
-    "sql": ["sql ddl", "sql schema", "generate sql", "sql"],
+    "sql": ["database", "relational database", "db schema", "sql ddl", "sql schema", "generate sql", "sql"],
     "python": ["python classes", "generate python"],
     "java": ["java classes", "generate java"],
     "pydantic": ["pydantic"],
@@ -41,6 +659,8 @@ GENERATOR_KEYWORDS: Dict[str, List[str]] = {
     "smartdata": ["smart data", "smartdata"],
     "agent": ["besser agent", "agent generator", "generate agent"],
     "qiskit": ["qiskit", "quantum code", "quantum generator", "quantum circuit code", "ibm quantum"],
+    "rest_api": ["rest api", "rest_api", "generate rest api"],
+    "rdf": ["rdf", "rdf generator", "rdf vocabulary", "generate rdf"],
     "export": [
         "export project", "export the project", "export my project",
         "export to json", "export into json", "export as json", "export json",
@@ -48,6 +668,8 @@ GENERATOR_KEYWORDS: Dict[str, List[str]] = {
         "export model", "export the model", "export my model",
         "download project", "download the project", "download my project",
         "save as json", "save as buml", "save project",
+        "save the project", "save my project", "save project to json",
+        "save the project to json", "save the project as json",
         "export diagram", "export the diagram",
     ],
     "deploy": [
@@ -56,17 +678,23 @@ GENERATOR_KEYWORDS: Dict[str, List[str]] = {
         "deploy to cloud", "deploy project", "deploy the project",
         "deploy my project", "render deploy", "publish app", "publish the app",
         "publish to render", "publish my app",
+        "deploy this model", "deploy the model", "deploy my model",
+        "deploy it", "deploy this", "go ahead and deploy",
+        "push this to prod", "push to prod", "push it to prod",
+        "ship it to production", "ship this to production",
     ],
 }
 
 GENERATOR_REQUIRED_FIELDS: Dict[str, List[str]] = {
-    "django": ["project_name", "app_name", "containerization"],
+    "django": [],
     "backend": [],
     "sql": ["dialect"],
     "sqlalchemy": ["dbms"],
     "jsonschema": ["mode"],
     "smartdata": [],
     "qiskit": ["backend", "shots"],
+    "rest_api": [],
+    "rdf": [],
     "export": ["format"],
     "deploy": [],
 }
@@ -76,6 +704,34 @@ EXPORT_FORMATS = ["json", "buml"]
 DIALECT_VALUES = ["sqlite", "postgresql", "mysql", "mssql", "mariadb", "oracle"]
 MODE_VALUES = ["regular", "smart_data"]
 QISKIT_BACKENDS = ["aer_simulator", "fake_backend", "ibm_quantum"]
+
+# Common ways users actually spell a dialect/DBMS that don't match a
+# DIALECT_VALUES entry verbatim (e.g. "postgres" instead of "postgresql").
+# Without this, a message that clearly names a dialect ("postgres SQL")
+# still triggered the "which dialect?" config prompt (#QA bug).
+_DIALECT_ALIASES: Dict[str, str] = {
+    "postgres": "postgresql",
+    "psql": "postgresql",
+    "sql server": "mssql",
+    "sqlserver": "mssql",
+    "maria": "mariadb",
+}
+
+
+def _resolve_dialect(lower_message: str) -> Optional[str]:
+    """Return the canonical DIALECT_VALUES name mentioned in *lower_message*.
+
+    Checks exact ``DIALECT_VALUES`` first, then the common aliases above
+    (word-boundary matched so e.g. "psql" doesn't match inside an
+    unrelated word). Returns ``None`` when no dialect/DBMS is named.
+    """
+    for dialect in DIALECT_VALUES:
+        if re.search(r"\b" + re.escape(dialect) + r"\b", lower_message):
+            return dialect
+    for alias, canonical in _DIALECT_ALIASES.items():
+        if re.search(r"\b" + re.escape(alias) + r"\b", lower_message):
+            return canonical
+    return None
 
 
 def _sanitize_identifier(value: str, fallback: str) -> str:
@@ -93,7 +749,8 @@ _FUZZY_PATTERNS: List[Tuple[str, re.Pattern]] = [
     ("export", re.compile(
         r"\b(?:export|download|save)\b.*\b(?:json|buml|project|model|diagram)\b", re.I)),
     ("deploy", re.compile(
-        r"\b(?:deploy|publish)\b.*\b(?:render|cloud|app|application|project)\b", re.I)),
+        r"\b(?:deploy|publish|push|ship)\b.*\b(?:render|cloud|app|application|"
+        r"project|model|prod|production|live)\b", re.I)),
 ]
 
 
@@ -136,58 +793,6 @@ _DIAGRAM_TYPE_TOKENS = [
     "structural diagram", "domain model", "structural model",
     "bpmn", "business process", "process diagram",
 ]
-
-# Pre-compiled patterns for _is_diagram_creation_request (avoid recompiling).
-_CREATION_VERB_START = re.compile(
-    r'^(?:please\s+|can you\s+|could you\s+|i want to\s+|i\'d like to\s+)?'
-    r'(?:generate|create|build|design|make|model|draft|develop)\b'
-)
-_CREATION_VERB_ANYWHERE = re.compile(
-    r'\b(?:generate|create|build|design|make|model|draft|develop)\b'
-    r'.{0,30}'  # up to 30 chars between verb and diagram token
-    r'\b(?:class diagram|object diagram|state (?:machine|diagram)|agent diagram'
-    r'|gui diagram|quantum (?:circuit|diagram)|structural (?:diagram|model)|domain model)\b'
-)
-_NEED_PATTERN = re.compile(
-    r'\b(?:need|want|give me|show me|produce|draw)\b.*\b(?:diagram|model|machine|circuit)\b'
-)
-
-
-def _is_diagram_creation_request(lower: str) -> bool:
-    """Return True when the message asks to generate/create a *diagram* rather
-    than generate source code from an existing model.
-
-    Examples that should return True:
-      - "generate a class diagram"
-      - "generate the state machine for an order"
-      - "i'd like you to generate a class diagram for a library system"
-      - "can we build a state machine"
-
-    Examples that should return False:
-      - "generate django"
-      - "generate python code"
-      - "generate sql from my model"
-    """
-    # Must mention a diagram type
-    if not any(token in lower for token in _DIAGRAM_TYPE_TOKENS):
-        return False
-
-    # Check 1: message starts with a creation verb (possibly with filler).
-    if _CREATION_VERB_START.search(lower):
-        return True
-
-    # Check 2: creation verb appears anywhere NEAR a diagram type token.
-    # Catches "I'd like you to generate a class diagram" and
-    # "can we create a state machine for the order process".
-    if _CREATION_VERB_ANYWHERE.search(lower):
-        return True
-
-    # Check 3: "I need a class diagram", "give me a state diagram", etc.
-    if _NEED_PATTERN.search(lower):
-        return True
-
-    return False
-
 
 def _extract_project_name_from_context(request: AssistantRequest) -> str:
     snapshot = request.context.project_snapshot
@@ -235,16 +840,14 @@ def parse_inline_generator_config(
                 config["containerization"] = False
 
     elif generator_type == "sql":
-        for dialect in DIALECT_VALUES:
-            if dialect in lower:
-                config["dialect"] = dialect
-                break
+        dialect = _resolve_dialect(lower)
+        if dialect:
+            config["dialect"] = dialect
 
     elif generator_type == "sqlalchemy":
-        for dbms in DIALECT_VALUES:
-            if dbms in lower:
-                config["dbms"] = dbms
-                break
+        dbms = _resolve_dialect(lower)
+        if dbms:
+            config["dbms"] = dbms
 
     elif generator_type == "jsonschema":
         if "smart" in lower:
@@ -396,6 +999,144 @@ def _clear_pending_state(session: Session) -> None:
             session.delete(key)
 
 
+def _clear_pending_smart_gen(session: Session) -> None:
+    """Clear stashed smart-gen instructions and the skip-mismatch flag.
+
+    Called after the user resolves a mismatch confirmation (via Generate
+    Anyway, Cancel, or after a chained mismatch-regen run completes)
+    so a stale stash doesn't leak into a future unrelated request.
+    """
+    try:
+        session_data = session.get_dictionary()
+    except Exception as exc:
+        logger.debug(f"Session dictionary access failed (best-effort): {exc}")
+        session_data = {}
+
+    for key in (
+        PENDING_SMART_GEN_INSTRUCTIONS,
+        PENDING_SMART_GEN_PROVIDER,
+        PENDING_SMART_GEN_TIMESTAMP,
+        SKIP_MISMATCH_CHECK_ONCE,
+        MISMATCH_REGEN_PENDING,
+    ):
+        if isinstance(session_data, dict) and key in session_data:
+            session.delete(key)
+
+
+def handle_pending_smart_gen_confirmation(session: Session) -> bool:
+    """Intercept a pending smart-gen confirm/cancel before intent routing.
+
+    Called from _common_preamble (before any state body runs) so that a plain
+    "yes" / "continue" typed at the "Do you want to continue?" prompt is caught
+    regardless of which intent the classifier picks for the message.
+
+    Returns True when the confirmation was handled (caller must return).
+    Returns False when no pending confirmation exists or the message is not an
+    unambiguous answer (the normal routing pipeline should handle it).
+    """
+    if not session.get(PENDING_SMART_GEN_INSTRUCTIONS):
+        return False
+
+    from protocol.adapters import parse_assistant_request
+    from session_helpers import reply_message, reply_payload
+
+    request = parse_assistant_request(session)
+    msg_lower = (request.message or "").strip().lower()
+
+    decision = _smart_gen_confirmation_decision(msg_lower)
+
+    if decision is None:
+        # Allow the classifier to cancel on the user's behalf (novel phrasings
+        # like "rather not"), but NEVER confirm: firing the generator spends a
+        # run on the user's API key, so confirmation must come from the
+        # exact-phrase list only (B-2).
+        _uc = session.get(UNIFIED_CLASSIFICATION)
+        if (getattr(_uc, "pending_flow_action", None) == "answer"
+                and getattr(_uc, "pending_flow_answer", None) == "cancel"):
+            decision = "cancel"
+
+    if decision == "cancel":
+        _clear_pending_smart_gen(session)
+        _clear_pending_state(session)
+        reply_message(session, "Cancelled. Your model is unchanged.")
+        return True
+
+    if decision == "confirm":
+        from handlers.smart_generation_handler import GenerationClassification
+        stashed_instructions = session.get(PENDING_SMART_GEN_INSTRUCTIONS) or ""
+        stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic"
+        stashed_ts = session.get(PENDING_SMART_GEN_TIMESTAMP)
+        if not _smart_gen_stash_is_fresh(stashed_ts):
+            _clear_pending_smart_gen(session)
+            _clear_pending_state(session)
+            reply_message(
+                session,
+                "That generation request expired — please ask again "
+                "and I'll prepare a fresh run.",
+            )
+            return True
+        _clear_pending_smart_gen(session)
+        if stashed_instructions.strip():
+            payload = build_trigger_smart_generator_payload(
+                GenerationClassification(
+                    route="smart",
+                    refined_instructions=stashed_instructions,
+                    provider=stashed_provider,
+                    reason="user confirmed the run",
+                ),
+                reason_prefix="generating with current model",
+                original_request=session.get(ORIGINAL_APP_REQUEST) or "",
+            )
+            reply_payload(session, payload)
+            return True
+
+    return False
+
+
+def handle_pending_plan_generation_confirmation(session: Session) -> bool:
+    """Intercept an exact answer to the plan-pause question before intent
+    routing (mirrors :func:`handle_pending_smart_gen_confirmation`).
+
+    A mixed "design X and generate Y" plan pauses with the generator stashed
+    under ``PLAN_GENERATION_CONFIRM_FLAG``. The intent classifier misreads
+    short answers — a literal "ok" has been stamped ``decline_intent`` live —
+    so an EXACT yes/ok/generate/no is consumed here, from ``_common_preamble``,
+    before intent routing can carry it into a state that never reaches the
+    generation handler. Non-exact messages return ``False`` and route
+    normally; the plan-pause gate inside :func:`handle_generation_request`
+    then judges them with the classifier verdict.
+
+    Returns ``True`` when the answer was handled (caller must return).
+    """
+    pending_generator, pending_config = _get_pending_state(session)
+    if not (
+        pending_generator
+        and pending_generator != _AWAITING_SELECTION
+        and isinstance(pending_config, dict)
+        and pending_config.get(PLAN_GENERATION_CONFIRM_FLAG)
+    ):
+        return False
+
+    from protocol.adapters import parse_assistant_request
+    from session_helpers import reply_message, reply_payload
+
+    request = parse_assistant_request(session)
+    if getattr(request, "action", None) == "frontend_event":
+        return False
+    if _plan_pause_exact_decision((request.message or "").strip().lower()) is None:
+        return False
+
+    # Delegate to the generation handler: its plan-pause gate resolves the
+    # exact answer deterministically (one decision point, no duplication) and
+    # dispatches or cancels accordingly.
+    payload = handle_generation_request(session, request)
+    if isinstance(payload, dict):
+        reply_payload(session, payload)
+    elif isinstance(payload, str):
+        reply_message(session, payload)
+    return True
+
+
 def _looks_like_mixed_modeling_and_generation(message: str) -> bool:
     lower = (message or "").lower()
     if not detect_generator_type(lower):
@@ -422,101 +1163,42 @@ def _looks_like_mixed_modeling_and_generation(message: str) -> bool:
     return has_modeling_language and has_multi_step_connector
 
 
-# Pattern: "create/build/design … for <anything>" — the "for" signals a domain
-# context, making this a modeling request regardless of generator keywords.
-_MODELING_VERB_FOR_PATTERN = re.compile(
-    r'\b(?:create|build|design|model|make|develop|architect|plan|draft)\b'
-    r'.{1,60}'       # up to 60 chars between verb and "for"
-    r'\bfor\b'
-    r'.{3,}',        # at least 3 chars after "for" (a real domain phrase)
-    re.I,
-)
-
-# Pattern: "create/build/design a <noun-phrase>" where the noun phrase is NOT
-# a bare generator keyword.  Catches "build me a web app", "create a booking
-# platform", etc.  The negative lookahead excludes bare generator targets like
-# "generate django" or "generate sql".
-_MODELING_VERB_OBJECT_PATTERN = re.compile(
-    r'\b(?:create|build|design|model|make|develop|architect|plan|draft)\b'
-    r'\s+(?:me\s+|us\s+)?'               # optional "me"/"us"
-    r'(?:a|an|the|my|our|this)?\s*'       # optional article
-    r'(?!django\b|sql\b|python\b|java\b|pydantic\b|qiskit\b|backend\b)'  # NOT a bare generator
-    r'(\w+(?:\s+\w+){1,4})',              # 2-5 word noun phrase
-    re.I,
-)
-
-# Explicit generation phrases that override modeling detection.
-_EXPLICIT_GENERATION_PHRASES = [
-    "generate code", "generate the code", "generate source",
-    "run generator", "trigger generator", "code generation",
-    "source code", "export", "deploy",
-]
-
-
-def _is_modeling_request(message: str) -> bool:
-    """Return True when the message is primarily asking to model/create/design
-    a system, NOT to generate source code from an existing model.
-
-    Uses pattern-based detection instead of a hardcoded domain list, so
-    "create a web app for insurance claims" works just as well as
-    "create a web app for hotel booking".
-    """
-    lower = (message or "").lower()
-
-    # Fast path: diagram creation requests are always modeling.
-    if _is_diagram_creation_request(lower):
-        return True
-
-    # Veto: explicit generation phrases always win.
-    if any(g in lower for g in _EXPLICIT_GENERATION_PHRASES):
-        return False
-
-    # Pattern 1: "verb … for <domain>" — strongest signal.
-    # "create a web app for hotel booking" ✓
-    # "build a platform for managing inventory" ✓
-    # "design a system for insurance claims" ✓
-    if _MODELING_VERB_FOR_PATTERN.search(lower):
-        return True
-
-    # Pattern 2: "verb [article] <noun-phrase>" with 2+ words after article.
-    # "create a booking platform" ✓  "build me a reservation system" ✓
-    # "generate django" ✗ (bare generator keyword, excluded by lookahead)
-    m = _MODELING_VERB_OBJECT_PATTERN.search(lower)
-    if m:
-        noun_phrase = m.group(1).strip()
-        # The noun phrase must contain a domain/system word, not just a
-        # generator keyword.  A noun phrase of 3+ words is strong enough
-        # on its own ("hotel booking system").  For 2-word phrases, check
-        # that at least one word isn't a pure generator keyword.
-        words = noun_phrase.split()
-        _GENERATOR_ONLY_WORDS = {
-            "django", "sql", "python", "java", "pydantic", "qiskit",
-            "sqlalchemy", "backend", "jsonschema", "smartdata", "agent",
-        }
-        if len(words) >= 3:
-            return True
-        if len(words) == 2 and not all(w in _GENERATOR_ONLY_WORDS for w in words):
-            return True
-
-    return False
-
-
 def should_route_to_generation(session: Session, request: AssistantRequest) -> bool:
+    """State-transition gatekeeper for ``generation_state``.
+
+    Runs on every ``ReceiveJSONEvent``. We deliberately keep it cheap
+    (NO LLM call, NO text heuristics) and defer all intent
+    classification to the two places that already do that job:
+
+      1. The unified classifier (one classifier-tier call per message,
+         with BAF's local Simple classifier as fallback) decides whether
+         this is a generation request. Its ``json_intent_matches``
+         transition routes to ``generation_state`` on its own.
+      2. Inside ``generation_state``, ``handle_generation_request`` calls
+         the unified classifier's cached verdict (no extra LLM
+         call) for the smart-vs-deterministic sub-routing.
+
+    The only jobs of this function are the two non-intent signals BAF's
+    classifier can't see:
+
+      * ``frontend_event`` callbacks (``generator_result``, etc.) —
+        ``raw_payload`` events, not conversational messages.
+      * pending generator/config or smart-generation confirmation state —
+        the next message belongs to the in-progress flow, not a new intent.
+
+    Older versions of this function ran text-content heuristics
+    (``detect_generator_type``, ``_is_modeling_request``, phrase lists,
+    etc.) as a safety net for BAF misclassifications. That net is
+    removed — BAF's ``generation_intent`` description was strengthened
+    to cover non-BESSER stacks (rails, rust, kotlin, …) so it routes
+    correctly on its own.
+    """
     if request.action == "frontend_event":
         return True
     pending_generator, _ = _get_pending_state(session)
-    if pending_generator:
-        return True
-    if _looks_like_mixed_modeling_and_generation(request.message):
-        return False
-    if _is_modeling_request(request.message):
-        return False
-    # Pure diagram-creation requests ("generate a class diagram") should NOT
-    # be routed to generation even if no domain qualifier is present (which
-    # _is_modeling_request requires).
-    if _is_diagram_creation_request((request.message or "").lower()):
-        return False
-    return detect_generator_type(request.message) is not None
+    return bool(
+        pending_generator or session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+    )
 
 
 def _normalize_defaults(generator_type: str, request: AssistantRequest, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -526,7 +1208,7 @@ def _normalize_defaults(generator_type: str, request: AssistantRequest, config: 
         if config.get("project_name") == app_name:
             app_name = f"{app_name}_app"
         config.setdefault("app_name", app_name)
-        config.setdefault("containerization", False)
+        config.setdefault("containerization", True)
     elif generator_type == "sql":
         config.setdefault("dialect", "sqlite")
     elif generator_type == "sqlalchemy":
@@ -543,17 +1225,48 @@ def _normalize_defaults(generator_type: str, request: AssistantRequest, config: 
     return config
 
 
-def _handle_frontend_event(request: AssistantRequest) -> Dict[str, Any]:
+# Friendly, generator-specific completion lines for a deterministic run. The
+# browser already shows a result card (generator, "0 tokens", Download), so the
+# agent's reply is just one confirming sentence under it — worded for what was
+# actually built rather than a generic "generation completed".
+_GENERATOR_DONE_MESSAGES: Dict[str, str] = {
+    "generate_sql": "Your database schema is generated and ready to download.",
+    "generate_sqlalchemy": "Your SQLAlchemy models are generated and ready to download.",
+    "generate_django": "Your Django project is generated and ready to download.",
+    "generate_fastapi_backend": "Your FastAPI backend is generated and ready to download.",
+    "generate_backend": "Your backend is generated and ready to download.",
+    "generate_web_app": "Your web app is generated and ready to download.",
+    "generate_python": "Your Python classes are generated and ready to download.",
+    "generate_java": "Your Java classes are generated and ready to download.",
+    "generate_pydantic": "Your Pydantic models are generated and ready to download.",
+    "generate_json_object": "Your JSON objects are generated and ready to download.",
+    "generate_json_schema": "Your JSON Schema is generated and ready to download.",
+    "generate_pytorch": "Your PyTorch model is generated and ready to download.",
+    "generate_tensorflow": "Your TensorFlow model is generated and ready to download.",
+    "generate_bpmn": "Your BPMN process is generated and ready to download.",
+    "generate_qiskit": "Your quantum circuit code is generated and ready to download.",
+    "generate_supabase": "Your Supabase schema is generated and ready to download.",
+}
+
+
+def _handle_frontend_event(request: AssistantRequest, session=None) -> Dict[str, Any]:
     event_type = request.raw_payload.get("eventType")
     if event_type == "generator_result":
         ok = bool(request.raw_payload.get("ok"))
         message = request.raw_payload.get("message")
         metadata = request.raw_payload.get("metadata")
-        result_message = message if isinstance(message, str) and message.strip() else (
-            "Generation completed successfully." if ok else "Generation failed."
-        )
-        if isinstance(metadata, dict) and metadata.get("filename"):
-            result_message = f"{result_message} File: {metadata['filename']}"
+        if isinstance(metadata, dict) and metadata.get("smart"):
+            return _handle_smart_generator_result(ok, message, metadata, session)
+        if ok:
+            # One generator-appropriate confirmation under the card. Do NOT
+            # re-echo the "Generating…" trigger text (it reads as "starting"
+            # AFTER completion) or append the filename (the card already has it).
+            gen = metadata.get("generatorType") if isinstance(metadata, dict) else None
+            result_message = _GENERATOR_DONE_MESSAGES.get(
+                gen, "Your code is generated and ready to download."
+            )
+        else:
+            result_message = message if isinstance(message, str) and message.strip() else "Generation failed."
         return {"action": "assistant_message", "message": result_message}
     return {
         "action": "assistant_message",
@@ -561,40 +1274,714 @@ def _handle_frontend_event(request: AssistantRequest) -> Dict[str, Any]:
     }
 
 
+def _handle_smart_generator_result(
+    ok: bool,
+    message: Any,
+    metadata: Dict[str, Any],
+    session,
+) -> Dict[str, Any]:
+    """Outcome report for a smart-generation run the agent triggered.
+
+    Previously the smart path was fire-and-forget: the agent that
+    classified the request and refined the instructions never learned
+    whether the run succeeded, what it cost, or why it failed — so it
+    couldn't follow up and "why did it fail?" got a blank stare. This
+    records the outcome in conversation memory and replies with an
+    outcome-aware message + suggested next steps.
+    """
+    error_code = metadata.get("errorCode")
+    cost = metadata.get("costUsd")
+    generator_used = metadata.get("generator_used")
+    # Cost is intentionally NOT surfaced to the user (kept out of chat).
+    cost_text = ""
+
+    if ok:
+        incomplete = bool(metadata.get("incomplete"))
+        incomplete_reason = metadata.get("incompleteReason")
+        if incomplete:
+            head = (
+                f"The {SPEC_DRIVEN_NAME} produced output, but the run stopped early "
+                "so it may be incomplete"
+            )
+            if incomplete_reason:
+                head += f": {incomplete_reason}"
+            parts = [head + cost_text + "."]
+        else:
+            parts = [f"{SPEC_DRIVEN_NAME} generation finished successfully" + cost_text + "."]
+        if metadata.get("filename") or metadata.get("fileName"):
+            parts.append(f"File: {metadata.get('filename') or metadata.get('fileName')}")
+        if incomplete:
+            parts.append(
+                "You can run the generation again to finish the remaining changes."
+            )
+        result_message = " ".join(parts)
+        suggestions = None
+    elif error_code == "COST_CAP":
+        result_message = (
+            f"The {SPEC_DRIVEN_NAME} run hit its cost cap before finishing"
+            + cost_text
+            + ". You can retry with a larger budget, or narrow the "
+            "instructions so less code needs to be generated."
+        )
+        suggestions = ["Retry with refined instructions"]
+    elif error_code == "CANCELLED":
+        result_message = f"The {SPEC_DRIVEN_NAME} run was stopped" + cost_text + "."
+        suggestions = ["Retry the generation"]
+    elif error_code == "INVALID_KEY":
+        result_message = (
+            f"{SPEC_DRIVEN_NAME} generation failed: the provider rejected the API key. "
+            "Check the key in the AI settings and try again."
+        )
+        suggestions = None
+    else:
+        detail = message if isinstance(message, str) and message.strip() else None
+        result_message = (
+            f"{SPEC_DRIVEN_NAME} generation failed"
+            + (f" ({error_code})" if error_code else "")
+            + cost_text
+            + ("." if not detail else f": {detail}")
+        )
+        suggestions = ["Retry with refined instructions"]
+
+    # Record the outcome so follow-up turns ("why did it fail?",
+    # "run it again") have context. Best-effort — memory failures must
+    # never break the reply.
+    if session is not None:
+        if ok:
+            # Structured recency signal for the classifier's SMART-GEN
+            # FOLLOW-UP rule. Outside the memory try/except on purpose: it
+            # must survive memory failures, and only SUCCESSFUL runs count —
+            # "add auth to it" after a FAILED run is not a follow-up to
+            # reuse-for-generation.
+            session.set(LAST_SMART_GEN_AT, time.time())
+            # Attribute the run to its project. This callback is a
+            # ``frontend_event`` and carries NO workspace context, so the id
+            # comes from where the run was armed (_stash_smart_gen). Without
+            # it the timestamp is project-blind and leaks into the next
+            # project the user opens in the same session — which is exactly
+            # how a brand-new project's first request got answered with
+            # "I'll update your existing app".
+            session.set(
+                LAST_SMART_GEN_PROJECT_ID,
+                session.get(SMART_GEN_ARMED_PROJECT_ID),
+            )
+        # Stash the outcome (success OR failure) so a follow-up QUESTION
+        # about the finished run ("what we generated?") can be answered
+        # from here instead of re-arming a new generation confirmation.
+        session.set(LAST_SMART_GEN_SUMMARY, result_message)
+        try:
+            from memory import get_memory, memory_session_key
+
+            # Stable payload sessionId so memory survives reconnects (B-5).
+            session_id = memory_session_key(session)
+            mem = get_memory(session_id)
+            mem.add_assistant(f"[smart-generation outcome] {result_message}"[:500])
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("Could not record smart-gen outcome in memory", exc_info=True)
+
+    payload: Dict[str, Any] = {"action": "assistant_message", "message": result_message}
+    if suggestions:
+        payload["suggestedActions"] = suggestions
+    return payload
+
+
+# A question ABOUT a past generation: interrogative opener + a
+# generated/built/created reference within the same short message, or the
+# bare "what did/have/was ... generate(d)" forms. Precision-first — an
+# imperative like "generate rust classes" never matches (no interrogative
+# opener), and future-directed questions are excluded separately.
+_PAST_GEN_QUESTION_RE = re.compile(
+    r"^(what|which|show|tell|list|describe|explain)\b.{0,60}\b(generat|built|created|produced)",
+    re.IGNORECASE,
+)
+# Future-directed words that turn "what ... generate" into a request for
+# options/capabilities or a NEW run — those keep the normal routing.
+_FUTURE_GEN_WORDS_RE = re.compile(
+    r"\b(should|shall|can|could|would|will|next|now|again|regenerate|new)\b",
+    re.IGNORECASE,
+)
+
+# --- Continue-from-GitHub guard ------------------------------------------
+# Chat path for resuming a PAST generation that was pushed to GitHub:
+# "continue from github.com/owner/repo" must hand the frontend a
+# trigger_github_import action (the frontend calls the backend import
+# endpoint, loads the returned project, and arms the modify machinery —
+# the agent itself never touches GitHub or any HTTP endpoint).
+# Deterministic and precision-first, like the past-generation guard above:
+# an LLM verdict is never allowed to invent, miss, or swallow an import.
+#
+# URL form — unambiguous on its own: github.com/{owner}/{repo} with an
+# optional scheme, optional ".git" suffix (stripped in the extractor) and
+# optional /tree/{branch} segment. The repo pattern is dotted-segment
+# shaped so a trailing sentence period is NOT swallowed
+# ("...from github.com/x/y." → repo "y") while dotted repo names and
+# ".git" still match. The lookbehind rejects lookalike hosts
+# ("mygithub.com", "api.github.com").
+_GITHUB_URL_RE = re.compile(
+    r"(?<![A-Za-z0-9.-])(?:www\.)?github\.com/"
+    r"(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?)/"
+    r"(?P<repo>[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)"
+    r"(?:/tree/(?P<branch>[^\s?#]+))?",
+    re.IGNORECASE,
+)
+# Continuation verbs (EN + FR "reprendre" forms) — the bare owner/repo
+# form fires ONLY alongside one of these, and the classifier-side reroute
+# (unified_classifier._post_validate) requires one even for URLs, so a
+# "create a diagram like github.com/x/y" style request is never hijacked.
+_GITHUB_CONTINUE_VERB_RE = re.compile(
+    r"\b(?:continue|continuing|continues|resume|resuming|resumes|"
+    r"load|loading|loads|import|importing|imports|"
+    r"open|opening|opens|reprend\w*|reprise)\b",
+    re.IGNORECASE,
+)
+# The word that makes a bare "owner/repo" mean a REPOSITORY. Without it
+# (plus a continuation verb) a slash pair in ordinary prose
+# ("src/handlers", "1/2") must never fire.
+_GITHUB_REPO_WORD_RE = re.compile(
+    r"\b(?:repos?|repository|repositories|github)\b", re.IGNORECASE,
+)
+# Bare {owner}/{repo}: same owner/repo shapes as the URL form; the
+# lookarounds keep it from matching inside a longer path or URL.
+_BARE_OWNER_REPO_RE = re.compile(
+    r"(?<![\w./@-])"
+    r"(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?)/"
+    r"(?P<repo>[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)"
+    r"(?![\w/-])",
+)
+# "branch <name>" / "branche <name>" (FR) named in the message text — used
+# only when the URL carried no /tree/<branch> segment.
+_GITHUB_BRANCH_WORD_RE = re.compile(
+    r"\bbranche?\s+[\"'`]?"
+    r"(?P<branch>[A-Za-z0-9_/-]+(?:\.[A-Za-z0-9_/-]+)*)",
+    re.IGNORECASE,
+)
+
+
+def _extract_github_reference(
+    message: str,
+) -> Optional[Tuple[str, str, Optional[str]]]:
+    """Extract ``(owner, repo, branch)`` from a GitHub reference in *message*.
+
+    Two accepted shapes, precision-first (never fires on arbitrary "a/b"
+    prose):
+
+    * a github.com URL (scheme optional, ``.git`` and ``/tree/{branch}``
+      suffixes optional) — unambiguous on its own;
+    * a bare ``owner/repo`` — ONLY when the message ALSO contains a
+      continuation verb (continue / resume / load / import / open /
+      reprend…) AND a repo word (repo / repository / github).
+
+    ``branch`` comes from the URL's ``/tree/<branch>`` segment, else a
+    "branch <name>" phrase in the message, else ``None`` (the backend
+    then uses the repo's default branch). Returns ``None`` when the
+    message carries no GitHub reference.
+    """
+    msg = message or ""
+    owner = repo = branch = None
+    url_match = _GITHUB_URL_RE.search(msg)
+    if url_match:
+        owner = url_match.group("owner")
+        repo = url_match.group("repo")
+        branch = url_match.group("branch")
+    elif _GITHUB_CONTINUE_VERB_RE.search(msg) and _GITHUB_REPO_WORD_RE.search(msg):
+        bare_match = _BARE_OWNER_REPO_RE.search(msg)
+        if bare_match:
+            owner = bare_match.group("owner")
+            repo = bare_match.group("repo")
+    if not owner or not repo:
+        return None
+    if repo.lower().endswith(".git"):
+        repo = repo[: -len(".git")]
+    if not repo:
+        return None
+    if not re.search(r"[A-Za-z]", owner + repo):
+        # Digits-only pairs ("1/2", "3/4") are prose — fractions or dates —
+        # not a plausible GitHub reference.
+        return None
+    if branch:
+        # A /tree/<branch> segment is greedy up to whitespace so slashed
+        # branch names ("feature/login") survive; trim sentence punctuation.
+        branch = branch.rstrip(".,;:!?)'\"/")
+    if not branch:
+        word_match = _GITHUB_BRANCH_WORD_RE.search(msg)
+        if word_match:
+            branch = word_match.group("branch")
+    return owner, repo, branch or None
+
+
+def _build_github_import_payload(
+    owner: str, repo: str, branch: Optional[str],
+) -> Dict[str, Any]:
+    """Build the ``trigger_github_import`` action payload.
+
+    The frontend handles the action: it calls the backend's GitHub import
+    endpoint, loads the returned project into the editor, and arms the
+    incremental-modify machinery. ``branch`` is ``None`` when the user
+    named none (the backend then uses the repo's default branch).
+    """
+    branch_part = f" on branch {branch}" if branch else ""
+    return {
+        "action": "trigger_github_import",
+        "owner": owner,
+        "repo": repo,
+        "branch": branch,
+        "message": (
+            f"Importing **{owner}/{repo}**{branch_part} from GitHub — I'll "
+            "load the project and you can continue modifying it from here. "
+            "If the repo wasn't created by BESSER (no model inside), I'll "
+            "ask you to open it in the editor first."
+        ),
+    }
+
+
+# Normalized spellings of the mismatch quick-action label a user might TYPE
+# instead of clicking. Matched only while a mismatch rebuild is stashed.
+_MISMATCH_LABEL_ALIASES = {
+    "update model + generate",
+    "update model and generate",
+    "update the model + generate",
+    "update the model and generate",
+    "update model plus generate",
+    "update model generate",
+}
+
+
 def handle_generation_request(session: Session, request: AssistantRequest) -> Dict[str, Any]:
+    """Route a generation-state request to smart-gen, deterministic, or menu.
+
+    BAF's intent classifier has already decided this is a generation
+    request. Our job here is the SUB-routing: smart generator (for any
+    custom stack / language BESSER doesn't have built-in) vs one of
+    BESSER's deterministic generators (django / pydantic / sql / …) vs
+    redirect-to-modeling (if BAF misclassified).
+
+    The sub-routing verdict (route + generator_type +
+    refined_instructions) comes from the unified classifier's cached
+    per-message classification — one rulebook, zero extra LLM calls.
+    """
     if request.action == "frontend_event":
-        return _handle_frontend_event(request)
+        return _handle_frontend_event(request, session)
 
-    pending_generator, pending_config = _get_pending_state(session)
-    detected_generator = detect_generator_type(request.message)
+    # Past-generation QUESTION guard (live bug 2026-09-01): after a smart
+    # run finished, "What we generated" classified as generation_intent and
+    # re-armed the whole smart-gen confirmation instead of being answered.
+    # A past-tense/interrogative reference to the finished run — with no
+    # future-directed word — is a question about the outcome, never a new
+    # run. Deterministic, and only fires while a completed run is fresh.
+    _msg = (request.message or "").strip()
+    if _PAST_GEN_QUESTION_RE.search(_msg) and not _FUTURE_GEN_WORDS_RE.search(_msg):
+        _summary = session.get(LAST_SMART_GEN_SUMMARY)
+        _at = session.get(LAST_SMART_GEN_AT) or 0
+        if _summary and (time.time() - float(_at)) < 1800:
+            logger.info(
+                "Past-generation question answered from stashed outcome "
+                "(no new run armed): %r", _msg[:80],
+            )
+            return {
+                "action": "assistant_message",
+                "message": (
+                    f"{_summary} Use the **Download** button on the run card "
+                    "to save the files, or tell me what to change and I'll "
+                    "modify the generated app."
+                ),
+            }
 
-    # Safety net: if the intent classifier misrouted a modeling request here
-    # (e.g. "create a web app for hotel booking" contains "web app" which
-    # matches the web_app generator keyword), redirect the user instead of
-    # silently triggering code generation on a possibly empty canvas.
-    _lower_msg_check = (request.message or "").lower()
-    if not pending_generator and (
-        _is_modeling_request(request.message)
-        or _is_diagram_creation_request(_lower_msg_check)
-    ):
+    # Continue-from-GitHub guard: "continue from github.com/x/y" (or
+    # "continue from my repo x/y") means resuming a PAST generation that was
+    # pushed to GitHub. Deterministic and terminal: extract owner/repo/branch
+    # and hand the frontend a trigger_github_import action — it calls the
+    # backend import endpoint, loads the project, and arms the modify
+    # machinery. Runs BEFORE sub-route dispatch so no LLM verdict (smart /
+    # deterministic / modeling) can swallow the import into a fresh run.
+    _gh_ref = _extract_github_reference(_msg)
+    if _gh_ref is not None:
+        _gh_owner, _gh_repo, _gh_branch = _gh_ref
+        # An import loads a DIFFERENT project: abandon any pending generator
+        # config / smart-gen confirmation, exactly as the "different request
+        # abandons this confirmation" path below would — so a later generic
+        # "yes" can never spend against a stale pre-import run (B-2).
+        _clear_pending_smart_gen(session)
+        _clear_pending_state(session)
+        logger.info(
+            "Continue-from-GitHub: importing %s/%s (branch=%s)",
+            _gh_owner, _gh_repo, _gh_branch,
+        )
+        return _build_github_import_payload(_gh_owner, _gh_repo, _gh_branch)
+
+    # Pending smart-generation confirmation: short-circuit the classifier only
+    # for an unambiguous whole yes/no/cancel reply. Qualified or mixed replies
+    # are deliberately not treated as approval to spend the user's API key.
+    msg_lower = (request.message or "").strip().lower()
+    has_pending_smart_gen = bool(session.get(PENDING_SMART_GEN_INSTRUCTIONS))
+    smart_gen_decision = (
+        _smart_gen_confirmation_decision(msg_lower) if has_pending_smart_gen else None
+    )
+    if has_pending_smart_gen and smart_gen_decision is None:
+        # ActiveFlow: the classifier may CANCEL on the user's behalf (novel
+        # phrasings like "rather not" — cancelling is always safe) but must
+        # NEVER CONFIRM: firing the generator SPENDS a run (the user's own
+        # API key on BYOK), so confirmation stays exact-phrase/button-only
+        # (B-2). Live lesson: "fast" — meant for the GUI choice — was read
+        # by the LLM as an eager confirm and fired a run the user never
+        # asked for.
+        _uc_sc = session.get(UNIFIED_CLASSIFICATION)
+        if (getattr(_uc_sc, "pending_flow_action", None) == "answer"
+                and getattr(_uc_sc, "pending_flow_answer", None) == "cancel"):
+            smart_gen_decision = "cancel"
+
+    if smart_gen_decision == "cancel":
+        _clear_pending_smart_gen(session)
         _clear_pending_state(session)
         return {
             "action": "assistant_message",
-            "message": (
-                "It looks like you want to **create a diagram or design a system**, "
-                "not generate code from an existing model. Try rephrasing as: "
-                '**"create a class diagram for …"** or **"design a system for …"** '
-                "so I can build the model first."
-            ),
+            "message": "Cancelled. Your model is unchanged.",
         }
 
-    # If we were awaiting a generator selection, use the detected type only.
-    # The sentinel "_awaiting_selection" is not a real generator.
-    if pending_generator == _AWAITING_SELECTION:
-        _clear_pending_state(session)
-        generator_type = detected_generator
+    if smart_gen_decision == "confirm":
+        # Explicit user confirmation: fire the smart-gen handoff with the
+        # previously-stashed instructions / provider. This is the ONLY
+        # place a trigger_smart_generator payload is emitted — every
+        # other path stashes + asks first (B-2: the run spends the
+        # user's own API key).
+        from handlers.smart_generation_handler import GenerationClassification
+        stashed_instructions = session.get(PENDING_SMART_GEN_INSTRUCTIONS) or ""
+        stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic"
+        stashed_ts = session.get(PENDING_SMART_GEN_TIMESTAMP)
+        if not _smart_gen_stash_is_fresh(stashed_ts):
+            # Reject stale confirmations: a stash older than the TTL may
+            # belong to a long-abandoned dialog the user no longer means.
+            _clear_pending_smart_gen(session)
+            _clear_pending_state(session)
+            return {
+                "action": "assistant_message",
+                "message": (
+                    "That generation request expired — please ask again "
+                    "and I'll prepare a fresh run."
+                ),
+            }
+        _clear_pending_smart_gen(session)
+        if stashed_instructions.strip():
+            return build_trigger_smart_generator_payload(
+                GenerationClassification(
+                    route="smart",
+                    refined_instructions=stashed_instructions,
+                    provider=stashed_provider,
+                    reason="user confirmed the run",
+                ),
+                reason_prefix="generating with current model",
+                original_request=session.get(ORIGINAL_APP_REQUEST) or "",
+            )
+        # Fall through to normal classification if the stash was empty.
+
+    # Typed "Update model + generate": users sometimes TYPE the mismatch
+    # button's label instead of clicking it. The raw label re-classified as a
+    # fresh smart-gen request and re-showed the mismatch question in a loop
+    # (and, below, would have cleared the stashed run as a "different
+    # request"). Treat any label alias as the button press: dispatch the
+    # stashed rebuild prompt to the modeling path — the create choke point
+    # then resumes the stashed smart-gen exactly like the real button.
+    _regen_stash_alias = session.get(MISMATCH_REGEN_PENDING)
+    if (
+        isinstance(_regen_stash_alias, str) and _regen_stash_alias.strip()
+        and _norm_prompt(request.message) in _MISMATCH_LABEL_ALIASES
+    ):
+        logger.info(
+            "[Generation] Typed mismatch-button label — dispatching the "
+            "stashed rebuild prompt"
+        )
+        request.message = _regen_stash_alias
+        try:
+            from execution import execute_planned_operations
+            execute_planned_operations(
+                session=session,
+                request=request,
+                default_mode="complete_system",
+                matched_intent="create_complete_system_intent",
+            )
+            return None
+        except Exception:
+            logger.exception("[Generation] mismatch label dispatch failed")
+
+    _regen_prompt = session.get(MISMATCH_REGEN_PENDING)
+    _is_regen_rebuild = (
+        isinstance(_regen_prompt, str)
+        and _norm_prompt(request.message) == _norm_prompt(_regen_prompt)
+    )
+    if has_pending_smart_gen and not _is_regen_rebuild:
+        _stash_intent = getattr(
+            session.get(UNIFIED_CLASSIFICATION), "intent", None)
+        if _stash_intent == "out_of_scope_intent":
+            # Off-topic interjection ("draw me a cat") at the confirmation:
+            # answer it and KEEP the prepared run so "Continue" still works.
+            # (out_of_scope_state is unreachable here — the pending stash
+            # suppresses intent routing.)
+            return {"action": "assistant_message",
+                    "message": OUT_OF_SCOPE_REDIRECT}
+        if _stash_intent == "decline_intent":
+            # A decline at the confirmation IS the answer: cancel cleanly.
+            _clear_pending_smart_gen(session)
+            _clear_pending_state(session)
+            return {"action": "assistant_message",
+                    "message": "Cancelled. Your model is unchanged."}
+        # A different request abandons this confirmation. Clearing the stash
+        # prevents a later generic "yes" from spending against an old run.
+        # EXCEPTION: the domain-mismatch "Update model + generate" chain only
+        # keeps the stash alive when THIS message is exactly the stashed rebuild
+        # prompt — the intended continuation. A different create typed after a
+        # mismatch falls through here and abandons normally (no spurious resume).
+        _clear_pending_smart_gen(session)
+
+    pending_generator, pending_config = _get_pending_state(session)
+    _use_pending = bool(pending_generator and pending_generator != _AWAITING_SELECTION)
+
+    # ── Plan-paused generation confirmation ──────────────────────────────
+    # A mixed "design X and generate Y" plan paused after the model step
+    # (execution/planning.py) and stashed the generator here, marked with
+    # PLAN_GENERATION_CONFIRM_FLAG. Unlike a mid-config flow, the stashed
+    # generator must ONLY fire on an affirmative answer to the "review or
+    # continue with generating?" question — any other message abandons the
+    # pause and is routed on its own merits (mirroring how a different
+    # request abandons a smart-gen confirmation).
+    _plan_confirm_pending = (
+        _use_pending
+        and isinstance(pending_config, dict)
+        and bool(pending_config.get(PLAN_GENERATION_CONFIRM_FLAG))
+    )
+    # Set when the gate below resolves this message as a CONFIRM. The
+    # mid-config opt-out and pivot checks further down re-consult the
+    # classifier verdict for the SAME message; a resolved confirmation must
+    # never be re-litigated there. (Live bug: the classifier stamped a
+    # literal "ok" as decline_intent — the known short-answer misread — and
+    # the opt-out then cancelled a deterministically confirmed run.)
+    _plan_pause_confirmed = False
+    _plan_pause_exact_confirm = False
+    if _plan_confirm_pending:
+        # The internal marker must never leak into a generator config payload.
+        pending_config = {
+            k: v for k, v in pending_config.items()
+            if k != PLAN_GENERATION_CONFIRM_FLAG
+        }
+        _uc_pause = session.get(UNIFIED_CLASSIFICATION)
+        _pause_intent = getattr(_uc_pause, "intent", None)
+        # PRECEDENCE: exact affirmative phrases confirm deterministically
+        # FIRST, exact declines cancel; the classifier verdict is consulted
+        # only for novel phrasings.
+        _decision = _plan_pause_exact_decision(msg_lower)
+        _plan_pause_exact_confirm = _decision == "confirm"
+        if _decision is None:
+            _flow_act = getattr(_uc_pause, "pending_flow_action", None)
+            _flow_ans = getattr(_uc_pause, "pending_flow_answer", None)
+            if _flow_act == "answer" and _flow_ans == "confirm":
+                _decision = "confirm"
+            elif (
+                (_flow_act == "answer" and _flow_ans == "cancel")
+                or _pause_intent == "decline_intent"
+            ):
+                _decision = "cancel"
+
+        if _decision == "cancel":
+            _clear_pending_state(session)
+            session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+            return {
+                "action": "assistant_message",
+                "message": (
+                    "Understood — I won't run code generation. Your model is "
+                    "ready whenever you'd like to continue."
+                ),
+            }
+        if _decision == "confirm" or _pause_intent == "generation_intent":
+            # Continue with the paused generator: persist the stash without
+            # the marker and fall through to the normal pending-flow handling
+            # below (config parsing, pivot detection, dispatch).
+            _plan_pause_confirmed = True
+            _set_pending_state(session, pending_generator, pending_config)
+            logger.info(
+                "▶️ [Generation] Plan-paused '%s' generation confirmed by the user",
+                pending_generator,
+            )
+        else:
+            # Not an answer to the pause question — abandon the paused
+            # generation and let this message classify normally.
+            logger.info(
+                "[Generation] Plan-paused '%s' generation abandoned — message "
+                "is not a confirmation", pending_generator,
+            )
+            _clear_pending_state(session)
+            session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+            _use_pending = False
+
+    # When a config-collection flow is pending (e.g. we asked for the Django
+    # project name), the user may PIVOT instead of answering — "generate the
+    # database" while mid-Django-config, or escalating to the smart generator.
+    # Trust the fresh classification: if it's a clear request for a DIFFERENT
+    # built-in generator, or the smart route, abandon the pending flow and
+    # re-route — otherwise we'd re-prompt for the old generator's config
+    # forever (the "asked for a database, got Django questions" bug).
+    # Consult the CACHED classification (populated by state_bodies' priority-0
+    # hook — read directly so there is NO extra LLM call here). If the cache is
+    # empty we simply don't pivot and continue the pending flow.
+    classification = None
+    if _use_pending:
+        # Opt-out FIRST: an explicit cancel or a decline verdict mid-config
+        # must EXIT the flow. Without this, the reply looped the config
+        # prompt and the CONFIG_PROMPT_ATTEMPTS >= 3 branch auto-filled
+        # defaults and generated the very thing the user was refusing.
+        # SKIPPED for a message the plan-pause gate above already resolved as
+        # a confirmation: the classifier's decline/cancel misread of a bare
+        # "ok"/"yes" must not override the deterministic answer (live bug).
+        _uc_cfg = session.get(UNIFIED_CLASSIFICATION)
+        if (
+            not _plan_pause_confirmed
+            and (
+                _norm_prompt(request.message) in _CONFIG_CANCEL_PHRASES
+                or getattr(_uc_cfg, "intent", None) == "decline_intent"
+                or (getattr(_uc_cfg, "pending_flow_action", None) == "answer"
+                    and getattr(_uc_cfg, "pending_flow_answer", None) == "cancel")
+            )
+        ):
+            logger.info(
+                "[Generation] Pending '%s' config flow cancelled by the user",
+                pending_generator,
+            )
+            _clear_pending_state(session)
+            session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+            return {
+                "action": "assistant_message",
+                "message": "Cancelled — no code was generated. Your model is unchanged.",
+            }
+        _cached = session.get(UNIFIED_CLASSIFICATION)
+        # The pivot check is likewise skipped after an EXACT-phrase confirm:
+        # "ok" / "generate" means the STASHED generator, whatever generator
+        # the classifier happened to guess for the bare acknowledgment.
+        # Classifier-driven confirms keep the pivot so "generate sql
+        # instead" typed at the pause still reroutes.
+        if (
+            not _plan_pause_exact_confirm
+            and _cached is not None
+            and getattr(_cached, "intent", None) == "generation_intent"
+        ):
+            _fresh = _classification_to_legacy(_cached)
+            pivoted = _fresh.route == "smart" or (
+                _fresh.route == "deterministic"
+                and _fresh.generator_type
+                and _fresh.generator_type != pending_generator
+            )
+            if pivoted:
+                logger.info(
+                    "generation pivot: abandoning pending '%s' config flow for "
+                    "route=%s generator_type=%s",
+                    pending_generator, _fresh.route, _fresh.generator_type,
+                )
+                _clear_pending_state(session)
+                session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+                _use_pending = False
+                classification = _fresh  # reuse below; avoids a second lookup
+
+    if _use_pending:
+        # Multi-turn continuation: user is answering the pending generator's
+        # config prompt (e.g. "what's your Django project name?"). Use the
+        # already-picked generator and fall through to the config parsing /
+        # dispatch path below without re-routing.
+        generator_type: Optional[str] = pending_generator
     else:
-        generator_type = detected_generator or pending_generator
+        # First-time-through (or just-pivoted): read the unified classifier's
+        # verdict from the per-message cache (populated by state_bodies'
+        # priority-0 hook). Falls back to a fresh call only when the cache is
+        # empty — typically in tests that bypass the state machine. Net result
+        # in production: ZERO extra LLM calls — the classification was already
+        # done before this state body ran (and reused above when pending).
+        if classification is None:
+            classification = _get_classification_from_cache_or_classify(session, request)
+        logger.info(
+            "generation sub-route: route=%s generator_type=%s reason=%s",
+            classification.route, classification.generator_type, classification.reason,
+        )
+
+        if classification.route == "smart":
+            _clear_pending_state(session)
+            session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+
+            # Domain-mismatch guard: when the user's request describes a
+            # different domain than their existing class diagram, refuse
+            # to silently rewrite generated code that won't match their
+            # model. Surface the choice to the user via quick actions.
+            # Honors a one-shot ``SKIP_MISMATCH_CHECK_ONCE`` flag so the
+            # "Generate anyway" path doesn't loop on this question.
+            skip_mismatch = bool(session.get(SKIP_MISMATCH_CHECK_ONCE))
+            if skip_mismatch:
+                session.set(SKIP_MISMATCH_CHECK_ONCE, False)
+            else:
+                is_mismatch, suggested = _read_unified_mismatch_info(session)
+                if is_mismatch and suggested:
+                    return _build_mismatch_confirmation(session, classification, suggested)
+
+            # Never fire directly: the smart generator spends the user's
+            # own API key, so stash + ask for explicit confirmation (B-2).
+            # Pass the user's own message so the confirmation copy can tell a
+            # fix/modify apart from a first build (pilot P2).
+            return _build_smart_gen_confirmation(
+                session,
+                classification.refined_instructions or "",
+                classification.provider or "anthropic",
+                user_message=getattr(request, "message", None),
+            )
+
+        if classification.route == "modeling":
+            _clear_pending_state(session)
+            # The request is really a modeling request (create OR modify),
+            # not code-gen. Build/edit the model directly instead of bouncing
+            # the user with a "rephrase" message — classification is
+            # non-deterministic, so this makes the outcome CONSISTENT
+            # regardless of which path the message took. The MODE comes from
+            # the unified verdict: a modify-shaped message ("add a Payment
+            # class and regenerate") must MODIFY, not rebuild from scratch.
+            # execute_planned_operations sends the reply itself; return None
+            # so the caller adds nothing more (deferred import avoids a
+            # module-load cycle).
+            _uc = session.get(UNIFIED_CLASSIFICATION)
+            if getattr(_uc, "intent", None) == "modify_model_intent":
+                _mode, _intent = "modify_model", "modify_model_intent"
+            else:
+                _mode, _intent = "complete_system", "create_complete_system_intent"
+            try:
+                from execution import execute_planned_operations
+                execute_planned_operations(
+                    session=session,
+                    request=request,
+                    default_mode=_mode,
+                    matched_intent=_intent,
+                )
+                return None
+            except Exception as exc:
+                logger.error(f"[GenRedirect] modeling build failed: {exc}", exc_info=True)
+                return {
+                    "action": "assistant_message",
+                    "message": (
+                        "It looks like you want to design a system. Try "
+                        '**"create a class diagram for a library"**.'
+                    ),
+                }
+
+        if classification.route == "other":
+            _clear_pending_state(session)
+            return {
+                "action": "assistant_message",
+                "message": (
+                    "I didn't catch a clear code-generation request. If you want code, "
+                    'try something like **"generate django"** for a built-in generator '
+                    'or **"build me a rails api"** / **"generate code in rust"** for a '
+                    "custom stack. If you want a diagram, try "
+                    '**"create a class diagram for a library"**.'
+                ),
+            }
+
+        # route == "deterministic" — fall through to the config-parse
+        # / dispatch path with the classifier's picked generator type.
+        # If ``_AWAITING_SELECTION`` was set, clear it; the classifier
+        # has effectively answered which generator the user picked.
+        if pending_generator == _AWAITING_SELECTION:
+            _clear_pending_state(session)
+        generator_type = classification.generator_type
 
     if not generator_type:
         _lower_msg = (request.message or "").lower()
@@ -645,6 +2032,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 "**Database**: `sql`, `sqlalchemy`\n"
                 "**Code**: `python`, `java`, `pydantic`\n"
                 "**Data formats**: `jsonschema`, `smartdata`\n"
+                "**APIs & semantics**: `rest_api`, `rdf`\n"
                 "**Other**: `agent`, `qiskit`\n\n"
                 "**Export**: `export json` or `export buml`\n"
                 "**Deploy**: `deploy to render`\n\n"
@@ -721,30 +2109,36 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 "then fill in the repository details and hit **Publish**."
             ),
         }
-    # Empty model guard: disabled because the WebSocket context may be stale
-    # right after an injection (frontend has the model but sends pre-injection
-    # snapshot with the next message). Frontend validates before calling backend.
-    # context = getattr(request, 'context', None)
-    # active_model = getattr(context, 'active_model', None) if context else None
-    # if active_model is None:
-    #     snapshot = getattr(context, 'project_snapshot', None) if context else None
-    #     if isinstance(snapshot, dict):
-    #         diagrams = snapshot.get('diagrams', {})
-    #         active_type = getattr(context, 'active_diagram_type', None)
-    #         if isinstance(diagrams, dict) and active_type:
-    #             diagram_data = diagrams.get(active_type, {})
-    #             if isinstance(diagram_data, dict):
-    #                 active_model = diagram_data.get('model')
-    #
-    # if not active_model or (isinstance(active_model, dict) and not active_model.get('elements')):
-    #     return {
-    #         "action": "assistant_message",
-    #         "message": (
-    #             f"Your diagram is empty — please create a model first before "
-    #             f"generating **{generator_type}** code. Try describing your system "
-    #             f"(e.g. *\"create a library management system\"*)."
-    #         ),
-    #     }
+    # Validate the diagrams this specific generator consumes. An unrelated
+    # model must not satisfy a ClassDiagram prerequisite, and canonical GUI
+    # models carry ``pages`` rather than an ``elements`` map.
+    request_context = getattr(request, "context", None)
+    missing_prerequisites = _missing_generator_prerequisites(
+        request_context, generator_type,
+    )
+    if missing_prerequisites:
+        labels = {
+            "ClassDiagram": "Class Diagram",
+            "GUINoCodeDiagram": "GUI Diagram",
+            "AgentDiagram": "Agent Diagram",
+            "QuantumCircuitDiagram": "Quantum Circuit Diagram",
+        }
+        missing_text = " and ".join(
+            f"**{labels.get(dtype, dtype)}**" for dtype in missing_prerequisites
+        )
+        if not _project_has_any_model(request_context):
+            lead = "Your workspace looks empty"
+        else:
+            lead = f"Your workspace is missing a usable {missing_text}"
+        return {
+            "action": "assistant_message",
+            "message": (
+                f"{lead} — **{generator_type}** generation requires {missing_text}. "
+                f"Describe what you want first "
+                f"(e.g. *\"create a library management system\"*), then ask me to "
+                f"generate the code."
+            ),
+        }
 
     return {
         "action": "trigger_generator",

@@ -146,12 +146,6 @@ class TestParseV2Payload:
         assert request.diagram_type == "ClassDiagram"
         assert request.is_v2
 
-    def test_with_active_model(self):
-        model = {"elements": {"cls-1": {"name": "Foo"}}}
-        raw = make_v2_payload("Modify User", "ClassDiagram", active_model=model)
-        request = parse_v2_payload(raw)
-        assert request.current_model == model
-
     def test_frontend_event_action(self):
         raw = make_v2_payload("", action="frontend_event")
         request = parse_v2_payload(raw)

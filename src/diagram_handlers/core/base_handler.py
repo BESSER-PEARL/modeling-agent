@@ -20,10 +20,23 @@ from abc import ABC, abstractmethod
 from pydantic import BaseModel
 
 from agent_config import LLM_MAX_TOKENS_SMALL, LLM_MAX_TOKENS_LARGE, LLM_TEMPERATURE
+from model_config import (
+    MODEL_CLASSIFIER,
+    MODEL_GENERATION_SMALL,
+    reasoning_effort_for,
+    supports_custom_temperature,
+)
 from .layout_engine import apply_layout
 from errors import ErrorCode, classify_error, build_error_response, _RECOVERY_HINTS
 
 logger = logging.getLogger(__name__)
+
+# Full prompt/response content is DEBUG-only by default: prompts embed
+# conversation history and the user's model summaries, which must not land
+# in plaintext INFO logs (compliance + log volume). Set LOG_PROMPTS=1 to
+# restore INFO-level content logging for a debugging session.
+_LOG_PROMPTS = os.getenv("LOG_PROMPTS", "").strip().lower() in {"1", "true", "yes"}
+_log_content = logger.info if _LOG_PROMPTS else logger.debug
 
 class LLMPredictionError(Exception):
     """Raised when the LLM fails to produce a usable response after retries."""
@@ -234,6 +247,9 @@ class BaseDiagramHandler(ABC):
         'remove_transition': 'Removed transition from',
         'modify_intent': 'Updated',
         'add_intent': 'Added',
+        'add_rag_element': 'Added knowledge base',
+        'add_state_body': 'Added reply to',
+        'add_intent_training_phrase': 'Added training phrase to',
         'modify_object': 'Updated',
         'add_object': 'Added',
         'add_link': 'Added link to',
@@ -297,7 +313,23 @@ class BaseDiagramHandler(ABC):
         if class_name and method_name and action in ('remove_element', 'modify_method', 'remove_method'):
             return f"method {method_name} from {class_name}"
 
-        return class_name or attr_name or method_name or 'element'
+        # Agent transition endpoints (source → target state)
+        src_state = target.get('sourceStateName')
+        tgt_state = target.get('targetStateName')
+        if src_state and tgt_state:
+            return f"{src_state} → {tgt_state}"
+        if src_state or tgt_state:
+            return src_state or tgt_state
+
+        # Agent intent / RAG names, then a generic changes.name fallback, before
+        # giving up on the literal 'element'.
+        intent_name = target.get('intentName')
+        rag_name = target.get('name')
+        changes = (mod or {}).get('changes') if isinstance(mod, dict) else None
+        changes_name = changes.get('name') if isinstance(changes, dict) else None
+
+        return (class_name or attr_name or method_name or intent_name
+                or rag_name or changes_name or 'element')
 
     def _friendly_batch_message(self, mods: list) -> str:
         """Produce a friendly summary for a batch of modifications."""
@@ -364,8 +396,11 @@ class BaseDiagramHandler(ABC):
         Returns:
             Modification spec dict ready to send to the frontend.
         """
+        # Modifications are small, schema-constrained, latency-sensitive
+        # outputs → the SMALL generation tier (see model_config).
         parsed = self.predict_structured(
             user_prompt, response_schema, system_prompt=system_prompt,
+            model=MODEL_GENERATION_SMALL,
         )
 
         # Element-not-found short-circuit (used by BPMN and compatible schemas).
@@ -446,8 +481,62 @@ class BaseDiagramHandler(ABC):
     # ------------------------------------------------------------------
     # LLM call with retry
     # ------------------------------------------------------------------
+
+    def _predict_raw(
+        self, prompt: str, model: Optional[str] = None, *, max_tokens: Optional[int] = None,
+    ) -> str:
+        """Single free-text LLM call honoring a per-call model override.
+
+        BAF's ``LLMOpenAI.predict`` always sends ``self.llm.name`` as the
+        model, so per-call routing (see ``model_config``) must go through
+        the OpenAI client directly when an override is requested. Falls
+        back to the BAF path when no override is given or the client is
+        unavailable. Token tracking stays with the caller.
+
+        BYOK: when the current request carries a user-supplied key (see
+        ``byok.current_byok``), this free-text generation call is routed
+        through the user's own per-request client instead of the shared
+        server LLM. SDK auth/rate-limit errors propagate so
+        ``predict_with_retry`` / ``errors.classify_error`` surface them.
+        """
+        effective_max_tokens = max_tokens or LLM_MAX_TOKENS_LARGE
+
+        from byok import get_active_client  # local import: avoids import cycle
+        byok_client = get_active_client()
+        if byok_client is not None:
+            return byok_client.predict_raw(
+                prompt,
+                model=model,
+                temperature=LLM_TEMPERATURE,
+                reasoning_effort=reasoning_effort_for(model) if model else None,
+                max_tokens=effective_max_tokens,
+            )
+
+        client = getattr(self.llm, 'client', None)
+        if model and client is not None and hasattr(client, 'chat'):
+            raw_kwargs: Dict[str, Any] = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_completion_tokens": effective_max_tokens,
+            }
+            # gpt-5* / o-series models 400 on an explicit non-default
+            # temperature — omit the parameter for them; cap their hidden
+            # reasoning instead (quality holds, latency drops ~40%).
+            if supports_custom_temperature(model):
+                raw_kwargs["temperature"] = LLM_TEMPERATURE
+            else:
+                raw_kwargs["reasoning_effort"] = reasoning_effort_for(model)
+            completion = client.chat.completions.create(**raw_kwargs)
+            if not completion.choices:
+                return ""
+            return completion.choices[0].message.content or ""
+        return self.llm.predict(prompt)
+
     # NOTE: This adds an extra LLM round-trip (2–4s latency).
-    def predict_with_retry(self, prompt: str, max_retries: int = 1) -> str:
+    def predict_with_retry(
+        self, prompt: str, max_retries: int = 1, *, model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str:
         """Call the LLM with automatic retry and jittered exponential backoff.
 
         Rate-limit handling is delegated to OpenAI's API (429 responses)
@@ -461,6 +550,7 @@ class BaseDiagramHandler(ABC):
         Args:
             prompt: Full prompt to send.
             max_retries: Number of additional attempts after the first (default 1).
+            model: Optional per-call model override (see ``model_config``).
 
         Returns:
             Non-empty string response.
@@ -502,7 +592,7 @@ class BaseDiagramHandler(ABC):
                     f"(attempt {attempt + 1}/{total_attempts}, "
                     f"prompt_len={len(effective_prompt)})"
                 )
-                response = self.llm.predict(effective_prompt)
+                response = self._predict_raw(effective_prompt, model=model, max_tokens=max_tokens)
 
                 # Track tokens from the last API call if available
                 try:
@@ -517,7 +607,7 @@ class BaseDiagramHandler(ABC):
                         tracker.record(
                             prompt_tokens=est_prompt,
                             completion_tokens=est_completion,
-                            model=getattr(self.llm, 'name', 'gpt-4.1-mini'),
+                            model=model or getattr(self.llm, 'name', MODEL_CLASSIFIER),
                         )
                 except Exception as exc:
                     logger.debug(f"Token tracking failed (best-effort): {exc}")
@@ -568,9 +658,20 @@ class BaseDiagramHandler(ABC):
         "StateMachineModificationResponse", "GUIModificationSpec",
         "QuantumModificationSpec", "AgentModificationResponse",
         "BPMNModificationResponse",
+        "UserProfileModificationResponse",
     }
     _SMALL_OUTPUT_MAX_TOKENS = LLM_MAX_TOKENS_SMALL
     _LARGE_OUTPUT_MAX_TOKENS = LLM_MAX_TOKENS_LARGE
+
+    def _structured_max_tokens(self, response_schema: Type[BaseModel]) -> int:
+        """Completion budget for a structured call, chosen per schema.
+
+        Handlers whose outputs exceed the shared LARGE tier (e.g. multi-page
+        GUI authoring) override this for their schemas.
+        """
+        if response_schema.__name__ in self._SMALL_OUTPUT_SCHEMAS:
+            return self._SMALL_OUTPUT_MAX_TOKENS
+        return self._LARGE_OUTPUT_MAX_TOKENS
 
     def predict_structured(
         self,
@@ -580,6 +681,7 @@ class BaseDiagramHandler(ABC):
         max_retries: int = 1,
         system_prompt: str = "",
         temperature: float = LLM_TEMPERATURE,
+        model: Optional[str] = None,
     ) -> BaseModel:
         """Call the LLM with OpenAI Structured Outputs, returning a validated Pydantic model.
 
@@ -596,6 +698,8 @@ class BaseDiagramHandler(ABC):
             max_retries: Number of retry attempts (default 1).
             system_prompt: Optional system instruction prepended to messages.
             temperature: LLM temperature (default 0.2).
+            model: Optional per-call model override (see ``model_config``);
+                defaults to the handler's LLM instance model.
 
         Returns:
             Validated Pydantic model instance.
@@ -603,6 +707,9 @@ class BaseDiagramHandler(ABC):
         Raises:
             LLMPredictionError: If all attempts fail.
         """
+        effective_model = model or (
+            self.llm.name if hasattr(self.llm, 'name') else MODEL_CLASSIFIER
+        )
         # --- Check if client supports .parse() ---
         client = getattr(self.llm, 'client', None)
         has_parse = (
@@ -618,7 +725,7 @@ class BaseDiagramHandler(ABC):
                 "falling back to predict_with_retry"
             )
             return self._structured_fallback(
-                prompt, response_schema, system_prompt, max_retries,
+                prompt, response_schema, system_prompt, max_retries, model=model,
             )
 
         # --- Structured parse with retry ---
@@ -663,32 +770,40 @@ class BaseDiagramHandler(ABC):
                             break
 
             try:
-                max_tokens = (
-                    self._SMALL_OUTPUT_MAX_TOKENS
-                    if response_schema.__name__ in self._SMALL_OUTPUT_SCHEMAS
-                    else self._LARGE_OUTPUT_MAX_TOKENS
-                )
+                max_tokens = self._structured_max_tokens(response_schema)
                 logger.info(
                     f"🤖 [{self.get_diagram_type()}] Structured LLM call started "
                     f"(attempt {attempt + 1}/{total_attempts}, "
                     f"schema={response_schema.__name__}, "
+                    f"model={effective_model}, "
                     f"max_tokens={max_tokens})"
                 )
-                # Log prompt content for diagnostics (full content only at DEBUG)
+                # Lengths stay at INFO; full content is DEBUG-only (or INFO
+                # with LOG_PROMPTS=1) because prompts embed user data.
                 for i, msg in enumerate(messages):
                     role = msg.get("role", "?")
                     content = msg.get("content", "")
                     logger.debug(
                         f"📝 [{self.get_diagram_type()}] Prompt msg[{i}] role={role} "
-                        f"len={len(content)} chars:\n{content}"
+                        f"len={len(content)} chars"
                     )
-                completion = client.beta.chat.completions.parse(
-                    model=self.llm.name if hasattr(self.llm, 'name') else "gpt-4.1-mini",
-                    messages=messages,
-                    response_format=response_schema,
-                    temperature=temperature,
-                    max_completion_tokens=max_tokens,
-                )
+                    _log_content(
+                        f"📝 [{self.get_diagram_type()}] Prompt msg[{i}] content:\n{content}"
+                    )
+                parse_kwargs: Dict[str, Any] = {
+                    "model": effective_model,
+                    "messages": messages,
+                    "response_format": response_schema,
+                    "max_completion_tokens": max_tokens,
+                }
+                # gpt-5* / o-series models 400 on an explicit non-default
+                # temperature — omit the parameter for them; cap their hidden
+                # reasoning instead (quality holds, latency drops ~40%).
+                if supports_custom_temperature(effective_model):
+                    parse_kwargs["temperature"] = temperature
+                else:
+                    parse_kwargs["reasoning_effort"] = reasoning_effort_for(effective_model)
+                completion = client.beta.chat.completions.parse(**parse_kwargs)
 
                 # Track tokens & detect truncation
                 finish_reason = completion.choices[0].finish_reason if completion.choices else None
@@ -696,10 +811,7 @@ class BaseDiagramHandler(ABC):
                 raw_content = getattr(completion.choices[0].message, 'content', None) if completion.choices else None
 
                 if usage:
-                    tracker.record_from_usage(
-                        usage,
-                        model=self.llm.name if hasattr(self.llm, 'name') else "gpt-4.1-mini",
-                    )
+                    tracker.record_from_usage(usage, model=effective_model)
                     logger.info(
                         f"📊 [{self.get_diagram_type()}] Token usage: "
                         f"prompt={usage.prompt_tokens}, "
@@ -726,8 +838,9 @@ class BaseDiagramHandler(ABC):
                         raise LLMPredictionError(f"LLM refused: {refusal}")
                     raise LLMPredictionError("LLM returned empty structured output")
 
-                # Log successful response content
-                logger.info(
+                # Response content is DEBUG-only (LOG_PROMPTS=1 restores INFO)
+                # — it contains the user's generated model data.
+                _log_content(
                     f"📤 [{self.get_diagram_type()}] Parsed response: "
                     f"{parsed.model_dump_json()[:3000]}"
                 )
@@ -761,6 +874,7 @@ class BaseDiagramHandler(ABC):
         response_schema: Type[BaseModel],
         system_prompt: str,
         max_retries: int,
+        model: Optional[str] = None,
     ) -> BaseModel:
         """Fallback path when structured outputs API is unavailable.
 
@@ -781,7 +895,7 @@ class BaseDiagramHandler(ABC):
             "No markdown, no explanation."
         )
 
-        response = self.predict_with_retry(full_prompt, max_retries=max_retries)
+        response = self.predict_with_retry(full_prompt, max_retries=max_retries, model=model)
         json_text = self.clean_json_response(response)
 
         try:
@@ -811,6 +925,9 @@ class BaseDiagramHandler(ABC):
         response_schema: Type[BaseModel],
         *,
         temperature: float = 0.2,
+        raw_request: Optional[str] = None,
+        model: Optional[str] = None,
+        reasoning_model: Optional[str] = None,
     ) -> BaseModel:
         """Two-pass generation with structured output for pass 2.
 
@@ -825,15 +942,27 @@ class BaseDiagramHandler(ABC):
         thought preamble.
 
         Falls back to single-pass structured if reasoning fails.
+
+        Args:
+            user_request: The (possibly context-enriched) request, including
+                conversation history and the workspace context block.
+            raw_request: The original user message *before* context
+                enrichment. Used for the fast-path length check so that
+                conversation history / workspace context never push a trivial
+                request onto the expensive reasoning pass. Falls back to
+                ``user_request`` when not provided.
+            model: Optional per-call model override for the structured pass.
+            reasoning_model: Optional per-call model override for the
+                free-text reasoning pass (see ``model_config``).
         """
         # Fast path: simple requests don't need a reasoning pass.
-        # Use the raw user message length, not the enriched prompt which
-        # includes workspace context and conversation history.
-        # Look for the raw request before any context blocks.
-        raw_request = user_request.split("\n\nWorkspace context:")[0].split("\n\nRecent conversation context")[0].strip()
-        if len(raw_request) < self._TWO_PASS_MIN_LENGTH:
+        # Judge "simple" by the raw user message length when the caller
+        # provides it — the enriched ``user_request`` includes conversation
+        # history and workspace context, which would inflate the check.
+        simple_check = (raw_request or user_request).strip()
+        if len(simple_check) < self._TWO_PASS_MIN_LENGTH:
             logger.info(
-                f"⚡ [{self.get_diagram_type()}] Simple request ({len(raw_request)} chars) "
+                f"⚡ [{self.get_diagram_type()}] Simple request ({len(simple_check)} chars) "
                 "— skipping reasoning pass, using single-pass structured"
             )
             return self.predict_structured(
@@ -841,12 +970,15 @@ class BaseDiagramHandler(ABC):
                 response_schema,
                 system_prompt=system_prompt,
                 temperature=temperature,
+                model=model,
             )
 
         # Pass 1: Design reasoning (free-text)
         logger.info(f"🧠 [{self.get_diagram_type()}] Two-pass structured: reasoning pass")
         try:
-            reasoning = self.predict_with_retry(reasoning_prompt, max_retries=1)
+            reasoning = self.predict_with_retry(
+                reasoning_prompt, max_retries=1, model=reasoning_model,
+            )
         except Exception as exc:
             logger.warning(
                 f"[{self.get_diagram_type()}] Reasoning pass failed ({exc}), "
@@ -857,6 +989,7 @@ class BaseDiagramHandler(ABC):
                 response_schema,
                 system_prompt=system_prompt,
                 temperature=temperature,
+                model=model,
             )
 
         if not reasoning or not reasoning.strip():
@@ -866,6 +999,7 @@ class BaseDiagramHandler(ABC):
                 response_schema,
                 system_prompt=system_prompt,
                 temperature=temperature,
+                model=model,
             )
 
         logger.info(
@@ -873,7 +1007,13 @@ class BaseDiagramHandler(ABC):
             f"({len(reasoning)} chars), starting structured pass"
         )
 
-        # Pass 2: Structured output using the reasoning as context
+        # Pass 2: Structured output using the reasoning as context.
+        # The enriched ``user_request`` (conversation history + workspace
+        # context block) is embedded here — and only here — so the structured
+        # pass sees the workspace state exactly once. The reasoning pass works
+        # from the raw request (callers build ``reasoning_prompt`` from
+        # ``raw_request`` when available), avoiding sending the full enriched
+        # context twice.
         structured_prompt = (
             f"Design analysis (use this as your guide):\n{reasoning}\n\n"
             f"User Request: {user_request}\n\n"
@@ -885,6 +1025,7 @@ class BaseDiagramHandler(ABC):
             response_schema,
             system_prompt=system_prompt,
             temperature=temperature,
+            model=model,
         )
 
     # ------------------------------------------------------------------
@@ -1030,6 +1171,10 @@ class BaseDiagramHandler(ABC):
         user_request: str,
         system_prompt: str,
         reasoning_prompt: str,
+        *,
+        model: Optional[str] = None,
+        reasoning_model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """Two-pass LLM generation: first reason about the design, then generate JSON.
 
@@ -1040,23 +1185,34 @@ class BaseDiagramHandler(ABC):
         Pass 2 (structured): The LLM converts the reasoning into the target
         JSON schema.  The reasoning from pass 1 is included as context.
 
+        ``model`` / ``reasoning_model`` are optional per-call overrides for
+        the JSON and reasoning passes respectively (see ``model_config``).
+
         Returns the raw JSON string from pass 2.
         """
         # Pass 1: Design reasoning (free-text) — delegates to predict_with_retry
         # which handles retry and backoff internally.
         logger.info(f"[{self.get_diagram_type()}] Two-pass: starting reasoning pass")
         try:
-            reasoning = self.predict_with_retry(reasoning_prompt, max_retries=1)
+            reasoning = self.predict_with_retry(
+                reasoning_prompt, max_retries=1, model=reasoning_model,
+            )
         except Exception as exc:
             logger.warning(
                 f"[{self.get_diagram_type()}] Reasoning pass failed ({exc}), "
                 "falling back to single-pass"
             )
-            return self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_request}")
+            return self.predict_with_retry(
+                f"{system_prompt}\n\nUser Request: {user_request}",
+                model=model, max_tokens=max_tokens,
+            )
 
         if not reasoning or not reasoning.strip():
             logger.warning(f"[{self.get_diagram_type()}] Reasoning pass returned empty, falling back")
-            return self.predict_with_retry(f"{system_prompt}\n\nUser Request: {user_request}")
+            return self.predict_with_retry(
+                f"{system_prompt}\n\nUser Request: {user_request}",
+                model=model, max_tokens=max_tokens,
+            )
 
         logger.info(
             f"[{self.get_diagram_type()}] Two-pass: reasoning complete "
@@ -1072,7 +1228,7 @@ class BaseDiagramHandler(ABC):
             "Return ONLY the JSON, no explanations."
         )
 
-        return self.predict_with_retry(structured_prompt)
+        return self.predict_with_retry(structured_prompt, model=model, max_tokens=max_tokens)
 
     # ------------------------------------------------------------------
     # Validation-feedback loop (critique → fix)
@@ -1225,3 +1381,281 @@ Return ONLY the JSON, no explanations."""
             )
             return spec
 
+    # ------------------------------------------------------------------
+    # Error recovery: JSON repair
+    # ------------------------------------------------------------------
+
+    def self_correct(
+        self,
+        original_response: str,
+        validation_errors: List[str],
+        system_prompt: str,
+        user_request: str,
+    ) -> Optional[str]:
+        """Self-correcting error recovery: show the LLM its validation errors
+        and ask it to fix them.
+
+        This is called when a generated spec passes JSON parsing but fails
+        schema or domain validation.  Instead of falling back to a static
+        template, the LLM gets a second chance with explicit feedback about
+        what went wrong.
+
+        Returns the corrected JSON string, or ``None`` if correction fails.
+        """
+        error_list = "\n".join(f"- {e}" for e in validation_errors[:10])
+        correction_prompt = (
+            f"{system_prompt}\n\n"
+            f"Your previous response had these validation errors:\n{error_list}\n\n"
+            f"Original user request: {user_request}\n\n"
+            f"Your previous (invalid) response:\n{original_response[:3000]}\n\n"
+            "Fix ALL the validation errors listed above and return the corrected JSON. "
+            "Return ONLY valid JSON, no explanations."
+        )
+
+        try:
+            logger.info(
+                f"[{self.get_diagram_type()}] Self-correcting: "
+                f"{len(validation_errors)} error(s) to fix"
+            )
+            # Mechanical fix-up → cheapest tier (see model_config).
+            corrected = self._predict_raw(correction_prompt, model=MODEL_CLASSIFIER)
+
+            if corrected and corrected.strip():
+                cleaned = self.clean_json_response(corrected)
+                # Verify it parses
+                json.loads(cleaned)
+                logger.info(f"[{self.get_diagram_type()}] Self-correction succeeded")
+                return cleaned
+        except Exception as exc:
+            logger.warning(f"[{self.get_diagram_type()}] Self-correction failed: {exc}")
+        return None
+
+    def parse_validate_or_correct(
+        self,
+        raw_response: str,
+        required_keys: Dict[str, type],
+        optional_keys: Optional[Dict[str, type]] = None,
+        label: str = "LLM response",
+        system_prompt: str = "",
+        user_request: str = "",
+    ) -> Dict[str, Any]:
+        """Parse, validate, and self-correct if validation fails.
+
+        This is the most resilient parsing pipeline:
+        1. Clean + parse JSON
+        2. Validate against schema
+        3. If validation fails, try self-correction (LLM fixes its own errors)
+        4. If that fails, try JSON repair
+        5. If everything fails, raise ValueError
+
+        Returns the validated dict.
+        """
+        json_text = self.clean_json_response(raw_response)
+        spec = self.parse_json_safely(json_text)
+
+        if spec is None:
+            # Try repair first
+            schema_hint = f"Required keys: {list(required_keys.keys())}"
+            repaired = self.repair_json_response(json_text, schema_hint)
+            if repaired:
+                spec = self.parse_json_safely(repaired)
+            if spec is None:
+                raise ValueError(f"Could not parse JSON: {json_text[:200]}")
+
+        errors = validate_spec(spec, required_keys, optional_keys, label=label)
+        if not errors:
+            return spec
+
+        # Try self-correction
+        if system_prompt and user_request:
+            corrected_json = self.self_correct(
+                raw_response, errors, system_prompt, user_request,
+            )
+            if corrected_json:
+                corrected_spec = self.parse_json_safely(corrected_json)
+                if corrected_spec is not None:
+                    retry_errors = validate_spec(
+                        corrected_spec, required_keys, optional_keys, label=label,
+                    )
+                    if not retry_errors:
+                        return corrected_spec
+                    logger.warning(
+                        f"[{self.get_diagram_type()}] Self-corrected response still has errors: "
+                        f"{retry_errors}"
+                    )
+
+        joined = "; ".join(errors)
+        logger.warning(f"[{self.get_diagram_type()}] Schema validation failed: {joined}")
+        raise ValueError(f"Schema validation failed: {joined}")
+
+    def repair_json_response(self, malformed_json: str, schema_hint: str) -> Optional[str]:
+        """Attempt to repair malformed JSON by sending it back to the LLM.
+
+        This is a last-resort recovery step when ``parse_json_safely`` fails.
+        The LLM receives the broken JSON and the expected schema, and tries
+        to fix syntax errors.
+
+        Returns the repaired JSON string, or ``None`` if repair also fails.
+        """
+        repair_prompt = (
+            "The following JSON is malformed and could not be parsed. "
+            "Fix the syntax errors and return ONLY the corrected JSON, nothing else.\n\n"
+            f"Expected schema: {schema_hint}\n\n"
+            f"Malformed JSON:\n{malformed_json[:3000]}"
+        )
+        try:
+            # Mechanical fix-up → cheapest tier (see model_config).
+            response = self._predict_raw(repair_prompt, model=MODEL_CLASSIFIER)
+            if response and response.strip():
+                cleaned = self.clean_json_response(response)
+                # Verify it actually parses
+                import json as _json
+                _json.loads(cleaned)
+                logger.info(f"[{self.get_diagram_type()}] JSON repair succeeded")
+                return cleaned
+        except Exception as exc:
+            logger.warning(f"[{self.get_diagram_type()}] JSON repair failed: {exc}")
+        return None
+
+    def parse_and_validate_with_repair(
+        self,
+        raw_response: str,
+        required_keys: Dict[str, type],
+        optional_keys: Optional[Dict[str, type]] = None,
+        label: str = "LLM response",
+    ) -> Dict[str, Any]:
+        """Like ``parse_and_validate`` but attempts JSON repair on parse failure.
+
+        Falls back to ``repair_json_response`` when the initial parse fails,
+        giving the LLM a second chance to produce valid JSON.
+        """
+        json_text = self.clean_json_response(raw_response)
+        spec = self.parse_json_safely(json_text)
+
+        if spec is None:
+            # Attempt repair
+            schema_hint = f"Required keys: {list(required_keys.keys())}"
+            if optional_keys:
+                schema_hint += f", Optional keys: {list(optional_keys.keys())}"
+            repaired = self.repair_json_response(json_text, schema_hint)
+            if repaired:
+                spec = self.parse_json_safely(repaired)
+
+        if spec is None:
+            raise ValueError(f"Could not parse JSON from LLM response (even after repair): {json_text[:200]}")
+
+        errors = validate_spec(spec, required_keys, optional_keys, label=label)
+        if errors:
+            joined = "; ".join(errors)
+            logger.warning(f"[{self.get_diagram_type()}] Schema validation failed: {joined}")
+            raise ValueError(f"Schema validation failed: {joined}")
+
+        return spec
+
+    # ------------------------------------------------------------------
+    # Degraded generation fallback for complex failures
+    # ------------------------------------------------------------------
+
+    def _extract_element_names(self, user_request: str, element_label: str = "entity") -> List[str]:
+        """Ask the LLM to extract element names from a user request.
+
+        This is used by the degraded fallback path when full system generation
+        fails.  The LLM is asked to return just the names (a simple task that
+        is much less likely to fail than generating a full schema).
+
+        Args:
+            user_request: The original user request text.
+            element_label: What to call the elements (e.g. "class", "state",
+                "entity") in the extraction prompt.
+
+        Returns:
+            A list of name strings.  Empty list on failure.
+        """
+        extraction_prompt = (
+            f"From this request, extract ONLY the {element_label} names the user wants. "
+            "Return a JSON array of strings. Example: [\"User\", \"Product\", \"Order\"]\n\n"
+            f"Request: {user_request}\n\n"
+            "Return ONLY the JSON array, no explanations."
+        )
+        try:
+            # Name extraction is a trivial task → cheapest tier (see model_config).
+            response = self.predict_with_retry(
+                extraction_prompt, max_retries=1, model=MODEL_CLASSIFIER,
+            )
+            cleaned = self.clean_json_response(response)
+            names = json.loads(cleaned)
+            if isinstance(names, list) and len(names) > 0:
+                return [str(n) for n in names if isinstance(n, str) and n.strip()]
+        except Exception as exc:
+            logger.warning(
+                f"[{self.get_diagram_type()}] Could not extract {element_label} names: {exc}"
+            )
+        return []
+
+    def _generate_degraded_system(
+        self,
+        user_request: str,
+        existing_model: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Attempt degraded generation: extract names first, then fill details.
+
+        This two-step approach is a safety net when ``generate_complete_system``
+        fails after all retries.  It is cheaper and more reliable because each
+        LLM call is smaller.
+
+        Subclasses that override ``generate_complete_system`` can call this
+        from their exception handler as a last resort before falling back to
+        ``generate_fallback_element``.
+
+        Returns ``None`` if even the degraded approach fails, so the caller
+        can fall through to a static fallback.
+        """
+        diagram_type = self.get_diagram_type()
+        logger.info(f"[{diagram_type}] Attempting degraded generation fallback")
+
+        # Step 1: Extract just the names (simple, high success rate)
+        element_label = {
+            "ClassDiagram": "class",
+            "StateMachine": "state",
+            "ObjectDiagram": "object",
+            "AgentDiagram": "agent",
+        }.get(diagram_type, "entity")
+
+        names = self._extract_element_names(user_request, element_label)
+        if not names:
+            logger.warning(f"[{diagram_type}] Degraded fallback: no names extracted")
+            return None
+
+        # Step 2: Generate each element individually
+        elements: List[Dict[str, Any]] = []
+        for name in names[:10]:  # Cap to prevent excessive LLM calls
+            try:
+                single_prompt = (
+                    f"{self.get_system_prompt()}\n\n"
+                    f"User Request: Create a {name} {element_label} with appropriate "
+                    f"attributes for a system about: {user_request}\n\n"
+                    "Return ONLY valid JSON, no markdown, no explanation."
+                )
+                resp = self.predict_with_retry(single_prompt, max_retries=1)
+                cleaned = self.clean_json_response(resp)
+                spec = self.parse_json_safely(cleaned)
+                if spec and isinstance(spec, dict):
+                    spec.pop("position", None)
+                    elements.append(spec)
+                    logger.info(f"[{diagram_type}] Degraded fallback: generated {name}")
+            except Exception as exc:
+                logger.warning(
+                    f"[{diagram_type}] Degraded fallback: failed to generate {name}: {exc}"
+                )
+
+        if not elements:
+            return None
+
+        logger.info(
+            f"[{diagram_type}] Degraded fallback: produced "
+            f"{len(elements)}/{len(names)} elements"
+        )
+        return {
+            "elements": elements,
+            "names": [n for n in names[:10] if n.strip()],
+        }

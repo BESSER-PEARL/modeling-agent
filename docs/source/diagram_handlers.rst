@@ -18,12 +18,23 @@ Handler Class Hierarchy
 
    BaseDiagramHandler (abstract)
    │
-   ├── ClassDiagramHandler          # UML class diagrams
-   ├── StateMachineHandler          # UML state machines
-   ├── ObjectDiagramHandler         # UML object diagrams
-   ├── AgentDiagramHandler          # BESSER agent diagrams
-   ├── GUINoCodeDiagramHandler      # GrapesJS GUI models
-   └── QuantumCircuitDiagramHandler # Quirk quantum circuits
+   ├── ClassDiagramHandler          # UML class diagrams            → "ClassDiagram"
+   ├── ObjectDiagramHandler         # UML object diagrams           → "ObjectDiagram"
+   ├── StateMachineHandler          # UML state machines            → "StateMachineDiagram"
+   ├── AgentDiagramHandler          # BESSER agent diagrams         → "AgentDiagram"
+   ├── GUINoCodeDiagramHandler      # GrapesJS GUI models           → "GUINoCodeDiagram"
+   ├── QuantumCircuitDiagramHandler # Quirk quantum circuits        → "QuantumCircuitDiagram"
+   ├── BPMNDiagramHandler           # BPMN process diagrams         → "BPMN"
+   └── UserProfileDiagramHandler    # BESSER user-profile models    → "UserDiagram"
+
+.. note::
+
+   The string on the right is the value returned by ``get_diagram_type()`` —
+   the **WME storage-bucket token**, which is what the protocol, the factory
+   and ``SUPPORTED_DIAGRAM_TYPES`` all key on. Two of them do not follow the
+   ``<Name>Diagram`` convention: BPMN's token is ``"BPMN"`` (the editor's
+   converter sets the Apollon ``model.type`` to ``"BPMNDiagram"`` itself),
+   and the User Profile handler's token is ``"UserDiagram"``.
 
 BaseDiagramHandler
 ------------------
@@ -47,8 +58,8 @@ Abstract Methods (must override)
      - Return the LLM system prompt for this handler
    * - ``generate_single_element(request, model, **kw) -> dict``
      - Generate a single diagram element
-   * - ``generate_complete_system(request, model, **kw) -> dict``
-     - Generate a complete diagram
+   * - ``generate_complete_system(request, model) -> dict``
+     - Generate a complete diagram (no ``**kwargs`` on the base signature)
    * - ``generate_fallback_element(request) -> dict``
      - Return a minimal valid element when all else fails
 
@@ -64,12 +75,23 @@ Shared Concrete Methods
    * - ``generate_modification()``
      - Default modification handler using LLM
    * - ``predict_with_retry()``
-     - LLM call with exponential backoff and jitter
+     - Free-text LLM call with jittered exponential backoff. Routed through
+       the user's BYOK client when one is active for this request.
+   * - ``predict_structured()``
+     - OpenAI Structured Outputs call validated against a Pydantic schema.
+       Omits ``temperature`` and passes ``reasoning_effort`` for gpt-5 /
+       o-series models.
+   * - ``predict_two_pass_structured()``
+     - Two-pass generation: free-text reasoning, then a structured pass.
+       Skips the reasoning pass for raw requests shorter than
+       ``_TWO_PASS_MIN_LENGTH`` (250 chars).
    * - ``predict_two_pass()``
-     - Two-pass generation: free-text reasoning then structured JSON
+     - Older free-text two-pass variant (reasoning then JSON)
    * - ``validate_and_refine()``
      - LLM self-critique loop for output validation
-   * - ``repair_json_response()``
+   * - ``self_correct()`` / ``parse_validate_or_correct()``
+     - Re-prompt the model with the validation error and re-parse
+   * - ``repair_json_response()`` / ``parse_and_validate_with_repair()``
      - Last-resort JSON repair via LLM
    * - ``apply_single_layout()``
      - Layout positioning for single elements
@@ -81,9 +103,15 @@ Shared Concrete Methods
 Retry Strategy
 ~~~~~~~~~~~~~~
 
-- **Retry:** Exponential backoff with jitter (3 attempts)
-- **Rate limiting:** Handled by OpenAI's API directly (429 responses caught by retry logic)
-- **Fallback:** Graceful degradation through multiple levels (primary LLM → JSON repair → type-specific fallback → error response)
+- **Handler retry:** ``predict_with_retry()`` runs ``1 + max_retries``
+  attempts (default 1 retry) with jittered exponential backoff.
+- **Shared-client retry:** underneath that, the shared server LLM's SDK client
+  is patched once (``src/utilities/llm_retry.py``) to retry transient upstream
+  failures — 429 and 5xx — up to ``MAX_ATTEMPTS = 4`` with a bounded backoff
+  (~5 s worst case). Non-429 4xx responses fail fast.
+- **Fallback:** graceful degradation through multiple levels (primary LLM →
+  self-correct / JSON repair → type-specific fallback → error response with
+  ``retryable``).
 
 ClassDiagramHandler
 -------------------
@@ -114,8 +142,9 @@ Domain Patterns (currently disabled)
 
 Domain and state pattern hints are defined in ``src/domain_patterns.py`` and
 ``src/state_patterns.py`` but are **not currently injected** into the LLM prompt.
-They were disabled because GPT-4.1 produces good diagrams without them, and the
-pattern injection biased the LLM toward hardcoded templates.
+They were disabled because current-generation models produce good diagrams
+without them, while the pattern injection biased the LLM toward hardcoded
+templates.
 
 .. list-table::
    :header-rows: 1
@@ -261,21 +290,125 @@ Features
   forms and tables — no LLM call needed.
 - **LLM Mode:** Generates customized pages with charts, dashboards, and
   complex layouts via LLM.
-- **Chart Color Palettes:** Provides consistent color schemes for data-bound
-  charts and visualizations.
+- **Per-Domain Design System** (``gui_design_system.py``): a set of design
+  themes — ``government``, ``finance``, ``health``, ``startup``, ``default``
+  — each a bundle of concrete tokens (palette, type scale, spacing, radius,
+  shadow, font stack). ``stylesheet_rules(domain)`` emits GrapesJS CSS rule
+  objects in the exact shape ``editor.loadProjectData`` consumes, so a
+  generated app actually *looks* like its domain instead of shipping the same
+  slate-blue skin every time. ``block_exemplars(domain)`` supplies proven,
+  editable-safe HTML composition patterns built from reusable ``.ds-*``
+  component classes.
+- **HTML → GrapesJS converter** (``gui_html_converter.py``): turns rich themed
+  markup written by the LLM into the nested component-definition tree the GUI
+  editor loads. Tag identity is preserved (an ``<h2>`` stays ``tagName:"h2"``
+  so the frontend's ``markTextEditable`` can make it double-click editable);
+  ``<script>``/``<style>``, ``on*`` handlers and external ``href``/``src``
+  values are stripped.
+- **Widget splicing:** the LLM writes only the page *chrome*, leaving a
+  ``<!--WIDGET:kind-->`` marker where data should go. The server splices the
+  real, data-bound widget (table, bar/pie/line/radar chart, metric card,
+  form, dashboard) into that slot from typed Python builders. LLM markup can
+  never masquerade as a widget — ``data-gjs-type``/``data-source`` attributes
+  are dropped on parse.
 - **Class Metadata Injection:** Extracts class attributes and types to
   auto-populate form fields, table columns, and chart axes.
+
+.. note::
+
+   Generated apps are served under a strict Content-Security-Policy that
+   blocks external stylesheets, webfonts and remote images. Every font stack
+   in the design system is therefore system-fonts-only, and all imagery in
+   the exemplars is a CSS gradient or inline SVG.
 
 GUINoCodeDiagram Generation Modes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-When a ClassDiagram exists in the project:
+When a ClassDiagram exists in the project, the agent asks which mode to use
+and offers the choice as two quick actions:
 
-1. **Auto mode:** Deterministic page generation (no LLM).
-2. **LLM mode:** Customized generation with user preferences.
+1. **Fast & deterministic:** one screen per class with data tables and method
+   buttons. No LLM call.
+2. **AI-Generated (experimental):** personalized screens with navigation,
+   styling, and realistic content.
 
-If the user message contains customization hints (chart, dashboard, custom, etc.),
-the LLM mode is used automatically. Otherwise, the agent asks which mode to use.
+If the user message already contains a customization hint (``chart``,
+``dashboard``, ``custom``, ``sidebar``, ``metric``, ``kpi``, ``landing``,
+``hero``, ``theme``, ``color``, ``dark``, ``tailored``, …) the AI-generated
+path is taken without asking. The choice is stored as a pending flow and
+resolved by ``confirmation.handle_pending_gui_choice``.
+
+BPMNDiagramHandler
+------------------
+
+**Location:** ``src/diagram_handlers/types/bpmn_diagram_handler.py``
+
+Generates BPMN process diagrams — start/end events, tasks, exclusive /
+parallel / inclusive gateways and sequence flows — optionally grouped into
+pools (participants) and lanes (roles within a pool).
+
+Features
+~~~~~~~~
+
+- **Reasoning-prompt completeness rules:** the two-pass reasoning prompt
+  explicitly forbids silently merging several described decision points into
+  one gateway — a failure mode found by statistical probing, not by a single
+  manual test.
+- **Deterministic post-generation repair** (``_validate_and_refine``): pure
+  Python fixes for structural invariants the LLM violates despite the system
+  prompt — ``_connect_orphaned_nodes`` reattaches nodes with no incoming
+  flow, ``_normalize_pool_refs`` and ``_infer_missing_lane_owners`` fix
+  pool/lane membership, ``_unique_id`` de-duplicates ids.
+- **Reference validation on modification** (``_validate_mod_refs``): a
+  modification naming a node that does not exist is rejected rather than
+  applied to an arbitrary substitute.
+- **Positions are not generated here.** The editor's injector lays out the
+  process (and any pools/lanes) and routes the flows itself. Flow *type*
+  (message vs. sequence) is likewise derived on the editor side from pool
+  membership — the agent never sets it.
+
+.. note::
+
+   Pools and lanes are **generation-only**. ``generate_modification`` does not
+   yet support ``add_pool`` / ``add_lane`` actions.
+
+UserProfileDiagramHandler
+-------------------------
+
+**Location:** ``src/diagram_handlers/types/user_profile_handler.py``
+
+Generates BESSER **User Profile** models (diagram type ``UserDiagram``). A
+user-profile model describes a *target user* as a set of class-instance boxes
+drawn from a fixed metamodel (``User``, ``Personal_Information``,
+``Competence``, ``Language``, …). Each attribute row is a matching
+**criterion** carrying a comparison operator (``age >= 18``, ``level == B2``)
+rather than a plain instance value.
+
+It mirrors ``ObjectDiagramHandler``, with two differences:
+
+1. **The reference catalog is bundled, not transmitted.** The editor does not
+   send the metamodel, so the handler loads it from disk via
+   ``utilities.user_metamodel.load_user_metamodel()`` (cached; degrades to an
+   empty catalog if the resource is missing). A curated
+   ``load_user_metamodel_semantics()`` supplies element and attribute
+   descriptions for the prompt.
+2. **Attributes carry an inferred operator** from ``<``, ``<=``, ``==``,
+   ``>=``, ``>``.
+
+The handler also understands the metamodel's structure: it builds an
+association graph, knows which classes are singletons, computes each class's
+path to the ``User`` root, and assembles the required intermediate boxes and
+links so a generated profile is always structurally connected.
+
+.. note::
+
+   Step 6 of the checklist below is currently **unfinished for this type**:
+   ``UserDiagram`` is not in ``_TARGET_DIAGRAM_TYPES`` and its vocabulary is not
+   in ``_SYSTEM_PROMPT``, so the classifier can never return it as a
+   ``target_diagram_type``. Profile requests still work because
+   ``KEYWORD_TARGETS`` resolves "user profile" / "persona" / "target user" at
+   Level 1, but a request that avoids that vocabulary will not reach this
+   handler.
 
 QuantumCircuitDiagramHandler
 ----------------------------
@@ -324,22 +457,33 @@ Parameters
      - Description
    * - Canvas X range
      - -900 to 900
-     - Horizontal bounds (expandable)
+     - Horizontal bounds (expanded dynamically by element count)
    * - Canvas Y range
      - -500 to 500
-     - Vertical bounds (expandable)
-   * - Horizontal gap
+     - Vertical bounds (expanded dynamically by element count)
+   * - ``H_GAP``
+     - 100px
+     - Horizontal gap between elements
+   * - ``V_GAP``
+     - 80px
+     - Vertical gap between elements
+   * - ``REL_EXTRA_GAP``
      - 60px
-     - Minimum space between elements
-   * - Vertical gap
-     - 50px
-     - Minimum space between rows
-   * - Margin
+     - Additional gap between classes joined by a relationship
+   * - ``MARGIN``
      - 40px
-     - Minimum clearance around elements
-   * - Grid snap
+     - Minimum clearance from any occupied rectangle
+   * - ``GRID_SNAP``
      - 20px
-     - Coordinates snap to 20px grid
+     - Coordinates snap to multiples of this value
+
+Class diagrams get a dedicated layered layout rather than a plain grid:
+``layout_class_system()`` runs a Sugiyama pipeline (build graph → remove
+cycles → assign layers → minimize crossings → assign coordinates) so
+inheritance and association structure is legible. Per-type entry points
+exist for each handler — ``layout_class_single`` / ``_system``,
+``layout_object_*``, ``layout_state_*``, ``layout_agent_*``,
+``layout_user_*`` — dispatched by the public ``apply_layout()``.
 
 DiagramHandlerFactory
 ---------------------
@@ -348,18 +492,32 @@ DiagramHandlerFactory
 
 Registry that maps diagram type strings to handler instances.
 
+Handlers are registered by listing the **class** in the module-level
+``HANDLER_CLASSES`` tuple; the factory instantiates each one and keys the
+registry on its own ``get_diagram_type()`` return value, so the token can
+never drift from the handler that owns it.
+
 .. code-block:: python
+
+   HANDLER_CLASSES = (
+       ClassDiagramHandler,
+       ObjectDiagramHandler,
+       StateMachineHandler,
+       AgentDiagramHandler,
+       GUINoCodeDiagramHandler,
+       QuantumCircuitDiagramHandler,
+       BPMNDiagramHandler,
+       UserProfileDiagramHandler,
+   )
+
 
    class DiagramHandlerFactory:
        def __init__(self, llm):
-           self._handlers = {
-               "ClassDiagram":          ClassDiagramHandler(llm),
-               "ObjectDiagram":         ObjectDiagramHandler(llm),
-               "StateMachineDiagram":   StateMachineHandler(llm),
-               "AgentDiagram":          AgentDiagramHandler(llm),
-               "GUINoCodeDiagram":      GUINoCodeDiagramHandler(llm),
-               "QuantumCircuitDiagram": QuantumCircuitDiagramHandler(llm),
-           }
+           self.llm = llm
+           self._handlers = {}
+           for handler_class in HANDLER_CLASSES:
+               handler = handler_class(llm)
+               self._handlers[handler.get_diagram_type()] = handler
 
        def get_handler(self, diagram_type: str) -> Optional[BaseDiagramHandler]:
            """Return handler for type, or None if unsupported."""
@@ -373,12 +531,40 @@ Registry that maps diagram type strings to handler instances.
 Adding a New Diagram Type
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-1. Create a new handler class extending ``BaseDiagramHandler`` in
-   ``src/diagram_handlers/types/``
-2. Implement the 4 required abstract methods
-3. Register in ``DiagramHandlerFactory.__init__``
-4. Add to ``SUPPORTED_DIAGRAM_TYPES`` in ``src/protocol/types.py``
-5. Add display metadata in ``src/diagram_handlers/registry/metadata.py``
+A diagram type has to be registered in **every** one of these places. Missing
+one produces a stale-list bug that manual testing tends not to catch, because
+testing from inside the new diagram's own tab never exercises routing or
+discoverability.
 
-Layout, retry, two-pass generation, and validation are inherited
-automatically from ``BaseDiagramHandler``.
+1. **Schemas** — add ``src/schemas/<type>.py`` (single-element spec,
+   complete-system spec, modification actions) and export them from
+   ``src/schemas/__init__.py``.
+2. **Handler** — add ``src/diagram_handlers/types/<type>_diagram_handler.py``
+   extending ``BaseDiagramHandler`` and implementing the 5 abstract methods:
+   ``get_diagram_type``, ``get_system_prompt``, ``generate_single_element``,
+   ``generate_complete_system``, ``generate_fallback_element``. Override
+   ``generate_modification`` if the default LLM path is not enough.
+3. **Factory** — add the class to ``HANDLER_CLASSES`` in
+   ``src/diagram_handlers/registry/factory.py``.
+4. **Protocol** — add the token to ``SUPPORTED_DIAGRAM_TYPES`` in
+   ``src/protocol/types.py``.
+5. **Metadata** — add display metadata in
+   ``src/diagram_handlers/registry/metadata.py``.
+6. **Classifier** — add the token to ``_TARGET_DIAGRAM_TYPES`` in
+   ``src/unified_classifier.py`` and teach ``_SYSTEM_PROMPT`` the type's
+   vocabulary, so a request naming it routes to the right intent.
+7. **Orchestrator** — add ``KEYWORD_TARGETS`` entries, an
+   ``_IMPLICIT_PATTERNS`` regex, and append the type to ``FALLBACK_PRIORITY``
+   in ``src/orchestrator/workspace_orchestrator.py``.
+8. **Capability copy** — ``src/state_bodies.py`` enumerates supported types in
+   more than one place (the quick-response capability text and the global
+   fallback prompt). Grep for an existing type's name to find them all.
+9. **Suggestions** — add a suggestion list in ``src/suggestions.py`` and wire
+   it into ``_DIAGRAM_SUGGESTION_HANDLERS``.
+10. **Docs** — this page, the README table, and
+    :doc:`websocket_protocol`'s supported-types list.
+11. **Frontend** (separate repo) — the type must exist in the editor's own
+    diagram-type union and be a valid ``activeDiagramType`` context value.
+
+Layout, retry, structured output, two-pass generation, and validation are
+inherited automatically from ``BaseDiagramHandler``.

@@ -10,6 +10,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
+from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
 from schemas import SingleQuantumGateSpec, SystemQuantumCircuitSpec, QuantumModificationSpec
 from utilities.model_context import detailed_model_summary
 
@@ -281,6 +282,10 @@ def _operation_to_placements(operation: Dict[str, Any]) -> Tuple[Optional[int], 
     if gate_name in {"CNOT", "CZ", "CY"}:
         control_row = _to_int(operation.get("controlRow"), 0)
         target_row = _to_int(operation.get("targetRow"), max(control_row + 1, 1))
+        # control and target must be different qubits, else the control dot and
+        # the gate symbol land in the same cell and one overwrites the other (#49).
+        if target_row == control_row:
+            target_row = control_row + 1
         target_symbol = "X" if gate_name == "CNOT" else "Z" if gate_name == "CZ" else "Y"
         return column, [(control_row, "\u2022"), (target_row, target_symbol)], None
 
@@ -288,13 +293,22 @@ def _operation_to_placements(operation: Dict[str, Any]) -> Tuple[Optional[int], 
     if gate_name == "TOFFOLI":
         ctrl1 = _to_int(operation.get("controlRow"), 0)
         ctrl2 = _to_int(operation.get("controlRow2"), max(ctrl1 + 1, 1))
+        if ctrl2 == ctrl1:
+            ctrl2 = ctrl1 + 1
         target_row = _to_int(operation.get("targetRow"), max(ctrl2 + 1, 2))
+        if target_row in (ctrl1, ctrl2):  # all three qubits must be distinct (#49)
+            target_row = max(ctrl1, ctrl2) + 1
         return column, [(ctrl1, "\u2022"), (ctrl2, "\u2022"), (target_row, "X")], None
 
-    # --- SWAP pair -----------------------------------------------------------
-    if gate_name == "SWAP_PAIR":
-        row = _to_int(operation.get("row"), 0)
+    # --- SWAP (plain "SWAP" and legacy "SWAP_PAIR") --------------------------
+    # Plain SWAP used to fall through to the single-symbol default, dropping
+    # targetRow and rendering one broken marker \u2014 every prompt tells the model
+    # to use "SWAP", so handle both identically. (#24)
+    if gate_name in {"SWAP", "SWAP_PAIR"}:
+        row = _to_int(operation.get("row", operation.get("controlRow")), 0)
         target_row = _to_int(operation.get("targetRow"), row + 1)
+        if target_row == row:
+            target_row = row + 1
         return column, [(row, "Swap"), (target_row, "Swap")], None
 
     # --- Standalone CONTROL / ANTI_CONTROL -----------------------------------
@@ -387,14 +401,17 @@ Rules:
         normalized = _normalize_quantum_model(model)
         existing_cols = normalized.get("cols", []) if append else []
 
-        max_row = normalized.get("qubitCount", DEFAULT_QUBITS) - 1
+        # Seed from the existing register ONLY when appending; a fresh
+        # generation sizes to the actual operations instead of flooring at
+        # DEFAULT_QUBITS (#25 — a 2-qubit Bell state was padded to 5 qubits).
+        max_row = (normalized.get("qubitCount", DEFAULT_QUBITS) - 1) if append else -1
         for op in operations:
             _, placements, _ = _operation_to_placements(op)
             for row, _ in placements:
                 max_row = max(max_row, row)
 
-        qubit_count = _normalize_qubit_count(qubit_count_hint, fallback=max_row + 1)
-        qubit_count = max(qubit_count, max_row + 1)
+        qubit_count = _normalize_qubit_count(qubit_count_hint, fallback=max(max_row + 1, 1))
+        qubit_count = max(qubit_count, max_row + 1, 1)
 
         cols: List[List[Any]] = []
         for col in existing_cols:
@@ -405,6 +422,7 @@ Rules:
         next_free_column = len(cols)
         gate_metadata: Dict[str, Any] = normalized.get("gateMetadata", {}) if append else {}
 
+        measured_rows: set[int] = set()
         for op in operations:
             column, placements, metadata = _operation_to_placements(op)
             target_column = next_free_column if column is None or column < 0 else column
@@ -412,6 +430,8 @@ Rules:
             column_values = cols[target_column]
             for row, symbol in placements:
                 _place_symbol(column_values, row, symbol)
+                if isinstance(symbol, str) and symbol.upper().startswith("MEASURE"):
+                    measured_rows.add(row)
             # Store function-gate metadata so the frontend can restore nested-circuit info
             if metadata is not None and placements:
                 first_row = placements[0][0]
@@ -421,6 +441,10 @@ Rules:
 
         normalized["cols"] = cols
         normalized["qubitCount"] = qubit_count
+        # Allocate one classical bit per measured qubit — classicalBitCount was
+        # always left at 0, so measurement results had nowhere to go (#50).
+        existing_cbits = _to_int(normalized.get("classicalBitCount"), 0)
+        normalized["classicalBitCount"] = max(existing_cbits, len(measured_rows))
         normalized["gateMetadata"] = gate_metadata
         return normalized
 
@@ -428,7 +452,11 @@ Rules:
         prompt = self.get_system_prompt()
 
         try:
-            parsed = self.predict_structured(user_request, SingleQuantumGateSpec, system_prompt=prompt)
+            # Single element → SMALL generation tier (latency-sensitive).
+            parsed = self.predict_structured(
+                user_request, SingleQuantumGateSpec, system_prompt=prompt,
+                model=MODEL_GENERATION_SMALL,
+            )
             spec = parsed.model_dump()
 
             operation = spec.get("operation")
@@ -615,7 +643,11 @@ Rules:
         user_prompt = f"User Request: {user_request}"
 
         try:
-            parsed = self.predict_structured(user_prompt, SystemQuantumCircuitSpec, system_prompt=system_prompt)
+            # Complete-system generation → LARGE tier (see model_config).
+            parsed = self.predict_structured(
+                user_prompt, SystemQuantumCircuitSpec, system_prompt=system_prompt,
+                model=MODEL_GENERATION_LARGE,
+            )
             spec = parsed.model_dump()
 
             operations = spec.get("operations") if isinstance(spec.get("operations"), list) else []
@@ -718,7 +750,11 @@ Rules:
 
         try:
             user_prompt = f"User Request: {user_request}{context_block}"
-            parsed = self.predict_structured(user_prompt, QuantumModificationSpec, system_prompt=prompt)
+            # Modification → SMALL generation tier (latency-sensitive).
+            parsed = self.predict_structured(
+                user_prompt, QuantumModificationSpec, system_prompt=prompt,
+                model=MODEL_GENERATION_SMALL,
+            )
             spec = parsed.model_dump()
 
             operations = spec.get("operations") if isinstance(spec.get("operations"), list) else []

@@ -26,6 +26,7 @@ from typing import Any, Dict, Iterator, List, Optional, Type
 
 from pydantic import BaseModel
 
+from model_config import MODEL_CLASSIFIER, reasoning_effort_for, supports_custom_temperature
 from tracking import get_tracker
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ class LLMProvider:
     All calls are automatically tracked via the TokenTracker singleton.
     """
 
-    def __init__(self, llm_instance: Any, model_name: str = "gpt-4.1-mini") -> None:
+    def __init__(self, llm_instance: Any, model_name: str = MODEL_CLASSIFIER) -> None:
         self._llm = llm_instance
         self._model = model_name
         self.tracker = get_tracker()
@@ -82,12 +83,18 @@ class LLMProvider:
         *,
         temperature: float = 0.2,
         max_tokens: int = 8192,
+        model: Optional[str] = None,
     ) -> BaseModel:
         """Parse LLM response into a validated Pydantic model.
 
         Uses OpenAI's structured outputs API when available, falls back to
         JSON mode + manual validation otherwise.
+
+        Args:
+            model: Optional per-call model override (see ``model_config``);
+                defaults to the provider's configured model.
         """
+        effective_model = model or self._model
         client = self.client
         if client is None or not hasattr(client, 'beta'):
             # Fallback: predict + parse
@@ -95,16 +102,23 @@ class LLMProvider:
             raw = self.predict(prompt)
             return schema.model_validate_json(raw)
 
-        completion = client.beta.chat.completions.parse(
-            model=self._model,
-            messages=messages,
-            response_format=schema,
-            temperature=temperature,
-            max_completion_tokens=max_tokens,
-        )
+        parse_kwargs: Dict[str, Any] = {
+            "model": effective_model,
+            "messages": messages,
+            "response_format": schema,
+            "max_completion_tokens": max_tokens,
+        }
+        # gpt-5* / o-series models 400 on an explicit non-default
+        # temperature — omit the parameter for them; cap their hidden
+        # reasoning instead (quality holds, latency drops ~40%).
+        if supports_custom_temperature(effective_model):
+            parse_kwargs["temperature"] = temperature
+        else:
+            parse_kwargs["reasoning_effort"] = reasoning_effort_for(effective_model)
+        completion = client.beta.chat.completions.parse(**parse_kwargs)
 
         if hasattr(completion, 'usage') and completion.usage:
-            self.tracker.record_from_usage(completion.usage, model=self._model)
+            self.tracker.record_from_usage(completion.usage, model=effective_model)
 
         if not completion.choices:
             raise ValueError("LLM returned no choices (possible content filter)")
@@ -126,12 +140,17 @@ class LLMProvider:
         *,
         temperature: float = 0.4,
         max_tokens: int = 4096,
+        model: Optional[str] = None,
     ) -> Iterator[str]:
         """Stream LLM response token by token.
 
         Yields content strings as they arrive. Tracks usage from the
         final chunk's usage stats.
+
+        Args:
+            model: Optional per-call model override (see ``model_config``).
         """
+        effective_model = model or self._model
         client = self.client
         if client is None or not hasattr(client, 'chat'):
             # Fallback: predict and yield as single chunk
@@ -139,18 +158,25 @@ class LLMProvider:
             yield self.predict(prompt)
             return
 
-        stream = client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            temperature=temperature,
-            max_completion_tokens=max_tokens,
-            stream=True,
-            stream_options={"include_usage": True},
-        )
+        stream_kwargs: Dict[str, Any] = {
+            "model": effective_model,
+            "messages": messages,
+            "max_completion_tokens": max_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        # gpt-5* / o-series models 400 on an explicit non-default
+        # temperature — omit the parameter for them; cap their hidden
+        # reasoning instead (quality holds, latency drops ~40%).
+        if supports_custom_temperature(effective_model):
+            stream_kwargs["temperature"] = temperature
+        else:
+            stream_kwargs["reasoning_effort"] = reasoning_effort_for(effective_model)
+        stream = client.chat.completions.create(**stream_kwargs)
 
         for event in stream:
             if hasattr(event, 'usage') and event.usage is not None:
-                self.tracker.record_from_usage(event.usage, model=self._model)
+                self.tracker.record_from_usage(event.usage, model=effective_model)
 
             if not event.choices:
                 continue
@@ -170,7 +196,7 @@ _provider_lock = threading.Lock()
 
 def get_provider(
     llm_instance: Any = None,
-    model_name: str = "gpt-4.1-mini",
+    model_name: str = MODEL_CLASSIFIER,
 ) -> Optional[LLMProvider]:
     """Get or create the global LLMProvider singleton.
 

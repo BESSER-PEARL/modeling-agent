@@ -26,6 +26,24 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from model_config import MODEL_VISION, reasoning_effort_for, supports_custom_temperature
+
+
+def _vision_sampling_params() -> Dict[str, Any]:
+    """Token/temperature params appropriate for the configured vision model.
+
+    gpt-5* / o-series models require ``max_completion_tokens``, reject an
+    explicit non-default ``temperature``, and get their hidden reasoning
+    capped via ``reasoning_effort``; older models (gpt-4o, gpt-4.1) use
+    ``max_tokens`` and accept temperature.
+    """
+    if supports_custom_temperature(MODEL_VISION):
+        return {"max_tokens": 8192, "temperature": 0.1}
+    return {
+        "max_completion_tokens": 8192,
+        "reasoning_effort": reasoning_effort_for(MODEL_VISION),
+    }
+
 logger = logging.getLogger(__name__)
 
 # ── File type detection ────────────────────────────────────────────────────────
@@ -623,11 +641,11 @@ def _convert_pdf(
                 "Authorization": f"Bearer {openai_api_key}",
             },
             json={
-                "model": "gpt-4.1",
+                # Vision tier — env-overridable (see model_config).
+                "model": MODEL_VISION,
                 "messages": [{"role": "user", "content": content_blocks}],
-                "max_tokens": 8192,
-                "temperature": 0.1,
                 "response_format": {"type": "json_object"},
+                **_vision_sampling_params(),
             },
             timeout=90,
         )
@@ -660,44 +678,84 @@ def _convert_image(
     mime_type = _get_mime_type(filename)
     vision_prompt = _build_image_prompt()  # auto-detect from image
 
-    try:
-        import requests as http_requests
+    import requests as http_requests
 
-        response = http_requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {openai_api_key}",
-            },
-            json={
-                "model": "gpt-4.1",
-                "messages": [
+    payload = {
+        # Vision tier — env-overridable (see model_config).
+        "model": MODEL_VISION,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": vision_prompt},
                     {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": vision_prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{mime_type};base64,{image_b64}",
-                                },
-                            },
-                        ],
-                    }
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime_type};base64,{image_b64}"},
+                    },
                 ],
-                "max_tokens": 8192,
-                "temperature": 0.1,
-                "response_format": {"type": "json_object"},
-            },
-            timeout=60,
+            }
+        ],
+        "response_format": {"type": "json_object"},
+        **_vision_sampling_params(),
+    }
+
+    # The vision model intermittently returns null content (a transient empty
+    # completion / safety filter) even for a perfectly readable image — the SAME
+    # image frequently succeeds on a retry. So retry a few times on empty content
+    # before giving up, and log finish_reason/refusal so the cause is diagnosable.
+    raw_text = None
+    last_refusal = None
+    last_finish_reason = None
+    for attempt in range(3):
+        try:
+            response = http_requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {openai_api_key}",
+                },
+                json=payload,
+                timeout=60,
+            )
+            response.raise_for_status()
+            choice = response.json()["choices"][0]
+            raw_text = choice["message"].get("content")
+            if raw_text:
+                break
+            last_finish_reason = choice.get("finish_reason")
+            refusal = choice["message"].get("refusal")
+            if isinstance(refusal, str) and refusal.strip():
+                last_refusal = refusal.strip()
+            logger.warning(
+                "[FileConversion] Vision returned null content "
+                "(attempt %d/3, model=%s, finish=%s, refusal=%s) for %s",
+                attempt + 1, MODEL_VISION, last_finish_reason,
+                last_refusal, filename,
+            )
+        except Exception as e:
+            logger.error(
+                f"[FileConversion] Vision API call failed (attempt {attempt + 1}/3): {e}"
+            )
+            if attempt == 2:
+                return _error_response(
+                    "Failed to process the image. Please make sure the image contains "
+                    "a clear UML diagram or UI mockup."
+                )
+
+    # A refusal (or a content-filter stop) is NOT the same as an empty reply:
+    # the model actively declined, and retrying the identical request won't help.
+    # Say so honestly — the old path flattened this into "returned no content",
+    # which misled a pilot user whose perfectly benign mockup was refused.
+    if not raw_text and (last_refusal or last_finish_reason == "content_filter"):
+        logger.warning(
+            "[FileConversion] Vision declined the image (model=%s, finish=%s) for %s",
+            MODEL_VISION, last_finish_reason, filename,
         )
-        response.raise_for_status()
-        data = response.json()
-        raw_text = data["choices"][0]["message"]["content"]
-    except Exception as e:
-        logger.error(f"[FileConversion] Vision API call failed: {e}")
         return _error_response(
-            "Failed to process the image. Please make sure the image contains a clear UML diagram."
+            "The AI model declined to read this image. This can happen with photos "
+            "or busy screenshots even when they're harmless. Try a clearer, cropped "
+            "image showing just the diagram or UI mockup — or describe the page you "
+            "want and I'll model it from your description."
         )
 
     return _parse_llm_response(raw_text, filename, "image", expected_type=None)
@@ -728,6 +786,17 @@ def _parse_llm_response(
     expected_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Parse the LLM response, detect diagram type, and validate the spec."""
+    # A vision/LLM call can return None (empty content, a refusal, or a truncated
+    # response) — guard BEFORE .strip() so an intermittent empty reply becomes a
+    # clean, retryable message instead of an AttributeError crash.
+    if not isinstance(raw_response, str) or not raw_response.strip():
+        logger.error(
+            f"[FileConversion] Empty/None LLM response for {source_label} ({filename})"
+        )
+        return _error_response(
+            f"I couldn't read the {source_label} — the AI model returned no content. "
+            "Please try again, or describe the page you want instead."
+        )
     # Clean markdown code fences if present
     cleaned = raw_response.strip()
     if cleaned.startswith("```json"):
@@ -744,7 +813,7 @@ def _parse_llm_response(
         logger.error(f"[FileConversion] Failed to parse LLM JSON for {source_label}: {e}")
         logger.debug(f"[FileConversion] Raw response: {raw_response[:500]!r}")
         return _error_response(
-            f"The AI couldn't produce a valid specification from the {source_label} file. "
+            f"The AI couldn't extract a valid model from the {source_label} file. "
             "Please try again or simplify the input."
         )
 

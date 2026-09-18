@@ -13,14 +13,22 @@ state body.
 
 import logging
 import re
-from typing import Any
+from dataclasses import replace
+from typing import Any, Optional
 
 from baf.core.session import Session
 
 from protocol.adapters import parse_assistant_request
-from session_helpers import reply_message, reply_payload
+from session_helpers import reply_message, reply_payload, emit_webapp_generate_prompt
 from model_utils import model_has_elements  # noqa: F401  (re-export for backward compat)
-from session_keys import PENDING_COMPLETE_SYSTEM, PENDING_GUI_CHOICE
+from session_keys import (
+    PENDING_COMPLETE_SYSTEM,
+    PENDING_GUI_CHOICE,
+    PENDING_SMART_GEN_INSTRUCTIONS,
+    PENDING_SMART_GEN_PROVIDER,
+    PENDING_WEBAPP_GENERATE,
+    UNIFIED_CLASSIFICATION,
+)
 from execution import execute_model_operation
 
 logger = logging.getLogger(__name__)
@@ -30,30 +38,49 @@ logger = logging.getLogger(__name__)
 # Keyword lists
 # ------------------------------------------------------------------
 
+# NOTE: 'delete'/'remove'/'clear'/'erase' were deliberately removed from the
+# REPLACE list — they are ordinary edit verbs, so a brand-new request like
+# "delete the Author class" was being consumed as a "replace" confirmation and
+# silently wiping the model. Replace now requires explicit replace intent.
 REPLACE_KEYWORDS = [
-    'replace', 'yes', 'overwrite', 'new one', 'start fresh',
-    'remove', 'clear', 'delete', 'erase', 'fresh',
+    'replace', 'yes', 'overwrite', 'new one', 'start fresh', 'fresh',
+    # 'confirm' is the primary affirmative answer offered by the
+    # destructive-edit guard's suggestedActions (see model_operations.py's
+    # _build_destructive_modify_confirmation) -- it also doubles as a
+    # replace synonym for the plain complete_system confirmation.
+    'confirm',
 ]
+# NOTE: 'add' was removed for the same reason as 'delete'/'remove' above — it
+# is an ordinary edit verb, so a pivot like "no, just add an email attribute to
+# Customer" was consumed as a KEEP answer and the user's actual instruction
+# discarded. 'no' moved to the WEAK tier: it only counts as a keep answer when
+# the whole message is short and confirmation-shaped ("no", "no thanks") — in a
+# longer message it is treated as a new request instead.
 KEEP_KEYWORDS = [
-    'keep', 'no', 'add', 'both', 'alongside', 'merge',
+    'keep', 'both', 'alongside', 'merge',
     "don't remove", 'do not remove',
 ]
+_WEAK_KEEP_KEYWORDS = ['no']
+_WEAK_KEEP_MAX_WORDS = 4
 CANCEL_KEYWORDS = ['cancel', 'never mind', 'forget', 'stop', 'abort']
 NEW_TAB_KEYWORDS = [
     'new tab', 'new diagram', 'another tab', 'separate', 'own tab',
     'different tab', 'create new', 'add tab', 'fresh tab',
 ]
 
-# Short words that must match as whole words to avoid false positives
-# (e.g. "no" should not match inside "nothing", "note", "another").
-_WHOLE_WORD_KEYWORDS = {'no', 'yes', 'add', 'keep'}
+# Negation markers — if the user negates a replace ("do not replace",
+# "don't overwrite"), it must NOT be read as a replace answer.
+_NEGATION_RE = re.compile(r"\b(?:no|not|never|none|cannot)\b|n['’]?t\b", re.IGNORECASE)
 
 
 def keyword_matches(keyword: str, text: str) -> bool:
-    """Check if *keyword* appears in *text*, using word-boundary matching for short ambiguous words."""
-    if keyword in _WHOLE_WORD_KEYWORDS:
-        return bool(re.search(rf'\b{re.escape(keyword)}\b', text))
-    return keyword in text
+    """Whole-word / whole-phrase match of *keyword* in *text*.
+
+    Substring matching caused silent data loss: 'replace' matched inside
+    'do not replace', 'add' inside 'address', etc. Always match on word
+    boundaries so a keyword only counts when it stands as its own token(s).
+    """
+    return bool(re.search(rf'\b{re.escape(keyword)}\b', text))
 
 
 # ------------------------------------------------------------------
@@ -61,7 +88,95 @@ def keyword_matches(keyword: str, text: str) -> bool:
 # ------------------------------------------------------------------
 
 _AUTO_KEYWORDS = ['auto', '1', 'deterministic', 'fast', 'standard', 'default', 'basic']
-_LLM_KEYWORDS = ['llm', '2', 'personali', 'ai', 'experimental', 'custom', 'design']
+# 'ai-generated' is the exact phrase the AI-Generated suggestion button now
+# sends (it replaced the opaque 'llm' token); 'llm' is kept for back-compat and
+# for anyone typing it. The classifier verdict (valid_answers auto/llm/cancel)
+# is the primary router — these keywords are the LLM-outage fallback.
+_LLM_KEYWORDS = ['ai-generated', 'llm', '2', 'personali', 'ai', 'experimental', 'custom', 'design']
+
+
+def _build_auto_gui_message(request: Any, detected_gen: Optional[str] = None) -> str:
+    """Build the auto-generate GUI success message, naming the pages created.
+
+    The deterministic ("auto") path builds one page per class on the frontend.
+    We resolve the class diagram here so the assistant can CONFIRM completion
+    and name the pages — previously the auto path only said "Generating GUI…"
+    and never reported that it was done (#3).
+
+    Falls back to a generic completion message if the class diagram can't be
+    resolved (the frontend still generates the GUI; we just can't name pages).
+    """
+    from handlers.generation_handler import detect_generator_type
+    from suggestions import get_artifact_label
+
+    if detected_gen is None:
+        detected_gen = detect_generator_type(getattr(request, "message", "") or "")
+    from reply_copy import continue_generating_prompt
+    _artifact = get_artifact_label(detected_gen)
+    _follow_up = "\n\n" + continue_generating_prompt(_artifact)
+
+    try:
+        from utilities.model_resolution import resolve_class_diagram
+        from utilities.class_metadata import extract_class_metadata
+
+        class_diagram = resolve_class_diagram(request)
+        class_metadata = extract_class_metadata(class_diagram) if class_diagram else []
+        page_names = [
+            c["name"] for c in class_metadata
+            if isinstance(c, dict) and c.get("name")
+        ]
+    except Exception:  # pragma: no cover — defensive; never block on the message
+        logger.debug("[GUIChoice] Could not resolve class names for auto-GUI message", exc_info=True)
+        page_names = []
+
+    if not page_names:
+        return (
+            "Every part of your app now has its own screen with a data view and "
+            "quick action buttons." + _follow_up
+        )
+
+    shown = page_names[:6]
+    names_str = ", ".join(f"**{n}**" for n in shown)
+    if len(page_names) > 6:
+        names_str += f" (+{len(page_names) - 6} more)"
+    return (
+        f"I built **{len(page_names)}** screen(s) for your app — {names_str}. "
+        "Each one shows its data with quick action buttons." + _follow_up
+    )
+
+
+def _maybe_emit_webapp_prompt(session: Session) -> None:
+    """Show the "generate the web app?" nudge if a web-app plan is awaiting it.
+
+    A "create a web app" plan builds the model + GUI, then has its generation op
+    STRIPPED at the plan source (planning.execute_planned_operations), which sets
+    PENDING_WEBAPP_GENERATE. Because the generation op is gone, the GUI-choice's
+    stored ``remaining_operations`` is empty and ``_resume_remaining_ops`` never
+    runs — so whichever path finishes the GUI must consume the flag here and emit
+    the prompt. Idempotent: the flag is cleared on the first emit, so calling this
+    from both the resume tail and the GUI-choice tail is safe.
+    """
+    if session.get(PENDING_WEBAPP_GENERATE):
+        session.set(PENDING_WEBAPP_GENERATE, None)
+        emit_webapp_generate_prompt(session)
+
+
+# Bare flow-control tokens a user types (or a quick-action button sends) to
+# ANSWER a pending confirmation. A message that normalizes to one of these
+# is always an answer — never a pivot — regardless of the intent label the
+# classifier stamped on it.
+_FLOW_ANSWER_TOKENS = {
+    "replace", "replace it", "keep", "keep it", "keep both",
+    "keep it and add alongside", "add alongside", "new tab",
+    "create in a new tab", "confirm", "confirm apply the change",
+    "apply the change", "go ahead", "yes", "no", "cancel", "ok",
+}
+
+
+def _normalize_flow_token(message: str) -> str:
+    """Lowercase, strip punctuation/dashes, collapse whitespace."""
+    cleaned = re.sub(r"[^\w\s]", " ", (message or "").lower())
+    return " ".join(cleaned.split())
 
 
 def handle_pending_gui_choice(session: Session) -> bool:
@@ -77,14 +192,28 @@ def handle_pending_gui_choice(session: Session) -> bool:
     request = parse_assistant_request(session)
     user_msg = (request.message or '').lower().strip()
 
-    wants_cancel = any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
+    # ActiveFlow: classifier verdict primary, keywords as outage fallback.
+    _uc = session.get(UNIFIED_CLASSIFICATION)
+    _flow_action = getattr(_uc, "pending_flow_action", None)
+    _flow_answer = getattr(_uc, "pending_flow_answer", None)
+    _verdict_usable = _flow_action == "answer" and _flow_answer in (
+        "auto", "llm", "cancel")
+
+    if _verdict_usable:
+        wants_cancel = _flow_answer == "cancel"
+    else:
+        wants_cancel = any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
     if wants_cancel:
         session.set(PENDING_GUI_CHOICE, None)
         reply_message(session, "Cancelled. No GUI was generated.")
         return True
 
-    wants_auto = any(keyword_matches(w, user_msg) for w in _AUTO_KEYWORDS)
-    wants_llm = any(keyword_matches(w, user_msg) for w in _LLM_KEYWORDS)
+    if _verdict_usable:
+        wants_auto = _flow_answer == "auto"
+        wants_llm = _flow_answer == "llm"
+    else:
+        wants_auto = any(keyword_matches(w, user_msg) for w in _AUTO_KEYWORDS)
+        wants_llm = any(keyword_matches(w, user_msg) for w in _LLM_KEYWORDS)
 
     if not wants_auto and not wants_llm:
         # The user's message doesn't look like a GUI choice answer.
@@ -95,20 +224,31 @@ def handle_pending_gui_choice(session: Session) -> bool:
             "treating as new request, clearing pending state"
         )
         session.set(PENDING_GUI_CHOICE, None)
+        # Also drop the web-app pause flag: the user broke out of the GUI flow
+        # (e.g. a modify), so the next execute_planned_operations must NOT fire
+        # the "Your screens are ready" prompt — the screens were never generated.
+        session.set(PENDING_WEBAPP_GENERATE, None)
         return False  # Let normal state body handle the new request
 
     if wants_auto:
+        from handlers.generation_handler import detect_generator_type
+        from suggestions import get_post_spec_suggestions
+
         remaining_ops = pending.get('remaining_operations')
         session.set(PENDING_GUI_CHOICE, None)
         logger.info("🔄 [GUIChoice] User chose AUTO-GENERATE (deterministic)")
+        # Use the original request text (not the GUI-choice reply "1"/"auto") so
+        # detect_generator_type can see keywords like "web application" or "database".
+        _original_msg = pending.get('operation_request', '') or getattr(request, "message", "") or ""
+        _detected_gen = detect_generator_type(_original_msg)
         reply_payload(session, {
             "action": "auto_generate_gui",
             "diagramType": "GUINoCodeDiagram",
-            "message": (
-                "Generating GUI from your Class Diagram\u2026\n\n"
-                "I'll generate the GUI automatically from your Class Diagram. "
-                "Each class will get its own page with a data table and method buttons."
-            ),
+            # Frontend builds one page per class via autoGenerateGUIFromClassDiagram.
+            # The message CONFIRMS completion naming the pages that were created.
+            # suggestedActions give the user their next step (generate or review).
+            "message": _build_auto_gui_message(request, detected_gen=_detected_gen or "web_app"),
+            "suggestedActions": get_post_spec_suggestions(_detected_gen or "web_app"),
         })
         # Resume any remaining operations from the original plan
         if isinstance(remaining_ops, list) and remaining_ops:
@@ -118,6 +258,9 @@ def handle_pending_gui_choice(session: Session) -> bool:
                 'GUINoCodeDiagram', 'complete_system',
                 pending.get('operation_request', ''), pending,
             )
+        # Note: _maybe_emit_webapp_prompt is intentionally NOT called here.
+        # The artifact-aware follow-up is already embedded in the auto_generate_gui
+        # message above, so a separate prompt would be premature and redundant.
         return True
 
     # LLM-driven path
@@ -127,9 +270,10 @@ def handle_pending_gui_choice(session: Session) -> bool:
     stored_replace = pending.get('_replace_existing')
     remaining_ops = pending.get('remaining_operations')
 
-    # Restore the original request message for the operation
-    working_request = request
-    working_request.message = pending.get('operation_request', request.message)
+    # Restore the original request message for the operation. Use a copy:
+    # ``request`` is the session-cached AssistantRequest, so mutating it in
+    # place would corrupt the cached object for any later read this turn (#63).
+    working_request = replace(request, message=pending.get('operation_request', request.message))
 
     try:
         execute_model_operation(
@@ -160,6 +304,9 @@ def handle_pending_gui_choice(session: Session) -> bool:
             pending.get('operation_request', ''), pending,
         )
 
+    # Same web-app nudge as the auto path: the stripped generation leaves
+    # remaining_ops empty, so emit the "generate the web app?" prompt here.
+    _maybe_emit_webapp_prompt(session)
     return True
 
 
@@ -182,15 +329,80 @@ def handle_pending_system_confirmation(session: Session) -> bool:
     request = parse_assistant_request(session)
     user_msg = (request.message or '').lower().strip()
 
-    wants_cancel = any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
+    # ActiveFlow: the classifier judged this message WITH the pending question
+    # in its context. Its verdict is PRIMARY; the keyword parsing below is the
+    # LLM-outage fallback (verdict missing or unusable).
+    _uc = session.get(UNIFIED_CLASSIFICATION)
+    _flow_action = getattr(_uc, "pending_flow_action", None)
+    _flow_answer = getattr(_uc, "pending_flow_answer", None)
+    if _flow_action == "new_request":
+        logger.info(
+            "[PendingConfirm] Classifier: message is a NEW REQUEST — "
+            "abandoning the confirmation")
+        session.set(PENDING_COMPLETE_SYSTEM, None)
+        return False  # Let normal routing handle the new request
+
+    # PIVOT GUARD (live 4/4 destructive bug): "add a Member class" typed at
+    # the replace/keep prompt was labelled answer='keep' by the classifier
+    # ("they want to keep the model…") while its own INTENT verdict correctly
+    # said modify_model_intent — and honoring 'keep' RESUMED THE STASHED
+    # CREATE, burying the user's edit under a brand-new system. An edit
+    # instruction is a PIVOT, never an answer: the intent verdict wins over
+    # the answer label. Abandon the confirmation and let the modify route
+    # normally. Deterministic — phrasing cannot re-trigger the bug.
+    #
+    # EXCEPT for bare flow-control tokens (live loop, 2026-09-02): the
+    # classifier labels the literal answers "replace"/"confirm" as
+    # modify_model_intent too, and the guard then abandoned the
+    # confirmation and EXECUTED the word "confirm" as a modify request —
+    # which re-planned a destructive change, re-blocked, and re-asked in
+    # an endless loop. A message that IS an answer token can never be a
+    # pivot, whatever intent the classifier stamped on it.
+    _bare_answer = _normalize_flow_token(user_msg) in _FLOW_ANSWER_TOKENS
+    if (
+        _flow_action == "answer"
+        and getattr(_uc, "intent", None) == "modify_model_intent"
+        and not _bare_answer
+    ):
+        logger.info(
+            "[PendingConfirm] Modify-intent verdict at the replace/keep "
+            "prompt — treating as a PIVOT, abandoning the confirmation")
+        session.set(PENDING_COMPLETE_SYSTEM, None)
+        return False
+    _verdict_usable = _flow_action == "answer" and _flow_answer in (
+        "replace", "keep", "new_tab", "confirm", "cancel")
+
+    if _verdict_usable:
+        wants_cancel = _flow_answer == "cancel"
+    else:
+        wants_cancel = any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
     if wants_cancel:
         session.set(PENDING_COMPLETE_SYSTEM, None)
         reply_message(session, "Cancelled. Your existing model is unchanged.")
         return True
 
-    wants_new_tab = pending.get('can_add_tab', False) and any(keyword_matches(w, user_msg) for w in NEW_TAB_KEYWORDS)
-    wants_replace = any(keyword_matches(w, user_msg) for w in REPLACE_KEYWORDS)
-    wants_keep = any(keyword_matches(w, user_msg) for w in KEEP_KEYWORDS)
+    if _verdict_usable:
+        wants_new_tab = (_flow_answer == "new_tab"
+                         and pending.get('can_add_tab', False))
+        wants_replace = _flow_answer in ("replace", "confirm")
+        wants_keep = _flow_answer == "keep"
+    else:
+        wants_new_tab = pending.get('can_add_tab', False) and any(keyword_matches(w, user_msg) for w in NEW_TAB_KEYWORDS)
+        wants_replace = any(keyword_matches(w, user_msg) for w in REPLACE_KEYWORDS)
+        wants_keep = any(keyword_matches(w, user_msg) for w in KEEP_KEYWORDS)
+        if not wants_keep and len(user_msg.split()) <= _WEAK_KEEP_MAX_WORDS:
+            # Short, confirmation-shaped replies ("no", "no thanks") count as
+            # keep; a long message containing 'no' is a new request.
+            wants_keep = any(keyword_matches(w, user_msg) for w in _WEAK_KEEP_KEYWORDS)
+
+        # BLOCKER safety guard (keyword path only — the classifier reads
+        # negation natively): replacing DESTROYS the user's existing model, so
+        # only do it on an UNAMBIGUOUS replace. Any keep signal, or any
+        # negation ("no, keep my model, do not replace it"), downgrades to
+        # keep.
+        if wants_replace and (wants_keep or _NEGATION_RE.search(user_msg)):
+            wants_replace = False
+            wants_keep = True
 
     if not wants_replace and not wants_keep and not wants_new_tab:
         # The user's message doesn't look like a confirmation answer.
@@ -202,6 +414,56 @@ def handle_pending_system_confirmation(session: Session) -> bool:
         )
         session.set(PENDING_COMPLETE_SYSTEM, None)
         return False  # Let normal state body handle the new request
+
+    # ── Destructive modify-model guard ────────────────────────────────
+    # Stored by model_operations._build_destructive_modify_confirmation
+    # when a modify_model plan would delete most/all of the existing
+    # model. Unlike the file-upload precomputed path below, a non-confirm
+    # answer must NOT send the payload at all (just with a flag toggled)
+    # -- it must discard the destructive plan entirely so the model is
+    # left completely untouched.
+    if pending.get('destructive_modify'):
+        if wants_replace:
+            stored_payload = pending.get('precomputed_payload')
+            if isinstance(stored_payload, dict):
+                logger.info(
+                    "🔄 [PendingConfirm] User confirmed destructive modify_model — "
+                    "applying stored plan"
+                )
+                reply_payload(session, stored_payload)
+            else:
+                reply_message(
+                    session,
+                    "Something went wrong — the pending change is no longer available. "
+                    "Please try again.",
+                )
+            session.set(PENDING_COMPLETE_SYSTEM, None)
+
+            # If this destructive op was one step of a larger multi-op plan
+            # (see execution/planning.py, which stashes 'remaining_operations'
+            # onto ANY pending dict under this same session key), resume the
+            # rest now that the user has confirmed. Mirrors the replace/keep/
+            # new-tab branches below.
+            remaining_ops = pending.get('remaining_operations')
+            if isinstance(remaining_ops, list) and remaining_ops:
+                stored_diagram_type = pending.get('diagram_type', 'ClassDiagram')
+                stored_message = pending.get('original_message', request.message)
+                working_request = replace(request, message=stored_message)
+                logger.info(
+                    f"[PendingConfirm] Resuming {len(remaining_ops)} remaining operation(s) "
+                    "after destructive-modify confirmation"
+                )
+                _resume_remaining_ops(
+                    session, remaining_ops, working_request,
+                    stored_diagram_type, 'modify_model', stored_message, pending,
+                )
+        else:
+            logger.info(
+                "[PendingConfirm] User declined destructive modify_model — discarding plan"
+            )
+            reply_message(session, "Cancelled — no changes were made. Your model is unchanged.")
+            session.set(PENDING_COMPLETE_SYSTEM, None)
+        return True
 
     # --- User answered: execute the stored creation -----------------------
 
@@ -236,9 +498,10 @@ def handle_pending_system_confirmation(session: Session) -> bool:
     stored_operation = pending.get('operation', {})
     stored_default_mode = pending.get('default_mode', 'complete_system')
 
-    # Rebuild a minimal request that carries the stored message.
-    working_request = request
-    working_request.message = stored_message
+    # Rebuild a minimal request that carries the stored message. Use a copy:
+    # ``request`` is the session-cached AssistantRequest, so mutating it in
+    # place would corrupt the cached object for any later read this turn (#63).
+    working_request = replace(request, message=stored_message)
 
     # ── New tab path ──────────────────────────────────────────────────
     if wants_new_tab:
@@ -271,6 +534,10 @@ def handle_pending_system_confirmation(session: Session) -> bool:
                 session, remaining_ops, working_request,
                 stored_diagram_type, stored_default_mode, stored_message, pending,
             )
+
+        # Resume smart-gen handoff if a mismatch chain was pending — the
+        # new tab now holds the rebuilt domain model.
+        _resume_smart_gen_after_replace(session)
 
         return True
 
@@ -313,7 +580,60 @@ def handle_pending_system_confirmation(session: Session) -> bool:
             stored_diagram_type, stored_default_mode, stored_message, pending,
         )
 
+    # ── Resume smart-gen handoff if a mismatch chain was pending ─────
+    # When the user reached this confirmation via the "Update model +
+    # generate" mismatch quick action, the mismatch handler stashed smart-gen
+    # instructions in the session and paused waiting for this answer.
+    # Now that the model has been replaced (the only path that makes
+    # sense to chain — keeping the old model would defeat the point of
+    # the mismatch fix), fire the Spec-Driven Agent handoff.
+    if replace_existing:
+        _resume_smart_gen_after_replace(session)
+
     return True
+
+
+def _resume_smart_gen_after_replace(session: Session) -> None:
+    """Ask to run the stashed smart-gen handoff after a model replace.
+
+    No-op when there are no stashed instructions (the common case — most
+    replaces happen outside the mismatch flow). Must NOT auto-fire: the
+    smart generator spends the USER'S OWN API key, so the stash is
+    refreshed and the user gets an explicit run/cancel choice (B-2). The
+    actual trigger is emitted by the confirm handler in
+    ``handle_generation_request``.
+    """
+    stashed_instructions = session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+    if not isinstance(stashed_instructions, str) or not stashed_instructions.strip():
+        return
+
+    stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic"
+
+    try:
+        from handlers.generation_handler import (
+            _build_smart_gen_confirmation,
+            _clear_pending_smart_gen,
+        )
+    except ImportError:  # pragma: no cover — defensive in case of refactor
+        logger.exception("[PendingConfirm] Could not import smart-gen handoff helpers")
+        return
+
+    try:
+        # _build_smart_gen_confirmation re-stashes with a fresh timestamp —
+        # the user just actively continued this flow.
+        payload = _build_smart_gen_confirmation(
+            session,
+            stashed_instructions,
+            stashed_provider,
+            reason_prefix="Model rebuilt and ready.",
+        )
+    except Exception:
+        logger.exception("[PendingConfirm] Failed to build smart-gen confirmation payload")
+        _clear_pending_smart_gen(session)
+        return
+
+    if isinstance(payload, dict):
+        reply_payload(session, payload)
 
 
 def _resume_remaining_ops(
@@ -389,6 +709,16 @@ def _resume_remaining_ops(
             from utilities.request_builders import build_generation_request
             from session_helpers import reply_payload
 
+            # Defensive net: a web-app plan's generation is normally STRIPPED at
+            # the source (planning.execute_planned_operations), so a generation op
+            # rarely survives into a post-GUI resume. But if one ever does, defer
+            # it — never auto-run generation right after a GUI build.
+            if stored_diagram_type == 'GUINoCodeDiagram':
+                logger.info("[GUIChoice] Deferring web-app generation — asking the user to generate")
+                session.set(PENDING_WEBAPP_GENERATE, None)
+                emit_webapp_generate_prompt(session)
+                break  # Stop here; the user drives generation explicitly.
+
             gen_type = remaining_op.get('generatorType')
             if isinstance(gen_type, str) and gen_type:
                 gen_req = build_generation_request(
@@ -410,3 +740,8 @@ def _resume_remaining_ops(
                         "Something went wrong while running code generation. "
                         "Please try again.",
                     )
+
+    # Web-app pause (GUI-choice path): the GUI was just built and its generation
+    # was stripped at the plan source, so show the "generate the web app?" prompt
+    # here. Non-web-app resumes leave the flag unset and skip this.
+    _maybe_emit_webapp_prompt(session)

@@ -7,18 +7,27 @@ It is part of the `BESSER <https://besser-pearl.github.io/BESSER/>`_ platform
 (*better software faster*) — an open-source low-code platform for smart software
 modeling developed by the `BESSER-PEARL <https://github.com/BESSER-PEARL>`_ team.
 
-The agent interprets natural-language requests over WebSocket and returns
-structured diagram JSON payloads that the frontend renders directly.
+The agent is a WebSocket service that turns natural language into **diagram
+operations**. It interprets each request, decides what to do, and returns a
+structured action payload — ``inject_complete_system``, ``modify_model``,
+``trigger_generator``, ``trigger_smart_generator`` and friends — that the
+editor applies to the canvas or hands to a generator.
 
 **Key capabilities:**
 
-- Create and modify UML diagrams from natural language
+- Create and modify diagrams from natural language
 - Multi-step orchestration (model first, then generate code)
-- 6 diagram types: Class, Object, StateMachine, Agent, GUI, Quantum Circuit
+- 8 diagram types: Class, Object, State Machine, Agent, GUI (no-code),
+  Quantum Circuit, BPMN, and User Profile
 - Code generation via `BESSER generators <https://besser-pearl.github.io/BESSER/generators.html>`_
-  (Django, Python, Java, SQL, and more)
+  (Django, Python, Java, SQL, and more), plus a smart LLM-authored path for
+  stacks BESSER has no built-in generator for
+- Bring-your-own-key (BYOK) routing, so generation can run on the user's own
+  OpenAI, Anthropic or Mistral key
 - UML specification Q&A via :term:`RAG` (ChromaDB)
-- File conversion from PlantUML, RDF, images, and text
+- File conversion from PlantUML, RDF/knowledge graphs, XMI, PDFs, images, and
+  plain text
+- Voice input via OpenAI speech-to-text
 
 **Part of the BESSER ecosystem:**
 

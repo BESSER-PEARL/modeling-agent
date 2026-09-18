@@ -9,7 +9,7 @@ from typing import List, Literal, Optional
 
 import re
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class MethodParameterSpec(BaseModel):
@@ -19,11 +19,12 @@ class MethodParameterSpec(BaseModel):
 
 class AttributeSpec(BaseModel):
     name: str = Field(min_length=1, max_length=50, description="Attribute name in camelCase")
-    type: Optional[str] = Field(default=None, description="Data type (e.g. String, int, bool, float, Date, or PascalCase class/enum name). Null for enum literals.")
+    type: Optional[str] = Field(default=None, description="Data type: a PRIMITIVE (String, int, bool, float, Date, datetime) or an ENUM name only. Do NOT use another class as an attribute type — model 'X has a Y' (Y is a class) as a relationship, not an attribute. Null for enum literals.")
     visibility: Literal["public", "private", "protected", "package"] = Field(default="public", description="UML visibility")
     isDerived: bool = Field(default=False, description="Whether this is a derived/computed attribute.")
     defaultValue: Optional[str] = Field(default=None, description="Default value for the attribute.")
     isOptional: bool = Field(default=False, description="Whether this attribute is optional/nullable.")
+    isExternalId: bool = Field(default=False, description="Whether this attribute is the natural/external identifier the user says identifies the object (room number, email, ISBN) — its value must be unique.")
 
 
 class MethodSpec(BaseModel):
@@ -59,21 +60,115 @@ class RelationshipSpec(BaseModel):
     targetMultiplicity: str = Field(default="*", description="Target multiplicity: 1, 0..1, 0..*, or 1..*")
     name: Optional[str] = Field(default=None, description="Optional relationship name")
 
+    @field_validator("sourceMultiplicity", "targetMultiplicity", mode="before")
+    @classmethod
+    def _normalize_multiplicity(cls, v):
+        # LLMs emit many/N/n/0..n/* etc. which the BUML multiplicity parser
+        # rejects, breaking export. Map them to accepted forms (1, 0..1, 0..*,
+        # 1..*) and pass valid values through. (#46)
+        if v is None:
+            return "1"
+        s = str(v).strip().lower().replace(" ", "")
+        if s in ("", "?"):
+            return "1"
+        if s in ("*", "n", "many", "0..n", "0..*", "*..*", "n..n", "0..many"):
+            return "0..*"
+        if s in ("1..n", "1..*", "1..many", "+"):
+            return "1..*"
+        return s.replace("..n", "..*").replace("..many", "..*")
+
+
+class OCLConstraintSpec(BaseModel):
+    """A single OCL invariant capturing a business rule the user explicitly stated.
+
+    Used to record constraints that cannot be expressed by multiplicities or
+    attribute types alone (uniqueness, multiplicity-beyond-cardinality, value
+    ranges). The ``expression`` is a full OCL invariant in BESSER's B-OCL
+    syntax (``context <Class> inv [name]: <expression>``).
+    """
+    context: str = Field(
+        description="The PascalCase name of the class this invariant constrains "
+                    "(the OCL context class). Must be one of the classes above.",
+    )
+    expression: str = Field(
+        description="A full OCL invariant in B-OCL syntax, e.g. "
+                    "'context Speaker inv oneSessionPerSlot: "
+                    "self.sessions->forAll(s1, s2 | s1 <> s2 implies s1.timeSlot <> s2.timeSlot)'. "
+                    "Capture ONLY rules the user explicitly stated.",
+    )
+    name: Optional[str] = Field(
+        default=None,
+        description="Optional short invariant name (e.g. 'oneSessionPerSlot').",
+    )
+
 
 class SystemClassSpec(BaseModel):
     """A complete class diagram with multiple classes and relationships."""
     systemName: str = Field(default="", description="Descriptive system name")
     classes: List[SingleClassSpec] = Field(min_length=1, description="All classes in the system.")
     relationships: List[RelationshipSpec] = Field(default_factory=list, description="Relationships between classes.")
+    constraints: List[OCLConstraintSpec] = Field(
+        default_factory=list,
+        description="OCL invariants for business rules the user EXPLICITLY stated "
+                    "(uniqueness, multiplicity-beyond-cardinality, value ranges). "
+                    "Leave EMPTY when the user stated no such rule — never invent constraints.",
+    )
 
 
 # -- Modification schemas --
 
+# Hallucinated "placeholder" tokens the LLM invents for required name fields it
+# has no real value for (e.g. add_class.target.className). Matched
+# case-insensitively as a substring so any of these anywhere in the name flags
+# it as junk. Covers the live cases "...ClassNamePlaceholderHere" and
+# "ChatbotHandlerClassNamePlaceholder".
+# NOTE: substring-matched, so keep these specific enough not to collide with a
+# legitimate domain class name (e.g. a real "Todo" class). Avoid bare tokens
+# like "todo"/"tbd"/"xxx".
+_PLACEHOLDER_TOKENS = (
+    "placeholder",
+    "classnamehere",
+    "classname here",
+    "namehere",
+    "yourclassname",
+    "yourclass",
+    "<name>",
+    "<class>",
+    "<classname>",
+    "enterclassname",
+    "insertclassname",
+    "exampleclassname",
+    "newclassname",
+)
+
+
+def _is_placeholder(value: str | None) -> bool:
+    """Return True if *value* looks like a hallucinated placeholder token.
+
+    Case-insensitive substring match against ``_PLACEHOLDER_TOKENS`` so a leak
+    like ``RolePermissionAssociationClassNamePlaceholderHere`` or
+    ``ChatbotHandlerClassNamePlaceholder`` is caught even when the LLM prefixes
+    or suffixes it with a real-looking word.
+    """
+    if not value or not isinstance(value, str):
+        return False
+    low = value.strip().lower()
+    return any(tok in low for tok in _PLACEHOLDER_TOKENS)
+
+
 def _clean_name(value: str | None) -> str | None:
-    """Strip JSON artifacts (},  ],  etc.) that the LLM may include in names."""
+    """Strip JSON artifacts (}, ], etc.) and null out hallucinated placeholders.
+
+    First removes trailing JSON syntax the LLM may leak into a name, then nulls
+    the value entirely if it matches a placeholder token — so a leak can never
+    reach the applied model or the success message.
+    """
     if not value:
         return value
-    return re.sub(r'[{}\[\],]+$', '', value).strip() or None
+    cleaned = re.sub(r'[{}\[\],]+$', '', value).strip() or None
+    if _is_placeholder(cleaned):
+        return None
+    return cleaned
 
 
 class ClassModificationTarget(BaseModel):
@@ -97,13 +192,6 @@ class ClassModificationTarget(BaseModel):
 class ClassModificationChanges(BaseModel):
     name: Optional[str] = Field(default=None, max_length=30, description="New name for rename operations (PascalCase, ONE word only)")
     type: Optional[str] = Field(default=None, description="New type for attribute/parameter changes")
-
-    @model_validator(mode='after')
-    def strip_json_artifacts(self) -> 'ClassModificationChanges':
-        self.name = _clean_name(self.name)
-        if self.className:
-            self.className = _clean_name(self.className)
-        return self
     visibility: Optional[Literal["public", "private", "protected", "package"]] = None
     returnType: Optional[str] = None
     parameters: Optional[List[MethodParameterSpec]] = None
@@ -113,6 +201,16 @@ class ClassModificationChanges(BaseModel):
     ]] = None
     sourceMultiplicity: Optional[str] = None
     targetMultiplicity: Optional[str] = None
+    roleName: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "New name for the association END at the TARGET class side (the "
+            "role/end name, e.g. 'headedDepartment') for modify_relationship. "
+            "Use this — NOT 'name' — when renaming an association end or role; "
+            "'name' renames the relationship label itself."
+        ),
+    )
     className: Optional[str] = Field(default=None, max_length=30, description="Class name in PascalCase for add_class action (ONE word only, e.g. User, Order)")
     attributes: Optional[List[AttributeSpec]] = Field(default=None, description="Attributes for add_class action")
     methods: Optional[List[MethodSpec]] = Field(default=None, description="Methods for add_class action")
@@ -126,6 +224,36 @@ class ClassModificationChanges(BaseModel):
     constraint: Optional[str] = Field(default=None, description="Full BOCL block ('context Class (inv|pre|post) [name]: body') for add_ocl_constraint")
     text: Optional[str] = Field(default=None, description="Plain-language description surfaced when an OCL constraint fails (used by add_ocl_constraint)")
 
+    @field_validator('name', 'className', mode='before')
+    @classmethod
+    def _null_placeholder_names(cls, v):
+        """Null a hallucinated placeholder name BEFORE length validation.
+
+        These fields cap at 30 chars; a long leak like
+        "ChatbotHandlerClassNamePlaceholder" (34 chars) would otherwise raise a
+        max_length ValidationError and fail the whole modification. Running in
+        ``mode='before'`` nulls it first so the constraint never sees the junk.
+        """
+        if isinstance(v, str) and _is_placeholder(v):
+            return None
+        return v
+
+    @model_validator(mode='after')
+    def strip_json_artifacts(self) -> 'ClassModificationChanges':
+        """Strip JSON artifacts and null any hallucinated placeholder name.
+
+        Also drops placeholder-named attributes/methods (their ``name`` field
+        has min_length=1 so it can't be nulled in place — the whole entry is
+        removed instead) so a leak can't survive on a sub-element either.
+        """
+        self.name = _clean_name(self.name)
+        self.className = _clean_name(self.className)
+        if self.attributes:
+            self.attributes = [a for a in self.attributes if not _is_placeholder(a.name)]
+        if self.methods:
+            self.methods = [m for m in self.methods if not _is_placeholder(m.name)]
+        return self
+
 
 class ClassModification(BaseModel):
     action: Literal[
@@ -137,9 +265,58 @@ class ClassModification(BaseModel):
         "extract_class", "split_class", "merge_classes",
         "promote_attribute", "add_enum",
         "add_ocl_constraint",
-    ] = Field(description="Action to perform.")
+    ] = Field(description=(
+        "Action to perform. Choose carefully:\n"
+        "- add_relationship: CONNECT TWO EXISTING classes. Set target.sourceClass "
+        "+ target.targetClass + changes.relationshipType. Use for 'add a "
+        "composition/aggregation/association between X and Y', 'connect X and Y', "
+        "'X has/owns/contains/references/knows a Y' when Y is a CLASS; and for "
+        "INHERITANCE: 'X extends Y', 'X is a subclass of Y', 'make X inherit from "
+        "Y', 'X and Y both extend Z' (emit ONE add_relationship per child with "
+        "relationshipType='Inheritance'). NEVER create new classes for X or Y "
+        "when they already exist in the model — link the existing ones.\n"
+        "- add_class: ONLY to create a brand-new class that does not exist yet.\n"
+        "- add_attribute: add a field to an existing class — use for 'X has a Y' "
+        "ONLY when Y is a primitive type (string/int/date/bool), not a class.\n"
+        "- add_ocl_constraint: add an OCL constraint to a class.\n"
+        "- modify_relationship / remove_element / modify_*: change or delete an "
+        "existing element."
+    ))
     target: ClassModificationTarget
     changes: Optional[ClassModificationChanges] = Field(default=None, description="Changes to apply. Required for all actions except remove_element.")
+
+    @model_validator(mode='after')
+    def resolve_add_class_name(self) -> 'ClassModification':
+        """For add_class, source the real class name and clear junk target.
+
+        The new class name belongs in ``changes.className``; ``target.className``
+        is meaningless for add_class (the target is a brand-new class). The LLM
+        frequently hallucinates a placeholder there. This validator:
+
+        1. Resolves the real, non-placeholder name from whichever of
+           ``changes.className`` / ``target.className`` actually holds it
+           (self-consistency: if the name landed only in target, promote it).
+        2. Always clears ``target.className`` so a placeholder can never leak
+           into the applied model or the success message.
+
+        Field-level cleaning has already nulled obvious placeholders by the time
+        this runs, so anything surviving here is treated as a real name.
+        """
+        if self.action != "add_class":
+            return self
+
+        # changes is created lazily so add_class always has somewhere to write
+        if self.changes is None:
+            self.changes = ClassModificationChanges()
+
+        # Both are already placeholder-cleaned (None if junk). Prefer the
+        # canonical location (changes.className); fall back to target.className.
+        resolved = self.changes.className or _clean_name(self.target.className)
+        self.changes.className = resolved
+
+        # target.className is meaningless for a NEW class — never let it through.
+        self.target.className = None
+        return self
 
 
 class ClassModificationResponse(BaseModel):

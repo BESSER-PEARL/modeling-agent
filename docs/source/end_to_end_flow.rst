@@ -31,7 +31,7 @@ The system has three parts:
        end
 
        FE <-->|"WebSocket<br/>JSON messages"| BE
-       BE -->|"API calls"| OpenAI["OpenAI (GPT-4.1)"]
+       BE -->|"API calls"| OpenAI["OpenAI<br/>(per-tier model routing)"]
 
 Frontend (browser)
 ~~~~~~~~~~~~~~~~~~
@@ -47,7 +47,9 @@ Backend (Docker / Python)
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - **WebSocket server**: Listens for messages from the frontend chat.
-- **Intent recognition**: Determines what the user wants (create? modify? generate?).
+- **Unified classifier**: One structured-output LLM call decides what the user
+  wants (create? modify? generate?) *and* every sub-routing detail, cached for
+  the whole message.
 - **Orchestrator**: Plans which operations to run (e.g., "create ClassDiagram then
   generate code").
 - **Diagram handlers**: One per diagram type. Each handler builds prompts and parses
@@ -62,6 +64,16 @@ The backend sends a prompt like *"You are a UML expert. Create a class diagram f
 a shoe store."* OpenAI returns structured JSON matching a Pydantic schema
 (e.g., ``{ classes: [...], relationships: [...] }``). The backend validates the
 response and sends it to the frontend.
+
+Which model answers depends on the call site, not on one global setting:
+routing and repair run on the cheap classifier tier, complete-system
+generation on the large tier, single-element and modification calls on the
+small tier, and file conversion from an image or PDF on the vision tier. Every
+tier is env-overridable — see :doc:`configuration`.
+
+If the user supplied their own API key, the generation and conversational
+calls in this flow run through a per-request client built from that key
+instead of the shared server key.
 
 Creation Flow
 -------------
@@ -98,8 +110,17 @@ Step 3–4: Backend receives and classifies
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The protocol adapter (``protocol/adapters.py``) parses the raw message into an
-``AssistantRequest`` object. The intent classifier asks the LLM what the user
-wants and returns an intent like ``create_complete_system_intent``.
+``AssistantRequest`` object. Note that the payload arrives double-JSON-encoded:
+BAF's WebSocket platform preserves only four top-level keys, so the v2 payload
+is a JSON string inside ``message``.
+
+The unified classifier (``unified_classifier.py``) then makes **one**
+structured-output call and returns a ``UnifiedClassification`` — here
+``intent="create_complete_system_intent"``,
+``target_diagram_type="ClassDiagram"``,
+``model_disposition="new_from_scratch"``. The result is cached on the BAF
+event id, so every transition condition and state body that asks afterwards
+reads it for free.
 
 Step 5–6: State machine and orchestrator
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -232,7 +253,8 @@ Modification Flow
 When the user says **"change storeId to int"**, the flow is shorter:
 
 1. Frontend sends ``{ message: "change storeId to int", context: { ... } }``
-2. Backend classifies intent: ``modify_model_intent``
+2. The classifier returns ``modify_model_intent`` with
+   ``model_disposition="extend_existing"``
 3. Handler builds prompt with the **current model** so the LLM knows what exists
 4. LLM returns structured modifications:
 
@@ -259,7 +281,9 @@ The backend sends three types of injection payloads over WebSocket.
 inject_complete_system
 ~~~~~~~~~~~~~~~~~~~~~~
 
-Creates a full diagram from scratch (replaces existing content):
+Injects a full diagram. Whether it replaces the current content or merges into
+it is carried by ``replaceExisting``, which the agent stamps after resolving
+the user's answer to a replace/keep/new-tab confirmation:
 
 .. code-block:: json
 

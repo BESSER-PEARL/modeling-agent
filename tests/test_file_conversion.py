@@ -10,6 +10,7 @@ from handlers.file_conversion_handler import (
     detect_file_type,
     detect_plantuml_diagram_type,
     _resolve_diagram_type,
+    _parse_llm_response,
     CONVERTIBLE_DIAGRAM_TYPES,
 )
 
@@ -219,9 +220,78 @@ class TestConvertFileImage:
         assert result["action"] == "agent_error"
         assert "vision" in result["message"].lower() or "api key" in result["message"].lower()
 
+    _PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+
+    @staticmethod
+    def _fake_post_factory(message: dict, finish_reason: str = "stop"):
+        class _Resp:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"choices": [{"finish_reason": finish_reason, "message": message}]}
+
+        def _post(*_args, **_kwargs):
+            return _Resp()
+
+        return _post
+
+    def test_image_refusal_returns_declined_message_not_no_content(self, monkeypatch):
+        # The vision model actively REFUSED (finish=stop, refusal set). The old
+        # path flattened this into "returned no content" — misleading a pilot
+        # user whose benign mockup was refused. We now say it was declined.
+        import requests as http_requests
+        monkeypatch.setattr(
+            http_requests,
+            "post",
+            self._fake_post_factory(
+                {"content": None, "refusal": "I'm sorry, I can't assist with that."}
+            ),
+        )
+        result = convert_file_to_class_spec(
+            file_content_b64=self._PNG_B64,
+            filename="mockup.png",
+            llm_predict=_mock_llm_predict,
+            openai_api_key="test-key",
+        )
+        assert result["action"] == "agent_error"
+        msg = result["message"].lower()
+        assert "declined" in msg
+        assert "no content" not in msg
+
+    def test_image_empty_content_keeps_retryable_no_content_message(self, monkeypatch):
+        # A genuinely empty reply (no refusal) stays the retryable "no content"
+        # message — retrying the same image often succeeds.
+        import requests as http_requests
+        monkeypatch.setattr(
+            http_requests,
+            "post",
+            self._fake_post_factory({"content": None, "refusal": None}),
+        )
+        result = convert_file_to_class_spec(
+            file_content_b64=self._PNG_B64,
+            filename="mockup.png",
+            llm_predict=_mock_llm_predict,
+            openai_api_key="test-key",
+        )
+        assert result["action"] == "agent_error"
+        msg = result["message"].lower()
+        assert "no content" in msg
+        assert "declined" not in msg
+
 
 class TestConvertFileEdgeCases:
     """Test error handling and edge cases."""
+
+    def test_parse_llm_response_none_is_graceful(self):
+        # An empty/None vision reply must NOT crash on .strip() — it should
+        # return a clean, retryable agent_error (regression: the image->GUI
+        # vision call returned None and crashed with NoneType.strip()).
+        for bad in (None, "", "   "):
+            result = _parse_llm_response(bad, "page.png", "image")
+            assert result["action"] == "agent_error"
+            msg = result["message"].lower()
+            assert "couldn't read" in msg or "no content" in msg
 
     def test_invalid_base64_returns_error(self):
         result = convert_file_to_class_spec(
