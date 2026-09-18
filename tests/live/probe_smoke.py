@@ -273,9 +273,10 @@ async def _await_boot():
     and BOOT_WAIT was raised twice chasing a boot time that was never the
     problem.
 
-    A rejection is also not a boot delay: an HTTP status from the upgrade
-    means the server is up and answering, so waiting cannot help. Fail fast
-    and say so.
+    A 4xx rejection is not a boot delay: the server is up and answering, so
+    waiting cannot help. Fail fast and say so. A 5xx GATEWAY error is the
+    opposite — the proxy is up but the agent is not listening yet — so keep
+    waiting through it.
     """
     deadline = time.monotonic() + BOOT_WAIT
     started = time.monotonic()
@@ -289,6 +290,14 @@ async def _await_boot():
         except Exception as exc:
             status = getattr(exc, "status_code", None)
             last = f"{type(exc).__name__}: {str(exc)[:140]}"
+            # A GATEWAY error is the boot window: nginx answers 502/503/504
+            # while the agent is still training its NER + per-state intent
+            # classifiers (~3m40s) and nothing is listening upstream yet.
+            # Treating it as "up but rejecting" failed the gate on every single
+            # agent deploy, which trained everyone to ignore the gate.
+            if status in (502, 503, 504):
+                await asyncio.sleep(5)
+                continue
             if status is not None:
                 return False, (
                     f"the agent answered HTTP {status} to the WebSocket upgrade — "
