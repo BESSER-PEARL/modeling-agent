@@ -280,9 +280,15 @@ Examples:
                 "asks for a comprehensive/complete system or names many entities.\n"
                 "2. What attributes does each class need? (be thorough)\n"
                 "3. What relationships connect these classes? What type (Association, "
-                "Composition, Aggregation, Inheritance)? What multiplicities? If the "
-                "same two classes need MORE THAN ONE relationship, plan a distinct, "
-                "meaningful name for each (e.g. 'worksIn' vs 'heads').\n"
+                "Composition, Aggregation, Inheritance)? For each one state the two "
+                "directions as SEPARATE sentences in this exact form — 'for one X "
+                "there are <n> Y' and 'for one Y there are <n> X' — quoting the "
+                "user's words for each. Do NOT use dash shorthand like 'X 1--* Y'; "
+                "writing one number and mirroring the other is how the ends get "
+                "swapped. If the same two classes need MORE THAN ONE relationship, "
+                "plan a distinct, meaningful name for each (e.g. 'worksIn' vs "
+                "'heads') — and if one fact is simply stated twice in the request "
+                "(from each side), that is ONE relationship, not two.\n"
                 "4. Are there any association classes needed (e.g., Enrollment between "
                 "Student and Course with grade)?\n"
                 "5. Is there any inheritance hierarchy that makes sense?\n"
@@ -340,6 +346,22 @@ Examples:
             # the expensive LLM-from-scratch fallback. Rewrite it into an
             # association (or coerce an unknown type to String).
             self._rewrite_class_typed_attributes(system_spec)
+
+            # Guard: a label naming BOTH ends ("contact / bookingsAsContact")
+            # becomes a name plus a sourceRole. A name with a space fails the
+            # editor's class-diagram quality check and blocks GUI generation.
+            # Must run before the merge, which uses the recovered source role
+            # to spot one fact stated from both sides.
+            self._split_dual_role_names(system_spec)
+
+            # Guard: one fact stated twice becomes one relationship. A request
+            # phrased from both sides ("a booking produces a bill" / "a bill is
+            # raised against a booking") makes the LLM emit two links for the
+            # same association, which lands as two foreign keys to the same
+            # partner and a create schema demanding two ids for one link.
+            # Must run before the naming/orientation guards below, which would
+            # otherwise paper over the duplicate with a "_1" suffix.
+            self._merge_redundant_parallel_associations(system_spec)
 
             # Guard: no two associations may share the same name. The LLM
             # sometimes names multiple relationships identically (e.g. two links
@@ -821,6 +843,222 @@ Examples:
     def _spec_rel_type(rel: Dict[str, Any]) -> str:
         value = rel.get("type")
         return value.strip().lower() if isinstance(value, str) else "association"
+
+    _SPEC_UNBOUNDED = 9999
+
+    @classmethod
+    def _parse_multiplicity(cls, value: Any) -> tuple:
+        """``'1'`` -> (1, 1); ``'0..1'`` -> (0, 1); ``'0..*'`` -> (0, UNBOUNDED).
+
+        Unparseable input falls back to (1, 1) — the schema default.
+        """
+        text = str(value).strip().replace(" ", "") if value is not None else ""
+        if not text:
+            return (1, 1)
+        star = cls._SPEC_UNBOUNDED
+
+        def _bound(token: str, default: int) -> int:
+            if token in ("*", "n", "many"):
+                return star
+            try:
+                return int(token)
+            except ValueError:
+                return default
+
+        if ".." in text:
+            low, _, high = text.partition("..")
+            return (_bound(low, 0), _bound(high, star))
+        single = _bound(text, 1)
+        return (single, single)
+
+    @classmethod
+    def _format_multiplicity(cls, lower: int, upper: int) -> str:
+        if lower == upper:
+            return "*" if upper >= cls._SPEC_UNBOUNDED else str(lower)
+        high = "*" if upper >= cls._SPEC_UNBOUNDED else str(upper)
+        return f"{lower}..{high}"
+
+    def _split_dual_role_names(self, system_spec: Dict[str, Any]) -> None:
+        """Split a ``"targetRole / sourceRole"`` label into its two roles.
+
+        Asked to state both directions of a relationship, the model volunteers
+        both role names in the single label field — ``"contact /
+        bookingsAsContact"``. That reaches the editor as an association-end
+        name, and a name containing a space fails the class-diagram quality
+        check outright ("Name cannot contain spaces"), blocking GUI
+        generation: observed live 2026-09-18 on every one of seven
+        relationships.
+
+        The second name is real information the schema never asked for, so it
+        is kept as ``sourceRole`` (which the orientation guard already swaps
+        alongside multiplicities) rather than thrown away — the duplicate
+        detector uses it to recognise one fact stated from both sides. Any
+        label that is not a valid identifier is coerced into one.
+
+        Mutates *system_spec* in place.
+        """
+        relationships = system_spec.get("relationships")
+        if not isinstance(relationships, list):
+            return
+        for rel in relationships:
+            if not isinstance(rel, dict):
+                continue
+            label = rel.get("name")
+            if not isinstance(label, str) or not label.strip():
+                continue
+            target_role, _, source_role = label.partition("/")
+            target_ident = self._to_identifier(target_role, pascal=False)
+            if target_ident:
+                rel["name"] = target_ident
+            elif _VALID_IDENTIFIER_RE.match(label.strip()) is None:
+                rel.pop("name", None)
+            if source_role.strip() and not rel.get("sourceRole"):
+                source_ident = self._to_identifier(source_role, pascal=False)
+                if source_ident:
+                    rel["sourceRole"] = source_ident
+            if label != rel.get("name"):
+                logger.info(
+                    "[ClassDiagram] Split relationship label %r into name=%r "
+                    "sourceRole=%r", label, rel.get("name"), rel.get("sourceRole"),
+                )
+
+    @classmethod
+    def _is_crosswise_reciprocal(cls, group: List[Dict[str, Any]]) -> bool:
+        """True when two opposite-facing links carry each other's role names.
+
+        ``Room--reservations/room-->ReservedRoom`` beside
+        ``ReservedRoom--room/reservations-->Room`` is one fact written from
+        each side: each link's target role is the other's source role. That
+        holds even when the two statements disagree on a bound (``1`` vs
+        ``1..*``), which is exactly when the mirror test fails and the
+        duplicate would otherwise survive.
+        """
+        if len(group) != 2:
+            return False
+        first, second = group
+        if first["source"] != second["target"] or first["target"] != second["source"]:
+            return False
+
+        def roles(rel):
+            name = rel.get("name")
+            source = rel.get("sourceRole")
+            if not isinstance(name, str) or not isinstance(source, str):
+                return None
+            return (name.strip().lower(), source.strip().lower())
+
+        a, b = roles(first), roles(second)
+        return bool(a and b and a == (b[1], b[0]))
+
+    def _merge_redundant_parallel_associations(self, system_spec: Dict[str, Any]) -> None:
+        """Collapse an association the LLM emitted more than once.
+
+        The generator restates one fact as two links whenever the request
+        phrases it from both sides ("a booking produces a bill" / "a bill is
+        raised against a booking"). Both survive into the model, so the class
+        gets two foreign keys to the same partner and the create schema demands
+        two ids for one relationship — observed live 2026-09-17, where ``Bill``
+        carried both ``booking_id`` and ``forBooking_id`` (each NOT NULL and
+        UNIQUE) and ``Room`` was linked to ``ReservedRoom`` twice, once as a
+        mandatory FK and once through a join table.
+
+        Genuinely distinct parallel links (``homeAddress``/``workAddress``) are
+        told apart by their names: a group whose relationships all carry
+        DISTINCT non-empty names is left alone. Any other group — one named and
+        one unnamed, all unnamed, or repeated names — is one fact stated twice
+        and is merged into a single relationship.
+
+        The survivor keeps the first occurrence's orientation and the first
+        non-empty name; each end's multiplicity becomes the union of the
+        group's (min lower bound, max upper bound), so the merged link admits
+        every instance either original admitted. Only plain Associations are
+        grouped: Composition/Aggregation carry existential semantics that must
+        not be dissolved, and Inheritance creates no ends.
+
+        Mutates *system_spec* in place; no-op for already-clean specs.
+        """
+        relationships = system_spec.get("relationships")
+        if not isinstance(relationships, list) or len(relationships) < 2:
+            return
+
+        groups: Dict[frozenset, List[Dict[str, Any]]] = {}
+        for rel in relationships:
+            if not isinstance(rel, dict):
+                continue
+            if self._spec_rel_type(rel) != "association":
+                continue
+            src, tgt = rel.get("source"), rel.get("target")
+            if not isinstance(src, str) or not isinstance(tgt, str):
+                continue
+            if not src or not tgt or src == tgt:
+                continue
+            groups.setdefault(frozenset((src, tgt)), []).append(rel)
+
+        doomed: List[int] = []
+        for pair, group in groups.items():
+            if len(group) < 2:
+                continue
+            names = [
+                rel["name"].strip()
+                for rel in group
+                if isinstance(rel.get("name"), str) and rel["name"].strip()
+            ]
+            all_distinctly_named = (
+                len(names) == len(group) and len(set(names)) == len(group)
+            )
+            # All distinctly named => genuinely different roles, keep them —
+            # unless the group is a RECIPROCAL pair whose ends mirror each
+            # other. A plain Association is already navigable both ways, so
+            # A->B plus B->A with mirrored multiplicities is one fact the
+            # request stated from each side, each side named after its own
+            # target: observed live 2026-09-18, Booking--bookingRooms-->
+            # BookingRoom alongside BookingRoom--booking-->Booking.
+            if all_distinctly_named and not self._is_crosswise_reciprocal(group):
+                # Kept on purpose, but say so: EF Core and SQLAlchemy both
+                # surface this ambiguity rather than resolving it silently, and
+                # downstream the extra link shows up only as a "_1" suffix that
+                # reads like a bug.
+                logger.info(
+                    "[ClassDiagram] Kept %d parallel %s-%s associations (%s) — "
+                    "distinct role names, so they are treated as different "
+                    "relationships, not one stated twice",
+                    len(group), *sorted(pair), ", ".join(names),
+                )
+                continue
+
+            survivor = group[0]
+            keep_src, keep_tgt = survivor["source"], survivor["target"]
+            src_low, src_up = self._parse_multiplicity(survivor.get("sourceMultiplicity"))
+            tgt_low, tgt_up = self._parse_multiplicity(survivor.get("targetMultiplicity"))
+
+            for rel in group[1:]:
+                a_low, a_up = self._parse_multiplicity(rel.get("sourceMultiplicity"))
+                b_low, b_up = self._parse_multiplicity(rel.get("targetMultiplicity"))
+                if rel["source"] != keep_src:
+                    # Stated in the opposite direction — line the ends up.
+                    a_low, a_up, b_low, b_up = b_low, b_up, a_low, a_up
+                src_low, src_up = min(src_low, a_low), max(src_up, a_up)
+                tgt_low, tgt_up = min(tgt_low, b_low), max(tgt_up, b_up)
+                doomed.append(id(rel))
+
+            survivor["sourceMultiplicity"] = self._format_multiplicity(src_low, src_up)
+            survivor["targetMultiplicity"] = self._format_multiplicity(tgt_low, tgt_up)
+            if not (isinstance(survivor.get("name"), str) and survivor["name"].strip()):
+                if names:
+                    survivor["name"] = names[0]
+            logger.info(
+                "[ClassDiagram] Merged %d duplicate %s-%s associations into one "
+                "(%s %s -- %s %s)",
+                len(group), keep_src, keep_tgt,
+                keep_src, survivor["sourceMultiplicity"],
+                survivor["targetMultiplicity"], keep_tgt,
+            )
+
+        if doomed:
+            dead = set(doomed)
+            system_spec["relationships"] = [
+                rel for rel in relationships
+                if not (isinstance(rel, dict) and id(rel) in dead)
+            ]
 
     @staticmethod
     def _reach_over_edges(edges: List[tuple], seeds: set) -> set:

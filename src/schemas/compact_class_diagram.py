@@ -65,8 +65,16 @@ class CompactRelationshipSpec(BaseModel):
         description="Kind: assoc=Association, comp=Composition, "
                     "aggr=Aggregation, inher=Inheritance, real=Realization, "
                     "dep=Dependency")
-    sm: str = Field(description="Source multiplicity (1, 0..1, 0..*, 1..*); '' for inheritance")
-    tm: str = Field(description="Target multiplicity; '' for inheritance")
+    how_many_TARGET_for_one_SOURCE: str = Field(description=(
+        "Take ONE <f> (the SOURCE). How many <t> (the TARGET) does it have? "
+        "Answer 1, 0..1, 0..* or 1..*, read off the user's own words. "
+        "'' for inheritance."))
+    how_many_SOURCE_for_one_TARGET: str = Field(description=(
+        "Now the opposite direction. Take ONE <t> (the TARGET). How many <f> "
+        "(the SOURCE) does it have? Answer this independently — it is usually "
+        "NOT the same as the other field, and copying or swapping the two is "
+        "the single most common mistake. 1, 0..1, 0..* or 1..*. "
+        "'' for inheritance."))
     l: str = Field(description="Relationship name; '' if none")
 
 
@@ -102,8 +110,11 @@ COMPACT_ENCODING_RULES = (
     "and return types are PLAIN type names — the '?' marker belongs to "
     "attribute entries only, never inside a method string.\n"
     "- rels: {f: source, t: target, k: assoc|comp|aggr|inher|real|dep, "
-    "sm/tm: multiplicities ('' for inheritance), l: name or ''}. For "
-    "inheritance f is the SUBCLASS and t the SUPERCLASS.\n"
+    "how_many_TARGET_for_one_SOURCE and how_many_SOURCE_for_one_TARGET: "
+    "answer each direction SEPARATELY ('' for inheritance), l: name or ''}. "
+    "l is ONE identifier naming the target end — never two names, never a "
+    "slash, never a space. For inheritance f is the SUBCLASS and t the "
+    "SUPERCLASS.\n"
     "- ocl: [] unless the user explicitly stated a business rule.\n"
     "Do not add prose or extra fields."
 )
@@ -256,8 +267,11 @@ def expand_compact_spec(compact: CompactSystemClassSpec) -> SystemClassSpec:
             type=_REL_KIND.get(r.k, "Association"),
             source=r.f,
             target=r.t,
-            sourceMultiplicity=r.sm.strip() or "1",
-            targetMultiplicity=r.tm.strip() or ("1" if r.k == "inher" else "*"),
+            # UML writes a multiplicity at the end it counts: the source end
+            # says how many sources exist per ONE target.
+            sourceMultiplicity=r.how_many_SOURCE_for_one_TARGET.strip() or "1",
+            targetMultiplicity=(r.how_many_TARGET_for_one_SOURCE.strip()
+                                or ("1" if r.k == "inher" else "*")),
             name=r.l.strip() or None,
         ))
 

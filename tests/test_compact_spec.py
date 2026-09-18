@@ -139,9 +139,10 @@ def _compact_sample() -> CompactSystemClassSpec:
         ],
         rels=[
             CompactRelationshipSpec(f="Book", t="Media", k="inher",
-                                    sm="", tm="", l=""),
+                                    how_many_TARGET_for_one_SOURCE="", how_many_SOURCE_for_one_TARGET="", l=""),
+            # One Library holds many Books; one Book sits in one Library.
             CompactRelationshipSpec(f="Library", t="Book", k="comp",
-                                    sm="1", tm="*", l="catalog"),
+                                    how_many_TARGET_for_one_SOURCE="*", how_many_SOURCE_for_one_TARGET="1", l="catalog"),
         ],
         ocl=["context Book inv positivePrice: self.price > 0", "", "not an invariant"],
     )
