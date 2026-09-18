@@ -24,6 +24,7 @@ class AttributeSpec(BaseModel):
     isDerived: bool = Field(default=False, description="Whether this is a derived/computed attribute.")
     defaultValue: Optional[str] = Field(default=None, description="Default value for the attribute.")
     isOptional: bool = Field(default=False, description="Whether this attribute is optional/nullable.")
+    isExternalId: bool = Field(default=False, description="Whether this attribute is the natural/external identifier the user says identifies the object (room number, email, ISBN) — its value must be unique.")
 
 
 class MethodSpec(BaseModel):

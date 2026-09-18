@@ -47,7 +47,9 @@ class CompactClassSpec(BaseModel):
     a: List[str] = Field(description=(
         "Attributes, ONE string each: 'name: type'. Optional decorations: "
         "visibility prefix '+','-','#','~'; '/' prefix for derived; "
-        "'= default' suffix for a default value; '?' suffix if optional. "
+        "'= default' suffix for a default value; '?' suffix if optional; "
+        "'!' suffix if it is the natural/external identifier the user says "
+        "identifies the object (unique — e.g. 'roomNumber: str!'). "
         "For an enumeration class the entries are BARE literal names "
         "(UPPER_CASE, no type)."))
     m: List[str] = Field(description=(
@@ -103,7 +105,9 @@ COMPACT_ENCODING_RULES = (
     "- attribute string: 'name: type' (types: str, int, float, bool, "
     "datetime, date, time, or an enumeration name). Decorations when "
     "needed: visibility prefix '+'/'-'/'#'/'~', '/' prefix for derived, "
-    "'= value' suffix for defaults, '?' suffix for optional. Enumeration "
+    "'= value' suffix for defaults, '?' suffix for optional, '!' suffix for "
+    "a natural/external identifier (isExternalId — 'roomNumber: str!' when "
+    "every room is identified by its room number). Enumeration "
     "classes list BARE literal names in a (UPPER_CASE, no type).\n"
     "- method string: 'name(param: type, ...) -> returnType' — omit "
     "'-> ...' when it returns nothing; '()' for no parameters. Parameter "
@@ -139,11 +143,12 @@ _OCL_RE = re.compile(r"context\s+(\w+)\s+inv\s*(\w*)\s*:", re.IGNORECASE)
 
 
 def _parse_attribute(raw: str, is_enum_class: bool) -> AttributeSpec:
-    """'[vis][/]name: type [= default] [?]' → AttributeSpec. Never raises."""
+    """'[vis][/]name: type [= default] [?] [!]' → AttributeSpec. Never raises."""
     s = (raw or "").strip()
     visibility = "public"
     derived = False
     optional = False
+    external_id = False
     default = None
 
     if s[:1] in _VISIBILITY:
@@ -155,6 +160,9 @@ def _parse_attribute(raw: str, is_enum_class: bool) -> AttributeSpec:
     if s.endswith("?"):
         optional = True
         s = s[:-1].strip()
+    if s.endswith("!"):
+        external_id = True
+        s = s[:-1].strip()
     if "=" in s:
         s, default = s.split("=", 1)
         default = default.strip() or None
@@ -164,8 +172,11 @@ def _parse_attribute(raw: str, is_enum_class: bool) -> AttributeSpec:
         name, type_ = s.split(":", 1)
         name = name.strip()
         type_ = type_.strip() or None
-        # 'name: str?' — optional marker glued to the type instead of the
-        # entry ('str?' is not a BUML type).
+        # 'name: str?' / 'name: str!' — marker glued to the type instead of
+        # the entry ('str?' is not a BUML type).
+        if type_ and type_.endswith("!"):
+            external_id = True
+            type_ = type_.rstrip("!").strip() or None
         if type_ and type_.endswith("?"):
             optional = True
             type_ = type_.rstrip("?").strip() or None
@@ -181,6 +192,7 @@ def _parse_attribute(raw: str, is_enum_class: bool) -> AttributeSpec:
     return AttributeSpec(
         name=name[:50], type=type_, visibility=visibility,
         isDerived=derived, defaultValue=default, isOptional=optional,
+        isExternalId=external_id,
     )
 
 
