@@ -78,6 +78,10 @@ class CompactRelationshipSpec(BaseModel):
         "the single most common mistake. 1, 0..1, 0..* or 1..*. "
         "'' for inheritance."))
     l: str = Field(description="Relationship name; '' if none")
+    ac: str = Field(default="", description=(
+        "For k=assoc only: name of the class in classes carrying per-link "
+        "attributes (e.g. Enrollment.grade on Student-Course). Attach it once "
+        "to this association, without extra links to its endpoints; '' otherwise."))
 
 
 class CompactSystemClassSpec(BaseModel):
@@ -118,7 +122,10 @@ COMPACT_ENCODING_RULES = (
     "answer each direction SEPARATELY ('' for inheritance), l: name or ''}. "
     "l is ONE identifier naming the target end — never two names, never a "
     "slash, never a space. For inheritance f is the SUBCLASS and t the "
-    "SUPERCLASS.\n"
+    "SUPERCLASS. ac: association-class name or ''; when values belong to a "
+    "pairing, declare their class in classes and attach it with ac on the "
+    "direct assoc between the paired classes. Do not add two ordinary "
+    "relationships from that association class to the endpoints.\n"
     "- ocl: [] unless the user explicitly stated a business rule.\n"
     "Do not add prose or extra fields."
 )
@@ -285,6 +292,7 @@ def expand_compact_spec(compact: CompactSystemClassSpec) -> SystemClassSpec:
             targetMultiplicity=(r.how_many_TARGET_for_one_SOURCE.strip()
                                 or ("1" if r.k == "inher" else "*")),
             name=r.l.strip() or None,
+            associationClass=r.ac.strip() or None,
         ))
 
     constraints: List[OCLConstraintSpec] = []

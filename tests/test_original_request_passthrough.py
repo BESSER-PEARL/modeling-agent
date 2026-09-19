@@ -53,6 +53,13 @@ def test_spec_reaches_the_run_verbatim():
     assert "awaiting payment, confirmed, or cancelled" in instructions
     assert "not arrived, checked in, or checked out" in instructions
     assert "combined capacity of the rooms booked" in instructions
+    # Machine framing must not make an accepted boundary-sized spec invalid.
+    from agent_config import MAX_USER_MESSAGE_CHARS
+    from utilities.message_limits import UserMessageTooLong
+    full = SPEC + "x" * (MAX_USER_MESSAGE_CHARS - len(SPEC))
+    assert _payload(original_request=full)["instructions"] == full
+    with pytest.raises(UserMessageTooLong, match="64,000"):
+        _payload(original_request=full + "x")
 
 
 def test_summary_is_kept_alongside_it():
@@ -71,8 +78,7 @@ def test_the_spec_is_marked_as_the_authority():
 
 
 def test_no_original_request_leaves_the_payload_unchanged():
-    """Short asks ('make a hotel app') never reach the stash, so the old
-    single-summary payload must still be produced exactly."""
+    """Absent original context keeps the single-summary payload unchanged."""
     assert _payload()["instructions"] == SUMMARY
     assert _payload(original_request="   ")["instructions"] == SUMMARY
 
@@ -154,13 +160,134 @@ def test_only_class_diagram_creation_stashes():
     assert original_request_to_stash(_Req(FULL_SPEC), "modify_model", "ClassDiagram") is None
 
 
-def test_short_asks_are_not_stashed():
-    assert original_request_to_stash(_Req("make a hotel app"), "complete_system", "ClassDiagram") is None
+def test_concise_specs_are_preserved_but_empty_asks_are_not():
+    assert original_request_to_stash(_Req("make a hotel app"), "complete_system", "ClassDiagram") == "make a hotel app"
     assert original_request_to_stash(_Req(""), "complete_system", "ClassDiagram") is None
 
 
 def test_missing_message_attribute_is_tolerated():
     assert original_request_to_stash(object(), "complete_system", "ClassDiagram") is None
+
+
+def test_original_context_is_project_scoped_and_direct_requests_are_frozen(monkeypatch):
+    from src.handlers import generation_handler as generation
+    from session_keys import PENDING_SMART_GEN_ORIGINAL_REQUEST
+    from utilities.original_request import remember_original_request, original_request_for_project
+
+    class Session:
+        project_id = "hotel"
+
+        def __init__(self):
+            self.data = {}
+
+        def get(self, key):
+            return self.data.get(key)
+
+        def set(self, key, value):
+            self.data[key] = value
+
+    session = Session()
+    monkeypatch.setattr(generation, "_active_project_id", lambda s: s.project_id)
+    remember_original_request(session, FULL_SPEC, "hotel")
+    assert original_request_for_project(session, None) == ""
+    assert original_request_for_project(session, "other") == ""
+    generation._build_smart_gen_confirmation(session, SUMMARY, "openai", user_message="generate application")
+    assert session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST) == FULL_SPEC
+
+    # A new/imported project cannot inherit the previous project's authority.
+    session.project_id = "imported-library"
+    generation._build_smart_gen_confirmation(session, "Generate this library", "openai", user_message="generate application")
+    assert session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST) == ""
+    direct = "Generate this imported library. Anonymous users can read, but only owners can edit."
+    generation._build_smart_gen_confirmation(session, "Make a library app", "openai", user_message=direct)
+    assert session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST) == direct
+    assert original_request_for_project(session, "imported-library") == direct
+    assert FULL_SPEC not in session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST)
+
+    # A later global update must not mutate the already-confirmable request.
+    remember_original_request(session, "An unrelated new request", "imported-library")
+    assert session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST) == direct
+    assert generation._pending_smart_gen_project_changed(session) is False
+    session.project_id = "another-project"
+    assert generation._pending_smart_gen_project_changed(session) is True
+
+
+def test_same_project_create_gui_confirm_keeps_raw_spec_and_followups(monkeypatch):
+    from src.handlers import generation_handler as generation
+    from session_keys import PENDING_SMART_GEN_ORIGINAL_REQUEST
+    from utilities.original_request import remember_original_request, original_request_for_project
+
+    class Session:
+        def __init__(self):
+            self.data = {}
+
+        def get(self, key):
+            return self.data.get(key)
+
+        def set(self, key, value):
+            self.data[key] = value
+
+    session = Session()
+    monkeypatch.setattr(generation, "_active_project_id", lambda s: "hotel")
+    remember_original_request(session, FULL_SPEC, "hotel")
+    assert original_request_to_stash(_Req("Generate GUI screens"), "complete_system", "GUINoCodeDiagram") is None
+    generation._build_smart_gen_confirmation(session, SUMMARY, "openai", reason_prefix="Model rebuilt and ready.")
+    assert session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST) == FULL_SPEC
+    change = "Use SQLite, FastAPI and React."
+    combined = generation._original_for_smart_generation(session, change)
+    assert FULL_SPEC in combined and change in combined
+    assert generation._original_for_smart_generation(session, change) == combined
+    assert generation._original_for_smart_generation(session, "yes") == combined
+    assert generation._original_for_smart_generation(session, "yes!") == combined
+    assert original_request_for_project(session, "hotel") == combined
+    from agent_config import MAX_USER_MESSAGE_CHARS
+    from utilities.message_limits import UserMessageTooLong
+    maximum = "x" * MAX_USER_MESSAGE_CHARS
+    remember_original_request(session, maximum, "hotel")
+    with pytest.raises(UserMessageTooLong, match="combined original specification"):
+        generation._original_for_smart_generation(session, "Also enforce phone validation.")
+    assert original_request_for_project(session, "hotel") == maximum
+
+    # Exercise the real modeling dispatch after confirmation / mismatch resume,
+    # where request.message may have been reconstructed from a planner summary.
+    from unittest.mock import MagicMock
+    import execution.model_operations as modeling
+    from protocol.types import AssistantRequest, WorkspaceContext
+    from session_keys import MISMATCH_REGEN_PENDING
+    from tests.conftest import FakeSession
+    handler = MagicMock()
+    handler.generate_complete_system.return_value = {"action": "assistant_message", "message": "captured"}
+    factory = MagicMock()
+    factory.get_handler.return_value = handler
+    monkeypatch.setattr(modeling.ctx, "diagram_factory", factory)
+    monkeypatch.setattr(modeling, "reply_progress", lambda *args: None)
+    monkeypatch.setattr(modeling, "reply_message", lambda *args: None)
+    monkeypatch.setattr(modeling, "resolve_target_model", lambda *args: None)
+    monkeypatch.setattr(modeling, "build_workspace_context_block", lambda *args: "")
+    for project_id, confirming, expected in (
+        ("hotel", True, FULL_SPEC),
+        ("hotel", False, FULL_SPEC),
+        ("other", True, PLANNER_REWRITE),
+        (None, True, PLANNER_REWRITE),
+    ):
+        resumed = FakeSession()
+        remember_original_request(resumed, FULL_SPEC, "hotel")
+        if not confirming:
+            resumed.set(MISMATCH_REGEN_PENDING, PLANNER_REWRITE)
+        request = AssistantRequest(
+            message=PLANNER_REWRITE if project_id == "hotel" else "replace",
+            context=WorkspaceContext(project_snapshot={"id": project_id, "diagrams": {}}),
+        )
+        modeling.execute_model_operation(
+            resumed, request,
+            {"diagramType": "ClassDiagram", "mode": "complete_system", "request": PLANNER_REWRITE},
+            "complete_system", _skip_existing_check=confirming,
+        )
+        call = handler.generate_complete_system.call_args
+        assert call.kwargs["raw_request"] == expected
+        assert expected in call.args[0]
+        if expected != FULL_SPEC:
+            assert FULL_SPEC not in call.args[0]
 
 
 # ----------------------------------------------------------------------

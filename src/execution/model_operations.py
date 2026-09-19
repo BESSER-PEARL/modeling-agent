@@ -26,6 +26,9 @@ from utilities.model_resolution import (
 from utilities.workspace_context import build_workspace_context_block, record_session_action
 from utilities.class_metadata import extract_class_metadata
 from utilities.model_context import is_diagram_nontrivial
+from utilities.original_request import (
+    original_request_for_project, remember_original_request, request_project_id,
+)
 from suggestions import get_suggested_actions, get_artifact_label, get_post_spec_suggestions
 from session_keys import (
     LAST_EXECUTED_DIAGRAM_TYPE,
@@ -33,18 +36,12 @@ from session_keys import (
     MISMATCH_REGEN_PENDING,
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
-    ORIGINAL_APP_REQUEST,
     PENDING_SMART_GEN_INSTRUCTIONS,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
 )
 
 logger = logging.getLogger(__name__)
-
-# Below this, a request is a one-liner ('make a hotel app'), not a spec worth
-# carrying verbatim into the run.
-_ORIGINAL_REQUEST_MIN_CHARS = 200
-
 
 def original_request_to_stash(request, operation_mode, target_diagram_type):
     """The user's verbatim app description, or None.
@@ -60,9 +57,9 @@ def original_request_to_stash(request, operation_mode, target_diagram_type):
     if operation_mode != "complete_system" or target_diagram_type != "ClassDiagram":
         return None
     message = (getattr(request, "message", "") or "").strip()
-    if len(message) < _ORIGINAL_REQUEST_MIN_CHARS:
-        return None
-    return message
+    # A concise specification is still authoritative; length is not evidence
+    # that the user's own requirements can safely be replaced by a summary.
+    return message or None
 
 
 # ------------------------------------------------------------------
@@ -524,8 +521,15 @@ def execute_model_operation(
     spec_to_stash = original_request_to_stash(
         request, operation_mode, target_diagram_type,
     )
-    if spec_to_stash:
-        session.set(ORIGINAL_APP_REQUEST, spec_to_stash)
+    resuming_spec = _skip_existing_check or _matches_regen_prompt(session, request)
+    if resuming_spec and operation_mode == "complete_system" and target_diagram_type == "ClassDiagram":
+        # Resume requests may contain only the planner summary or the mismatch
+        # button's synthesized prompt. Reuse only a proven same-project source.
+        spec_to_stash = original_request_for_project(session, request_project_id(request)) or operation_request
+    elif spec_to_stash and not resuming_spec:
+        # Confirmation resumes and mismatch buttons can carry synthesized
+        # sub-prompts. They must not overwrite the original create request.
+        remember_original_request(session, spec_to_stash, request_project_id(request))
 
     # ── Existing-model guard for complete_system ─────────────────────────
     if (
@@ -840,7 +844,7 @@ def execute_model_operation(
                     modeling_prompt,
                     existing_model=target_model,
                     class_metadata=gui_class_metadata,
-                    raw_request=operation_request,
+                    raw_request=spec_to_stash or operation_request,
                 )
     except Exception as exc:
         logger.error(f"❌ [ModelOp] Handler exception: {exc}", exc_info=True)

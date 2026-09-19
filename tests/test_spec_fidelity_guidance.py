@@ -149,7 +149,10 @@ def test_prompt_covers_attributes_that_belong_to_the_relationship():
 def test_link_rule_carries_the_agreed_price_example():
     assert "ReservedRoom" in PROMPT
     assert "agreedPrice" in PROMPT
-    assert "Booking 1 -- 0..* ReservedRoom 0..* -- 1 Room" in PROMPT
+    assert 'Booking--Room with associationClass="ReservedRoom"' in PROMPT
+    assert "ReservedRoom.extraCharges" in PROMPT
+    assert "Do NOT replace it with two ordinary links" in PROMPT
+    assert "Booking 1 -- 0..* ReservedRoom 0..* -- 1 Room" not in PROMPT
 
 
 def test_link_rule_explains_why_neither_class_works():

@@ -113,6 +113,18 @@ def test_smart_cost_cap_suggests_retry():
     assert result.get("suggestedActions") == ["Retry with refined instructions"]
 
 
+@pytest.mark.parametrize("metadata,expected,unexpected", [
+    ({"incomplete": True, "blockerCount": 19}, "19 unresolved blockers", "stopped early"),
+    ({"blockerCount": 1}, "1 unresolved blocker;", "stopped early"),
+    ({"incomplete": True}, "stopped early", "finished successfully"),
+])
+def test_smart_partial_output_does_not_claim_success(metadata, expected, unexpected):
+    result = _handle_frontend_event(_smart_event(True, metadata), None)
+    assert expected in result["message"]
+    assert unexpected not in result["message"]
+    assert "incomplete" in result["message"]
+
+
 def test_smart_invalid_key_names_the_problem():
     result = _handle_frontend_event(
         _smart_event(False, {"errorCode": "INVALID_KEY"}),

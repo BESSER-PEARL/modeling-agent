@@ -189,8 +189,9 @@ class TestUniquenessIsExternalId:
 
 class TestLinkClassExtraAmounts:
     def test_extra_charges_are_a_link_attribute(self):
-        assert "ReservedRoom.extraCharges" in PROMPT
+        assert "associationClass" in PROMPT
         low = PROMPT.lower()
-        assert "any extra charges recorded against those rooms" in low
-        assert "discounts applied to that line" in low
-        assert "never dropped" in low
+        assert "agreed price and extra charges" in low
+        assert "all those per-link attributes" in low
+        assert "do not drop amounts" in low
+        assert "do not replace it with two ordinary links" in low

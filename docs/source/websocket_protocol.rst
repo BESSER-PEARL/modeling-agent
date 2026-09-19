@@ -365,10 +365,25 @@ Injects a full diagram (all elements + relationships) at once.
    :doc:`end_to_end_flow`.
 
    Class-diagram ``systemSpec`` objects may also carry a ``constraints`` list
-   of OCL invariants. The agent captures and emits them, but neither the
-   frontend converter nor the editor's class-diagram JSON has a slot for them
-   yet, so they reach the boundary and are **not persisted**. Frontend support
-   is the remaining follow-up.
+   of OCL invariants. The frontend persists these as ``ClassOCLConstraint``
+   elements with ``ClassOCLLink`` attachments to their context classes. A
+   persisted constraint is not necessarily enforced by a target generator;
+   unsupported rules remain work for the spec-driven agent.
+
+   An ``Association`` may carry ``associationClass: "Enrollment"``. Declare
+   ``Enrollment`` in ``classes`` with the attributes belonging to the pairing,
+   and attach it to exactly one direct relationship (for example
+   ``Student``--``Course``). The frontend emits a ``ClassLinkRel`` whose source
+   is the attribute class and whose target is that relationship's ID. BESSER
+   converts this to a native ``AssociationClass``; no two extra ordinary
+   endpoint associations are needed. Compact LLM output uses ``ac`` for the
+   same attachment, expanded before this message is sent. Missing or null
+   ``associationClass`` preserves the ordinary relationship behavior.
+
+   This attachment is supported by complete-system generation; the existing
+   incremental modification protocol does not yet expose it. Deploy the
+   matching frontend converter with the agent schema change: older converters
+   ignore this field and lose the native attachment.
 
 modify_model (single)
 ~~~~~~~~~~~~~~~~~~~~~

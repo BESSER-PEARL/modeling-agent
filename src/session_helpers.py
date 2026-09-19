@@ -21,7 +21,6 @@ from handlers.generation_handler import (
     detect_generator_type,
 )
 from agent_config import (
-    MAX_USER_MESSAGE_CHARS,
     STREAM_BUFFER_THRESHOLD,
     LLM_TEXT_TEMPERATURE,
     LLM_MAX_TOKENS_TEXT,
@@ -49,23 +48,7 @@ logger = logging.getLogger(__name__)
 def get_user_message(session: Session) -> str:
     """Extract normalized message using protocol adapters."""
     request = parse_assistant_request(session)
-    message = request.message or ""
-    if len(message) > MAX_USER_MESSAGE_CHARS:
-        original_len = len(message)
-        logger.warning(
-            f"User message truncated from {original_len} to {MAX_USER_MESSAGE_CHARS} chars"
-        )
-        message = message[:MAX_USER_MESSAGE_CHARS] + "\u2026[truncated]"
-        reply_message(
-            session,
-            f"Your message was quite long ({original_len:,} characters) and has been "
-            f"trimmed to {MAX_USER_MESSAGE_CHARS:,} characters. If important details "
-            "were near the end, consider splitting your request into smaller parts.",
-            # Mid-turn notice, not the turn's reply \u2014 must not claim the
-            # turn's single telemetry event before the real handler runs.
-            telemetry_exempt=True,
-        )
-    return message
+    return request.message or ""
 
 
 def get_diagram_type(session: Session, default: str = 'ClassDiagram') -> str:

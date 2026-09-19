@@ -8,19 +8,12 @@ from baf.library.transition.events.base_events import ReceiveJSONEvent
 
 from .types import AssistantRequest, FileAttachment, WorkspaceContext, SUPPORTED_DIAGRAM_TYPES
 from session_keys import PARSED_ASSISTANT_REQUEST, PARSED_REQUEST_EVENT_ID, VOICE_CONTEXT
-from agent_config import MAX_USER_MESSAGE_CHARS
+from utilities.message_limits import validate_message_length
 
 
 def _cap_user_message(msg: str) -> str:
-    """Hard-cap an inbound user message at the protocol boundary (#30).
-
-    MAX_USER_MESSAGE_CHARS was only enforced in an empty-message fallback, so a
-    huge paste reached memory and every LLM prompt untruncated. Cap it here so
-    all downstream consumers (which read request.message directly) are bounded.
-    """
-    if isinstance(msg, str) and len(msg) > MAX_USER_MESSAGE_CHARS:
-        return msg[:MAX_USER_MESSAGE_CHARS] + "…[truncated]"
-    return msg
+    """Accept the full request or reject it; a partial spec is not safe input."""
+    return validate_message_length(msg)
 
 logger = logging.getLogger(__name__)
 

@@ -59,6 +59,13 @@ class RelationshipSpec(BaseModel):
     sourceMultiplicity: str = Field(default="1", description="Source multiplicity: 1, 0..1, 0..*, or 1..*")
     targetMultiplicity: str = Field(default="*", description="Target multiplicity: 1, 0..1, 0..*, or 1..*")
     name: Optional[str] = Field(default=None, description="Optional relationship name")
+    associationClass: Optional[str] = Field(
+        default=None,
+        description="For an Association with per-link attributes, the name of the "
+                    "class in classes that owns those attributes. Attach that class "
+                    "to this association ONLY, not through two extra associations. "
+                    "Null for an ordinary relationship.",
+    )
 
     @field_validator("sourceMultiplicity", "targetMultiplicity", mode="before")
     @classmethod
@@ -113,6 +120,26 @@ class SystemClassSpec(BaseModel):
                     "(uniqueness, multiplicity-beyond-cardinality, value ranges). "
                     "Leave EMPTY when the user stated no such rule — never invent constraints.",
     )
+
+    @model_validator(mode="after")
+    def validate_association_classes(self) -> "SystemClassSpec":
+        classes = {cls.className: cls for cls in self.classes}
+        attached = set()
+        for rel in self.relationships:
+            name = rel.associationClass
+            if name is None:
+                continue
+            if rel.type != "Association":
+                raise ValueError("associationClass must attach to an Association")
+            for referenced in (rel.source, rel.target, name):
+                if referenced not in classes or classes[referenced].isEnumeration:
+                    raise ValueError(f"Association class references unknown/non-class {referenced!r}")
+            if name in (rel.source, rel.target) or classes[name].isAbstract:
+                raise ValueError("associationClass must be a separate, concrete class")
+            if name in attached:
+                raise ValueError(f"Association class {name!r} must attach to exactly one association")
+            attached.add(name)
+        return self
 
 
 # -- Modification schemas --

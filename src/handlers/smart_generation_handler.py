@@ -30,6 +30,8 @@ import logging
 from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, Field
+from agent_config import MAX_USER_MESSAGE_CHARS
+from utilities.message_limits import validate_message_length
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +179,7 @@ def build_trigger_smart_generator_payload(
         raise ValueError("smart classification has no refined_instructions")
 
     original = (original_request or "").strip()
+    validate_message_length(original, label="The original specification")
     if original and original not in instructions:
         instructions = (
             f"{instructions}\n\n"
@@ -185,6 +188,11 @@ def build_trigger_smart_generator_payload(
             "differs, this text wins.\n\n"
             f"{original}"
         )
+    if len(instructions) > MAX_USER_MESSAGE_CHARS and original:
+        # The machine summary is optional; the accepted user specification is
+        # not. Do not reject or clip a 64k spec just because framing was added.
+        instructions = original
+    validate_message_length(instructions, label="The generation instructions")
 
     provider = classification.provider or "anthropic"
     llm_model = _DEFAULT_SMART_GEN_MODEL_BY_PROVIDER.get(provider, "claude-sonnet-4-6")

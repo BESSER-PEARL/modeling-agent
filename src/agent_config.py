@@ -8,7 +8,7 @@ instead of being scattered across modules.
 MAX_TABS = 5
 
 # ── Message handling ──────────────────────────────────────────────────────
-MAX_USER_MESSAGE_CHARS = 12_000
+MAX_USER_MESSAGE_CHARS = 64_000
 
 # ── Session cleanup ──────────────────────────────────────────────────────
 GRACE_PERIOD_SECONDS = 300

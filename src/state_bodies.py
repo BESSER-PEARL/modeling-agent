@@ -8,6 +8,7 @@ Call :func:`register_all` from ``modeling_agent.py`` after states
 and intents have been created.
 """
 
+import json
 import logging
 import re
 from typing import Any, Dict, Optional
@@ -20,6 +21,7 @@ import agent_context as ctx
 from model_config import MODEL_GENERATION_SMALL
 from protocol.adapters import parse_assistant_request
 from protocol.types import AssistantRequest
+from utilities.message_limits import UserMessageTooLong
 from memory import get_memory, memory_session_key
 from session_helpers import (
     get_user_message,
@@ -46,7 +48,6 @@ from handlers.generation_handler import (
 )
 from orchestrator import determine_target_diagram_type
 from utilities.model_context import detailed_model_summary, is_diagram_nontrivial
-from utilities.model_context import detailed_model_summary
 from utilities.user_metamodel import (
     build_user_profile_help_prompt,
     format_user_metamodel_guide,
@@ -84,7 +85,9 @@ logger = logging.getLogger(__name__)
 def _ensure_unified_classification(session: Session) -> bool:
     """Priority-0 transition hook: populates the per-message classifier cache.
 
-    ALWAYS returns False. The purpose is the side effect: one LLM call
+    Normally returns False. Oversized messages return True to enter the
+    current state's preamble, which reports the rejection without an LLM call.
+    The normal purpose is the side effect: one LLM call
     per message that sets ``session[UNIFIED_CLASSIFICATION]``, so the
     subsequent ``json_intent_matches`` transitions read our classifier's
     verdict instead of BAF's description-based one.
@@ -115,6 +118,8 @@ def _ensure_unified_classification(session: Session) -> bool:
             classification.generator_type,
             classification.reason,
         )
+    except UserMessageTooLong:
+        return True
     except Exception:
         logger.exception("unified classifier hook failed; falling back to BAF")
     return False
@@ -130,7 +135,13 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     # Reconnect recovery: the frontend re-requests its last completed reply after
     # a mid-generation WebSocket reconnect dropped it. Re-send the buffered reply
     # and stop — never re-run generation or consume a pending flow.
-    _replay_req = parse_assistant_request(session)
+    try:
+        _replay_req = parse_assistant_request(session)
+    except UserMessageTooLong as error:
+        # reply_message parses the request again; use the wire envelope here
+        # so rejection itself cannot recurse into the same parsing error.
+        session.reply(json.dumps({"action": "assistant_message", "message": str(error), "isError": True}))
+        return None
     if getattr(_replay_req, "action", None) == "replay_last_response":
         replay_last_reply(session, _replay_req)
         return None
@@ -1029,6 +1040,8 @@ def generation_body(session: Session):
 
     try:
         response_payload = handle_generation_request(session, request)
+    except UserMessageTooLong as error:
+        response_payload = {"action": "assistant_message", "message": str(error), "isError": True}
     except Exception as error:
         logger.error(f"❌ Error in generation_body: {error}")
         response_payload = {
@@ -1179,12 +1192,12 @@ def add_unified_transitions(state, intents_map, fallback_state, generation_state
     # 0. Unified classifier hook — populates the per-message cache so
     #    subsequent ``json_intent_matches`` conditions read from our
     #    classifier's verdict instead of BAF's description-based one.
-    #    The hook NEVER transitions (always returns False); it's a
-    #    pure side-effect condition. One LLM call per message,
+    #    Normally a pure side-effect condition. Oversized input self-transitions
+    #    into the preamble's explicit rejection. One LLM call per valid message,
     #    regardless of how many transitions we have.
     state.when_event(ReceiveJSONEvent()) \
         .with_condition(_ensure_unified_classification) \
-        .go_to(state)  # unreachable — hook always returns False
+        .go_to(state)
 
     # 1. Intent-matched JSON transitions (highest priority for user messages)
     for intent, dest_state in intents_map.items():

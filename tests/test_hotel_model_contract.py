@@ -21,13 +21,18 @@ Two calibration targets:
    ``hotel-booking/2-validation-and-business-rules/low-code-model/model.json``,
    stored under ``tests/fixtures/``) must validate with zero warnings. It pins
    the checks themselves against a known-good model — ``ReservedRoom``
-   included, as the association class the agent's spec cannot yet express.
+   included, as a native association class.
+
+The native case also exercises both wire schemas, the REAL TypeScript editor
+converter, BUML conversion, and SQLite/FastAPI HTTP creation. It requires the
+sibling frontend checkout with its installed Node dependencies.
 
 The BESSER side runs in ``besser_contract_probe.py`` (its own interpreter, the
 workspace sibling ``../BESSER`` first on the path when present); the probe
 skips these tests when the BESSER it finds lacks the checks.
 """
 import json
+from copy import deepcopy
 import os
 import subprocess
 import sys
@@ -212,3 +217,72 @@ def test_reference_model_validates_with_zero_warnings(reference_report):
         "ClassLinkRel must round-trip into an AssociationClass"
     assert reference_report["classes"]["Booking"]["ends"]["rooms"][:2] == ["Room", 1], \
         "'at least one room' lives on the direct Booking-Room association"
+
+
+_NATIVE_COMPACT = {
+    "name": "HotelBooking", "ocl": [],
+    "classes": [
+        {"n": "Booking", "a": ["number: int!"], "m": [], "k": ""},
+        {"n": "Room", "a": ["roomNumber: str!"], "m": [], "k": ""},
+        {"n": "Guest", "a": ["name: str"], "m": [], "k": ""},
+        {"n": "ReservedRoom", "a": ["agreedPrice: float", "extraCharges: float"], "m": [], "k": ""},
+    ],
+    "rels": [
+        {"f": "Booking", "t": "Room", "k": "assoc", "l": "rooms", "ac": "ReservedRoom",
+         "how_many_SOURCE_for_one_TARGET": "0..*", "how_many_TARGET_for_one_SOURCE": "1..*"},
+        {"f": "Booking", "t": "Guest", "k": "assoc", "l": "guests",
+         "how_many_SOURCE_for_one_TARGET": "0..*", "how_many_TARGET_for_one_SOURCE": "1..*"},
+    ],
+}
+
+
+@pytest.mark.parametrize("compact", [True, False])
+def test_native_agent_spec_creates_attributed_links_without_relaxing_bounds(monkeypatch, compact):
+    import diagram_handlers.types.class_diagram_handler as module
+    from schemas.compact_class_diagram import CompactSystemClassSpec, expand_compact_spec
+
+    response = CompactSystemClassSpec(**_NATIVE_COMPACT)
+    if not compact:
+        response = expand_compact_spec(response)
+    monkeypatch.setattr(module, "COMPACT_SPEC_ENABLED", compact)
+    handler = ClassDiagramHandler(_CannedLLM(response.model_dump_json()))
+    result = handler.generate_complete_system(_PROSE, raw_request=_PROSE)
+    assert result["action"] == "inject_complete_system"
+    spec = result["systemSpec"]
+    assert _pair(spec, "Booking", "Room")["associationClass"] == "ReservedRoom"
+    assert _end(_pair(spec, "Booking", "Room"), "Room") == "1..*"
+    assert spec["constraints"] == [], "native links need no construction-cycle relaxation"
+    report = _besser_report("native", spec)
+    assert report["validate"] == {"success": True, "errors": [], "warnings": []}
+    assert report["classes"]["ReservedRoom"]["kind"] == "AssociationClass"
+    assert report["classes"]["Booking"]["ends"]["rooms"][:2] == ["Room", 1]
+    assert report["http"]["links"] == [[100.0, 12.5], [200.0, 0.0]]
+    assert report["http"]["empty_rooms_status"] == 400
+    assert report["http"]["duplicate_room_status"] == 409
+
+
+def test_native_attachment_survives_guards_and_rejects_invalid_references():
+    from pydantic import ValidationError
+    from schemas.class_diagram import SystemClassSpec
+    from schemas.compact_class_diagram import CompactSystemClassSpec, expand_compact_spec
+
+    spec = expand_compact_spec(CompactSystemClassSpec(**_NATIVE_COMPACT)).model_dump()
+    spec["classes"][-1]["className"] = "reserved-room"
+    spec["relationships"][0]["associationClass"] = "reserved-room"
+    handler = ClassDiagramHandler(None)
+    handler._sanitize_identifier_names(spec)
+    assert spec["relationships"][0]["associationClass"] == "ReservedRoom"
+    # A distinct plain link sharing the same endpoints cannot consume the attachment.
+    plain = {**spec["relationships"][0], "associationClass": None}
+    spec["relationships"].insert(0, plain)
+    handler._merge_redundant_parallel_associations(spec)
+    assert len(spec["relationships"]) == 3
+    for invalid in ("Missing", "Booking"):
+        broken = deepcopy(spec)
+        broken["relationships"][1]["associationClass"] = invalid
+        with pytest.raises(ValidationError):
+            SystemClassSpec(**broken)
+    broken = deepcopy(spec)
+    broken["relationships"][0]["associationClass"] = "ReservedRoom"
+    with pytest.raises(ValidationError, match="exactly one association"):
+        SystemClassSpec(**broken)

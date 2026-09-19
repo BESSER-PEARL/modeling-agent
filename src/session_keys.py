@@ -119,3 +119,5 @@ UNIFIED_CLASSIFICATION_EVENT_ID = "_unified_classification_event_id"
 # saw the sentences stating status vocabularies, named actions or business
 # rules, and could not diff them against the model.
 ORIGINAL_APP_REQUEST = "_original_app_request"
+ORIGINAL_APP_REQUEST_PROJECT_ID = "_original_app_request_project_id"
+PENDING_SMART_GEN_ORIGINAL_REQUEST = "_pending_smart_gen_original_request"

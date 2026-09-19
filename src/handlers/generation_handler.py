@@ -10,6 +10,9 @@ from handlers.smart_generation_handler import (
 )
 from protocol.types import AssistantRequest
 from utilities.model_context import is_diagram_nontrivial
+from utilities.original_request import (
+    clear_original_request, original_request_for_project, remember_original_request,
+)
 from session_keys import (
     CONFIG_PROMPT_ATTEMPTS,
     LAST_SMART_GEN_AT,
@@ -18,7 +21,7 @@ from session_keys import (
     MISMATCH_REGEN_PENDING,
     PENDING_GENERATOR_CONFIG,
     PENDING_GENERATOR_TYPE,
-    ORIGINAL_APP_REQUEST,
+    PENDING_SMART_GEN_ORIGINAL_REQUEST,
     PENDING_SMART_GEN_INSTRUCTIONS,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
@@ -175,7 +178,9 @@ def _active_project_id(session: Session) -> Optional[str]:
     return None
 
 
-def _stash_smart_gen(session: Session, instructions: str, provider: str) -> None:
+def _stash_smart_gen(
+    session: Session, instructions: str, provider: str, *, original_request: str = "",
+) -> None:
     """Stash a smart-gen payload with a fresh timestamp (see TTL above).
 
     Also records the project the run is being armed in. A run can ONLY start
@@ -188,7 +193,38 @@ def _stash_smart_gen(session: Session, instructions: str, provider: str) -> None
     session.set(PENDING_SMART_GEN_INSTRUCTIONS, instructions)
     session.set(PENDING_SMART_GEN_PROVIDER, provider)
     session.set(PENDING_SMART_GEN_TIMESTAMP, time.time())
+    session.set(PENDING_SMART_GEN_ORIGINAL_REQUEST, original_request)
     session.set(SMART_GEN_ARMED_PROJECT_ID, _active_project_id(session))
+
+
+def _original_for_smart_generation(session, user_message, *, replace=False):
+    project_id = _active_project_id(session)
+    previous = original_request_for_project(session, project_id)
+    message = (user_message or "").strip()
+    normalized = _norm_prompt(re.sub(r"[,.!?]+", " ", message))
+    generic = _SMART_GEN_CONFIRM_PHRASES | _PLAN_GEN_CONFIRM_PHRASES | {
+        "generate app", "generate application", "generate the application",
+        "generate a web app", "generate web app", "generate code", "generate it",
+        "build it", "build the app", "create the app",
+    }
+    if not message or normalized in generic:
+        return previous
+    if previous and not replace and (message == previous or previous.endswith("\n" + message)):
+        return previous
+    if previous and not replace:
+        message = (
+            f"{previous}\n\n## Subsequent user request, verbatim\n\n"
+            "This later request takes precedence where it changes earlier requirements.\n\n"
+            f"{message}"
+        )
+    remember_original_request(session, message, project_id)
+    return message
+
+
+def _pending_smart_gen_project_changed(session):
+    armed = session.get(SMART_GEN_ARMED_PROJECT_ID)
+    current = _active_project_id(session)
+    return bool(armed or current) and armed != current
 
 
 _SMART_GEN_CONFIRM_PHRASES = {
@@ -485,7 +521,8 @@ def _build_smart_gen_confirmation(
     # armed project too, and the fix decision must never read state this very
     # call wrote.
     project_id = _active_project_id(session)
-    _stash_smart_gen(session, refined, provider)
+    original = _original_for_smart_generation(session, user_message)
+    _stash_smart_gen(session, refined, provider, original_request=original)
 
     prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
 
@@ -539,7 +576,9 @@ def _build_smart_gen_confirmation(
     }
 
 
-def _build_mismatch_confirmation(session: Session, classification, suggested: str) -> Dict[str, Any]:
+def _build_mismatch_confirmation(
+    session: Session, classification, suggested: str, *, user_message: Optional[str] = None,
+) -> Dict[str, Any]:
     """Stash the smart-gen instructions and ask the user how to proceed.
 
     Triggered when the user's request describes a different domain than
@@ -556,7 +595,8 @@ def _build_mismatch_confirmation(session: Session, classification, suggested: st
     refined = (classification.refined_instructions or "").strip()
     provider = classification.provider or "anthropic"
     rebuild_prompt = f"create a class diagram for {suggested}"
-    _stash_smart_gen(session, refined, provider)
+    original = _original_for_smart_generation(session, user_message, replace=True)
+    _stash_smart_gen(session, refined, provider, original_request=original)
     # Arm the one-shot resume with the EXACT rebuild prompt the button sends.
     # The guard below and the create choke point
     # (execution.model_operations.execute_model_operation) only keep the stash
@@ -1016,6 +1056,7 @@ def _clear_pending_smart_gen(session: Session) -> None:
         PENDING_SMART_GEN_INSTRUCTIONS,
         PENDING_SMART_GEN_PROVIDER,
         PENDING_SMART_GEN_TIMESTAMP,
+        PENDING_SMART_GEN_ORIGINAL_REQUEST,
         SKIP_MISMATCH_CHECK_ONCE,
         MISMATCH_REGEN_PENDING,
     ):
@@ -1066,6 +1107,12 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
         stashed_instructions = session.get(PENDING_SMART_GEN_INSTRUCTIONS) or ""
         stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic"
         stashed_ts = session.get(PENDING_SMART_GEN_TIMESTAMP)
+        stashed_original = session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST) or ""
+        if _pending_smart_gen_project_changed(session):
+            _clear_pending_smart_gen(session)
+            _clear_pending_state(session)
+            reply_message(session, "The open project changed. Please prepare generation for this project again.")
+            return True
         if not _smart_gen_stash_is_fresh(stashed_ts):
             _clear_pending_smart_gen(session)
             _clear_pending_state(session)
@@ -1085,7 +1132,7 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
                     reason="user confirmed the run",
                 ),
                 reason_prefix="generating with current model",
-                original_request=session.get(ORIGINAL_APP_REQUEST) or "",
+                original_request=stashed_original,
             )
             reply_payload(session, payload)
             return True
@@ -1296,13 +1343,21 @@ def _handle_smart_generator_result(
     cost_text = ""
 
     if ok:
-        incomplete = bool(metadata.get("incomplete"))
+        blocker_count = metadata.get("blockerCount")
+        blocker_count = blocker_count if isinstance(blocker_count, int) and blocker_count > 0 else 0
+        incomplete = bool(metadata.get("incomplete")) or blocker_count > 0
         incomplete_reason = metadata.get("incompleteReason")
         if incomplete:
-            head = (
-                f"The {SPEC_DRIVEN_NAME} produced output, but the run stopped early "
-                "so it may be incomplete"
-            )
+            if blocker_count:
+                head = (
+                    f"The {SPEC_DRIVEN_NAME} finished with {blocker_count} unresolved "
+                    f"blocker{'s' if blocker_count != 1 else ''}; the application is incomplete"
+                )
+            else:
+                head = (
+                    f"The {SPEC_DRIVEN_NAME} produced output, but the run stopped early "
+                    "so it may be incomplete"
+                )
             if incomplete_reason:
                 head += f": {incomplete_reason}"
             parts = [head + cost_text + "."]
@@ -1602,6 +1657,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         # "yes" can never spend against a stale pre-import run (B-2).
         _clear_pending_smart_gen(session)
         _clear_pending_state(session)
+        clear_original_request(session)
         logger.info(
             "Continue-from-GitHub: importing %s/%s (branch=%s)",
             _gh_owner, _gh_repo, _gh_branch,
@@ -1647,6 +1703,14 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         stashed_instructions = session.get(PENDING_SMART_GEN_INSTRUCTIONS) or ""
         stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic"
         stashed_ts = session.get(PENDING_SMART_GEN_TIMESTAMP)
+        stashed_original = session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST) or ""
+        if _pending_smart_gen_project_changed(session):
+            _clear_pending_smart_gen(session)
+            _clear_pending_state(session)
+            return {
+                "action": "assistant_message",
+                "message": "The open project changed. Please prepare generation for this project again.",
+            }
         if not _smart_gen_stash_is_fresh(stashed_ts):
             # Reject stale confirmations: a stash older than the TTL may
             # belong to a long-abandoned dialog the user no longer means.
@@ -1669,7 +1733,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                     reason="user confirmed the run",
                 ),
                 reason_prefix="generating with current model",
-                original_request=session.get(ORIGINAL_APP_REQUEST) or "",
+                original_request=stashed_original,
             )
         # Fall through to normal classification if the stash was empty.
 
@@ -1913,7 +1977,9 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             else:
                 is_mismatch, suggested = _read_unified_mismatch_info(session)
                 if is_mismatch and suggested:
-                    return _build_mismatch_confirmation(session, classification, suggested)
+                    return _build_mismatch_confirmation(
+                        session, classification, suggested, user_message=getattr(request, "message", None),
+                    )
 
             # Never fire directly: the smart generator spends the user's
             # own API key, so stash + ask for explicit confirmation (B-2).
