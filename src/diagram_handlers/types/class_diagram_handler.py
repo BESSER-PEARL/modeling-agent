@@ -793,6 +793,9 @@ Examples:
             if not isinstance(token, str) or not token.strip():
                 return token
             name = token.strip()
+            alias = self._TYPE_ALIAS_NORMALISATION.get(name.lower())
+            if alias is not None:
+                return alias
             if name.lower() in self._PRIMITIVE_ATTR_TYPES or name in known:
                 return name
             coerced += 1
@@ -1385,6 +1388,29 @@ Examples:
         "date", "datetime", "time", "timedelta", "any",
     })
 
+    # Types the frontend already canonicalises before anything reaches BUML
+    # (``typeNormalization.ts`` TYPE_ALIASES). The agent did not, so a
+    # ``LocalDate`` matched no primitive, was not a declared class, and fell
+    # to the coercion below as an unresolvable type - **a date silently
+    # became a string**. Same for ``BigDecimal``, 3 occurrences each across
+    # 19 runs. Mapping rather than merely admitting them matters: the
+    # membership test returns the name unchanged, which would hand BUML a
+    # ``LocalDate`` it does not know.
+    _TYPE_ALIAS_NORMALISATION = {
+        "localdate": "date",
+        "localdatetime": "datetime",
+        "localtime": "time",
+        "timestamp": "datetime",
+        "instant": "datetime",
+        "bigdecimal": "float",
+        "biginteger": "int",
+        "uuid": "str",
+        "guid": "str",
+        "character": "str",
+        "object": "any",
+        "void": "any",
+    }
+
     def _declare_referenced_enumerations(
         self, system_spec: Dict[str, Any], request_text: str,
     ) -> None:
@@ -1593,6 +1619,15 @@ Examples:
                     kept.append(a)
                     continue
                 tt = t.strip()
+                alias = self._TYPE_ALIAS_NORMALISATION.get(tt.lower())
+                if alias is not None:
+                    # A Java-flavoured spelling the frontend already
+                    # canonicalises. Without this it matches no primitive,
+                    # is not a declared class, and falls to the coercion
+                    # below - so a LocalDate silently became a String.
+                    a["type"] = alias
+                    kept.append(a)
+                    continue
                 if tt.lower() in self._PRIMITIVE_ATTR_TYPES or tt in enum_names:
                     kept.append(a)  # primitive or valid enum-typed attribute
                     continue
