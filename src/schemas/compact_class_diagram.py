@@ -21,6 +21,7 @@ generation never emits those (they are authored via modify flows).
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import List, Literal
 
@@ -147,6 +148,8 @@ COMPACT_ENCODING_RULES = (
 # ---------------------------------------------------------------------------
 # Deterministic expansion (compact -> canonical SystemClassSpec)
 # ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
 
 _VISIBILITY = {"+": "public", "-": "private", "#": "protected", "~": "package"}
 
@@ -275,6 +278,31 @@ def _parse_method(raw: str) -> MethodSpec:
     )
 
 
+def _usable_association_class(name: str, rel: "CompactRelationshipSpec",
+                              classes: List[SingleClassSpec],
+                              attached: set) -> bool:
+    """Mirror ``SystemClassSpec.validate_association_classes`` non-fatally.
+
+    That validator raises on five separate ``ac`` conditions, and the raise
+    escapes ``expand_compact_spec`` into ``generate_complete_system``'s
+    blanket ``except Exception`` — so ONE bad ``ac`` string throws away the
+    whole model and drops the request onto the incremental fallback. Losing
+    a link's per-link attributes is a far smaller loss than losing every
+    class, and this module's contract is that a malformed member "degrades
+    to a sane default, never an exception".
+    """
+    by_name = {c.className: c for c in classes}
+    if rel.k != "assoc":
+        return False
+    for referenced in (rel.f, rel.t, name):
+        cls = by_name.get(referenced)
+        if cls is None or cls.isEnumeration:
+            return False
+    if name in (rel.f, rel.t) or by_name[name].isAbstract:
+        return False
+    return name not in attached
+
+
 def expand_compact_spec(compact: CompactSystemClassSpec) -> SystemClassSpec:
     """Deterministically expand the compact form into the canonical spec.
 
@@ -294,7 +322,19 @@ def expand_compact_spec(compact: CompactSystemClassSpec) -> SystemClassSpec:
         ))
 
     relationships: List[RelationshipSpec] = []
+    attached: set = set()
     for r in compact.rels:
+        assoc_class = r.ac.strip() or None
+        if assoc_class and not _usable_association_class(assoc_class, r, classes,
+                                                         attached):
+            logger.warning(
+                "[CompactSpec] dropping unusable associationClass %r on %s->%s; "
+                "keeping the association and the rest of the model",
+                assoc_class, r.f, r.t,
+            )
+            assoc_class = None
+        if assoc_class:
+            attached.add(assoc_class)
         relationships.append(RelationshipSpec(
             type=_REL_KIND.get(r.k, "Association"),
             source=r.f,
@@ -309,7 +349,7 @@ def expand_compact_spec(compact: CompactSystemClassSpec) -> SystemClassSpec:
                                 or ("1" if r.k == "inher" else "*")),
             name=r.l.strip() or None,
             sourceRole=r.ls.strip() or None,
-            associationClass=r.ac.strip() or None,
+            associationClass=assoc_class,
         ))
 
     constraints: List[OCLConstraintSpec] = []

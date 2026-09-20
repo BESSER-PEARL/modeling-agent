@@ -357,6 +357,18 @@ Examples:
             # to spot one fact stated from both sides.
             self._split_dual_role_names(system_spec)
 
+            # Guard: an association class is attached to ONE association; it
+            # must not ALSO be joined to that association's endpoints by
+            # ordinary associations. SQLAlchemyGenerator derives the link
+            # table's FK columns from the ATTACHED association's end names
+            # ("bookings" -> bookings_id) and the ordinary association's
+            # relationship() from its OWN end name ("booking" -> booking_id),
+            # so the two disagree and the generated sql_alchemy.py raises
+            # AttributeError on import - the app is dead before the agent
+            # writes a line. The system prompt already forbids these extra
+            # links; this makes it deterministic.
+            self._drop_redundant_association_class_links(system_spec)
+
             # Guard: one fact stated twice becomes one relationship. A request
             # phrased from both sides ("a booking produces a bill" / "a bill is
             # raised against a booking") makes the LLM emit two links for the
@@ -732,8 +744,21 @@ Examples:
         and set isOptional. On method parameters and return types the
         metamodel has no optionality, so the marker is just stripped.
         Purely deterministic — no LLM round-trip.
+
+        Also coerces a method parameter or return type that names nothing in
+        the spec ('List[Bill]', 'dict', 'Money'). Attributes already get that
+        treatment in :meth:`_rewrite_class_typed_attributes`; methods did not,
+        and the omission is not local: ``parse_method`` raises ValueError and
+        ``_resolve_type`` raises ConversionError, so ONE bad token aborts the
+        conversion of the WHOLE diagram rather than just that method.
         """
         fixed = 0
+        coerced = 0
+
+        known: set = set()
+        for cls in system_spec.get("classes", []):
+            if isinstance(cls, dict) and isinstance(cls.get("className"), str):
+                known.add(cls["className"])
 
         def _clean(token: Any) -> Any:
             nonlocal fixed
@@ -741,6 +766,19 @@ Examples:
                 fixed += 1
                 return token.rstrip().rstrip("?").strip()
             return token
+
+        def _resolvable(token: Any, fallback: str) -> Any:
+            """Keep a primitive/class/enum name; replace anything else."""
+            nonlocal coerced
+            if not isinstance(token, str) or not token.strip():
+                return token
+            name = token.strip()
+            if name.lower() in self._PRIMITIVE_ATTR_TYPES or name in known:
+                return name
+            coerced += 1
+            logger.info("[ClassDiagram] Unresolvable member type %r -> %r",
+                        name, fallback)
+            return fallback
 
         for cls in system_spec.get("classes", []):
             if not isinstance(cls, dict):
@@ -755,14 +793,22 @@ Examples:
             for method in cls.get("methods", []):
                 if not isinstance(method, dict):
                     continue
-                method["returnType"] = _clean(method.get("returnType"))
+                # 'any' for a return: non-committal and a valid primitive, the
+                # same landing spot 'void' already gets downstream.
+                method["returnType"] = _resolvable(
+                    _clean(method.get("returnType")), "any")
                 for param in method.get("parameters", []):
                     if isinstance(param, dict):
-                        param["type"] = _clean(param.get("type"))
+                        param["type"] = _resolvable(_clean(param.get("type")), "str")
         if fixed:
             logger.info(
                 "[ClassDiagram] Sanitized %d decorated type token(s) "
                 "('type?' → 'type')", fixed,
+            )
+        if coerced:
+            logger.info(
+                "[ClassDiagram] Coerced %d unresolvable method member type(s); "
+                "an unknown token would have failed the whole conversion", coerced,
             )
 
     def _dedupe_relationship_names(self, system_spec: Dict[str, Any]) -> None:
@@ -979,6 +1025,64 @@ Examples:
         base = re.sub(r"_\d+$", "", name.strip().lower())
         cls = target.strip().lower()
         return bool(cls) and base in (cls, cls + "s", cls + "es")
+
+    def _drop_redundant_association_class_links(self, system_spec: Dict[str, Any]) -> None:
+        """Remove ordinary links between an association class and its endpoints.
+
+        An association class is ALREADY connected to both endpoints through
+        the association it is attached to. The LLM frequently adds the two
+        ordinary associations as well (Qwen did on the hotel prompt), and the
+        result does not merely duplicate a link: the generated
+        ``sql_alchemy.py`` names the same foreign key two different ways and
+        fails to import. Verified by regenerating the scaffold from the live
+        run's model - unimportable as produced, importable with these two
+        links removed, no LLM involved either way.
+
+        Mutates *system_spec* in place.
+        """
+        relationships = system_spec.get("relationships")
+        if not isinstance(relationships, list):
+            return
+
+        # {association class name: {the two endpoint class names}}
+        attached: Dict[str, set] = {}
+        for rel in relationships:
+            if not isinstance(rel, dict):
+                continue
+            name = rel.get("associationClass")
+            if isinstance(name, str) and name.strip():
+                attached[name.strip()] = {rel.get("source"), rel.get("target")}
+        if not attached:
+            return
+
+        kept, dropped = [], []
+        for rel in relationships:
+            if not isinstance(rel, dict):
+                kept.append(rel)
+                continue
+            source, target = rel.get("source"), rel.get("target")
+            # Association, Composition and Aggregation alike: the LLM picks
+            # any of the three for these duplicates (Qwen used Association on
+            # one hotel run and Composition on the next) and all three produce
+            # the same unimportable sql_alchemy.py. Inheritance is excluded -
+            # "the link class IS a Booking" is a different claim, wrong in
+            # other ways, and not this guard's business.
+            redundant = (
+                str(rel.get("type") or "Association")
+                in ("Association", "Composition", "Aggregation")
+                and not rel.get("associationClass")
+                and ((source in attached and target in attached[source])
+                     or (target in attached and source in attached[target]))
+            )
+            (dropped if redundant else kept).append(rel)
+
+        if dropped:
+            system_spec["relationships"] = kept
+            logger.info(
+                "[ClassDiagram] Dropped %d redundant association-class link(s): %s",
+                len(dropped),
+                ", ".join(f"{r.get('source')}->{r.get('target')}" for r in dropped)[:200],
+            )
 
     def _merge_redundant_parallel_associations(self, system_spec: Dict[str, Any]) -> None:
         """Collapse an association the LLM emitted more than once.
