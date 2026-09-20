@@ -9,8 +9,12 @@ still leaves the package in ``sys.modules``.
 stdin:  ``{"kind": "spec", "data": <systemSpec>}`` — the agent's
         ``inject_complete_system`` payload, converted to editor JSON the way
         the frontend's ``ClassDiagramConverter.convertCompleteSystem`` does it
-        (source role empty, target role = relationship name, one OCL box per
-        context class; attributes left out, the checks navigate ends only) —
+        (source role = sourceRole, target role = relationship name, one OCL
+        box per context class; attributes left out, the checks navigate ends
+        only) —
+        ``{"kind": "real", ...}`` for the same payload through the REAL
+        TypeScript converter (attributes included, so OCL over attributes
+        resolves) —
         or ``{"kind": "diagram", "data": <editor diagram>}`` as exported.
 stdout: ``{"skip": reason}`` when this BESSER cannot answer, else
         ``{"validate": ..., "ocl_warnings": [...], "constraints": [...],
@@ -62,7 +66,8 @@ def editor_json(system_spec):
             "id": rid, "name": rel.get("name") or "",
             "type": type_map.get(str(rel.get("type") or "").lower(), "ClassBidirectional"),
             "source": {"element": ids[rel["source"]], "direction": "Left",
-                       "multiplicity": rel.get("sourceMultiplicity") or "1", "role": ""},
+                       "multiplicity": rel.get("sourceMultiplicity") or "1",
+                       "role": rel.get("sourceRole") or ""},
             "target": {"element": ids[rel["target"]], "direction": "Right",
                        "multiplicity": rel.get("targetMultiplicity") or "1",
                        "role": rel.get("name") or ""},
@@ -176,7 +181,7 @@ def native_http_report(model):
 
 def main():
     payload = json.load(sys.stdin)
-    if payload["kind"] == "native":
+    if payload["kind"] in ("native", "real"):
         diagram = real_editor_json(payload["data"])
         if diagram is None:
             print(json.dumps({"skip": "native round-trip needs Node and the sibling frontend's installed esbuild"}))

@@ -11,11 +11,11 @@ gives Person an end called 'booking', Booking->Employee[handledBy] gives
 Employee one too, and Employee inherits Person's. Guest is identical.
 
 ``_ensure_unique_association_ends`` DETECTED this - it logged the clash four
-times - and then declined to act, because its reorientation phase only fires
-for parallel associations between the *identical* pair
-(``pair_direction_counts[(src, tgt)] > 1``). Here the pairs differ and only
-meet through inheritance, so nothing flipped and the run aborted with an
-opaque BAD_REQUEST.
+times - and then declined to act: it believed a source-derived end could not
+be named. It can: the converter writes ``source.role = rel.sourceRole``. The
+guard now names the colliding source ends instead of swapping endpoints,
+which relabelled the OPPOSITE end and cost the model its OCL
+(``test_source_role_survives_to_besser`` in test_hotel_model_contract.py).
 """
 import copy
 
@@ -47,7 +47,8 @@ def _end_names_per_class(spec):
         if r["type"] == "inheritance":
             continue
         ends.setdefault(r["source"], []).append(r.get("name") or r["target"].lower())
-        ends.setdefault(r["target"], []).append(r["source"].lower())
+        ends.setdefault(r["target"], []).append(
+            r.get("sourceRole") or r["source"].lower())
 
     def chain(cls):
         out, changed = {cls}, True
@@ -78,17 +79,31 @@ def test_the_unrepaired_spec_really_does_collide():
     assert "Employee" in clashing and "Guest" in clashing
 
 
-def test_only_plain_associations_are_flipped():
-    """A composition carries direction meaning and must never be reoriented."""
+def test_no_relationship_is_ever_reoriented():
+    """Endpoints carry the roles: swapping them relabels both ends. The repair
+    is naming, never reorientation — for compositions, whose direction is
+    semantic, and for plain associations alike."""
     spec = _hotel_spec()
     for r in spec["relationships"]:
         if r.get("name") == "handledBy":
             r["type"] = "composition"
-    before = copy.deepcopy(spec["relationships"])
+    before = [(r["source"], r["target"]) for r in spec["relationships"]]
     ClassDiagramHandler(None)._ensure_unique_association_ends(spec)
-    after = next(r for r in spec["relationships"] if r.get("name") == "handledBy")
-    orig = next(r for r in before if r.get("name") == "handledBy")
-    assert (after["source"], after["target"]) == (orig["source"], orig["target"])
+    assert [(r["source"], r["target"]) for r in spec["relationships"]] == before
+
+
+def test_the_repair_names_source_ends_and_leaves_target_names_alone():
+    """The names the OCL navigates (contact/guests/handledBy) are untouched;
+    the colliding source-derived ends get the suffix instead."""
+    spec = _hotel_spec()
+    ClassDiagramHandler(None)._ensure_unique_association_ends(spec)
+    by_target = {r["target"]: r for r in spec["relationships"]
+                 if r["type"] == "association"}
+    assert [r["name"] for r in spec["relationships"] if r["type"] == "association"] == [
+        "contact", "guests", "handledBy"]
+    assert by_target["Person"].get("sourceRole") in (None, "booking")
+    assert by_target["Guest"]["sourceRole"] == "booking_1"
+    assert by_target["Employee"]["sourceRole"] == "booking_2"
 
 
 def test_clean_spec_is_left_alone():
@@ -106,5 +121,8 @@ def test_clean_spec_is_left_alone():
 def test_prompt_tells_the_model_to_name_both_ends():
     p = ClassDiagramHandler(None)._get_system_generation_prompt()
     assert "NAME BOTH ENDS OF EVERY RELATIONSHIP" in p
+    # The rule must name fields the schemas actually have, or the model
+    # invents a syntax that is silently dropped.
+    assert "sourceRole" in p and "compact encoding: l and ls" in p
     assert "defaults to the lowercased class name" in p
     assert "INCLUDING the names it inherits" in p

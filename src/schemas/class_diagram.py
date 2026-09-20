@@ -49,6 +49,9 @@ class SingleClassSpec(BaseModel):
     isEnumeration: bool = Field(default=False, description="Whether this is an enumeration.")
 
 
+_MULTIPLICITY_RE = re.compile(r"^(\d+|\*)(\.\.(\d+|\*))?$")
+
+
 class RelationshipSpec(BaseModel):
     type: Literal[
         "Association", "Inheritance", "Composition", "Aggregation",
@@ -58,7 +61,13 @@ class RelationshipSpec(BaseModel):
     target: str = Field(description="Target class name")
     sourceMultiplicity: str = Field(default="1", description="Source multiplicity: 1, 0..1, 0..*, or 1..*")
     targetMultiplicity: str = Field(default="*", description="Target multiplicity: 1, 0..1, 0..*, or 1..*")
-    name: Optional[str] = Field(default=None, description="Optional relationship name")
+    name: Optional[str] = Field(default=None, description="Name of the TARGET end (the role the source class navigates by), also used as the relationship name")
+    sourceRole: Optional[str] = Field(
+        default=None,
+        description="Name of the SOURCE end (the role the target class navigates by). "
+                    "Name both ends: a blank end falls back to the lowercased class "
+                    "name, and those defaults collide across an inheritance hierarchy.",
+    )
     associationClass: Optional[str] = Field(
         default=None,
         description="For an Association with per-link attributes, the name of the "
@@ -82,7 +91,12 @@ class RelationshipSpec(BaseModel):
             return "0..*"
         if s in ("1..n", "1..*", "1..many", "+"):
             return "1..*"
-        return s.replace("..n", "..*").replace("..many", "..*")
+        s = s.replace("..n", "..*").replace("..many", "..*")
+        # Anything still outside the grammar ("several", "oneormore") aborts
+        # the whole diagram->BUML conversion in BESSER's multiplicity parser,
+        # surfacing to the user as an opaque INTERNAL error. 0..* is the safe
+        # reading of an unknown word: it never invents a mandatory end.
+        return s if _MULTIPLICITY_RE.match(s) else "0..*"
 
 
 class OCLConstraintSpec(BaseModel):

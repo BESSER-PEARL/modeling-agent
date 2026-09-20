@@ -236,7 +236,7 @@ RULES:
 14. ATTRIBUTE TYPES ARE PRIMITIVES OR ENUMS — NEVER ANOTHER CLASS. An attribute's type must be a primitive (String, int, bool, float, Date, datetime, time) or an enumeration name. If a class "has a" another class you also model (a PointOfInterest has a Location, an Order has a Customer, a Trip has a start Location and an end Location), express it as a RELATIONSHIP (Association) between the two classes — give the relationship a role name (e.g. startLocation, endLocation) to distinguish multiple links to the same class. NEVER put the class's name in an attribute's "type". Value objects you define (Location, Address, Money, Coordinates, TimeRange) are classes: connect them with relationships, don't use them as attribute types.
 16. STATUS VOCABULARIES ARE THE USER'S WORDS, AND N DIMENSIONS MEANS N ENUMERATIONS. When the user lists the values a status can take, the enumeration's literals are EXACTLY those values — never add a member the user did not name, never rename one, never "improve" the set. And when the user describes TWO OR MORE INDEPENDENT things that vary separately, emit ONE ENUMERATION PER DIMENSION, each with its own attribute on the class — never merge them into a single status. Worked example: "a booking has a commercial status: awaiting payment, confirmed or cancelled. Separately it has a physical status: not arrived, checked in or checked out" => TWO enumerations, BookingCommercialStatus (AWAITING_PAYMENT, CONFIRMED, CANCELLED) and BookingPhysicalStatus (NOT_ARRIVED, CHECKED_IN, CHECKED_OUT), and Booking gets BOTH attributes. Merging them into one BookingStatus is wrong twice over: it makes states that legitimately co-occur (a CONFIRMED booking whose guest has NOT_ARRIVED) unrepresentable, and it forces you to invent members like NO_SHOW or BOOKED that the user never mentioned. Tell-tale wording for a second dimension: "separately", "independently", "as well as", "at the same time", or simply two different sentences each introducing its own list of values.
 17. VALUES THAT BELONG TO A PAIRING USE A NATIVE ASSOCIATION CLASS. A grade for a student in a course, or an agreed price and extra charges for a room in a booking, belongs to the link, not to either endpoint. Declare a concrete class for the link itself in classes with ALL those per-link attributes, then put its name in associationClass on ONE direct Association between the two endpoint classes (compact encoding: ac). Example: Student--Course with associationClass="Enrollment", and Enrollment.grade. Hotel example: Booking--Room with associationClass="ReservedRoom", and ReservedRoom.agreedPrice AND ReservedRoom.extraCharges. Putting the agreed price on Room overwrites it for every other booking; putting it on Booking cannot distinguish two different rooms with different agreed prices. Tell-tale wording: "for that <A> in that <B>", "may differ from the standard", "per <A> per <B>". Keep the user's cardinalities on that direct association. Do NOT replace it with two ordinary links through the association class, and do not add those redundant links. Use an ordinary entity with separate associations instead only when the spec needs independent identity/lifecycle or multiple distinct records for the same pair. Keep all per-link values together, including agreed price AND extra charges; do not drop amounts or put them on the shared Room/Product.
-15. PARALLEL ASSOCIATIONS NEED DISTINCT NAMES. When the same two classes are connected by MORE THAN ONE relationship (e.g. a Doctor "works in" a Department AND "heads" a Department), give EACH of those relationships a distinct, meaningful name ("worksIn", "heads") — never leave two relationships between the same pair of classes unnamed or identically named. The relationship name becomes the association end's role name; missing or duplicate names collide into the same role and fail validation. NAME BOTH ENDS OF EVERY RELATIONSHIP, ALWAYS. An end you leave blank is not neutral - it defaults to the lowercased class name, and those defaults collide silently ACROSS AN INHERITANCE HIERARCHY. Observed live 2026-09-17, and it aborted the whole generation before a single file was written: Booking(unnamed)->Person[contact] gave Person an end called 'booking', Booking(unnamed)->Employee[handledBy] gave Employee an end called 'booking', Employee inherits Person, and the run died with "The class 'Employee' cannot have two association ends with the same name: 'booking'". Guest had the identical clash. So: whenever a PARENT class and its SUBCLASSES are all associated with the same other class - a Person/Employee/Guest hierarchy that all relate to Booking is the textbook case - every one of those ends needs its own distinct name. Correct: source=Booking role='bookingsAsContact' -> target=Person role='contact'; source=Booking role='bookingsHandled' -> target=Employee role='handledBy'; source=Booking role='bookingsStayedOn' -> target=Guest role='guests'. Check every class, INCLUDING the names it inherits, before you finish.
+15. PARALLEL ASSOCIATIONS NEED DISTINCT NAMES. When the same two classes are connected by MORE THAN ONE relationship (e.g. a Doctor "works in" a Department AND "heads" a Department), give EACH of those relationships a distinct, meaningful name ("worksIn", "heads") — never leave two relationships between the same pair of classes unnamed or identically named. The relationship name becomes the association end's role name; missing or duplicate names collide into the same role and fail validation. NAME BOTH ENDS OF EVERY RELATIONSHIP, ALWAYS: "name" is the TARGET end's role and "sourceRole" is the SOURCE end's (compact encoding: l and ls). An end you leave blank is not neutral - it defaults to the lowercased class name, and those defaults collide silently ACROSS AN INHERITANCE HIERARCHY. Observed live 2026-09-17, and it aborted the whole generation before a single file was written: Booking(unnamed)->Person[contact] gave Person an end called 'booking', Booking(unnamed)->Employee[handledBy] gave Employee an end called 'booking', Employee inherits Person, and the run died with "The class 'Employee' cannot have two association ends with the same name: 'booking'". Guest had the identical clash. So: whenever a PARENT class and its SUBCLASSES are all associated with the same other class - a Person/Employee/Guest hierarchy that all relate to Booking is the textbook case - every one of those ends needs its own distinct name. Correct: Booking->Person with sourceRole='bookingsAsContact' and name='contact'; Booking->Employee with sourceRole='bookingsHandled' and name='handledBy'; Booking->Guest with sourceRole='bookingsStayedOn' and name='guests'. Check every class, INCLUDING the names it inherits, before you finish.
 13. CONSTRAINTS (OCL) — ONLY FOR RULES NO FIELD FLAG OR MULTIPLICITY CAN EXPRESS. SINGLE-ATTRIBUTE UNIQUENESS IS NOT ONE OF THEM: when the user says one attribute identifies the object or must be unique — "every room is identified by its room number", "emails must be unique", "each book is known by its ISBN" — set isExternalId=true on THAT attribute (compact encoding: the '!' suffix, 'roomNumber: str!') and write NO constraint for it. That flag is what makes the generated database reject a second room "101"; an OCL invariant for it is ignored by the generators and the duplicate gets in. If the user EXPLICITLY states a business rule that multiplicities, attribute types and that flag cannot express — a limit beyond cardinality ("a speaker presents at most one session per time slot"), a value range ("age must be at least 18") or a value shape ("must be a valid email") — capture it in the "constraints" list as an OCL invariant in B-OCL syntax: context <ClassName> inv <name>: <expression>. The context MUST be one of the classes you created. Examples: "context Account inv positiveBalance: self.balance >= 0"; "context Speaker inv oneSessionPerSlot: self.sessions->forAll(s1, s2 | s1 <> s2 implies s1.timeSlot <> s2.timeSlot)". CRITICAL: capture ONLY rules the user actually stated. If the user stated no such rule, leave "constraints" EMPTY — NEVER invent constraints. BUT "EXPLICITLY STATED" MEANS STATED IN ORDINARY PROSE — a rule does NOT have to be labelled "constraint", "invariant" or "rule", and does NOT have to be written in OCL. Every one of these phrasings is an explicit statement you must capture: "must not exceed", "cannot be more than", "may not overlap", "cannot be double-booked", "must be a valid <X>", "at least", "at most", "must not be before/after", "only if". Worked examples from a hotel request: "the total number of guests must not exceed the combined capacity of the rooms booked" => context Booking inv guestsWithinCapacity: self.guestCount <= self.rooms->collect(capacity)->sum(); "a room cannot be double-booked for overlapping dates" => context Room inv noOverlappingBookings: self.bookings->forAll(b1, b2 | b1 <> b2 implies b1.departureDate <= b2.arrivalDate or b2.departureDate <= b1.arrivalDate); "the arrival date must not be after the departure date" => context Booking inv arrivalBeforeDeparture: self.arrivalDate <= self.departureDate; "email and phone must be valid" => context Guest inv validEmail: self.email.matches('^[^\\s@]+@[^\\s@]+\\.[A-Za-z]{{2,}}$') and context Guest inv validPhone: self.phone.matches('^\\+?[0-9]{{7,15}}$'). A SHAPE CONSTRAINT IS ANCHORED WITH ^ AND $ AND NEVER ACCEPTS WHITESPACE unless the user said so — an unanchored pattern let "spaces in@email.com" through in a live run. Before you finish, re-read the request for these phrasings — four stated rules producing an empty constraints list is a failure, not caution.
 
 Examples:
@@ -825,25 +825,35 @@ Examples:
     # Association-end uniqueness at CREATION time (spec-level guard)
     # ------------------------------------------------------------------
     # The frontend converter (ClassDiagramConverter.convertCompleteSystem)
-    # injects every spec relationship with ``source.role = ''`` and
-    # ``target.role = rel.name || ''``, and the validator derives each end's
-    # name as "explicit role, else lowercased endpoint-class name". So for a
-    # spec relationship S→T:
+    # injects every spec relationship with ``source.role = rel.sourceRole ||
+    # ''`` and ``target.role = rel.name || ''``, and the validator derives
+    # each end's name as "explicit role, else lowercased endpoint-class
+    # name". So for a spec relationship S→T:
     #   * S's navigable end (the target endpoint) is named rel.name or
-    #     lower(T)  — addressable via the relationship NAME;
-    #   * T's navigable end (the source endpoint) is ALWAYS named lower(S)
-    #     — addressable only by flipping the relationship's orientation.
-    # Two same-orientation associations between one pair therefore give the
-    # shared target class two identical ends NO naming can fix — which is why
-    # the guard first alternates orientations (plain Associations only, the
-    # bidirectional type where direction is not semantic) and then assigns
-    # unique names.
+    #     lower(T);
+    #   * T's navigable end (the source endpoint) is named rel.sourceRole or
+    #     lower(S).
+    # BOTH ends are nameable, so a collision is always fixable in place —
+    # never by swapping the endpoints, which would move each name to the
+    # opposite end.
 
     # Spec relationship types that create NO association ends once injected
     # (the converter maps them to ClassInheritance). Everything else —
     # including Realization/Dependency, which fall through to
     # ClassBidirectional — produces two role-bearing endpoints.
     _SPEC_NON_END_REL_TYPES = frozenset({"inheritance", "generalization"})
+
+    @staticmethod
+    def _spec_role(rel: Dict[str, Any], side: str) -> str:
+        """The explicit role a spec relationship gives its *side* end.
+
+        ``name`` carries the TARGET end's role (the converter writes it to
+        ``target.role``), ``sourceRole`` the SOURCE end's. Empty when the end
+        is unnamed, in which case the converter falls back to the lowercased
+        endpoint-class name.
+        """
+        raw = rel.get("name") if side == "target" else rel.get("sourceRole")
+        return raw.strip() if isinstance(raw, str) and raw.strip() else ""
 
     @staticmethod
     def _spec_rel_type(rel: Dict[str, Any]) -> str:
@@ -1114,65 +1124,25 @@ Examples:
 
         return _reach(True) | _reach(False)
 
-    def _flip_for_inherited_end_clash(
-        self, rel, owner, collect_entries, inheritance_edges, taken_ends,
-    ) -> bool:
-        """Flip a plain Association so its source-derived end becomes nameable.
-
-        Returns True if the relationship was flipped. Only plain associations
-        are flipped - a composition or aggregation carries direction meaning.
-        The flip is taken only when it is strictly an improvement: the end it
-        creates on the far side must not itself already exist in that class's
-        inheritance chain.
-        """
-        if self._spec_rel_type(rel) != "association":
-            return False
-        src, tgt = rel.get("source"), rel.get("target")
-        if not isinstance(src, str) or not isinstance(tgt, str) or src == tgt:
-            return False
-
-        # After flipping, the OLD source gains a source-derived end named
-        # lower(old target). Refuse if that name is already used anywhere in
-        # the old source's own inheritance chain.
-        src_chain = self._reach_over_edges(inheritance_edges, {src})
-        existing_on_src = {
-            e["name"] for e in collect_entries() if e["owner"] in src_chain
-            and e["rel"] is not rel
-        }
-        if tgt.lower() in existing_on_src:
-            return False
-
-        rel["source"], rel["target"] = tgt, src
-        for a, b in (("sourceMultiplicity", "targetMultiplicity"),
-                     ("sourceRole", "targetRole")):
-            if a in rel or b in rel:
-                rel[a], rel[b] = rel.get(b), rel.get(a)
-        logger.info(
-            "[ClassDiagram] Flipped %s->%s to %s->%s so '%s' stops colliding "
-            "on '%s' through inheritance",
-            src, tgt, tgt, src, src.lower(), owner,
-        )
-        return True
-
     def _ensure_unique_association_ends(self, system_spec: Dict[str, Any]) -> None:
         """Make every class's association-end names unique in the spec.
 
         Computes each class's navigable end names with the same derivation
-        the validator uses on the injected model (explicit role — i.e. the
-        relationship name on the target endpoint — else the lowercased
-        endpoint-class name), counting ends inherited across the class's
-        generalization chain. Duplicates are resolved deterministically:
+        the validator uses on the injected model (explicit role — ``name`` on
+        the target endpoint, ``sourceRole`` on the source endpoint — else the
+        lowercased endpoint-class name), counting ends inherited across the
+        class's generalization chain. A duplicate group keeps its first
+        entry, preferring an LLM-given name over a class-derived one so an
+        OCL-navigable role is never the one renamed; every other end is
+        suffixed ``_1``/``_2`` — the convention the backend converter and the
+        repair flow use — writing ``name`` for a target end and
+        ``sourceRole`` for a source end. New target names also stay unique
+        among relationship labels.
 
-        1. ORIENTATION: a later same-direction parallel Association between
-           an already-connected pair is flipped (endpoints + multiplicities
-           swapped — direction is not semantic for a plain bidirectional
-           Association), turning its un-nameable source-derived end into a
-           nameable one. Compositions/aggregations are never flipped.
-        2. NAMING: later duplicates that sit on a nameable (target) endpoint
-           get a unique relationship name — the existing label suffixed if
-           one exists, else the lowercased target-class name, with the same
-           ``_1``/``_2`` convention the backend converter and the repair
-           flow use. New names also stay unique among relationship labels.
+        Endpoints are NEVER swapped: the wire format carries the target role
+        in ``name`` and the source role in ``sourceRole``, so a swap moves
+        each name to the opposite end. Both ends being nameable, naming is
+        always enough.
 
         Mutates *system_spec* in place; no-op for already-clean specs.
         """
@@ -1189,48 +1159,7 @@ Examples:
                 and isinstance(rel.get("target"), str) and rel.get("target")
             )
 
-        # ── Phase 1: alternate orientations of parallel Associations ──
-        pair_direction_counts: Dict[tuple, int] = {}
-        for rel in relationships:
-            if _is_end_creating(rel):
-                key = (rel["source"], rel["target"])
-                pair_direction_counts[key] = pair_direction_counts.get(key, 0) + 1
-        for rel in relationships:
-            if not _is_end_creating(rel) or rel["source"] == rel["target"]:
-                continue
-            src, tgt = rel["source"], rel["target"]
-            if (
-                pair_direction_counts.get((src, tgt), 0) > 1
-                and pair_direction_counts.get((tgt, src), 0) == 0
-                and self._spec_rel_type(rel) == "association"
-            ):
-                # Prefer flipping an UNNAMED parallel (no label semantics to
-                # disturb); flip a named one only when no unnamed candidate
-                # exists in the same direction group.
-                group = [
-                    r for r in relationships
-                    if _is_end_creating(r)
-                    and (r["source"], r["target"]) == (src, tgt)
-                    and self._spec_rel_type(r) == "association"
-                ]
-                unnamed = [
-                    r for r in group
-                    if not (isinstance(r.get("name"), str) and r["name"].strip())
-                ]
-                candidate = (unnamed or group)[-1]
-                candidate["source"], candidate["target"] = tgt, src
-                candidate["sourceMultiplicity"], candidate["targetMultiplicity"] = (
-                    candidate.get("targetMultiplicity"),
-                    candidate.get("sourceMultiplicity"),
-                )
-                pair_direction_counts[(src, tgt)] -= 1
-                pair_direction_counts[(tgt, src)] = 1
-                logger.info(
-                    "[ClassDiagram] Reoriented a parallel %s–%s association so "
-                    "both classes' end names stay addressable", src, tgt,
-                )
-
-        # ── Phase 2: unique end names per class (chain-aware) ──
+        # Inheritance closure: an end counts against every class in the chain.
         inheritance_edges = [
             (rel["source"], rel["target"])
             for rel in relationships
@@ -1246,16 +1175,14 @@ Examples:
             for rel in relationships:
                 if not _is_end_creating(rel):
                     continue
-                raw_name = rel.get("name")
-                label = raw_name.strip() if isinstance(raw_name, str) else ""
-                entries.append({
-                    "rel": rel, "owner": rel["source"], "fixable": True,
-                    "name": label or rel["target"].lower(),
-                })
-                entries.append({
-                    "rel": rel, "owner": rel["target"], "fixable": False,
-                    "name": rel["source"].lower(),
-                })
+                for side, owner in (("target", rel["source"]),
+                                    ("source", rel["target"])):
+                    explicit = self._spec_role(rel, side)
+                    entries.append({
+                        "rel": rel, "owner": owner, "side": side,
+                        "explicit": bool(explicit),
+                        "name": explicit or rel[side].lower(),
+                    })
             return entries
 
         taken_labels = {
@@ -1286,60 +1213,39 @@ Examples:
             for end_name, group in by_name.items():
                 if len(group) < 2:
                     continue
-                unfixable = [e for e in group if not e["fixable"]]
-                kept = unfixable[0] if unfixable else group[0]
+                explicit = [e for e in group if e["explicit"]]
+                kept = (explicit or group)[0]
                 for e in group:
                     if e is kept:
                         continue
-                    if not e["fixable"]:
-                        # A source-derived end cannot be renamed, but a plain
-                        # Association can be FLIPPED, which turns it into a
-                        # nameable one. Phase 1 only flips parallels between
-                        # the identical pair; the collision here comes from
-                        # DIFFERENT pairs that meet through inheritance
-                        # (Booking->Person[contact] and Booking->Employee
-                        # [handledBy] both give their target an end called
-                        # "booking", and Employee inherits Person's). That
-                        # aborted a whole run on 2026-09-17 with "The class
-                        # 'Employee' cannot have two association ends with the
-                        # same name: 'booking'".
-                        rel = e["rel"]
-                        flipped = self._flip_for_inherited_end_clash(
-                            rel, e["owner"], _collect_entries,
-                            inheritance_edges, taken_ends,
-                        )
-                        if flipped:
-                            renamed += 1
-                            continue
-                        logger.warning(
-                            "[ClassDiagram] Class '%s' keeps duplicate end "
-                            "'%s' (source-side of a non-reorientable "
-                            "relationship) — left for downstream repair",
-                            cls_name, end_name,
-                        )
-                        continue
-                    rel = e["rel"]
-                    raw_name = rel.get("name")
-                    base = (
-                        raw_name.strip()
-                        if isinstance(raw_name, str) and raw_name.strip()
-                        else rel["target"].lower()
-                    )
+                    # Both ends are nameable: a target end through ``name``, a
+                    # source end through ``sourceRole`` (the converter writes
+                    # both). The collision once treated as unfixable comes from
+                    # DIFFERENT pairs meeting through inheritance —
+                    # Booking->Person[contact] and Booking->Employee[handledBy]
+                    # each give their target an end called "booking", and
+                    # Employee inherits Person's.
+                    rel, side = e["rel"], e["side"]
+                    field = "name" if side == "target" else "sourceRole"
+                    base = self._spec_role(rel, side) or rel[side].lower()
                     counter = 1
                     while (
                         f"{base}_{counter}" in taken_ends
-                        or f"{base}_{counter}".lower() in taken_labels
+                        or (side == "target"
+                            and f"{base}_{counter}".lower() in taken_labels)
                     ):
                         counter += 1
                     unique = f"{base}_{counter}"
-                    rel["name"] = unique
+                    rel[field] = unique
                     taken_ends.add(unique)
-                    taken_labels.add(unique.lower())
+                    if side == "target":
+                        taken_labels.add(unique.lower())
                     renamed += 1
                     logger.info(
-                        "[ClassDiagram] Named the %s–%s association '%s' so "
-                        "'%s' has no duplicate '%s' end",
-                        rel["source"], rel["target"], unique, cls_name, end_name,
+                        "[ClassDiagram] Named the %s end of the %s-%s "
+                        "association '%s' so '%s' has no duplicate '%s' end",
+                        side, rel["source"], rel["target"], unique, cls_name,
+                        end_name,
                     )
 
         if renamed:
@@ -1473,9 +1379,9 @@ Examples:
         key — intact; then the target end over the source end (the spec's
         named, navigable end, so a composition keeps its whole); then document
         order. Repeats until nothing cycles. The invariant navigates the end
-        by the name the converter will give it (the relationship name on a
-        target end, the lowercased source class on a source end) because B-OCL
-        resolves it against the context class.
+        by the name the converter will give it (``name`` on a target end,
+        ``sourceRole`` on a source end, else the lowercased endpoint class)
+        because B-OCL resolves it against the context class.
 
         Mutates *system_spec* in place; no-op when nothing cycles.
         """
@@ -1551,11 +1457,7 @@ Examples:
             rel, side = victim["rel"], victim["side"]
             before = rel.get(f"{side}Multiplicity")
             rel[f"{side}Multiplicity"] = self._format_multiplicity(0, victim["max"])
-            label = rel.get("name")
-            if side == "target" and isinstance(label, str) and label.strip():
-                end_name = label.strip()
-            else:
-                end_name = rel[side].lower()
+            end_name = self._spec_role(rel, side) or rel[side].lower()
             base = f"{end_name}_at_least_{victim['min']}"
             name, counter = base, 2
             while name in taken_names:

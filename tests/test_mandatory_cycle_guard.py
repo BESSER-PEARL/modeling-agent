@@ -117,6 +117,21 @@ def test_many_end_is_relaxed_even_when_it_is_the_source_end(handler):
     assert con["expression"].endswith("self.bookedroom->size() >= 1")
 
 
+def test_source_end_invariant_uses_the_source_role(handler):
+    """The invariant must navigate the end the converter will actually build.
+    With ``sourceRole='bookedRooms'`` the guard used to emit
+    ``self.bookedroom`` against a real end called ``bookedRooms`` — an OCL
+    rule BESSER cannot resolve, self-inflicted by the repair."""
+    rel = _assoc("BookedRoom", "Booking", "1..*", "1", name="booking")
+    rel["sourceRole"] = "bookedRooms"
+    spec = {"relationships": [rel]}
+    handler._break_mandatory_cycles(spec)
+    con = _constraints(spec)[0]
+    assert con["context"] == "Booking"
+    assert con["expression"].endswith("self.bookedRooms->size() >= 1")
+    assert con["name"] == "bookedRooms_at_least_1"
+
+
 def test_one_to_one_relaxes_the_target_end(handler):
     """Both single-valued: the named, navigable end gives way and the source's
     reference stays mandatory."""

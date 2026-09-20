@@ -286,3 +286,173 @@ def test_native_attachment_survives_guards_and_rejects_invalid_references():
     broken["relationships"][0]["associationClass"] = "ReservedRoom"
     with pytest.raises(ValidationError, match="exactly one association"):
         SystemClassSpec(**broken)
+
+
+# ---------------------------------------------------------------------------
+# Both ends of every relationship, end to end (the inherited-end clash)
+# ---------------------------------------------------------------------------
+# The hotel prose states two rules OCL has to carry: "the total number of
+# guests must not exceed the combined capacity of the rooms booked" and "a
+# room cannot be double-booked". Both navigate association ends by name, so
+# the repair that makes the Person/Employee/Guest ends unique decides whether
+# they survive.
+#
+# The old repair SWAPPED the endpoints of Booking->Guest and
+# Booking->Employee. ``name`` carries the TARGET end's role, so the swap moved
+# 'guests' onto Guest's side and left Booking navigating 'guest' -- BESSER
+# answered "Property 'guests' not found in context 'Booking' (did you mean
+# 'self.guest'?)" and dropped the invariant. Naming the source end instead
+# keeps every end reading correctly from both sides.
+
+_BOTH_ENDS_PROSE = (
+    "A hotel takes bookings. Each booking has a contact person, lists at least "
+    "one guest and covers at least one room, and is handled by an employee. "
+    "Employees and guests are people. The total number of guests must not "
+    "exceed the combined capacity of the rooms booked, and a room cannot be "
+    "double-booked for overlapping dates."
+)
+
+_BOTH_ENDS_OCL = [
+    "context Booking inv guestsWithinCapacity: self.guests->size() <= "
+    "self.rooms->collect(maxOccupancy)->sum()",
+    "context Room inv noOverlappingBookings: self.bookings->forAll(b1, b2 | "
+    "b1 <> b2 implies b1.departureDate <= b2.arrivalDate or "
+    "b2.departureDate <= b1.arrivalDate)",
+]
+
+_BOTH_ENDS_CLASSES = [
+    {"n": "Person", "a": ["name: str"], "m": [], "k": ""},
+    {"n": "Employee", "a": ["staffNumber: str!"], "m": [], "k": ""},
+    {"n": "Guest", "a": ["loyaltyId: str"], "m": [], "k": ""},
+    {"n": "Room", "a": ["roomNumber: str!", "maxOccupancy: int"], "m": [], "k": ""},
+    {"n": "Booking", "a": ["arrivalDate: date", "departureDate: date"], "m": [], "k": ""},
+]
+
+# (f, t, kind, l, how_many_TARGET_for_one_SOURCE, how_many_SOURCE_for_one_TARGET, ls)
+_BOTH_ENDS_RELS = [
+    ("Employee", "Person", "inher", "", "", "", ""),
+    ("Guest", "Person", "inher", "", "", "", ""),
+    ("Booking", "Person", "assoc", "contact", "1", "0..*", "bookingsAsContact"),
+    ("Booking", "Guest", "assoc", "guests", "1..*", "0..*", "bookings"),
+    ("Booking", "Employee", "assoc", "handledBy", "1", "0..*", "bookingsHandled"),
+    ("Booking", "Room", "assoc", "rooms", "1..*", "0..*", "bookings"),
+]
+
+
+def _both_ends_compact(with_source_roles):
+    return {
+        "name": "HotelBooking", "classes": _BOTH_ENDS_CLASSES,
+        "ocl": _BOTH_ENDS_OCL,
+        "rels": [
+            {"f": f, "t": t, "k": k, "l": l, "ac": "",
+             "ls": ls if with_source_roles else "",
+             "how_many_TARGET_for_one_SOURCE": tgt,
+             "how_many_SOURCE_for_one_TARGET": src}
+            for f, t, k, l, tgt, src, ls in _BOTH_ENDS_RELS
+        ],
+    }
+
+
+def _both_ends_spec(with_source_roles):
+    import diagram_handlers.types.class_diagram_handler as module
+    from schemas.compact_class_diagram import CompactSystemClassSpec
+
+    response = CompactSystemClassSpec(**_both_ends_compact(with_source_roles))
+    saved = module.COMPACT_SPEC_ENABLED
+    module.COMPACT_SPEC_ENABLED = True
+    try:
+        handler = ClassDiagramHandler(_CannedLLM(response.model_dump_json()))
+        result = handler.generate_complete_system(_BOTH_ENDS_PROSE,
+                                                  raw_request=_BOTH_ENDS_PROSE)
+    finally:
+        module.COMPACT_SPEC_ENABLED = saved
+    assert result["action"] == "inject_complete_system"
+    return result["systemSpec"]
+
+
+@pytest.fixture(scope="module")
+def both_ends_report():
+    # The REAL TypeScript converter: the OCL navigates attributes as well as
+    # ends, and the contract-only shim leaves attributes out.
+    return _besser_report("real", _both_ends_spec(True))
+
+
+def test_the_repair_never_swaps_endpoints(monkeypatch):
+    """A swap moves both role names to the opposite end."""
+    spec = _both_ends_spec(True)
+    assert [(r["source"], r["target"]) for r in spec["relationships"]] == [
+        (f, t) for f, t, *_ in _BOTH_ENDS_RELS]
+
+
+def test_named_source_ends_survive_the_guards(monkeypatch):
+    spec = _both_ends_spec(True)
+    roles = {(r["source"], r["target"]): r.get("sourceRole")
+             for r in spec["relationships"]}
+    assert roles[("Booking", "Room")] == "bookings"
+    assert roles[("Booking", "Guest")] == "bookings"
+    assert roles[("Booking", "Person")] == "bookingsAsContact"
+
+
+def test_both_stated_rules_parse_against_besser(both_ends_report):
+    """The acceptance criterion: zero warnings and both invariants recovered."""
+    assert both_ends_report["validate"] == {
+        "success": True, "errors": [], "warnings": []}
+    assert both_ends_report["ocl_warnings"] == []
+    assert both_ends_report["constraints"] == [
+        "guestsWithinCapacity", "noOverlappingBookings"]
+
+
+def test_every_end_reads_correctly_from_both_sides(both_ends_report):
+    classes = both_ends_report["classes"]
+    assert sorted(classes["Booking"]["ends"]) == [
+        "contact", "guests", "handledBy", "rooms"]
+    assert sorted(classes["Room"]["ends"]) == ["bookings"]
+    assert sorted(classes["Person"]["ends"]) == ["bookingsAsContact"]
+    assert sorted(classes["Guest"]["ends"]) == ["bookings"]
+    assert sorted(classes["Employee"]["ends"]) == ["bookingsHandled"]
+
+
+def test_unnamed_source_ends_are_repaired_without_losing_the_named_ones():
+    """Same prose, source ends left blank: the inherited clash still has to be
+    resolved, and the OCL-navigable target names must survive it."""
+    spec = _both_ends_spec(False)
+    report = _besser_report("real", spec)
+    assert report["validate"]["errors"] == []
+    assert sorted(report["classes"]["Booking"]["ends"]) == [
+        "contact", "guests", "handledBy", "rooms"]
+    # Employee inherits Person's end, so the three 'booking' ends must differ.
+    inherited = (list(report["classes"]["Person"]["ends"])
+                 + list(report["classes"]["Employee"]["ends"])
+                 + list(report["classes"]["Guest"]["ends"]))
+    assert len(inherited) == len(set(inherited)) == 3
+    assert "guestsWithinCapacity" in report["constraints"]
+
+
+def test_besser_resolves_the_inherited_clash_the_removed_guard_existed_for():
+    """The guard was added for "The class 'Employee' cannot have two
+    association ends with the same name: 'booking'". BESSER's own
+    ``_dedupe_end_name`` has resolved that since 2026-08-24, so the raw
+    unrepaired shape must convert cleanly on its own."""
+    raw = {
+        "systemName": "HotelBooking",
+        "classes": [{"className": n, "attributes": [], "methods": []}
+                    for n in ("Person", "Employee", "Guest", "Booking")],
+        "relationships": [
+            {"type": "Inheritance", "source": "Employee", "target": "Person"},
+            {"type": "Inheritance", "source": "Guest", "target": "Person"},
+            {"type": "Association", "source": "Booking", "target": "Person",
+             "sourceMultiplicity": "0..*", "targetMultiplicity": "1", "name": "contact"},
+            {"type": "Association", "source": "Booking", "target": "Guest",
+             "sourceMultiplicity": "0..*", "targetMultiplicity": "1..*", "name": "guests"},
+            {"type": "Association", "source": "Booking", "target": "Employee",
+             "sourceMultiplicity": "0..*", "targetMultiplicity": "1", "name": "handledBy"},
+        ],
+        "constraints": [],
+    }
+    report = _besser_report("real", raw)
+    assert report["validate"] == {"success": True, "errors": [], "warnings": []}
+    assert sorted(report["classes"]["Booking"]["ends"]) == [
+        "contact", "guests", "handledBy"]
+    for cls in ("Employee", "Guest"):
+        ends = list(report["classes"][cls]["ends"])
+        assert len(ends) == len(set(ends)), ends

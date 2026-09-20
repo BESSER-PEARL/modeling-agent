@@ -1,19 +1,19 @@
 """Association-end uniqueness at CREATION time.
 
 Two associations between the same pair of classes with no distinct role
-names collide once injected: the frontend converter emits ``source.role=''``
-and ``target.role=rel.name||''``, and the validator derives every empty role
-from the lowercased endpoint-class name — so a Doctor who "works in" AND
-"heads" a Department gets two 'department' ends and a guaranteed
-"cannot have two association ends with the same name" error on rich models.
+names collide once injected: the frontend converter emits
+``source.role=rel.sourceRole||''`` and ``target.role=rel.name||''``, and the
+validator derives every empty role from the lowercased endpoint-class name —
+so a Doctor who "works in" AND "heads" a Department gets two 'department'
+ends and a guaranteed "cannot have two association ends with the same name"
+error on rich models.
 
 ``ClassDiagramHandler._ensure_unique_association_ends`` post-processes the
-generated spec before injection: it reorients a later same-direction parallel
-Association (direction is not semantic for the bidirectional type; the flip
-makes the otherwise-unnameable source-derived end name-addressable) and then
-assigns unique relationship names using the validator's own derivation,
-counting ends inherited across generalization chains — matching the
-duplicate-end repair's semantics.
+generated spec before injection: it NAMES the colliding ends, writing
+``name`` for a target end and ``sourceRole`` for a source end, using the
+validator's own derivation and counting ends inherited across generalization
+chains. It never swaps endpoints — ``name`` and ``sourceRole`` label ENDS, so
+a swap moves each name to the opposite end.
 
 The modification path gets the same protection for ``add_relationship`` mods
 (``_ensure_unique_ends_for_added_relationships``), reusing the repair
@@ -48,9 +48,9 @@ def _spec(rels, classes=("Doctor", "Department")):
 
 
 def _effective_ends(spec):
-    """Mirror the injected-model derivation: for rel S→T the source class
-    owns an end named (rel.name or lower(T)); the target class owns an end
-    named lower(S) (the injected source role is always empty)."""
+    """Mirror the injected-model derivation: for rel S→T the source class owns
+    an end named (rel.name or lower(T)); the target class owns an end named
+    (rel.sourceRole or lower(S))."""
     ends = {}
     inheritance_edges = []
     for rel in spec["relationships"]:
@@ -59,8 +59,9 @@ def _effective_ends(spec):
             inheritance_edges.append((rel["source"], rel["target"]))
             continue
         label = (rel.get("name") or "").strip()
+        source_role = (rel.get("sourceRole") or "").strip()
         ends.setdefault(rel["source"], []).append(label or rel["target"].lower())
-        ends.setdefault(rel["target"], []).append(rel["source"].lower())
+        ends.setdefault(rel["target"], []).append(source_role or rel["source"].lower())
     return ends, inheritance_edges
 
 
@@ -87,17 +88,15 @@ class TestSpecEndUniqueness:
         ])
         _handler()._ensure_unique_association_ends(spec)
         _assert_no_duplicate_ends(spec)
-        orientations = {
-            (r["source"], r["target"]) for r in spec["relationships"]
-        }
-        # One link was reoriented so BOTH classes' colliding ends became
-        # name-addressable (the injected source role is never nameable).
-        assert orientations == {("Doctor", "Department"), ("Department", "Doctor")}
-        # The flip preserved the multiplicities' meaning by swapping them.
-        flipped = next(
-            r for r in spec["relationships"] if r["source"] == "Department"
-        )
-        assert (flipped["sourceMultiplicity"], flipped["targetMultiplicity"]) == ("1", "0..1")
+        # Both colliding ends are named in place; nothing is reoriented and no
+        # multiplicity moves.
+        assert [(r["source"], r["target"]) for r in spec["relationships"]] == [
+            ("Doctor", "Department"), ("Doctor", "Department")]
+        assert [(r["sourceMultiplicity"], r["targetMultiplicity"])
+                for r in spec["relationships"]] == [("*", "1"), ("0..1", "1")]
+        second = spec["relationships"][1]
+        assert second["name"] == "department_1"
+        assert second["sourceRole"] == "doctor_1"
 
     def test_opposite_orientation_distinct_names_untouched(self):
         """An already-clean pair — distinct roles, opposite orientations —
@@ -112,24 +111,21 @@ class TestSpecEndUniqueness:
         assert spec == before
         _assert_no_duplicate_ends(spec)
 
-    def test_same_orientation_named_pair_keeps_names_and_flips_one(self):
-        """Distinct names alone cannot fix a same-direction pair (the shared
-        target class still gets two source-derived 'doctor' ends) — one link
-        is flipped, but the user's names are preserved."""
+    def test_same_orientation_named_pair_keeps_names_and_orientation(self):
+        """Distinct names fix Doctor's side; the shared target class still gets
+        two source-derived 'doctor' ends, which a source role now fixes without
+        touching the user's names or the stated direction."""
         spec = _spec([
             _assoc("Doctor", "Department", name="worksIn", sm="*", tm="1"),
             _assoc("Doctor", "Department", name="heads", sm="0..1", tm="1"),
         ])
         _handler()._ensure_unique_association_ends(spec)
         _assert_no_duplicate_ends(spec)
-        names = sorted(
-            (r.get("name") or "") for r in spec["relationships"]
-        )
-        assert names == ["heads", "worksIn"]
-        orientations = {
-            (r["source"], r["target"]) for r in spec["relationships"]
-        }
-        assert orientations == {("Doctor", "Department"), ("Department", "Doctor")}
+        assert sorted((r.get("name") or "") for r in spec["relationships"]) == [
+            "heads", "worksIn"]
+        assert {(r["source"], r["target"]) for r in spec["relationships"]} == {
+            ("Doctor", "Department")}
+        assert spec["relationships"][1]["sourceRole"] == "doctor_1"
 
     def test_inherited_ends_are_counted(self):
         """A parent's end collides with a child's own end across the
@@ -153,14 +149,15 @@ class TestSpecEndUniqueness:
 
     def test_single_unnamed_self_association_gets_a_name(self):
         """A self-association contributes BOTH ends to the same class — even
-        one unnamed self-link collides with itself."""
+        one unnamed self-link collides with itself. The source end takes the
+        suffix, so the association's own label stays free."""
         spec = _spec(
             [_assoc("Employee", "Employee", sm="0..1", tm="*")],
             classes=("Employee",),
         )
         _handler()._ensure_unique_association_ends(spec)
         _assert_no_duplicate_ends(spec)
-        assert spec["relationships"][0]["name"] == "employee_1"
+        assert spec["relationships"][0]["sourceRole"] == "employee_1"
 
     def test_new_names_avoid_existing_relationship_labels(self):
         """Assigned end names double as relationship labels, which must stay

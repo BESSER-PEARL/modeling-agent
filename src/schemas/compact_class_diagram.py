@@ -77,7 +77,15 @@ class CompactRelationshipSpec(BaseModel):
         "NOT the same as the other field, and copying or swapping the two is "
         "the single most common mistake. 1, 0..1, 0..* or 1..*. "
         "'' for inheritance."))
-    l: str = Field(description="Relationship name; '' if none")
+    l: str = Field(description=(
+        "Name of the TARGET end — the role ONE <f> uses to reach its <t> "
+        "(Booking->Room: 'rooms'). ONE identifier, no slash, no space; "
+        "'' for inheritance or when there is genuinely no name."))
+    ls: str = Field(default="", description=(
+        "Name of the SOURCE end — the role ONE <t> uses to reach its <f> "
+        "(Booking->Room: 'bookings'). Name BOTH ends: a blank end falls back "
+        "to the lowercased class name, and those defaults collide across an "
+        "inheritance hierarchy. ONE identifier; '' for inheritance."))
     ac: str = Field(default="", description=(
         "For k=assoc only: name of the class in classes carrying per-link "
         "attributes (e.g. Enrollment.grade on Student-Course). Attach it once "
@@ -119,10 +127,15 @@ COMPACT_ENCODING_RULES = (
     "attribute entries only, never inside a method string.\n"
     "- rels: {f: source, t: target, k: assoc|comp|aggr|inher|real|dep, "
     "how_many_TARGET_for_one_SOURCE and how_many_SOURCE_for_one_TARGET: "
-    "answer each direction SEPARATELY ('' for inheritance), l: name or ''}. "
-    "l is ONE identifier naming the target end — never two names, never a "
-    "slash, never a space. For inheritance f is the SUBCLASS and t the "
-    "SUPERCLASS. ac: association-class name or ''; when values belong to a "
+    "answer each direction SEPARATELY ('' for inheritance), l: target-end "
+    "name, ls: source-end name}. NAME BOTH ENDS, as rule 15 requires: l is "
+    "the end one <f> navigates to reach its <t> (Booking->Room: 'rooms'), "
+    "ls is the end one <t> navigates to reach its <f> ('bookings'). Each is "
+    "ONE identifier — never two names, never a slash, never a space; the "
+    "second name goes in ls, never inside l. Leave an end '' only for "
+    "inheritance or when it genuinely has no name. For inheritance f is the "
+    "SUBCLASS and t the SUPERCLASS. ac: association-class name or ''; when "
+    "values belong to a "
     "pairing, declare their class in classes and attach it with ac on the "
     "direct assoc between the paired classes. Do not add two ordinary "
     "relationships from that association class to the endpoints.\n"
@@ -288,10 +301,14 @@ def expand_compact_spec(compact: CompactSystemClassSpec) -> SystemClassSpec:
             target=r.t,
             # UML writes a multiplicity at the end it counts: the source end
             # says how many sources exist per ONE target.
-            sourceMultiplicity=r.how_many_SOURCE_for_one_TARGET.strip() or "1",
+            # A blank bound is missing information, not a stated "1" — the
+            # invented mandatory end is what rule 7 warns against.
+            sourceMultiplicity=(r.how_many_SOURCE_for_one_TARGET.strip()
+                                or ("1" if r.k == "inher" else "0..*")),
             targetMultiplicity=(r.how_many_TARGET_for_one_SOURCE.strip()
                                 or ("1" if r.k == "inher" else "*")),
             name=r.l.strip() or None,
+            sourceRole=r.ls.strip() or None,
             associationClass=r.ac.strip() or None,
         ))
 

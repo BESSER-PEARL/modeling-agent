@@ -36,9 +36,9 @@ def _expand(*rels, classes=("Booking", "Employee", "Guest", "Person", "Room")):
     return expand_compact_spec(spec)
 
 
-def _rel(f, t, t_per_f, f_per_t, k="assoc", l=""):
+def _rel(f, t, t_per_f, f_per_t, k="assoc", l="", ls=""):
     return CompactRelationshipSpec(
-        f=f, t=t, k=k, l=l,
+        f=f, t=t, k=k, l=l, ls=ls,
         how_many_TARGET_for_one_SOURCE=t_per_f,
         how_many_SOURCE_for_one_TARGET=f_per_t,
     )
@@ -104,9 +104,12 @@ def test_loose_values_are_normalized(raw, expected):
     assert out.relationships[0].targetMultiplicity == expected
 
 
-def test_empty_source_side_falls_back_to_one():
+def test_empty_source_side_falls_back_to_optional_many():
+    """A blank bound is missing information. Defaulting it to "1" invents a
+    MANDATORY end — the inverted-bound failure this module exists for, and
+    what the prompt's own rule 7 warns against."""
     out = _expand(_rel("Booking", "Guest", "0..*", ""))
-    assert out.relationships[0].sourceMultiplicity == "1"
+    assert out.relationships[0].sourceMultiplicity == "0..*"
 
 
 def test_inheritance_ends_are_not_multiplicities():
@@ -206,3 +209,51 @@ def test_every_schema_field_is_named_in_the_encoding_rules():
     for name in CompactRelationshipSpec.model_fields:
         if len(name) > 1:  # single letters appear as 'f:', 't:' etc.
             assert name in COMPACT_ENCODING_RULES, f"{name} undocumented"
+
+
+# -- the multiplicity whitelist must be closed ---------------------------
+@pytest.mark.parametrize("raw", ["several", "one or more", "a few", "some",
+                                 "1 or 2", "0..n..1", "multiple"])
+def test_words_outside_the_grammar_never_reach_besser(raw):
+    """``_normalize_multiplicity`` mapped a fixed vocabulary and passed the
+    rest through: 'several' stayed 'several' and 'one or more' became
+    'oneormore'. BESSER's multiplicity parser then aborts the whole
+    diagram->BUML conversion, which reaches the user as an INTERNAL error."""
+    import re
+    out = _expand(_rel("Booking", "Guest", raw, raw))
+    rel = out.relationships[0]
+    for value in (rel.sourceMultiplicity, rel.targetMultiplicity):
+        assert re.match(r"^(\d+|\*)(\.\.(\d+|\*))?$", value), value
+        assert value == "0..*"
+
+
+def test_a_legal_explicit_range_is_not_clobbered():
+    out = _expand(_rel("Booking", "Guest", "2..5", "3"))
+    rel = out.relationships[0]
+    assert rel.targetMultiplicity == "2..5"
+    assert rel.sourceMultiplicity == "3"
+
+
+# -- both ends are nameable ----------------------------------------------
+def test_ls_carries_the_source_end_name():
+    """Rule 15 tells the model to name BOTH ends; before ``ls`` existed the
+    compact schema had nowhere to put the second name and it was dropped."""
+    out = _expand(_rel("Booking", "Room", "1..*", "0..*", l="rooms", ls="bookings"))
+    rel = out.relationships[0]
+    assert rel.name == "rooms"
+    assert rel.sourceRole == "bookings"
+
+
+def test_a_blank_ls_stays_unset():
+    out = _expand(_rel("Booking", "Room", "1..*", "0..*", l="rooms"))
+    assert out.relationships[0].sourceRole is None
+
+
+def test_encoding_rules_agree_with_rule_15_about_naming_both_ends():
+    """The rules are appended AFTER the system prompt, so recency favours
+    them: they must not tell the model to name one end when rule 15 demands
+    both."""
+    from src.schemas.compact_class_diagram import COMPACT_ENCODING_RULES
+    assert "NAME BOTH ENDS" in COMPACT_ENCODING_RULES
+    assert "ls" in COMPACT_ENCODING_RULES
+    assert "l is ONE identifier naming the target end" not in COMPACT_ENCODING_RULES
