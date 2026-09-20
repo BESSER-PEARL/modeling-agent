@@ -362,3 +362,25 @@ class ClassModification(BaseModel):
 
 class ClassModificationResponse(BaseModel):
     modifications: List[ClassModification] = Field(min_length=1, description="List of modifications to apply")
+
+
+class RecoveredEnumerationSpec(BaseModel):
+    """Literals for an enumeration an attribute references but nobody declared.
+
+    ``_declare_referenced_enumerations`` finds the reference deterministically;
+    only the NAMING of the literals needs language, because a specification
+    writes a state as "the guests have not arrived yet" rather than
+    NOT_ARRIVED.
+    """
+    typeName: str = Field(description="The referenced type name, echoed back exactly.")
+    literals: List[str] = Field(
+        description="The values this attribute is restricted to, in the order "
+                    "the specification lists them, as UPPER_SNAKE_CASE "
+                    "identifiers. EMPTY when the specification does not "
+                    "restrict it to a fixed set — never invent values.",
+    )
+
+
+class RecoveredEnumerationsSpec(BaseModel):
+    """One entry per referenced-but-undeclared type."""
+    enumerations: List[RecoveredEnumerationSpec] = Field(default_factory=list)

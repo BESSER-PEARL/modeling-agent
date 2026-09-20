@@ -32,6 +32,7 @@ from ..core.prompt_fragments import (
 )
 from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
 from schemas import SingleClassSpec, SystemClassSpec, ClassModificationResponse
+from schemas.class_diagram import RecoveredEnumerationsSpec
 from schemas.compact_class_diagram import (
     COMPACT_ENCODING_RULES,
     CompactSystemClassSpec,
@@ -239,6 +240,8 @@ RULES:
 15. PARALLEL ASSOCIATIONS NEED DISTINCT NAMES. When the same two classes are connected by MORE THAN ONE relationship (e.g. a Doctor "works in" a Department AND "heads" a Department), give EACH of those relationships a distinct, meaningful name ("worksIn", "heads") — never leave two relationships between the same pair of classes unnamed or identically named. The relationship name becomes the association end's role name; missing or duplicate names collide into the same role and fail validation. NAME BOTH ENDS OF EVERY RELATIONSHIP, ALWAYS: "name" is the TARGET end's role and "sourceRole" is the SOURCE end's (compact encoding: l and ls). An end you leave blank is not neutral - it defaults to the lowercased class name, and those defaults collide silently ACROSS AN INHERITANCE HIERARCHY. Observed live 2026-09-17, and it aborted the whole generation before a single file was written: Booking(unnamed)->Person[contact] gave Person an end called 'booking', Booking(unnamed)->Employee[handledBy] gave Employee an end called 'booking', Employee inherits Person, and the run died with "The class 'Employee' cannot have two association ends with the same name: 'booking'". Guest had the identical clash. So: whenever a PARENT class and its SUBCLASSES are all associated with the same other class - a Person/Employee/Guest hierarchy that all relate to Booking is the textbook case - every one of those ends needs its own distinct name. Correct: Booking->Person with sourceRole='bookingsAsContact' and name='contact'; Booking->Employee with sourceRole='bookingsHandled' and name='handledBy'; Booking->Guest with sourceRole='bookingsStayedOn' and name='guests'. Check every class, INCLUDING the names it inherits, before you finish.
 13. CONSTRAINTS (OCL) — ONLY FOR RULES NO FIELD FLAG OR MULTIPLICITY CAN EXPRESS. SINGLE-ATTRIBUTE UNIQUENESS IS NOT ONE OF THEM: when the user says one attribute identifies the object or must be unique — "every room is identified by its room number", "emails must be unique", "each book is known by its ISBN" — set isExternalId=true on THAT attribute (compact encoding: the '!' suffix, 'roomNumber: str!') and write NO constraint for it. That flag is what makes the generated database reject a second room "101"; an OCL invariant for it is ignored by the generators and the duplicate gets in. If the user EXPLICITLY states a business rule that multiplicities, attribute types and that flag cannot express — a limit beyond cardinality ("a speaker presents at most one session per time slot"), a value range ("age must be at least 18") or a value shape ("must be a valid email") — capture it in the "constraints" list as an OCL invariant in B-OCL syntax: context <ClassName> inv <name>: <expression>. The context MUST be one of the classes you created. Examples: "context Account inv positiveBalance: self.balance >= 0"; "context Speaker inv oneSessionPerSlot: self.sessions->forAll(s1, s2 | s1 <> s2 implies s1.timeSlot <> s2.timeSlot)". CRITICAL: capture ONLY rules the user actually stated. If the user stated no such rule, leave "constraints" EMPTY — NEVER invent constraints. BUT "EXPLICITLY STATED" MEANS STATED IN ORDINARY PROSE — a rule does NOT have to be labelled "constraint", "invariant" or "rule", and does NOT have to be written in OCL. Every one of these phrasings is an explicit statement you must capture: "must not exceed", "cannot be more than", "may not overlap", "cannot be double-booked", "must be a valid <X>", "at least", "at most", "must not be before/after", "only if". Worked examples from a hotel request: "the total number of guests must not exceed the combined capacity of the rooms booked" => context Booking inv guestsWithinCapacity: self.guestCount <= self.rooms->collect(capacity)->sum(); "a room cannot be double-booked for overlapping dates" => context Room inv noOverlappingBookings: self.bookings->forAll(b1, b2 | b1 <> b2 implies b1.departureDate <= b2.arrivalDate or b2.departureDate <= b1.arrivalDate); "the arrival date must not be after the departure date" => context Booking inv arrivalBeforeDeparture: self.arrivalDate <= self.departureDate; "email and phone must be valid" => context Guest inv validEmail: self.email.matches('^[^\\s@]+@[^\\s@]+\\.[A-Za-z]{{2,}}$') and context Guest inv validPhone: self.phone.matches('^\\+?[0-9]{{7,15}}$'). A SHAPE CONSTRAINT IS ANCHORED WITH ^ AND $ AND NEVER ACCEPTS WHITESPACE unless the user said so — an unanchored pattern let "spaces in@email.com" through in a live run. Before you finish, re-read the request for these phrasings — four stated rules producing an empty constraints list is a failure, not caution.
 
+18. A VALUE THE USER SAYS IS NOT ENTERED IS DERIVED. When the request says a value is "followed automatically", "never set by hand", "neither is set by hand", "not typed in", "worked out from", "computed from" or "calculated", mark that attribute DERIVED (compact encoding: the '/' prefix, '/totalPrice: float'). That flag is what keeps the value out of the generated create form and makes the backend compute it; an unmarked one ships as an ordinary stored field that the user is asked to type in, which is exactly what the request said must not happen. Worked examples: "The status of a task is followed automatically, and it is never set by hand" => /status: TaskStatus. "The total amount of the order is likewise not typed in. It is worked out from the quantities and agreed unit prices" => /totalAmount: float. "Two states are followed for every booking, and neither is set by hand" => BOTH state attributes are derived. Mark ONLY values the request describes this way - never guess that an ordinary field is computed.
+
 Examples:
 - E-commerce: User, Product, Order, Payment, ShoppingCart with associations and multiplicities
 - Library: Book, Author, Member, Loan with inheritance (DigitalBook extends Book) and compositions
@@ -297,7 +300,15 @@ Examples:
                 "that attribute, not an OCL rule. Did they EXPLICITLY state any "
                 "other business rule that needs an OCL constraint (a limit beyond "
                 "cardinality, a value range, a value shape)? Only note rules the "
-                "user actually stated — do NOT invent any.\n\n"
+                "user actually stated — do NOT invent any.\n"
+                "7. Does the request say any value is NOT entered by the "
+                "user — 'followed automatically', 'never set by hand', "
+                "'not typed in', 'worked out from', 'computed from'? "
+                "Name each one and say what it is computed from: those "
+                "attributes are DERIVED. And does it restrict any value to "
+                "a CLOSED SET of named options? Each such set is its own "
+                "enumeration, declared as a class, with exactly the user's "
+                "values in the order given.\n\n"
                 "Provide a clear design analysis. Be thorough about relationships — "
                 "they are the most commonly missed element. Do NOT pad the design "
                 "with peripheral subsystems the user didn't ask for."
@@ -342,6 +353,15 @@ Examples:
             # Rewrite any such relationship into an enum-typed attribute on the
             # non-enum side (or drop it). Enums are attribute types, not related.
             self._rewrite_enum_relationships(system_spec)
+
+            # Guard: an attribute may reference an enumeration the model
+            # forgot to declare. Declare it from the user's own words, BEFORE
+            # the guard below, which would otherwise read the reference as a
+            # hallucinated type and coerce it to String — losing the closed
+            # value set. Every String-typed attribute in seven archived Qwen
+            # runs (12 of 12) was exactly that.
+            self._declare_referenced_enumerations(
+                system_spec, raw_request or user_request)
 
             # Guard: never ship an attribute whose TYPE names another class.
             # The deterministic code generators only handle primitive + enum
@@ -1364,6 +1384,158 @@ Examples:
         "float", "double", "decimal", "number", "char", "byte",
         "date", "datetime", "time", "timedelta", "any",
     })
+
+    def _declare_referenced_enumerations(
+        self, system_spec: Dict[str, Any], request_text: str,
+    ) -> None:
+        """Declare an enumeration an attribute references but nobody created.
+
+        :meth:`_rewrite_class_typed_attributes` coerces an attribute whose
+        type names nothing in the spec to ``String``. For a genuinely
+        hallucinated type that is right. For ``Ticket.status : StatusEnum``
+        it throws away the one thing the model got right.
+
+        Measured on Qwen3-30B-A3B: across seven archived runs every single
+        ``String``-typed attribute (12 of 12) was a state the specification
+        had closed, and nothing else in those runs is typed ``String`` -
+        ordinary attributes are lowercase ``str``/``int``/``date``, because
+        ``String`` is not a token the model writes here, it is what the
+        coercion below assigns. A logged run shows it happening::
+
+            Coerced unknown attribute type Ticket.status : StatusEnum -> String
+            Coerced unknown attribute type Ticket.urgency : UrgencyEnum -> String
+
+        The enumerations were missing from the model's ``classes`` list, not
+        from its intent. Recover them instead of erasing them.
+
+        Detection is deterministic. Only the literal NAMES need language - a
+        specification says "the guests have not arrived yet", not
+        NOT_ARRIVED - so they come from one narrow structured call, made only
+        when there is something to recover (no candidates, no call, so a
+        model that declares its enumerations pays nothing). The repair fails
+        closed: whatever is not recovered is left untouched for the existing
+        guard to coerce exactly as before.
+        """
+        classes = system_spec.get("classes")
+        if not isinstance(classes, list) or not request_text:
+            return
+
+        declared = {
+            cls["className"] for cls in classes
+            if isinstance(cls, dict) and isinstance(cls.get("className"), str)
+        }
+        candidates: Dict[str, List[str]] = {}
+        for cls in classes:
+            if not isinstance(cls, dict) or cls.get("isEnumeration"):
+                continue
+            for attr in cls.get("attributes") or []:
+                if not isinstance(attr, dict):
+                    continue
+                type_name = attr.get("type")
+                if not isinstance(type_name, str) or not type_name.strip():
+                    continue
+                type_name = type_name.strip()
+                if (type_name.lower() in self._PRIMITIVE_ATTR_TYPES
+                        or type_name in declared
+                        # A type that is not already a valid identifier would
+                        # become an invalid CLASS name here, and
+                        # _sanitize_identifier_names has already run. Leave it
+                        # to the coercion below, as today.
+                        or _VALID_IDENTIFIER_RE.match(type_name) is None
+                        # Same population the coercion below calls hallucinated:
+                        # a PascalCase type naming nothing in the spec. No name
+                        # pattern beyond that — "DayOfWeek" is as much an
+                        # enumeration as "OrderStatus", and the recovery call is
+                        # what decides, answering "no fixed set" for a genuine
+                        # hallucination.
+                        or not type_name[:1].isupper()):
+                    continue
+                candidates.setdefault(type_name, []).append(
+                    f"{cls.get('className')}.{attr.get('name')}")
+        if not candidates:
+            return
+
+        wanted = "\n".join(
+            f"- {type_name} (referenced by {', '.join(sorted(owners))})"
+            for type_name, owners in sorted(candidates.items())
+        )
+        prompt = (
+            "These attribute types are referenced by the model of this "
+            "system but were never declared:\n"
+            f"{wanted}\n\n"
+            "For each one, read the specification below and give the values "
+            "that attribute is restricted to, in the order the specification "
+            "lists them, as UPPER_SNAKE_CASE identifiers. Name each value "
+            "after what the specification says it means: 'the guests have "
+            "not arrived yet' is NOT_ARRIVED, 'awaiting payment' is "
+            "AWAITING_PAYMENT. If the specification does not restrict an "
+            "attribute to a fixed set of values, return an EMPTY list for "
+            "it - never invent values.\n\n"
+            f"Specification:\n{request_text}"
+        )
+        try:
+            recovered = self.predict_structured(
+                prompt,
+                RecoveredEnumerationsSpec,
+                system_prompt=(
+                    "You extract enumerated value sets from a system "
+                    "specification. You never invent a value the "
+                    "specification does not state."
+                ),
+                model=MODEL_GENERATION_SMALL,
+            )
+        except Exception as exc:  # noqa: BLE001 - recovery is best-effort
+            logger.warning(
+                "[ClassDiagram] Enumeration recovery failed (%s); leaving %d "
+                "undeclared type(s) to the class-typed-attribute guard",
+                exc, len(candidates),
+            )
+            return
+
+        added = 0
+        for entry in recovered.enumerations:
+            type_name = (entry.typeName or "").strip()
+            if type_name not in candidates or type_name in declared:
+                continue
+            literals: List[str] = []
+            seen: set = set()
+            for literal in entry.literals:
+                # UPPER_SNAKE, keeping the underscores: _to_identifier() would
+                # camelCase "NOT_ARRIVED" into "notArrived" and lose them.
+                name = re.sub(r"[^A-Za-z0-9]+", "_", str(literal or "")).strip("_").upper()
+                if name[:1].isdigit():
+                    name = "_" + name
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                literals.append(name)
+            if len(literals) < 2:
+                # One value is not a choice, and none means the specification
+                # closed nothing. Either way leave it to the existing guard.
+                continue
+            classes.append({
+                "className": type_name,
+                "attributes": [
+                    {"name": literal, "type": None, "visibility": "public",
+                     "isDerived": False, "defaultValue": None,
+                     "isOptional": False, "isExternalId": False}
+                    for literal in literals
+                ],
+                "methods": [],
+                "isAbstract": False,
+                "isEnumeration": True,
+            })
+            declared.add(type_name)
+            added += 1
+            logger.info(
+                "[ClassDiagram] Declared enumeration %s(%s) referenced by %s",
+                type_name, ", ".join(literals), ", ".join(candidates[type_name]),
+            )
+        if added:
+            logger.info(
+                "[ClassDiagram] Undeclared-enumeration guard: %d of %d recovered",
+                added, len(candidates),
+            )
 
     def _rewrite_class_typed_attributes(self, system_spec: Dict[str, Any]) -> None:
         """Convert an attribute TYPED as another class into an Association.
