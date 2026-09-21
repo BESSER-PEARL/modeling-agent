@@ -1851,6 +1851,65 @@ Examples:
                     names.add(name.strip())
         return names
 
+    def _normalise_modification_types(self, spec: Dict[str, Any]) -> None:
+        """Canonicalise Java-flavoured type names on the MODIFY path.
+
+        Every type guard — ``_sanitize_member_types``,
+        ``_rewrite_class_typed_attributes``, ``_declare_referenced_enumerations``
+        — is called from ``generate_complete_system`` only, so a type arriving
+        through a modification reached BUML with nothing looking at it. The
+        same ``LocalDate`` that the generate path canonicalises to ``date``
+        went through a modify op untouched.
+
+        This is the deterministic half of that gap and it is safe to close
+        here: the mapping mirrors the frontend's own ``TYPE_ALIASES``, so a
+        modify op and a full generation now agree. The other half — coercing a
+        genuinely unknown type, and rewriting a class-typed attribute into an
+        association — needs the declared-type set and is left to the caller
+        rather than guessed at from one op.
+
+        Mutates *spec* in place. No-op when no op carries an aliased type.
+        """
+        mods = spec.get("modifications")
+        if not isinstance(mods, list):
+            mods = [spec]
+
+        def _canon(value: Any) -> Any:
+            if not isinstance(value, str) or not value.strip():
+                return value
+            return self._TYPE_ALIAS_NORMALISATION.get(value.strip().lower(), value)
+
+        renamed = 0
+        for mod in mods:
+            if not isinstance(mod, dict):
+                continue
+            changes = mod.get("changes")
+            if not isinstance(changes, dict):
+                continue
+            for key in ("type", "returnType"):
+                before = changes.get(key)
+                after = _canon(before)
+                if after != before:
+                    changes[key] = after
+                    renamed += 1
+            for list_key, type_key in (("attributes", "type"),
+                                       ("methods", "returnType"),
+                                       ("parameters", "type")):
+                for entry in changes.get(list_key) or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    before = entry.get(type_key)
+                    after = _canon(before)
+                    if after != before:
+                        entry[type_key] = after
+                        renamed += 1
+
+        if renamed:
+            logger.info(
+                "[ClassDiagram] Canonicalised %d aliased type(s) on the "
+                "modification path", renamed,
+            )
+
     def _rewrite_enum_relationship_mods(
         self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,
     ) -> None:
@@ -3055,6 +3114,9 @@ Examples:
                     logger.info("[ClassDiagram] Detected refactoring action, expanding into primitives")
                     spec = handler._expand_refactoring_actions(spec, current_model)
                 handler._rewrite_enum_relationship_mods(spec, current_model)
+                # Runs after the expansion, so ops synthesised by a
+                # refactoring are canonicalised too.
+                handler._normalise_modification_types(spec)
                 return spec
 
             # Up to TWO samples: when EVERY op targets something absent from
