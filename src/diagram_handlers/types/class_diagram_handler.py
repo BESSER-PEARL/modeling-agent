@@ -412,6 +412,16 @@ Examples:
             # exact end-name derivation the validator applies.
             self._ensure_unique_association_ends(system_spec)
 
+            # Guard: an abstract base declared as the CHILD of its own
+            # subclasses. Must run before the shadow-strip below, which walks
+            # this graph and would otherwise strip from the wrong end.
+            self._fix_inverted_inheritance(system_spec)
+
+            # Guard: isAbstract on a LEAF rather than the base (3 of 10 live
+            # runs). An abstract leaf cannot be instantiated, so the app cannot
+            # create that entity at all.
+            self._fix_misplaced_abstract(system_spec)
+
             # Guard: a subclass must not redefine an attribute an ancestor
             # already declares (BUML validates attribute shadowing; the LLM
             # loves stamping id/createdAt/updatedAt on EVERY class, including
@@ -584,6 +594,104 @@ Examples:
             logger.info(
                 "[ClassDiagram] Enum-relationship guard: rewrote %d, dropped %d",
                 rewritten, dropped,
+            )
+
+    def _fix_inverted_inheritance(self, system_spec: Dict[str, Any]) -> None:
+        """Flip an Inheritance whose ends are the wrong way round.
+
+        Live report (2026-09-22, hotel): the spec shipped ``Person -> Guest``
+        and ``Person -> Employee``. The converter reads source as the SUBCLASS,
+        so the model came out as "Person extends Guest" AND "Person extends
+        Employee" -- one class multiply inheriting from two others, exactly
+        backwards from "two specialised kinds of persons exist". Nothing caught
+        it: DomainModel.validate() checks that both ends EXIST, never that the
+        direction is sensible, so it validated clean and reached code
+        generation inverted.
+
+        The signal is the SHARED SOURCE, not the abstract flag. A base extended
+        by two kinds appears as two links sharing a TARGET; the inverted form
+        shares a SOURCE, which would be multiple inheritance -- never what these
+        specs ask for.
+
+        Keying on ``isAbstract`` was tried first and is wrong: run 2 of a
+        10-run batch emitted the direction CORRECTLY (``Employee -> Person``)
+        while marking *Employee* abstract and Person concrete, so an
+        abstract-child rule would have inverted a correct hierarchy. The flag
+        travels independently of the direction and cannot arbitrate it.
+
+        A single inverted link with no shared end is left alone -- there is no
+        evidence to act on, and guessing is how the above nearly happened.
+        """
+        rels = [r for r in system_spec.get("relationships", [])
+                if isinstance(r, dict) and r.get("type") == "Inheritance"]
+        if len(rels) < 2:
+            return
+        names = {c.get("className") for c in system_spec.get("classes", [])
+                 if isinstance(c, dict)}
+
+        by_source: Dict[str, list] = {}
+        for rel in rels:
+            child, parent = rel.get("source"), rel.get("target")
+            if child in names and parent in names and child != parent:
+                by_source.setdefault(child, []).append(rel)
+
+        flipped = []
+        for child, group in by_source.items():
+            if len(group) < 2:
+                continue
+            for rel in group:
+                rel["source"], rel["target"] = rel["target"], rel["source"]
+                flipped.append(f"{child}->{rel['source']}")
+
+        if flipped:
+            logger.info(
+                "[ClassDiagram] Flipped %d inverted inheritance link(s) "
+                "(one class declared as the subclass of several): %s",
+                len(flipped), ", ".join(flipped)[:200],
+            )
+
+    def _fix_misplaced_abstract(self, system_spec: Dict[str, Any]) -> None:
+        """Clear ``isAbstract`` from a class that is only ever a SUBCLASS.
+
+        Measured on a 10-run live batch of the hotel prompt: 3 runs marked a
+        leaf abstract instead of the base -- ``Guest`` in one, ``Employee`` in
+        another, and in run 07 BOTH while ``Person`` stayed concrete. An
+        abstract leaf cannot be instantiated, so the delivered app could not
+        create a guest at all, and nothing downstream objected: BUML is happy to
+        hold an abstract class with no subclasses.
+
+        One-directional on purpose. A class that is the SOURCE of an inheritance
+        and never the TARGET has subclasses of nothing beneath it, so abstract
+        is meaningless there and clearing it is safe. Promoting the base instead
+        would be a guess: the benchmark's own known-good hotel model marks NO
+        class abstract, so an abstract base is not required by these specs.
+
+        Runs after the direction guard, which must settle who is the subclass.
+        """
+        classes = {
+            c.get("className"): c
+            for c in system_spec.get("classes", [])
+            if isinstance(c, dict) and c.get("className")
+        }
+        inh = [r for r in system_spec.get("relationships", [])
+               if isinstance(r, dict) and r.get("type") == "Inheritance"]
+        if not inh or not classes:
+            return
+
+        bases = {r.get("target") for r in inh}
+        cleared = []
+        for rel in inh:
+            child = classes.get(rel.get("source"))
+            name = rel.get("source")
+            if child and name not in bases and child.get("isAbstract"):
+                child["isAbstract"] = False
+                cleared.append(name)
+
+        if cleared:
+            logger.info(
+                "[ClassDiagram] Cleared isAbstract from %d leaf class(es) "
+                "(a subclass with nothing beneath it cannot be abstract): %s",
+                len(cleared), ", ".join(sorted(set(cleared)))[:200],
             )
 
     def _strip_shadowed_attributes(self, system_spec: Dict[str, Any]) -> None:

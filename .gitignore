@@ -18,3 +18,5 @@ htmlcov/
 docs/build/
 scripts/*
 .claude/
+tests/live/batch/
+tests/live/spec_out.json
