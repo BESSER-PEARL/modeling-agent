@@ -146,20 +146,27 @@ def test_prompt_covers_attributes_that_belong_to_the_relationship():
     assert "class for the link itself" in low
 
 
-def test_link_rule_carries_the_agreed_price_example():
-    assert "ReservedRoom" in PROMPT
-    assert "agreedPrice" in PROMPT
-    assert 'Booking--Room with associationClass="ReservedRoom"' in PROMPT
-    assert "ReservedRoom.extraCharges" in PROMPT
+def test_link_rule_carries_a_worked_example():
+    """One concrete example, and it must be DOMAIN-NEUTRAL.
+
+    The rule used to carry a second, hotel-specific example (Booking--Room /
+    ReservedRoom.agreedPrice). Measured across this file's prompt text, hotel
+    vocabulary ran to 80 occurrences, so every request in any domain was read
+    through a hotel lens. The principle is domain-free; the example should be
+    too, and Student--Course/Enrollment.grade already was."""
+    assert 'Student--Course with associationClass="Enrollment"' in PROMPT
+    assert "Enrollment.grade" in PROMPT
     assert "Do NOT replace it with two ordinary links" in PROMPT
-    assert "Booking 1 -- 0..* ReservedRoom 0..* -- 1 Room" not in PROMPT
+    for hotel_term in ("ReservedRoom", "agreedPrice", "Booking--Room"):
+        assert hotel_term not in PROMPT, f"rule 17 re-acquired {hotel_term!r}"
 
 
 def test_link_rule_explains_why_neither_class_works():
     """Without the reason, the model puts it on whichever class it met first."""
     low = PROMPT.lower()
-    assert "overwrites it for every other booking" in low
-    assert "cannot distinguish two different rooms" in low
+    # Stated over abstract endpoints, so it transfers to any domain.
+    assert "overwrites it for every other b" in low
+    assert "cannot tell two different a" in low
 
 
 def test_link_rule_lists_the_tell_tale_wording():

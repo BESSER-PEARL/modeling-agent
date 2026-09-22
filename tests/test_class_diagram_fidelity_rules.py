@@ -191,7 +191,10 @@ class TestLinkClassExtraAmounts:
     def test_extra_charges_are_a_link_attribute(self):
         assert "associationClass" in PROMPT
         low = PROMPT.lower()
-        assert "agreed price and extra charges" in low
+        # The rule must still demand that SEVERAL per-link values stay
+        # together -- the defect this class was written for -- but say it
+        # without naming a domain.
         assert "all those per-link attributes" in low
-        assert "do not drop amounts" in low
+        assert "several per-link values" in low
+        assert "put them all on that one link class" in low
         assert "do not replace it with two ordinary links" in low
