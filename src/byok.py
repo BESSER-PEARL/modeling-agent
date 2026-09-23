@@ -88,8 +88,8 @@ class BYOKError(RuntimeError):
 # (quality / heavy) and "small" (cheap / latency-sensitive) — and map each
 # tier to the chosen provider's canonical equivalent.
 #
-# ``large`` honours the user's explicitly chosen model (``user_api_model``)
-# when supplied; ``small`` always uses the provider's cheap sibling to keep
+# A model the user explicitly chose (``user_api_model``) is used for every call,
+# both tiers. Without one, ``small`` uses the provider's cheap sibling to keep
 # routing / repair / classifier-tier calls inexpensive on the user's key.
 _PROVIDER_TIER_MODELS = {
     "openai":    {"large": "gpt-5.5",              "small": "gpt-4o-mini"},
@@ -123,11 +123,13 @@ def resolve_model(
     user_model: Optional[str],
 ) -> str:
     """Map the agent's per-call (OpenAI) model request to a concrete model
-    name for *provider*."""
+    name for *provider*. A model the user picked is used for every call; the
+    tier defaults apply only when they picked none."""
+    chosen = (user_model or "").strip()
+    if chosen:
+        return chosen
     table = _PROVIDER_TIER_MODELS.get(provider, _PROVIDER_TIER_MODELS["openai"])
-    if _tier_of(requested_model) == "large":
-        return (user_model or "").strip() or table["large"]
-    return table["small"]
+    return table[_tier_of(requested_model)]
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +152,7 @@ def _allow_custom_base_url() -> bool:
 @dataclass(frozen=True)
 class BYOKConfig:
     """The user's key/provider for a single request. ``model`` is the user's
-    explicitly chosen model (used for the ``large`` tier), if any. ``base_url``
+    explicitly chosen model (used for every call), if any. ``base_url``
     is set for the OpenAI-compatible 'PIA'/'local' providers (they arrive as
     provider='openai' + this URL)."""
 

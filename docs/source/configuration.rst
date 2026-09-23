@@ -313,10 +313,10 @@ and the shared server LLM is never mutated.
 
 Because BYOK bypasses any gateway, the agent's OpenAI-canonical per-call
 model names are collapsed into two tiers and mapped to each provider's
-equivalent (``_PROVIDER_TIER_MODELS`` in ``src/byok.py``). The ``large``
-tier honours the user's explicitly chosen model when supplied; ``small``
-always uses the provider's cheap sibling so routing and repair calls stay
-inexpensive on the user's key.
+equivalent (``_PROVIDER_TIER_MODELS`` in ``src/byok.py``). A model the user
+explicitly chose is used for every call; only without one does ``small`` use
+the provider's cheap sibling so routing and repair calls stay inexpensive on
+the user's key.
 
 
 Tunable Constants

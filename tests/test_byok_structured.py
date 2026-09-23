@@ -232,3 +232,20 @@ def test_the_per_call_timeout_outlasts_a_long_reasoning_pass():
     """Live (2026-09-23): the hotel spec's reasoning pass on Nebius Qwen was cut
     at exactly 120 s and redone, costing ~2 minutes; the retry took ~110 s."""
     assert byok._SDK_TIMEOUT_SECONDS >= 300
+
+
+# ---------------------------------------------------------------------------
+# The model the user picked is used for every call
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("requested", [None, "gpt-4o-mini", "gpt-4o", "gpt-5.5"])
+def test_the_users_chosen_model_is_used_for_every_call(requested):
+    """A user who picks Sonnet 5 gets Sonnet 5 everywhere. The cheap sibling
+    for "small" calls also broke gateways: PIA refuses the undated
+    claude-haiku-4-5 alias (403), so small calls failed outright."""
+    assert byok.resolve_model("anthropic", requested, "claude-sonnet-5") == "claude-sonnet-5"
+
+
+def test_without_a_chosen_model_the_provider_defaults_apply():
+    assert byok.resolve_model("anthropic", "gpt-5.5", None) == "claude-sonnet-4-6"
+    assert byok.resolve_model("anthropic", None, None) == "claude-haiku-4-5"
