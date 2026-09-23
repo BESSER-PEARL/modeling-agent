@@ -327,3 +327,16 @@ def test_field_description_asks_to_preserve_concrete_nouns():
     assert "status values" in low
     assert "named operations" in low
     assert "stated rules" in low
+
+
+def test_the_summary_is_labelled_as_notes_that_cannot_add_anything():
+    """Live (2026-09-23): the summary of a hotel spec that asks for SQLite and
+    no login said "PostgreSQL ... login/signup, role-based access ... Docker".
+    It stays (it can carry a stack the user accepted with a plain "yes"), but
+    as notes the coding model may not add features or override the spec from."""
+    instructions = _payload(original_request=SPEC)["instructions"]
+    notes = instructions.index("## Assistant's notes")
+    assert notes < instructions.index(SUMMARY) < instructions.index("original request, verbatim")
+    header = instructions[notes:instructions.index(SUMMARY)].lower()
+    assert "may be inaccurate" in header
+    assert "never add" in header and "user's request wins" in header

@@ -181,7 +181,16 @@ def build_trigger_smart_generator_payload(
     original = (original_request or "").strip()
     validate_message_length(original, label="The original specification")
     if original and original not in instructions:
+        # The summary is kept (it can carry a stack the user accepted with a
+        # plain "yes") but labelled: live, one said "PostgreSQL, login, roles"
+        # for a spec asking for SQLite and no login.
         instructions = (
+            "## Assistant's notes (may be inaccurate)\n\n"
+            "Use these only for choices the user confirmed in the conversation "
+            "that are missing from their request below. Never add a feature, "
+            "database, framework, tool or deployment step that is not in the "
+            "user's request; where these notes disagree with it, the user's "
+            "request wins.\n\n"
             f"{instructions}\n\n"
             "## The user's original request, verbatim\n\n"
             "This is the authority. Where the summary above is shorter or "
