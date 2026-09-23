@@ -109,8 +109,9 @@ create_complete_system_intent = agent.new_intent(
         '"create a deployment diagram for agent services". '
         "IMPORTANT: When 'generate' is followed by a diagram type (class "
         "diagram, state machine, object diagram, agent diagram, GUI diagram, "
-        "quantum circuit, BPMN process, Agentic BPMN process, component diagram, "
-        "or deployment diagram), it means CREATE a diagram, NOT generate code. "
+        "quantum circuit, BPMN diagram, BPMN process, Agentic BPMN process, "
+        "business process, component diagram, or deployment diagram), it means "
+        "CREATE a diagram, NOT generate code. "
         '"generate a class diagram" = create_complete_system_intent. '
         '"generate django" or "generate python code" = generation_intent. '
         "Quantum keywords: \"create Grover's algorithm\", "
@@ -120,6 +121,11 @@ create_complete_system_intent = agent.new_intent(
         '"implement quantum fourier transform", "create a quantum algorithm", '
         '"do grovers search", "implement bernstein vazirani", '
         '"build a variational circuit", "create an entanglement circuit". '
+        'BPMN / business-process keywords: "create a BPMN diagram for", '
+        '"model a business process for", "create a process for", '
+        '"design a workflow for", "model an order fulfillment process", '
+        '"create a process diagram", "build a BPMN process", '
+        '"model the approval workflow", "create the onboarding process". '
         "This is for creating MULTIPLE elements, a complete model, a "
         "GUI / frontend diagram, a web application system, or a quantum "
         "algorithm FROM SCRATCH — NOT for adding to or extending an "
@@ -157,7 +163,11 @@ modify_model_intent = agent.new_intent(
         'Quantum modifications: "add a gate to the circuit", '
         '"remove the measurement", "change gate on qubit 2", '
         '"add more qubits", "extend the circuit", '
-        '"replace the X gate with a Y gate", "add a CNOT between q0 and q3".'
+        '"replace the X gate with a Y gate", "add a CNOT between q0 and q3". '
+        'BPMN modifications: "add a task to the process", "add a gateway", '
+        '"add a decision point", "rename the Ship Order task", '
+        '"add a flow from Check Stock to Prepare Package", '
+        '"remove the Notify Customer task", "add an end event".'
     ),
 )
 modeling_help_intent = agent.new_intent(
@@ -221,6 +231,7 @@ generation_intent = agent.new_intent(
         "new diagrams, systems, models, GUIs, or frontends. "
         "IMPORTANT: 'generate a class diagram', 'generate a state machine', "
         "'generate a BPMN process', 'generate an Agentic BPMN process', "
+        "'generate a BPMN diagram', 'generate a business process', "
         "'generate a component diagram', 'generate a deployment diagram', "
         "'generate a diagram for X', and 'generate an object diagram' are NOT "
         "generation — those are create_complete_system_intent because the "

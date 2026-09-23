@@ -3,6 +3,7 @@ Agent Diagram Handler
 Handles generation of UML Agent Diagrams (multi-agent conversational flows)
 """
 
+import re
 from typing import Dict, Any, List, Optional
 import logging
 
@@ -18,6 +19,37 @@ from utilities.model_context import detailed_model_summary
 # Get logger
 logger = logging.getLogger(__name__)
 
+# Matches a `def <name>(...)` anywhere in a code reply's text.  BESSER's
+# agent_model_builder.py writes replyType="code" text verbatim into the
+# generated file and extracts the callable name with this exact pattern
+# (re.search(r'def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(', ...)); if no match is
+# found it falls back to a name that was never defined, producing a
+# NameError in the generated agent. See modeling-agent#8.
+_DEF_PATTERN = re.compile(r"\bdef\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(")
+
+
+def _ensure_code_reply_is_function(text: str, name_hint: str) -> str:
+    """Guarantee a replyType="code" body is a proper `def name(session):` block.
+
+    If the LLM already emitted a function definition, return it unchanged.
+    Otherwise wrap the (assumed) statement-level code it produced in a
+    minimal function so the downstream code builder can extract and call it
+    instead of writing bare statements into module scope.
+    """
+    if not isinstance(text, str) or _DEF_PATTERN.search(text):
+        return text
+
+    body = text.strip("\n")
+    if not body:
+        return text
+
+    safe_name = re.sub(r"\W+", "_", name_hint.strip().lower()).strip("_") or "custom_action"
+    if safe_name[0].isdigit():
+        safe_name = f"fn_{safe_name}"
+    indented = "\n".join(f"    {line}" if line.strip() else "" for line in body.splitlines())
+    logger.info(f"[AgentDiagram] Wrapped a bare code reply ('{name_hint}') in def {safe_name}(session):")
+    return f"def {safe_name}(session):\n{indented}"
+
 
 _AGENT_ACTIONS_BLOCK = """AVAILABLE ACTIONS:
 - add_state: Create a new state. Set target.stateName, put replies [{text, replyType}] in changes.
@@ -25,7 +57,7 @@ _AGENT_ACTIONS_BLOCK = """AVAILABLE ACTIONS:
 - modify_state / modify_intent: Rename elements (set changes.name).
 - add_transition: Connect states (set target.sourceStateName, target.targetStateName, changes.condition, changes.intentName).
 - remove_transition: Disconnect states.
-- add_state_body: Add reply text to a state (changes.text, changes.replyType).
+- add_state_body: Add reply text to a state (changes.text, changes.replyType — see rule 7 for replyType="code").
 - add_intent_training_phrase: Add example phrase to intent (changes.trainingPhrase).
 - remove_element: Delete a state or intent.
 - add_rag_element: Create a RAG knowledge base element. Set target.name to the KB name."""
@@ -34,9 +66,18 @@ _AGENT_RULES_BLOCK = f"""RULES:
 1. For transitions, "condition" is usually "when_intent_matched" with an "intentName".
 2. {EXACT_NAMES_RULE}
 3. {MULTI_MOD_ARRAY_RULE}
-4. replyType is "text" for scripted replies, "llm" for AI-generated.
+4. replyType is "text" for scripted replies, "llm" for AI-generated, "code" for custom
+   Python logic, "rag" for a knowledge-base lookup, "db_reply" for a database query.
 5. Example: "add a welcome state" → add_state with target.stateName="welcomeState", changes.replies=[{{text:"Welcome!", replyType:"text"}}]
-6. Example: "add a greeting intent" → add_intent with target.intentName="GreetingIntent", changes.trainingPhrases=["hello","hi","hey there"]"""
+6. Example: "add a greeting intent" → add_intent with target.intentName="GreetingIntent", changes.trainingPhrases=["hello","hi","hey there"]
+7. CRITICAL for replyType="code": the "text" MUST be a complete Python function
+   definition starting with "def <name>(session):" — never bare statements. The
+   generated code is written verbatim into the agent's source file and the
+   function name is extracted from the "def" line to be called at runtime; code
+   without a "def" produces a broken agent.
+   Example: "add a function that logs the user's message" → add_state_body with
+   target.stateName="logState", changes.replyType="code",
+   changes.text="def log_message(session):\\n    print(session.event.message)\""""
 
 MODIFY_SYSTEM_PROMPT_AGENT = "\n\n".join([
     "You are a conversational agent modeling expert. The user wants to modify an agent diagram.",
@@ -56,7 +97,9 @@ class AgentDiagramHandler(BaseDiagramHandler):
 
 IMPORTANT RULES:
 1. Provide the "type" field (state, intent, or initial) based on the user request.
-2. For states include 1-3 "replies" with both "text" and "replyType" (text or llm).
+2. For states include 1-3 "replies" with both "text" and "replyType" (text or llm — use
+   "code" only if the user explicitly asks for custom Python logic; when you do, "text"
+   MUST be a complete function starting with "def <name>(session):", never bare statements).
 3. Add "fallbackBodies" only when the request mentions fallbacks or error handling.
 4. For intents include 3-4 "trainingPhrases" that reflect how a user would trigger the intent.
 5. Keep names concise (camelCase for states, TitleCase for intents).
@@ -111,6 +154,9 @@ IMPORTANT RULES:
 2. Each state can have MULTIPLE replies (text lines):
    - Use replyType="text" for scripted responses (most common)
    - Use replyType="llm" for AI-generated dynamic responses
+   - Use replyType="code" ONLY when the user explicitly asks for custom Python logic;
+     "text" MUST then be a complete function starting with "def <name>(session):" —
+     never bare statements, they break the generated agent.
 3. AVOID DEAD-ENDS: Every state MUST have at least one exit path.
 4. States can have MULTIPLE transitions.
 5. Transition types:
@@ -305,11 +351,13 @@ IMPORTANT RULES:
 
         replies = self._normalize_reply_list(
             spec.get("replies") or spec.get("bodies") or spec.get("responses"),
-            default_text=f"Response from {state_name} state"
+            default_text=f"Response from {state_name} state",
+            name_hint=f"{state_name}_reply",
         )
         fallback_bodies = self._normalize_reply_list(
             spec.get("fallbackBodies") or spec.get("fallbacks") or spec.get("fallbackReplies"),
-            default_text=""
+            default_text="",
+            name_hint=f"{state_name}_fallback",
         )
 
         normalized_state = {
@@ -354,11 +402,11 @@ IMPORTANT RULES:
             normalized_intent["position"] = position
         return normalized_intent
 
-    def _normalize_reply_list(self, replies: Any, default_text: str) -> List[Dict[str, str]]:
+    def _normalize_reply_list(self, replies: Any, default_text: str, name_hint: str = "custom_action") -> List[Dict[str, str]]:
         """Normalize reply/fallback entries into structured dictionaries"""
         normalized: List[Dict[str, str]] = []
         if isinstance(replies, list):
-            for entry in replies:
+            for index, entry in enumerate(replies):
                 if isinstance(entry, str):
                     text = entry.strip()
                     if text:
@@ -373,6 +421,8 @@ IMPORTANT RULES:
                     if not text:
                         continue
                     reply_type = entry.get("replyType") or entry.get("type") or "text"
+                    if reply_type == "code":
+                        text = _ensure_code_reply_is_function(text, f"{name_hint}_{index}")
                     normalized.append({"text": text, "replyType": reply_type})
 
         if not normalized and default_text:
@@ -542,10 +592,11 @@ IMPORTANT RULES:
                 context_block = '\n\n' + summary
         
         user_prompt = f"Modify the agent diagram: {user_request}{context_block}"
-        
+
         try:
             return self._execute_modification(
                 user_prompt, system_prompt, AgentModificationResponse,
+                post_processor=self._fix_code_replies_in_modifications,
             )
 
         except LLMPredictionError as e:
@@ -555,6 +606,35 @@ IMPORTANT RULES:
             logger.error(f"Error generating agent diagram modification: {e}")
             return self.generate_fallback_modification(user_request)
     
+    @staticmethod
+    def _fix_code_replies_in_modifications(mod_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """post_processor for _execute_modification: guarantee every
+        replyType="code" reply produced by add_state / add_state_body /
+        modify_state is a proper `def name(session):` block (see
+        _ensure_code_reply_is_function and modeling-agent#8)."""
+        for mod in mod_list:
+            changes = mod.get("changes")
+            if not isinstance(changes, dict):
+                continue
+
+            target = mod.get("target") or {}
+            name_hint = target.get("stateName") or "custom_action"
+
+            if changes.get("replyType") == "code" and isinstance(changes.get("text"), str):
+                changes["text"] = _ensure_code_reply_is_function(changes["text"], name_hint)
+
+            replies = changes.get("replies")
+            if isinstance(replies, list):
+                for index, reply in enumerate(replies):
+                    if (
+                        isinstance(reply, dict)
+                        and reply.get("replyType") == "code"
+                        and isinstance(reply.get("text"), str)
+                    ):
+                        reply["text"] = _ensure_code_reply_is_function(reply["text"], f"{name_hint}_{index}")
+
+        return mod_list
+
     def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
         """Generate a fallback modification when AI generation fails"""
         return {

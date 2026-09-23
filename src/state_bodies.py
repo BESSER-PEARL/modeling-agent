@@ -105,7 +105,7 @@ _QUICK_RESPONSES = {
         "**BESSER** (Better Smart Software Engineering Research) is an open-source "
         "low-code platform for building software through model-driven engineering.\n\n"
         "It lets you:\n"
-        "- Design domain models visually (class diagrams, state machines, GUIs, agents, quantum circuits)\n"
+        "- Design domain models visually (class diagrams, state machines, GUIs, agents, quantum circuits, BPMN processes)\n"
         "- Generate production code automatically (Django, FastAPI, React, Flutter, SQL, and more)\n"
         "- Deploy full-stack web applications from your models\n\n"
         "Learn more at [besser.readthedocs.io](https://besser.readthedocs.io/) "
@@ -199,9 +199,10 @@ def global_fallback_body(session: Session):
     try:
         prompt = (
             f"You are a modeling assistant that helps with UML diagrams, quantum circuits, "
-            f"GUI design, agent diagrams, BPMN and code generation. The user said: '{user_message}'. "
+            f"GUI design, agent diagrams, BPMN business-process diagrams, and code generation. "
+            f"The user said: '{user_message}'. "
             "If this is related to any kind of modeling (class diagrams, quantum circuits, "
-            "state machines, GUI design, etc.), suggest how you can help them. "
+            "state machines, GUI design, BPMN processes, etc.), suggest how you can help them. "
             "Otherwise, politely explain your capabilities."
         )
         stream_llm_response(session, ctx.gpt_text, prompt)

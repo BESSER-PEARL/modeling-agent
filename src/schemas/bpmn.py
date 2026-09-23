@@ -1,10 +1,13 @@
 """Pydantic schemas for BPMN structured outputs.
 
 Field descriptions are used by OpenAI Structured Outputs to guide generation.
-Base BPMN only — start/end events, tasks, gateways, sequence flows.  No pools,
-lanes, or agentic concepts (roles, governance, collaboration, trust).
+Base BPMN plus collaboration diagrams — start/end events, tasks, gateways,
+sequence flows, and optional pools/lanes for multi-participant processes.
+No other agentic concepts (roles, governance, collaboration, trust).
 
-Layout is handled on the WME side; the agent emits no positions.
+Layout is handled on the WME side; the agent emits no positions. Message vs.
+sequence flow type is also derived on the WME side from pool membership, not
+emitted by the agent.
 """
 
 from __future__ import annotations
@@ -79,24 +82,65 @@ class BPMNNodeSpec(BaseModel):
     gatewayRole: Optional[_GATEWAY_ROLE] = Field(default=None)
     governanceDsl: Optional[str] = Field(default=None)
 
-
 class BPMNLaneSpec(BaseModel):
-    id: str = Field(min_length=1, max_length=40)
-    name: str = Field(default="", max_length=60)
-    isAgentic: bool = Field(default=False)
-    role: Optional[_AGENT_ROLE] = Field(default=None)
-    trustScore: Optional[int] = Field(default=None, ge=0, le=100)
-    multiplicity: Optional[int] = Field(default=None, ge=1)
-    agentDiagramRef: Optional[str] = Field(default=None)
+    id: str = Field(
+        min_length=1,
+        max_length=40,
+        description=(
+            "Short unique slug identifying this lane/role within its pool "
+            "(e.g. 'reviewer'). Referenced by node laneId. Lowercase, no spaces."
+        ),
+    )
+    name: str = Field(
+        default="",
+        max_length=60,
+        description="Role/participant display name (e.g. 'Reviewer Agent').",
+    )
+    isAgentic: bool = Field(
+        default=False,
+        description="Whether this lane represents an AgenticSwarm role.",
+    )
+    role: Optional[_AGENT_ROLE] = Field(
+        default=None,
+        description="AgenticSwarm role when isAgentic is true.",
+    )
+    trustScore: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="Optional trust score for an AgenticSwarm lane.",
+    )
+    multiplicity: Optional[str] = Field(
+        default=None,
+        max_length=60,
+        description="Optional agent multiplicity, for example '1..*'.",
+    )
+    agentDiagramRef: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="Optional reference to an Agent diagram.",
+    )
 
 
 class BPMNPoolSpec(BaseModel):
-    id: str = Field(min_length=1, max_length=40)
-    name: str = Field(default="", max_length=60)
+    id: str = Field(
+        min_length=1,
+        max_length=40,
+        description=(
+            "Short unique slug identifying this participant/pool "
+            "(e.g. 'customer'). Lowercase, no spaces."
+        ),
+    )
+    name: str = Field(
+        default="",
+        max_length=80,
+        description="Pool/participant display name (e.g. 'Customer').",
+    )
     lanes: List[BPMNLaneSpec] = Field(
         default_factory=list,
         description=(
-            "Optional lanes inside this pool. Use `lanes`, never `swimlanes`."
+            "Optional lanes/roles inside this pool. Nodes refer to them via laneId. "
+            "Use `lanes`, never `swimlanes`."
         ),
     )
 
@@ -108,16 +152,35 @@ class BPMNFlowSpec(BaseModel):
 
 
 class SystemBPMNSpec(BaseModel):
-    systemName: str = Field(default="")
-    nodes: List[BPMNNodeSpec] = Field(min_length=1)
+    systemName: str = Field(
+        default="BPMN Process",
+        max_length=100,
+        description="Concise process title.",
+    )
+    nodes: List[BPMNNodeSpec] = Field(
+        default_factory=list,
+        description="All activities, events, and gateways in the process.",
+    )
     flows: List[BPMNFlowSpec] = Field(
         default_factory=list,
         description=(
-            "Flows only contain source, target, and name. WME derives ordinary "
-            "sequence/message rendering from pool membership."
+            "Flows connecting the nodes by id. Every node except the start has "
+            "an incoming flow; every node except end events has an outgoing "
+            "flow. A flow between nodes in different pools is a message flow; "
+            "the WME derives this automatically from poolId, do not set a flow "
+            "type yourself."
         ),
     )
-    pools: List[BPMNPoolSpec] = Field(default_factory=list)
+    pools: List[BPMNPoolSpec] = Field(
+        default_factory=list,
+        description=(
+            "Participants/organizations — only when the request involves 2+ "
+            "distinct actors communicating (e.g. customer/vendor, system A/system B) "
+            "or explicit roles within one organization. Each node with a non-null "
+            "poolId must reference one of these pool ids. Leave empty for a "
+            "single-actor flat process (the common case)."
+        ),
+    )
 
 
 # -- Modification schemas --

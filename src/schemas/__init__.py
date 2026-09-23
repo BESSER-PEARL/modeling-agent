@@ -66,9 +66,9 @@ from .quantum_circuit import (
 from .bpmn import (
     BPMNNodeSpec,
     BPMNFlowSpec,
-    SystemBPMNSpec,
-    BPMNPoolSpec,
     BPMNLaneSpec,
+    BPMNPoolSpec,
+    SystemBPMNSpec,
     BPMNModificationTarget,
     BPMNModificationChanges,
     BPMNModification,
