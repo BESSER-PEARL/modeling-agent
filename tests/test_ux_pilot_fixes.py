@@ -495,3 +495,29 @@ def test_no_run_at_all_is_still_no_app():
     from handlers.generation_handler import _smart_gen_project_has_app
     session = make_session("fix my app", project_snapshot={"id": "proj-A"})
     assert _smart_gen_project_has_app(session, "proj-A") is False
+
+
+def test_gui_choice_is_asked_even_when_the_request_mentions_a_dashboard():
+    """Always ask how to create the screens. Live (2026-09-23): for "generate
+    an app end-to-end" the planner wrote its own GUI step request ("...screens:
+    Login screen, Dashboard, ..."); a keyword shortcut read "Dashboard", assumed
+    the user wanted a custom GUI and skipped the question the user never saw."""
+    session = FakeSession()
+    request = MagicMock()
+    request.message = "Generate an app end-to-end following this description: ..."
+    operation = {
+        "diagramType": "GUINoCodeDiagram",
+        "mode": "complete_system",
+        "request": "Create a GUI diagram with the following screens: Login screen, Dashboard, Bookings",
+    }
+    captured = []
+    with patch.object(mo, "resolve_class_diagram", return_value=_CLASS_DIAGRAM), \
+         patch.object(mo, "reply_payload", side_effect=lambda _s, p: captured.append(p)):
+        result = mo.execute_model_operation(
+            session=session, request=request, operation=operation,
+            default_mode="complete_system", _skip_existing_check=True,
+        )
+
+    assert result is None, "no GUI may be generated before the user chose how"
+    assert session.get(PENDING_GUI_CHOICE), "the choice must be pending"
+    assert "How would you like me to create your screens" in captured[0]["message"]

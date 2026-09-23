@@ -575,21 +575,11 @@ def execute_model_operation(
                 return None
 
     # ── GUI generation-mode choice ───────────────────────────────────────
-    # NOTE: pure scoping/filler words ("only", "just") and over-generic ones
-    # ("form", "layout", "style") were removed — they forced the experimental
-    # custom-GUI path on plain requests like "create a GUI for just the Product
-    # class". Keep only hints that genuinely signal a custom/bespoke GUI.
-    _CUSTOM_GUI_HINTS = {
-        "chart", "dashboard", "custom", "specific", "page for",
-        "sidebar", "metric", "kpi", "landing", "hero",
-        "don't include", "exclude", "theme", "color", "dark",
-        "personali", "unique", "tailored", "bespoke",
-    }
+    # Always asked. A keyword shortcut ("dashboard", "chart", ...) used to skip
+    # it, but it read the planner's own rewritten step request, so screens the
+    # planner invented ("Login screen, Dashboard") skipped the user's choice.
     _resolved_class_diagram = None
     if target_diagram_type == "GUINoCodeDiagram" and operation_mode in ("complete_system", None, ""):
-        _req_lower = (operation_request or "").lower()
-        _wants_custom = any(hint in _req_lower for hint in _CUSTOM_GUI_HINTS)
-
         _resolved_class_diagram = resolve_class_diagram(request)
         _has_class_diagram = (
             isinstance(_resolved_class_diagram, dict)
@@ -597,10 +587,7 @@ def execute_model_operation(
             and len(_resolved_class_diagram["elements"]) > 0
         )
 
-        if _has_class_diagram and _wants_custom:
-            logger.info("[ModelOp] Custom GUI request detected — using LLM-driven path")
-
-        elif _has_class_diagram and not _skip_gui_choice:
+        if _has_class_diagram and not _skip_gui_choice:
             session.set(PENDING_GUI_CHOICE, {
                 'operation_request': operation_request,
                 'operation': operation,
