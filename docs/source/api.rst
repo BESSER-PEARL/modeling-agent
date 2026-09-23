@@ -63,7 +63,8 @@ Core Runtime Modules
   - ``set_current(provider, api_key, model, base_url)`` / ``reset_current(token)``
   - ``get_active_client()`` — the per-request client, or ``None``
   - ``resolve_model(provider, requested_model, user_model)``
-  - ``SUPPORTED_PROVIDERS`` — ``openai``, ``anthropic``, ``mistral``
+  - ``SUPPORTED_PROVIDERS`` — ``openai``, ``anthropic``, ``mistral``, ``nebius``
+  - ``predict_json(prompt, model)`` / ``user_openai_key()`` — the attachment paths
 
 ``src/state_bodies.py``
   All state body functions and transition wiring:

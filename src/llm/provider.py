@@ -20,6 +20,7 @@ Usage::
     print(provider.tracker.summary())
 """
 
+import json
 import logging
 import threading
 from typing import Any, Dict, Iterator, List, Optional, Type
@@ -95,7 +96,26 @@ class LLMProvider:
                 defaults to the provider's configured model.
         """
         effective_model = model or self._model
-        client = self.client
+        # BYOK: a user who saved a key pays for this call too.
+        from byok import _strip_code_fences, get_active_client, get_current, resolve_model
+        byok_client = get_active_client()
+        if byok_client is not None:
+            client = byok_client.openai_client
+            if client is None:
+                # Anthropic / Mistral / custom endpoint: JSON mode + validation.
+                prompt = "\n".join(m["content"] for m in messages) + (
+                    "\n\nReturn ONLY a JSON object matching this JSON schema:\n"
+                    + json.dumps(schema.model_json_schema())
+                )
+                raw = byok_client.predict_raw(
+                    prompt, model=effective_model, json_mode=True,
+                    temperature=temperature, max_tokens=max_tokens,
+                )
+                return schema.model_validate_json(_strip_code_fences(raw))
+            cfg = get_current()
+            effective_model = resolve_model("openai", effective_model, cfg.model if cfg else None)
+        else:
+            client = self.client
         if client is None or not hasattr(client, 'beta'):
             # Fallback: predict + parse
             prompt = "\n".join(m["content"] for m in messages)

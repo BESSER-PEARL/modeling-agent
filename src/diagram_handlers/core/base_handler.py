@@ -710,8 +710,22 @@ class BaseDiagramHandler(ABC):
         effective_model = model or (
             self.llm.name if hasattr(self.llm, 'name') else MODEL_CLASSIFIER
         )
+        # BYOK: a user who saved a key pays for their own structured calls.
+        from byok import get_active_client, get_current, resolve_model
+        byok_client = get_active_client()
+        if byok_client is not None:
+            client = byok_client.openai_client
+            if client is None:
+                # Anthropic / Mistral / custom endpoint: JSON mode on the
+                # user's client (predict_with_retry is BYOK-routed).
+                return self._structured_fallback(
+                    prompt, response_schema, system_prompt, max_retries, model=model,
+                )
+            cfg = get_current()
+            effective_model = resolve_model("openai", effective_model, cfg.model if cfg else None)
+        else:
+            client = getattr(self.llm, 'client', None)
         # --- Check if client supports .parse() ---
-        client = getattr(self.llm, 'client', None)
         has_parse = (
             client is not None
             and hasattr(client, 'beta')

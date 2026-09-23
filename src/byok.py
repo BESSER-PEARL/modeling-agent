@@ -1,7 +1,7 @@
 """Bring-your-own-key (BYOK) per-request LLM routing for the modeling agent.
 
-A user can paste their own OpenAI / Anthropic / Mistral API key in the
-frontend; it is sent over the WebSocket and stored on the BAF session
+A user can paste their own OpenAI / Anthropic / Mistral / Nebius API key in
+the frontend; it is sent over the WebSocket and stored on the BAF session
 (keys ``user_api_key`` / ``user_api_provider`` / ``user_api_model``).
 When such a key is present, the agent's conversational + generation LLM
 calls run through a *per-request* client built from that key instead of
@@ -28,9 +28,11 @@ and conversation:
 * ``session_helpers.stream_llm_response`` (conversational reply / help /
   describe).
 
-BAF-internal intent classification, RAG embeddings, and OpenAI
-*structured-output* ``.parse()`` calls (``predict_structured``) stay on
-the shared server key — see the module that wires routing for details.
+the structured-output calls (``base_handler.predict_structured`` and the
+intent classifier's ``LLMProvider.parse``: ``.parse()`` on the user's OpenAI
+client, JSON mode for the other providers) and file attachments (JSON text
+path via :func:`predict_json`; the image/PDF vision path via
+:func:`user_openai_key` when the key is an OpenAI one).
 
 Errors
 ------
@@ -57,10 +59,12 @@ from model_config import reasoning_effort_for, supports_custom_temperature
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_PROVIDERS = ("openai", "anthropic", "mistral")
+SUPPORTED_PROVIDERS = ("openai", "anthropic", "mistral", "nebius")
 
 # Mistral speaks the OpenAI Chat Completions protocol at this endpoint.
 MISTRAL_BASE_URL = "https://api.mistral.ai/v1"
+# Nebius Token Factory is OpenAI-compatible too (same endpoint BESSER uses).
+NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1/"
 
 # Per-request SDK timeout. Without it the SDKs default to several minutes,
 # which would let a hung BYOK call stall a whole turn.
@@ -90,6 +94,9 @@ _PROVIDER_TIER_MODELS = {
     "openai":    {"large": "gpt-5.5",              "small": "gpt-4o-mini"},
     "anthropic": {"large": "claude-sonnet-4-6",    "small": "claude-haiku-4-5"},
     "mistral":   {"large": "mistral-large-latest", "small": "mistral-small-latest"},
+    # One small-activation MoE serves both tiers (BESSER's Nebius default).
+    "nebius":    {"large": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+                  "small": "Qwen/Qwen3-30B-A3B-Instruct-2507"},
 }
 
 
@@ -252,10 +259,11 @@ class BYOKClient:
     ) -> None:
         self.provider = (provider or "").strip().lower()
         self._user_model = (model or "").strip() or None
+        self._base_url = base_url
         if self.provider not in SUPPORTED_PROVIDERS:
             raise BYOKError(f"Unsupported BYOK provider: {provider!r}")
 
-        if self.provider in ("openai", "mistral"):
+        if self.provider in ("openai", "mistral", "nebius"):
             try:
                 from openai import OpenAI
             except ImportError as exc:  # pragma: no cover - openai is a hard dep
@@ -269,6 +277,8 @@ class BYOKClient:
                 client_kwargs["base_url"] = base_url
             elif self.provider == "mistral":
                 client_kwargs["base_url"] = MISTRAL_BASE_URL
+            elif self.provider == "nebius":
+                client_kwargs["base_url"] = NEBIUS_BASE_URL
             self._client = OpenAI(**client_kwargs)
         else:  # anthropic — lazily gated; SDK may not be installed
             try:
@@ -280,6 +290,17 @@ class BYOKClient:
                     "an OpenAI or Mistral key instead."
                 ) from exc
             self._client = anthropic.Anthropic(api_key=api_key, timeout=_SDK_TIMEOUT_SECONDS)
+
+    @property
+    def openai_client(self):
+        """The OpenAI SDK client for structured ``.parse()`` calls, or ``None``.
+
+        Only the official OpenAI endpoint is known to support Structured
+        Outputs; Anthropic, Mistral and custom gateways use JSON mode instead.
+        """
+        if self.provider == "openai" and not self._base_url:
+            return self._client
+        return None
 
     # -- public call shapes -------------------------------------------------
 
@@ -328,8 +349,8 @@ class BYOKClient:
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
         }
-        # Mistral uses ``max_tokens``; OpenAI uses ``max_completion_tokens``.
-        if self.provider == "mistral":
+        # Mistral and Nebius use ``max_tokens``; OpenAI uses ``max_completion_tokens``.
+        if self.provider in ("mistral", "nebius"):
             kwargs["max_tokens"] = max_tokens
         else:
             kwargs["max_completion_tokens"] = max_tokens
@@ -418,6 +439,25 @@ def _strip_code_fences(text: str) -> str:
     if t.endswith("```"):
         t = t[:-3]
     return t.strip()
+
+
+def predict_json(prompt: str, model: Optional[str] = None) -> Optional[str]:
+    """JSON-mode call on the user's key, or ``None`` when no key is active
+    (the caller then uses the shared server LLM)."""
+    client = get_active_client()
+    if client is None:
+        return None
+    return client.predict_raw(prompt, model=model, json_mode=True)
+
+
+def user_openai_key() -> Optional[str]:
+    """The user's key when it can call the official OpenAI API directly (the
+    image/PDF vision path), else ``None``. Anthropic/Mistral keys cannot, so
+    those requests keep the server key."""
+    cfg = current_byok.get()
+    if cfg is not None and cfg.provider == "openai" and not cfg.base_url:
+        return cfg.api_key
+    return None
 
 
 def get_active_client() -> Optional[BYOKClient]:

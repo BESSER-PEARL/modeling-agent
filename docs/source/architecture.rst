@@ -114,9 +114,10 @@ The system is organized into these layers, processed in order for each request:
    OpenAI, encapsulating model selection and call conventions (structured
    outputs via ``parse()``, streaming via ``stream()``).
 
-10. **BYOK Routing** (``src/byok.py``): Per-request routing of generation and
-    conversational calls through a user-supplied API key, driven by a
-    context var set at the WebSocket request boundary.
+10. **BYOK Routing** (``src/byok.py``): Per-request routing of generation,
+    structured-output, classification and conversational calls through a
+    user-supplied API key, driven by a context var set at the WebSocket
+    request boundary.
 
 11. **Conversation Memory** (``src/memory/``): Per-session conversation
     history with a rolling LLM summary of everything older than the verbatim

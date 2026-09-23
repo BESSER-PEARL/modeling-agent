@@ -10,6 +10,7 @@ import logging
 from baf.core.session import Session
 
 import agent_context as ctx
+from byok import user_openai_key
 from model_config import MODEL_GENERATION_SMALL
 from protocol.types import AssistantRequest
 from session_helpers import reply_payload
@@ -29,7 +30,9 @@ def handle_file_attachments(session: Session, request: AssistantRequest) -> bool
     from utilities.model_resolution import resolve_target_model
     from utilities.model_context import compact_model_summary
 
-    openai_key = ctx.openai_api_key
+    # The user's own OpenAI key pays for the vision path when it can; the
+    # text path is BYOK-routed inside gpt_predict_json.
+    openai_key = user_openai_key() or ctx.openai_api_key
 
     # Cap attachment count + per-file size BEFORE decoding — each attachment
     # triggers a sequential vision/LLM call, so an unbounded batch blocks the

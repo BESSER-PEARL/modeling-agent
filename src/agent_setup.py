@@ -131,6 +131,10 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
         text path). BAF's ``predict`` cannot vary the model per call, so
         the override goes through the OpenAI client directly.
         """
+        from byok import predict_json as byok_predict_json
+        routed = byok_predict_json(prompt, model=model)
+        if routed is not None:
+            return routed
         client = getattr(gpt, 'client', None)
         if model and client is not None and hasattr(client, 'chat'):
             completion = client.chat.completions.create(

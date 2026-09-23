@@ -288,15 +288,20 @@ and the shared server LLM is never mutated.
    * - Property
      - Value
    * - Supported providers
-     - ``openai``, ``anthropic``, ``mistral`` (Mistral speaks the OpenAI
-       Chat Completions protocol at ``https://api.mistral.ai/v1``)
+     - ``openai``, ``anthropic``, ``mistral``, ``nebius`` (Mistral and Nebius
+       speak the OpenAI Chat Completions protocol at
+       ``https://api.mistral.ai/v1`` and
+       ``https://api.tokenfactory.nebius.com/v1/``)
    * - Routed call shapes
-     - ``base_handler._predict_raw`` / ``predict_with_retry`` (generation)
-       and ``session_helpers.stream_llm_response`` (conversational reply,
-       help, describe)
+     - ``base_handler._predict_raw`` / ``predict_with_retry`` (generation),
+       ``session_helpers.stream_llm_response`` (conversational reply, help,
+       describe), ``base_handler.predict_structured`` and the intent
+       classifier's ``LLMProvider.parse`` (``.parse()`` on a user's OpenAI
+       key, JSON mode + schema validation for the other providers), and file
+       attachments (``gpt_predict_json``; image/PDF vision with an OpenAI key)
    * - Not routed
-     - BAF-internal intent classification, RAG embeddings, and OpenAI
-       structured-output ``.parse()`` calls stay on the shared server key
+     - The local BAF fallback classifier (no LLM), RAG embeddings, and image/PDF
+       vision for non-OpenAI keys (they cannot call the OpenAI vision API)
    * - Per-request timeout
      - 120 s (without it the SDKs default to several minutes, letting one
        hung call stall a whole turn)
