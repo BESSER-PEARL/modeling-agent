@@ -120,6 +120,9 @@ _QUICK_RESPONSES = {
         "- **GUI / Web UI** — *\"Design a dashboard for my Product class\"*\n"
         "- **Agent Diagrams** — *\"Create a pizza-ordering chatbot agent\"*\n"
         "- **Quantum Circuits** — *\"Create Grover's search algorithm\"*\n\n"
+        "- **BPMN Processes** — *\"Create a pizza store workflow\"*\n"
+        "- **Component Diagrams** — *\"Create a component diagram for a RAG agent swarm\"*\n"
+        "- **Deployment Diagrams** — *\"Create a deployment diagram for agent services\"*\n\n"
         "**Modify diagrams:**\n"
         "- *\"Add email attribute to User\"*, *\"Rename Order to Purchase\"*, *\"Add a transition from Idle to Active\"*\n\n"
         "**Generate code:**\n"
@@ -140,7 +143,7 @@ _QUICK_RESPONSES = {
         "   *Example: \"Generate Django\"* or *\"Generate a web app\"*\n\n"
         "**Tips:**\n"
         "- Be specific about what you want — more detail = better results\n"
-        "- I support 6 diagram types: Class, State Machine, Object, GUI, Agent, and Quantum Circuit\n"
+        "- I support Class, State Machine, Object, GUI, Agent, Quantum Circuit, BPMN, Component, and Deployment diagrams\n"
         "- You can switch between diagram types anytime\n"
         "- Ask *\"What can you do?\"* for a full list of capabilities"
     ),
@@ -196,7 +199,7 @@ def global_fallback_body(session: Session):
     try:
         prompt = (
             f"You are a modeling assistant that helps with UML diagrams, quantum circuits, "
-            f"GUI design, agent diagrams, and code generation. The user said: '{user_message}'. "
+            f"GUI design, agent diagrams, BPMN and code generation. The user said: '{user_message}'. "
             "If this is related to any kind of modeling (class diagrams, quantum circuits, "
             "state machines, GUI design, etc.), suggest how you can help them. "
             "Otherwise, politely explain your capabilities."
@@ -345,6 +348,10 @@ def modeling_help_body(session: Session):
             "- BPMN elements: start/end events, tasks (user, service, send, receive, manual, script), "
             "gateways (exclusive, parallel, inclusive), sequence flows\n"
             "- Process design patterns: sequential flows, exclusive decisions, parallel work, loops\n"
+            "- Agentic BPMN: agentic lanes, roles (solution, supervision), "
+            "trust scores, multiplicity, reflection modes, and AgentDiagram references\n"
+            "- Governance: Agentic parallel/inclusive gateways, diverging/merging roles, and Governance DSL "
+            "on governed merging gateways\n"
             "- Best practices: clear verb-phrase task names, gateway labeling, start/end event placement\n\n"
             "Provide clear, practical advice about BPMN modeling. "
             "If they ask about a process pattern, explain the key elements and how to express it in BPMN. "

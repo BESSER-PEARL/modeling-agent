@@ -103,9 +103,14 @@ create_complete_system_intent = agent.new_intent(
         '"generate the frontend", "build the frontend", '
         '"create a web app for", "model a web application for", '
         '"design a web app for", "build a web app for". '
+        '"create an Agentic BPMN swarm for document review", '
+        '"create a BPMN process for order fulfillment", '
+        '"create a component diagram for a RAG agent swarm", '
+        '"create a deployment diagram for agent services". '
         "IMPORTANT: When 'generate' is followed by a diagram type (class "
         "diagram, state machine, object diagram, agent diagram, GUI diagram, "
-        "quantum circuit), it means CREATE a diagram, NOT generate code. "
+        "quantum circuit, BPMN process, Agentic BPMN process, component diagram, "
+        "or deployment diagram), it means CREATE a diagram, NOT generate code. "
         '"generate a class diagram" = create_complete_system_intent. '
         '"generate django" or "generate python code" = generation_intent. '
         "Quantum keywords: \"create Grover's algorithm\", "
@@ -136,6 +141,9 @@ modify_model_intent = agent.new_intent(
         'Single-element creation: "create a class", "create a class called User", '
         '"make a class Person", "create a state", "make a state", '
         '"make one state", "create an object instance". '
+        'BPMN and architecture examples: "add a BPMN task", '
+        '"change a lane role to supervision", "add Governance DSL to the merging gateway", '
+        '"add a component dependency", "deploy a component to a cloud node". '
         "ANY request starting with 'add' should use this intent: "
         '"add a class", "add a Person class", "add a state", '
         '"add a Hadamard gate", "add a CNOT gate". '
@@ -212,7 +220,9 @@ generation_intent = agent.new_intent(
         "or DEPLOYMENT — NOT for creating, modeling, designing, or building "
         "new diagrams, systems, models, GUIs, or frontends. "
         "IMPORTANT: 'generate a class diagram', 'generate a state machine', "
-        "'generate a diagram for X', 'generate an object diagram' are NOT "
+        "'generate a BPMN process', 'generate an Agentic BPMN process', "
+        "'generate a component diagram', 'generate a deployment diagram', "
+        "'generate a diagram for X', and 'generate an object diagram' are NOT "
         "generation — those are create_complete_system_intent because the "
         "user wants to CREATE a diagram, not generate source code. "
         "If the user says 'create a web app for X' or 'model a web "

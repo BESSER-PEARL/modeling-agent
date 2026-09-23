@@ -67,9 +67,8 @@ from .bpmn import (
     BPMNNodeSpec,
     BPMNFlowSpec,
     SystemBPMNSpec,
-    BPMNSwimlaneSpec,
     BPMNPoolSpec,
-    SystemAgenticBPMNSpec,
+    BPMNLaneSpec,
     BPMNModificationTarget,
     BPMNModificationChanges,
     BPMNModification,
@@ -124,7 +123,7 @@ __all__ = [
     "QuantumModificationSpec",
     # BPMN
     "BPMNNodeSpec", "BPMNFlowSpec", "SystemBPMNSpec",
-    "BPMNSwimlaneSpec", "BPMNPoolSpec", "SystemAgenticBPMNSpec",
+    "BPMNLaneSpec", "BPMNPoolSpec",
     "BPMNModificationTarget", "BPMNModificationChanges",
     "BPMNModification", "BPMNModificationResponse",
     # Component Diagram

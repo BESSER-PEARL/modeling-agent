@@ -329,13 +329,12 @@ def _summarize_agent_diagram(model: Dict[str, Any]) -> List[str]:
 
     return lines
 
-
 def _summarize_bpmn(model: Dict[str, Any], *, max_items: int = 25) -> List[str]:
-    """Summarize a BPMN model: flow nodes (tasks/events/gateways) and sequence flows.
+    """Summarize BPMN pools, lanes, nodes, and flows for safe LLM modifications.
 
-    Each node is prefixed with its Apollon element id as [id] so the LLM can
-    reference unnamed nodes unambiguously.  Named nodes can still be targeted by
-    name; unnamed nodes MUST be referenced by the [id] value.
+    WME stores pools and lanes as BPMNPool/BPMNSwimlane elements. Node owner
+    contains the actual WME lane id, so the context must expose both lane
+    identity and AgenticSwarm metadata before asking the LLM to modify it.
     """
     elements = model.get("elements")
     relationships = model.get("relationships")
@@ -343,52 +342,105 @@ def _summarize_bpmn(model: Dict[str, Any], *, max_items: int = 25) -> List[str]:
         return []
 
     lines: List[str] = []
-    names: Dict[str, str] = {}  # eid -> display name (may be empty string)
+    names: Dict[str, str] = {}
+    lane_names: Dict[str, str] = {}
 
+    # Pools first: this makes the hierarchy visible before its nodes.
+    for eid, el in elements.items():
+        if not isinstance(el, dict) or el.get("type") != "BPMNPool":
+            continue
+        name = el.get("name") or ""
+        display = f" {name}" if name else ""
+        lines.append(f"Pool: [{eid}]{display}")
+
+    # Lanes second. `BPMNSwimlane` remains the WME storage element type;
+    # user-facing text and generated specifications call it a lane.
+    for eid, el in elements.items():
+        if not isinstance(el, dict) or el.get("type") != "BPMNSwimlane":
+            continue
+        name = el.get("name") or ""
+        lane_names[eid] = name
+        role = el.get("role") or "unspecified"
+        multiplicity = el.get("multiplicity", 1)
+        agentic = str(el.get("isAgentic") is True).lower()
+        display = f" {name}" if name else ""
+        lines.append(
+            f"Lane: [{eid}]{display} "
+            f"(role={role}, agentic={agentic}, multiplicity={multiplicity})"
+        )
+
+    # Normal BPMN flow nodes. Pools and lanes were already reported above.
     for eid, el in elements.items():
         if not isinstance(el, dict):
             continue
+
         el_type = el.get("type", "")
-        # Include all BPMN node types. BPMNFlow lives in relationships, not
-        # elements, so excluding it here is sufficient — no explicit whitelist
-        # means new Apollon node types (e.g. BPMNCallActivity) are auto-included.
-        if not el_type.startswith("BPMN") or el_type == "BPMNFlow":
+        if (
+            not el_type.startswith("BPMN")
+            or el_type in ("BPMNFlow", "BPMNPool", "BPMNSwimlane")
+        ):
             continue
+
         name = el.get("name") or ""
         names[eid] = name
-        kind = el_type.replace("BPMN", "")
-        detail = ""
-        if el_type == "BPMNTask" and el.get("taskType") and el.get("taskType") != "default":
-            detail = f" {el['taskType']}"
+        details: List[str] = [el_type.replace("BPMN", "")]
+
+        if el_type == "BPMNTask" and el.get("taskType") not in (None, "default"):
+            details.append(f"taskType={el['taskType']}")
         elif el_type == "BPMNGateway" and el.get("gatewayType"):
-            detail = f" {el['gatewayType']}"
+            details.append(f"gatewayType={el['gatewayType']}")
+
+        owner = el.get("owner")
+        if isinstance(owner, str) and owner in lane_names:
+            details.append(f"lane={lane_names[owner] or owner}")
+
+        if el.get("isAgentic") is True:
+            details.append("agentic=true")
+            details.append(f"trust={el.get('trustScore', 0)}")
+
+            if el_type == "BPMNTask":
+                details.append(f"reflection={el.get('reflectionMode', 'none')}")
+                if el.get("agentDiagramRef"):
+                    details.append("agentDiagramRef=set")
+
+            if el_type == "BPMNGateway":
+                details.append(f"role={el.get('gatewayRole', 'diverging')}")
+                governance = "set" if str(el.get("governanceDsl") or "").strip() else "unset"
+                details.append(f"governanceDsl={governance}")
+
         display = f" {name}" if name else ""
-        lines.append(f"[{eid}]{display} ({kind}{detail})")
+        lines.append(f"[{eid}]{display} ({', '.join(details)})")
 
     if isinstance(relationships, dict):
         for rel in relationships.values():
             if not isinstance(rel, dict) or rel.get("type") != "BPMNFlow":
                 continue
+
             source = rel.get("source")
             target = rel.get("target")
             if not isinstance(source, dict) or not isinstance(target, dict):
                 continue
-            s_id = source.get("element", "")
-            t_id = target.get("element", "")
-            s_name = names.get(s_id, "")
-            t_name = names.get(t_id, "")
-            s_display = f"[{s_id}] {s_name}" if s_name else f"[{s_id}]"
-            t_display = f"[{t_id}] {t_name}" if t_name else f"[{t_id}]"
+
+            source_id = source.get("element", "")
+            target_id = target.get("element", "")
+            source_name = names.get(source_id, "")
+            target_name = names.get(target_id, "")
+            source_display = (
+                f"[{source_id}] {source_name}" if source_name else f"[{source_id}]"
+            )
+            target_display = (
+                f"[{target_id}] {target_name}" if target_name else f"[{target_id}]"
+            )
             label = rel.get("name", "")
-            lbl = f" [{label}]" if label else ""
-            lines.append(f"Flow: {s_display} -> {t_display}{lbl}")
+            suffix = f" [{label}]" if label else ""
+            lines.append(f"Flow: {source_display} -> {target_display}{suffix}")
 
     if len(lines) > max_items:
         overflow = len(lines) - max_items
         lines = lines[:max_items]
-        lines.append(f"  …and {overflow} more node/flow item(s)")
-    return lines
+        lines.append(f"  …and {overflow} more BPMN item(s)")
 
+    return lines
 
 # Mapping of Quirk-style gate symbols to human-readable names.
 _QUIRK_SYMBOL_MAP: Dict[str, str] = {

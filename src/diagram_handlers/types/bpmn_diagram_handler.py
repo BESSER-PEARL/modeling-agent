@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
 from ..core.prompt_fragments import EXACT_NAMES_RULE, POSITION_DISCLAIMER, REMOVE_ELEMENT_RULE
-from schemas import SystemBPMNSpec, SystemAgenticBPMNSpec, BPMNModificationResponse
+from schemas import SystemBPMNSpec, BPMNModificationResponse
 from utilities.model_context import detailed_model_summary
 
 logger = logging.getLogger(__name__)
@@ -50,29 +50,35 @@ Partial matches are valid (e.g. "Reviewer 1" matching "Review by Reviewer 1"). O
 If the user says 'undo', 'undo that', 'revert', or similar, do not emit any modifications. Reply with modifications: [], elementFound: false,
 and set message to: 'To undo, use Ctrl+Z or the undo button in the editor toolbar.'"""
 
-
-MODIFY_SYSTEM_PROMPT_AGENTIC_BPMN = f"""You are an agentic BPMN modeling expert. The user wants to modify a BPMN process with pools and swimlanes.
+MODIFY_SYSTEM_PROMPT_AGENTIC_BPMN = f"""You are an Agentic BPMN modeling expert.
 
 READING THE CONTEXT:
-Each pool appears as:  Pool: [id] Name
-Each swimlane appears as:  Lane: [id] Name (role, isAgentic=true/false, multiplicity=N)
-Each node appears as:  [id] Name (type) [in lane: LaneName]
-Each flow appears as:  Flow: [src-id] Name -> [tgt-id] Name
+Each pool appears as: Pool: [id] Name
+Each lane appears as: Lane: [id] Name (role=..., agentic=..., multiplicity=...)
+Each node appears as: [id] Name (type) [in lane: LaneName]
+Each flow appears as: Flow: [src-id] Name -> [tgt-id] Name
 
 MODIFICATION RULES:
-1. Actions: "add_task", "add_gateway", "add_event", "add_flow", "modify_node", "remove_flow", "remove_element", "add_pool", "add_swimlane", "modify_swimlane", "remove_swimlane", "remove_pool"
-2. Standard node operations (add_task/gateway/event/flow, modify_node, remove_flow, remove_element): same as base BPMN. Use changes.owner to specify the swimlane name/id.
-3. add_pool: set target.nodeName to the pool name.
-4. add_swimlane: set target.nodeName to the lane name, changes.poolName to the pool name/id to add it to. Optional: changes.role ('manager'/'worker'), changes.isAgentic (true/false), changes.trustScore (0-100), changes.multiplicity (1+).
-5. modify_swimlane: set target.swimlaneName to the lane name. Put new values in changes (role, trustScore, multiplicity, name).
-6. remove_swimlane: set target.swimlaneName to the lane name.
-7. remove_pool: set target.poolName to the pool name.
+1. Actions are: "add_task", "add_gateway", "add_event", "add_flow",
+   "modify_node", "remove_flow", "remove_element", "add_pool",
+   "add_swimlane", "modify_swimlane", "remove_swimlane", "remove_pool".
+2. The `*_swimlane` action names are WME API names. Call the modeled
+   constructs lanes in explanations and never generate pools[].swimlanes.
+3. add_swimlane: set target.nodeName and changes.poolName. Allowed role values:
+   solution, supervision, collaboration, consensus.
+4. Use changes.owner only to place a newly added node in an existing lane.
+5. Use modify_node for task fields: isAgentic, reflectionMode, trustScore,
+   agentDiagramRef; or gateway fields: isAgentic, gatewayRole, trustScore,
+   governanceDsl.
+6. An agentic gateway must be parallel or inclusive. governanceDsl is only
+   meaningful for a merging gateway.
+7. Flows contain only normal endpoints and labels. Do not use agentic
+   message-flow notation, collaborationMode, or mergingStrategy.
 8. {REMOVE_ELEMENT_RULE}
 9. {EXACT_NAMES_RULE}
 
-If element not found: elementFound: false, modifications: [], explain in message.
-If user says 'undo': modifications: [], elementFound: false, message: 'To undo, use Ctrl+Z or the undo button in the editor toolbar.'"""
-
+If an element is not present in context, set elementFound: false and emit
+no modifications."""
 
 class BPMNDiagramHandler(BaseDiagramHandler):
     """Handler for base BPMN process generation and modification."""
@@ -171,24 +177,33 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows."""
 
     def _generate_agentic_complete_system(self, user_request: str) -> Dict[str, Any]:
         """Generate a BPMN process with pools and swimlanes (agentic BPMN)."""
-        system_prompt = """You are an agentic BPMN modeling expert. Create a BPMN process with pools and swimlanes from the user's request.
+        system_prompt = """You are an agentic BPMN modeling expert. Create an
+AgenticSwarm BPMN process from the user's request.
 
 DESIGN RULES:
-1. Use pools to group collaborating participants (organizations, agents, systems).
-2. Use swimlanes for individual participants within a pool. Set isAgentic=true for AI agents.
-3. Agent roles: 'manager' for orchestrators/supervisors, 'worker' for task executors.
-4. multiplicity: how many instances of this agent type run concurrently (usually 1, sometimes 2-5 for workers).
-5. Each flow node (task/event/gateway) MUST have its owner set to a swimlane id.
-6. Sequence flows connect nodes — they can cross swimlane boundaries for agent coordination.
-7. Use exactly ONE start event per process (in the manager/first lane if agentic).
-8. Keep focused: 1-2 pools, 2-5 lanes per pool, 1-3 tasks per lane. Do NOT add positions."""
+1. Emit pools[].lanes. Never emit pools[].swimlanes.
+2. Use pools for distinct participants and lanes for distinct roles inside a pool.
+3. Agentic lane roles are exactly: solution, supervision, collaboration, consensus.
+4. Preserve lane metadata where relevant: isAgentic, role, trustScore,
+multiplicity, agentDiagramRef.
+5. Every node in a pool must set poolId. Every node in a lane must set laneId.
+owner may match laneId for backend normalization; never use a generated
+WME/Apollon element id.
+6. Agentic tasks may use isAgentic, reflectionMode, trustScore, and
+agentDiagramRef.
+7. Agentic gateways must be parallel or inclusive. They may use isAgentic,
+gatewayRole, trustScore, and governanceDsl. A governed merge must have
+gatewayRole="merging" and a non-empty governanceDsl.
+8. Flows contain only source, target, and name. Never emit flowType, agentic
+flow fields, collaborationMode, or mergingStrategy.
+9. Use one start event and at least one end event. Do not emit positions."""
 
         reasoning_prompt = (
             "You are an agentic process-design expert. Think step by step about the "
             "following collaboration request and plan it before producing JSON.\n\n"
             f"User Request: {user_request}\n\n"
             "Analyze:\n"
-            "1. Who are the participants (agents/services)? Who manages, who executes?\n"
+            "1. Who are the participants and which lane role fits each: solution, supervision, collaboration, or consensus?\n"
             "2. How many instances of each participant are needed (multiplicity)?\n"
             "3. What tasks does each participant perform?\n"
             "4. How do they coordinate (what sequence flows cross lanes)?\n"
@@ -201,7 +216,7 @@ DESIGN RULES:
                 user_request=user_request,
                 system_prompt=system_prompt,
                 reasoning_prompt=reasoning_prompt,
-                response_schema=SystemAgenticBPMNSpec,
+                response_schema=SystemBPMNSpec,
             )
             system_spec = parsed.model_dump()
             return {
@@ -221,7 +236,7 @@ DESIGN RULES:
         name = spec.get("systemName") or "process"
         pools = spec.get("pools", [])
         nodes = spec.get("nodes", [])
-        total_lanes = sum(len(p.get("swimlanes", [])) for p in pools)
+        total_lanes = sum(len(p.get("lanes", [])) for p in pools)
         tasks = [n.get("name", "?") for n in nodes if n.get("type") == "task"][:5]
         msg = f"Built the **{name}** agentic process with {len(pools)} pool(s) and {total_lanes} lane(s)"
         if tasks:

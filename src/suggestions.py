@@ -79,6 +79,18 @@ _BPMN_SUGGESTIONS = [
     ("Regenerate with more detail", "Regenerate the current BPMN process with more detail and intermediate steps."),
 ]
 
+_COMPONENT_SUGGESTIONS = [
+    ("Add an agent component", "add an agent component"),
+    ("Connect components", "add a dependency between components"),
+    ("Describe the architecture", "describe my component diagram"),
+]
+
+_DEPLOYMENT_SUGGESTIONS = [
+    ("Add a deployment node", "add a cloud deployment node"),
+    ("Deploy a component", "deploy a component to a node"),
+    ("Describe the topology", "describe my deployment diagram"),
+]
+
 _GENERATION_SUGGESTIONS = [
     ("Generate another format", "generate sql"),
     ("Modify the model", ""),
@@ -224,6 +236,19 @@ def _suggestions_for_bpmn(
 ) -> List[Dict[str, str]]:
     return _build_actions(_BPMN_SUGGESTIONS)
 
+def _suggestions_for_component(
+    operation_mode: str,
+    available_diagrams: Optional[List[str]],
+) -> List[Dict[str, str]]:
+    return _build_actions(_COMPONENT_SUGGESTIONS)
+
+
+def _suggestions_for_deployment(
+    operation_mode: str,
+    available_diagrams: Optional[List[str]],
+) -> List[Dict[str, str]]:
+    return _build_actions(_DEPLOYMENT_SUGGESTIONS)
+
 
 _DIAGRAM_SUGGESTION_HANDLERS = {
     "ClassDiagram": _suggestions_for_class_diagram,
@@ -233,6 +258,8 @@ _DIAGRAM_SUGGESTION_HANDLERS = {
     "ObjectDiagram": _suggestions_for_object_diagram,
     "QuantumCircuitDiagram": _suggestions_for_quantum,
     "BPMN": _suggestions_for_bpmn,
+    "ComponentDiagram": _suggestions_for_component,
+    "DeploymentDiagram": _suggestions_for_deployment,
 }
 
 
