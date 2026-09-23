@@ -25,6 +25,8 @@ generate, convert) over WebSocket-compatible payloads.
 | `BPMN` | Yes | Yes | Yes |
 | `UserDiagram` | Yes | Yes | Yes |
 
+`AgentDiagram` also covers agent components (intents, LLMs, RAG databases, tools, skills, workspaces, GUIs) and all 17 state reply types.
+
 ## Supported Generators
 
 `django`, `backend`, `web_app`, `sql`, `sqlalchemy`, `python`, `java`, `pydantic`, `jsonschema`, `smartdata`, `agent`, `qiskit`
