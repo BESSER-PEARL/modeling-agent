@@ -226,3 +226,9 @@ def test_a_nebius_key_is_accepted_and_calls_the_nebius_endpoint(monkeypatch):
     assert created["api_key"] == "neb-key"
     assert created["call"]["model"].startswith("Qwen/")
     assert "max_tokens" in created["call"] and "max_completion_tokens" not in created["call"]
+
+
+def test_the_per_call_timeout_outlasts_a_long_reasoning_pass():
+    """Live (2026-09-23): the hotel spec's reasoning pass on Nebius Qwen was cut
+    at exactly 120 s and redone, costing ~2 minutes; the retry took ~110 s."""
+    assert byok._SDK_TIMEOUT_SECONDS >= 300

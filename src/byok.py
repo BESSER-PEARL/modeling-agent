@@ -67,8 +67,9 @@ MISTRAL_BASE_URL = "https://api.mistral.ai/v1"
 NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1/"
 
 # Per-request SDK timeout. Without it the SDKs default to several minutes,
-# which would let a hung BYOK call stall a whole turn.
-_SDK_TIMEOUT_SECONDS = 120.0
+# which would let a hung BYOK call stall a whole turn. 120 s cut a long-spec
+# reasoning pass on Nebius Qwen mid-answer (live, 2026-09-23), forcing a redo.
+_SDK_TIMEOUT_SECONDS = 300.0
 
 
 class BYOKError(RuntimeError):

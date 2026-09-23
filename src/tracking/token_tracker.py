@@ -55,6 +55,15 @@ _COST_PER_1K: Dict[str, Dict[str, float]] = {
     "gpt-5.6-luna": {"prompt": 0.001, "completion": 0.006},
     "gpt-5.4-mini": {"prompt": 0.00075, "completion": 0.0045},
     "gpt-5.4-nano": {"prompt": 0.0002, "completion": 0.00125},
+    # Production large/reasoning override (BESSER_AGENT_MODEL_*).
+    "gpt-5-mini": {"prompt": 0.00025, "completion": 0.002},
+    # BYOK tier models (byok._PROVIDER_TIER_MODELS). Rates from the price file
+    # BESSER vendors (spec_driven_agent/providers/data/model_prices.json).
+    "claude-sonnet-4-6": {"prompt": 0.003, "completion": 0.015},
+    "claude-haiku-4-5": {"prompt": 0.001, "completion": 0.005},
+    "mistral-large-latest": {"prompt": 0.0005, "completion": 0.0015},
+    "mistral-small-latest": {"prompt": 0.00015, "completion": 0.0006},
+    "Qwen/Qwen3-30B-A3B-Instruct-2507": {"prompt": 0.0001, "completion": 0.0003},
 }
 
 # Fallback for unknown models — placeholder pricing, not any real model's rate.

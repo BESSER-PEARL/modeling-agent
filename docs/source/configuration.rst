@@ -303,8 +303,8 @@ and the shared server LLM is never mutated.
      - The local BAF fallback classifier (no LLM), RAG embeddings, and image/PDF
        vision for non-OpenAI keys (they cannot call the OpenAI vision API)
    * - Per-request timeout
-     - 120 s (without it the SDKs default to several minutes, letting one
-       hung call stall a whole turn)
+     - 300 s (without it the SDKs default to several minutes, letting one
+       hung call stall a whole turn; 120 s cut long-spec reasoning passes short)
    * - Error handling
      - Provider call errors (auth, rate limit) propagate so the existing
        ``errors.classify_error`` taxonomy can surface them. Only
