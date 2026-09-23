@@ -816,6 +816,103 @@ class TestAgentModificationResponse:
             AgentModificationResponse(modifications=[])
 
 
+class TestAgentReplyTypeSharing:
+    """ReplyType is declared once and shared by replies and add_state_body changes."""
+
+    def test_reply_and_changes_share_one_reply_type_alias(self):
+        from typing import get_args
+        from schemas.agent_diagram import ReplyType, REPLY_TYPE_HINTS
+        values = set(get_args(ReplyType))
+        assert set(REPLY_TYPE_HINTS) == values
+        assert "gui_reply" in values and "ws_plotly" in values
+        for v in values:
+            assert AgentReplySpec(text="x", replyType=v).replyType == v
+            assert AgentModificationChanges(replyType=v).replyType == v
+
+    def test_changes_rejects_invalid_reply_type(self):
+        with pytest.raises(ValidationError):
+            AgentModificationChanges(replyType="audio")
+
+    @pytest.mark.parametrize("field, bogus", [
+        ("inputPromptMode", "bogus"),
+        ("dbSelectionType", "bogus"),
+        ("dbQueryMode", "bogus"),
+        ("dbOperation", "bogus"),
+    ])
+    def test_changes_rejects_bogus_enum_fields(self, field, bogus):
+        with pytest.raises(ValidationError):
+            AgentModificationChanges(**{field: bogus})
+        with pytest.raises(ValidationError):
+            AgentReplySpec(text="x", **{field: bogus})
+
+    def test_changes_accepts_valid_reply_fields(self):
+        c = AgentModificationChanges(
+            text="Ask the LLM", replyType="llm", inputPromptMode="custom",
+            customInputPrompt="Summarize", llm_name="gpt", dbQueryMode="sql",
+        )
+        assert c.inputPromptMode == "custom"
+        assert c.customInputPrompt == "Summarize"
+        assert c.llm_name == "gpt"
+
+    def test_reply_type_help_lists_every_value(self):
+        from typing import get_args
+        from schemas.agent_diagram import ReplyType, reply_type_help
+        text = reply_type_help("  ")
+        for v in get_args(ReplyType):
+            assert f'"{v}"' in text
+        assert len(text.splitlines()) == len(get_args(ReplyType))
+
+
+class TestAgentComponentSpecs:
+    def test_system_spec_component_lists_default_empty(self):
+        s = SystemAgentSpec(states=[AgentStateSpec(stateName="S1")])
+        for key in ("ragElements", "llms", "tools", "skills", "workspaces", "guis"):
+            assert getattr(s, key) == []
+
+    def test_system_spec_accepts_components(self):
+        s = SystemAgentSpec(
+            states=[AgentStateSpec(stateName="S1")],
+            llms=[{"name": "gpt", "provider": "openai"}],
+            ragElements=[{"name": "docs", "llm_name": "gpt", "k": 3}],
+            tools=[{"name": "search", "description": "web search", "code": "def search(q): ..."}],
+            skills=[{"name": "tone", "content": "Be polite"}],
+            workspaces=[{"name": "ws", "path": "/data", "writable": False}],
+            guis=[{"gui_id": "orderForm", "is_form": True}],
+        )
+        assert s.llms[0].num_previous_messages == 1
+        assert s.ragElements[0].k == 3
+        assert s.tools[0].name == "search"
+        assert s.skills[0].content == "Be polite"
+        assert s.workspaces[0].writable is False
+        assert s.workspaces[0].max_read_bytes == 200_000
+        assert s.guis[0].is_form is True and s.guis[0].persist is True
+
+    def test_component_names_required(self):
+        with pytest.raises(ValidationError):
+            SystemAgentSpec(states=[AgentStateSpec(stateName="S1")], llms=[{"name": ""}])
+        with pytest.raises(ValidationError):
+            SystemAgentSpec(states=[AgentStateSpec(stateName="S1")], guis=[{"gui_id": ""}])
+
+    @pytest.mark.parametrize("action", ["add_llm", "add_tool", "add_skill", "add_workspace", "add_gui"])
+    def test_new_component_actions_accepted(self, action):
+        m = AgentModification(
+            action=action,
+            target=AgentModificationTarget(name="comp"),
+            changes=AgentModificationChanges(provider="openai", code="def f(): pass", content="c",
+                                             path="/tmp", writable=True, gui_id="g", is_form=False),
+        )
+        assert m.action == action
+        assert m.target.name == "comp"
+
+    def test_unknown_action_rejected(self):
+        with pytest.raises(ValidationError):
+            AgentModification(action="add_database", target=AgentModificationTarget(name="x"))
+
+    def test_intent_description(self):
+        assert AgentIntentSpec(intentName="Greet", intentDescription="Says hi").intentDescription == "Says hi"
+        assert AgentModificationChanges(intentDescription="d").intentDescription == "d"
+
+
 # =============================================================================
 # GUI Diagram schemas
 # =============================================================================

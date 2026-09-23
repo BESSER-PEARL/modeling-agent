@@ -2,48 +2,57 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, get_args
 
 from pydantic import BaseModel, Field
 
 
-class AgentReplySpec(BaseModel):
-    text: str = Field(
-        description=(
-            "Reply text, LLM prompt, or Python code depending on replyType. "
-            "When replyType is 'code', this MUST be a complete function definition "
-            "starting with 'def <name>(session):' — never bare statements."
-        ),
-    )
-    replyType: Literal[
-        "text", "llm", "llm_chat", "rag", "db_reply", "code",
-        "web_crawl_llm",
-        "ws_markdown", "ws_html", "ws_speech", "ws_options",
-        "ws_location", "ws_file", "ws_image", "ws_dataframe", "ws_plotly",
-        "gui_reply",
-    ] = Field(
-        default="text",
-        description=(
-            "Action type for this body element:\n"
-            "  text          – scripted text reply (most common)\n"
-            "  llm           – LLM-generated reply (set system_message / llm_name)\n"
-            "  llm_chat      – LLM chat reply with conversation history\n"
-            "  rag           – RAG knowledge-base lookup (set ragDatabaseName)\n"
-            "  db_reply      – SQL / LLM database query (set dbSelectionType etc.)\n"
-            "  code          – custom Python function (text must be a full def)\n"
-            "  web_crawl_llm – crawl a URL then reply via LLM (set initial_url)\n"
-            "  ws_markdown   – WebSocket reply as Markdown (set ws_message)\n"
-            "  ws_html       – WebSocket reply as HTML (set ws_message)\n"
-            "  ws_speech     – WebSocket text-to-speech reply (set ws_message)\n"
-            "  ws_options    – WebSocket options/buttons (set ws_options)\n"
-            "  ws_location   – WebSocket GPS location (set ws_latitude/ws_longitude)\n"
-            "  ws_file       – WebSocket file transfer\n"
-            "  ws_image      – WebSocket image transfer\n"
-            "  ws_dataframe  – WebSocket dataframe\n"
-            "  ws_plotly     – WebSocket Plotly chart\n"
-            "  gui_reply     – show a GUI page (set guiId to the AgentGUI component id)"
-        ),
-    )
+ReplyType = Literal[
+    "text", "llm", "llm_chat", "rag", "db_reply", "code",
+    "web_crawl_llm",
+    "ws_markdown", "ws_html", "ws_speech", "ws_options",
+    "ws_location", "ws_file", "ws_image", "ws_dataframe", "ws_plotly",
+    "gui_reply",
+]
+"""Every action type a state body can have (single source of truth for the
+schemas and the handler prompts)."""
+
+REPLY_TYPE_HINTS: Dict[str, str] = {
+    "text": "scripted text reply (most common)",
+    "llm": "LLM-generated reply (set system_message and/or llm_name)",
+    "llm_chat": "LLM chat reply with conversation history",
+    "rag": "RAG knowledge-base lookup (set ragDatabaseName, optionally llm_name)",
+    "db_reply": "database query (set dbSelectionType 'default'/'custom', dbQueryMode 'llm_query'/'sql', etc.)",
+    "code": "custom Python function (text MUST be a complete 'def <name>(session):' function)",
+    "web_crawl_llm": "crawl a URL then reply via LLM (set initial_url)",
+    "ws_markdown": "WebSocket reply as Markdown (set ws_message)",
+    "ws_html": "WebSocket reply as HTML (set ws_message)",
+    "ws_speech": "WebSocket text-to-speech reply (set ws_message)",
+    "ws_options": "WebSocket option buttons (set ws_options, newline-separated)",
+    "ws_location": "WebSocket GPS location (set ws_latitude and ws_longitude)",
+    "ws_file": "WebSocket file transfer",
+    "ws_image": "WebSocket image transfer",
+    "ws_dataframe": "WebSocket dataframe",
+    "ws_plotly": "WebSocket Plotly chart",
+    "gui_reply": "show a GUI page (set guiId to the AgentGUI component's gui_id)",
+}
+assert set(REPLY_TYPE_HINTS) == set(get_args(ReplyType)), "REPLY_TYPE_HINTS out of sync with ReplyType"
+
+
+def reply_type_help(indent: str = "") -> str:
+    """One line per ReplyType value with its hint, for prompts and schema descriptions."""
+    values = get_args(ReplyType)
+    width = max(len(v) for v in values) + 2  # room for the quotes
+    lines = []
+    for value in values:
+        quoted = f'"{value}"'
+        lines.append(f"{indent}- {quoted:<{width}} – {REPLY_TYPE_HINTS[value]}")
+    return "\n".join(lines)
+
+
+class AgentReplyFields(BaseModel):
+    """Type-specific fields of a state body action, shared by ``AgentReplySpec``
+    (replies in state specs) and ``AgentModificationChanges`` (add_state_body)."""
 
     # --- RAG fields ---
     ragDatabaseName: Optional[str] = Field(
@@ -127,6 +136,20 @@ class AgentReplySpec(BaseModel):
     guiId: Optional[str] = Field(
         default=None,
         description="gui_id of the AgentGUI component to display (required for gui_reply).",
+    )
+
+
+class AgentReplySpec(AgentReplyFields):
+    text: str = Field(
+        description=(
+            "Reply text, LLM prompt, or Python code depending on replyType. "
+            "When replyType is 'code', this MUST be a complete function definition "
+            "starting with 'def <name>(session):' — never bare statements."
+        ),
+    )
+    replyType: ReplyType = Field(
+        default="text",
+        description="Action type for this body element:\n" + reply_type_help("  "),
     )
 
 
@@ -422,7 +445,7 @@ class AgentModificationTarget(BaseModel):
     )
 
 
-class AgentModificationChanges(BaseModel):
+class AgentModificationChanges(AgentReplyFields):
     name: Optional[str] = Field(
         default=None,
         max_length=60,
@@ -457,33 +480,10 @@ class AgentModificationChanges(BaseModel):
             "When replyType is 'code', MUST be a complete 'def <name>(session):' function."
         ),
     )
-    replyType: Optional[Literal[
-        "text", "llm", "llm_chat", "rag", "db_reply", "code",
-        "web_crawl_llm",
-        "ws_markdown", "ws_html", "ws_speech", "ws_options",
-        "ws_location", "ws_file", "ws_image", "ws_dataframe", "ws_plotly",
-        "gui_reply",
-    ]] = Field(
+    replyType: Optional[ReplyType] = Field(
         default=None,
-        description="Action type for add_state_body.",
+        description="Action type for add_state_body (type-specific fields are inherited from AgentReplyFields).",
     )
-    ragDatabaseName: Optional[str] = Field(default=None, description="RAG KB name (rag).")
-    system_message: Optional[str] = Field(default=None, description="LLM system prompt (llm/llm_chat).")
-    llm_name: Optional[str] = Field(default=None, description="LLM component name.")
-    inputPromptMode: Optional[str] = Field(default=None, description="LLM input mode.")
-    storeInSession: Optional[str] = Field(default=None, description="Session variable to store output.")
-    sendReply: Optional[bool] = Field(default=None, description="Whether to send LLM output as reply.")
-    dbSelectionType: Optional[str] = Field(default=None, description="DB selection (db_reply).")
-    dbCustomName: Optional[str] = Field(default=None, description="Custom DB name (db_reply).")
-    dbQueryMode: Optional[str] = Field(default=None, description="DB query mode (db_reply).")
-    dbOperation: Optional[str] = Field(default=None, description="DB operation (db_reply).")
-    dbSqlQuery: Optional[str] = Field(default=None, description="Raw SQL query (db_reply).")
-    initial_url: Optional[str] = Field(default=None, description="Crawl start URL (web_crawl_llm).")
-    ws_message: Optional[str] = Field(default=None, description="WS message content.")
-    ws_options: Optional[str] = Field(default=None, description="WS options (newline-separated).")
-    ws_latitude: Optional[float] = Field(default=None, description="WS location latitude.")
-    ws_longitude: Optional[float] = Field(default=None, description="WS location longitude.")
-    guiId: Optional[str] = Field(default=None, description="GUI component id (gui_reply).")
 
     # --- add_intent_training_phrase ---
     trainingPhrase: Optional[str] = Field(

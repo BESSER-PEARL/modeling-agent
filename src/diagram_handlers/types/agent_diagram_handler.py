@@ -13,7 +13,7 @@ from ..core.prompt_fragments import (
     MULTI_MOD_ARRAY_RULE,
     POSITION_DISCLAIMER,
 )
-from schemas import AgentSingleElementSpec, SystemAgentSpec, AgentModificationResponse
+from schemas import AgentSingleElementSpec, SystemAgentSpec, AgentModificationResponse, reply_type_help
 from utilities.model_context import detailed_model_summary
 
 # Get logger
@@ -51,6 +51,10 @@ def _ensure_code_reply_is_function(text: str, name_hint: str) -> str:
     return f"def {safe_name}(session):\n{indented}"
 
 
+# replyType bullet lists are generated from the schema's ReplyType alias so the
+# prompts can never drift from what the structured output accepts.
+_REPLY_TYPES_PROMPT = reply_type_help("   ")
+
 _AGENT_ACTIONS_BLOCK = """AVAILABLE ACTIONS:
 - add_state: Create a new state. Set target.stateName, put replies [{text, replyType, ...}] in changes.
 - add_intent: Create a new intent. Set target.intentName, put trainingPhrases ["phrase1","phrase2","phrase3"] in changes.
@@ -71,24 +75,8 @@ _AGENT_RULES_BLOCK = f"""RULES:
 1. For transitions, "condition" is usually "when_intent_matched" with an "intentName".
 2. {EXACT_NAMES_RULE}
 3. {MULTI_MOD_ARRAY_RULE}
-4. replyType options for state bodies:
-   - "text"          – scripted text reply (most common)
-   - "llm"           – LLM-generated reply (set changes.system_message and/or changes.llm_name)
-   - "llm_chat"      – LLM chat with conversation history
-   - "rag"           – RAG knowledge-base lookup (set changes.ragDatabaseName and/or changes.llm_name)
-   - "db_reply"      – SQL database query (set changes.dbSelectionType, changes.dbQueryMode, etc.)
-   - "code"          – custom Python function (changes.text MUST be a complete def)
-   - "web_crawl_llm" – crawl a URL then reply via LLM (set changes.initial_url)
-   - "ws_markdown"   – WebSocket Markdown reply (set changes.ws_message)
-   - "ws_html"       – WebSocket HTML reply (set changes.ws_message)
-   - "ws_speech"     – WebSocket text-to-speech (set changes.ws_message)
-   - "ws_options"    – WebSocket option buttons (set changes.ws_options as newline-separated list)
-   - "ws_location"   – WebSocket GPS location (set changes.ws_latitude, changes.ws_longitude)
-   - "ws_file"       – WebSocket file transfer
-   - "ws_image"      – WebSocket image transfer
-   - "ws_dataframe"  – WebSocket dataframe
-   - "ws_plotly"     – WebSocket Plotly chart
-   - "gui_reply"     – show a GUI page (set changes.guiId to the AgentGUI component id)
+4. replyType options for state bodies (type-specific fields go in changes, e.g. changes.system_message):
+{_REPLY_TYPES_PROMPT}
 5. Example: "add a welcome state" → add_state with target.stateName="welcomeState", changes.replies=[{{text:"Welcome!", replyType:"text"}}]
 6. Example: "add a greeting intent" → add_intent with target.intentName="GreetingIntent", changes.trainingPhrases=["hello","hi","hey there"]
 7. CRITICAL for replyType="code": the "text" MUST be a complete Python function
@@ -118,17 +106,9 @@ class AgentDiagramHandler(BaseDiagramHandler):
 
 IMPORTANT RULES:
 1. Provide the "type" field (state, intent, or initial) based on the user request.
-2. For states include 1-3 "replies". Each reply has a "replyType":
-   - "text" – scripted reply (most common)
-   - "llm" / "llm_chat" – AI-generated reply; add system_message / llm_name as needed
-   - "rag" – knowledge-base lookup; set ragDatabaseName
-   - "db_reply" – SQL query; set dbSelectionType, dbQueryMode, etc.
-   - "code" – custom Python; "text" MUST be a complete "def <name>(session):" function
-   - "gui_reply" – show a GUI page; set guiId
-   - "ws_markdown" / "ws_html" / "ws_speech" – WebSocket text variants; set ws_message
-   - "ws_options" – buttons; set ws_options (newline-separated)
-   - "ws_location" – GPS; set ws_latitude / ws_longitude
-   - "ws_file" / "ws_image" / "ws_dataframe" / "ws_plotly" / "web_crawl_llm" – other media
+2. For states include 1-3 "replies". Each reply has a "replyType" (default to "text"; use
+   "code" only if the user explicitly asks for custom Python logic):
+{_REPLY_TYPES_PROMPT}
 3. Add "fallbackBodies" only when the request mentions fallbacks or error handling.
 4. For intents include 3-4 "trainingPhrases" that reflect how a user would trigger the intent.
 5. Keep names concise (camelCase for states, TitleCase for intents).
@@ -181,19 +161,9 @@ Before generating, think through:
 
 IMPORTANT RULES:
 1. Create AS MANY states and intents as needed for the conversation.
-2. Each state can have MULTIPLE replies/actions via "replyType":
-   - "text"          – scripted reply (most common)
-   - "llm"           – LLM-generated reply; add system_message and/or llm_name
-   - "llm_chat"      – LLM chat with conversation history
-   - "rag"           – RAG lookup; set ragDatabaseName (and optionally llm_name)
-   - "db_reply"      – SQL query; set dbSelectionType ("default"/"custom"), dbQueryMode ("llm_query"/"sql"), etc.
-   - "code"          – custom Python; "text" MUST be a complete "def <name>(session):" function
-   - "web_crawl_llm" – crawl a URL via LLM; set initial_url
-   - "gui_reply"     – show a GUI page; set guiId to the AgentGUI component id
-   - "ws_markdown" / "ws_html" / "ws_speech" – WebSocket variants; set ws_message
-   - "ws_options"    – option buttons; set ws_options (newline-separated)
-   - "ws_location"   – GPS pin; set ws_latitude and ws_longitude
-   - "ws_file" / "ws_image" / "ws_dataframe" / "ws_plotly" – WebSocket media types
+2. Each state can have MULTIPLE replies/actions via "replyType" (use "code" ONLY when the
+   user explicitly asks for custom Python logic):
+{_REPLY_TYPES_PROMPT}
 3. AVOID DEAD-ENDS: Every state MUST have at least one exit path.
 4. States can have MULTIPLE transitions.
 5. Transition types:

@@ -484,6 +484,86 @@ class TestDetailedModelSummaryAgent:
         assert "AgentDiagram" in result
 
 
+# Editor (new format): components section + Apollon {element: id} endpoints.
+AGENT_MODEL_NEW_FORMAT = {
+    "elements": {
+        "init": {"type": "StateInitialNode", "name": ""},
+        "s1": {"type": "AgentState", "name": "Greeting"},
+        "s2": {"type": "AgentState", "name": "Answer"},
+    },
+    "relationships": {
+        "r0": {"type": "AgentStateTransitionInit", "source": {"element": "init"}, "target": {"element": "s1"}},
+        "r1": {"type": "AgentStateTransition", "source": {"element": "s1", "direction": "Right"},
+               "target": {"element": "s2", "direction": "Left"}},
+    },
+    "components": {
+        "i1": {"type": "AgentIntent", "name": "AskQuestion"},
+        "l1": {"type": "AgentLLM", "name": "gpt4"},
+        "rag1": {"type": "AgentRagElement", "name": "faqDocs"},
+        "t1": {"type": "AgentTool", "name": "webSearch"},
+        "sk1": {"type": "AgentSkill", "name": "politeTone"},
+        "w1": {"type": "AgentWorkspace", "name": "dataDir"},
+        "g1": {"type": "AgentGUI", "gui_id": "orderForm"},
+    },
+}
+
+# Old projects: intents (and components) still live in ``elements``.
+AGENT_MODEL_OLD_FORMAT = {
+    "elements": {
+        "s1": {"type": "AgentState", "name": "Greeting"},
+        "i1": {"type": "AgentIntent", "name": "say_hello"},
+        "ib1": {"type": "AgentIntentBody", "name": "hi", "owner": "i1"},
+        "rag1": {"type": "AgentRagElement", "name": "legacyKb"},
+    },
+    "relationships": {},
+}
+
+
+class TestDetailedModelSummaryAgentFormats:
+    def test_new_format_lists_every_component_type(self):
+        result = detailed_model_summary(AGENT_MODEL_NEW_FORMAT, "AgentDiagram")
+        assert "Intents: AskQuestion" in result
+        assert "LLMs: gpt4" in result
+        assert "RAG databases: faqDocs" in result
+        assert "Tools: webSearch" in result
+        assert "Skills: politeTone" in result
+        assert "Workspaces: dataDir" in result
+        assert "GUIs (gui_id): orderForm" in result
+
+    def test_new_format_transitions_with_element_endpoints(self):
+        result = detailed_model_summary(AGENT_MODEL_NEW_FORMAT, "AgentDiagram")
+        assert "Greeting → Answer" in result
+        assert "initial → Greeting" in result
+
+    def test_old_format_intents_in_elements(self):
+        result = detailed_model_summary(AGENT_MODEL_OLD_FORMAT, "AgentDiagram")
+        assert "Intents: say_hello" in result
+        assert "RAG databases: legacyKb" in result
+        assert "States: Greeting" in result
+
+    def test_legacy_agent_components_key(self):
+        model = {
+            "elements": {"s1": {"type": "AgentState", "name": "Greeting"}},
+            "relationships": {},
+            "agentComponents": {"l1": {"type": "AgentLLM", "name": "legacyLlm"}},
+        }
+        assert "LLMs: legacyLlm" in detailed_model_summary(model, "AgentDiagram")
+
+    def test_components_win_over_elements_on_duplicate_id(self):
+        from utilities.model_context import agent_model_elements
+        merged = agent_model_elements({
+            "agentComponents": {"x": {"type": "AgentLLM", "name": "a"}},
+            "elements": {"x": {"type": "AgentLLM", "name": "b"}},
+            "components": {"x": {"type": "AgentLLM", "name": "c"}},
+        })
+        assert merged["x"]["name"] == "c"
+
+    def test_components_only_model_is_summarized(self):
+        model = {"elements": {}, "relationships": {},
+                 "components": {"i1": {"type": "AgentIntent", "name": "Greet"}}}
+        assert "Intents: Greet" in detailed_model_summary(model, "AgentDiagram")
+
+
 # ---------------------------------------------------------------------------
 # detailed_model_summary – QuantumCircuitDiagram
 # ---------------------------------------------------------------------------
