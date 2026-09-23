@@ -369,7 +369,7 @@ def modeling_help_body(session: Session):
             "Components (services, agents, models, databases, tools), and ComponentDependencies\n"
             "- Component stereotypes: «solution» (general component/agent), «llm» (language model), "
             "«db» (database/storage), «rag» (retrieval-augmented), «tool» (utility), «skill» (capability)\n"
-            "- Dependency stereotypes: uses (service call), supervises (manager→worker), "
+            "- Dependency stereotypes: uses (service call), supervises (supervision→solution), "
             "collaborates (peer exchange), revises (feedback loop), delegates (task handoff)\n"
             "- Architecture patterns: layered systems, microservices, agent pipelines, AI-assisted workflows\n\n"
             "Provide clear, practical advice about component architecture modeling. "

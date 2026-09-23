@@ -30,7 +30,7 @@ class ComponentSpec(BaseModel):
 class ComponentDependencySpec(BaseModel):
     source: str = Field(description="Source component/subsystem id.")
     target: str = Field(description="Target component/subsystem id.")
-    stereotype: _DEPENDENCY_STEREOTYPE = Field(default="uses", description="'uses' for service/library dependency, 'supervises' for manager→worker, 'collaborates' for peer, 'revises' for feedback loops, 'delegates' for task delegation.")
+    stereotype: _DEPENDENCY_STEREOTYPE = Field(default="uses", description="'uses' for service/library dependency, 'supervises' for supervision→solution, 'collaborates' for peer, 'revises' for feedback loops, 'delegates' for task delegation.")
 
 
 class SystemComponentSpec(BaseModel):
