@@ -341,3 +341,102 @@ def test_bpmn_suggestions_have_nonempty_prompts():
         assert action.get("prompt"), (
             f"Chip '{action.get('label')}' has empty prompt — WME will no-op when user clicks it"
         )
+
+def test_agentic_bpmn_schema_preserves_lanes_and_governance():
+    from schemas import SystemBPMNSpec
+
+    spec = SystemBPMNSpec(
+        systemName="Review Swarm",
+        pools=[
+            {
+                "id": "swarm",
+                "name": "Review Swarm",
+                "lanes": [
+                    {
+                        "id": "supervisor",
+                        "name": "Supervisor",
+                        "isAgentic": True,
+                        "role": "supervision",
+                        "trustScore": 90,
+                        "multiplicity": 1,
+                    },
+                    {
+                        "id": "reviewers",
+                        "name": "Reviewer",
+                        "isAgentic": True,
+                        "role": "solution",
+                        "trustScore": 75,
+                        "multiplicity": 3,
+                    },
+                ],
+            }
+        ],
+        nodes=[
+            {
+                "id": "start",
+                "name": "Start",
+                "type": "startEvent",
+                "poolId": "swarm",
+                "laneId": "supervisor",
+                "owner": "supervisor",
+            },
+            {
+                "id": "merge",
+                "name": "Select Result",
+                "type": "gateway",
+                "gatewayType": "parallel",
+                "poolId": "swarm",
+                "laneId": "supervisor",
+                "owner": "supervisor",
+                "isAgentic": True,
+                "gatewayRole": "merging",
+                "trustScore": 90,
+                "governanceDsl": "Policy: MajorityPolicy",
+            },
+        ],
+    ).model_dump()
+
+    assert spec["pools"][0]["lanes"][0]["role"] == "supervision"
+    assert spec["pools"][0]["lanes"][1]["multiplicity"] == 3
+    assert "swimlanes" not in spec["pools"][0]
+    assert spec["nodes"][1]["governanceDsl"] == "Policy: MajorityPolicy"
+    assert spec["nodes"][1]["laneId"] == "supervisor"
+
+
+def test_bpmn_model_summary_includes_agentic_lane_and_governance():
+    from utilities.model_context import detailed_model_summary
+
+    model = {
+        "elements": {
+            "pool-1": {"type": "BPMNPool", "name": "Review Swarm"},
+            "lane-1": {
+                "type": "BPMNSwimlane",
+                "name": "Supervisor",
+                "owner": "pool-1",
+                "isAgentic": True,
+                "role": "supervision",
+                "trustScore": 90,
+                "multiplicity": 1,
+            },
+            "gateway-1": {
+                "type": "BPMNGateway",
+                "name": "Select Result",
+                "owner": "lane-1",
+                "gatewayType": "parallel",
+                "isAgentic": True,
+                "gatewayRole": "merging",
+                "trustScore": 90,
+                "governanceDsl": "Policy: MajorityPolicy",
+            },
+        },
+        "relationships": {},
+    }
+
+    summary = detailed_model_summary(model, "BPMN")
+
+    assert "Pool: [pool-1] Review Swarm" in summary
+    assert "role=supervision" in summary
+    assert "multiplicity=1" in summary
+    assert "lane=Supervisor" in summary
+    assert "role=merging" in summary
+    assert "governanceDsl=set" in summary
