@@ -244,8 +244,9 @@ Elements
    Components are read from the editor's ``components`` section. Older projects
    keep them in ``elements`` (intents on the canvas) or in a legacy top-level
    ``agentComponents`` map; all three are merged when reading
-   (``agent_model_elements()`` in ``src/utilities/model_context.py``, with
-   ``components`` winning on duplicate ids). The layout engine reserves an
+   (``agent_model_elements()`` in ``src/utilities/model_context.py``, in the
+   order ``elements``, ``agentComponents``, ``components``; later sections win
+   on duplicate ids). The layout engine reserves an
    intent row on the canvas only for old-format models that already have
    ``AgentIntent`` elements.
 
@@ -278,7 +279,8 @@ for both the schemas and the handler prompts.
    * - ``db_reply``
      - Database query
      - ``dbSelectionType`` (``default``/``custom``), ``dbCustomName``,
-       ``dbQueryMode`` (``llm_query``/``sql``), ``dbOperation``,
+       ``dbQueryMode`` (``llm_query``/``sql``), ``dbOperation``
+       (``any``/``select``/``insert``/``update``/``delete``),
        ``dbSqlQuery``, ``llm_name``
    * - ``code``
      - Custom Python function

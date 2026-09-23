@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional, get_args
+from typing import Dict, List, Literal, Optional, get_args
 
 from pydantic import BaseModel, Field
 
@@ -36,7 +36,6 @@ REPLY_TYPE_HINTS: Dict[str, str] = {
     "ws_plotly": "WebSocket Plotly chart",
     "gui_reply": "show a GUI page (set guiId to the AgentGUI component's gui_id)",
 }
-assert set(REPLY_TYPE_HINTS) == set(get_args(ReplyType)), "REPLY_TYPE_HINTS out of sync with ReplyType"
 
 
 def reply_type_help(indent: str = "") -> str:
@@ -99,9 +98,9 @@ class AgentReplyFields(BaseModel):
         default=None,
         description="Query mode: 'llm_query' (LLM writes the query) or 'sql' (raw SQL in dbSqlQuery).",
     )
-    dbOperation: Optional[Literal["any", "create", "read", "update", "delete"]] = Field(
+    dbOperation: Optional[Literal["any", "select", "insert", "update", "delete"]] = Field(
         default=None,
-        description="DB operation constraint (default 'any').",
+        description="DB operation constraint: 'any' (default), 'select', 'insert', 'update' or 'delete'.",
     )
     dbSqlQuery: Optional[str] = Field(
         default=None,
@@ -264,7 +263,7 @@ class AgentGUISpec(BaseModel):
 
 
 class AgentRagSpec(BaseModel):
-    name: str = Field(description="Unique name for this RAG knowledge base.")
+    name: str = Field(min_length=1, description="Unique name for this RAG knowledge base.")
     llm_name: Optional[str] = Field(
         default=None,
         description="Name of the AgentLLM to use for RAG answer generation.",
@@ -429,11 +428,14 @@ class AgentModificationTarget(BaseModel):
     )
     sourceStateName: Optional[str] = Field(
         default=None,
-        description="Source state name when adding or removing a transition.",
+        description=(
+            "Source state name for add_transition and remove_transition "
+            "(use 'initial' for the entry-point node)."
+        ),
     )
     targetStateName: Optional[str] = Field(
         default=None,
-        description="Target state name when adding or removing a transition.",
+        description="Target state name for add_transition and remove_transition.",
     )
     transitionId: Optional[str] = Field(
         default=None,
@@ -465,7 +467,10 @@ class AgentModificationChanges(AgentReplyFields):
     )
     intentName: Optional[str] = Field(
         default=None,
-        description="Intent name for a transition condition.",
+        description=(
+            "Intent name for a transition condition (add_transition with condition "
+            "'when_intent_matched')."
+        ),
     )
     condition: Optional[Literal["when_intent_matched", "when_no_intent_matched", "auto"]] = Field(
         default=None,

@@ -258,3 +258,42 @@ def test_layout_single_intent_new_vs_old_format():
     assert "position" in old_spec
     state_spec = layout_agent_single({"type": "state", "stateName": "s"}, None)
     assert "position" in state_spec
+
+
+def test_modify_prompt_documents_transition_target_fields():
+    from diagram_handlers.types.agent_diagram_handler import MODIFY_SYSTEM_PROMPT_AGENT
+    for line_start in ("- add_transition:", "- remove_transition:"):
+        idx = MODIFY_SYSTEM_PROMPT_AGENT.index(line_start)
+        entry = MODIFY_SYSTEM_PROMPT_AGENT[idx:MODIFY_SYSTEM_PROMPT_AGENT.index("\n- ", idx + 1)]
+        assert "target.sourceStateName" in entry
+        assert "target.targetStateName" in entry
+    assert "changes.intentName" in MODIFY_SYSTEM_PROMPT_AGENT
+
+
+def test_modify_prompt_places_type_specific_fields_per_action():
+    from diagram_handlers.types.agent_diagram_handler import MODIFY_SYSTEM_PROMPT_AGENT
+    assert "changes.replies[i]" in MODIFY_SYSTEM_PROMPT_AGENT
+    assert "for add_state_body they go directly in changes" in MODIFY_SYSTEM_PROMPT_AGENT
+
+
+def test_complete_system_message_lists_component_counts(monkeypatch):
+    from types import SimpleNamespace
+    h = _handler()
+    spec = _system_spec()
+    spec.update({
+        "llms": [{"name": "gpt"}, {"name": "claude"}],
+        "tools": [{"name": "search"}],
+        "guis": [{"gui_id": "orderForm"}],
+    })
+    monkeypatch.setattr(h, "predict_structured", lambda *a, **k: SimpleNamespace(model_dump=lambda: spec))
+    result = h.generate_complete_system("build a bot")
+    assert result["action"] == "inject_complete_system"
+    assert ", components: 2 LLMs, 1 tool, 1 GUI." in result["message"]
+
+
+def test_complete_system_message_without_components_has_no_suffix(monkeypatch):
+    from types import SimpleNamespace
+    h = _handler()
+    spec = _system_spec()
+    monkeypatch.setattr(h, "predict_structured", lambda *a, **k: SimpleNamespace(model_dump=lambda: spec))
+    assert "components:" not in h.generate_complete_system("build a bot")["message"]

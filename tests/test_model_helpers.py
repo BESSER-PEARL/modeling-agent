@@ -49,6 +49,27 @@ class TestCompactModelSummary:
         summary = compact_model_summary(model, "QuantumCircuitDiagram")
         assert "2 circuit" in summary
 
+    def test_agent_diagram_counts_components_only_intent(self):
+        model = {"elements": {}, "relationships": {},
+                 "components": {"i1": {"type": "AgentIntent", "name": "Greet"}}}
+        summary = compact_model_summary(model, "AgentDiagram")
+        assert summary == "AgentDiagram: 1 element(s), 0 relationship(s)."
+
+    def test_agent_diagram_counts_states_and_components_across_formats(self):
+        model = {
+            "elements": {
+                "s1": {"type": "AgentState", "name": "Greeting"},
+                "s2": {"type": "AgentReasoningState", "name": "think"},
+                "b1": {"type": "AgentStateBody", "name": "Hi", "owner": "s1"},  # not counted
+                "i1": {"type": "AgentIntent", "name": "Old"},
+            },
+            "relationships": {"r1": {"type": "AgentStateTransition"}},
+            "agentComponents": {"l1": {"type": "AgentLLM", "name": "gpt"}},
+            "components": {"t1": {"type": "AgentTool", "name": "search"}},
+        }
+        summary = compact_model_summary(model, "AgentDiagram")
+        assert summary == "AgentDiagram: 5 element(s), 1 relationship(s)."
+
 
 # ---------------------------------------------------------------------------
 # resolve_target_model
@@ -557,6 +578,34 @@ class TestDetailedModelSummaryAgentFormats:
             "components": {"x": {"type": "AgentLLM", "name": "c"}},
         })
         assert merged["x"]["name"] == "c"
+
+    def test_agent_components_win_over_elements_on_duplicate_id(self):
+        # Precedence is elements < agentComponents < components (later wins),
+        # matching BESSER's backend processor and the editor.
+        from utilities.model_context import agent_model_elements
+        merged = agent_model_elements({
+            "elements": {"x": {"type": "AgentLLM", "name": "fromElements"}},
+            "agentComponents": {"x": {"type": "AgentLLM", "name": "fromAgentComponents"}},
+        })
+        assert merged["x"]["name"] == "fromAgentComponents"
+
+    def test_reasoning_state_is_listed_as_a_state(self):
+        model = {"elements": {"s1": {"type": "AgentReasoningState", "name": "think"}}, "relationships": {}}
+        assert "States: think" in detailed_model_summary(model, "AgentDiagram")
+
+    def test_transition_with_unnamed_endpoints_uses_question_mark(self):
+        model = {
+            "elements": {
+                "s1": {"type": "AgentState", "name": ""},
+                "s2": {"type": "AgentState", "name": None},
+            },
+            "relationships": {
+                "r1": {"type": "AgentStateTransition", "source": {"element": "s1"}, "target": {"element": "s2"}},
+            },
+        }
+        result = detailed_model_summary(model, "AgentDiagram")
+        assert "Transitions: ? → ?" in result
+        assert "None" not in result
 
     def test_components_only_model_is_summarized(self):
         model = {"elements": {}, "relationships": {},

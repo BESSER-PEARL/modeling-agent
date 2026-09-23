@@ -59,23 +59,32 @@ _AGENT_ACTIONS_BLOCK = """AVAILABLE ACTIONS:
 - add_state: Create a new state. Set target.stateName, put replies [{text, replyType, ...}] in changes.
 - add_intent: Create a new intent. Set target.intentName, put trainingPhrases ["phrase1","phrase2","phrase3"] in changes.
 - modify_state / modify_intent: Rename elements (set changes.name).
-- add_transition: Connect states (set target.sourceStateName, target.targetStateName, changes.condition, changes.intentName).
-- remove_transition: Disconnect states.
+- add_transition: Connect two states. Set target.sourceStateName (source state, or "initial") and
+  target.targetStateName (target state); set changes.condition and, for "when_intent_matched",
+  changes.intentName (the triggering intent).
+- remove_transition: Disconnect two states. Set target.sourceStateName and target.targetStateName.
 - add_state_body: Add an action to a state (changes.text, changes.replyType, plus type-specific fields).
 - add_intent_training_phrase: Add example phrase to intent (changes.trainingPhrase).
 - remove_element: Delete a state or intent.
-- add_rag_element: Create a RAG knowledge base component. Set target.name to the KB name; optionally set changes.llm_name, changes.k, changes.embedding_provider.
-- add_llm: Add an LLM configuration component. Set target.name; optionally changes.provider, changes.num_previous_messages, changes.global_context.
+- add_rag_element: Create a RAG knowledge base component. Set target.name to the KB name;
+  optionally set changes.llm_name, changes.k, changes.embedding_provider.
+- add_llm: Add an LLM configuration component. Set target.name; optionally changes.provider,
+  changes.num_previous_messages, changes.global_context.
 - add_tool: Add a tool component. Set target.name; set changes.description, changes.code (Python function source).
 - add_skill: Add a skill component. Set target.name; set changes.content, optionally changes.description.
 - add_workspace: Add a workspace component. Set target.name; set changes.path, optionally changes.writable.
-- add_gui: Add a GUI page component. Set target.name; set changes.gui_id, optionally changes.persist, changes.is_form, changes.width."""
+- add_gui: Add a GUI page component. Set target.name; set changes.gui_id, optionally changes.persist,
+  changes.is_form, changes.width."""
 
 _AGENT_RULES_BLOCK = f"""RULES:
-1. For transitions, "condition" is usually "when_intent_matched" with an "intentName".
+1. For add_transition / remove_transition, always name the states with target.sourceStateName and
+   target.targetStateName. For add_transition, changes.condition is usually "when_intent_matched"
+   with changes.intentName set to the triggering intent.
 2. {EXACT_NAMES_RULE}
 3. {MULTI_MOD_ARRAY_RULE}
-4. replyType options for state bodies (type-specific fields go in changes, e.g. changes.system_message):
+4. replyType options for state bodies. Type-specific fields sit next to text/replyType:
+   for add_state_body they go directly in changes (e.g. changes.system_message); for add_state
+   they go on each changes.replies[i] (e.g. changes.replies[0].system_message).
 {_REPLY_TYPES_PROMPT}
 5. Example: "add a welcome state" → add_state with target.stateName="welcomeState", changes.replies=[{{text:"Welcome!", replyType:"text"}}]
 6. Example: "add a greeting intent" → add_intent with target.intentName="GreetingIntent", changes.trainingPhrases=["hello","hi","hey there"]
@@ -427,7 +436,9 @@ IMPORTANT RULES:
             normalized_intent["position"] = position
         return normalized_intent
 
-    def _normalize_reply_list(self, replies: Any, default_text: str, name_hint: str = "custom_action") -> List[Dict[str, Any]]:
+    def _normalize_reply_list(
+        self, replies: Any, default_text: str, name_hint: str = "custom_action",
+    ) -> List[Dict[str, Any]]:
         """Normalize reply/fallback entries into structured dictionaries, preserving all extra action fields."""
         normalized: List[Dict[str, Any]] = []
         if isinstance(replies, list):
@@ -502,7 +513,7 @@ IMPORTANT RULES:
 
         # Agent components (no canvas bounds — go to the components section)
         rag_elements = [r for r in spec.get("ragElements", []) if isinstance(r, dict) and r.get("name")]
-        llms = [l for l in spec.get("llms", []) if isinstance(l, dict) and l.get("name")]
+        llms = [llm for llm in spec.get("llms", []) if isinstance(llm, dict) and llm.get("name")]
         tools = [t for t in spec.get("tools", []) if isinstance(t, dict) and t.get("name")]
         skills = [s for s in spec.get("skills", []) if isinstance(s, dict) and s.get("name")]
         workspaces = [w for w in spec.get("workspaces", []) if isinstance(w, dict) and w.get("name")]

@@ -19,7 +19,23 @@ def compact_model_summary(model_data: Any, diagram_type: str) -> str:
     if not isinstance(model_data, dict):
         return f"{diagram_type}: no structured model available."
 
-    if diagram_type in {"ClassDiagram", "ObjectDiagram", "StateMachineDiagram", "AgentDiagram", "BPMN"}:
+    if diagram_type == "AgentDiagram":
+        # Agent intents/components may live in ``components`` (new format),
+        # ``elements`` or ``agentComponents``; count states + components across all.
+        agent_elements = agent_model_elements(model_data)
+        relationships = model_data.get("relationships")
+        if agent_elements or isinstance(relationships, dict):
+            counted = [
+                el for el in agent_elements.values()
+                if isinstance(el, dict) and el.get("type") in _AGENT_COUNTED_TYPES
+            ]
+            rel_count = len(relationships) if isinstance(relationships, dict) else 0
+            return (
+                f"{diagram_type}: {len(counted)} element(s), "
+                f"{rel_count} relationship(s)."
+            )
+
+    if diagram_type in {"ClassDiagram", "ObjectDiagram", "StateMachineDiagram", "BPMN"}:
         elements = model_data.get("elements")
         relationships = model_data.get("relationships")
         if isinstance(elements, dict) and isinstance(relationships, dict):
@@ -355,18 +371,21 @@ _AGENT_COMPONENT_LABELS: List[Tuple[str, str]] = [
     ("AgentWorkspace", "Workspaces"),
     ("AgentGUI", "GUIs"),
 ]
+_AGENT_STATE_TYPES = ("AgentState", "AgentReasoningState")
+_AGENT_COUNTED_TYPES = set(_AGENT_STATE_TYPES) | {t for t, _ in _AGENT_COMPONENT_LABELS}
 _AGENT_TRANSITION_TYPES = {"AgentStateTransition", "AgentStateTransitionInit", "AgentTransition"}
 
 
 def agent_model_elements(model: Dict[str, Any]) -> Dict[str, Any]:
     """Return every agent element regardless of storage format.
 
-    Merges ``agentComponents`` (legacy), ``elements`` (old projects keep
-    intents/components on the canvas) and ``components`` (new format, wins on
-    duplicate ids) — the same precedence BESSER's backend processor uses.
+    Merges ``elements`` (old projects keep intents/components on the canvas),
+    then ``agentComponents`` (legacy schema), then ``components`` (new format);
+    later sections win on duplicate ids — the same precedence BESSER's backend
+    processor and the editor use.
     """
     merged: Dict[str, Any] = {}
-    for key in ("agentComponents", "elements", "components"):
+    for key in ("elements", "agentComponents", "components"):
         section = model.get(key)
         if isinstance(section, dict):
             merged.update(section)
@@ -398,7 +417,7 @@ def _summarize_agent_diagram(model: Dict[str, Any]) -> List[str]:
     lines: List[str] = []
 
     states = [e.get("name") for e in elements.values()
-              if isinstance(e, dict) and e.get("type") in ("AgentState", "AgentReasoningState") and e.get("name")]
+              if isinstance(e, dict) and e.get("type") in _AGENT_STATE_TYPES and e.get("name")]
     if states:
         lines.append(f"States: {_join_names(states)}")
 
@@ -425,7 +444,7 @@ def _summarize_agent_diagram(model: Dict[str, Any]) -> List[str]:
             if not isinstance(source, dict) or not isinstance(target, dict):
                 continue
             src_name = source.get("name") or ("initial" if source.get("type") == "StateInitialNode" else "?")
-            transitions.append(f"{src_name} → {target.get('name')}")
+            transitions.append(f"{src_name} → {target.get('name') or '?'}")
         if transitions:
             trans_str = ', '.join(transitions[:5])
             if len(transitions) > 5:

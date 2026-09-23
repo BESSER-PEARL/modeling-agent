@@ -845,6 +845,42 @@ class TestAgentReplyTypeSharing:
         with pytest.raises(ValidationError):
             AgentReplySpec(text="x", **{field: bogus})
 
+    @pytest.mark.parametrize("op", ["any", "select", "insert", "update", "delete"])
+    def test_db_operation_accepts_besser_values(self, op):
+        # Must match BESSER's DBReply.VALID_OPERATIONS and the editor dropdown.
+        assert AgentModificationChanges(dbOperation=op).dbOperation == op
+        assert AgentReplySpec(text="x", replyType="db_reply", dbOperation=op).dbOperation == op
+
+    @pytest.mark.parametrize("op", ["create", "read"])
+    def test_db_operation_rejects_crud_names(self, op):
+        with pytest.raises(ValidationError):
+            AgentModificationChanges(dbOperation=op)
+        with pytest.raises(ValidationError):
+            AgentReplySpec(text="x", dbOperation=op)
+
+    def test_db_literals_match_besser_dbreply(self):
+        from typing import get_args
+        from schemas.agent_diagram import AgentReplyFields
+
+        def literal_values(field):
+            literal = get_args(AgentReplyFields.model_fields[field].annotation)[0]
+            return set(get_args(literal))
+
+        assert literal_values("dbSelectionType") == {"default", "custom"}
+        assert literal_values("dbQueryMode") == {"llm_query", "sql"}
+        assert literal_values("dbOperation") == {"any", "select", "insert", "update", "delete"}
+        assert literal_values("inputPromptMode") == {"last_user_message", "custom"}
+
+    def test_reply_type_hints_cover_every_reply_type(self):
+        from typing import get_args
+        from schemas.agent_diagram import ReplyType, REPLY_TYPE_HINTS
+        assert set(REPLY_TYPE_HINTS) == set(get_args(ReplyType))
+
+    def test_rag_spec_rejects_empty_name(self):
+        from schemas.agent_diagram import AgentRagSpec
+        with pytest.raises(ValidationError):
+            AgentRagSpec(name="")
+
     def test_changes_accepts_valid_reply_fields(self):
         c = AgentModificationChanges(
             text="Ask the LLM", replyType="llm", inputPromptMode="custom",

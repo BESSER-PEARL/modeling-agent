@@ -756,7 +756,7 @@ AgentDiagram Schemas
        ``storeInSession``, ``sendReply``, ``dbSelectionType``
        (``Literal["default", "custom"]``), ``dbCustomName``, ``dbQueryMode``
        (``Literal["llm_query", "sql"]``), ``dbOperation``
-       (``Literal["any", "create", "read", "update", "delete"]``),
+       (``Literal["any", "select", "insert", "update", "delete"]``),
        ``dbSqlQuery``, ``initial_url``, ``ws_message``, ``ws_options``,
        ``ws_latitude``, ``ws_longitude``, ``guiId``
    * - ``AgentReplySpec``
