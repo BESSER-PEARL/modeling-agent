@@ -39,10 +39,10 @@ def _vision_sampling_params() -> Dict[str, Any]:
     """
     if supports_custom_temperature(MODEL_VISION):
         return {"max_tokens": 8192, "temperature": 0.1}
-    return {
-        "max_completion_tokens": 8192,
-        "reasoning_effort": reasoning_effort_for(MODEL_VISION),
-    }
+    kwargs = {"max_completion_tokens": 8192}
+    if reasoning_effort_for(MODEL_VISION):
+        kwargs["reasoning_effort"] = reasoning_effort_for(MODEL_VISION)
+    return kwargs
 
 logger = logging.getLogger(__name__)
 

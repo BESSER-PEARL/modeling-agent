@@ -215,10 +215,14 @@ class UnifiedClassification(BaseModel):
         description=(
             "REQUIRED when generation_route='smart'. A polished prompt for the "
             "smart generator naming the stack (e.g. 'Rails 7, PostgreSQL via "
-            "Active Record, Devise auth') and any non-functional requirements "
-            "the user mentioned. Max 2000 chars. Do NOT describe the class "
-            "diagram in detail — the generator has the domain model. Do NOT "
-            "invent requirements the user didn't mention."
+            "Active Record') and any non-functional requirements the user "
+            "mentioned. Invent nothing: authentication, login, sign-up, "
+            "roles, JWT, responsive design, styling and navigation go in "
+            "only if the user's own words asked for them, because the "
+            "generator builds whatever this field names. Keep the user's "
+            "concrete nouns (status values, named operations, stated rules). "
+            "Max 2000 chars. Do NOT describe the class diagram in detail — "
+            "the generator has the domain model."
         ),
     )
     provider: Literal["anthropic", "openai"] = Field(
@@ -753,15 +757,15 @@ _SYSTEM_PROMPT = (
     "classes — never merely because it names a stack or framework.\n\n"
     "=== refined_instructions (populate when generation_route='smart') ===\n"
     "A polished, implementation-focused prompt for the smart generator:\n"
-    "  * name the stack explicitly (Rails, PostgreSQL, Devise auth, ...)\n"
+    "  * name the stack explicitly (Rails, PostgreSQL, ...)\n"
     "  * include non-functional requirements the user mentioned\n"
     "  * max 2000 chars\n"
     "  * do NOT describe the class diagram in detail (the generator "
     "    has the domain model)\n"
     "  * for a SMART-GEN FOLLOW-UP (adding a feature to the app the "
     "    generator just built) describe ONLY the feature to ADD (e.g. "
-    "    'Add user authentication: login/signup, session handling, "
-    "    protect existing routes') — the generator re-runs incrementally "
+    "    'Add a search bar to the Books page filtering by title and "
+    "    author') — the generator re-runs incrementally "
     "    over the existing codebase, so do NOT re-describe the whole app "
     "    or the domain model\n"
     "  * do NOT invent requirements the user didn't mention\n\n"
@@ -809,8 +813,8 @@ _SYSTEM_PROMPT = (
     "bias strongly toward acting; only ask when genuinely stuck.\n\n"
     "=== OUTPUT ===\n"
     "Return the structured classification. Always include 'reason' "
-    "(≤160 chars) explaining your choice. Be decisive — do not "
-    "second-guess; the state machine trusts your verdict."
+    "(≤160 chars) explaining your choice. The state machine acts on "
+    "your verdict directly, with no second check."
 )
 
 
@@ -879,7 +883,12 @@ def classify_message(
         # budget for fast non-reasoning models like gpt-4o-mini.
         from model_config import supports_custom_temperature
 
+        import byok
         classifier_model = getattr(llm_provider, "model_name", "") or ""
+        cfg = byok.get_current()
+        if cfg is not None:
+            # A user key sends this call to the user's model; size for that one.
+            classifier_model = byok.resolve_model(cfg.provider, classifier_model, cfg.model)
         max_tokens = 800 if supports_custom_temperature(classifier_model) else 4000
         result: UnifiedClassification = llm_provider.parse(
             messages=messages,

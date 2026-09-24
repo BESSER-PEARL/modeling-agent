@@ -526,7 +526,7 @@ class BaseDiagramHandler(ABC):
             # reasoning instead (quality holds, latency drops ~40%).
             if supports_custom_temperature(model):
                 raw_kwargs["temperature"] = LLM_TEMPERATURE
-            else:
+            elif reasoning_effort_for(model):
                 raw_kwargs["reasoning_effort"] = reasoning_effort_for(model)
             completion = client.chat.completions.create(**raw_kwargs)
             if not completion.choices:
@@ -546,8 +546,6 @@ class BaseDiagramHandler(ABC):
 
         Retry improvements:
         - Jitter added to backoff delays to prevent thundering-herd retries.
-        - On parse-error retries, a simplified "JSON-only" prompt is tried as
-          a self-healing mechanism.
 
         Args:
             prompt: Full prompt to send.
@@ -576,17 +574,7 @@ class BaseDiagramHandler(ABC):
                 )
                 time.sleep(backoff)
 
-            # On parse_error retries, try a simplified prompt that enforces JSON
             effective_prompt = prompt
-            if attempt > 0 and last_error_type == "parse_error":
-                effective_prompt = (
-                    prompt + "\n\n"
-                    "IMPORTANT: Return ONLY valid JSON, no markdown, no explanation."
-                )
-                logger.info(
-                    f"[{self.get_diagram_type()}] Self-healing: using simplified "
-                    f"JSON-only prompt on attempt {attempt + 1}"
-                )
 
             try:
                 logger.info(
@@ -817,7 +805,7 @@ class BaseDiagramHandler(ABC):
                 # reasoning instead (quality holds, latency drops ~40%).
                 if supports_custom_temperature(effective_model):
                     parse_kwargs["temperature"] = temperature
-                else:
+                elif reasoning_effort_for(effective_model):
                     parse_kwargs["reasoning_effort"] = reasoning_effort_for(effective_model)
                 completion = client.beta.chat.completions.parse(**parse_kwargs)
 

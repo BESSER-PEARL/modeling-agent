@@ -134,7 +134,7 @@ class LLMProvider:
         # reasoning instead (quality holds, latency drops ~40%).
         if supports_custom_temperature(effective_model):
             parse_kwargs["temperature"] = temperature
-        else:
+        elif reasoning_effort_for(effective_model):
             parse_kwargs["reasoning_effort"] = reasoning_effort_for(effective_model)
         completion = client.beta.chat.completions.parse(**parse_kwargs)
 
@@ -191,7 +191,7 @@ class LLMProvider:
         # reasoning instead (quality holds, latency drops ~40%).
         if supports_custom_temperature(effective_model):
             stream_kwargs["temperature"] = temperature
-        else:
+        elif reasoning_effort_for(effective_model):
             stream_kwargs["reasoning_effort"] = reasoning_effort_for(effective_model)
         stream = client.chat.completions.create(**stream_kwargs)
 

@@ -55,7 +55,7 @@ from agent_config import (
     LLM_TEMPERATURE,
     LLM_TEXT_TEMPERATURE,
 )
-from model_config import reasoning_effort_for, supports_custom_temperature
+from model_config import anthropic_effort, reasoning_effort_for, supports_custom_temperature
 
 logger = logging.getLogger(__name__)
 
@@ -386,13 +386,18 @@ class BYOKClient:
                 prompt
                 + "\n\nReturn ONLY valid JSON. No markdown code fences, no prose."
             )
-        # Anthropic accepts temperature in [0, 1]; the agent uses 0.2/0.4.
-        message = self._client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            temperature=max(0.0, min(1.0, temperature)),
-            messages=[{"role": "user", "content": content}],
-        )
+        kwargs = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": content}],
+        }
+        if supports_custom_temperature(model):
+            # Anthropic accepts temperature in [0, 1]; the agent uses 0.2/0.4.
+            kwargs["temperature"] = max(0.0, min(1.0, temperature))
+        elif anthropic_effort(model):
+            # Sonnet 5 & co. reject sampling params; cap adaptive thinking instead.
+            kwargs["extra_body"] = {"output_config": {"effort": anthropic_effort(model)}}
+        message = self._client.messages.create(**kwargs)
         text = "".join(
             getattr(block, "text", "")
             for block in getattr(message, "content", []) or []

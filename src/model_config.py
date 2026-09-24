@@ -62,11 +62,17 @@ MODEL_EMBEDDINGS = _env("EMBEDDINGS", "text-embedding-3-small")
 # models). Call sites must omit the parameter for these models instead
 # of passing their usual 0.0–0.4 values.
 _FIXED_TEMPERATURE_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+# Claude models that 400 on any temperature/top_p/top_k. Substring match so
+# gateway ids such as "us.anthropic.claude-sonnet-5" count too.
+_NO_SAMPLING_CLAUDE = ("claude-sonnet-5", "claude-opus-4-7", "claude-opus-4-8",
+                       "claude-opus-5", "claude-fable", "claude-mythos")
 
 
 def supports_custom_temperature(model: str) -> bool:
     """True when *model* accepts an explicit ``temperature`` parameter."""
     name = (model or "").lower()
+    if any(m in name for m in _NO_SAMPLING_CLAUDE):
+        return False
     return not any(name.startswith(p) for p in _FIXED_TEMPERATURE_PREFIXES)
 
 
@@ -79,7 +85,21 @@ MODEL_REASONING_EFFORT = _env("REASONING_EFFORT", "low")
 
 def reasoning_effort_for(model: str) -> "str | None":
     """``reasoning_effort`` to pass for *model*, or None for non-reasoning
-    models (gpt-4o & friends reject the parameter)."""
-    if supports_custom_temperature(model):
+    models (gpt-4o & friends reject the parameter). Never for Claude: an
+    OpenAI-compatible gateway may translate it to ``budget_tokens``, which
+    Sonnet 5 rejects; Claude effort goes through ``anthropic_effort``."""
+    if supports_custom_temperature(model) or "claude" in (model or "").lower():
         return None
     return MODEL_REASONING_EFFORT
+
+
+_ANTHROPIC_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def anthropic_effort(model: str) -> "str | None":
+    """``output_config.effort`` for a Claude model that takes no sampling
+    params, or None when the configured effort is not a Claude level."""
+    if supports_custom_temperature(model):
+        return None
+    effort = (MODEL_REASONING_EFFORT or "").lower()
+    return effort if effort in _ANTHROPIC_EFFORTS else None

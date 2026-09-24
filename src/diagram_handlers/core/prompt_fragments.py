@@ -51,10 +51,10 @@ POSITION_DISCLAIMER = (
 # ---------------------------------------------------------------------------
 
 NAMING_PASCAL_RULE = (
-    "NAMING: Class names MUST be exactly ONE word in PascalCase: \"User\", "
-    "\"Book\", \"Order\", \"Payment\". NEVER concatenate words like "
-    "\"UserLibraryUser\", \"BookReading\", \"OrderPayment\". Just \"User\", "
-    "\"Reading\", \"Payment\"."
+    "NAMING: class names are PascalCase nouns, as short as the concept "
+    "allows (\"User\", \"Payment\", \"OrderStatus\", \"BookCopy\"). Don't "
+    "glue a neighbouring class or the domain onto a name: \"UserLibraryUser\", "
+    "\"OrderPayment\" should be \"User\", \"Payment\"."
 )
 
 RENAME_CASCADES_RULE = (

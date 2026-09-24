@@ -26,6 +26,7 @@ from src.handlers.smart_generation_handler import (
     GenerationClassification,
     build_trigger_smart_generator_payload,
 )
+from src.unified_classifier import _SYSTEM_PROMPT, UnifiedClassification
 
 SUMMARY = "Build a hotel booking web app. FastAPI, SQLite, React."
 
@@ -303,7 +304,14 @@ def test_same_project_create_gui_confirm_keeps_raw_spec_and_followups(monkeypatc
 
 
 def _refined_instructions_description() -> str:
-    return GenerationClassification.model_fields["refined_instructions"].description
+    # The classifier's schema is the one the model reads; GenerationClassification
+    # is only built in code (generation_handler.py) and never sent to a model.
+    return UnifiedClassification.model_fields["refined_instructions"].description
+
+
+def test_the_routing_rulebook_does_not_use_auth_as_an_example():
+    assert "Devise auth" not in _SYSTEM_PROMPT
+    assert "Add user authentication" not in _SYSTEM_PROMPT
 
 
 def test_field_description_no_longer_uses_auth_as_an_example():
