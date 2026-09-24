@@ -195,3 +195,77 @@ def test_the_per_class_fallback_parser_survives_it_too():
 
     handler = ClassDiagramHandler(_JsonModeLLM(""))
     assert handler.parse_json_safely(_broken({"ocl": [PHONE_OCL]})) == {"ocl": [PHONE_OCL]}
+
+
+# ---------------------------------------------------------------------------
+# Stringified lists/objects (Sonnet 5 sent them in 16 of 30 fresh tool calls)
+# ---------------------------------------------------------------------------
+
+def _stringified(answer, *keys):
+    """``answer`` with the named top-level fields sent as JSON strings."""
+    return json.dumps({k: json.dumps(v) if k in keys else v for k, v in answer.items()})
+
+
+@pytest.mark.parametrize("keys", [("classes",), ("rels",), ("ocl",), ("classes", "rels", "ocl")])
+def test_a_model_with_stringified_lists_survives_json_mode(keys):
+    from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
+    from schemas.compact_class_diagram import CompactSystemClassSpec
+
+    handler = ClassDiagramHandler(_JsonModeLLM(_stringified(HOTEL_ANSWER, *keys)))
+    spec = handler.predict_structured("hotel", CompactSystemClassSpec, max_retries=0)
+
+    assert [c.n for c in spec.classes] == ["Person", "Guest", "Room", "Booking"]
+    assert spec.classes[0].a == HOTEL_ANSWER["classes"][0]["a"]
+    assert spec.ocl == [EMAIL_OCL, PHONE_OCL]
+
+
+def test_stringified_values_are_decoded_at_every_depth_and_when_rewrapped():
+    from schemas.compact_class_diagram import CompactSystemClassSpec
+    from utilities.json_repair import validate_llm_json
+
+    classes = [dict(c, a=json.dumps(c["a"])) for c in HOTEL_ANSWER["classes"]]
+    answer = dict(HOTEL_ANSWER, classes=json.dumps({"classes": classes}))
+    spec = validate_llm_json(CompactSystemClassSpec, json.dumps(answer))
+    assert spec.classes[2].a == ["roomNumber: int!", "capacity: int", "price: float"]
+
+
+def test_a_string_field_that_looks_like_json_is_never_decoded():
+    from schemas.compact_class_diagram import CompactSystemClassSpec
+    from utilities.json_repair import coerce_to_model
+
+    answer = dict(HOTEL_ANSWER, name='["NotAList"]', ocl=['["context x inv: true"]'],
+                  classes=[dict(HOTEL_ANSWER["classes"][0], n='{"a": 1}', a=['["x: int"]'])])
+    assert coerce_to_model(answer, CompactSystemClassSpec) == answer
+
+
+@pytest.mark.parametrize("value", ["not json", '"a string"', '{"other": []}', "[1, 2"])
+def test_a_string_that_is_not_the_declared_shape_still_fails_validation(value):
+    from pydantic import ValidationError
+    from schemas.compact_class_diagram import CompactSystemClassSpec
+    from utilities.json_repair import validate_llm_json
+
+    with pytest.raises(ValidationError):
+        validate_llm_json(CompactSystemClassSpec, json.dumps(dict(HOTEL_ANSWER, classes=value)))
+
+
+def test_the_classifier_json_path_decodes_stringified_lists(monkeypatch):
+    from types import SimpleNamespace
+    from typing import List, Optional
+    from pydantic import BaseModel
+
+    import byok
+    from llm.provider import LLMProvider
+
+    class Rules(BaseModel):
+        ocl: Optional[List[str]] = None
+
+    stub = SimpleNamespace(provider="anthropic", openai_client=None,
+                           predict_raw=lambda prompt, **kw: json.dumps({"ocl": json.dumps([EMAIL_OCL])}))
+    token = byok.set_current("anthropic", "sk-user", None)
+    monkeypatch.setattr(byok, "get_active_client", lambda: stub)
+    try:
+        result = LLMProvider(object(), model_name="gpt-4o-mini").parse(
+            [{"role": "user", "content": "x"}], schema=Rules)
+    finally:
+        byok.reset_current(token)
+    assert result.ocl == [EMAIL_OCL]

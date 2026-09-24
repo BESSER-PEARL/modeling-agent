@@ -29,7 +29,7 @@ from model_config import (
 from .layout_engine import apply_layout
 from errors import ErrorCode, classify_error, build_error_response, _RECOVERY_HINTS
 
-from utilities.json_repair import loads_tolerant
+from utilities.json_repair import loads_tolerant, validate_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -915,18 +915,12 @@ class BaseDiagramHandler(ABC):
         json_text = self.clean_json_response(response)
 
         try:
-            parsed = response_schema.model_validate_json(json_text)
+            parsed = validate_llm_json(response_schema, json_text)
         except Exception as exc:
-            # One more try: parse as dict (tolerating unescaped regex
-            # backslashes) and validate
-            try:
-                data = loads_tolerant(json_text)
-                parsed = response_schema.model_validate(data)
-            except Exception:
-                raise LLMPredictionError(
-                    f"Failed to validate LLM response against "
-                    f"{response_schema.__name__}: {exc}"
-                )
+            raise LLMPredictionError(
+                f"Failed to validate LLM response against "
+                f"{response_schema.__name__}: {exc}"
+            )
 
         return parsed
 
