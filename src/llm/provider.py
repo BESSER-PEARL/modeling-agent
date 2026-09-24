@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from model_config import MODEL_CLASSIFIER, reasoning_effort_for, supports_custom_temperature
 from tracking import get_tracker
+from utilities.json_repair import loads_tolerant
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +112,12 @@ class LLMProvider:
                     prompt, model=effective_model, json_mode=True,
                     temperature=temperature, max_tokens=max_tokens,
                 )
-                return schema.model_validate_json(_strip_code_fences(raw))
+                text = _strip_code_fences(raw)
+                try:
+                    return schema.model_validate_json(text)
+                except ValueError:
+                    # Unescaped regex backslashes: retry tolerantly.
+                    return schema.model_validate(loads_tolerant(text))
             cfg = get_current()
             effective_model = resolve_model("openai", effective_model, cfg.model if cfg else None)
         else:

@@ -29,6 +29,8 @@ from model_config import (
 from .layout_engine import apply_layout
 from errors import ErrorCode, classify_error, build_error_response, _RECOVERY_HINTS
 
+from utilities.json_repair import loads_tolerant
+
 logger = logging.getLogger(__name__)
 
 # Full prompt/response content is DEBUG-only by default: prompts embed
@@ -915,9 +917,10 @@ class BaseDiagramHandler(ABC):
         try:
             parsed = response_schema.model_validate_json(json_text)
         except Exception as exc:
-            # One more try: parse as dict and validate
+            # One more try: parse as dict (tolerating unescaped regex
+            # backslashes) and validate
             try:
-                data = json.loads(json_text)
+                data = loads_tolerant(json_text)
                 parsed = response_schema.model_validate(data)
             except Exception:
                 raise LLMPredictionError(
@@ -1071,7 +1074,7 @@ class BaseDiagramHandler(ABC):
     def parse_json_safely(self, json_text: str) -> Optional[Dict[str, Any]]:
         """Parse JSON with error handling"""
         try:
-            result = json.loads(json_text)
+            result = loads_tolerant(json_text)
             logger.debug(f"[BaseHandler] JSON parsed successfully, keys: {list(result.keys()) if isinstance(result, dict) else type(result).__name__}")
             return result
         except json.JSONDecodeError as e:
