@@ -7,7 +7,7 @@ variants live here so every handler and the workspace-context builder can
 share the same logic.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 # ---------------------------------------------------------------------------
 # Compact (one-line) model summary
@@ -19,7 +19,23 @@ def compact_model_summary(model_data: Any, diagram_type: str) -> str:
     if not isinstance(model_data, dict):
         return f"{diagram_type}: no structured model available."
 
-    if diagram_type in {"ClassDiagram", "ObjectDiagram", "StateMachineDiagram", "AgentDiagram", "BPMN"}:
+    if diagram_type == "AgentDiagram":
+        # Agent intents/components may live in ``components`` (new format),
+        # ``elements`` or ``agentComponents``; count states + components across all.
+        agent_elements = agent_model_elements(model_data)
+        relationships = model_data.get("relationships")
+        if agent_elements or isinstance(relationships, dict):
+            counted = [
+                el for el in agent_elements.values()
+                if isinstance(el, dict) and el.get("type") in _AGENT_COUNTED_TYPES
+            ]
+            rel_count = len(relationships) if isinstance(relationships, dict) else 0
+            return (
+                f"{diagram_type}: {len(counted)} element(s), "
+                f"{rel_count} relationship(s)."
+            )
+
+    if diagram_type in {"ClassDiagram", "ObjectDiagram", "StateMachineDiagram", "BPMN"}:
         elements = model_data.get("elements")
         relationships = model_data.get("relationships")
         if isinstance(elements, dict) and isinstance(relationships, dict):
@@ -342,40 +358,93 @@ def _summarize_gui_model(model: Dict[str, Any]) -> List[str]:
     return lines
 
 
+# Agent component element types (LLMs, intents, RAG DBs, tools, ...).  In the
+# editor's new format they live in ``model["components"]``; older projects keep
+# them in ``model["elements"]`` and a legacy schema used a top-level
+# ``agentComponents`` map.  Mirrors BESSER's agent_diagram_processor.
+_AGENT_COMPONENT_LABELS: List[Tuple[str, str]] = [
+    ("AgentIntent", "Intents"),
+    ("AgentLLM", "LLMs"),
+    ("AgentRagElement", "RAG databases"),
+    ("AgentTool", "Tools"),
+    ("AgentSkill", "Skills"),
+    ("AgentWorkspace", "Workspaces"),
+    ("AgentGUI", "GUIs"),
+]
+_AGENT_STATE_TYPES = ("AgentState", "AgentReasoningState")
+_AGENT_COUNTED_TYPES = set(_AGENT_STATE_TYPES) | {t for t, _ in _AGENT_COMPONENT_LABELS}
+_AGENT_TRANSITION_TYPES = {"AgentStateTransition", "AgentStateTransitionInit", "AgentTransition"}
+
+
+def agent_model_elements(model: Dict[str, Any]) -> Dict[str, Any]:
+    """Return every agent element regardless of storage format.
+
+    Merges ``elements`` (old projects keep intents/components on the canvas),
+    then ``agentComponents`` (legacy schema), then ``components`` (new format);
+    later sections win on duplicate ids — the same precedence BESSER's backend
+    processor and the editor use.
+    """
+    merged: Dict[str, Any] = {}
+    for key in ("elements", "agentComponents", "components"):
+        section = model.get(key)
+        if isinstance(section, dict):
+            merged.update(section)
+    return merged
+
+
+def _endpoint_id(endpoint: Any) -> str:
+    """Relationship endpoints are ``{"element": id, ...}`` in Apollon JSON; accept plain ids too."""
+    if isinstance(endpoint, dict):
+        endpoint = endpoint.get("element")
+    return endpoint if isinstance(endpoint, str) else ""
+
+
+def _join_names(names: List[str], limit: int = 10) -> str:
+    text = ', '.join(names[:limit])
+    if len(names) > limit:
+        text += f" …+{len(names) - limit} more"
+    return text
+
+
 def _summarize_agent_diagram(model: Dict[str, Any]) -> List[str]:
-    """Summarize an AgentDiagram model: states, intents, transitions."""
-    elements = model.get("elements")
+    """Summarize an AgentDiagram model: states, components (intents, LLMs, RAG DBs,
+    tools, skills, workspaces, GUIs) and transitions."""
     relationships = model.get("relationships")
-    if not isinstance(elements, dict):
+    elements = agent_model_elements(model)
+    if not elements:
         return []
 
     lines: List[str] = []
 
     states = [e.get("name") for e in elements.values()
-              if isinstance(e, dict) and e.get("type") == "AgentState" and e.get("name")]
+              if isinstance(e, dict) and e.get("type") in _AGENT_STATE_TYPES and e.get("name")]
     if states:
-        state_str = ', '.join(states[:10])
-        if len(states) > 10:
-            state_str += f" …+{len(states) - 10} more"
-        lines.append(f"States: {state_str}")
+        lines.append(f"States: {_join_names(states)}")
 
-    intents = [e.get("name") for e in elements.values()
-               if isinstance(e, dict) and e.get("type") == "AgentIntent" and e.get("name")]
-    if intents:
-        intent_str = ', '.join(intents[:10])
-        if len(intents) > 10:
-            intent_str += f" …+{len(intents) - 10} more"
-        lines.append(f"Intents: {intent_str}")
+    for comp_type, label in _AGENT_COMPONENT_LABELS:
+        names: List[str] = []
+        for e in elements.values():
+            if not isinstance(e, dict) or e.get("type") != comp_type:
+                continue
+            # AgentGUI components are referenced by gui_id (gui_reply.guiId).
+            name = (e.get("gui_id") if comp_type == "AgentGUI" else None) or e.get("name")
+            if isinstance(name, str) and name.strip():
+                names.append(name.strip())
+        if names:
+            suffix = " (gui_id)" if comp_type == "AgentGUI" else ""
+            lines.append(f"{label}{suffix}: {_join_names(names)}")
 
     if isinstance(relationships, dict):
         transitions: List[str] = []
         for rel in relationships.values():
-            if not isinstance(rel, dict) or rel.get("type") != "AgentTransition":
+            if not isinstance(rel, dict) or rel.get("type") not in _AGENT_TRANSITION_TYPES:
                 continue
-            source = elements.get(rel.get("source", ""))
-            target = elements.get(rel.get("target", ""))
-            if isinstance(source, dict) and isinstance(target, dict):
-                transitions.append(f"{source.get('name')} → {target.get('name')}")
+            source = elements.get(_endpoint_id(rel.get("source")))
+            target = elements.get(_endpoint_id(rel.get("target")))
+            if not isinstance(source, dict) or not isinstance(target, dict):
+                continue
+            src_name = source.get("name") or ("initial" if source.get("type") == "StateInitialNode" else "?")
+            transitions.append(f"{src_name} → {target.get('name') or '?'}")
         if transitions:
             trans_str = ', '.join(transitions[:5])
             if len(transitions) > 5:

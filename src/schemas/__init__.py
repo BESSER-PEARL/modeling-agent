@@ -39,6 +39,10 @@ from .object_diagram import (
     ObjectModificationResponse,
 )
 from .agent_diagram import (
+    ReplyType,
+    REPLY_TYPE_HINTS,
+    reply_type_help,
+    AgentReplyFields,
     AgentReplySpec,
     AgentStateSpec,
     AgentIntentSpec,
@@ -100,6 +104,7 @@ __all__ = [
     "ObjectModificationTarget", "ObjectModificationChanges",
     "ObjectModification", "ObjectModificationResponse",
     # Agent Diagram
+    "ReplyType", "REPLY_TYPE_HINTS", "reply_type_help", "AgentReplyFields",
     "AgentReplySpec", "AgentStateSpec", "AgentIntentSpec",
     "AgentSingleElementSpec", "AgentTransitionSpec", "SystemAgentSpec",
     "AgentModificationTarget", "AgentModificationChanges",
