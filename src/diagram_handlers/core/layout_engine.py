@@ -225,12 +225,13 @@ _PRIMARY_ELEMENT_TYPES: Dict[str, Set[str]] = {
     "ClassDiagram": {"Class"},
     "ObjectDiagram": {"Object"},
     "StateMachineDiagram": {"State", "StateInitialNode", "StateFinalNode"},
-    "AgentDiagram": {"AgentState", "AgentIntent", "StateInitialNode"},
+    "AgentDiagram": {"AgentState", "StateInitialNode"},
+    "UserDiagram": {"UserModelName"},
 }
 
 _CHILD_ELEMENT_TYPES: Set[str] = {
     "ClassAttribute", "ClassMethod",
-    "AgentStateBody", "AgentStateFallbackBody", "AgentIntentBody",
+    "AgentStateBody", "AgentStateFallbackBody",
 }
 
 
@@ -1767,14 +1768,36 @@ def layout_state_system(
     return system_spec
 
 
+def agent_intents_on_canvas(existing_model: Optional[Dict[str, Any]]) -> bool:
+    """True when the existing agent model is in the old format that keeps
+    intents as canvas elements (``model["elements"]``).
+
+    The editor's new format stores intents (and all other agent components) in
+    ``model["components"]`` without bounds, so the layout must not reserve
+    canvas space for them.  An empty/new diagram is treated as new format; the
+    old editor's converter still falls back to its own intent row when an
+    intent arrives without a position.
+    """
+    if not isinstance(existing_model, dict):
+        return False
+    elements = existing_model.get("elements")
+    if not isinstance(elements, dict):
+        return False
+    return any(isinstance(e, dict) and e.get("type") == "AgentIntent" for e in elements.values())
+
+
 def layout_agent_single(
     spec: Dict[str, Any],
     existing_model: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Assign position to a single agent diagram element."""
+    elem_type = spec.get("type", "state")
+    if elem_type == "intent" and not agent_intents_on_canvas(existing_model):
+        # New format: intents are components without canvas bounds.
+        spec.pop("position", None)
+        return spec
     width, height = estimate_agent_element_size(spec)
     occupied = extract_occupied_rects(existing_model, "AgentDiagram")
-    elem_type = spec.get("type", "state")
     # Intents go to the upper half, states to the lower half
     if elem_type == "intent":
         pref_y = _snap(CANVAS_MIN_Y + 60)
@@ -1798,7 +1821,9 @@ def layout_agent_system(
     Uses a **two-band hybrid layout** designed specifically for agent
     diagrams (cyclic state machines with a separate intent concept):
 
-    **Band 1 (top)** -- Initial node + all intents in a horizontal row.
+    **Band 1 (top)** -- Initial node (+ intents, but only for old-format
+    models that keep intents on the canvas; in the new format intents are
+    bound-less components and get no position).
     **Band 2 (bottom)** -- States laid out with Sugiyama on the
     state-to-state transition subgraph only.
 
@@ -1806,7 +1831,14 @@ def layout_agent_system(
     where intents get scattered among state layers.
     """
     states_list: List[Dict[str, Any]] = system_spec.get("states", [])
-    intents_list: List[Dict[str, Any]] = system_spec.get("intents", [])
+    all_intents: List[Dict[str, Any]] = system_spec.get("intents", [])
+    if agent_intents_on_canvas(existing_model):
+        intents_list = all_intents
+    else:
+        intents_list = []
+        for intent in all_intents:
+            if isinstance(intent, dict):
+                intent.pop("position", None)
     initial_nodes: List[Dict[str, Any]] = system_spec.get("initialNodes", [])
     agent_transitions: List[Dict[str, Any]] = system_spec.get("transitions", [])
     has_initial = bool(system_spec.get("hasInitialNode", False))
@@ -2082,6 +2114,58 @@ def layout_agent_system(
 
 
 # ---------------------------------------------------------------------------
+# User Profile layout — profiles behave like objects (boxes + links).
+# We alias ``profileName`` -> ``objectName`` and reuse the object layout so
+# positions and edge directions are computed by the existing Sugiyama code.
+# ---------------------------------------------------------------------------
+
+def layout_user_single(
+    spec: Dict[str, Any],
+    existing_model: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Assign position to a single user-profile box."""
+    width, height = estimate_object_size(spec)
+    occupied = extract_occupied_rects(existing_model, "UserDiagram")
+    center_x = _snap((CANVAS_MIN_X + CANVAS_MAX_X) // 2 - width // 2)
+    center_y = _snap((CANVAS_MIN_Y + CANVAS_MAX_Y) // 2 - height // 2)
+    x, y = _find_free_position(width, height, occupied,
+                                preferred_x=center_x, preferred_y=center_y)
+    spec["position"] = {"x": x, "y": y}
+    return spec
+
+
+def layout_user_system(
+    system_spec: Dict[str, Any],
+    existing_model: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Assign positions to a complete user-profile model.
+
+    Reuses :func:`layout_object_system` by aliasing each profile's
+    ``profileName`` to ``objectName`` (the object layout reads that key and
+    sets ``position`` on the same dicts).  The temporary alias is removed
+    afterwards.  Existing-canvas collision uses ``UserModelName`` boxes.
+    """
+    profiles = system_spec.get("profiles", [])
+    if not profiles:
+        return system_spec
+    links = system_spec.get("links", [])
+
+    for profile in profiles:
+        profile["objectName"] = profile.get("profileName") or profile.get("className", "")
+
+    object_view = {"objects": profiles, "links": links}
+    # extract_occupied_rects keys off diagram type; object layout uses
+    # "ObjectDiagram" internally, which still picks up UserModelName boxes
+    # (owner == null) from an existing user-profile model.
+    layout_object_system(object_view, existing_model)
+
+    for profile in profiles:
+        profile.pop("objectName", None)
+
+    return system_spec
+
+
+# ---------------------------------------------------------------------------
 # Convenience dispatcher
 # ---------------------------------------------------------------------------
 
@@ -2129,6 +2213,11 @@ def apply_layout(
         if mode == "system":
             return layout_agent_system(spec, existing_model)
         return layout_agent_single(spec, existing_model)
+
+    if diagram_type == "UserDiagram":
+        if mode == "system":
+            return layout_user_system(spec, existing_model)
+        return layout_user_single(spec, existing_model)
 
     # Fallback: try single-class layout
     return layout_class_single(spec, existing_model)

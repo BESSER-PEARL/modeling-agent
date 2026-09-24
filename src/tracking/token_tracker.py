@@ -9,7 +9,7 @@ Usage::
     from tracking import get_tracker
 
     tracker = get_tracker()
-    tracker.record(prompt_tokens=120, completion_tokens=80, model="gpt-4.1-mini")
+    tracker.record(prompt_tokens=120, completion_tokens=80, model=LLM_MODEL_DEFAULT)
 
     print(tracker.summary())           # global totals
     print(tracker.session_summary(sid)) # per-session totals
@@ -21,10 +21,19 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
+from agent_config import LLM_MODEL_DEFAULT
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Cost table (USD per 1 000 tokens) — updated for gpt-4.1-mini pricing
+# Cost table (USD per 1 000 tokens)
+#
+# Every model the agent can be pointed at needs an entry here. A model that is
+# missing still records tokens, but its cost is computed from _DEFAULT_COST —
+# a placeholder, not that model's real pricing. That fallback is deliberately
+# quiet per call (this runs on every LLM response) but is reported once per
+# unknown model via _warn_unknown_model, so a model swap that forgets this
+# table shows up in the logs instead of silently producing wrong cost figures.
 # ---------------------------------------------------------------------------
 
 _COST_PER_1K: Dict[str, Dict[str, float]] = {
@@ -34,8 +43,27 @@ _COST_PER_1K: Dict[str, Dict[str, float]] = {
     "gpt-4o": {"prompt": 0.0025, "completion": 0.01},
 }
 
-# Fallback for unknown models
+# Fallback for unknown models — placeholder pricing, not any real model's rate.
 _DEFAULT_COST = {"prompt": 0.001, "completion": 0.004}
+
+# Models already reported as missing from _COST_PER_1K, so the warning is
+# emitted once per model rather than once per LLM call.
+_unknown_models_seen: set = set()
+_unknown_models_lock = threading.Lock()
+
+
+def _warn_unknown_model(model: str) -> None:
+    """Log once that `model` has no cost-table entry and is using placeholder pricing."""
+    with _unknown_models_lock:
+        if model in _unknown_models_seen:
+            return
+        _unknown_models_seen.add(model)
+    logger.warning(
+        "No cost-table entry for model %r; reported costs for it are estimated from "
+        "placeholder pricing (%s/1K prompt, %s/1K completion). Add it to _COST_PER_1K "
+        "in tracking/token_tracker.py.",
+        model, _DEFAULT_COST["prompt"], _DEFAULT_COST["completion"],
+    )
 
 
 @dataclass
@@ -67,13 +95,16 @@ class TokenTracker:
         self,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
-        model: str = "gpt-4.1-mini",
+        model: str = LLM_MODEL_DEFAULT,
         session_id: Optional[str] = None,
         cached: bool = False,
     ) -> None:
         """Record a single LLM call's token usage."""
         total = prompt_tokens + completion_tokens
-        cost_table = _COST_PER_1K.get(model, _DEFAULT_COST)
+        cost_table = _COST_PER_1K.get(model)
+        if cost_table is None:
+            _warn_unknown_model(model)
+            cost_table = _DEFAULT_COST
         cost = (
             (prompt_tokens / 1000) * cost_table["prompt"]
             + (completion_tokens / 1000) * cost_table["completion"]
@@ -112,7 +143,7 @@ class TokenTracker:
     def record_from_usage(
         self,
         usage,
-        model: str = "gpt-4.1-mini",
+        model: str = LLM_MODEL_DEFAULT,
         session_id: Optional[str] = None,
     ) -> None:
         """Record from an OpenAI ``CompletionUsage`` object (or any obj with

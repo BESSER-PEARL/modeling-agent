@@ -39,6 +39,10 @@ from .object_diagram import (
     ObjectModificationResponse,
 )
 from .agent_diagram import (
+    ReplyType,
+    REPLY_TYPE_HINTS,
+    reply_type_help,
+    AgentReplyFields,
     AgentReplySpec,
     AgentStateSpec,
     AgentIntentSpec,
@@ -74,6 +78,16 @@ from .bpmn import (
     BPMNModification,
     BPMNModificationResponse,
 )
+from .user_profile import (
+    UserProfileAttributeSpec,
+    SingleUserProfileSpec,
+    UserProfileLinkSpec,
+    SystemUserProfileSpec,
+    UserProfileModificationTarget,
+    UserProfileModificationChanges,
+    UserProfileModification,
+    UserProfileModificationResponse,
+)
 
 __all__ = [
     # Class Diagram
@@ -90,6 +104,7 @@ __all__ = [
     "ObjectModificationTarget", "ObjectModificationChanges",
     "ObjectModification", "ObjectModificationResponse",
     # Agent Diagram
+    "ReplyType", "REPLY_TYPE_HINTS", "reply_type_help", "AgentReplyFields",
     "AgentReplySpec", "AgentStateSpec", "AgentIntentSpec",
     "AgentSingleElementSpec", "AgentTransitionSpec", "SystemAgentSpec",
     "AgentModificationTarget", "AgentModificationChanges",
@@ -104,4 +119,9 @@ __all__ = [
     "BPMNNodeSpec", "BPMNFlowSpec", "BPMNLaneSpec", "BPMNPoolSpec", "SystemBPMNSpec",
     "BPMNModificationTarget", "BPMNModificationChanges",
     "BPMNModification", "BPMNModificationResponse",
+    # User Profile
+    "UserProfileAttributeSpec", "SingleUserProfileSpec", "UserProfileLinkSpec",
+    "SystemUserProfileSpec",
+    "UserProfileModificationTarget", "UserProfileModificationChanges",
+    "UserProfileModification", "UserProfileModificationResponse",
 ]

@@ -1,0 +1,35 @@
+{
+  "_source": "Curated descriptions distilled from the BESSER-PEARL/User-Modeling-Language metamodel component READMEs (PersonalInformation, Accessibility, Competence, Culture) at https://github.com/BESSER-PEARL/User-Modeling-Language/tree/main/metamodel. The bundled user_metamodel.json carries no descriptive text of its own, so these are used to ground natural-language explanations of the user-profile elements. Only the classes present in the bundled short metamodel are covered.",
+  "overview": "A User Profile describes a *target user* (a group of users, not one individual) as a set of class-instance boxes drawn from a fixed metamodel. Every box attaches, directly or through a grouping element, to a single root User element. Each attribute row is a matching CRITERION with a comparison operator (e.g. \"age >= 18\", \"level == B2\"), not a fixed value.",
+  "classes": {
+    "User": "The root element of a user profile. It carries no attributes of its own; it anchors the profile, and every other element attaches to it directly or through a grouping element (Personal_Information, Culture, Competence, Accessibility).",
+    "Personal_Information": "Demographic identity data — the kind of information a user would enter on a profile page of a social-media platform or similar to describe who they are (name, age, nationality, address, gender). Attaches directly to User (at most one per profile).",
+    "Culture": "The user's cultural background — social behaviour, institutions and norms, typically tied to a region. Its dimensions follow Hofstede's cultural model, and it also records the user's religion. Attaches directly to User (at most one per profile).",
+    "Competence": "A grouping element for how capable the user is: it bundles the user's languages, skills and education. It carries no attributes itself — the concrete competences live in the Language, Skill and Education boxes attached to it. Attaches directly to User (at most one per profile).",
+    "Accessibility": "A grouping element for the user's accessibility needs — everything relating to how sensory, motor or cognitive capabilities affect their interaction. It carries no attributes itself; concrete needs are expressed through the Disability boxes attached to it. Attaches directly to User (at most one per profile).",
+    "Language": "A language the user speaks, recorded as an ISO 639-3 code with proficiency on the CEFR scale. Attaches under Competence; a profile may have several Language boxes.",
+    "Skill": "The user's proficiency in performing specific tasks or actions. Attaches under Competence; a profile may have several Skill boxes.",
+    "Education": "A degree or diploma the user holds, together with its field of study and awarding institution. Attaches under Competence; a profile may have several Education boxes.",
+    "Disability": "A concrete disability the user might have and the aspect(s) of life or interaction it affects (e.g. Sight, Hearing, Mobility). Attaches under Accessibility; a profile may have several Disability boxes."
+  },
+  "attributes": {
+    "Personal_Information.age": "How old the user is.",
+    "Personal_Information.firstName": "The user's given name. Uniquely identifies one individual, so it is usually left blank for a target-user profile.",
+    "Personal_Information.lastName": "The user's family name. Uniquely identifies one individual, so it is usually left blank for a target-user profile.",
+    "Personal_Information.nationality_iso3166": "The user's nationality, as an ISO 3166 country code.",
+    "Personal_Information.address": "Where the user lives. Uniquely identifies one individual, so it is usually left blank for a target-user profile.",
+    "Personal_Information.gender": "The gender the user identifies with.",
+    "Culture.religion": "The user's religious belief.",
+    "Language.iso693_3": "The language, given as an ISO 639-3 three-letter code.",
+    "Language.level": "The user's proficiency in the language, on the CEFR scale (A1 lowest to C2 highest).",
+    "Skill.name": "The skill in question.",
+    "Skill.score": "How proficient the user is in the skill.",
+    "Education.fieldOfDegree": "The field of study of the degree.",
+    "Education.degreeName": "The name of the degree or diploma.",
+    "Education.degreeType": "The kind of degree (e.g. Bachelor's, Master's, Doctorate).",
+    "Education.providedBy": "The institution that awarded the degree.",
+    "Disability.name": "The name of the disability.",
+    "Disability.description": "A short description of the disability.",
+    "Disability.affects": "The aspect of life or interaction the disability affects (e.g. Sight, Hearing, Mobility, Cognitive)."
+  }
+}

@@ -24,6 +24,13 @@ KEYWORD_TARGETS = [
     ("process diagram", "BPMN"),
     ("process model", "BPMN"),
     ("workflow diagram", "BPMN"),
+    # User Profile
+    ("user profile", "UserDiagram"),
+    ("user model", "UserDiagram"),
+    ("user diagram", "UserDiagram"),
+    ("target user", "UserDiagram"),
+    ("user persona", "UserDiagram"),
+    ("persona", "UserDiagram"),
     # Agent
     ("agent diagram", "AgentDiagram"),
     ("agent model", "AgentDiagram"),
@@ -101,6 +108,11 @@ _IMPLICIT_PATTERNS: List[Tuple[str, re.Pattern]] = [
         r"|transitions?\b.{0,40}\b(?:states?|status)"
         r"|(?:states?|status)\b.{0,40}\b(?:transitions?|flows?|events?|process))\b", re.I)),
 
+    # ── User Profile (persona / target-user vocabulary) ──
+    ("UserDiagram", re.compile(
+        r"\b(?:user\s+profile|user\s+persona|target\s+user|user\s+model"
+        r"|personas?\b|audience\s+profile)\b", re.I)),
+
     # ── Agent Diagram ──
     ("AgentDiagram", re.compile(
         r"\b(?:multi[- ]?agents?|conversational\s+agents?|chatbots?"
@@ -144,6 +156,7 @@ FALLBACK_PRIORITY: Tuple[str, ...] = (
     "GUINoCodeDiagram",
     "QuantumCircuitDiagram",
     "BPMN",
+    "UserDiagram",
 )
 
 

@@ -105,8 +105,8 @@ create_complete_system_intent = agent.new_intent(
         '"design a web app for", "build a web app for". '
         "IMPORTANT: When 'generate' is followed by a diagram type (class "
         "diagram, state machine, object diagram, agent diagram, GUI diagram, "
-        "quantum circuit, BPMN diagram, business process), it means CREATE a "
-        "diagram, NOT generate code. "
+        "quantum circuit, BPMN diagram, business process, user profile, "
+        "persona), it means CREATE a diagram, NOT generate code. "
         '"generate a class diagram" = create_complete_system_intent. '
         '"generate django" or "generate python code" = generation_intent. '
         "Quantum keywords: \"create Grover's algorithm\", "
@@ -116,6 +116,12 @@ create_complete_system_intent = agent.new_intent(
         '"implement quantum fourier transform", "create a quantum algorithm", '
         '"do grovers search", "implement bernstein vazirani", '
         '"build a variational circuit", "create an entanglement circuit". '
+        'User Profile keywords: "create a user profile", '
+        '"create a user profile for", "model a target user", '
+        '"build a persona", "create a persona for", '
+        '"model the audience for", "design a user profile", '
+        '"create a user model for elderly users", '
+        '"model a target user with sight issues". '
         'BPMN / business-process keywords: "create a BPMN diagram for", '
         '"model a business process for", "create a process for", '
         '"design a workflow for", "model an order fulfillment process", '
@@ -172,6 +178,10 @@ modeling_help_intent = agent.new_intent(
         'Quantum help: "explain quantum gates", "how does superposition work", '
         '"what is entanglement", "explain Grover\'s algorithm concept", '
         '"how do quantum circuits work", "what is a Hadamard gate". '
+        'User-profile help: "what is the Accessibility element", '
+        '"what does the Competence element mean", "explain the user profile '
+        'metamodel", "which user-profile elements do I need to model an elderly '
+        'user with sight issues", "what attributes does Personal_Information have". '
         "This is for CONCEPTUAL help and explanations, NOT for creating, "
         "modifying, or describing existing models."
     ),
@@ -223,7 +233,8 @@ generation_intent = agent.new_intent(
         "new diagrams, systems, models, GUIs, or frontends. "
         "IMPORTANT: 'generate a class diagram', 'generate a state machine', "
         "'generate a diagram for X', 'generate an object diagram', "
-        "'generate a BPMN diagram', 'generate a business process' are NOT "
+        "'generate a BPMN diagram', 'generate a business process', "
+        "'generate a user profile', 'generate a persona' are NOT "
         "generation — those are create_complete_system_intent because the "
         "user wants to CREATE a diagram, not generate source code. "
         "If the user says 'create a web app for X' or 'model a web "

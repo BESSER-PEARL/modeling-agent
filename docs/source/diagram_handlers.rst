@@ -224,15 +224,187 @@ AgentDiagramHandler
 
 **Location:** ``src/diagram_handlers/types/agent_diagram_handler.py``
 
-Generates BESSER conversational agent diagrams with states, intents, and transitions.
+Generates BESSER conversational agent diagrams with states, transitions, and
+agent components (intents, LLMs, RAG databases, tools, skills, workspaces, GUIs).
 
 Elements
 ~~~~~~~~
 
-- **State:** Named state with ``replies[]`` (response texts)
-- **Intent:** Named intent with ``trainingPhrases[]``
+- **State:** Named state with ``replies[]`` (actions run on entry) and
+  ``fallbackBodies[]`` (actions run when no intent matches). Each action has a
+  ``text`` and a ``replyType`` (see below).
 - **Initial:** Starting pseudo-element
-- **Transition:** Links states via intents
+- **Transition:** Links states; ``condition`` is ``when_intent_matched`` (with
+  the intent name), ``when_no_intent_matched``, or ``auto``
+- **Components:** Intents (``trainingPhrases[]``), LLMs, RAG databases, tools,
+  skills, workspaces, and GUIs. They have no canvas bounds.
+
+.. note::
+
+   Components are read from the editor's ``components`` section. Older projects
+   keep them in ``elements`` (intents on the canvas) or in a legacy top-level
+   ``agentComponents`` map; all three are merged when reading
+   (``agent_model_elements()`` in ``src/utilities/model_context.py``, in the
+   order ``elements``, ``agentComponents``, ``components``; later sections win
+   on duplicate ids). The layout engine reserves an
+   intent row on the canvas only for old-format models that already have
+   ``AgentIntent`` elements.
+
+Reply Types
+~~~~~~~~~~~
+
+``ReplyType`` in ``src/schemas/agent_diagram.py`` is the single source of truth
+for both the schemas and the handler prompts.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 38 40
+
+   * - ``replyType``
+     - Purpose
+     - Key fields
+   * - ``text``
+     - Scripted text reply (default)
+     - ``text``
+   * - ``llm``
+     - LLM-generated reply
+     - ``system_message``, ``llm_name``, ``inputPromptMode``,
+       ``customInputPrompt``, ``storeInSession``, ``sendReply``
+   * - ``llm_chat``
+     - LLM reply with conversation history
+     - same as ``llm``
+   * - ``rag``
+     - RAG knowledge-base lookup
+     - ``ragDatabaseName``, ``llm_name``
+   * - ``db_reply``
+     - Database query
+     - ``dbSelectionType`` (``default``/``custom``), ``dbCustomName``,
+       ``dbQueryMode`` (``llm_query``/``sql``), ``dbOperation``
+       (``any``/``select``/``insert``/``update``/``delete``),
+       ``dbSqlQuery``, ``llm_name``
+   * - ``code``
+     - Custom Python function
+     - ``text`` must be a complete ``def <name>(session):`` function (bare
+       code is wrapped automatically)
+   * - ``web_crawl_llm``
+     - Crawl a URL, then reply via LLM
+     - ``initial_url``
+   * - ``ws_markdown``, ``ws_html``, ``ws_speech``
+     - WebSocket Markdown, HTML, or text-to-speech reply
+     - ``ws_message``
+   * - ``ws_options``
+     - WebSocket option buttons
+     - ``ws_options`` (newline-separated)
+   * - ``ws_location``
+     - WebSocket GPS location
+     - ``ws_latitude``, ``ws_longitude``
+   * - ``ws_file``, ``ws_image``, ``ws_dataframe``, ``ws_plotly``
+     - WebSocket file, image, dataframe, or Plotly chart
+     - none
+   * - ``gui_reply``
+     - Show a GUI page
+     - ``guiId`` (the ``gui_id`` of an ``AgentGUI`` component)
+
+Component Specs
+~~~~~~~~~~~~~~~
+
+``SystemAgentSpec`` carries ``states`` and ``transitions`` plus one list per
+component type: ``intents``, ``llms``, ``ragElements``, ``tools``, ``skills``,
+``workspaces``, and ``guis``.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 20 55
+
+   * - Spec
+     - List
+     - Fields (defaults)
+   * - ``AgentIntentSpec``
+     - ``intents``
+     - ``intentName``, ``intentDescription``, ``trainingPhrases``
+   * - ``AgentLLMSpec``
+     - ``llms``
+     - ``name``, ``provider`` (``openai``), ``num_previous_messages`` (1),
+       ``global_context``
+   * - ``AgentRagSpec``
+     - ``ragElements``
+     - ``name``, ``llm_name``, ``llm_prompt``, ``k`` (4),
+       ``embedding_provider`` (``openai``)
+   * - ``AgentToolSpec``
+     - ``tools``
+     - ``name``, ``description``, ``code`` (Python function source)
+   * - ``AgentSkillSpec``
+     - ``skills``
+     - ``name``, ``content``, ``description``
+   * - ``AgentWorkspaceSpec``
+     - ``workspaces``
+     - ``name``, ``path``, ``description``, ``writable`` (true),
+       ``max_read_bytes`` (200000)
+   * - ``AgentGUISpec``
+     - ``guis``
+     - ``gui_id``, ``persist`` (true), ``width``, ``is_form`` (false)
+
+Modification Actions
+~~~~~~~~~~~~~~~~~~~~
+
+``AgentModification.action`` is a ``Literal``, so the LLM cannot produce any
+other action. Component actions take the component name in ``target.name`` and
+their fields in ``changes``.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Action
+     - Target / changes
+   * - ``add_state``
+     - ``target.stateName``; ``changes.replies``
+   * - ``modify_state``, ``modify_intent``
+     - ``target.stateName`` / ``target.intentName``; ``changes.name``
+   * - ``add_intent``
+     - ``target.intentName``; ``changes.trainingPhrases``,
+       ``changes.intentDescription``
+   * - ``add_transition``, ``remove_transition``
+     - ``target.sourceStateName``, ``target.targetStateName``;
+       ``changes.condition``, ``changes.intentName``
+   * - ``add_state_body``
+     - ``target.stateName``; ``changes.text``, ``changes.replyType`` and the
+       reply type's fields
+   * - ``add_intent_training_phrase``
+     - ``target.intentName``; ``changes.trainingPhrase``
+   * - ``add_rag_element``
+     - ``target.name``; ``changes.llm_name``, ``changes.llm_prompt``,
+       ``changes.k``, ``changes.embedding_provider``
+   * - ``add_llm``
+     - ``target.name``; ``changes.provider``,
+       ``changes.num_previous_messages``, ``changes.global_context``
+   * - ``add_tool``
+     - ``target.name``; ``changes.description``, ``changes.code``
+   * - ``add_skill``
+     - ``target.name``; ``changes.content``, ``changes.description``
+   * - ``add_workspace``
+     - ``target.name``; ``changes.path``, ``changes.description``,
+       ``changes.writable``
+   * - ``add_gui``
+     - ``target.name``; ``changes.gui_id``, ``changes.persist``,
+       ``changes.is_form``, ``changes.width``
+   * - ``remove_element``
+     - ``target.stateName`` or ``target.intentName``; no ``changes``. Removes
+       a state with its bodies, fallback bodies, and connected transitions, or
+       an intent with its training phrases. Other components (LLMs, RAG
+       databases, tools, skills, workspaces, GUIs) cannot be removed with it.
+
+.. code-block:: json
+
+   {
+     "action": "add_llm",
+     "target": {"name": "gpt4"},
+     "changes": {"provider": "openai", "num_previous_messages": 3}
+   }
+
+The model summary sent to the LLM (``_summarize_agent_diagram()`` in
+``src/utilities/model_context.py``) lists states, every component type, and
+transitions, so modifications can reference existing components by name.
 
 Features
 ~~~~~~~~

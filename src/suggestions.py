@@ -79,6 +79,13 @@ _BPMN_SUGGESTIONS = [
     ("Regenerate with more detail", "Regenerate the current BPMN process with more detail and intermediate steps."),
 ]
 
+_USER_PROFILE_SUGGESTIONS = [
+    ("Add a competence", "add a Language box for French at C1"),
+    ("Refine a criterion", "set the age criterion to >= 21"),
+    ("Add accessibility needs", "add an Accessibility box"),
+    ("Describe my user profile", "describe my user profile"),
+]
+
 _GENERATION_SUGGESTIONS = [
     ("Generate another format", "generate sql"),
     ("Modify the model", ""),
@@ -225,6 +232,13 @@ def _suggestions_for_bpmn(
     return _build_actions(_BPMN_SUGGESTIONS)
 
 
+def _suggestions_for_user_profile(
+    operation_mode: str,
+    available_diagrams: Optional[List[str]],
+) -> List[Dict[str, str]]:
+    return _build_actions(_USER_PROFILE_SUGGESTIONS)
+
+
 _DIAGRAM_SUGGESTION_HANDLERS = {
     "ClassDiagram": _suggestions_for_class_diagram,
     "StateMachineDiagram": _suggestions_for_state_machine,
@@ -233,6 +247,7 @@ _DIAGRAM_SUGGESTION_HANDLERS = {
     "ObjectDiagram": _suggestions_for_object_diagram,
     "QuantumCircuitDiagram": _suggestions_for_quantum,
     "BPMN": _suggestions_for_bpmn,
+    "UserDiagram": _suggestions_for_user_profile,
 }
 
 

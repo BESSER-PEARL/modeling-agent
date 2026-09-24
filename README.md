@@ -22,6 +22,10 @@ generate, convert) over WebSocket-compatible payloads.
 | `AgentDiagram` | Yes | Yes | Yes |
 | `GUINoCodeDiagram` | Yes | Yes | Yes |
 | `QuantumCircuitDiagram` | Yes | Yes | Yes |
+| `BPMN` | Yes | Yes | Yes |
+| `UserDiagram` | Yes | Yes | Yes |
+
+`AgentDiagram` also covers agent components (intents, LLMs, RAG databases, tools, skills, workspaces, GUIs) and all 17 state reply types.
 
 ## Supported Generators
 

@@ -13,7 +13,7 @@ from ..core.prompt_fragments import (
     MULTI_MOD_ARRAY_RULE,
     POSITION_DISCLAIMER,
 )
-from schemas import AgentSingleElementSpec, SystemAgentSpec, AgentModificationResponse
+from schemas import AgentSingleElementSpec, SystemAgentSpec, AgentModificationResponse, reply_type_help
 from utilities.model_context import detailed_model_summary
 
 # Get logger
@@ -51,23 +51,41 @@ def _ensure_code_reply_is_function(text: str, name_hint: str) -> str:
     return f"def {safe_name}(session):\n{indented}"
 
 
+# replyType bullet lists are generated from the schema's ReplyType alias so the
+# prompts can never drift from what the structured output accepts.
+_REPLY_TYPES_PROMPT = reply_type_help("   ")
+
 _AGENT_ACTIONS_BLOCK = """AVAILABLE ACTIONS:
-- add_state: Create a new state. Set target.stateName, put replies [{text, replyType}] in changes.
+- add_state: Create a new state. Set target.stateName, put replies [{text, replyType, ...}] in changes.
 - add_intent: Create a new intent. Set target.intentName, put trainingPhrases ["phrase1","phrase2","phrase3"] in changes.
 - modify_state / modify_intent: Rename elements (set changes.name).
-- add_transition: Connect states (set target.sourceStateName, target.targetStateName, changes.condition, changes.intentName).
-- remove_transition: Disconnect states.
-- add_state_body: Add reply text to a state (changes.text, changes.replyType — see rule 7 for replyType="code").
+- add_transition: Connect two states. Set target.sourceStateName (source state, or "initial") and
+  target.targetStateName (target state); set changes.condition and, for "when_intent_matched",
+  changes.intentName (the triggering intent).
+- remove_transition: Disconnect two states. Set target.sourceStateName and target.targetStateName.
+- add_state_body: Add an action to a state (changes.text, changes.replyType, plus type-specific fields).
 - add_intent_training_phrase: Add example phrase to intent (changes.trainingPhrase).
 - remove_element: Delete a state or intent.
-- add_rag_element: Create a RAG knowledge base element. Set target.name to the KB name."""
+- add_rag_element: Create a RAG knowledge base component. Set target.name to the KB name;
+  optionally set changes.llm_name, changes.k, changes.embedding_provider.
+- add_llm: Add an LLM configuration component. Set target.name; optionally changes.provider,
+  changes.num_previous_messages, changes.global_context.
+- add_tool: Add a tool component. Set target.name; set changes.description, changes.code (Python function source).
+- add_skill: Add a skill component. Set target.name; set changes.content, optionally changes.description.
+- add_workspace: Add a workspace component. Set target.name; set changes.path, optionally changes.writable.
+- add_gui: Add a GUI page component. Set target.name; set changes.gui_id, optionally changes.persist,
+  changes.is_form, changes.width."""
 
 _AGENT_RULES_BLOCK = f"""RULES:
-1. For transitions, "condition" is usually "when_intent_matched" with an "intentName".
+1. For add_transition / remove_transition, always name the states with target.sourceStateName and
+   target.targetStateName. For add_transition, changes.condition is usually "when_intent_matched"
+   with changes.intentName set to the triggering intent.
 2. {EXACT_NAMES_RULE}
 3. {MULTI_MOD_ARRAY_RULE}
-4. replyType is "text" for scripted replies, "llm" for AI-generated, "code" for custom
-   Python logic, "rag" for a knowledge-base lookup, "db_reply" for a database query.
+4. replyType options for state bodies. Type-specific fields sit next to text/replyType:
+   for add_state_body they go directly in changes (e.g. changes.system_message); for add_state
+   they go on each changes.replies[i] (e.g. changes.replies[0].system_message).
+{_REPLY_TYPES_PROMPT}
 5. Example: "add a welcome state" → add_state with target.stateName="welcomeState", changes.replies=[{{text:"Welcome!", replyType:"text"}}]
 6. Example: "add a greeting intent" → add_intent with target.intentName="GreetingIntent", changes.trainingPhrases=["hello","hi","hey there"]
 7. CRITICAL for replyType="code": the "text" MUST be a complete Python function
@@ -97,9 +115,9 @@ class AgentDiagramHandler(BaseDiagramHandler):
 
 IMPORTANT RULES:
 1. Provide the "type" field (state, intent, or initial) based on the user request.
-2. For states include 1-3 "replies" with both "text" and "replyType" (text or llm — use
-   "code" only if the user explicitly asks for custom Python logic; when you do, "text"
-   MUST be a complete function starting with "def <name>(session):", never bare statements).
+2. For states include 1-3 "replies". Each reply has a "replyType" (default to "text"; use
+   "code" only if the user explicitly asks for custom Python logic):
+{_REPLY_TYPES_PROMPT}
 3. Add "fallbackBodies" only when the request mentions fallbacks or error handling.
 4. For intents include 3-4 "trainingPhrases" that reflect how a user would trigger the intent.
 5. Keep names concise (camelCase for states, TitleCase for intents).
@@ -148,15 +166,13 @@ Before generating, think through:
 - What does the agent reply in each state?
 - Are there fallback paths for unrecognized input?
 - Is every state reachable and does every state have an exit?
+- What LLMs, RAG databases, tools, skills, workspaces, or GUI pages does the agent need?
 
 IMPORTANT RULES:
 1. Create AS MANY states and intents as needed for the conversation.
-2. Each state can have MULTIPLE replies (text lines):
-   - Use replyType="text" for scripted responses (most common)
-   - Use replyType="llm" for AI-generated dynamic responses
-   - Use replyType="code" ONLY when the user explicitly asks for custom Python logic;
-     "text" MUST then be a complete function starting with "def <name>(session):" —
-     never bare statements, they break the generated agent.
+2. Each state can have MULTIPLE replies/actions via "replyType" (use "code" ONLY when the
+   user explicitly asks for custom Python logic):
+{_REPLY_TYPES_PROMPT}
 3. AVOID DEAD-ENDS: Every state MUST have at least one exit path.
 4. States can have MULTIPLE transitions.
 5. Transition types:
@@ -167,7 +183,14 @@ IMPORTANT RULES:
 7. Keep names consistent (camelCase for states, TitleCase for intents).
 8. Include "sourceDirection" and "targetDirection" for visual flow.
 9. FallbackBodies are optional.
-10. {POSITION_DISCLAIMER}"""
+10. {POSITION_DISCLAIMER}
+11. AGENT COMPONENTS (add to the corresponding lists when the agent needs them):
+    - llms: LLM configurations (name, provider, num_previous_messages, global_context)
+    - ragElements: RAG knowledge bases (name, llm_name, k, embedding_provider)
+    - tools: callable tools for reasoning states (name, description, code)
+    - skills: knowledge/instructions for reasoning states (name, content, description)
+    - workspaces: filesystem access (name, path, writable)
+    - guis: GUI pages referenced by gui_reply actions (gui_id, persist, is_form, width)"""
 
         user_request_prompt = f"{user_request}"
 
@@ -200,6 +223,14 @@ IMPORTANT RULES:
                 parts.append(f" with states: {', '.join(f'**{n}**' for n in state_names)}")
             if intent_names:
                 parts.append(f" and intents: {', '.join(f'**{n}**' for n in intent_names)}")
+            component_counts = []
+            for key, label in [("llms", "LLM"), ("ragElements", "RAG DB"), ("tools", "tool"),
+                                ("skills", "skill"), ("workspaces", "workspace"), ("guis", "GUI")]:
+                n = len(normalized_system.get(key, []))
+                if n:
+                    component_counts.append(f"{n} {label}{'s' if n > 1 else ''}")
+            if component_counts:
+                parts.append(f", components: {', '.join(component_counts)}")
             parts.append(". Feel free to ask me to add more conversation flows or modify existing ones!")
             message = "".join(parts)
 
@@ -392,19 +423,24 @@ IMPORTANT RULES:
         if not phrases:
             return None
 
-        normalized_intent = {
+        normalized_intent: Dict[str, Any] = {
             "type": "intent",
             "intentName": intent_name,
             "trainingPhrases": phrases[:5]
         }
+        intent_desc = spec.get("intentDescription") or spec.get("description")
+        if intent_desc:
+            normalized_intent["intentDescription"] = intent_desc
         position = self._normalize_position(spec)
         if position:
             normalized_intent["position"] = position
         return normalized_intent
 
-    def _normalize_reply_list(self, replies: Any, default_text: str, name_hint: str = "custom_action") -> List[Dict[str, str]]:
-        """Normalize reply/fallback entries into structured dictionaries"""
-        normalized: List[Dict[str, str]] = []
+    def _normalize_reply_list(
+        self, replies: Any, default_text: str, name_hint: str = "custom_action",
+    ) -> List[Dict[str, Any]]:
+        """Normalize reply/fallback entries into structured dictionaries, preserving all extra action fields."""
+        normalized: List[Dict[str, Any]] = []
         if isinstance(replies, list):
             for index, entry in enumerate(replies):
                 if isinstance(entry, str):
@@ -423,7 +459,16 @@ IMPORTANT RULES:
                     reply_type = entry.get("replyType") or entry.get("type") or "text"
                     if reply_type == "code":
                         text = _ensure_code_reply_is_function(text, f"{name_hint}_{index}")
-                    normalized.append({"text": text, "replyType": reply_type})
+                    # Start with all extra fields the LLM may have filled in, then
+                    # overwrite the two canonical ones so they are always correct.
+                    result: Dict[str, Any] = {
+                        k: v for k, v in entry.items()
+                        if k not in {"text", "replyType", "type", "message", "name"}
+                        and v is not None
+                    }
+                    result["text"] = text
+                    result["replyType"] = reply_type
+                    normalized.append(result)
 
         if not normalized and default_text:
             normalized.append({"text": default_text, "replyType": "text"})
@@ -466,12 +511,26 @@ IMPORTANT RULES:
                     "label": ""
                 })
 
+        # Agent components (no canvas bounds — go to the components section)
+        rag_elements = [r for r in spec.get("ragElements", []) if isinstance(r, dict) and r.get("name")]
+        llms = [llm for llm in spec.get("llms", []) if isinstance(llm, dict) and llm.get("name")]
+        tools = [t for t in spec.get("tools", []) if isinstance(t, dict) and t.get("name")]
+        skills = [s for s in spec.get("skills", []) if isinstance(s, dict) and s.get("name")]
+        workspaces = [w for w in spec.get("workspaces", []) if isinstance(w, dict) and w.get("name")]
+        guis = [g for g in spec.get("guis", []) if isinstance(g, dict) and g.get("gui_id")]
+
         normalized_system = {
             "systemName": system_name,
             "hasInitialNode": has_initial,
             "intents": intents,
             "states": states,
-            "transitions": transitions
+            "transitions": transitions,
+            "ragElements": rag_elements,
+            "llms": llms,
+            "tools": tools,
+            "skills": skills,
+            "workspaces": workspaces,
+            "guis": guis,
         }
         initial_position = self._normalize_position(spec.get("initialNode"))
         if not initial_position:
