@@ -504,7 +504,7 @@ _SYSTEM_PROMPT = (
     "asks to ADD or CHANGE a FEATURE of the GENERATED APP / CODE, that is "
     "generation_intent with generation_route='smart' and "
     "model_disposition='reuse_for_generation' — NOT modify_model_intent. "
-    "The frontend re-runs the Vibe generator in incremental modify mode "
+    "The frontend re-runs the Spec-Driven Agent in incremental modify mode "
     "on the SAME project, so it edits the GENERATED CODE, never the class "
     "diagram. Signals: app/feature words plus a pronoun pointing at the "
     "app ('it', 'the app', 'the code', 'the generated app', 'the site', "
