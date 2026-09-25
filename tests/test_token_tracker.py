@@ -254,3 +254,15 @@ def test_unknown_model_warns_once(caplog):
 
     warnings = [r for r in caplog.records if "totally-made-up-model" in r.getMessage()]
     assert len(warnings) == 1, f"expected exactly one warning, got {len(warnings)}"
+
+
+def test_every_model_a_user_key_can_route_to_has_a_price():
+    """BYOK maps each call to a provider tier model; an unpriced one reports
+    placeholder costs, as happened for the Nebius Qwen model and for
+    gpt-5-mini."""
+    from byok import _PROVIDER_TIER_MODELS
+    from tracking.token_tracker import _COST_PER_1K
+
+    routed = {model for tiers in _PROVIDER_TIER_MODELS.values() for model in tiers.values()}
+    for model in routed | {"gpt-5-mini"}:
+        assert model in _COST_PER_1K, f"no cost entry for {model!r}"

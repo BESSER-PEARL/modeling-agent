@@ -28,23 +28,76 @@ formatting accordingly.
 Inbound Messages (Frontend → Backend)
 --------------------------------------
 
-All frontend messages use the ``user_message`` action, wrapped in a
-BESSER framework envelope.
+Most frontend messages use the ``user_message`` action, wrapped in a
+BESSER framework envelope. The other inbound actions are listed below.
 
 Envelope Structure
 ~~~~~~~~~~~~~~~~~~
 
-The BESSER framework wraps the v2 payload inside an outer envelope:
+BAF's ``Payload.decode()`` reads only three top-level keys off a message —
+``action``, ``message`` and ``history`` — so the v2 payload is
+**JSON-stringified into the ``message`` field** of a ``user_message``
+envelope. The wire payload is therefore double-JSON-encoded:
 
 .. code-block:: json
 
    {
      "action": "user_message",
-     "user_id": "session-uuid",
-     "message": "<JSON string of v2 payload>"
+     "message": "<JSON string of v2 payload>",
+     "history": false
    }
 
-The ``message`` field contains a **JSON-encoded string** of the inner v2 payload.
+``_unwrap_v2_envelope()`` in ``src/protocol/adapters.py`` recovers the inner
+payload and merges it over the outer one.
+
+.. note::
+
+   Session identity does **not** travel in the envelope. The frontend appends a
+   persisted ``?user_id=`` query parameter to the WebSocket **URL**, and the
+   platform reads it off the HTTP request that opened the socket
+   (``_extract_user_id_from_request`` in ``patches/websocket_platform.py``).
+   Inside the payload, continuity comes from the v2 ``sessionId`` field.
+
+.. note::
+
+   The same double-encoding applies in reverse to streamed replies: each
+   chunk arrives wrapped as ``{"action": "agent_reply_str", "message":
+   "<JSON string>", "history": false}``, where the inner string is the
+   ``stream_start`` / ``stream_chunk`` / ``stream_done`` payload. When probing
+   the agent directly (bypassing the browser), replicate and unwrap **both**
+   layers — a single-level unwrap silently treats every response as an
+   unrecognized action and hangs waiting for a message that already arrived.
+
+Other inbound actions
+~~~~~~~~~~~~~~~~~~~~~
+
+Not every message from the frontend is a ``user_message``:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 72
+
+   * - Action
+     - Purpose
+   * - ``user_message``
+     - A text turn, optionally with base64 ``attachments``
+   * - ``user_voice``
+     - Base64 audio, transcribed by OpenAI speech-to-text. The workspace
+       context is sent just before it as a ``_voice_context`` session
+       variable, because the transcript arrives as plain text with no JSON
+       context of its own.
+   * - ``user_set_variable``
+     - Sets a BAF session variable. Used to arm BYOK
+       (``user_api_key`` / ``user_api_provider`` / ``user_api_model`` /
+       ``user_api_base``), to pass ``_voice_context``, and as a keep-alive
+       heartbeat.
+   * - ``frontend_event``
+     - Reports the outcome of an action the frontend executed (e.g. a
+       generator finishing). Routed deterministically to the generation
+       state — never classified.
+   * - ``replay_last_response``
+     - Asks the agent to re-send its last completed terminal reply. Used
+       after a reconnect that dropped a long-running reply mid-flight.
 
 V2 Payload Structure
 ~~~~~~~~~~~~~~~~~~~~
@@ -112,22 +165,36 @@ Field Reference
      - UUID of the active diagram
    * - ``context.activeModel``
      - No
-     - Current model JSON from the canvas (may be stale after injection)
+     - **Deprecated and ignored.** The agent resolves the active model from
+       ``projectSnapshot`` using ``activeDiagramType`` and
+       ``currentDiagramIndices``. The field is tolerated if an older frontend
+       still sends it.
    * - ``context.projectSnapshot``
      - No
-     - Full project state including all diagram tabs
+     - Full project state. ``diagrams`` maps each diagram type to an **array**
+       of tabs (``{id, title, model}``); a bare dict is accepted as the
+       legacy single-diagram format.
    * - ``context.diagramSummaries``
      - No
-     - Short text summaries of each diagram
+     - Array of ``{diagramType, diagramId, title}``. Derived from
+       ``projectSnapshot`` when absent.
    * - ``context.currentDiagramIndices``
      - No
      - Active tab index per diagram type (for multi-tab support)
+   * - ``context.pilotParticipant``
+     - No
+     - Opt-in study participant label (e.g. ``"P3"``), present only when the
+       session was opened with a study link. Validated against
+       ``^[A-Za-z0-9_-]{1,16}$`` and dropped otherwise. Never a name or email.
    * - ``attachments``
      - No
-     - Array of uploaded files (PlantUML, images, RDF, etc.)
+     - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)
 
 Supported Diagram Types
 ~~~~~~~~~~~~~~~~~~~~~~~~
+
+``SUPPORTED_DIAGRAM_TYPES`` in ``src/protocol/types.py``. An
+``activeDiagramType`` outside this set is normalized to ``ClassDiagram``.
 
 .. code-block:: text
 
@@ -137,6 +204,8 @@ Supported Diagram Types
    AgentDiagram
    GUINoCodeDiagram
    QuantumCircuitDiagram
+   BPMN            # NOT "BPMNDiagram" — the editor's converter sets that itself
+   UserDiagram     # User Profile models
 
 
 Outbound Messages (Backend → Frontend)
@@ -144,6 +213,66 @@ Outbound Messages (Backend → Frontend)
 
 All responses are JSON objects with an ``action`` field that determines the
 message type.
+
+Action index
+~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 16 56
+
+   * - Action
+     - Terminal?
+     - Meaning
+   * - ``inject_element``
+     - Yes
+     - Add one element to the canvas
+   * - ``inject_complete_system``
+     - Yes
+     - Inject a full diagram
+   * - ``modify_model``
+     - Yes
+     - Apply one or many modifications
+   * - ``assistant_message``
+     - Yes
+     - Text-only reply (also the shape of a structured error)
+   * - ``agent_error``
+     - Yes
+     - Error the frontend surfaces with a recovery affordance
+   * - ``create_diagram_tab``
+     - Yes
+     - Create a new tab for a diagram type
+   * - ``trigger_generator``
+     - Yes
+     - Run a deterministic BESSER generator
+   * - ``trigger_smart_generator``
+     - Yes
+     - Hand off to the LLM-authored Spec-Driven Agent
+   * - ``trigger_github_import``
+     - Yes
+     - Import a BESSER project from a GitHub repo and resume work on it
+   * - ``trigger_export``
+     - Yes
+     - Export the project
+   * - ``trigger_deploy``
+     - Yes
+     - Open the deploy dialog
+   * - ``auto_generate_gui``
+     - Yes
+     - Deterministically build the GUI diagram from the class diagram
+   * - ``progress``
+     - No
+     - Progress / keep-alive tick
+   * - ``stream_start`` / ``stream_chunk`` / ``stream_done``
+     - ``stream_done`` only
+     - Streamed free-text reply
+
+A subset of the terminal replies is buffered per stable session key so a reply
+completed while the socket was reconnecting can be replayed on request:
+``inject_complete_system``, ``modify_model``, ``auto_generate_gui``,
+``trigger_generator``, ``trigger_github_import`` and ``assistant_message``
+(``_TERMINAL_REPLY_ACTIONS`` / ``replay_last_reply`` in
+``src/session_helpers.py``).
 
 inject_element
 ~~~~~~~~~~~~~~
@@ -224,7 +353,37 @@ Injects a full diagram (all elements + relationships) at once.
    * - ``createNewTab``
      - ``true`` to create a new tab for the diagram
    * - ``suggestedActions``
-     - Optional list of follow-up action buttons for the user
+     - Optional list of ``{label, prompt}`` follow-up buttons. Clicking one
+       sends its ``prompt`` as the next user message.
+
+.. note::
+
+   ``systemSpec`` is the handler's **simple** format (``classes`` /
+   ``relationships`` arrays for a class diagram, and the per-type equivalent
+   for the others), *not* the editor's Apollon element/relationship maps. The
+   frontend's ``ConverterFactory`` performs that translation — see
+   :doc:`end_to_end_flow`.
+
+   Class-diagram ``systemSpec`` objects may also carry a ``constraints`` list
+   of OCL invariants. The frontend persists these as ``ClassOCLConstraint``
+   elements with ``ClassOCLLink`` attachments to their context classes. A
+   persisted constraint is not necessarily enforced by a target generator;
+   unsupported rules remain work for the spec-driven agent.
+
+   An ``Association`` may carry ``associationClass: "Enrollment"``. Declare
+   ``Enrollment`` in ``classes`` with the attributes belonging to the pairing,
+   and attach it to exactly one direct relationship (for example
+   ``Student``--``Course``). The frontend emits a ``ClassLinkRel`` whose source
+   is the attribute class and whose target is that relationship's ID. BESSER
+   converts this to a native ``AssociationClass``; no two extra ordinary
+   endpoint associations are needed. Compact LLM output uses ``ac`` for the
+   same attachment, expanded before this message is sent. Missing or null
+   ``associationClass`` preserves the ordinary relationship behavior.
+
+   This attachment is supported by complete-system generation; the existing
+   incremental modification protocol does not yet expose it. Deploy the
+   matching frontend converter with the agent schema change: older converters
+   ignore this field and lose the native attachment.
 
 modify_model (single)
 ~~~~~~~~~~~~~~~~~~~~~
@@ -274,43 +433,38 @@ Apply multiple modifications in a single message.
 Nested Modification Actions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+The valid nested actions are ``Literal`` types on each diagram's Pydantic
+modification schema (``src/schemas/``), so the LLM cannot hallucinate one —
+Structured Outputs rejects the response and the call retries.
+
 .. list-table::
    :header-rows: 1
-   :widths: 30 30 40
+   :widths: 26 74
 
-   * - Action
-     - Diagram Type
-     - Purpose
-   * - ``modify_class``
-     - ClassDiagram
-     - Rename, change visibility, etc.
-   * - ``add_class``
-     - ClassDiagram
-     - Add a new class
-   * - ``remove_element``
-     - ClassDiagram
-     - Remove a class or relationship
-   * - ``add_relationship``
-     - ClassDiagram
-     - Add a new relationship
-   * - ``add_attribute``
-     - ClassDiagram
-     - Add an attribute to a class
-   * - ``remove_method``
-     - ClassDiagram
-     - Remove a method from a class
-   * - ``modify_attribute``
-     - ClassDiagram
-     - Modify an existing attribute
-   * - ``modify_object``
-     - ObjectDiagram
-     - Modify an object instance
-   * - ``modify_state``
-     - StateMachine, Agent
-     - Modify a state
-   * - ``modify_element``
-     - Any (generic)
-     - Generic element modification (fallback)
+   * - Diagram Type
+     - Valid nested actions
+   * - ``ClassDiagram``
+     - ``add_class``, ``modify_class``, ``add_attribute``,
+       ``modify_attribute``, ``add_method``, ``modify_method``,
+       ``add_relationship``, ``modify_relationship``, ``remove_element``,
+       ``extract_class``, ``split_class``, ``merge_classes``,
+       ``promote_attribute``, ``add_enum``, ``add_ocl_constraint``
+   * - ``StateMachineDiagram``
+     - ``add_state``, ``modify_state``, ``add_transition``,
+       ``modify_transition``, ``add_code_block``, ``remove_element``
+   * - ``ObjectDiagram``, ``UserDiagram``
+     - ``add_object``, ``modify_object``, ``modify_attribute_value``,
+       ``add_link``, ``remove_element``
+   * - ``AgentDiagram``
+     - ``add_state``, ``modify_state``, ``add_intent``, ``modify_intent``,
+       ``add_transition``, ``remove_transition``, ``add_state_body``,
+       ``add_intent_training_phrase``, ``add_rag_element``,
+       ``remove_element``
+   * - ``BPMN``
+     - ``add_task``, ``add_gateway``, ``add_event``, ``add_flow``,
+       ``modify_node``, ``remove_flow``, ``remove_element``
+   * - Any (generic)
+     - ``modify_element`` — the base handler's fallback shape
 
 assistant_message
 ~~~~~~~~~~~~~~~~~
@@ -358,43 +512,105 @@ Loading/progress indicator update.
 agent_error
 ~~~~~~~~~~~
 
-Error payload sent when something goes wrong.
+Error payload sent when something goes wrong and the frontend should surface a
+recovery affordance (for example an inline "Add your API key" button, which it
+keys on ``rate_limit`` / ``auth_error``).
 
 .. code-block:: json
 
    {
      "action": "agent_error",
-     "message": "Failed to generate the diagram.",
-     "errorCode": "LLM_PARSE_ERROR",
+     "errorCode": "rate_limit",
+     "message": "We've hit the shared free usage limit for the AI service...",
+     "suggestedRecovery": "Add your own API key",
      "retryable": true
    }
 
-.. list-table::
-   :header-rows: 1
-   :widths: 30 70
-
-   * - Error Code
-     - Description
-   * - ``LLM_PARSE_ERROR``
-     - LLM returned unparseable JSON (retryable)
-   * - ``HANDLER_ERROR``
-     - Diagram handler raised an exception
-   * - ``VALIDATION_ERROR``
-     - Generated diagram failed schema validation
-   * - ``CONVERSION_ERROR``
-     - File conversion failed
-
-switch_diagram
-~~~~~~~~~~~~~~
-
-Switch the active diagram tab in the editor.
+Most structured errors are instead sent as an ``assistant_message`` carrying
+the same fields plus ``"error": true`` — see ``build_error_response()`` in
+``src/errors.py``:
 
 .. code-block:: json
 
    {
-     "action": "switch_diagram",
-     "diagramType": "StateMachineDiagram",
-     "reason": "Switching to StateMachineDiagram based on your request."
+     "action": "assistant_message",
+     "error": true,
+     "errorCode": "parse_error",
+     "message": "I had trouble structuring that response.",
+     "suggestedRecovery": "try rephrasing your request more specifically",
+     "retryable": false,
+     "diagramType": "ClassDiagram"
+   }
+
+Error codes
+^^^^^^^^^^^
+
+``ErrorCode`` in ``src/errors.py``. Values are lowercase snake_case. Each code
+carries a default user-facing message, a recovery hint, and a ``retryable``
+flag that the caller may override.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 14 58
+
+   * - Error Code
+     - Retryable
+     - Description
+   * - ``llm_failure``
+     - yes
+     - The AI service is temporarily unavailable
+   * - ``parse_error``
+     - yes
+     - The model returned something that could not be structured
+   * - ``validation_error``
+     - yes
+     - The generated model had structural issues
+   * - ``schema_error``
+     - —
+     - Structured output failed schema validation
+   * - ``generation_error``
+     - —
+     - Generation failed for another reason
+   * - ``generation_handler_error``
+     - —
+     - The generation handler raised
+   * - ``timeout``
+     - yes
+     - The request was too complex to process in time
+   * - ``rate_limit``
+     - yes
+     - Provider rate limit or shared quota reached
+   * - ``auth_error``
+     - —
+     - The API key was rejected
+   * - ``context_error``
+     - —
+     - Required workspace context was missing or unusable
+   * - ``unsupported``
+     - —
+     - The request asks for something the agent does not support
+   * - ``prerequisite_missing``
+     - —
+     - A generator's required diagram does not exist yet
+   * - ``handler_missing``
+     - —
+     - No handler registered for the target diagram type
+   * - ``unknown``
+     - —
+     - Unclassified failure
+
+create_diagram_tab
+~~~~~~~~~~~~~~~~~~
+
+Create a new tab for a diagram type. Emitted when the user answers a
+replace/keep confirmation with "new tab"; the injection payload that follows
+carries ``replaceExisting: true`` so it fills the freshly created tab.
+
+.. code-block:: json
+
+   {
+     "action": "create_diagram_tab",
+     "diagramType": "ClassDiagram"
    }
 
 trigger_generator
@@ -443,17 +659,90 @@ Open the deploy dialog on the frontend.
      "message": "Opening the **Deploy to Render** dialog..."
    }
 
+trigger_smart_generator
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Hand off to the LLM-authored **Spec-Driven Agent**. Emitted when the request names a
+stack BESSER has no deterministic generator for, or a BESSER stack plus
+extras the template cannot produce (auth, JWT, Docker, migrations, tests, …).
+Built by ``build_trigger_smart_generator_payload()`` in
+``src/handlers/smart_generation_handler.py``.
+
+.. code-block:: json
+
+   {
+     "action": "trigger_smart_generator",
+     "instructions": "Rails 7 with PostgreSQL via Active Record and Devise auth",
+     "provider": "anthropic",
+     "llmModel": "claude-sonnet-4-6",
+     "message": "Generating your application from your specs…"
+   }
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Field
+     - Description
+   * - ``instructions``
+     - The polished prompt for the generator. Required — the frontend aborts
+       on an empty value. Names the stack and any non-functional requirements
+       the user mentioned; it does **not** restate the class diagram, which
+       the generator already has.
+   * - ``provider``
+     - Suggested provider. The frontend's BYOK selection can override it.
+   * - ``llmModel``
+     - Default model for that provider
+
+The Spec-Driven Agent itself does **not** run over this WebSocket — the
+frontend calls the BESSER backend's spec-driven HTTP/SSE endpoints with the
+user's key. This action only hands it the instructions.
+
+trigger_github_import
+~~~~~~~~~~~~~~~~~~~~~
+
+Resume work on a project that was previously generated and pushed to GitHub.
+The agent never touches GitHub itself: the frontend calls the backend's import
+endpoint, loads the returned project, and arms the incremental-modify
+machinery.
+
+.. code-block:: json
+
+   {
+     "action": "trigger_github_import",
+     "owner": "besser-pearl",
+     "repo": "my-generated-app",
+     "branch": null,
+     "message": "Importing **besser-pearl/my-generated-app** from GitHub..."
+   }
+
+``branch`` is ``null`` when the user named none; the backend then uses the
+repository's default branch.
+
+.. note::
+
+   This route is matched **deterministically** by regex, not inferred by the
+   classifier — an import must never be invented, missed, or swallowed. The
+   bare ``owner/repo`` form only fires alongside an explicit continuation verb,
+   so "create a diagram like github.com/x/y" is never hijacked.
+
 auto_generate_gui
 ~~~~~~~~~~~~~~~~~
 
-Auto-generate a GUI diagram from the class diagram.
+Deterministically build the GUI diagram from the class diagram — one page per
+class, no LLM call. The frontend does the building via
+``autoGenerateGUIFromClassDiagram``; ``message`` confirms completion and names
+the pages that were created.
 
 .. code-block:: json
 
    {
      "action": "auto_generate_gui",
-     "sourceDiagramType": "ClassDiagram",
-     "message": "Auto-generating GUI from the class diagram..."
+     "diagramType": "GUINoCodeDiagram",
+     "message": "I created screens for Book, Author and Member.",
+     "suggestedActions": [
+       {"label": "Generate the web app", "prompt": "generate the web app"}
+     ]
    }
 
 
@@ -484,19 +773,34 @@ Multi-Step: Create Model → Generate Code
      { "message": "create a library system and generate django" }
 
    Backend → Frontend:
-     { "action": "progress", "message": "Creating class diagram..." }
+     { "action": "progress", "message": "Thinking about your Class Diagram design..." }
      { "action": "inject_complete_system", "diagramType": "ClassDiagram",
        "systemSpec": { ... } }
      { "action": "assistant_message",
-       "message": "To generate your Django project, I need a few details..." }
+       "message": "Your model is ready. Shall I generate the Django project?",
+       "suggestedActions": [ { "label": "Generate", "prompt": "generate" } ] }
 
    Frontend → Backend:
-     { "message": "project_name=library app_name=books containerization=true" }
+     { "message": "generate" }
 
    Backend → Frontend:
      { "action": "trigger_generator", "generatorType": "django",
-       "config": { "project_name": "library", "app_name": "books",
+       "config": { "project_name": "library", "app_name": "library_app",
                    "containerization": true } }
+
+.. important::
+
+   A mixed "design X **and** generate Y" plan deliberately **pauses** after the
+   modeling step instead of running the generator straight through. The
+   generator is stashed behind ``PLAN_GENERATION_CONFIRM_FLAG`` and only runs
+   once the user explicitly confirms, so a user who only wanted the model does
+   not get a code-generation run they never asked for.
+
+   Generators with required config (``sql`` needs ``dialect``, ``sqlalchemy``
+   needs ``dbms``, ``qiskit`` needs ``backend`` and ``shots``, ``export`` needs
+   ``format``) ask for those values in the same way before the
+   ``trigger_generator`` payload is emitted; ``GENERATOR_REQUIRED_FIELDS`` in
+   ``src/handlers/generation_handler.py`` is the source of truth.
 
 Streaming Response (Help/Explanation)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

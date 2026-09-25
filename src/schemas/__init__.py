@@ -11,6 +11,7 @@ from .class_diagram import (
     MethodParameterSpec,
     MethodSpec,
     RelationshipSpec,
+    OCLConstraintSpec,
     SingleClassSpec,
     SystemClassSpec,
     ClassModificationTarget,
@@ -56,10 +57,16 @@ from .agent_diagram import (
 )
 from .gui_diagram import (
     GUISectionSpec,
+    GUIBindSpec,
     SingleGUIElementSpec,
     GUIPageSpec,
     SystemGUISpec,
+    AuthoredGUISectionSpec,
+    AuthoredGUIPageSpec,
+    AuthoredSystemGUISpec,
+    GUIThemeSpec,
     GUIModificationSpec,
+    GUIModificationBatchSpec,
 )
 from .quantum_circuit import (
     QuantumOperationSpec,
@@ -92,7 +99,7 @@ from .user_profile import (
 __all__ = [
     # Class Diagram
     "AttributeSpec", "MethodParameterSpec", "MethodSpec",
-    "RelationshipSpec", "SingleClassSpec", "SystemClassSpec",
+    "RelationshipSpec", "OCLConstraintSpec", "SingleClassSpec", "SystemClassSpec",
     "ClassModificationTarget", "ClassModificationChanges",
     "ClassModification", "ClassModificationResponse",
     # State Machine
@@ -110,8 +117,11 @@ __all__ = [
     "AgentModificationTarget", "AgentModificationChanges",
     "AgentModification", "AgentModificationResponse",
     # GUI Diagram
-    "GUISectionSpec", "SingleGUIElementSpec", "GUIPageSpec", "SystemGUISpec",
-    "GUIModificationSpec",
+    "GUISectionSpec", "GUIBindSpec", "SingleGUIElementSpec", "GUIPageSpec",
+    "AuthoredGUISectionSpec", "AuthoredGUIPageSpec", "AuthoredSystemGUISpec",
+    "GUIThemeSpec",
+    "GUIModificationBatchSpec",
+    "SystemGUISpec", "GUIModificationSpec",
     # Quantum Circuit
     "QuantumOperationSpec", "SingleQuantumGateSpec", "SystemQuantumCircuitSpec",
     "QuantumModificationSpec",

@@ -40,12 +40,12 @@ class TestConstructor:
         assert provider.model_name == "gpt-4o"
 
     def test_default_model_name(self):
-        # Asserts against the configured constant rather than a copy of the
-        # literal, so changing the model in agent_config.py doesn't leave this
-        # test asserting the old name.
+        # The provider default follows the routing table's classifier tier
+        # (env-overridable) instead of a hard-coded literal.
+        from model_config import MODEL_CLASSIFIER
         mock_llm = _make_mock_llm()
         provider = LLMProvider(mock_llm)
-        assert provider.model_name == LLM_MODEL_DEFAULT
+        assert provider.model_name == MODEL_CLASSIFIER
 
     def test_tracker_is_set(self):
         mock_llm = _make_mock_llm()
@@ -136,11 +136,6 @@ class TestClientProperty:
 
 class TestModelNameProperty:
     """model_name returns the configured model string."""
-
-    def test_returns_configured_name(self):
-        mock_llm = _make_mock_llm()
-        provider = LLMProvider(mock_llm, model_name="gpt-4o")
-        assert provider.model_name == "gpt-4o"
 
     def test_different_model_names(self):
         for name in ("gpt-4.1-mini", "gpt-4o-mini", "gpt-4.1", "custom-model"):

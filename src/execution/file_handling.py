@@ -10,6 +10,8 @@ import logging
 from baf.core.session import Session
 
 import agent_context as ctx
+from byok import user_openai_key
+from model_config import MODEL_GENERATION_SMALL
 from protocol.types import AssistantRequest
 from session_helpers import reply_payload
 from model_utils import model_has_elements
@@ -28,17 +30,52 @@ def handle_file_attachments(session: Session, request: AssistantRequest) -> bool
     from utilities.model_resolution import resolve_target_model
     from utilities.model_context import compact_model_summary
 
-    openai_key = ctx.openai_api_key
+    # The user's own OpenAI key pays for the vision path when it can; the
+    # text path is BYOK-routed inside gpt_predict_json.
+    openai_key = user_openai_key() or ctx.openai_api_key
 
-    for attachment in request.attachments:
+    # Cap attachment count + per-file size BEFORE decoding — each attachment
+    # triggers a sequential vision/LLM call, so an unbounded batch blocks the
+    # single-threaded agent for minutes and runs up cost.
+    MAX_ATTACHMENTS = 5
+    MAX_FILE_B64_CHARS = 14_000_000  # ~10 MB once decoded
+    attachments = list(request.attachments)
+    if len(attachments) > MAX_ATTACHMENTS:
+        logger.warning(
+            "[FileConversion] %d attachments — processing first %d only",
+            len(attachments), MAX_ATTACHMENTS,
+        )
+        reply_payload(session, {
+            "action": "assistant_message",
+            "message": (
+                f"You attached {len(attachments)} files — I'll process the first "
+                f"{MAX_ATTACHMENTS} to stay responsive. Send the rest in a follow-up."
+            ),
+        })
+        attachments = attachments[:MAX_ATTACHMENTS]
+
+    for attachment in attachments:
+        if len(attachment.content_b64 or "") > MAX_FILE_B64_CHARS:
+            logger.warning(
+                "[FileConversion] Skipping oversized attachment %s (%d b64 chars)",
+                attachment.filename, len(attachment.content_b64 or ""),
+            )
+            reply_payload(session, {
+                "action": "assistant_message",
+                "message": f"Skipped **{attachment.filename}** — it's too large to process.",
+            })
+            continue
         logger.info(
             f"[FileConversion] Processing attachment: {attachment.filename} "
             f"({attachment.mime_type}, {len(attachment.content_b64)} b64 chars)"
         )
+        # Text-path conversions produce a full diagram model → SMALL
+        # generation tier instead of the classifier default (model_config).
+        _predict_json = ctx.gpt_predict_json
         result = convert_file_to_diagram_spec(
             file_content_b64=attachment.content_b64,
             filename=attachment.filename,
-            llm_predict=ctx.gpt_predict_json,
+            llm_predict=lambda prompt: _predict_json(prompt, model=MODEL_GENERATION_SMALL),
             openai_api_key=openai_key,
         )
 

@@ -41,6 +41,29 @@ _COST_PER_1K: Dict[str, Dict[str, float]] = {
     "gpt-4.1": {"prompt": 0.002, "completion": 0.008},
     "gpt-4o-mini": {"prompt": 0.00015, "completion": 0.0006},
     "gpt-4o": {"prompt": 0.0025, "completion": 0.01},
+    # Models used by the routing table in ``model_config.py`` — every
+    # routed model needs an entry here, otherwise its cost silently
+    # falls back to ``_DEFAULT_COST`` and skews cost reporting.
+    "gpt-5": {"prompt": 0.00125, "completion": 0.01},
+    "gpt-5.5": {"prompt": 0.005, "completion": 0.03},
+    # gpt-5.6 family (current defaults: terra for gen+reasoning, luna for
+    # edits) + the 5.4/5.6 options offered in the BYOK model picker. Prices
+    # per 1K = per-1M list price / 1000 (sol $5/$30, terra $2.50/$15,
+    # luna $1/$6, 5.4-mini $0.75/$4.50, 5.4-nano $0.20/$1.25).
+    "gpt-5.6-sol": {"prompt": 0.005, "completion": 0.03},
+    "gpt-5.6-terra": {"prompt": 0.0025, "completion": 0.015},
+    "gpt-5.6-luna": {"prompt": 0.001, "completion": 0.006},
+    "gpt-5.4-mini": {"prompt": 0.00075, "completion": 0.0045},
+    "gpt-5.4-nano": {"prompt": 0.0002, "completion": 0.00125},
+    # Production large/reasoning override (BESSER_AGENT_MODEL_*).
+    "gpt-5-mini": {"prompt": 0.00025, "completion": 0.002},
+    # BYOK tier models (byok._PROVIDER_TIER_MODELS). Rates from the price file
+    # BESSER vendors (spec_driven_agent/providers/data/model_prices.json).
+    "claude-sonnet-4-6": {"prompt": 0.003, "completion": 0.015},
+    "claude-haiku-4-5": {"prompt": 0.001, "completion": 0.005},
+    "mistral-large-latest": {"prompt": 0.0005, "completion": 0.0015},
+    "mistral-small-latest": {"prompt": 0.00015, "completion": 0.0006},
+    "Qwen/Qwen3-30B-A3B-Instruct-2507": {"prompt": 0.0001, "completion": 0.0003},
 }
 
 # Fallback for unknown models — placeholder pricing, not any real model's rate.

@@ -213,10 +213,14 @@ class TestResolveClassBinding:
         assert result is not None
         assert result["name"] == "Author"
 
-    def test_fallback_to_first(self, metadata):
+    def test_unmatched_name_does_not_bind_to_first_class(self, metadata):
+        # Binding an unknown name to the first class showed the wrong entity's
+        # data under the section's heading.
         spec = {"className": "NonExistent"}
-        result = _resolve_class_binding(spec, metadata)
-        assert result is not None  # Falls back to first class with attributes
+        assert _resolve_class_binding(spec, metadata) is None
+
+    def test_plural_name_matches_class(self, metadata):
+        assert _resolve_class_binding({"className": "authors"}, metadata)["name"] == "Author"
 
     def test_no_metadata_returns_none(self):
         assert _resolve_class_binding({}, None) is None
@@ -389,10 +393,29 @@ class TestTableComponent:
         assert "Pages" in labels
 
     def test_table_without_metadata(self):
-        spec = {"title": "Empty Table"}
+        # Without a ClassDiagram binding, the data-bound widget would render
+        # empty (no data-source, no rows). We now fall back to a themed HTML
+        # table populated from the LLM's fields + rows so it shows real content.
+        spec = {
+            "title": "Recent Orders",
+            "fields": ["Order", "Customer", "Total"],
+            "rows": [
+                {"cells": ["#1001", "A. Smith", "$42"]},
+                {"cells": ["#1002", "B. Jones", "$19"]},
+            ],
+        }
         result = _table_component(spec, None)
-        assert result["type"] == "table"
-        assert "data-source" not in result["attributes"]
+        assert result["tagName"] == "table"
+        assert "ds-table" in result["attributes"]["class"]
+        # headers from fields
+        thead = result["components"][0]
+        headers = [th.get("content", "") for th in thead["components"][0]["components"]]
+        assert headers == ["Order", "Customer", "Total"]
+        # rows from the LLM data (not empty)
+        tbody = result["components"][1]
+        assert len(tbody["components"]) == 2
+        first_row = [td.get("content", "") for td in tbody["components"][0]["components"]]
+        assert first_row == ["#1001", "A. Smith", "$42"]
 
 
 # ---------------------------------------------------------------------------

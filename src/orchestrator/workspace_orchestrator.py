@@ -1,7 +1,10 @@
+import logging
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from protocol.types import AssistantRequest, SUPPORTED_DIAGRAM_TYPES
+
+logger = logging.getLogger(__name__)
 
 KEYWORD_TARGETS = [
     # Class / Structural
@@ -67,8 +70,7 @@ KEYWORD_TARGETS = [
 
 
 # ---------------------------------------------------------------------------
-# Discriminating pattern rules — replacement for the old additive-weight
-# IMPLICIT_TARGET_RULES.
+# Discriminating pattern rules for implicit diagram-target detection.
 #
 # Each rule is a (diagram_type, compiled_regex) pair.  Patterns use
 # AND-based logic: they require at least one *strong, discriminating*
@@ -135,18 +137,6 @@ _IMPLICIT_PATTERNS: List[Tuple[str, re.Pattern]] = [
         re.I)),
 ]
 
-# Backward-compatible alias — some imports reference this name.
-# Keep the old dict shape so nothing breaks at import time, but mark
-# deprecated.  The actual scoring function `_rank_implicit_targets` now
-# uses `_IMPLICIT_PATTERNS` instead.
-IMPLICIT_TARGET_RULES: Dict[str, List[Tuple[str, int]]] = {
-    "ClassDiagram": [("structural", 5), ("domain model", 5), ("class", 4)],
-    "ObjectDiagram": [("object instance", 5), ("instances", 4)],
-    "StateMachineDiagram": [("lifecycle", 5), ("transition", 4), ("state", 3)],
-    "AgentDiagram": [("multi-agent", 5), ("agent", 4), ("intent", 4)],
-    "GUINoCodeDiagram": [("gui", 4), ("user interface", 5), ("frontend", 3)],
-    "QuantumCircuitDiagram": [("quantum", 6), ("qubit", 5), ("grover", 5)],
-}
 
 FALLBACK_PRIORITY: Tuple[str, ...] = (
     "ClassDiagram",
@@ -209,6 +199,23 @@ def _fallback_diagram_from_context(request: AssistantRequest, last_intent: Optio
         if active_type:
             return active_type
 
+    # For a fresh *creation* with no diagram-type signal at all (no explicit
+    # keyword matched, no discriminating pattern matched), default to the
+    # structural ClassDiagram rather than inheriting whatever tab happens to be
+    # active. "create a model about a library" is a structural request; if the
+    # user were sitting on the GUINoCodeDiagram tab left over from an earlier
+    # web-app flow, inheriting it would silently route the request into GUI
+    # generation and reuse the *old* class diagram instead of building the new
+    # model. Genuine GUI / BPMN / state-machine / … creations carry their own
+    # vocabulary and are resolved by
+    # the keyword/pattern layer *before* ever reaching this fallback, and each
+    # operation in a multi-diagram web-app plan carries its own explicit
+    # ``diagramType`` — so this only affects the otherwise-ambiguous generic
+    # "create a <model/system/app>" case, where the class diagram is the correct
+    # backbone to build first.
+    if last_intent == "create_complete_system_intent":
+        return "ClassDiagram"
+
     active_type = _normalize_context_type(request.context.active_diagram_type)
     if active_type:
         return active_type
@@ -248,33 +255,59 @@ def determine_target_diagram_types(
     request: AssistantRequest,
     last_intent: Optional[str] = None,
     max_targets: int = 3,
+    llm_target_type: Optional[str] = None,
 ) -> List[str]:
     """
     Resolve one or more diagram targets for a user message.
 
     Priority:
+    0. The unified classifier's ``target_diagram_type`` (it read the full
+       message + the workspace) — the PRIMARY signal when present and valid.
     1. Explicit diagram references in the prompt (ordered by first appearance)
     2. Implicit semantic hints (scored keyword rules)
     3. Active diagram fallback
+
+    The keyword pipeline (1–3) is the fallback for when the LLM left
+    ``target_diagram_type`` null. Consuming the classifier verdict fixes
+    wrong-diagram routing for natural phrasing (e.g. "add a virtual assistant" → AgentDiagram, "I need
+    screens" → GUINoCodeDiagram) that the keyword lists miss.
     """
     message_lower = (request.message or "").lower()
     explicit_targets = _collect_explicit_targets(message_lower)
+    implicit_targets = _rank_implicit_targets(message_lower)
+
+    if llm_target_type and llm_target_type in SUPPORTED_DIAGRAM_TYPES:
+        # Shadow-log a disagreement so the LLM-vs-keyword verdict is observable.
+        keyword_primary = (explicit_targets or implicit_targets or [None])[0]
+        if keyword_primary and keyword_primary != llm_target_type:
+            logger.info(
+                "[diagram-target] LLM=%s keyword=%s -> using LLM",
+                llm_target_type, keyword_primary,
+            )
+        # Keyword hits only contribute ADDITIONAL targets (multi-diagram
+        # requests); the LLM verdict leads.
+        extras = [t for t in (explicit_targets + implicit_targets) if t != llm_target_type]
+        return ([llm_target_type] + extras)[:max_targets]
+
     if explicit_targets:
         return explicit_targets[:max_targets]
-
-    implicit_targets = _rank_implicit_targets(message_lower)
     if implicit_targets:
         return implicit_targets[:max_targets]
-
     fallback = _fallback_diagram_from_context(request, last_intent=last_intent)
     return [fallback]
 
 
-def determine_target_diagram_type(request: AssistantRequest, last_intent: Optional[str] = None) -> str:
+def determine_target_diagram_type(
+    request: AssistantRequest,
+    last_intent: Optional[str] = None,
+    llm_target_type: Optional[str] = None,
+) -> str:
     """
     Resolve a single primary diagram target for the current user message.
     """
-    targets = determine_target_diagram_types(request, last_intent=last_intent, max_targets=1)
+    targets = determine_target_diagram_types(
+        request, last_intent=last_intent, max_targets=1, llm_target_type=llm_target_type
+    )
     return targets[0] if targets else _fallback_diagram_from_context(request, last_intent=last_intent)
 
 
@@ -314,11 +347,3 @@ def resolve_diagram_id(request: AssistantRequest, target_diagram_type: str) -> O
         if isinstance(diagram_id, str):
             return diagram_id
     return None
-
-
-def build_switch_diagram_action(target_diagram_type: str, reason: str = "") -> Dict[str, Any]:
-    return {
-        "action": "switch_diagram",
-        "diagramType": target_diagram_type,
-        "reason": reason or f"Switching to {target_diagram_type} based on your request.",
-    }

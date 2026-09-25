@@ -8,10 +8,28 @@ from baf.library.transition.events.base_events import ReceiveJSONEvent
 
 from .types import AssistantRequest, FileAttachment, WorkspaceContext, SUPPORTED_DIAGRAM_TYPES
 from session_keys import PARSED_ASSISTANT_REQUEST, PARSED_REQUEST_EVENT_ID, VOICE_CONTEXT
+from utilities.message_limits import validate_message_length
+
+
+def _cap_user_message(msg: str) -> str:
+    """Accept the full request or reject it; a partial spec is not safe input."""
+    return validate_message_length(msg)
 
 logger = logging.getLogger(__name__)
 
 DIAGRAM_PREFIX_PATTERN = re.compile(r"^\[DIAGRAM_TYPE:(\w+)\]\s*(.+)$", re.DOTALL)
+
+# Opt-in study participant labels (short tokens). Mirrors the telemetry
+# collector's contract; anything else is dropped at the protocol boundary.
+PILOT_PARTICIPANT_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,16}$")
+
+
+def _parse_pilot_participant(context_payload: Dict[str, Any]) -> Optional[str]:
+    """Validate the optional ``context.pilotParticipant`` label (or drop it)."""
+    candidate = context_payload.get("pilotParticipant")
+    if isinstance(candidate, str) and PILOT_PARTICIPANT_PATTERN.match(candidate):
+        return candidate
+    return None
 
 
 def safe_json_loads(value: Any) -> Optional[Dict[str, Any]]:
@@ -170,6 +188,7 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         message_text = message_envelope["message"]
 
     cleaned_message, prefixed_diagram = strip_diagram_prefix(message_text)
+    cleaned_message = _cap_user_message(cleaned_message)
 
     payload_diagram_type = (
         context_payload.get("activeDiagramType")
@@ -231,6 +250,8 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
     raw_indices = context_payload.get("currentDiagramIndices")
     current_diagram_indices = raw_indices if isinstance(raw_indices, dict) else None
 
+    pilot_participant = _parse_pilot_participant(context_payload)
+
     context = WorkspaceContext(
         active_diagram_type=active_diagram_type,
         active_diagram_id=context_payload.get("activeDiagramId"),
@@ -238,6 +259,7 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         project_snapshot=project_snapshot,
         diagram_summaries=diagram_summaries,
         current_diagram_indices=current_diagram_indices,
+        pilot_participant=pilot_participant,
     )
 
     # ── Parse file attachments ──
@@ -270,6 +292,7 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         context=context,
         raw_payload=raw_payload,
         attachments=attachments,
+        pilot_participant=pilot_participant,
     )
 
 
@@ -302,6 +325,7 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
     if not raw_payload:
         event_message = getattr(session.event, "message", "")
         cleaned_message, prefixed_diagram = strip_diagram_prefix(event_message if isinstance(event_message, str) else "")
+        cleaned_message = _cap_user_message(cleaned_message)
         diagram_type = normalize_diagram_type(prefixed_diagram or default_diagram_type, default=default_diagram_type)
 
         # Voice messages arrive as plain text (after STT) with no JSON context.

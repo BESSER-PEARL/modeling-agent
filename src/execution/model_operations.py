@@ -25,20 +25,199 @@ from utilities.model_resolution import (
 )
 from utilities.workspace_context import build_workspace_context_block, record_session_action
 from utilities.class_metadata import extract_class_metadata
-from suggestions import get_suggested_actions
+from utilities.model_context import is_diagram_nontrivial
+from utilities.original_request import (
+    original_request_for_project, remember_original_request, request_project_id,
+)
+from suggestions import get_suggested_actions, get_artifact_label, get_post_spec_suggestions
 from session_keys import (
     LAST_EXECUTED_DIAGRAM_TYPE,
     LAST_MATCHED_INTENT,
+    MISMATCH_REGEN_PENDING,
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
+    PENDING_SMART_GEN_INSTRUCTIONS,
+    PENDING_SMART_GEN_PROVIDER,
+    PENDING_SMART_GEN_TIMESTAMP,
 )
 
 logger = logging.getLogger(__name__)
+
+def original_request_to_stash(request, operation_mode, target_diagram_type):
+    """The user's verbatim app description, or None.
+
+    Returns the USER'S OWN message, never the planner's ``operation.request``:
+    the planner rewrites a long spec into a short sub-request, which drops
+    the sentences naming status values, actions and business rules before
+    they reach the run's gap analyser.
+    """
+    if operation_mode != "complete_system" or target_diagram_type != "ClassDiagram":
+        return None
+    message = (getattr(request, "message", "") or "").strip()
+    # A concise specification is still authoritative; length is not evidence
+    # that the user's own requirements can safely be replaced by a summary.
+    return message or None
+
+
+# ------------------------------------------------------------------
+# In-turn creation → snapshot bridge (empty-workspace guard fix)
+#
+# A create/complete-system op pushes the freshly built model STRAIGHT to the
+# frontend; it never round-trips through the backend's project snapshot. When a
+# single user turn is planned into "create diagram → generate code", the later
+# generate step reads the pre-create (often empty) snapshot and wrongly refuses
+# with "your workspace looks empty — there's no model to turn into code yet".
+#
+# These helpers record a lightweight canonical copy of the just-created model
+# back into the working request's project snapshot so a later generate step can
+# validate its diagram prerequisites. The frontend remains authoritative.
+# ------------------------------------------------------------------
+def _elements_from_result(
+    result_payload: Any,
+    diagram_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Extract a non-empty ``elements`` map from a handler result payload.
+
+    Understands class and agent ``systemSpec`` payloads, an editor-model
+    ``model.elements`` shape, and a single-``element`` shape. Falls back to a
+    marker for legacy callers; the snapshot bridge validates that marker
+    against the requested diagram type before recording it.
+    """
+    if not isinstance(result_payload, dict):
+        return {}
+
+    # Editor-model style: {"model": {"elements": {...}}}
+    model = result_payload.get("model")
+    if isinstance(model, dict) and isinstance(model.get("elements"), dict):
+        return dict(model["elements"])
+
+    # Class-diagram style: {"systemSpec": {"classes": [...], ...}}
+    spec = result_payload.get("systemSpec")
+    if isinstance(spec, dict):
+        elements: Dict[str, Any] = {}
+        if diagram_type == "AgentDiagram":
+            for index, state in enumerate(spec.get("states") or []):
+                if not isinstance(state, dict):
+                    continue
+                name = state.get("stateName") or state.get("name") or f"state_{index}"
+                elements[f"created-state-{index}-{name}"] = {
+                    "type": "AgentState",
+                    "name": str(name),
+                }
+            for index, intent in enumerate(spec.get("intents") or []):
+                if not isinstance(intent, dict):
+                    continue
+                name = intent.get("intentName") or intent.get("name") or f"intent_{index}"
+                elements[f"created-intent-{index}-{name}"] = {
+                    "type": "AgentIntent",
+                    "name": str(name),
+                }
+            return elements
+
+        classes = spec.get("classes")
+        if isinstance(classes, list):
+            for i, cls in enumerate(classes):
+                if not isinstance(cls, dict):
+                    continue
+                name = cls.get("className") or cls.get("name") or f"class_{i}"
+                elements[f"created-{i}-{name}"] = {"type": "Class", "name": str(name)}
+        # May be {} when the spec had no classes → guard should still fire.
+        return elements
+
+    # Single-element style: {"element": {...}}
+    element = result_payload.get("element")
+    if isinstance(element, dict):
+        name = element.get("className") or element.get("name") or "element"
+        return {f"created-{name}": {"type": "Class", "name": str(name)}}
+
+    # Unrecognized but successful create → mark non-empty with a placeholder so
+    # a later generate step doesn't think the workspace is empty.
+    return {"created-marker": {"type": "Element"}}
+
+
+def _record_created_model_in_snapshot(
+    context: Any, diagram_type: str, result_payload: Dict[str, Any],
+) -> bool:
+    """Make an in-turn creation visible to a later generate step in the same plan.
+
+    Records a lightweight representation of the just-created model under
+    ``context.project_snapshot["diagrams"][diagram_type]`` so a generate op
+    planned in the SAME turn passes ``_project_has_any_model``.
+
+    Returns ``True`` when the snapshot was updated. No-op (``False``) when the
+    context/type is missing, the payload produced nothing, or a non-empty model
+    for that type is already present in the snapshot.
+    """
+    if context is None or not isinstance(diagram_type, str) or not diagram_type:
+        return False
+
+    def _entry_is_nonempty(entry: Any) -> bool:
+        return (
+            isinstance(entry, dict)
+            and isinstance(entry.get("model"), dict)
+            and is_diagram_nontrivial(entry["model"], diagram_type)
+        )
+
+    snapshot = getattr(context, "project_snapshot", None)
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+        try:
+            context.project_snapshot = snapshot
+        except Exception:  # pragma: no cover — context without a settable field
+            return False
+
+    diagrams = snapshot.get("diagrams")
+    if not isinstance(diagrams, dict):
+        diagrams = {}
+        snapshot["diagrams"] = diagrams
+
+    existing = diagrams.get(diagram_type)
+    existing_entries = (
+        existing if isinstance(existing, list)
+        else ([existing] if existing is not None else [])
+    )
+    if any(_entry_is_nonempty(e) for e in existing_entries):
+        # A non-empty model for this type is already in the snapshot; the guard
+        # already passes, so there is nothing to bridge.
+        return False
+
+    direct_model = result_payload.get("model")
+    if isinstance(direct_model, dict) and is_diagram_nontrivial(
+        direct_model, diagram_type,
+    ):
+        bridged_model = dict(direct_model)
+    else:
+        elements = _elements_from_result(result_payload, diagram_type)
+        if not elements:
+            # The create genuinely produced nothing — leave the guard to fire.
+            return False
+        bridged_model = {"elements": elements}
+
+    if not is_diagram_nontrivial(bridged_model, diagram_type):
+        # Do not let a generic placeholder satisfy a typed prerequisite (for
+        # example, GUI readiness requires canonical ``pages`` content).
+        return False
+
+    diagrams[diagram_type] = [{"model": bridged_model}]
+    logger.info(
+        f"[ModelOp] Recorded in-turn {diagram_type} creation into snapshot "
+        "so a later generate step can validate its prerequisites."
+    )
+    return True
 
 
 # ------------------------------------------------------------------
 # Shared confirmation flow for existing-model guard
 # ------------------------------------------------------------------
+
+def _matches_regen_prompt(session: Session, request: AssistantRequest) -> bool:
+    """True when this message IS the stashed mismatch rebuild prompt."""
+    _regen_prompt = session.get(MISMATCH_REGEN_PENDING)
+    if not isinstance(_regen_prompt, str) or not _regen_prompt.strip():
+        return False
+    msg = " ".join((getattr(request, "message", "") or "").strip().lower().split())
+    return msg == " ".join(_regen_prompt.strip().lower().split())
+
 
 def _build_existing_model_confirmation(
     session: Session,
@@ -64,7 +243,10 @@ def _build_existing_model_confirmation(
         {"label": "Keep and add alongside", "prompt": "keep"},
     ]
     if can_add_tab:
-        confirmation_actions.append({"label": "Create in new tab", "prompt": "new tab"})
+        # "new diagram tab" disambiguates from a browser tab. The prompt stays
+        # "new tab" so the existing NEW_TAB_KEYWORDS / classifier routing is
+        # unchanged — only the user-visible label is clearer.
+        confirmation_actions.append({"label": "Create in a new diagram tab", "prompt": "new tab"})
 
     # Store pending state
     pending_data['can_add_tab'] = can_add_tab
@@ -80,13 +262,184 @@ def _build_existing_model_confirmation(
     confirmation_msg = (
         f"{source_description}, but you already have a model ({existing_summary}). "
         f"Would you like me to **replace** it, **keep** it and add alongside"
-        + (f", or create in a **new tab**? {tab_info}" if can_add_tab else f"? {tab_info}")
+        + (f", or create it in a **new diagram tab**? {tab_info}" if can_add_tab else f"? {tab_info}")
     )
 
     reply_payload(session, {
         "action": "assistant_message",
         "message": confirmation_msg,
         "suggestedActions": confirmation_actions,
+    })
+
+
+# ------------------------------------------------------------------
+# Destructive modify-model guard
+#
+# A vague correction ("that's wrong, redo it") can produce a modify_model
+# plan of remove_element operations that wipes the ENTIRE model. Every
+# diagram handler's generate_modification
+# (see diagram_handlers/core/base_handler.py::_execute_modification) returns
+# either a single "modification" dict or a batch "modifications" list of
+# {action, target, changes} entries; when that batch's *net effect* is to
+# remove most/all of the existing top-level elements, we must ask before
+# applying it instead of trusting the LLM's plan blindly.
+# ------------------------------------------------------------------
+
+# Target fields that scope a remove_element to a CHILD of a top-level
+# element (an attribute, method, relationship, or transition endpoint)
+# rather than to the top-level element itself. Deleting ONE class together
+# with its relationships requires several remove_element entries -- one per
+# relationship, per class_diagram_handler's REMOVE_ELEMENT_RULE -- so these
+# must be excluded from the "how many top-level elements would this remove"
+# tally below, or a normal single-class deletion would be over-guarded.
+_CHILD_SCOPE_TARGET_KEYS = (
+    "attributeName", "attributeId",
+    "methodName", "methodId",
+    "relationshipName", "relationshipId",
+    "sourceClass", "targetClass",
+    "sourceStateName", "targetStateName",
+    "transitionName", "transitionId",
+)
+
+# Element "type" values that are always children of another element
+# (mirrors the convention used by the layout engine's occupied-rect
+# extraction) -- these never count as a top-level element when tallying
+# the EXISTING model either.
+_CHILD_ELEMENT_TYPES = {
+    "ClassAttribute", "ClassMethod",
+    "AgentStateBody", "AgentStateFallbackBody", "AgentIntentBody",
+}
+
+# Any ONE of these being true means the modify_model plan would destroy a
+# large fraction of the existing model:
+#   - 3+ top-level elements removed in a single plan, or
+#   - the removal would clear the model entirely, or
+#   - 2+ removed AND that is at least half of what currently exists.
+# The >=2 floor on the fraction rule keeps it from flagging e.g. "remove 1
+# of my 2 classes" (a normal single edit) while still catching "remove 1 of
+# my 1 class" via the clears-the-model rule.
+_DESTRUCTIVE_MIN_REMOVED = 3
+_DESTRUCTIVE_MIN_REMOVED_FOR_FRACTION = 2
+_DESTRUCTIVE_FRACTION = 0.5
+
+
+def _is_top_level_removal(target: Any) -> bool:
+    """True when a remove_element target identifies a top-level element
+    (a class/state/object/intent) rather than one of its children."""
+    if not isinstance(target, dict) or not target:
+        return False
+    if any(target.get(key) for key in _CHILD_SCOPE_TARGET_KEYS):
+        return False
+    return any(
+        isinstance(value, str) and value.strip()
+        for value in target.values()
+    )
+
+
+def _count_removed_top_level_elements(result: Dict[str, Any]) -> int:
+    """Count how many TOP-LEVEL elements a modify_model result would delete.
+
+    Handles both the single-``modification`` and batch-``modifications``
+    shapes emitted by every diagram handler's ``generate_modification``.
+    Returns 0 (never crashes) when the result doesn't have either shape --
+    e.g. GUINoCodeDiagram's modify path returns an already-applied ``model``
+    instead, and only ever performs one edit at a time, so it's out of
+    scope for this batch-plan guard.
+    """
+    if not isinstance(result, dict):
+        return 0
+    mods = result.get("modifications")
+    if not isinstance(mods, list):
+        single = result.get("modification")
+        mods = [single] if isinstance(single, dict) else []
+
+    return sum(
+        1
+        for mod in mods
+        if isinstance(mod, dict)
+        and mod.get("action") == "remove_element"
+        and _is_top_level_removal(mod.get("target"))
+    )
+
+
+def _count_existing_top_level_elements(model: Optional[Dict[str, Any]]) -> int:
+    """Count top-level (non-child) elements in the CURRENT model."""
+    if not isinstance(model, dict):
+        return 0
+    elements = model.get("elements")
+    if not isinstance(elements, dict):
+        return 0
+    count = 0
+    for element in elements.values():
+        if not isinstance(element, dict):
+            continue
+        if element.get("type") in _CHILD_ELEMENT_TYPES:
+            continue
+        if element.get("owner"):
+            continue
+        count += 1
+    return count
+
+
+def _is_mass_deletion(removed: int, existing: int) -> bool:
+    """True when *removed* top-level elements is a destructive fraction of
+    *existing* -- see threshold rationale in the constants above."""
+    if removed <= 0:
+        return False
+    if removed >= _DESTRUCTIVE_MIN_REMOVED:
+        return True
+    if existing > 0 and removed >= existing:
+        return True
+    if (
+        removed >= _DESTRUCTIVE_MIN_REMOVED_FOR_FRACTION
+        and existing > 0
+        and (removed / existing) >= _DESTRUCTIVE_FRACTION
+    ):
+        return True
+    return False
+
+
+def _build_destructive_modify_confirmation(
+    session: Session,
+    target_diagram_type: str,
+    removed_count: int,
+    existing_count: int,
+    result: Dict[str, Any],
+) -> None:
+    """Ask the user to confirm a modify_model plan that would wipe out most
+    or all of the existing model, instead of silently applying it.
+
+    Stores the ALREADY-COMPUTED ``result`` payload (not an operation to
+    re-run): re-invoking the LLM on confirm could produce a different plan
+    than the one the user just approved, so ``handle_pending_system_
+    confirmation`` in confirmation.py sends this exact payload back on a
+    "confirm" answer, or discards it entirely otherwise.
+    """
+    pending_data = {
+        "destructive_modify": True,
+        "diagram_type": target_diagram_type,
+        "precomputed_payload": result,
+    }
+    session.set(PENDING_COMPLETE_SYSTEM, pending_data)
+
+    if existing_count > 0:
+        detail = f"remove {removed_count} of your {existing_count} existing element(s)"
+    else:
+        detail = f"remove {removed_count} element(s)"
+
+    message = (
+        f"That change would {detail} — most or all of your current "
+        f"{target_diagram_type}. Since the instruction was short, I want to "
+        "confirm before applying such a large change. **Confirm** to go "
+        "ahead, or **cancel** to keep your model as is."
+    )
+    reply_payload(session, {
+        "action": "assistant_message",
+        "message": message,
+        "suggestedActions": [
+            {"label": "Confirm — apply the change", "prompt": "confirm"},
+            {"label": "Cancel — keep my model", "prompt": "cancel"},
+        ],
     })
 
 
@@ -124,54 +477,103 @@ def execute_model_operation(
         operation_request = request.message
     operation_request = operation_request.strip()
 
+    # ── Modify-without-target guard ──────────────────────────────────────
+    # A modify_model op on a flow-style diagram only makes sense when that
+    # diagram already exists with content. When it doesn't (e.g. the user
+    # asks to "add an agent/chatbot to the app" while sitting on the
+    # class/GUI diagram — so the request resolves to an AgentDiagram that
+    # hasn't been created yet), promote the op to complete_system so the
+    # diagram is actually generated instead of failing in
+    # generate_modification on an empty model.
+    #
+    # Scoped to AgentDiagram / StateMachineDiagram / QuantumCircuitDiagram:
+    # their generate_modification needs an existing structure to edit. The
+    # ClassDiagram / ObjectDiagram / GUI handlers already create elements
+    # from an empty model on modify (e.g. "create a class called User"), so
+    # they are intentionally excluded to avoid regressing single-element
+    # creation into a full-system build.
+    _PROMOTE_MODIFY_WHEN_EMPTY = {
+        "AgentDiagram",
+        "StateMachineDiagram",
+        "QuantumCircuitDiagram",
+    }
+    _promoted_modify_to_complete = False
+    if operation_mode == "modify_model" and target_diagram_type in _PROMOTE_MODIFY_WHEN_EMPTY:
+        _existing = resolve_target_model(request, target_diagram_type)
+        if not model_has_elements(_existing):
+            logger.info(
+                "[ModelOp] No existing %s to modify — promoting modify_model "
+                "to complete_system so the diagram is created.",
+                target_diagram_type,
+            )
+            operation_mode = "complete_system"
+            _promoted_modify_to_complete = True
+
     logger.info(
         f"⚙️ [ModelOp] Executing: diagram={target_diagram_type}, mode={operation_mode}, "
         f"request={operation_request[:120]!r}"
     )
+
+    spec_to_stash = original_request_to_stash(
+        request, operation_mode, target_diagram_type,
+    )
+    resuming_spec = _skip_existing_check or _matches_regen_prompt(session, request)
+    if resuming_spec and operation_mode == "complete_system" and target_diagram_type == "ClassDiagram":
+        # Resume requests may contain only the planner summary or the mismatch
+        # button's synthesized prompt. Reuse only a proven same-project source.
+        spec_to_stash = original_request_for_project(session, request_project_id(request)) or operation_request
+    elif spec_to_stash and not resuming_spec:
+        # Confirmation resumes and mismatch buttons can carry synthesized
+        # sub-prompts. They must not overwrite the original create request.
+        remember_original_request(session, spec_to_stash, request_project_id(request))
 
     # ── Existing-model guard for complete_system ─────────────────────────
     if (
         not _skip_existing_check
         and operation_mode == 'complete_system'
     ):
-        existing_model = resolve_target_model(request, target_diagram_type)
-        if model_has_elements(existing_model):
-            from utilities.model_context import compact_model_summary
-
-            summary = compact_model_summary(existing_model, target_diagram_type)
-            stored_operation = {**operation, 'mode': operation_mode}
-
-            _build_existing_model_confirmation(
-                session=session,
-                request=request,
-                target_diagram_type=target_diagram_type,
-                existing_summary=summary,
-                pending_data={
-                    'message': operation_request,
-                    'diagram_type': target_diagram_type,
-                    'operation': stored_operation,
-                    'default_mode': default_mode,
-                },
-                source_description=f"I generated a new {target_diagram_type}",
-            )
+        # Mismatch "Update model + generate" rebuild: the user ALREADY chose
+        # to replace their model at the mismatch question. Re-asking replace/
+        # keep here would derail the resume when the model arrived via
+        # workspace context only (a fresh session on a loaded project). One
+        # consistent rule: the stashed rebuild prompt proceeds directly,
+        # replace semantics, no second question.
+        if _matches_regen_prompt(session, request):
             logger.info(
-                f"[ModelOp] Asked user to confirm replace/keep for existing {target_diagram_type}"
+                "[ModelOp] Mismatch rebuild prompt — skipping the replace/"
+                "keep re-ask (user already chose replace at the mismatch question)"
             )
-            return None
+        else:
+            existing_model = resolve_target_model(request, target_diagram_type)
+            if model_has_elements(existing_model):
+                from utilities.model_context import compact_model_summary
+
+                summary = compact_model_summary(existing_model, target_diagram_type)
+                stored_operation = {**operation, 'mode': operation_mode}
+
+                _build_existing_model_confirmation(
+                    session=session,
+                    request=request,
+                    target_diagram_type=target_diagram_type,
+                    existing_summary=summary,
+                    pending_data={
+                        'message': operation_request,
+                        'diagram_type': target_diagram_type,
+                        'operation': stored_operation,
+                        'default_mode': default_mode,
+                    },
+                    source_description=f"I can create a new {target_diagram_type}",
+                )
+                logger.info(
+                    f"[ModelOp] Asked user to confirm replace/keep for existing {target_diagram_type}"
+                )
+                return None
 
     # ── GUI generation-mode choice ───────────────────────────────────────
-    _CUSTOM_GUI_HINTS = {
-        "chart", "dashboard", "custom", "specific", "page for",
-        "sidebar", "metric", "kpi", "landing", "hero",
-        "form", "layout", "only", "just", "don't include",
-        "exclude", "style", "theme", "color", "dark",
-        "personali", "unique", "tailored", "bespoke",
-    }
+    # Always asked. A keyword shortcut would read the planner's rewritten step
+    # request, so screens the planner invented would skip the user's choice.
     _resolved_class_diagram = None
     if target_diagram_type == "GUINoCodeDiagram" and operation_mode in ("complete_system", None, ""):
-        _req_lower = (operation_request or "").lower()
-        _wants_custom = any(hint in _req_lower for hint in _CUSTOM_GUI_HINTS)
-
         _resolved_class_diagram = resolve_class_diagram(request)
         _has_class_diagram = (
             isinstance(_resolved_class_diagram, dict)
@@ -179,10 +581,7 @@ def execute_model_operation(
             and len(_resolved_class_diagram["elements"]) > 0
         )
 
-        if _has_class_diagram and _wants_custom:
-            logger.info("[ModelOp] Custom GUI request detected — using LLM-driven path")
-
-        elif _has_class_diagram and not _skip_gui_choice:
+        if _has_class_diagram and not _skip_gui_choice:
             session.set(PENDING_GUI_CHOICE, {
                 'operation_request': operation_request,
                 'operation': operation,
@@ -193,15 +592,18 @@ def execute_model_operation(
             reply_payload(session, {
                 "action": "assistant_message",
                 "message": (
-                    "How would you like me to generate the GUI?\n\n"
-                    "1️⃣ **Auto-generate** — Fast & deterministic. Creates one page per class "
-                    "with data tables and method buttons.\n"
-                    "2️⃣ **LLM-generated** *(experimental)* — AI-designed layout with "
-                    "personalized pages, navigation, and styling."
+                    "How would you like me to create your screens?\n\n"
+                    "1️⃣ **Basic CRUD pages** — one page per class to list, "
+                    "create, edit and delete its records.\n"
+                    "2️⃣ **Experimental AI design** — custom-designed screens "
+                    "with navigation, styling and realistic content."
                 ),
+                # Neither option is pre-selected. Each button sends its own label,
+                # which confirmation.handle_pending_gui_choice routes by keyword
+                # ("basic"/"crud" vs "experimental"/"ai"/"design").
                 "suggestedActions": [
-                    {"label": "Auto-generate", "prompt": "auto"},
-                    {"label": "LLM-generated (experimental)", "prompt": "llm"},
+                    {"label": "Basic CRUD pages", "prompt": "Basic CRUD pages"},
+                    {"label": "Experimental AI design", "prompt": "Experimental AI design"},
                 ],
             })
             logger.info("[ModelOp] Asked user to choose GUI generation mode")
@@ -226,31 +628,66 @@ def execute_model_operation(
 
     target_model = resolve_target_model(request, target_diagram_type)
 
-    # Inject conversation context for multi-turn awareness.
+    # Inject conversation context for multi-turn awareness: the rolling
+    # SUMMARY of older turns (so the agent remembers beyond the recent
+    # window) PLUS the last CONVERSATION_HISTORY_DEPTH messages verbatim.
     conversation_context = ""
     if not _skip_existing_check:
         try:
-            from memory import get_memory
-            session_id = getattr(session, 'id', None) or str(id(session))
+            from memory import get_memory, memory_session_key
+            # Stable payload sessionId so memory survives reconnects.
+            session_id = memory_session_key(session, request)
             mem = get_memory(session_id)
+            summary = (mem.get_summary() or "").strip()
             recent = mem.get_last_n(CONVERSATION_HISTORY_DEPTH)
+            blocks = []
+            if summary:
+                blocks.append(
+                    "Summary of earlier conversation (remember what the user has "
+                    f"already created or discussed):\n  {summary}"
+                )
             if recent and len(recent) > 1:
                 history_lines = []
                 for msg in recent[:-1]:
                     role = msg.get("role", "user")
-                    content = msg.get("content", "")[:200]
+                    # A user turn is often the spec itself; 200 chars would
+                    # cut a long description off inside its first sentence.
+                    limit = 2000 if role == "user" else 300
+                    content = msg.get("content", "")[:limit]
                     history_lines.append(f"  {role}: {content}")
                 if history_lines:
-                    conversation_context = (
-                        "Recent conversation context (use this to understand what the user has been working on):\n"
-                        + "\n".join(history_lines)
-                        + "\n\n"
+                    blocks.append(
+                        "Recent messages (oldest first):\n" + "\n".join(history_lines)
                     )
+            if blocks:
+                conversation_context = (
+                    "Recent conversation context (use this to understand what the "
+                    "user has been working on):\n"
+                    + "\n\n".join(blocks)
+                    + "\n\n"
+                )
         except Exception as exc:
             logger.debug(f"Conversation memory retrieval failed (best-effort): {exc}")
 
+    # The planner rewrites a long spec into a one-line sub-request and the
+    # conversation history is clipped, so without this block the generator
+    # loses the described enums, named actions and constraints.
+    spec_block = ""
+    if spec_to_stash and spec_to_stash not in operation_request:
+        spec_block = (
+            "## The user's request, verbatim - THIS IS THE AUTHORITY\n\n"
+            "Model exactly what it states: every status value it lists, every "
+            "action it names, every rule it gives, every attribute it "
+            "describes. The focused instruction that follows is a planner "
+            "summary of this text, not a replacement for it - where they "
+            "differ, this wins.\n\n"
+            f"{spec_to_stash}\n\n"
+            "## Focused instruction\n\n"
+        )
+
     modeling_prompt = (
         f"{conversation_context}"
+        f"{spec_block}"
         f"{operation_request}\n\n"
         f"{build_workspace_context_block(request, target_diagram_type)}"
     )
@@ -275,11 +712,24 @@ def execute_model_operation(
     def _timed_progress():
         steps = []
         if operation_mode == "complete_system":
-            steps = [
-                (8, "Generating classes and relationships..."),
-                (20, "Building attributes and methods..."),
-                (35, "Almost there..."),
-            ]
+            if target_diagram_type == "GUINoCodeDiagram":
+                # An AI-designed GUI legitimately takes ~2 minutes (reasoning
+                # pass + a large structured pass): pace the progress steps
+                # across the REAL duration and set the expectation up front.
+                steps = [
+                    (3, "Designing your screens — this takes about two minutes…"),
+                    (25, "Laying out the pages and navigation…"),
+                    (55, "Writing the styles and the copy…"),
+                    (90, "Binding your data to tables and charts…"),
+                    (120, "Assembling the final pages…"),
+                    (160, "Still working — larger apps take a little longer…"),
+                ]
+            else:
+                steps = [
+                    (8, "Generating classes and relationships..."),
+                    (20, "Building attributes and methods..."),
+                    (35, "Almost there..."),
+                ]
         elif operation_mode == "modify_model":
             steps = [
                 (4, "Updating model..."),
@@ -297,7 +747,13 @@ def execute_model_operation(
 
     try:
         if operation_mode == "modify_model":
-            extra_kwargs: Dict[str, Any] = {"class_metadata": gui_class_metadata}
+            # ``raw_request`` lets handlers distinguish the user's actual
+            # message from the context-enriched modeling prompt (used for the
+            # two-pass fast-path length check).
+            extra_kwargs: Dict[str, Any] = {
+                "class_metadata": gui_class_metadata,
+                "raw_request": operation_request,
+            }
             if target_diagram_type == "ObjectDiagram":
                 reference_diagram = resolve_object_reference_diagram(request, target_model)
                 reference_class_count = count_reference_classes(reference_diagram)
@@ -305,6 +761,22 @@ def execute_model_operation(
                     logger.info(
                         f"[ModelOp] ObjectDiagram modify reference resolved with {reference_class_count} class(es)."
                     )
+                elif not model_has_elements(target_model):
+                    # No class diagram to instantiate from AND the object
+                    # diagram is empty — this modify would create the first,
+                    # unlinked object. Apply the same guard the complete_system
+                    # path uses instead of silently producing a dangling object.
+                    # Edits to an EXISTING object diagram still proceed.
+                    logger.warning(
+                        "[ModelOp] ObjectDiagram modify with no reference classes "
+                        "and no existing objects — blocking unlinked object creation."
+                    )
+                    reply_message(
+                        session,
+                        "Please create a **Class Diagram** first — Object Diagrams "
+                        "need class definitions to instantiate from.",
+                    )
+                    return None
                 else:
                     logger.warning(
                         "[ModelOp] ObjectDiagram modify reference is missing or empty; output may drift."
@@ -337,20 +809,75 @@ def execute_model_operation(
                     modeling_prompt,
                     reference_diagram=reference_diagram,
                     existing_model=target_model,
+                    raw_request=operation_request,
                 )
             else:
                 result = handler.generate_complete_system(
                     modeling_prompt,
                     existing_model=target_model,
                     class_metadata=gui_class_metadata,
+                    raw_request=spec_to_stash or operation_request,
                 )
     except Exception as exc:
         logger.error(f"❌ [ModelOp] Handler exception: {exc}", exc_info=True)
-        reply_message(
-            session,
-            f"Something went wrong while processing your {diagram_label} request. "
-            "Please try again or rephrase.",
-        )
+        # Smart message for provider rate-limit / auth failures. When the
+        # SHARED server key hits its limit and the user has NOT supplied their
+        # own key, prompt them to add one (BYOK); when the user's OWN key
+        # fails, tell them to check it. errorCode (rate_limit / auth_error) is
+        # carried so the frontend can offer "Add your API key".
+        from errors import classify_error, ErrorCode
+        try:
+            _code = classify_error(exc)
+        except Exception:
+            _code = ErrorCode.UNKNOWN
+        try:
+            import byok
+            _byok_active = byok.is_active()
+        except Exception:
+            _byok_active = False
+        # Emit action='agent_error' with errorCode so the frontend surfaces an
+        # inline "Add your API key" button (it keys on rate_limit/auth_error).
+        if _byok_active and _code in (ErrorCode.RATE_LIMIT, ErrorCode.AUTH_ERROR):
+            reply_payload(session, {
+                "action": "agent_error",
+                "errorCode": "auth_error",
+                "message": (
+                    "Your API key was rejected or hit its rate limit. Check the "
+                    "key (the key icon in the assistant) and try again."
+                ),
+                "retryable": True,
+                "suggestedRecovery": "Check your API key",
+            })
+        elif _code == ErrorCode.RATE_LIMIT:
+            reply_payload(session, {
+                "action": "agent_error",
+                "errorCode": "rate_limit",
+                "message": (
+                    "We've hit the shared free usage limit for the AI service. "
+                    "Add your own API key (the key icon in the assistant) to keep "
+                    "going — it stays in your browser and is used only for your "
+                    "requests."
+                ),
+                "retryable": True,
+                "suggestedRecovery": "Add your own API key",
+            })
+        elif _code == ErrorCode.AUTH_ERROR:
+            reply_payload(session, {
+                "action": "agent_error",
+                "errorCode": "auth_error",
+                "message": (
+                    "The AI service is temporarily unavailable. Please try again "
+                    "shortly, or add your own API key in the assistant settings."
+                ),
+                "retryable": False,
+                "suggestedRecovery": "Try again shortly, or add your own API key",
+            })
+        else:
+            reply_message(
+                session,
+                f"Something went wrong while processing your {diagram_label} request. "
+                "Please try again or rephrase.",
+            )
         return None
     finally:
         _progress_stop.set()
@@ -370,6 +897,15 @@ def execute_model_operation(
     if result.get("action") == "assistant_message":
         reply_message(session, result.get("message", "Something went wrong. Please try again."))
         return None
+
+    # When a modify_model op was silently promoted to a full complete_system
+    # build (no existing diagram to edit), tell the user the scope changed so
+    # they aren't surprised by a whole new diagram instead of a small edit.
+    if _promoted_modify_to_complete and isinstance(result.get("message"), str):
+        result["message"] = (
+            f"There wasn't an existing {diagram_label} to modify, so I created a "
+            f"new one instead. " + result["message"]
+        )
 
     result["diagramType"] = target_diagram_type
     diagram_id = resolve_diagram_id(request, target_diagram_type)
@@ -394,6 +930,61 @@ def execute_model_operation(
     if suggestions:
         result["suggestedActions"] = suggestions
 
+    # For complete-system creations, detect the intended artifact type from the
+    # original user message and append an artifact-aware follow-up sentence +
+    # replace the generic buttons with artifact-specific ones.
+    # Skip for web_app: the GUI-choice flow runs next and emit_webapp_generate_prompt
+    # shows its own artifact-aware follow-up after the screens are built.
+    if operation_mode == "complete_system" and isinstance(result.get("message"), str):
+        from handlers.generation_handler import detect_generator_type  # lazy to avoid circular import
+        _detected_gen = detect_generator_type(request.message)
+        if _detected_gen != "web_app":
+            _artifact = get_artifact_label(_detected_gen)
+            result["message"] += (
+                f"\n\nYou can now review or refine your model, or continue "
+                f"with generating your {_artifact}. What would you like to do?"
+            )
+            result["suggestedActions"] = get_post_spec_suggestions(_detected_gen)
+
+    # After a MODIFY, keep the conversation flowing toward generation instead of
+    # showing the generic "Generate Python code / Describe my diagram" buttons:
+    # acknowledge the change and offer to continue generating, mirroring the
+    # create flow above. (web_app is left to the GUI-choice flow's own prompt.)
+    if operation_mode == "modify_model" and isinstance(result.get("message"), str):
+        from handlers.generation_handler import detect_generator_type  # lazy import
+        _detected_gen = detect_generator_type(request.message)
+        if _detected_gen != "web_app":
+            _artifact = get_artifact_label(_detected_gen)
+            result["message"] += (
+                f"\n\nWant to keep refining, or continue with generating your "
+                f"{_artifact}?"
+            )
+            result["suggestedActions"] = get_post_spec_suggestions(_detected_gen)
+
+    # ── Destructive modify-model guard ───────────────────────────────────
+    # Block a modify_model plan whose net effect would delete most/all of
+    # the existing top-level elements (see the guard section above); ask
+    # for confirmation instead of applying it silently.
+    if operation_mode == "modify_model":
+        _removed_count = _count_removed_top_level_elements(result)
+        if _removed_count > 0:
+            _existing_count = _count_existing_top_level_elements(target_model)
+            if _is_mass_deletion(_removed_count, _existing_count):
+                logger.warning(
+                    f"[ModelOp] Blocking destructive modify_model on {target_diagram_type}: "
+                    f"would remove {_removed_count} top-level element(s) "
+                    f"(existing={_existing_count}) — asking for confirmation "
+                    "instead of applying silently."
+                )
+                _build_destructive_modify_confirmation(
+                    session=session,
+                    target_diagram_type=target_diagram_type,
+                    removed_count=_removed_count,
+                    existing_count=_existing_count,
+                    result=result,
+                )
+                return None
+
     logger.info(
         f"📤 [ModelOp] Sending result: action={result.get('action')}, "
         f"replaceExisting={result.get('replaceExisting', 'NOT SET')}, "
@@ -401,7 +992,60 @@ def execute_model_operation(
     )
     reply_payload(session, result)
 
+    # Bridge this in-turn creation into the working request's snapshot so a
+    # generate op planned later in the SAME turn doesn't read the pre-create
+    # (empty) snapshot and wrongly refuse with "your workspace looks empty".
+    # Only genuine creations (not modify_model, which implies a pre-existing
+    # model) update the snapshot here.
+    if result.get("action") in ("inject_complete_system", "inject_element"):
+        _record_created_model_in_snapshot(
+            getattr(request, "context", None), target_diagram_type, result,
+        )
+
     session.set(LAST_EXECUTED_DIAGRAM_TYPE, target_diagram_type)
+
+    # ── Mismatch "Update model + generate" resume ────────────────────────
+    # When this build is the model-rebuild half of the domain-mismatch
+    # "Update model + generate" quick action, fire the stashed Spec-Driven
+    # handoff now so the "+ generate" half is actually honored — otherwise
+    # the user is left to click "Generate application" again (the button
+    # over-promises). Gated on the incoming message EQUALLING the exact rebuild
+    # prompt stashed in MISMATCH_REGEN_PENDING, so a different create typed
+    # after a mismatch never triggers this. Skipped on an explicit "keep".
+    _regen_prompt = session.get(MISMATCH_REGEN_PENDING)
+    _regen_msg = " ".join((getattr(request, "message", "") or "").strip().lower().split())
+    _regen_expect = (
+        " ".join(_regen_prompt.strip().lower().split())
+        if isinstance(_regen_prompt, str) else None
+    )
+    if (
+        operation_mode == "complete_system"
+        and result.get("action") == "inject_complete_system"
+        and _replace_existing is not False
+        and _regen_expect is not None
+        and _regen_msg == _regen_expect
+    ):
+        session.delete(MISMATCH_REGEN_PENDING)  # consume once
+        try:
+            from handlers.generation_handler import (
+                _build_smart_gen_confirmation,
+                _smart_gen_stash_is_fresh,
+            )
+
+            _stash = session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+            _fresh = _smart_gen_stash_is_fresh(session.get(PENDING_SMART_GEN_TIMESTAMP))
+            if isinstance(_stash, str) and _stash.strip() and _fresh:
+                logger.info("[ModelOp] Resuming stashed smart-gen after mismatch rebuild")
+                _payload = _build_smart_gen_confirmation(
+                    session,
+                    _stash,
+                    session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic",
+                    reason_prefix="Model rebuilt and ready.",
+                )
+                if isinstance(_payload, dict):
+                    reply_payload(session, _payload)
+        except Exception:
+            logger.exception("[ModelOp] mismatch smart-gen resume failed")
 
     action_label = result.get("action", "unknown")
     record_session_action(

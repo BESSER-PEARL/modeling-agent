@@ -3,9 +3,9 @@ Agent Diagram Handler
 Handles generation of UML Agent Diagrams (multi-agent conversational flows)
 """
 
-import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 import logging
+import re
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
 from ..core.prompt_fragments import (
@@ -13,8 +13,9 @@ from ..core.prompt_fragments import (
     MULTI_MOD_ARRAY_RULE,
     POSITION_DISCLAIMER,
 )
+from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
 from schemas import AgentSingleElementSpec, SystemAgentSpec, AgentModificationResponse, reply_type_help
-from utilities.model_context import detailed_model_summary
+from utilities.model_context import agent_model_elements, detailed_model_summary
 
 # Get logger
 logger = logging.getLogger(__name__)
@@ -80,7 +81,8 @@ _AGENT_RULES_BLOCK = f"""RULES:
 1. For add_transition / remove_transition, always name the states with target.sourceStateName and
    target.targetStateName. For add_transition, changes.condition is usually "when_intent_matched"
    with changes.intentName set to the triggering intent.
-2. {EXACT_NAMES_RULE}
+2. {EXACT_NAMES_RULE} NEVER invent
+   states or intents that are not listed in the current model.
 3. {MULTI_MOD_ARRAY_RULE}
 4. replyType options for state bodies. Type-specific fields sit next to text/replyType:
    for add_state_body they go directly in changes (e.g. changes.system_message); for add_state
@@ -95,13 +97,35 @@ _AGENT_RULES_BLOCK = f"""RULES:
    without a "def" produces a broken agent.
    Example: "add a function that logs the user's message" → add_state_body with
    target.stateName="logState", changes.replyType="code",
-   changes.text="def log_message(session):\\n    print(session.event.message)\""""
+   changes.text="def log_message(session):\\n    print(session.event.message)\"
+8. NEVER remove or rename an element unless the user explicitly asks for it AND
+   that element appears in the current model. If the request does not clearly
+   map to one of the actions above (e.g. it is a single stray word or is
+   ambiguous), return an empty modifications list rather than guessing.
+9. Only ADD elements the user explicitly asked for. Do not delete existing
+   elements as a side effect of an addition.
+10. When you ADD a new state, ALSO emit an add_transition that connects it into
+   the existing flow so it is never left orphaned: set target.sourceStateName
+   (an existing state, or "initial") and target.targetStateName (the new
+   state), and — if the transition is intent-triggered — changes.intentName.
+   Only skip the transition if the user explicitly asked for a disconnected
+   state."""
 
 MODIFY_SYSTEM_PROMPT_AGENT = "\n\n".join([
     "You are a conversational agent modeling expert. The user wants to modify an agent diagram.",
     _AGENT_ACTIONS_BLOCK,
     _AGENT_RULES_BLOCK,
 ])
+
+
+class _EmptyModificationError(Exception):
+    """Raised when no safe, applicable modification survives validation.
+
+    Used internally to bail out of the modification path and return a
+    non-mutating clarification instead of a (potentially destructive)
+    ``modify_model`` payload.
+    """
+    pass
 
 
 class AgentDiagramHandler(BaseDiagramHandler):
@@ -130,7 +154,11 @@ IMPORTANT RULES:
         user_prompt = f"Create an agent diagram element specification for: {user_request}"
 
         try:
-            parsed = self.predict_structured(user_prompt, AgentSingleElementSpec, system_prompt=system_prompt)
+            # Single element → SMALL generation tier (latency-sensitive).
+            parsed = self.predict_structured(
+                user_prompt, AgentSingleElementSpec, system_prompt=system_prompt,
+                model=MODEL_GENERATION_SMALL,
+            )
             agent_spec = parsed.model_dump()
 
             normalized_spec = self._normalize_single_element_spec(agent_spec, user_request)
@@ -158,6 +186,32 @@ IMPORTANT RULES:
     def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a complete agent conversation flow with deterministic positioning."""
 
+        # Multi-agent guard: the editor models ONE agent per Agent diagram, so
+        # a "multi-agent system" request must not be silently flattened. Detect
+        # it on the RAW user message (not the context-enriched prompt, which
+        # mentions existing AgentDiagrams) and explain instead of misleading.
+        import re as _re
+        _raw = kwargs.get("raw_request") or user_request or ""
+        if _re.search(
+            r"\bmulti[\s-]?agents?\b|\bmultiple\s+agents?\b|\bseveral\s+agents?\b"
+            r"|\b(?:two|three|four|five|\d+)\s+(?:separate\s+|different\s+|distinct\s+)?agents?\b"
+            r"|\bagents?\s+that\s+(?:delegate|coordinate|communicate|hand\s*off|talk)\b",
+            _raw, _re.IGNORECASE,
+        ):
+            return {
+                "action": "assistant_message",
+                "message": (
+                    "BESSER's editor models **one agent per Agent diagram**, so I can't build "
+                    "a true multi-agent system (agents delegating to each other) inside a single "
+                    "diagram yet. I can either:\n\n"
+                    "1. Build **one agent** that handles all those responsibilities as separate "
+                    "conversation flows, or\n"
+                    "2. Create **separate Agent diagrams** (one per agent) in their own tabs.\n\n"
+                    "Which would you prefer? (For real agent-to-agent orchestration you'd wire "
+                    "them together in Python with the BESSER Agentic Framework.)"
+                ),
+            }
+
         system_prompt = f"""You are a conversational agent modeling expert. Create a COMPLETE agent diagram specification.
 
 Before generating, think through:
@@ -169,7 +223,7 @@ Before generating, think through:
 - What LLMs, RAG databases, tools, skills, workspaces, or GUI pages does the agent need?
 
 IMPORTANT RULES:
-1. Create AS MANY states and intents as needed for the conversation.
+1. SCOPE: match the agent's size to the request. A plain request gets a focused conversation flow (4-8 states); only build a bigger flow when the user explicitly asks for a comprehensive agent or lists many scenarios themselves.
 2. Each state can have MULTIPLE replies/actions via "replyType" (use "code" ONLY when the
    user explicitly asks for custom Python logic):
 {_REPLY_TYPES_PROMPT}
@@ -195,7 +249,11 @@ IMPORTANT RULES:
         user_request_prompt = f"{user_request}"
 
         try:
-            parsed = self.predict_structured(user_request_prompt, SystemAgentSpec, system_prompt=system_prompt)
+            # Complete-system generation → LARGE tier (see model_config).
+            parsed = self.predict_structured(
+                user_request_prompt, SystemAgentSpec, system_prompt=system_prompt,
+                model=MODEL_GENERATION_LARGE,
+            )
             system_spec = parsed.model_dump()
 
             normalized_system = self._normalize_system_spec(system_spec, user_request)
@@ -361,7 +419,25 @@ IMPORTANT RULES:
         if element_type == "intent":
             normalized_intent = self._normalize_intent_spec(spec, request)
             if not normalized_intent:
-                raise ValueError("Intent specification requires at least one training phrase.")
+                # A single-intent request with no usable training phrases used
+                # to raise here, get swallowed by the broad except in
+                # generate_single_element, and fall back to building a STATE —
+                # the opposite of what the user asked for. Instead,
+                # synthesize a couple of starter phrases from the intent name
+                # so we still create an intent the user can flesh out.
+                intent_name = (
+                    spec.get("intentName")
+                    or spec.get("name")
+                    or self.extract_name_from_request(request, "Intent")
+                )
+                normalized_intent = {
+                    "type": "intent",
+                    "intentName": intent_name,
+                    "trainingPhrases": self._default_training_phrases(intent_name),
+                }
+                position = self._normalize_position(spec)
+                if position:
+                    normalized_intent["position"] = position
             return normalized_intent
 
         if element_type in {"initial", "initialnode", "start"}:
@@ -435,6 +511,30 @@ IMPORTANT RULES:
         if position:
             normalized_intent["position"] = position
         return normalized_intent
+
+    @staticmethod
+    def _default_training_phrases(intent_name: str) -> List[str]:
+        """Synthesize starter training phrases from an intent name.
+
+        Used when the user asks to create an intent but provides no example
+        utterances — an intent with zero phrases is unusable, so we seed a
+        couple of sensible defaults derived from the (camelCase / snake_case)
+        intent name instead of failing.
+        """
+        raw = (intent_name or "Intent").strip()
+        # Split camelCase and snake/kebab-case into words.
+        spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", raw)
+        spaced = re.sub(r"[_\-]+", " ", spaced)
+        humanized = " ".join(spaced.split()).lower().strip() or "this"
+        phrases = [humanized, f"I want to {humanized}"]
+        # De-duplicate while preserving order.
+        seen: Set[str] = set()
+        unique: List[str] = []
+        for phrase in phrases:
+            if phrase and phrase not in seen:
+                seen.add(phrase)
+                unique.append(phrase)
+        return unique
 
     def _normalize_reply_list(
         self, replies: Any, default_text: str, name_hint: str = "custom_action",
@@ -567,7 +667,10 @@ IMPORTANT RULES:
             return None
 
         state_names = {state["stateName"] for state in states}
-        primary_state = next(iter(state_names), None)
+        # Deterministic fallback target: the FIRST state in order, not an
+        # arbitrary element of a set (which made unresolved transitions point
+        # to a nondeterministic state run-to-run).
+        primary_state = states[0].get("stateName")
 
         source = transition.get("source") or transition.get("from") or "initial"
         target = transition.get("target") or transition.get("to")
@@ -638,9 +741,390 @@ IMPORTANT RULES:
     # Modification Support (NEW)
     # ------------------------------------------------------------------
 
+    # Modification actions that require their *target* element to already
+    # exist in the model.  Applying these to a non-existent element is either
+    # a no-op (which then surfaces a hallucinated "Removed X" message) or, in
+    # the multi-step case, can cascade into wiping the diagram. We refuse to
+    # emit them when the target is absent.
+    _MODS_REQUIRING_EXISTING_TARGET = {
+        "modify_state",
+        "modify_intent",
+        "add_state_body",
+        "add_intent_training_phrase",
+        "remove_element",
+        "remove_transition",
+        "add_transition",
+    }
+
+    # Actions that create brand-new elements.
+    _MODS_THAT_ADD = {
+        "add_state", "add_intent", "add_rag_element",
+        "add_llm", "add_tool", "add_skill", "add_workspace", "add_gui",
+    }
+
+    # Component add action -> element type it creates (duplicate check by name).
+    _COMPONENT_ADD_TYPES = {
+        "add_rag_element": "AgentRagElement",
+        "add_llm": "AgentLLM",
+        "add_tool": "AgentTool",
+        "add_skill": "AgentSkill",
+        "add_workspace": "AgentWorkspace",
+        "add_gui": "AgentGUI",
+    }
+
+    # Verbs/keywords that signal a genuine modeling instruction. A modify
+    # request that contains none of these (and is just a stray word or two) is
+    # treated as ambiguous: we ask for clarification rather than letting the
+    # LLM invent an arbitrary add/remove.
+    _MODIFY_INTENT_KEYWORDS = (
+        "add", "create", "new", "make", "insert", "append",
+        "remove", "delete", "drop", "erase",
+        "rename", "change", "update", "modify", "edit", "set", "replace",
+        "connect", "link", "transition", "branch", "route", "flow",
+        "state", "intent", "reply", "response", "phrase", "training",
+        "between", "from", "to", "rag", "knowledge", "fallback",
+        "llm", "tool", "skill", "workspace", "gui",
+    )
+
+    @classmethod
+    def _looks_like_actionable_request(cls, raw_request: Optional[str]) -> bool:
+        """Heuristic: does *raw_request* read like a real modeling instruction?
+
+        Returns ``False`` for empty input, a single stray token, or a short
+        phrase with no recognizable modeling verb/keyword (e.g. "ggg",
+        "gggIntent", "dfdf"). Such inputs must NOT mutate the model — the
+        caller turns a ``False`` here into a clarification prompt.
+
+        Conservative by design: anything with a real keyword, or any
+        multi-word request long enough to carry intent, passes through to the
+        LLM so we don't block legitimate edits.
+        """
+        if not isinstance(raw_request, str):
+            return False
+        text = raw_request.strip()
+        if not text:
+            return False
+
+        # Tokenise on word boundaries so a keyword must appear as a whole word.
+        # This is deliberate: "gggIntent" must NOT match the keyword "intent"
+        # (a stray-word case), while "add intent" does.
+        import re
+        tokens = {t for t in re.split(r"[^a-z0-9]+", text.lower()) if t}
+        if tokens & set(cls._MODIFY_INTENT_KEYWORDS):
+            return True
+
+        # No keyword matched. A single token (or a very short, verbless blurt)
+        # is treated as ambiguous. Longer free-text descriptions are allowed
+        # through — they may describe a flow without using our keyword list.
+        word_count = len(text.split())
+        if word_count <= 2:
+            return False
+        # 3+ words with no keyword and short overall → still ambiguous.
+        return len(text) >= 25
+
+    @staticmethod
+    def _index_existing_agent_model(current_model: Dict[str, Any]) -> Dict[str, set]:
+        """Extract the names of existing states / intents / components.
+
+        Reads every storage format (``elements``, ``agentComponents`` and the
+        editor's new ``components`` section). Returns lowercase name sets so target matching is case-insensitive
+        (mirrors the frontend modifier's ``findElementByName`` behaviour).
+        Missing / malformed models yield empty sets — the validator then
+        treats every target as absent, which is the safe (non-destructive)
+        default.
+        """
+        states: set = set()
+        intents: set = set()
+        components: Dict[str, set] = {}  # element type -> names
+        if isinstance(current_model, dict):
+            for el in agent_model_elements(current_model).values():
+                if not isinstance(el, dict):
+                    continue
+                el_type = el.get("type")
+                # AgentGUI components are referenced by gui_id.
+                name = (el.get("gui_id") if el_type == "AgentGUI" else None) or el.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                key = name.strip().lower()
+                if el_type in ("AgentState", "AgentReasoningState"):
+                    states.add(key)
+                elif el_type == "AgentIntent":
+                    intents.add(key)
+                elif isinstance(el_type, str):
+                    components.setdefault(el_type, set()).add(key)
+        rag = components.get("AgentRagElement", set())
+        return {"states": states, "intents": intents, "rag": rag, "components": components}
+
+    @staticmethod
+    def _mod_target_names(mod: Dict[str, Any]) -> Dict[str, Optional[str]]:
+        """Pull the (lowercased) state / intent names a modification refers to."""
+        target = mod.get("target") or {}
+        changes = mod.get("changes") or {}
+
+        def _norm(value: Any) -> Optional[str]:
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+            return None
+
+        return {
+            "stateName": _norm(target.get("stateName")),
+            "intentName": _norm(target.get("intentName")),
+            "sourceStateName": _norm(target.get("sourceStateName")),
+            "targetStateName": _norm(target.get("targetStateName")),
+            "name": _norm(changes.get("name")),
+        }
+
+    def _validate_modifications(
+        self, mod_list: List[Dict[str, Any]], current_model: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Drop modifications that can't be safely applied to *current_model*.
+
+        Guards against two failure classes:
+
+        * Hallucinated removals / edits of elements that don't
+          exist. We verify the target exists before keeping a destructive or
+          editing modification, so the agent never claims to have removed
+          something that was never there.
+        * Re-adding an element that already exists. We drop duplicate
+          ``add_*`` operations and report that it already exists.
+
+        Returns ``{"kept": [...], "skipped": [{reason, mod}, ...]}``. The
+        caller is responsible for turning an empty ``kept`` list into a
+        non-mutating clarification instead of a destructive payload.
+        """
+        index = self._index_existing_agent_model(current_model)
+        states, intents = index["states"], index["intents"]
+        components = index.get("components", {})
+
+        # --- First pass: names of states/intents ADDED in this same batch ----
+        # A transition whose endpoint is a state/intent that is itself being
+        # added in the SAME batch would otherwise be dropped as
+        # "missing_target" (it isn't in the *existing* model yet), leaving the
+        # new state silently orphaned. We collect the normalized names of add ops that
+        # will survive their own add-validation and treat them as "pending"
+        # endpoints when validating transitions below. Normalization matches
+        # ``_index_existing_agent_model`` (lowercased) so membership works.
+        pending: set = set()
+        for mod in mod_list:
+            if not isinstance(mod, dict):
+                continue
+            names = self._mod_target_names(mod)
+            action = mod.get("action")
+            if action == "add_state":
+                # Duplicate of an existing state → skipped as "exists"; the name
+                # is already in ``states`` so it must not join ``pending``.
+                if names["stateName"] and names["stateName"] in states:
+                    continue
+                add_name = names["stateName"] or names["name"]
+                if add_name:
+                    pending.add(add_name)
+            elif action == "add_intent":
+                if names["intentName"] and names["intentName"] in intents:
+                    continue
+                add_name = names["intentName"] or names["name"]
+                if add_name:
+                    pending.add(add_name)
+
+        kept: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+
+        for mod in mod_list:
+            if not isinstance(mod, dict):
+                skipped.append({"reason": "malformed", "mod": mod})
+                continue
+            action = mod.get("action")
+            names = self._mod_target_names(mod)
+
+            # --- Adds: refuse to duplicate an element that already exists ---
+            if action in self._MODS_THAT_ADD:
+                if action == "add_state" and names["stateName"] and names["stateName"] in states:
+                    skipped.append({"reason": "exists", "mod": mod})
+                    continue
+                if action == "add_intent" and names["intentName"] and names["intentName"] in intents:
+                    skipped.append({"reason": "exists", "mod": mod})
+                    continue
+                if action in self._COMPONENT_ADD_TYPES:
+                    # Components are named by target.name (a GUI by its gui_id).
+                    existing = components.get(self._COMPONENT_ADD_TYPES[action], set())
+                    raw_names = [(mod.get("target") or {}).get("name")]
+                    if action == "add_gui":
+                        raw_names.append((mod.get("changes") or {}).get("gui_id"))
+                    if any(isinstance(n, str) and n.strip().lower() in existing for n in raw_names):
+                        skipped.append({"reason": "exists", "mod": mod})
+                        continue
+                # Adds with a usable name are always safe (additive).
+                if action in ("add_state",) and not names["stateName"] and not names["name"]:
+                    skipped.append({"reason": "no_target", "mod": mod})
+                    continue
+                if action == "add_intent" and not names["intentName"] and not names["name"]:
+                    skipped.append({"reason": "no_target", "mod": mod})
+                    continue
+                kept.append(mod)
+                continue
+
+            # --- Target-requiring actions: the element MUST already exist ---
+            if action in self._MODS_REQUIRING_EXISTING_TARGET:
+                state_target = names["stateName"]
+                intent_target = names["intentName"]
+
+                if action in ("remove_element", "modify_state", "add_state_body"):
+                    if state_target and state_target in states:
+                        kept.append(mod)
+                    elif intent_target and intent_target in intents and action in ("remove_element", "modify_intent"):
+                        kept.append(mod)
+                    else:
+                        skipped.append({"reason": "missing_target", "mod": mod})
+                    continue
+
+                if action in ("modify_intent", "add_intent_training_phrase"):
+                    if intent_target and intent_target in intents:
+                        kept.append(mod)
+                    else:
+                        skipped.append({"reason": "missing_target", "mod": mod})
+                    continue
+
+                if action in ("add_transition", "remove_transition"):
+                    # Source may be a state, an intent, or the initial node.
+                    src = names["sourceStateName"] or state_target or intent_target
+                    tgt = names["targetStateName"]
+                    # ``pending`` lets a transition into/out of a just-added
+                    # state or intent survive (same-batch orphans).
+                    known = states | intents | pending | {"initial"}
+                    # The source must resolve to a known element; the target,
+                    # when specified, must also be known. An add_transition that
+                    # references an element that doesn't exist fails loudly
+                    # and is a deletion risk in batches.
+                    if src and src in known and (tgt is None or tgt in known):
+                        kept.append(mod)
+                    else:
+                        skipped.append({"reason": "missing_target", "mod": mod})
+                    continue
+
+            # Unknown / unclassified action → keep (frontend will validate),
+            # but only if it carries some target. Bare actions are dropped.
+            if any(names.values()):
+                kept.append(mod)
+            else:
+                skipped.append({"reason": "no_target", "mod": mod})
+
+        # Stable reorder: every add_state / add_intent must appear BEFORE any
+        # add_transition / remove_transition. The frontend applies kept mods in
+        # array order and resolves a transition's endpoints by name at apply
+        # time, so a transition referencing a just-added state must not precede
+        # the add op that introduces it. Relative order within each group (and
+        # among all other ops) is preserved (Python's sort is stable).
+        def _reorder_rank(mod: Any) -> int:
+            act = mod.get("action") if isinstance(mod, dict) else None
+            if act in ("add_state", "add_intent"):
+                return 0
+            if act in ("add_transition", "remove_transition"):
+                return 2
+            return 1
+
+        kept.sort(key=_reorder_rank)
+
+        return {"kept": kept, "skipped": skipped}
+
+    @staticmethod
+    def _added_state_display_name(mod: Dict[str, Any]) -> Optional[str]:
+        """Raw (non-normalized) display name of an ``add_state`` op.
+
+        Used for user-facing notes, so it keeps the original casing rather than
+        the lowercased form ``_mod_target_names`` returns.
+        """
+        target = mod.get("target") or {}
+        changes = mod.get("changes") or {}
+        name = target.get("stateName") or changes.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+        return None
+
+    def _find_orphan_added_states(self, kept: List[Dict[str, Any]]) -> List[str]:
+        """Names of kept ``add_state`` ops that no kept transition references.
+
+        A newly added state with no ``add_transition``/``remove_transition``
+        naming it (as source or target) is left disconnected from the rest of
+        the agent. We surface these honestly rather than fabricating an edge.
+        """
+        connected: set = set()
+        for mod in kept:
+            if not isinstance(mod, dict):
+                continue
+            if mod.get("action") in ("add_transition", "remove_transition"):
+                names = self._mod_target_names(mod)
+                for key in ("sourceStateName", "targetStateName", "stateName", "intentName"):
+                    if names.get(key):
+                        connected.add(names[key])
+        orphans: List[str] = []
+        for mod in kept:
+            if not isinstance(mod, dict) or mod.get("action") != "add_state":
+                continue
+            display = self._added_state_display_name(mod)
+            if display and display.lower() not in connected:
+                orphans.append(display)
+        return orphans
+
+    @staticmethod
+    def _orphan_states_note(orphans: List[str]) -> str:
+        """Plain-language note appended when new states are left unconnected."""
+        if not orphans:
+            return ""
+        if len(orphans) == 1:
+            return (
+                f"\n\nNote: I added **{orphans[0]}** but it isn't connected to the "
+                f"rest of the agent yet — tell me which state should lead into it "
+                f"(or out of it) and I'll wire it up."
+            )
+        joined = ", ".join(f"**{n}**" for n in orphans)
+        return (
+            f"\n\nNote: I added {joined} but they aren't connected to the rest of "
+            f"the agent yet — tell me which states should lead into them (or out "
+            f"of them) and I'll wire them up."
+        )
+
+    def _clarify_response(self, message: str) -> Dict[str, Any]:
+        """Return a non-mutating clarification message.
+
+        Crucially this carries ``action == 'assistant_message'`` (not
+        ``modify_model``) so the executor replies with text and the existing
+        diagram is left completely untouched (data-loss guard).
+        """
+        return {
+            "action": "assistant_message",
+            "diagramType": self.get_diagram_type(),
+            "message": message,
+        }
+
     def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate modifications for existing agent diagram elements"""
-        
+        """Generate modifications for existing agent diagram elements.
+
+        Safety contract (never violate): a modify request must NEVER delete or
+        empty an existing agent diagram. If the requested change can't be
+        parsed or safely applied, we return a clarifying ``assistant_message``
+        and leave the diagram unchanged.
+        """
+
+        # ── Ambiguity guard ──────────────────────────────────────────────
+        # A stray word ("ggg", "gggIntent", "dfdf") is not an instruction.
+        # Don't let the LLM invent an add/remove for it — ask what they mean.
+        # Use the raw user message (not the context-enriched ``user_request``).
+        raw_request = kwargs.get("raw_request")
+        if raw_request is None:
+            raw_request = user_request
+        if not self._looks_like_actionable_request(raw_request):
+            logger.info(
+                "[AgentDiagram] Modify request looks ambiguous/non-actionable "
+                "(%r) — asking for clarification, diagram left unchanged.",
+                (raw_request or "")[:60],
+            )
+            return self._clarify_response(
+                "I'm not sure what change you'd like me to make to the agent diagram. "
+                f"\"{(raw_request or '').strip()[:60]}\" doesn't map to a specific edit, so "
+                "I left the diagram unchanged. Try something like *'Add an intent called "
+                "Greeting'*, *'Rename the welcome state to start'*, or *'Add a transition "
+                "from greeting to support'*."
+            )
+
         system_prompt = MODIFY_SYSTEM_PROMPT_AGENT
 
         # Build context from current model using centralized summariser
@@ -649,22 +1133,91 @@ IMPORTANT RULES:
             summary = detailed_model_summary(current_model, 'AgentDiagram')
             if summary and 'no model data' not in summary and 'no structured model' not in summary:
                 context_block = '\n\n' + summary
-        
+
         user_prompt = f"Modify the agent diagram: {user_request}{context_block}"
 
-        try:
-            return self._execute_modification(
-                user_prompt, system_prompt, AgentModificationResponse,
-                post_processor=self._fix_code_replies_in_modifications,
-            )
+        # Validate every LLM-proposed modification against the *real* model
+        # before it is wrapped into the outgoing payload. This is what turns a
+        # hallucinated / destructive batch into a safe, no-op clarification.
+        def _post_processor(mod_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            result = self._validate_modifications(mod_list, current_model or {})
+            # Stash skip metadata so the success path can build an honest
+            # message ("X already exists", "couldn't find Y", …).
+            self._last_skipped = result["skipped"]
+            kept = result["kept"]
+            if not kept:
+                # Nothing safe to apply. Abort here so the executor never sends
+                # an empty / destructive modify_model payload — the diagram is
+                # left exactly as-is.
+                raise _EmptyModificationError()
+            # Backstop: flag any just-added state that no kept transition wires
+            # into the flow. Covers both the "LLM never emitted a connecting
+            # transition" case and anything the pending-name pass couldn't rescue. We don't
+            # invent an edge — we tell the user honestly (message appended below).
+            self._last_orphan_states = self._find_orphan_added_states(kept)
+            # Guarantee every replyType="code" reply is a proper function block
+            # before it is applied.
+            return self._fix_code_replies_in_modifications(kept)
 
+        self._last_skipped = []
+        self._last_orphan_states = []
+
+        try:
+            spec = self._execute_modification(
+                user_prompt, system_prompt, AgentModificationResponse,
+                post_processor=_post_processor,
+            )
+            # Surface orphaned new states so a modify never silently leaves a
+            # disconnected node with a misleading "Applied N changes" message.
+            orphans = getattr(self, "_last_orphan_states", []) or []
+            if orphans and isinstance(spec, dict) and spec.get("action") == "modify_model":
+                existing = spec.get("message") or ""
+                spec["message"] = (existing + self._orphan_states_note(orphans)).strip()
+            return spec
+
+        except _EmptyModificationError:
+            # No safe, applicable change survived validation. Leave the diagram
+            # untouched and ask the user to clarify.
+            logger.info(
+                "[AgentDiagram] No applicable modification after validation — "
+                "returning clarification (diagram left unchanged)."
+            )
+            return self._clarify_response(self._build_clarification_message(user_request))
         except LLMPredictionError as e:
             logger.error(f"[AgentDiagram] generate_modification LLM FAILED: {e}")
-            return self._error_response("I couldn't process that modification. Please try again or rephrase your request.")
+            return self._clarify_response(
+                "I couldn't process that modification. Please rephrase your request — "
+                "for example: *'Add a new intent called OrderPizza'* or "
+                "*'Add a transition from greeting to support'*. Your diagram is unchanged."
+            )
         except Exception as e:
-            logger.error(f"Error generating agent diagram modification: {e}")
+            logger.error(f"Error generating agent diagram modification: {e}", exc_info=True)
             return self.generate_fallback_modification(user_request)
-    
+    def _build_clarification_message(self, user_request: str) -> str:
+        """Build an honest clarification message from the last skip metadata."""
+        skipped = getattr(self, "_last_skipped", []) or []
+        reasons = {s.get("reason") for s in skipped if isinstance(s, dict)}
+
+        if "exists" in reasons:
+            return (
+                "That element already exists in the agent diagram, so I didn't add a "
+                "duplicate. Did you want to rename it, add replies/training phrases, or "
+                "connect it to another state? Let me know what to change."
+            )
+        if "missing_target" in reasons:
+            return (
+                "I couldn't find the element you referred to in the current agent diagram, "
+                "so I didn't change anything. Please use the exact name of an existing state "
+                "or intent — or tell me to create it first."
+            )
+        # Generic ambiguity / nonsense input (stray-word cases).
+        return (
+            "I'm not sure what change you'd like me to make to the agent diagram, so I left "
+            "it unchanged. Try something specific like *'Add an intent called Greeting'*, "
+            "*'Rename the welcome state to start'*, or *'Add a transition from greeting to "
+            "support'*."
+        )
+
     @staticmethod
     def _fix_code_replies_in_modifications(mod_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """post_processor for _execute_modification: guarantee every
@@ -695,15 +1248,17 @@ IMPORTANT RULES:
         return mod_list
 
     def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
-        """Generate a fallback modification when AI generation fails"""
-        return {
-            "action": "modify_model",
-            "modification": {
-                "action": "modify_state",
-                "target": {"stateName": "unknown"},
-                "changes": {"name": "modifiedState"}
-            },
-            "diagramType": self.get_diagram_type(),
-                "message": "I couldn't apply that modification automatically. Could you rephrase it? For example: *'Rename the greeting state to welcome'* or *'Add a new intent called OrderPizza'*."
-        }
+        """Fallback when AI generation fails.
+
+        IMPORTANT: this must NOT return a model-mutating payload. The previous
+        implementation returned a ``modify_state`` on a fictional ``"unknown"``
+        state, which (combined with the frontend's whole-model replace on
+        ``modify_model``) was a data-loss hazard. We now return a non-mutating
+        clarification so the existing diagram is always preserved.
+        """
+        return self._clarify_response(
+            "I couldn't apply that modification automatically, so I left your agent diagram "
+            "unchanged. Could you rephrase it? For example: *'Rename the greeting state to "
+            "welcome'* or *'Add a new intent called OrderPizza'*."
+        )
 

@@ -12,7 +12,15 @@ types, generators, intents, and modifying intent recognition.
 How to Add a New Diagram Type
 -----------------------------
 
-Adding a new diagram type touches 8 places. Follow this checklist in order:
+Adding a new diagram type touches every list below. Missing one produces a
+stale-list bug that manual testing tends not to catch — testing from inside
+the new diagram's own tab never exercises routing or discoverability, because
+``context.activeDiagramType`` already gives the answer away. Test from a
+*different* tab, with phrasing that does not literally name the type.
+
+0. **Create the schemas** in ``src/schemas/<type>.py`` (single-element spec,
+   complete-system spec, modification actions with ``Literal`` action names)
+   and re-export them from ``src/schemas/__init__.py``.
 
 1. **Create the handler** in ``src/diagram_handlers/types/``:
 
@@ -59,9 +67,40 @@ Adding a new diagram type touches 8 places. Follow this checklist in order:
 
    See :doc:`../orchestration` for how discriminating patterns work.
 
-7. **Add tests** in ``tests/test_diagram_handlers.py``
+   .. warning::
 
-8. **Update docs** in ``docs/source/diagram_handlers.rst``
+      Pattern order matters — the first match wins. Place a new pattern where
+      its vocabulary will not be stolen by a broader one above it (BPMN sits
+      above StateMachineDiagram precisely because "process" is in both).
+
+7. **Append to** ``FALLBACK_PRIORITY`` in the same file, so the type can be
+   resolved from the project snapshot when nothing else matches.
+
+8. **Teach the classifier**: add the token to ``_TARGET_DIAGRAM_TYPES`` in
+   ``src/unified_classifier.py`` and add the type's vocabulary to
+   ``_SYSTEM_PROMPT``, so a request naming it reaches a modeling intent at
+   all. Without this the message can fall through to the fallback body.
+
+9. **Update the capability copy** in ``src/state_bodies.py`` — the
+   ``_QUICK_RESPONSES`` capability text *and* ``global_fallback_body``'s
+   prompt both enumerate supported types independently. Grep for an existing
+   type's name (e.g. ``"quantum"``) to find every place.
+
+10. **Add suggestions** in ``src/suggestions.py`` and wire them into
+    ``_DIAGRAM_SUGGESTION_HANDLERS``.
+
+11. **Add tests** in ``tests/test_diagram_handlers.py`` plus a dedicated
+    ``tests/test_<type>.py``. Handler-level tests instantiate the handler with
+    ``MyDiagramHandler(None)`` — the LLM argument is only needed by methods
+    that actually call the model, so deterministic repair logic can be tested
+    as a pure function against hand-built dicts.
+
+12. **Update docs**: ``docs/source/diagram_handlers.rst``,
+    ``docs/source/websocket_protocol.rst``, ``docs/source/getting_started.rst``
+    and the README table.
+
+13. **Frontend** (separate repo): the type must exist in the editor's own
+    diagram-type union and be a valid ``activeDiagramType`` context value.
 
 
 How to Add a New Generator
@@ -91,17 +130,24 @@ How to Add a New Generator
 3. **Add inline config parsing** in ``parse_inline_generator_config()``
 
 4. **Add prerequisites** to ``GENERATOR_PREREQUISITES`` in
-   ``src/orchestrator/request_planner.py``:
+   ``src/handlers/generation_handler.py`` (``request_planner.py`` imports it
+   from there and injects it into the Tier-2 planner prompt):
 
    .. code-block:: python
 
       GENERATOR_PREREQUISITES["my_gen"] = ["ClassDiagram"]
 
-5. **Add config prompt** in ``_build_config_prompt()``
+5. **Add config prompt** in ``_build_config_prompt()`` and defaults in
+   ``_normalize_defaults()``
 
-6. **Add tests** in ``tests/test_generation_handler.py``
+6. **Mirror the name** in the two ``_DETERMINISTIC_GENERATOR_TYPES``
+   ``Literal`` lists — ``src/unified_classifier.py`` and
+   ``src/handlers/smart_generation_handler.py``. A generator the classifier
+   cannot name is a generator it will never route to.
 
-7. **Update docs** in ``docs/source/usage.rst``
+7. **Add tests** in ``tests/test_generation_handler.py``
+
+8. **Update docs** in ``docs/source/usage.rst``
 
 
 How to Add a New Intent
@@ -113,38 +159,57 @@ How to Add a New Intent
 
       my_intent = agent.new_intent(
           name="my_intent",
-          description="When the user wants to do X. Keywords: ..."
+          description="User wants to do X.",   # ONE line — see below
+          training_sentences=[                  # REQUIRED
+              "do x for me",
+              "can you x this",
+              "please x the model",
+          ],
       )
 
    .. warning::
 
-      Intent descriptions are the **primary signal** for the LLM classifier.
-      Include explicit positive examples, negative examples (what it's NOT),
-      and disambiguation rules for confusable intents. See
-      :doc:`../intent_recognition` for the full intent description guidelines.
+      ``training_sentences`` are **required**, not optional. The agent's
+      default BAF classifier is the local ``SimpleIntentClassifier``, which
+      trains on them at startup; an intent with none breaks it.
 
-2. **Create a state** in ``modeling_agent.py``:
+      Keep ``description`` to **one line**. It only feeds that local fallback
+      classifier — it does not drive routing, and the long keyword essays
+      these strings used to carry are gone. See
+      :doc:`../intent_recognition`.
+
+2. **Mirror the name** in ``_INTENT_NAMES`` in
+   ``src/unified_classifier.py`` and write the real routing rule in
+   ``_SYSTEM_PROMPT``. This is the step that actually makes the intent
+   reachable — include positive examples, what it is *not*, and
+   disambiguation against confusable intents.
+
+3. **Create a state** in ``modeling_agent.py``:
 
    .. code-block:: python
 
       my_state = agent.new_state("my_state")
 
-3. **Write the state body** in ``src/state_bodies.py``:
+4. **Write the state body** in ``src/state_bodies.py``:
 
    .. code-block:: python
 
       def my_body(session: Session):
-          request = parse_assistant_request(session)
+          request = _common_preamble(session)
+          if request is None:
+              return          # a pending flow or attachment consumed it
           # ... handle the intent ...
           reply_message(session, "Done!")
 
-4. **Register** in ``register_all()`` (same file):
+5. **Register** in ``register_all()`` (same file):
 
    - Add to ``states`` dict
    - Add to ``intents`` dict
    - Add to ``intent_map``
+   - Add a ``(state_name, fallback_name)`` entry to the transition-wiring loop
 
-5. **Add tests** for the state body logic
+6. **Add tests** for the state body logic and for the classifier verdict
+   (``tests/test_unified_classifier.py``)
 
 
 How to Modify Intent Recognition
@@ -156,25 +221,50 @@ your change:
 Fixing a Misclassification for a Specific Phrase
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-First, update the **intent description** in ``modeling_agent.py`` with an
-explicit example. This is the highest-impact, lowest-risk change.
+Edit the rule for that intent in ``_SYSTEM_PROMPT``
+(``src/unified_classifier.py``). This is the highest-impact, lowest-risk
+change, and it is the **only** place routing rules live.
 
 .. code-block:: python
 
-   description=(
-       "... existing description ... "
-       'NEW: "your problematic phrase" should match this intent because ...'
+   _SYSTEM_PROMPT = (
+       ...
+       "modify_model_intent: user wants to ADD / REMOVE / CHANGE "
+       "elements in an existing diagram. ... "
+       'NEW: "your problematic phrase" is this intent because ...'
    )
 
-Adding a Pre-Filter Guard (Zero Latency)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. warning::
 
-Add logic to ``_is_modeling_request()`` or ``_is_diagram_creation_request()``
-in ``src/handlers/generation_handler.py``.
+   Do **not** put the rule in the ``description=`` string of
+   ``agent.new_intent()`` in ``modeling_agent.py``. Those one-liners only feed
+   BAF's local fallback classifier; they do not drive routing. Keep them short.
 
-These run **before** the LLM classifier and catch obvious patterns. They also
-run **after** classification as safety nets (cross-validation in
-``json_intent_matches()``).
+   Do add a representative ``training_sentence`` there, though — the local
+   ``SimpleIntentClassifier`` trains on them at startup, and an intent with no
+   training sentences breaks that classifier.
+
+Adding a Deterministic Guard (Zero Latency)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The keyword pre-filter layer (``_is_modeling_request()``,
+``_is_diagram_creation_request()``, and the ``json_intent_matches()``
+cross-validation) has been **removed**. Routing rules belong in
+``unified_classifier._SYSTEM_PROMPT``.
+
+Reach for a deterministic guard only where the LLM is *measurably* unreliable
+and the decision must never be guessed. Existing examples:
+
+- ``_names_unsupported_stack()`` in ``src/unified_classifier.py`` — forces the
+  smart generation route when a message names a language or framework BESSER
+  has no generator for. Added because the classifier mapped "c classes" to
+  ``java`` and "c++ classes" to ``python``.
+- ``_GITHUB_URL_RE`` + ``_GITHUB_CONTINUE_VERB_RE`` in
+  ``src/handlers/generation_handler.py`` — a continue-from-GitHub request must
+  never be invented, missed, or swallowed.
+
+Both run in ``_post_validate()`` or at the handler boundary and *override* the
+LLM verdict, so keep them precision-first.
 
 Adding a Generator Keyword
 ~~~~~~~~~~~~~~~~~~~~~~~~~~

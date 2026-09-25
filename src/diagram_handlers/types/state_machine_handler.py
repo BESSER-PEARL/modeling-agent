@@ -25,6 +25,7 @@ from ..core.prompt_fragments import (
     POSITION_DISCLAIMER,
     REMOVE_ELEMENT_RULE,
 )
+from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
 from schemas import SingleStateSpec as SingleStateSchema, SystemStateMachineSpec, StateMachineModificationResponse
 from utilities.model_context import detailed_model_summary
 
@@ -73,10 +74,12 @@ Examples of good states:
         user_prompt = f"Create a state specification for: {user_request}"
 
         try:
+            # Single element → SMALL generation tier (latency-sensitive).
             parsed = self.predict_structured(
                 user_prompt,
                 SingleStateSchema,
                 system_prompt=system_prompt,
+                model=MODEL_GENERATION_SMALL,
             )
             state_spec = parsed.model_dump()
 
@@ -137,9 +140,21 @@ TRANSITION DESIGN GUIDELINES:
 - Guard conditions should be specific and testable
 - Trigger names should be verbs or verb phrases in camelCase"""
 
-    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def generate_complete_system(
+        self,
+        user_request: str,
+        existing_model: Dict[str, Any] = None,
+        raw_request: Optional[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
         """Generate a complete state machine with two-pass structured outputs, pattern injection,
-        validation-feedback loop, and deterministic layout."""
+        validation-feedback loop, and deterministic layout.
+
+        ``raw_request`` is the original user message before context enrichment
+        (conversation history / workspace block); it drives the fast-path
+        length check and keeps the reasoning prompt lean. Falls back to the
+        full ``user_request`` when not provided.
+        """
 
         system_prompt = self._get_system_generation_prompt()
 
@@ -148,10 +163,13 @@ TRANSITION DESIGN GUIDELINES:
 
         try:
             # --- Two-pass structured: reason about behavior first, then produce validated model ---
+            # The reasoning prompt uses the raw request only; the enriched
+            # context (history + workspace block) reaches the structured pass
+            # via ``user_request`` exactly once.
             reasoning_prompt = (
                 "You are a UML behavioral modeling expert. Think step by step about "
                 "the following state machine request and plan the design.\n\n"
-                f"User Request: {user_request}\n\n"
+                f"User Request: {raw_request or user_request}\n\n"
                 "Analyze:\n"
                 "1. What are the key lifecycle stages (states) of this process?\n"
                 "2. What events (triggers) cause transitions between states?\n"
@@ -164,11 +182,16 @@ TRANSITION DESIGN GUIDELINES:
                 "the most commonly under-specified element."
             )
 
+            # Complete-system generation → LARGE tier; reasoning pass on
+            # the REASONING tier (see model_config).
             parsed = self.predict_two_pass_structured(
                 user_request=user_request,
                 system_prompt=system_prompt,
                 reasoning_prompt=reasoning_prompt,
                 response_schema=SystemStateMachineSpec,
+                raw_request=raw_request,
+                model=MODEL_GENERATION_LARGE,
+                reasoning_model=MODEL_REASONING,
             )
             system_spec = parsed.model_dump()
 
@@ -206,11 +229,12 @@ TRANSITION DESIGN GUIDELINES:
     ) -> Dict[str, Any]:
         """Validate a generated state machine and fix common issues.
 
-        Checks for:
-        - Missing initial/final states
-        - Orphan states (no incoming or outgoing transitions)
-        - States with only generic names
-        - Missing error/alternative paths
+        Fixes:
+        - Drops transitions whose source/target names don't exist (they would
+          otherwise materialize as phantom states during layout).
+        - Adds a missing initial / final state and wires it into the flow.
+        - Connects orphan regular states (no incoming/outgoing transition) into
+          the happy path so every state is reachable.
         """
         states = spec.get("states", [])
         transitions = spec.get("transitions", [])
@@ -218,22 +242,23 @@ TRANSITION DESIGN GUIDELINES:
         if not states:
             return spec
 
-        # Check for orphan states (no transitions connecting them)
         state_names = {s.get("stateName") for s in states}
-        sources = {t.get("source") for t in transitions}
-        targets = {t.get("target") for t in transitions}
-        connected = sources | targets
 
-        orphans = []
-        for s in states:
-            name = s.get("stateName", "")
-            stype = s.get("stateType", "regular")
-            if stype == "initial" and name not in sources:
-                orphans.append(name)
-            elif stype == "final" and name not in targets:
-                orphans.append(name)
-            elif stype == "regular" and name not in connected:
-                orphans.append(name)
+        # Validate transition endpoints: a transition referencing a state that
+        # doesn't exist is dropped; otherwise it could appear as a phantom node
+        # when the layout engine builds the graph.
+        valid_transitions = []
+        for t in transitions:
+            src = t.get("source")
+            tgt = t.get("target")
+            if src in state_names and tgt in state_names:
+                valid_transitions.append(t)
+            else:
+                logger.info(
+                    "[StateMachine] Validation: dropping transition with unknown "
+                    "endpoint(s): source=%r target=%r", src, tgt,
+                )
+        transitions = valid_transitions
 
         # Check for missing initial state
         has_initial = any(s.get("stateType") == "initial" for s in states)
@@ -291,8 +316,47 @@ TRANSITION DESIGN GUIDELINES:
                 })
             logger.info("[StateMachine] Validation: added missing final state")
 
-        if orphans:
-            logger.info(f"[StateMachine] Validation: found {len(orphans)} orphan state(s): {orphans}")
+        # Connect orphan regular states into the flow. An orphan has no
+        # incoming AND no outgoing transition, so it floats disconnected.
+        # Wire them into the happy path (initial -> orphan -> final) so the
+        # diagram stays connected.
+        sources = {t.get("source") for t in transitions}
+        targets = {t.get("target") for t in transitions}
+        initial_state = next(
+            (s.get("stateName") for s in states if s.get("stateType") == "initial"), None,
+        )
+        final_state = next(
+            (s.get("stateName") for s in states if s.get("stateType") == "final"), None,
+        )
+        for s in states:
+            if s.get("stateType", "regular") != "regular":
+                continue
+            name = s.get("stateName", "")
+            if not name or name in sources or name in targets:
+                continue
+            if initial_state and initial_state != name:
+                transitions.append({
+                    "source": initial_state,
+                    "target": name,
+                    "trigger": "",
+                    "guard": "",
+                    "effect": "",
+                })
+                sources.add(initial_state)
+                targets.add(name)
+            if final_state and final_state != name:
+                transitions.append({
+                    "source": name,
+                    "target": final_state,
+                    "trigger": "",
+                    "guard": "",
+                    "effect": "",
+                })
+                sources.add(name)
+                targets.add(final_state)
+            logger.info(
+                "[StateMachine] Validation: connected orphan state %r into the flow", name,
+            )
 
         spec["states"] = states
         spec["transitions"] = transitions

@@ -1,0 +1,213 @@
+"""Unified LLM-based classifier for generation requests.
+
+The modeling agent's unified classifier decides — in its single
+per-message LLM call — both the STATE-level intent and the generation
+SUB-routing. This module holds the dispatch-shape schema for that
+sub-routing verdict:
+
+    route ∈ {"smart", "deterministic", "modeling", "other"}
+
+and — in the same structured-output call — returns any fields the
+caller needs so we never re-prompt the LLM later:
+
+  * For ``route == "deterministic"``: which BESSER built-in generator
+    (``generator_type``) so the caller dispatches to django / pydantic /
+    sql / etc. without any further keyword matching.
+  * For ``route == "smart"``: a polished ``refined_instructions`` prompt
+    for the Spec-Driven Agent, plus a provider suggestion.
+
+Routing is decided by the unified classifier;
+``generation_handler._classification_to_legacy`` adapts its verdict into
+this shape. This module only defines
+the :class:`GenerationClassification` dispatch schema and assembles the
+``trigger_smart_generator`` payload.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Dict, Literal, Optional
+
+from pydantic import BaseModel, Field
+from agent_config import MAX_USER_MESSAGE_CHARS
+from utilities.message_limits import validate_message_length
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------
+# Structured output schema
+# ---------------------------------------------------------------------
+
+
+# The names BESSER's deterministic generator registry understands. If
+# the classifier picks ``deterministic`` with a type not in this list,
+# the caller falls back to ``None`` and shows the user the generator
+# menu. Keep in sync with ``generation_handler.GENERATOR_KEYWORDS``.
+_DETERMINISTIC_GENERATOR_TYPES = Literal[
+    "django",
+    "backend",
+    "web_app",
+    "sql",
+    "sqlalchemy",
+    "python",
+    "java",
+    "pydantic",
+    "jsonschema",
+    "smartdata",
+    "agent",
+    "qiskit",
+    "rest_api",
+    "rdf",
+    "export",
+    "deploy",
+]
+
+
+class GenerationClassification(BaseModel):
+    """Single source of truth for routing + sub-routing of a generation request."""
+
+    route: Literal["smart", "deterministic", "modeling", "other"] = Field(
+        ...,
+        description=(
+            "Pick exactly one:\n"
+            "  'smart'         — user wants a custom codebase beyond any single "
+            "BESSER built-in generator: ANY non-BESSER language or framework "
+            "(rust, kotlin, swift, rails, flask, next.js, spring boot, go, "
+            "elixir, php/laravel, c#, c++, angular, svelte, ios app, ...) OR "
+            "a compound build ('full-stack fastapi + jwt + postgres', "
+            "'dockerized next.js', 'react + node'). This path runs the "
+            "LLM-augmented smart generator with the user's BYOK key.\n"
+            "  'deterministic' — user wants ONE of BESSER's built-in generators "
+            "EXACTLY: django, pydantic, python classes, java classes, sql, "
+            "sqlalchemy, jsonschema, smartdata, agent, qiskit, web_app, "
+            "backend, rest_api, rdf, export, deploy. If a non-BESSER language "
+            "is named, it is 'smart', never 'deterministic'.\n"
+            "  'modeling'      — user wants to CREATE or MODIFY a diagram "
+            "(class diagram, state machine, GUI, agent diagram), not "
+            "generate source code. 'generate a class diagram for X' is "
+            "modeling, not deterministic.\n"
+            "  'other'         — greeting, capability question, chat, "
+            "anything that is not a code-generation or modeling request."
+        ),
+    )
+    generator_type: Optional[_DETERMINISTIC_GENERATOR_TYPES] = Field(
+        default=None,
+        description=(
+            "REQUIRED when route='deterministic'. One of BESSER's built-in "
+            "generator names. LEAVE NULL for route != 'deterministic'."
+        ),
+    )
+    refined_instructions: Optional[str] = Field(
+        default=None,
+        description=(
+            "REQUIRED when route='smart'. A polished, implementation-focused "
+            "prompt for the smart generator: 1-3 short paragraphs naming the "
+            "stack (e.g. 'Ruby on Rails 7, PostgreSQL via Active Record') "
+            "and any non-functional requirements THE USER MENTIONED. "
+            "INVENT NOTHING. Never add authentication, login, sign-up, "
+            "roles, JWT, responsive design, styling or navigation unless "
+            "the user's own words asked for them — writing them here makes "
+            "the generator build them as if they had been requested. "
+            "Example: a hotel spec that never mentions users or login must "
+            "not be summarised as '...Include user authentication and a "
+            "responsive design'. Preserve the user's concrete nouns — status "
+            "values, named operations, stated rules — rather than "
+            "generalising them away. Max 2000 chars. LEAVE NULL for "
+            "route != 'smart'."
+        ),
+    )
+    provider: Literal["anthropic", "openai"] = Field(
+        default="anthropic",
+        description=(
+            "Suggested LLM provider for the smart generator when route='smart'. "
+            "Default 'anthropic'. Ignored for other routes."
+        ),
+    )
+    reason: str = Field(
+        ...,
+        description=(
+            "One short sentence (max 160 chars) explaining the classification. "
+            "Used for logs and surfaced to the user as a hint."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------
+# Payload assembly for the smart-gen path
+# ---------------------------------------------------------------------
+
+
+_DEFAULT_SMART_GEN_MODEL_BY_PROVIDER: Dict[str, str] = {
+    # Match ``besser/generators/llm/llm_client.py::DEFAULT_MODELS`` and
+    # the backend's config endpoint. If these diverge, a run with no
+    # explicit ``llmModel`` override will fail with an "unknown model"
+    # upstream error.
+    "anthropic": "claude-sonnet-4-6",
+    "openai": "gpt-4o",
+    "mistral": "mistral-large-latest",
+}
+
+
+def build_trigger_smart_generator_payload(
+    classification: GenerationClassification,
+    reason_prefix: str = "",
+    original_request: str = "",
+) -> Dict[str, Any]:
+    """Assemble the WebSocket ``trigger_smart_generator`` action payload.
+
+    Requires a classification whose ``route == 'smart'``.
+
+    ``original_request`` is the user's verbatim app description. It is
+    appended because ``refined_instructions`` is a 1-3 paragraph summary,
+    and the run's gap analyser diffs the request against the model: the
+    summary drops details (status vocabularies, business rules) and can
+    absorb assistant wording the user never wrote.
+    """
+    if classification.route != "smart":
+        raise ValueError(
+            "build_trigger_smart_generator_payload called with non-smart classification"
+        )
+    instructions = (classification.refined_instructions or "").strip()
+    if not instructions:
+        raise ValueError("smart classification has no refined_instructions")
+
+    original = (original_request or "").strip()
+    validate_message_length(original, label="The original specification")
+    if original and original not in instructions:
+        # The summary is kept (it can carry a stack the user accepted with a
+        # plain "yes") but labelled as possibly inaccurate, since a summary can
+        # contradict the spec (e.g. name a database the user did not ask for).
+        instructions = (
+            "## Assistant's notes (may be inaccurate)\n\n"
+            "Use these only for choices the user confirmed in the conversation "
+            "that are missing from their request below. Never add a feature, "
+            "database, framework, tool or deployment step that is not in the "
+            "user's request; where these notes disagree with it, the user's "
+            "request wins.\n\n"
+            f"{instructions}\n\n"
+            "## The user's original request, verbatim\n\n"
+            "This is the authority. Where the summary above is shorter or "
+            "differs, this text wins.\n\n"
+            f"{original}"
+        )
+    if len(instructions) > MAX_USER_MESSAGE_CHARS and original:
+        # The machine summary is optional; the accepted user specification is
+        # not. Do not reject or clip a 64k spec just because framing was added.
+        instructions = original
+    validate_message_length(instructions, label="The generation instructions")
+
+    provider = classification.provider or "anthropic"
+    llm_model = _DEFAULT_SMART_GEN_MODEL_BY_PROVIDER.get(provider, "claude-sonnet-4-6")
+
+    # Short, neutral run banner. The provider/free-tier choice and the BYOK
+    # option were already conveyed by the confirmation copy shown before this
+    # run (see ``_build_smart_gen_confirmation``), so this mid-run line stays
+    # minimal instead of repeating the API-key explanation.
+    return {
+        "action": "trigger_smart_generator",
+        "instructions": instructions,
+        "provider": provider,
+        "llmModel": llm_model,
+        "message": "Generating your application from your specs…",
+    }
