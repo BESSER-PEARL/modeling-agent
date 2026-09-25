@@ -43,8 +43,7 @@ from utilities.model_context import detailed_model_summary
 logger = logging.getLogger(__name__)
 
 # Compact structured output for complete-system generation: same model, same
-# modeling rules, ~2.4x faster (measured live — see
-# schemas/compact_class_diagram.py). Kill switch for rollback without a code
+# modeling rules, ~2.4x faster (see schemas/compact_class_diagram.py). Kill switch for rollback without a code
 # change: BESSER_AGENT_COMPACT_SPEC=0.
 COMPACT_SPEC_ENABLED = os.environ.get("BESSER_AGENT_COMPACT_SPEC", "1") != "0"
 
@@ -139,8 +138,8 @@ _CLASS_ELEMENT_TYPES = frozenset({"Class", "AbstractClass", "Interface"})
 # the element during validation. For a CLASS name that rejection is
 # unrecoverable for the editor's auto-fix loop: it emits a "rename X" repair,
 # but X was never accepted as a class, so the modify handler can't find it and
-# the loop spins (observed: a pilot user stuck for ~25 min on an app named with
-# hyphens). Sanitizing the name before it reaches the canvas prevents the loop.
+# the loop spins. Sanitizing the name before it reaches the canvas prevents the
+# loop.
 _VALID_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -358,8 +357,7 @@ Examples:
             # forgot to declare. Declare it from the user's own words, BEFORE
             # the guard below, which would otherwise read the reference as a
             # hallucinated type and coerce it to String — losing the closed
-            # value set. Every String-typed attribute in seven archived Qwen
-            # runs (12 of 12) was exactly that.
+            # value set.
             self._declare_referenced_enumerations(
                 system_spec, raw_request or user_request)
 
@@ -417,9 +415,8 @@ Examples:
             # this graph and would otherwise strip from the wrong end.
             self._fix_inverted_inheritance(system_spec)
 
-            # Guard: isAbstract on a LEAF rather than the base (3 of 10 live
-            # runs). An abstract leaf cannot be instantiated, so the app cannot
-            # create that entity at all.
+            # Guard: isAbstract on a LEAF rather than the base. An abstract leaf
+            # cannot be instantiated, so the app cannot create that entity at all.
             self._fix_misplaced_abstract(system_spec)
 
             # Guard: a subclass must not redefine an attribute an ancestor
@@ -491,7 +488,7 @@ Examples:
             return self._incremental_system_fallback(user_request, existing_model, raw_request=raw_request)
 
     # ------------------------------------------------------------------
-    # Enum-relationship guard (#33)
+    # Enum-relationship guard
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -599,28 +596,20 @@ Examples:
     def _fix_inverted_inheritance(self, system_spec: Dict[str, Any]) -> None:
         """Flip an Inheritance whose ends are the wrong way round.
 
-        Live report (2026-09-22, hotel): the spec shipped ``Person -> Guest``
-        and ``Person -> Employee``. The converter reads source as the SUBCLASS,
-        so the model came out as "Person extends Guest" AND "Person extends
-        Employee" -- one class multiply inheriting from two others, exactly
-        backwards from "two specialised kinds of persons exist". Nothing caught
-        it: DomainModel.validate() checks that both ends EXIST, never that the
-        direction is sensible, so it validated clean and reached code
-        generation inverted.
+        E.g. ``Person -> Guest`` plus ``Person -> Employee``: the converter reads
+        source as the SUBCLASS, so this means "Person extends Guest" AND "Person
+        extends Employee". DomainModel.validate() only checks that both ends
+        exist, so the inverted hierarchy would reach code generation.
 
         The signal is the SHARED SOURCE, not the abstract flag. A base extended
         by two kinds appears as two links sharing a TARGET; the inverted form
         shares a SOURCE, which would be multiple inheritance -- never what these
-        specs ask for.
-
-        Keying on ``isAbstract`` was tried first and is wrong: run 2 of a
-        10-run batch emitted the direction CORRECTLY (``Employee -> Person``)
-        while marking *Employee* abstract and Person concrete, so an
-        abstract-child rule would have inverted a correct hierarchy. The flag
-        travels independently of the direction and cannot arbitrate it.
+        specs ask for. ``isAbstract`` travels independently of the direction (a
+        correct ``Employee -> Person`` may still mark Employee abstract), so it
+        cannot arbitrate.
 
         A single inverted link with no shared end is left alone -- there is no
-        evidence to act on, and guessing is how the above nearly happened.
+        evidence to act on.
         """
         rels = [r for r in system_spec.get("relationships", [])
                 if isinstance(r, dict) and r.get("type") == "Inheritance"]
@@ -653,18 +642,15 @@ Examples:
     def _fix_misplaced_abstract(self, system_spec: Dict[str, Any]) -> None:
         """Clear ``isAbstract`` from a class that is only ever a SUBCLASS.
 
-        Measured on a 10-run live batch of the hotel prompt: 3 runs marked a
-        leaf abstract instead of the base -- ``Guest`` in one, ``Employee`` in
-        another, and in run 07 BOTH while ``Person`` stayed concrete. An
-        abstract leaf cannot be instantiated, so the delivered app could not
-        create a guest at all, and nothing downstream objected: BUML is happy to
-        hold an abstract class with no subclasses.
+        The LLM sometimes marks a leaf (e.g. ``Guest``) abstract instead of the
+        base. An abstract leaf cannot be instantiated, so the delivered app
+        could not create that entity, and BUML does not object: it happily
+        holds an abstract class with no subclasses.
 
         One-directional on purpose. A class that is the SOURCE of an inheritance
-        and never the TARGET has subclasses of nothing beneath it, so abstract
-        is meaningless there and clearing it is safe. Promoting the base instead
-        would be a guess: the benchmark's own known-good hotel model marks NO
-        class abstract, so an abstract base is not required by these specs.
+        and never the TARGET has nothing beneath it, so abstract is meaningless
+        there and clearing it is safe. Promoting the base instead would be a
+        guess: an abstract base is not required by these specs.
 
         Runs after the direction guard, which must settle who is the subclass.
         """
@@ -785,7 +771,7 @@ Examples:
         A class named with hyphens or spaces (e.g. ``risk-awareness-recommendation``)
         is rejected by BUML validation, and the editor's auto-fix loop can never
         repair it — it tries to *rename* a class that was never accepted, spins,
-        and burns turns (a real pilot incident). Fixing the name here, before the
+        and burns turns. Fixing the name here, before the
         spec is injected, removes the failure at its source.
 
         Class/enum names are PascalCased and every reference to them — relationship
@@ -1079,8 +1065,7 @@ Examples:
         bookingsAsContact"``. That reaches the editor as an association-end
         name, and a name containing a space fails the class-diagram quality
         check outright ("Name cannot contain spaces"), blocking GUI
-        generation: observed live 2026-09-18 on every one of seven
-        relationships.
+        generation.
 
         The second name is real information the schema never asked for, so it
         is kept as ``sourceRole`` (which the orientation guard already swaps
@@ -1162,12 +1147,10 @@ Examples:
 
         An association class is ALREADY connected to both endpoints through
         the association it is attached to. The LLM frequently adds the two
-        ordinary associations as well (Qwen did on the hotel prompt), and the
-        result does not merely duplicate a link: the generated
-        ``sql_alchemy.py`` names the same foreign key two different ways and
-        fails to import. Verified by regenerating the scaffold from the live
-        run's model - unimportable as produced, importable with these two
-        links removed, no LLM involved either way.
+        ordinary associations as well, and the result does not merely
+        duplicate a link: the generated ``sql_alchemy.py`` names the same
+        foreign key two different ways and fails to import. With these two
+        links removed it imports.
 
         Mutates *system_spec* in place.
         """
@@ -1193,8 +1176,7 @@ Examples:
                 continue
             source, target = rel.get("source"), rel.get("target")
             # Association, Composition and Aggregation alike: the LLM picks
-            # any of the three for these duplicates (Qwen used Association on
-            # one hotel run and Composition on the next) and all three produce
+            # any of the three for these duplicates, and all three produce
             # the same unimportable sql_alchemy.py. Inheritance is excluded -
             # "the link class IS a Booking" is a different claim, wrong in
             # other ways, and not this guard's business.
@@ -1222,10 +1204,8 @@ Examples:
         phrases it from both sides ("a booking produces a bill" / "a bill is
         raised against a booking"). Both survive into the model, so the class
         gets two foreign keys to the same partner and the create schema demands
-        two ids for one relationship — observed live 2026-09-17, where ``Bill``
-        carried both ``booking_id`` and ``forBooking_id`` (each NOT NULL and
-        UNIQUE) and ``Room`` was linked to ``ReservedRoom`` twice, once as a
-        mandatory FK and once through a join table.
+        two ids for one relationship (e.g. ``Bill`` carrying both ``booking_id``
+        and ``forBooking_id``, each NOT NULL and UNIQUE).
 
         Genuinely distinct parallel links (``homeAddress``/``workAddress``) are
         told apart by their names: a group whose relationships all carry
@@ -1233,11 +1213,10 @@ Examples:
         one unnamed, all unnamed, or repeated names — is one fact stated twice
         and is merged into a single relationship. A label that merely repeats
         its target class (``booking`` on a link to ``Booking``) is what the
-        converter derives for a missing label, so it counts as unnamed here:
-        live 2026-09-18 (``4efe04ff``/``9a6063ed``) three pairs were each one
-        fact named after its own target from both sides, slipped past this
-        test, and surfaced downstream as a ``_1``-suffixed duplicate end and
-        a second foreign key.
+        converter derives for a missing label, so it counts as unnamed here;
+        otherwise one fact named after its own target from both sides slips
+        past this test and surfaces downstream as a ``_1``-suffixed duplicate
+        end and a second foreign key.
 
         The survivor keeps the first occurrence's orientation and the first
         non-empty name; each end's multiplicity becomes the union of the
@@ -1288,8 +1267,8 @@ Examples:
             # other. A plain Association is already navigable both ways, so
             # A->B plus B->A with mirrored multiplicities is one fact the
             # request stated from each side, each side named after its own
-            # target: observed live 2026-09-18, Booking--bookingRooms-->
-            # BookingRoom alongside BookingRoom--booking-->Booking.
+            # target (e.g. Booking--bookingRooms-->BookingRoom alongside
+            # BookingRoom--booking-->Booking).
             if all_distinctly_named and not self._is_crosswise_reciprocal(group):
                 # Kept on purpose, but say so: EF Core and SQLAlchemy both
                 # surface this ambiguity rather than resolving it silently, and
@@ -1529,12 +1508,10 @@ Examples:
         hallucinated type that is right. For ``Ticket.status : StatusEnum``
         it throws away the one thing the model got right.
 
-        Measured on Qwen3-30B-A3B: across seven archived runs every single
-        ``String``-typed attribute (12 of 12) was a state the specification
-        had closed, and nothing else in those runs is typed ``String`` -
-        ordinary attributes are lowercase ``str``/``int``/``date``, because
-        ``String`` is not a token the model writes here, it is what the
-        coercion below assigns. A logged run shows it happening::
+        With Qwen3-30B-A3B, ``String``-typed attributes are in practice exactly
+        these closed states: ordinary attributes are lowercase
+        ``str``/``int``/``date``, because ``String`` is not a token the model
+        writes here, it is what the coercion below assigns. The log shows it::
 
             Coerced unknown attribute type Ticket.status : StatusEnum -> String
             Coerced unknown attribute type Ticket.urgency : UrgencyEnum -> String
@@ -1776,15 +1753,14 @@ Examples:
     def _break_mandatory_cycles(self, system_spec: Dict[str, Any]) -> None:
         """Relax one end of every mandatory creation cycle, keeping the rule as OCL.
 
-        Live runs ``4efe04ff`` and ``9a6063ed`` (2026-09-18) rendered "a
-        booking covers at least one room" as ``Booking --[1..*]--> BookedRoom``
-        while the link class kept ``BookedRoom --[1]--> Booking``. Each class
-        then needs an instance of the other to exist first, so the generated
-        ``BookingCreate`` demanded a ``BookedRoom`` id, ``BookedRoomCreate`` a
-        ``Booking`` id, and the shipped API could construct neither (69 routes,
-        2 of 15 workflow checks passed). BESSER's
-        ``DomainModel._validate_mandatory_cycles`` now reports the shape and
-        the Spec-Driven Agent refuses to build on it.
+        The LLM renders "a booking covers at least one room" as
+        ``Booking --[1..*]--> BookedRoom`` while the link class keeps
+        ``BookedRoom --[1]--> Booking``. Each class then needs an instance of
+        the other to exist first, so the generated ``BookingCreate`` demands a
+        ``BookedRoom`` id, ``BookedRoomCreate`` a ``Booking`` id, and the API
+        can construct neither. BESSER's
+        ``DomainModel._validate_mandatory_cycles`` reports the shape and the
+        Spec-Driven Agent refuses to build on it.
 
         "At least one" is a business invariant, not a creation-time bound:
         ``0..*`` plus ``context Booking inv: self.bookedRooms->size() >= 1``
@@ -1906,7 +1882,7 @@ Examples:
             logger.info("[ClassDiagram] Broke %d mandatory creation cycle(s)", relaxed)
 
     def _validate_constraints(self, system_spec: Dict[str, Any]) -> None:
-        """Drop OCL constraints whose context isn't a real class in the spec (#46).
+        """Drop OCL constraints whose context isn't a real class in the spec.
 
         Keeps only constraints with a non-empty ``expression`` whose ``context``
         names a class that actually exists, so a hallucinated context can't reach
@@ -2021,7 +1997,7 @@ Examples:
     def _rewrite_enum_relationship_mods(
         self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Rewrite add_relationship mods that point at an enumeration (#33).
+        """Rewrite add_relationship mods that point at an enumeration.
 
         A relationship endpoint that is an enumeration — whether the enum
         already exists in *current_model* or is created by an add_class with
@@ -2367,7 +2343,7 @@ Examples:
         if constraints:
             # Honest message: the business rules are understood but the editor
             # has no slot to display/store them yet, so don't claim they're
-            # shown on the canvas (#45).
+            # shown on the canvas.
             msg += (
                 f". I also noted {len(constraints)} rule(s) you mentioned, though "
                 "they aren't shown on the canvas yet"
@@ -2395,14 +2371,11 @@ Examples:
             "email: str"                -> "email"      (attribute)
             "+follow(user: User): bool" -> "follow"     (method)
 
-        The parameter list MUST be cut before the ``:`` split. This helper was
-        written for attributes and then reused for methods, where the first
-        ``:`` belongs to a PARAMETER, not a return type -- so
-        ``follow(user: User)`` became ``"follow(user"`` and ``follow()`` stayed
-        ``"follow()"``. Neither ever matched a bare "follow", which made every
-        method lookup fail: any request to update or remove a method answered
-        "I couldn't find a **follow** method", and the validation auto-fix
-        could never repair a method-related error (2026-09-14).
+        The parameter list MUST be cut before the ``:`` split: in a method the
+        first ``:`` belongs to a PARAMETER, not a return type, so
+        ``follow(user: User)`` would become ``"follow(user"`` and never match a
+        bare "follow" (every method lookup and method-related auto-fix would
+        fail).
         """
         name = (raw or "").strip()
         if name and name[0] in "+-#~":
@@ -3164,7 +3137,7 @@ Examples:
                     # targetClass identify a relationship by its endpoints — WITHOUT
                     # them here, "remove the relationship between Order and Customer"
                     # fell through and promoted "Order" to className, deleting the
-                    # whole Order class (#20).
+                    # whole Order class.
                     if any(target.get(k) for k in ("className", "classId",
                                                     "relationshipId", "relationshipName",
                                                     "sourceClass", "targetClass",
@@ -3217,7 +3190,7 @@ Examples:
 
             def _expand_refactoring(handler, spec):
                 """Expand refactoring actions into primitives, then guard against
-                any relationship whose endpoint is an enumeration (#33)."""
+                any relationship whose endpoint is an enumeration."""
                 if handler._is_refactoring_action(spec):
                     logger.info("[ClassDiagram] Detected refactoring action, expanding into primitives")
                     spec = handler._expand_refactoring_actions(spec, current_model)
@@ -3229,8 +3202,8 @@ Examples:
 
             # Up to TWO samples: when EVERY op targets something absent from
             # the model, the parse was almost certainly a sampling glitch
-            # (live case from the test sweep: a remove target came back as
-            # the garbled token 'id่อยl' — the identical retry succeeded).
+            # (e.g. a remove target that came back as a garbled token; the
+            # identical retry succeeds).
             # A fresh sample is cheap on the SMALL tier and turns that class
             # of flake into a non-event; a second total whiff reports
             # honestly as before.
@@ -3808,7 +3781,7 @@ Examples:
         # 1. Create the enum as a real enumeration. The frontend keys off
         #    changes.isEnumeration; without it we got a plain Class. Enum
         #    literals must NOT be typed by the enum name (that produced
-        #    "Low: Status") — leave them type-less. (#23)
+        #    "Low: Status") — leave them type-less.
         enum_attrs = [
             {"name": v, "visibility": "public"}
             for v in values if isinstance(v, str)
