@@ -1,4 +1,4 @@
-"""Focused live probe for the two fixes shipped in commit 16354b9:
+"""Focused live probe for two routing behaviours:
 
   1. decline_intent  — bare opt-out messages ("nothing", "no thanks", "never
      mind", novel phrasings) must be ACKNOWLEDGED, never routed into a create
@@ -14,7 +14,7 @@
 Reuses the WS client from test_nl_generation_scenarios (double-JSON protocol).
 
 Usage:
-  AGENT_WS_URL=wss://experimental.besser-pearl.org/agent \
+  AGENT_WS_URL=ws://localhost:8765 \
       python tests/live/probe_decline_mismatch.py
 """
 import asyncio
@@ -28,7 +28,6 @@ except Exception:
     pass
 
 sys.path.insert(0, os.path.dirname(__file__))
-os.environ.setdefault("AGENT_WS_URL", "wss://experimental.besser-pearl.org/agent")
 
 import websockets  # noqa: E402
 from _agent_ws import connect as agent_ws_connect  # noqa: E402

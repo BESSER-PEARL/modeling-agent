@@ -1,21 +1,20 @@
-"""Live release sweep against the deployed WME agent.
+"""Live release sweep against a running agent.
 
-Runs many REAL generation scenarios against wss://experimental.besser-pearl.org/agent
-and checks each result for the flaws users actually complain about:
+Runs many REAL generation scenarios against ``AGENT_WS_URL`` and checks each result for the flaws users actually complain about:
 
   - empty / hung / non-generation reply
   - too few classes  (a thin/broken model)
-  - ZERO relationships (isolated classes — the #1 "useless model" complaint)
-  - duplicate association names  (the bug we just fixed — verify at scale)
+  - ZERO relationships (isolated classes)
+  - duplicate association names
   - duplicate class names
   - dangling relationship endpoints (source/target not a real class)
   - enum used as a relationship endpoint
-  - web-app flow AUTO-generating instead of pausing (the pause fix — verify at scale)
+  - web-app flow AUTO-generating instead of pausing
 
-Concurrency is capped low to avoid overloading the single live agent.
+Concurrency is capped low to avoid overloading a single agent.
 
 Usage:
-  AGENT_WS_URL=wss://experimental.besser-pearl.org/agent REPEAT=1 CONC=3 \
+  AGENT_WS_URL=ws://localhost:8765 REPEAT=1 CONC=3 \
       python tests/live/wme_release_sweep.py
 """
 import asyncio
@@ -24,7 +23,6 @@ import sys
 import uuid
 
 sys.path.insert(0, os.path.dirname(__file__))
-os.environ.setdefault("AGENT_WS_URL", "wss://experimental.besser-pearl.org/agent")
 
 import websockets  # noqa: E402
 from _agent_ws import connect as agent_ws_connect  # noqa: E402
@@ -160,7 +158,7 @@ async def _run_webapp(sem, label, domain):
                         break
                     if ("generate the web app" in low
                             or "continue with generating your" in low):
-                        # 2026-08 model-first copy. Two emit paths, two
+                        # Model-first copy. Two emit paths, two
                         # variants: "…continue with generating your web app"
                         # (emit_webapp_generate_prompt) and "…generating your
                         # application" (the screens-built _follow_up).
@@ -169,7 +167,7 @@ async def _run_webapp(sem, label, domain):
                     if not answered and ("generate the gui" in low
                                         or "create your screens" in low
                                         or "fast & deterministic" in low):
-                        # Screens-first flow (2026-08): the agent asks HOW to
+                        # Screens-first flow: the agent asks HOW to
                         # create the screens before the defer message appears.
                         await _send(ws, sid, "fast & deterministic"
                                     if "screens" in low or "deterministic" in low

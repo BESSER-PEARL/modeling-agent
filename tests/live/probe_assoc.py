@@ -1,10 +1,7 @@
 """Send the hotel benchmark prompt and dump the systemSpec the agent builds."""
 import asyncio, json, os, sys, time, uuid
-sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
-HERE = r"C:\Users\sulejmani\Desktop\BESSER-Experimental\modeling-agent\tests\live"
-sys.path.insert(0, HERE)
-import websockets
-from _agent_ws import connect, AGENT_WS_ORIGIN  # noqa
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _agent_ws import connect  # noqa
 from test_nl_generation_scenarios import _unwrap, AGENT_WS_URL  # noqa
 
 PROMPT = open(os.path.join(os.path.dirname(__file__), "hotel_prompt.txt"),

@@ -20,16 +20,15 @@ HOW TO RUN
 ----------
 Standalone (prints a table, exits non-zero on failure — use as a deploy gate)::
 
-    python -m tests.live.test_nl_generation_scenarios
-    AGENT_WS_URL=wss://experimental.besser-pearl.org/agent REPEATS=3 \
+    AGENT_WS_URL=ws://localhost:8765 REPEATS=3 \
         python tests/live/test_nl_generation_scenarios.py
 
 As pytest (skipped unless explicitly enabled, since it needs a live agent)::
 
-    RUN_LIVE_AGENT_TESTS=1 python -m pytest tests/live/test_nl_generation_scenarios.py
+    RUN_LIVE_AGENT_TESTS=1 AGENT_WS_URL=ws://localhost:8765 python -m pytest tests/live/test_nl_generation_scenarios.py
 
 Env:
-  AGENT_WS_URL         default wss://experimental.besser-pearl.org/agent
+  AGENT_WS_URL         required, e.g. ws://localhost:8765
   REPEATS              probes per scenario (default 2)
   RUN_LIVE_AGENT_TESTS gate for the pytest wrapper (unset => skipped)
 """
@@ -48,9 +47,7 @@ except Exception:  # pragma: no cover - only needed for the live run
     websockets = None
     agent_ws_connect = None
 
-AGENT_WS_URL = os.environ.get(
-    "AGENT_WS_URL", "wss://experimental.besser-pearl.org/agent"
-)
+AGENT_WS_URL = os.environ.get("AGENT_WS_URL", "")
 REPEATS = int(os.environ.get("REPEATS", "2"))
 BUILD_TIMEOUT = 180
 GEN_TIMEOUT = 120
@@ -62,7 +59,7 @@ GEN_TIMEOUT = 120
 # ``build_model`` seeds a class diagram first so the request has something to
 # generate from — mirroring "start from a fixed model, then generate part X".
 SCENARIOS = [
-    # The reported bug: a bare "database" request must yield an actual database
+    # A bare "database" request must yield an actual database
     # — the deterministic SQL/SQLAlchemy layer OR the Spec-Driven Agent (smart),
     # which also builds one. The ONLY wrong answer is `django`, which asks for
     # Django project settings and produces no database. "database" is genuinely
@@ -73,7 +70,7 @@ SCENARIOS = [
     {"name": "the_database", "msg": "generate the database",
      "accept": {"sql", "sqlalchemy", "smart"}, "forbid": {"django"}},
     # Explicit phrasings name their generator — the deterministic one is
-    # expected (smart would be over-engineering), but django is still the bug.
+    # expected (smart would be over-engineering); django is still forbidden.
     {"name": "sql_schema", "msg": "generate the SQL schema for my model",
      "accept": {"sql", "sqlalchemy"}, "forbid": {"django"}},
     {"name": "sqlalchemy", "msg": "generate the SQLAlchemy models",
@@ -286,6 +283,8 @@ def test_nl_generation_matrix():
     import pytest
     if not os.environ.get("RUN_LIVE_AGENT_TESTS"):
         pytest.skip("live agent test — set RUN_LIVE_AGENT_TESTS=1 to run")
+    if not AGENT_WS_URL:
+        pytest.skip("live agent test — set AGENT_WS_URL to the agent's WebSocket URL")
     if websockets is None:
         pytest.skip("websockets package not installed")
     results = asyncio.run(run_matrix())

@@ -1,4 +1,4 @@
-"""Comprehensive ~100-scenario live release sweep against the deployed WME agent.
+"""Comprehensive ~100-scenario live release sweep against a running agent.
 
 One run exercises every user-facing capability + failure mode and classifies each
 as ok / FLAW / FAIL, grouped by category, with a final summary:
@@ -14,7 +14,7 @@ as ok / FLAW / FAIL, grouped by category, with a final summary:
   meta        - help / describe / greeting
 
 Usage:
-  AGENT_WS_URL=wss://experimental.besser-pearl.org/agent CONC=4 \
+  AGENT_WS_URL=ws://localhost:8765 CONC=4 \
       python tests/live/wme_100_sweep.py
 Knobs: CONC (parallelism), GEN_TIMEOUT (per-reply seconds), ONLY (csv of categories).
 """
@@ -31,7 +31,6 @@ except Exception:
     pass
 
 sys.path.insert(0, os.path.dirname(__file__))
-os.environ.setdefault("AGENT_WS_URL", "wss://experimental.besser-pearl.org/agent")
 
 import websockets  # noqa: E402
 from _agent_ws import connect as agent_ws_connect  # noqa: E402

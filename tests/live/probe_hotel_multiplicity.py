@@ -7,7 +7,8 @@ required create field).
 
     python tests/live/probe_hotel_multiplicity.py [runs]
 
-Env: AGENT_WS_URL (default wss://experimental.besser-pearl.org/agent)
+Env: AGENT_WS_URL (required, e.g. ws://localhost:8765); HOTEL_SPEC (default:
+the bundled hotel_prompt.txt)
 """
 import asyncio
 import json
@@ -18,7 +19,6 @@ import time
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-os.environ.setdefault("AGENT_WS_URL", "wss://experimental.besser-pearl.org/agent")
 
 from _agent_ws import connect as agent_ws_connect  # noqa: E402
 from test_nl_generation_scenarios import _unwrap, AGENT_WS_URL  # noqa: E402
@@ -26,7 +26,7 @@ from test_nl_generation_scenarios import _unwrap, AGENT_WS_URL  # noqa: E402
 TIMEOUT = int(os.environ.get("GEN_TIMEOUT", "240"))
 
 SPEC_PATH = pathlib.Path(
-    os.environ.get("HOTEL_SPEC", r"C:\Users\sulejmani\Desktop\BESSER-Experimental\hotel_spec.txt"))
+    os.environ.get("HOTEL_SPEC", os.path.join(os.path.dirname(os.path.abspath(__file__)), "hotel_prompt.txt")))
 PROMPT = SPEC_PATH.read_text(encoding="utf-8")
 
 # What a correct reading of the request gives, as (source_class, target_class)

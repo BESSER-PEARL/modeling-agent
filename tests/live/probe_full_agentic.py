@@ -8,7 +8,7 @@
   multiturn   context retention + mid-conversation pivots across 3-4 turns.
 
 Usage:
-  AGENT_WS_URL=wss://experimental.besser-pearl.org/agent CONC=4 \
+  AGENT_WS_URL=ws://localhost:8765 CONC=4 \
       python tests/live/probe_full_agentic.py
 Knobs: CONC, GEN_TIMEOUT, ONLY (csv of generators,crossdiag,multiturn).
 """
@@ -25,7 +25,6 @@ except Exception:
     pass
 
 sys.path.insert(0, os.path.dirname(__file__))
-os.environ.setdefault("AGENT_WS_URL", "wss://experimental.besser-pearl.org/agent")
 
 import websockets  # noqa: E402
 from _agent_ws import connect as agent_ws_connect  # noqa: E402

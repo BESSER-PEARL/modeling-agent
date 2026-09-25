@@ -1,5 +1,5 @@
 """Adversarial edge cases for the domain-mismatch "Update model + generate"
-chain and the MISMATCH_REGEN_PENDING one-shot flag (commit c3b42a7).
+chain and the MISMATCH_REGEN_PENDING one-shot flag.
 
 Each scenario runs on its own WS session and drives multiple turns, collecting
 ALL frames per turn so we can see a resume confirmation that follows an inject.
@@ -13,7 +13,7 @@ Scenarios:
   decline_interrupt "never mind" at the confirmation cancels, does not build
 
 Usage:
-  AGENT_WS_URL=wss://experimental.besser-pearl.org/agent \
+  AGENT_WS_URL=ws://localhost:8765 \
       python tests/live/probe_mismatch_edges.py
 """
 import asyncio
@@ -29,7 +29,6 @@ except Exception:
     pass
 
 sys.path.insert(0, os.path.dirname(__file__))
-os.environ.setdefault("AGENT_WS_URL", "wss://experimental.besser-pearl.org/agent")
 
 import websockets  # noqa: E402
 from _agent_ws import connect as agent_ws_connect  # noqa: E402

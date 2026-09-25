@@ -8,7 +8,7 @@ Flows:
   webapp        "create a web app for X" -> deferred -> "generate the web app" -> trigger
 
 Usage:
-  AGENT_WS_URL=wss://experimental.besser-pearl.org/agent \
+  AGENT_WS_URL=ws://localhost:8765 \
       python tests/live/probe_workflow_complete.py
 """
 import asyncio
@@ -24,7 +24,6 @@ except Exception:
     pass
 
 sys.path.insert(0, os.path.dirname(__file__))
-os.environ.setdefault("AGENT_WS_URL", "wss://experimental.besser-pearl.org/agent")
 
 import websockets  # noqa: E402
 from _agent_ws import connect as agent_ws_connect  # noqa: E402
@@ -43,10 +42,7 @@ _CODE_GEN_ACTIONS = {"trigger_generator", "trigger_smart_generator"}
 
 # A canned non-trivial model, as the editor would hold and resend every turn.
 # Without it the agent answers "your workspace looks empty - <stack> generation
-# requires Class Diagram", which this probe used to misread as a config prompt:
-# it answered that "prompt", the agent took the answer as a description and
-# BUILT a model, and the flow was reported as after-config:inject_complete_system
-# (NO_TRIGGER). Every gen:* flaw was this, not an agent regression.
+# requires Class Diagram", which is easy to misread as a config prompt.
 _SHOP_MODEL = {
     "version": "3.0.0",
     "type": "ClassDiagram",
@@ -237,10 +233,8 @@ async def _webapp_complete(sem, domain="a recipe sharing app"):
                     low = _txt(r).lower()
                     # The pause is about not auto-generating CODE. Building the
                     # class model from "create a web app for X" is the expected
-                    # first step, and tests/test_webapp_generation_gate.py scores
-                    # the invariant on trigger_* alone. Flagging
-                    # inject_complete_system here reported correct behaviour as a
-                    # violation on every run.
+                    # first step (tests/test_webapp_generation_gate.py scores
+                    # the invariant on trigger_* alone).
                     if r.get("action") in _CODE_GEN_ACTIONS:
                         return (label, f"AUTO-RAN({r.get('action')})", "AUTO_RAN_BEFORE_CONFIRM")
                     if "generate the web app" in low or ("ready" in low and "web app" in low):

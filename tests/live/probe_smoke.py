@@ -16,7 +16,7 @@ Checks are deterministic-ish behaviors (NOT generation fidelity):
   mismatch      "Update model + generate" breaks the loop AND resumes smart-gen
 
 Usage (run after ./deploy.sh agent):  python tests/live/probe_smoke.py
-  AGENT_WS_URL   default wss://experimental.besser-pearl.org/agent
+  AGENT_WS_URL   required, e.g. ws://localhost:8765
   BOOT_WAIT      seconds to keep retrying the first connection (default 360)
 Exit 0 = every critical invariant holds; 1 = a regression (details printed).
 """
@@ -33,16 +33,14 @@ except Exception:
     pass
 
 sys.path.insert(0, os.path.dirname(__file__))
-os.environ.setdefault("AGENT_WS_URL", "wss://experimental.besser-pearl.org/agent")
 
 import websockets  # noqa: E402
 from _agent_ws import connect as agent_ws_connect  # noqa: E402
 from test_nl_generation_scenarios import _unwrap, AGENT_WS_URL  # noqa: E402
 
 TIMEOUT = int(os.environ.get("GEN_TIMEOUT", "160"))
-# 180s was under the real boot time, so a healthy deploy failed the gate.
-# Measured 2026-09-11: 3m38s from container start to a listening WebSocket
-# (NER + one intent classifier per state, trained before the socket opens).
+# The agent trains its NER + one intent classifier per state before the
+# socket opens, which takes several minutes after container start.
 BOOT_WAIT = int(os.environ.get("BOOT_WAIT", "360"))
 BUILD = {"inject_complete_system", "modify_model", "auto_generate_gui", "inject_element"}
 TERMINAL = BUILD | {"trigger_generator", "trigger_smart_generator", "trigger_export"}
@@ -198,10 +196,9 @@ async def c_flow_pivot():
         asked = any("replace" in (t or "").lower() for _a, t, _l in f1)
         if not asked:
             return (False, f"no replace prompt ({[x[0] for x in f1]})")
-        # STRICTLY modify_model: the marathon's 4/4 destructive bug (the
-        # confirmation read 'add a Member class' as KEEP and resumed the
-        # stashed create) PASSED the old lenient check, because the wrongly
-        # resumed create also arrived as inject_complete_system.
+        # STRICTLY modify_model: a confirmation that reads 'add a Member class'
+        # as KEEP resumes the stashed create, which also arrives as
+        # inject_complete_system, so a lenient check would pass it.
         await _send(ws, sid, "add a Member class", model=_SHOP_MODEL)
         f2 = await _collect(ws)
         ok = any(x[0] == "modify_model" for x in f2)
@@ -290,11 +287,8 @@ async def _await_boot():
         except Exception as exc:
             status = getattr(exc, "status_code", None)
             last = f"{type(exc).__name__}: {str(exc)[:140]}"
-            # A GATEWAY error is the boot window: nginx answers 502/503/504
-            # while the agent is still training its NER + per-state intent
-            # classifiers (~3m40s) and nothing is listening upstream yet.
-            # Treating it as "up but rejecting" failed the gate on every single
-            # agent deploy, which trained everyone to ignore the gate.
+            # A gateway error (502/503/504) means the agent is still booting
+            # behind a reverse proxy, not that it is up and rejecting.
             if status in (502, 503, 504):
                 await asyncio.sleep(5)
                 continue
