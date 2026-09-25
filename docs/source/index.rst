@@ -20,7 +20,7 @@ editor applies to the canvas or hands to a generator.
 - 8 diagram types: Class, Object, State Machine, Agent, GUI (no-code),
   Quantum Circuit, BPMN, and User Profile
 - Code generation via `BESSER generators <https://besser-pearl.github.io/BESSER/generators.html>`_
-  (Django, Python, Java, SQL, and more), plus a smart LLM-authored path for
+  (Django, Python, Java, SQL, and more), plus the LLM-authored Spec-Driven Agent for
   stacks BESSER has no built-in generator for
 - Bring-your-own-key (BYOK) routing, so generation can run on the user's own
   OpenAI, Anthropic or Mistral key

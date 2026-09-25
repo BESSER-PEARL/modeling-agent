@@ -239,13 +239,16 @@ Environment Variables
    * - ``BESSER_BACKEND_URL``
      - ``http://localhost:3001``
      - Base URL of the BESSER backend. Used by the diagram-validation
-       bridge (``src/handlers/validation_handler.py``) and the pilot
-       telemetry collector (``src/telemetry.py``). Without it, every
+       bridge (``src/handlers/validation_handler.py``) and the opt-in
+       study telemetry collector (``src/telemetry.py``). Without it, every
        validation in a container fails with connection-refused.
    * - ``BESSER_AGENT_ALLOW_CUSTOM_BASE_URL``
      - unset (off)
      - Whether a BYOK request may specify its own API base URL. Set to
-       ``"false"`` on the hosted deployment.
+       ``"false"`` on the hosted deployment. Set to ``1`` for a local run that
+       uses PIA, Ollama or another OpenAI-compatible endpoint (they arrive as
+       ``provider=openai`` plus ``user_api_base``); when off, such a request
+       silently falls back to the shared server LLM.
    * - ``BESSER_AGENT_STT_LANGUAGE``
      - auto-detect
      - Pins speech-to-text to a language (``en``, ``fr``, ``de``, …).

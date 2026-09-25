@@ -144,7 +144,7 @@ WorkspaceContext
      - Active tab index per diagram type (default 0)
    * - ``pilotParticipant``
      - ``str``
-     - Optional pilot-experiment label, validated against
+     - Optional opt-in study participant label, validated against
        ``^[A-Za-z0-9_-]{1,16}$`` and dropped otherwise
 
 FileAttachment

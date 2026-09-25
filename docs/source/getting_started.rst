@@ -15,8 +15,8 @@ Key capabilities:
 
 - Diagram creation and modification via natural language.
 - Multi-operation orchestration (modeling + generation in a single request).
-- Code generation: BESSER's deterministic generators, plus an LLM-authored
-  **smart** path for stacks BESSER has no built-in generator for.
+- Code generation: BESSER's deterministic generators, plus a hand-off to the
+  LLM-authored **Spec-Driven Agent** for stacks BESSER has no built-in generator for.
 - Bring-your-own-key routing, so generation can run on the user's own OpenAI,
   Anthropic or Mistral key. See :doc:`configuration`.
 - UML specification Q&A with RAG (Retrieval-Augmented Generation) over the OMG
@@ -116,8 +116,8 @@ The agent listens on ``ws://localhost:8765`` by default.
 .. note::
 
    **Startup is slow.** Before the WebSocket opens, BAF trains a NER model plus
-   one local intent classifier per state (10 states). On the production image
-   this was measured at 3m38s from container start to a listening socket. A
+   one local intent classifier per state (10 states), which can take several
+   minutes (about 3.5 on the Docker image) before the socket listens. A
    first run that seems to hang is usually just this.
 
 If you see an ``OPENAI_API_KEY`` error, check your ``config.yaml`` or ``.env``

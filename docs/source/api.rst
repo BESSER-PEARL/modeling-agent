@@ -128,7 +128,7 @@ Core Runtime Modules
   - ``get_user_message`` / ``get_diagram_type`` / ``get_current_model``
 
 ``src/telemetry.py``
-  Fire-and-forget pilot-experiment prompt telemetry. Posts one ``prompt``
+  Opt-in, fire-and-forget study prompt telemetry. Posts one ``prompt``
   event per handled message to ``{BESSER_BACKEND_URL}/besser_api/telemetry/event``
   on a short-timeout daemon thread, only when the request carries a
   ``pilotParticipant`` label. Every exception is swallowed.

@@ -65,8 +65,8 @@ Glossary
       ``low``, since a structured diagram spec does not need deep
       chain-of-thought.
 
-   Smart Generator
-      The LLM-authored code-generation path, as opposed to BESSER's
+   Spec-Driven Agent
+      The LLM-authored code-generation path (``smart`` route in the code), as opposed to BESSER's
       template-driven deterministic generators. Used when the request names a
       stack BESSER has no generator for, or a BESSER stack plus extras the
       template cannot produce. Reached via a ``trigger_smart_generator``

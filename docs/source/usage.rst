@@ -214,10 +214,10 @@ Supported generator types and their keywords:
      - ``generate an RDF vocabulary``
      - RDF trigger
 
-Smart Generation
-~~~~~~~~~~~~~~~~
+Spec-Driven Agent (smart route)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Anything outside that list goes to the **smart generator** — an LLM-authored
+Anything outside that list goes to the **Spec-Driven Agent** — an LLM-authored
 codebase rather than a template. Two kinds of request take this route:
 
 - A language or framework BESSER has no deterministic generator for
@@ -230,7 +230,7 @@ codebase rather than a template. Two kinds of request take this route:
    build a Rails 7 app with Devise auth from my model
    generate a FastAPI backend with JWT and Docker
 
-Smart runs spend the user's own API key, so the agent always **asks for
+Spec-Driven Agent runs spend the user's own API key, so the agent always **asks for
 explicit confirmation** before starting one. If the request describes a
 different domain than the class diagram already on the canvas (classes say
 "Team/Player", the request says "a shoe store"), it offers three choices
@@ -329,8 +329,8 @@ Using Your Own API Key
 
 If you supply your own OpenAI, Anthropic or Mistral key in the editor, the
 agent routes its generation and conversational calls through a per-request
-client built from that key instead of the shared server key. Smart generation
-always uses your key. See :doc:`configuration` for what is and is not routed.
+client built from that key instead of the shared server key. The Spec-Driven
+Agent always uses your key. See :doc:`configuration` for what is and is not routed.
 
 UML Specification Queries
 -------------------------

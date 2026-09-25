@@ -10,7 +10,7 @@ Tests live in two places with very different characters:
 | Location | Character | Runs in CI? | Cost |
 | --- | --- | --- | --- |
 | `tests/*.py` | Deterministic unit / integration tests. No live LLM — everything is stubbed (`FakeSession`, `FakeLLM`, recording fakes, monkeypatched classifiers). | Run manually (there is no CI). | Free, fast. |
-| `tests/live/*.py` | **LIVE** harnesses that open a real WebSocket to the *deployed* agent at `wss://experimental.besser-pearl.org/agent` and drive real generations. | **Never** — they hit a paid model. | Cost tokens; run manually before a release. |
+| `tests/live/*.py` | **LIVE** harnesses that open a real WebSocket to a running agent (`AGENT_WS_URL`, required) and drive real generations. | **Never** — they hit a paid model. | Cost tokens; run manually before a release. |
 
 `tests/conftest.py` provides the shared scaffolding used across the flat suite:
 `FakeSession` (a stand-in for BAF's `Session`), `FakeLLM` (canned-response stub),
@@ -21,7 +21,7 @@ inserts `src/` onto `sys.path` so tests can use bare-style imports (`from protoc
 ## Running the tests
 
 ```bash
-# Full deterministic suite (1177 tests collected)
+# Full deterministic suite
 python -m pytest
 
 # Focused suites
@@ -44,25 +44,27 @@ run manually. Keep that in mind: a green local run is the only gate on a change.
 The `tests/live/` harnesses are **run by hand** (usually before a release) and print a
 categorized `ok / FLAW / FAIL` report to stdout. They are `__main__` scripts, not pytest
 tests (the one exception is the pytest wrapper in `test_nl_generation_scenarios.py`, which
-is **skipped unless `RUN_LIVE_AGENT_TESTS=1`**).
+is **skipped unless `RUN_LIVE_AGENT_TESTS=1`**). Every harness requires `AGENT_WS_URL`;
+the WebSocket `Origin` header is derived from it (`wss://host` → `https://host`, otherwise
+`http://localhost:8080`) and can be overridden with `AGENT_WS_ORIGIN`.
 
 ```bash
 # Comprehensive ~97-scenario release sweep
-AGENT_WS_URL=wss://experimental.besser-pearl.org/agent CONC=4 \
+AGENT_WS_URL=wss://<your-host>/agent CONC=4 \
     python tests/live/wme_100_sweep.py
 
 # Focused subset (comma-separated categories)
-ONLY=system,modify,edge python tests/live/wme_100_sweep.py
+AGENT_WS_URL=ws://localhost:8765 ONLY=system,modify,edge python tests/live/wme_100_sweep.py
 
 # NL→generator routing matrix (as a pytest deploy gate)
-RUN_LIVE_AGENT_TESTS=1 python -m pytest tests/live/test_nl_generation_scenarios.py
+AGENT_WS_URL=ws://localhost:8765 RUN_LIVE_AGENT_TESTS=1 python -m pytest tests/live/test_nl_generation_scenarios.py
 ```
 
 Environment knobs (defaults in parentheses):
 
 | Knob | Used by | Meaning |
 | --- | --- | --- |
-| `AGENT_WS_URL` | all live harnesses | Target agent (`wss://experimental.besser-pearl.org/agent`). |
+| `AGENT_WS_URL` | all live harnesses | Target agent, e.g. `ws://localhost:8765` or `wss://<your-host>/agent` (required, no default). |
 | `CONC` | `wme_100_sweep` (4), `wme_release_sweep` (3) | Parallel WebSocket connections — kept low to protect the single live agent. |
 | `GEN_TIMEOUT` | `wme_100_sweep`, `wme_release_sweep` (150) | Per-reply timeout, seconds. |
 | `ONLY` | `wme_100_sweep`, `wme_release_sweep` | CSV filter of scenario categories (`system,webapp,other,modify,generate,vague,edge,meta`). |
@@ -123,14 +125,14 @@ has **no** skip/xfail markers.
 | `test_gui_phase0.py` | 15 | 1× `importorskip("openai.lib._pydantic")` | Phase 0 quick-wins — truncation salvage, `two_column`, `stats_grid` value/binding preservation. |
 | `test_gui_phase3.py` | 22 | 1× `importorskip("openai.lib._pydantic")` | Phase 3 — LLM-authored `.ds-*` HTML sections + structured widget binding spliced at `<!--WIDGET:-->`, domain styles, graceful fallback. |
 
-### Generation & smart-generation flow
+### Generation & Spec-Driven Agent hand-off flow
 
 | File | ~Funcs | What it verifies |
 | --- | --- | --- |
 | `test_generation_handler.py` | 59 (param) | `generation_handler` — `detect_generator_type`, config parse/prompt, `should_route_to_generation` gatekeeper, dispatch, Django→SQL pivot-mid-config fix. |
 | `test_smart_generation_handler.py` | 17 (param) | Generation sub-routing via the unified classifier (fallback safety, dispatch) and `build_trigger_smart_generator_payload`. |
 | `test_routing_cleanup.py` | ~ | Behavioral pins for the routing cleanup: confirmation pivots, config-flow suppression + cancel, structured smart-gen recency, generator-registry sync. |
-| `test_smart_generation_handler_gate.py` | 10 (param) | The B-2 "confirm-before-smart" gate — never fires on first contact; stashes with a 30-min TTL; explicit/natural confirm fires, cancel/mixed never do. |
+| `test_smart_generation_handler_gate.py` | 10 (param) | The "confirm-before-smart" gate — never fires on first contact; stashes with a 30-min TTL; explicit/natural confirm fires, cancel/mixed never do. |
 | `test_smart_generator_result_event.py` | 6 | `generator_result` frontend event with `metadata.smart=True` — hides cost/internal name, records outcome to memory, maps error codes to tone. |
 | `test_webapp_generation_gate.py` | 4 | The web-app auto-generation **pause** — a GUI-create + `web_app` plan has the generation op stripped at source (`execution/planning.py`) and shows a generate nudge. Distinct from the smart-gen gate. |
 | `test_empty_workspace_bridge.py` | 11 | Same-turn create→generate bridging — an in-turn create is written back into the snapshot so a later generate step isn't wrongly refused as "empty workspace". |

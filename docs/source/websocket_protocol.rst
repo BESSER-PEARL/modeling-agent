@@ -183,8 +183,8 @@ Field Reference
      - Active tab index per diagram type (for multi-tab support)
    * - ``context.pilotParticipant``
      - No
-     - Pilot-experiment participant label (e.g. ``"P3"``), present only when
-       the tab was opened through a facilitator link. Validated against
+     - Opt-in study participant label (e.g. ``"P3"``), present only when the
+       session was opened with a study link. Validated against
        ``^[A-Za-z0-9_-]{1,16}$`` and dropped otherwise. Never a name or email.
    * - ``attachments``
      - No
@@ -247,7 +247,7 @@ Action index
      - Run a deterministic BESSER generator
    * - ``trigger_smart_generator``
      - Yes
-     - Run the LLM-authored smart generator
+     - Hand off to the LLM-authored Spec-Driven Agent
    * - ``trigger_github_import``
      - Yes
      - Import a BESSER project from a GitHub repo and resume work on it
@@ -662,7 +662,7 @@ Open the deploy dialog on the frontend.
 trigger_smart_generator
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-Run the LLM-authored **smart** generator. Emitted when the request names a
+Hand off to the LLM-authored **Spec-Driven Agent**. Emitted when the request names a
 stack BESSER has no deterministic generator for, or a BESSER stack plus
 extras the template cannot produce (auth, JWT, Docker, migrations, tests, …).
 Built by ``build_trigger_smart_generator_payload()`` in
@@ -694,7 +694,7 @@ Built by ``build_trigger_smart_generator_payload()`` in
    * - ``llmModel``
      - Default model for that provider
 
-The smart generator itself does **not** run over this WebSocket — the
+The Spec-Driven Agent itself does **not** run over this WebSocket — the
 frontend calls the BESSER backend's spec-driven HTTP/SSE endpoints with the
 user's key. This action only hands it the instructions.
 

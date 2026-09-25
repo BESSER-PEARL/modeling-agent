@@ -193,7 +193,7 @@ LLM call:
    * - ``generator_type``
      - Which BESSER built-in to run when ``generation_route="deterministic"``
    * - ``refined_instructions``
-     - The polished prompt handed to the smart generator when
+     - The polished prompt handed to the Spec-Driven Agent when
        ``generation_route="smart"``
    * - ``provider``
      - Suggested LLM provider for a smart run (``anthropic`` / ``openai``);

@@ -184,12 +184,12 @@ CORS is enforced independently by the agent: ``platforms.websocket.origins``
 in ``config.yaml`` whitelists the browser origins allowed to open a socket.
 
 The Docker entrypoint writes the key, so a container is restricted by default.
-Set the two production origins per deployment:
+Set the two allowed host origins per deployment:
 
 .. code-block:: bash
 
    BESSER_AGENT_WS_ORIGIN=https://editor.besser-pearl.org
-   BESSER_AGENT_WS_ORIGIN_ALT=https://experimental.besser-pearl.org
+   BESSER_AGENT_WS_ORIGIN_ALT=https://<your-second-host>
 
 The generated file also whitelists ``http://localhost`` on ports 8080, 5173 and
 3000 for local development.
@@ -197,11 +197,8 @@ The generated file also whitelists ``http://localhost`` on ports 8080, 5173 and
 .. warning::
 
    If the ``origins`` key is absent from ``config.yaml``, BAF accepts a
-   WebSocket from **any** origin — it is not a deny-by-default setting. Before
-   2026-09-14 the entrypoint omitted it and every container built from this
-   Dockerfile was in exactly that state, with nginx and the ``auth_request``
-   gate the only things restricting who could reach the socket. If you mount
-   your own ``config.yaml`` over the generated one, carry the key across.
+   WebSocket from **any** origin — it is not a deny-by-default setting. If you
+   mount your own ``config.yaml`` over the generated one, carry the key across.
 
 Health Monitoring
 -----------------
@@ -217,11 +214,9 @@ The image's healthcheck simply opens a TCP connection to the WebSocket port:
 
    The ``start-period`` must cover the **full** boot, not just process start.
    BAF trains a NER model plus one intent classifier per state before opening
-   the socket; container start to listening socket was measured at **3m38s**.
-   With the previous 40 s start-period, every deploy reported FAIL and the
-   container sat ``unhealthy`` for three minutes while being perfectly
-   fine — which is exactly how a *real* failure gets waved off as "probably
-   just the slow boot".
+   the socket; container start to listening socket takes about **3.5 minutes**.
+   A shorter start-period marks a healthy container ``unhealthy`` during boot,
+   which makes a real failure easy to dismiss as the slow boot.
 
 - **WebSocket keep-alive:** handled by the BESSER framework.
 - **Logs:** the agent logs to stdout. Use Docker log drivers (the production

@@ -295,8 +295,8 @@ via ``_common_preamble()``, the generation ones via the generation state body.
    * - GUI generation-mode choice (``src/confirmation.py``)
      - "Fast & deterministic" (one screen per class, no LLM) or
        "AI-Generated (experimental)"?
-   * - Smart-generation confirmation (``src/handlers/generation_handler.py``)
-     - Confirm before running the LLM-authored smart generator
+   * - Spec-Driven Agent confirmation (``src/handlers/generation_handler.py``)
+     - Confirm before handing off to the LLM-authored Spec-Driven Agent
    * - Plan-generation pause (``src/handlers/generation_handler.py``)
      - A mixed modeling + generation plan pauses after the modeling step and
        waits for an explicit "generate" before running the generator

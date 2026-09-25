@@ -12,8 +12,8 @@ that the editor applies to the canvas or hands to a generator.
 - Routes every message with **one** LLM classification call (`src/unified_classifier.py`),
   cached per message; a local, free TensorFlow `SimpleIntentClassifier` is the fallback.
 - Supports multi-step orchestration (for example: model first, then generate code).
-- Triggers BESSER's deterministic generators, or an LLM-authored **smart** generation
-  path for stacks BESSER has no built-in generator for.
+- Triggers BESSER's deterministic generators, or hands off to the LLM-authored
+  **Spec-Driven Agent** for stacks BESSER has no built-in generator for.
 - Routes generation and conversation through a user-supplied API key (BYOK) when one is set.
 - Answers UML specification questions using RAG over the OMG UML 2.5.1 specification.
 - Converts uploaded files (PlantUML, knowledge graphs, XMI, PDFs, images, text) into
@@ -49,7 +49,7 @@ Deterministic BESSER generators (`GENERATOR_KEYWORDS` in `src/handlers/generatio
 
 Anything outside that list — a non-BESSER language or framework, or a BESSER stack plus
 extras the template cannot produce (auth, Docker, migrations, …) — is routed to the
-**smart generator** via a `trigger_smart_generator` payload.
+**Spec-Driven Agent** via a `trigger_smart_generator` payload.
 
 ## Repository Structure
 
@@ -70,7 +70,7 @@ modeling-agent/
     confirmation.py                # Pending replace/keep + GUI-mode flows
     byok.py                        # Per-request bring-your-own-key routing
     suggestions.py                 # Context-aware "what's next?" suggestions
-    telemetry.py                   # Pilot-experiment prompt telemetry (fire-and-forget)
+    telemetry.py                   # Opt-in study prompt telemetry (fire-and-forget)
     llm/                           # LLM provider abstraction (structured output, streaming)
     memory/                        # Conversation memory + rolling summary
     schemas/                       # Pydantic schemas for structured LLM output
@@ -162,7 +162,7 @@ Optional environment overrides — the full list is in
 | --- | --- |
 | `BESSER_AGENT_MODEL_*` | Re-point one model tier (`CLASSIFIER`, `GENERATION_LARGE`, `GENERATION_GUI`, `GENERATION_SMALL`, `REASONING`, `VISION`, `EMBEDDINGS`), plus `REASONING_EFFORT` |
 | `BESSER_BACKEND_URL` | BESSER backend base URL (diagram validation + telemetry) |
-| `BESSER_AGENT_ALLOW_CUSTOM_BASE_URL` | Whether a BYOK request may supply its own API base URL |
+| `BESSER_AGENT_ALLOW_CUSTOM_BASE_URL` | Whether a BYOK request may supply its own API base URL (required for PIA / Ollama / other OpenAI-compatible endpoints) |
 | `BESSER_AGENT_STT_LANGUAGE` | Pin speech-to-text to a language instead of auto-detect |
 | `LOG_PROMPTS` | Log full LLM prompts (local debugging only) |
 

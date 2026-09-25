@@ -17,13 +17,10 @@ frontend applies to the diagram canvas or hands to a generator.
 - **Deployed alongside** BESSER's main releases but has its **own repo, its own
   `develop`→`main` branch convention, and its own release cadence** — it is
   *not* part of BESSER's version number and is never included in a BESSER release PR.
-  Deploy it with `./deploy.sh agent` from the **parent workspace** (the directory that
-  holds `BESSER/`, `modeling-agent/` and `deploy.sh`): it builds the image from your
-  local working tree, pushes it, and restarts `besser-wme-modeling-agent` on the host.
+  It ships as its own Docker image, built from this repo's `Dockerfile`.
 - Runs as a single long-lived process (`modeling_agent.py`) hosting BAF's
   `websocket_platform` (`config.yaml` → `platforms.websocket.port`, default 8765).
-  Reverse-proxied at `wss://<host>/agent` (`editor.besser-pearl.org` in production,
-  `experimental.besser-pearl.org` on the experimental stack).
+  Reverse-proxied at `wss://<host>/agent` (`editor.besser-pearl.org` in production).
 - **Boot is slow by design.** BAF trains a NER model plus one local intent classifier per
   state *before* the socket opens — measured 3m38s container-start to listening. That's why
   the Docker `HEALTHCHECK` uses `--start-period=300s`. A "hang" on first run is usually this.
@@ -263,7 +260,7 @@ modeling-agent/
     session_keys.py                # Every session-state key constant (import these, not literals)
     confirmation.py                # Pending replace/keep + GUI-mode choice flows
     byok.py                        # Per-request bring-your-own-key routing (contextvar)
-    telemetry.py                   # Fire-and-forget pilot prompt telemetry
+    telemetry.py                   # Opt-in, fire-and-forget study prompt telemetry
     reply_copy.py                  # Shared user-facing copy strings
     routing/intents.py             # Intent-name constants shared across modules
     orchestrator/
@@ -332,11 +329,11 @@ and the `MINIMAL_CLASS_MODEL` / `EMPTY_CLASS_MODEL` fixtures.
 **Statistical / live probing**: unit tests catch structural regressions but not LLM
 generation-quality drift (completeness, consistency across runs). For that, use the scripts
 in `tests/live/` (`probe_smoke.py`, `probe_full_agentic.py`, `wme_release_sweep.py`) against
-a running deployment — they speak the real double-encoded envelope (see **Wire Protocol**).
+a running agent (`AGENT_WS_URL` is required) — they speak the real double-encoded envelope (see **Wire Protocol**).
 Run the same prompt N times and diff the resulting specs: this is how the ~87%
 stock-gateway-drop and orphaned-end-event bugs were actually found; a single manual test in
 the browser has good odds of landing in the "looks fine" bucket even when the underlying
-rate is bad. `./deploy.sh agent` runs `probe_smoke.py` as a post-deploy gate.
+rate is bad. `probe_smoke.py` is fast enough to use as a post-deploy gate.
 
 ## Common Pitfalls
 
@@ -383,5 +380,5 @@ rate is bad. `./deploy.sh agent` runs `probe_smoke.py` as a post-deploy gate.
 9. **`config.yaml` is gitignored — real API keys never get committed.** Copy from
    `config_example.yaml`; the same applies to `.env` / `.env.example`. The Docker entrypoint
    generates `config.yaml` from the environment and redacts the `api_key` line from its own
-   debug output. Note it does **not** emit `platforms.websocket.origins`, so a container
-   accepts a socket from any origin unless you mount your own config.
+   debug output. It emits `platforms.websocket.origins` from `BESSER_AGENT_WS_ORIGIN` /
+   `BESSER_AGENT_WS_ORIGIN_ALT` plus the localhost dev origins.
