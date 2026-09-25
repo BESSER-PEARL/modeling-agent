@@ -182,7 +182,7 @@ class TestHandleGenerationRequest:
 
     def test_smart_route_asks_for_confirmation_then_fires_on_confirm(self, monkeypatch):
         """The smart route never auto-fires (it spends the user's own API
-        key — B-2): it stashes the payload and asks; the trigger is only
+        key): it stashes the payload and asks; the trigger is only
         emitted after the explicit confirm phrase."""
         self._patch_provider(monkeypatch, GenerationClassification(
             route="smart",

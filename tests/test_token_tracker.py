@@ -258,8 +258,8 @@ def test_unknown_model_warns_once(caplog):
 
 def test_every_model_a_user_key_can_route_to_has_a_price():
     """BYOK maps each call to a provider tier model; an unpriced one reports
-    placeholder costs. Live logs (2026-09-23) showed the warning for the Nebius
-    Qwen model and for gpt-5-mini, the production large/reasoning override."""
+    placeholder costs, as happened for the Nebius Qwen model and for
+    gpt-5-mini."""
     from byok import _PROVIDER_TIER_MODELS
     from tracking.token_tracker import _COST_PER_1K
 

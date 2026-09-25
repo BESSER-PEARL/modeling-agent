@@ -1,7 +1,7 @@
-"""Phase 3 tests for the GUINoCodeDiagram handler — LLM-authored HTML sections
+"""Tests for the GUINoCodeDiagram handler — LLM-authored HTML sections
 and structured widget binding.
 
-Phase 3 is the core rewrite: the LLM now AUTHORS rich themed HTML per section
+The LLM AUTHORS rich themed HTML per section
 (using the ``.ds-*`` design system) instead of picking from a closed type-menu
 that Python renders in one hardcoded skin. These tests pin down the invariants
 that keep that risky change safe:

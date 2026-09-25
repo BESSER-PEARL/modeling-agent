@@ -238,8 +238,8 @@ class TestConvertFileImage:
 
     def test_image_refusal_returns_declined_message_not_no_content(self, monkeypatch):
         # The vision model actively REFUSED (finish=stop, refusal set). The old
-        # path flattened this into "returned no content" — misleading a pilot
-        # user whose benign mockup was refused. We now say it was declined.
+        # path flattened this into "returned no content" — misleading a user
+        # whose benign mockup was refused. We now say it was declined.
         import requests as http_requests
         monkeypatch.setattr(
             http_requests,

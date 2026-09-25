@@ -1,7 +1,7 @@
-"""Pilot-experiment telemetry: context propagation + fire-and-forget posting.
+"""Opt-in study telemetry: context propagation + fire-and-forget posting.
 
-During a pilot session the frontend attaches ``context.pilotParticipant`` to
-every message. The protocol adapter propagates it into the request, and the
+When a session is tagged for a user study, the frontend attaches
+``context.pilotParticipant`` to every message. The protocol adapter propagates it into the request, and the
 reply choke points in ``session_helpers`` emit ONE ``prompt`` telemetry event
 per handled user message (what was asked + what the agent did with it).
 

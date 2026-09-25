@@ -360,8 +360,7 @@ class TestDetailedModelSummaryStateMachine:
         assert "Processing" in result
 
     def test_includes_state_types(self):
-        # Reconciled to feature behavior (commit 83800f5): StateInitialNode /
-        # StateFinalNode are pseudostates, not real states, and are now
+        # StateInitialNode / StateFinalNode are pseudostates, not real states, and are now
         # deliberately EXCLUDED from the state list/count (this fixed an
         # off-by-one where the initial node was counted as an extra state).
         # They're instead surfaced as a separate, non-counted pseudostate
@@ -403,8 +402,7 @@ class TestDetailedModelSummaryStateMachine:
         assert result.startswith("Current state machine:")
 
     def test_empty_state_machine(self):
-        # Reconciled to feature behavior (commit 83800f5): mirrors the
-        # class-diagram change — the "States (N):" count header is always
+        # Mirrors the class-diagram behaviour — the "States (N):" count header is always
         # emitted (even for N=0), so an empty model no longer falls back to
         # the compact summary that used to contain "StateMachineDiagram".
         result = detailed_model_summary({"elements": {}, "relationships": {}}, "StateMachineDiagram")

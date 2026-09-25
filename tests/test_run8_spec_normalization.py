@@ -1,7 +1,7 @@
-"""End-to-end normalization of the hotel spec as run 8 actually produced it.
+"""End-to-end normalization of a hotel spec as the LLM actually produced it.
 
-The relationship set below is read back from the generated
-``sql_alchemy.py`` of the 2026-09-17 16:09 run: every FK, join table and
+The relationship set below is read back from a generated
+``sql_alchemy.py``: every FK, join table and
 ``relationship()`` in that file is represented here. Running the real
 normalizer pipeline over it must remove the duplicate links that made the
 create schemas unsatisfiable, and must not disturb anything else.

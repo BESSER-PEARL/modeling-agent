@@ -1,4 +1,4 @@
-"""Class-diagram fidelity rules from the 2026-09-18 hotel run (Qwen3-30B).
+"""Class-diagram fidelity rules from a hotel-booking generation (Qwen3-30B).
 
 Three stated requirements were lost between the request and the generated
 app, and each one traced back to the compact schema or the generation prompt:
@@ -37,7 +37,7 @@ from schemas.compact_class_diagram import (  # noqa: E402
 
 PROMPT = ClassDiagramHandler(None)._get_system_generation_prompt()
 
-# The unanchored example the live run copied verbatim (Python literal for
+# The unanchored example the model copied verbatim (Python literal for
 # the prompt text  .+@.+\..+ ).
 UNANCHORED_EMAIL = ".+@.+\\..+"
 ANCHORED_EMAIL = "^[^\\s@]+@[^\\s@]+\\.[A-Za-z]{2,}$"

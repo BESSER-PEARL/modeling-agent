@@ -167,7 +167,7 @@ class TestClassifyMessage:
         assert result.generator_type == "java"
 
     def test_model_x_from_scratch_retargets_to_class_diagram(self):
-        # Live bug: "model a library system" on the GUI tab classifies as
+        # Bug: "model a library system" on the GUI tab classifies as
         # create_complete_system with target=GUINoCodeDiagram (inheriting the
         # active tab) and jumps to the "how should I build your screens?"
         # prompt. A from-scratch "model X" with no GUI/app vocabulary must
@@ -186,7 +186,7 @@ class TestClassifyMessage:
         assert result.target_diagram_type == "ClassDiagram"
 
     def test_app_request_builds_data_model_first(self):
-        # Pilot regression: a from-scratch APPLICATION request ("todo app",
+        # Regression: a from-scratch APPLICATION request ("todo app",
         # "webapp", "dashboard", "a system to track X") was jumping straight to
         # AI-generated screens on an empty data model — no specs, no class
         # diagram, and no deterministic-vs-AI choice. An application is
@@ -432,7 +432,7 @@ class TestSmartGenFollowUpRouting:
     def test_prompt_excludes_bare_builtins_from_smart_followup(self):
         """A bare 'generate a rest api' must stay deterministic even right
         after a smart run — the recency signal was pulling it to the smart
-        route (live flip-flop: smart/deterministic/smart on three sends)."""
+        route (flip-flop: smart/deterministic/smart on three sends)."""
         prompt = _SYSTEM_PROMPT
         assert "NAMES a BESSER built-in generator" in prompt
         assert "even minutes after a smart run" in prompt

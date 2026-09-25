@@ -1,4 +1,4 @@
-"""Tests for the enum-relationship guard (#33).
+"""Tests for the enum-relationship guard.
 
 A class diagram must never carry a relationship (Association, Composition,
 Aggregation, …) whose source or target is an Enumeration. Enums are used only

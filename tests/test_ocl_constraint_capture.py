@@ -1,4 +1,4 @@
-"""Tests for OCL constraint capture in class-diagram generation (#46).
+"""Tests for OCL constraint capture in class-diagram generation.
 
 The agent should capture business rules the user EXPLICITLY states (uniqueness,
 multiplicity-beyond-cardinality, value ranges) as OCL invariants in the

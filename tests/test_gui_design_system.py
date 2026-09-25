@@ -1,4 +1,4 @@
-"""Tests for the per-domain GUI design system (Phase 2).
+"""Tests for the per-domain GUI design system.
 
 The design system turns the always-empty GrapesJS ``styles[]`` array into a
 real, per-domain visual identity. These tests pin down the three public

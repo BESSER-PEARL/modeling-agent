@@ -1,6 +1,6 @@
 """A method must be findable by its bare name.
 
-Live 2026-09-14. A user asked for a social-media platform; the generated model
+A user asked for a social-media platform; the generated model
 gave User both a ``follow`` method and a ``follow`` association end, which the
 BESSER validator correctly reports:
 
@@ -20,8 +20,7 @@ return type:
     "follow()"            ->  "follow()"        never matches "follow"
 
 So every method lookup failed, not just the auto-fix: any "rename/remove that
-method" request hit the same phantom-target reply. Same failure shape as pilot
-participant P8, who was pushed into a long confusion loop by it.
+method" request hit the same phantom-target reply.
 """
 
 import pytest

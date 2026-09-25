@@ -1,6 +1,6 @@
 """Association ends that collide through an inheritance hierarchy.
 
-Run 3a4cab06 (2026-09-17) died before a single file was generated:
+A generation run died before a single file was generated:
 
     ValueError: The class 'Employee' cannot have two association ends
     with the same name: 'booking'

@@ -2,8 +2,8 @@
 
 The compact schema used to ask for "source multiplicity" / "target
 multiplicity". The model answered the ORM has-many question and wrote the
-count on the near end, so every association came out inverted: observed live
-2026-09-17, where "each booking is handled by exactly one employee" became
+count on the near end, so every association came out inverted: "each
+booking is handled by exactly one employee" became
 Booking 1 -- 0..* Employee and made Employee.booking_id NOT NULL, so no
 employee could be created before a booking existed.
 
@@ -196,7 +196,7 @@ def test_encoding_rules_do_not_advertise_the_old_field_names():
 
 
 def test_encoding_rules_forbid_a_two_part_relationship_label():
-    """Live 2026-09-18: the model wrote 'contact / bookingsAsContact' into l,
+    """The model wrote 'contact / bookingsAsContact' into l,
     which fails the editor's quality check on the space."""
     from src.schemas.compact_class_diagram import COMPACT_ENCODING_RULES
     assert "never two names" in COMPACT_ENCODING_RULES

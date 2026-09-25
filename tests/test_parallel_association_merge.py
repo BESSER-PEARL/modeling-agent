@@ -1,11 +1,11 @@
-"""Duplicate-association merge (observed live 2026-09-17).
+"""Duplicate-association merge.
 
-The run of 2026-09-17 16:09 produced a Bill carrying BOTH ``booking_id`` and
+A hotel-booking generation produced a Bill carrying BOTH ``booking_id`` and
 ``forBooking_id`` (each NOT NULL + UNIQUE) for the single "a booking has one
 bill" fact, and linked Room to ReservedRoom twice - once as a mandatory FK,
 once through a join table. Both made the generated create schemas demand ids
 that no client could supply. These tests pin the shapes taken from that run's
-sql_alchemy.py and assert the merge collapses them without touching genuinely
+generated sql_alchemy.py and assert the merge collapses them without touching genuinely
 distinct parallel links.
 """
 import pytest
@@ -60,9 +60,9 @@ def test_parse_format_roundtrip(handler):
         assert handler._format_multiplicity(*handler._parse_multiplicity(text)) == text
 
 
-# -- the live Bill<->Booking defect --------------------------------------
+# -- the Bill<->Booking defect -------------------------------------------
 def test_bill_booking_stated_twice_becomes_one_link(handler):
-    """Live shape: Bill.booking_id AND Bill.forBooking_id, both 1:1."""
+    """Observed shape: Bill.booking_id AND Bill.forBooking_id, both 1:1."""
     spec = {"relationships": [
         {"type": "Association", "source": "Bill", "target": "Booking",
          "sourceMultiplicity": "1", "targetMultiplicity": "1", "name": "forBooking"},
@@ -96,9 +96,9 @@ def test_merged_bill_end_is_no_longer_mandatory_both_ways(handler):
     assert len(mandatory_single) < 2
 
 
-# -- the live Room<->ReservedRoom defect ---------------------------------
+# -- the Room<->ReservedRoom defect --------------------------------------
 def test_room_reservedroom_keeps_the_permissive_end(handler):
-    """Live shape: a 1:N mandatory FK *and* an N:M join table for one fact."""
+    """Observed shape: a 1:N mandatory FK *and* an N:M join table for one fact."""
     spec = {"relationships": [
         {"type": "Association", "source": "ReservedRoom", "target": "Room",
          "sourceMultiplicity": "1", "targetMultiplicity": "0..*"},
@@ -310,7 +310,7 @@ def test_four_way_duplicate_collapses_to_one(handler):
 
 # -- reciprocal pairs: one fact the request stated from both sides -------
 def test_live_booking_bookingroom_reciprocal_is_merged(handler):
-    """Observed live 2026-09-18: Booking--bookingRooms/booking-->BookingRoom
+    """Observed shape: Booking--bookingRooms/booking-->BookingRoom
     alongside BookingRoom--booking/bookingRooms-->Booking. Each side named
     both ends, so the swapped roles prove it is one fact."""
     spec = {"relationships": [
@@ -371,9 +371,9 @@ def test_same_direction_distinct_names_still_survive(handler):
 
 
 
-# -- dual-role labels: "targetRole / sourceRole" (live 2026-09-18 run 9) ---
+# -- dual-role labels: "targetRole / sourceRole" ---------------------------
 def test_dual_role_label_is_split_into_name_and_source_role(handler):
-    """The live blocker: 'contact / bookingsAsContact' failed the editor's
+    """The blocker: 'contact / bookingsAsContact' failed the editor's
     quality check with "Name cannot contain spaces"."""
     spec = {"relationships": [
         {"type": "Association", "source": "Booking", "target": "Person",
@@ -444,7 +444,7 @@ def test_split_handles_degenerate_specs(handler, spec):
 
 
 def test_live_room_reservedroom_crosswise_duplicate_is_merged(handler):
-    """Live run 9: ReservedRoom--room/reservations-->Room alongside
+    """Observed shape: ReservedRoom--room/reservations-->Room alongside
     Room--reservations/room-->ReservedRoom. The bounds disagree (1 vs 1..*)
     so the mirror test cannot catch it; the swapped roles can."""
     spec = {"relationships": [
@@ -503,7 +503,6 @@ def test_keeping_a_duplicate_is_logged_not_silent(handler, caplog):
 
 
 # -- a label that only repeats the target class is not a role -------------
-#    (live 2026-09-18, runs 4efe04ff / 9a6063ed)
 def test_live_pair_named_after_its_own_target_from_both_sides_is_merged(handler):
     """Booking--reservedRooms-->ReservedRoom beside ReservedRoom--booking-->
     Booking: 'booking' is what the converter derives for an unlabelled end,

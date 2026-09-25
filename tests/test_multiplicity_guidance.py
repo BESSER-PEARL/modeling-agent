@@ -1,8 +1,7 @@
 """The prompt must tell the model to read cardinality out of the user's prose.
 
-Observed across three live runs of one very explicit spec (2026-09-16/17):
-the spec said "a given guest may appear on several bookings" and "an employee
-may be responsible for many bookings", and two of the three runs still emitted
+With one very explicit spec, the spec said "a given guest may appear on several bookings" and "an employee
+may be responsible for many bookings", and most runs still emitted
 Booking 1--1 Guest. The generator faithfully turns a 1--1 association into a
 UNIQUE foreign key, so the shipped app then refuses the user's real data.
 
@@ -53,8 +52,8 @@ def test_multiplicity_rule_still_lists_the_legal_values():
 # ----------------------------------------------------------------------
 # Which END carries which number
 #
-# Run 8c5a087a, 2026-09-17: the agent read every cardinality in the spec
-# correctly and then attached them to the wrong ends -
+# The agent can read every cardinality in the spec
+# correctly and still attach them to the wrong ends -
 #   emitted   Booking [1]    -> Person [0..*] contact
 #   correct   Booking [0..*] -> Person [1]    booking_contact
 # The first says every Person has exactly one Booking. The generator

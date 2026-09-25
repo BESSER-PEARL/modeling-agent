@@ -1,4 +1,4 @@
-"""Tests for the LLM-HTML → GrapesJS component-tree converter (Phase 1).
+"""Tests for the LLM-HTML → GrapesJS component-tree converter.
 
 Verifies the invariants the GUI editor depends on: tag identity is preserved
 (never collapsed to div), inline ``style`` becomes a css dict, text content is

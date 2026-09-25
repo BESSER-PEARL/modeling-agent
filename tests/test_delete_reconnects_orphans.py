@@ -1,11 +1,9 @@
 """Deleting a class must not silently orphan the ones it connected.
 
-Live case 2026-09-16. A library model had Book -> BookCopy -> Loan. The user
-said "remove book copy"; the agent removed BookCopy and its two relationships
-and reported a clean success. The result was structurally valid but
-meaningless: Loan still linked to Member and Librarian, but to nothing
-borrowable. The user's verdict was "it didn't fix the model, it's a little bit
-stupid" -- and they were right.
+A library model had Book -> BookCopy -> Loan. The user said "remove book
+copy"; the agent removed BookCopy and its two relationships and reported a
+clean success. The result was structurally valid but meaningless: Loan still
+linked to Member and Librarian, but to nothing borrowable.
 
 The frontend fix stopped the modifier DESTROYING neighbours. This covers the
 other half: the agent must reconnect what the deletion strands, or at minimum

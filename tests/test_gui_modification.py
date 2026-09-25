@@ -135,7 +135,7 @@ class TestSchemaStrictSafe:
 
 class TestDeterministicModify:
     def test_rename_page_multiword(self, handler, model):
-        # Bug #29 — the exact failing request.
+        # The exact failing request.
         res = handler._try_deterministic_modify(
             model, "Rename Page Management to Page Management Test", _page_names(model)
         )
@@ -146,7 +146,7 @@ class TestDeterministicModify:
         assert "renamed" in message.lower()
 
     def test_recolor_whole_gui(self, handler, model):
-        # Bug #5 — "change the GUI color to red".
+        # "change the GUI color to red".
         res = handler._try_deterministic_modify(
             model, "could you change the GUI color to red?", _page_names(model)
         )
@@ -172,7 +172,7 @@ class TestDeterministicModify:
         assert "background" not in hero["style"]
 
     def test_reorder_section_to_top(self, handler, model):
-        # Bug #24 — align the "Recent edits" card.
+        # Align the "Recent edits" card.
         before = _section_labels(model, "Page Management")
         assert before.index("Other card") < before.index("Recent edits")
         res = handler._try_deterministic_modify(

@@ -1,5 +1,5 @@
 """'Generate the GUI' must route to GUI-diagram creation, never the web-app
-code generator. Live bug: after a GUI build, 'generate the gui' stashed a
+code generator. Bug: after a GUI build, 'generate the gui' stashed a
 smart-gen confirmation, and every 'no, generate the gui model' reply was
 itself re-misrouted — re-creating the identical confirmation in a loop.
 The _post_validate guard breaks that class of loop deterministically.

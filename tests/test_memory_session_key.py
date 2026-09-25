@@ -1,4 +1,4 @@
-"""Tests for ``memory.memory_session_key`` (B-5).
+"""Tests for ``memory.memory_session_key``.
 
 Conversation memory must be keyed on the v2 payload's stable ``sessionId``
 — the BAF session id changes on every WebSocket reconnect, which used to

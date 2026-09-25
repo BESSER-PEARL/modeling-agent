@@ -1,7 +1,7 @@
 """The hotel prose end to end: agent spec -> editor JSON -> BUML -> model contract.
 
-Live runs 4efe04ff / 9a6063ed (2026-09-18) took a hotel description and
-shipped a model BESSER's Phase 0 model-contract check now rejects: a mandatory
+Generation runs took a hotel description and shipped a model BESSER's
+model-contract check rejects: a mandatory
 creation cycle (``Booking -> BookedRoom -> Booking``) and three class pairs
 connected twice. The prose, in the shape that matters here: a booking covers
 at least one room and may cover several; each room is tied to zero or
@@ -11,7 +11,7 @@ a booking may have a bill raised against it, but never more than one.
 
 Two calibration targets:
 
-1. The agent's own spec for that prose — the shape the LLM produced live,
+1. The agent's own spec for that prose — the shape the LLM produced,
    replayed through ``generate_complete_system`` with a canned LLM — must
    build a ``DomainModel`` that passes ``_validate_mandatory_cycles`` and
    ``_validate_duplicate_associations`` with no warning, and its relaxed
@@ -54,7 +54,7 @@ _PROSE = (
     "have a bill raised against it, but never more than one."
 )
 
-# The spec the LLM produced live, reduced to the classes the prose above
+# The spec the LLM produced, reduced to the classes the prose above
 # names. Every relationship is stated the way the runs stated it.
 _LIVE_SPEC = {
     "systemName": "HotelBooking",
@@ -166,8 +166,8 @@ def reference_report():
 
 # -- reproduction ----------------------------------------------------------
 def test_the_live_shape_trips_both_checks(live_shape_report):
-    """The raw LLM spec, converted as-is, is what the two runs shipped and
-    what Phase 0 now refuses — proof the checks see the defect."""
+    """The raw LLM spec, converted as-is, is what the agent produced and
+    what the model-contract check refuses — proof the checks see the defect."""
     assert any("Booking" in w and "ReservedRoom" in w
                for w in _cycle_warnings(live_shape_report))
     assert len(_duplicate_warnings(live_shape_report)) == 3
@@ -431,7 +431,7 @@ def test_unnamed_source_ends_are_repaired_without_losing_the_named_ones():
 def test_besser_resolves_the_inherited_clash_the_removed_guard_existed_for():
     """The guard was added for "The class 'Employee' cannot have two
     association ends with the same name: 'booking'". BESSER's own
-    ``_dedupe_end_name`` has resolved that since 2026-08-24, so the raw
+    ``_dedupe_end_name`` now resolves that, so the raw
     unrepaired shape must convert cleanly on its own."""
     raw = {
         "systemName": "HotelBooking",

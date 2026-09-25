@@ -1,4 +1,4 @@
-"""Tests for the auto-generate GUI completion message (#3).
+"""Tests for the auto-generate GUI completion message.
 
 The "Auto-generate" GUI path previously only emitted "Generating GUI…" and
 never confirmed completion. ``confirmation._build_auto_gui_message`` now

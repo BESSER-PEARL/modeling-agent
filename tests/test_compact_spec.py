@@ -109,7 +109,7 @@ class TestMethodDecoding:
             assert m.name  # sane fallback
 
     def test_optional_marker_on_param_type_stripped(self):
-        # Live case: 'str?' is not a BUML type — the '?' marker is defined
+        # Observed case: 'str?' is not a BUML type — the '?' marker is defined
         # for attribute entries only, but the model glued it to a parameter.
         m = _parse_method("updateDetails(title: str, description: str?): any")
         assert [p.type for p in m.parameters] == ["str", "str"]

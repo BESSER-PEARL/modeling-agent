@@ -1,4 +1,4 @@
-"""Guards found by the first full local end-to-end run (prompt -> app).
+"""Guards found by end-to-end runs (prompt -> app).
 
 Three defects, all of the same shape: ONE bad token in the LLM's output
 destroys the whole model rather than the one member it belongs to. Each test
@@ -8,15 +8,13 @@ below was verified to FAIL against the pre-fix code.
    so an association class naming a class that does not exist raised out of
    ``SystemClassSpec`` validation, was swallowed by ``generate_complete_system``'s
    blanket except, and dropped the request onto the incremental fallback.
-   Observed live: Qwen/Qwen3-30B-A3B on the grant-applications prompt.
 
 2. An association class joined to its endpoints by ORDINARY links as well as
    by its attachment makes ``SQLAlchemyGenerator`` name the same foreign key
    two ways (``bookings_id`` on the link table, ``BookingRoom.booking_id`` in
    the relationship), and the generated ``sql_alchemy.py`` raises
    AttributeError on import - the delivered app is dead before the agent
-   writes a line. Observed live on two consecutive Qwen hotel runs, once with
-   Association duplicates and once with Composition.
+   writes a line. Seen with both Association and Composition duplicates.
 
 3. A method parameter or return type naming nothing in the spec
    ('List[Bill]', 'dict', 'Money') raised ValueError/ConversionError out of

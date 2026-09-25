@@ -1,6 +1,6 @@
 """An abstract base declared as the CHILD of its own subclasses.
 
-Live report (2026-09-22, hotel benchmark prompt). The spec shipped
+On the hotel benchmark prompt the spec shipped
 
     Inheritance  Person -> Guest
     Inheritance  Person -> Employee
@@ -19,10 +19,9 @@ The signal is the SHARED SOURCE. A base extended by two kinds appears as two
 links sharing a TARGET; the inverted form shares a SOURCE, i.e. multiple
 inheritance, which these specs never ask for.
 
-Keying on ``isAbstract`` was tried first and is wrong. Run 2 of a 10-run live
-batch emitted the direction CORRECTLY (``Employee -> Person``) while marking
-*Employee* abstract and Person concrete -- an abstract-child rule would have
-inverted a correct hierarchy. That run is pinned below.
+Keying on ``isAbstract`` is wrong: a spec can emit the direction CORRECTLY
+(``Employee -> Person``) while marking *Employee* abstract and Person concrete
+-- an abstract-child rule would invert a correct hierarchy. Pinned below.
 """
 import pytest
 
@@ -73,7 +72,7 @@ def test_a_correct_hierarchy_is_left_alone(handler):
 
 
 def test_the_abstract_flag_does_not_arbitrate_direction(handler):
-    """Run 2 of the live batch, verbatim: correct direction, flag on the WRONG
+    """Observed spec, verbatim: correct direction, flag on the WRONG
     class. An abstract-child rule would invert this. It must not move."""
     spec = _spec([{"className": "Person"},
                   {"className": "Employee", "isAbstract": True},

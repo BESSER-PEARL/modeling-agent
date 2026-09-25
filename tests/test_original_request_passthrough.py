@@ -1,22 +1,11 @@
 """The run must receive the user's spec, not only a summary of it.
 
-Root cause found on the 2026-09-17 hotel run. ``trigger_smart_generator``
-carried ``refined_instructions`` — by its own schema "1-3 short paragraphs"
-written by the classifier — and nothing else. The downstream gap analyser
-diffs the request against the model to recover requirements the modelling
-step lost, so it was diffing against a summary.
-
-What that cost, measured on run 95bf7725:
-
-  * it DID recover "Implement Booking.checkIn() and Booking.checkOut() ...
-    user requested 'stay management'" — the phrase survived into the
-    summary, and the diff worked;
-  * it did NOT see the two status vocabularies ("awaiting payment,
-    confirmed, cancelled" / "not arrived, checked in, checked out") or the
-    four business rules — those sentences were compressed away;
-  * it attributed three JWT tasks to 'user requested "personalized screens
-    and navigation"', which is assistant flow wording the summary had
-    absorbed. The user never wrote it.
+``trigger_smart_generator`` used to carry only ``refined_instructions`` —
+by its own schema "1-3 short paragraphs" written by the classifier. The
+downstream gap analyser diffs the request against the model to recover
+requirements the modelling step lost, so it was diffing against a summary:
+status vocabularies and business rules were compressed away, and assistant
+flow wording the summary had absorbed was attributed to the user.
 """
 from __future__ import annotations
 
@@ -114,9 +103,8 @@ def test_non_smart_classification_still_rejected():
 # ----------------------------------------------------------------------
 # Which text gets stashed
 #
-# The first version of this fix stashed ``operation_request`` and looked
-# correct in every unit test, then captured nothing useful live: the planner
-# had already rewritten the 4,622-character spec into one line.
+# Stashing ``operation_request`` is not enough: the planner has already
+# rewritten a long spec into one line by then.
 # ----------------------------------------------------------------------
 
 from src.execution.model_operations import original_request_to_stash
@@ -294,12 +282,10 @@ def test_same_project_create_gui_confirm_keeps_raw_spec_and_followups(monkeypatc
 # ----------------------------------------------------------------------
 # The summary must not invent requirements
 #
-# Run 0ceb8611's instructions, in full, for a spec that never mentions
-# users or login: "Generate a web app for a hotel booking and stay
-# management system with screens for Dashboard, Bookings, Booking Detail,
-# Guests, Rooms, and more. Include user authentication and a responsive
-# design." The run then built auth. The field description had asked for
-# auth twice by example — "Devise auth" and "JWT".
+# For a spec that never mentions users or login, the summary read "...
+# Include user authentication and a responsive design." and the run built
+# auth: the field description had asked for auth by example ("Devise auth",
+# "JWT").
 # ----------------------------------------------------------------------
 
 
@@ -338,7 +324,7 @@ def test_field_description_asks_to_preserve_concrete_nouns():
 
 
 def test_the_summary_is_labelled_as_notes_that_cannot_add_anything():
-    """Live (2026-09-23): the summary of a hotel spec that asks for SQLite and
+    """The summary of a hotel spec that asks for SQLite and
     no login said "PostgreSQL ... login/signup, role-based access ... Docker".
     It stays (it can carry a stack the user accepted with a plain "yes"), but
     as notes the coding model may not add features or override the spec from."""

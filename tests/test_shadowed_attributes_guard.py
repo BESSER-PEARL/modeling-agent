@@ -1,7 +1,7 @@
 """Shadowed-attribute guard: a subclass must not redefine an attribute an
 ancestor already declares (BUML validates attribute shadowing). The LLM stamps
 id/createdAt/updatedAt on every class — including subclasses of a base class
-that already has them — producing a wall of validation warnings (live case:
+that already has them — producing a wall of validation warnings (e.g.
 Person <- Doctor/Patient/Staff each re-declaring id/createdAt/updatedAt).
 The guard strips the shadowed copies deterministically; method overrides are
 deliberately untouched (overriding is legitimate OO).
@@ -171,7 +171,7 @@ class TestPhantomWhiffRetry:
 
         def fake_execute(*args, **kwargs):
             calls["n"] += 1
-            # First sample garbled (live flake), second sample clean.
+            # First sample garbled (observed flake), second sample clean.
             return self._spec("id่อยl" if calls["n"] == 1 else "id")
 
         monkeypatch.setattr(handler, "_execute_modification", fake_execute)

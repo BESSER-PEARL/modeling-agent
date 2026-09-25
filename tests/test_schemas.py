@@ -990,7 +990,7 @@ class TestGUISectionSpec:
 
     def test_defaults(self):
         s = GUISectionSpec()
-        # Phase 3: ``type`` is now OPTIONAL (default None) — a section may instead
+        # ``type`` is OPTIONAL (default None) — a section may instead
         # be authored via ``html`` or ``bind``. The legacy builders still treat a
         # missing type as "content".
         assert s.type is None

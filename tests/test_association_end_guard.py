@@ -81,7 +81,7 @@ def _assert_no_duplicate_ends(spec):
 
 class TestSpecEndUniqueness:
     def test_two_unlabeled_parallel_associations_become_unique(self):
-        """The recurring live shape: two unnamed Doctor→Department links."""
+        """The recurring shape: two unnamed Doctor→Department links."""
         spec = _spec([
             _assoc("Doctor", "Department", sm="*", tm="1"),
             _assoc("Doctor", "Department", sm="0..1", tm="1"),

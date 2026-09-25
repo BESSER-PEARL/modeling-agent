@@ -112,8 +112,8 @@ def test_direct_generation_only_plan_still_runs():
 # Because the generation op is stripped at the plan source, the GUI-choice's
 # stored ``remaining_operations`` is EMPTY — so ``_resume_remaining_ops`` (which
 # also emits the prompt) never runs. The choice handler must still show the
-# "generate the web app?" nudge from its own tail. This is the exact gap a live
-# probe caught: the GUI built, then went silent.
+# "generate the web app?" nudge from its own tail. Otherwise the GUI builds,
+# then goes silent.
 # ---------------------------------------------------------------------------
 
 import confirmation  # noqa: E402

@@ -1,7 +1,7 @@
 """Tests for the class-diagram modification placeholder-leak fix.
 
-Covers the hackathon bug where the LLM hallucinates a placeholder string into
-``target.className`` for an ``add_class`` operation (live evidence:
+Covers the bug where the LLM hallucinates a placeholder string into
+``target.className`` for an ``add_class`` operation (e.g.
 ``RolePermissionAssociationClassNamePlaceholderHere``), and the related
 "ChatbotHandlerClassNamePlaceholder" case.
 
@@ -100,7 +100,7 @@ class TestPlaceholderDetection:
 
 class TestAddClassNameResolution:
     def test_live_bug_payload_is_cleaned(self):
-        """The exact live payload: junk in target, real name in changes."""
+        """The exact observed payload: junk in target, real name in changes."""
         m = ClassModification(
             action="add_class",
             target={"className": "RolePermissionAssociationClassNamePlaceholderHere"},

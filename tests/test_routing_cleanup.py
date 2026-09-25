@@ -378,7 +378,7 @@ class TestSyntheticSubRequestClassification:
 
     def test_create_verdict_with_noise_route_goes_to_modeling(self, monkeypatch):
         """The LLM fills generation_route='other' even on CREATE verdicts —
-        that noise must not hijack the route (live regression: the mismatch
+        that noise must not hijack the route (regression: the mismatch
         rebuild got the 'didn't catch a code-generation request' reply)."""
         from handlers.generation_handler import _classification_to_legacy
         noisy = UnifiedClassification(
@@ -487,9 +487,9 @@ class TestPendingStashInterjections:
         assert session.get(PENDING_SMART_GEN_INSTRUCTIONS)  # stash survives
 
     def test_verdict_confirm_never_fires_the_spend(self):
-        """B-2: the smart generator SPENDS a run, so an LLM verdict of
+        """The Spec-Driven Agent SPENDS a run, so an LLM verdict of
         'confirm' must NOT fire it — confirmation stays exact-phrase/button
-        only. (Live regression: "fast", meant for the GUI choice, was read
+        only. (Regression: "fast", meant for the GUI choice, was read
         as an eager confirm and fired an unwanted run.)"""
         from handlers.generation_handler import handle_generation_request
         session = self._session_with_stash("generation_intent")
@@ -557,7 +557,7 @@ class TestOutageNetPins:
 
 
 class TestMismatchRegenFixes:
-    """Full-coverage sweep bugs: (a) the mismatch rebuild prompt must skip
+    """Regressions: (a) the mismatch rebuild prompt must skip
     the replace/keep re-ask (context-only models hit it and derailed the
     resume); (b) a TYPED "Update model + generate" label must act like the
     button instead of looping the mismatch question."""
@@ -600,7 +600,7 @@ class TestMismatchRegenFixes:
 
 
 class TestBareAnswerTokensNeverPivot:
-    """Live loop (2026-09-02): the classifier stamped the literal answers
+    """Regression: the classifier stamped the literal answers
     'replace'/'confirm' with modify_model_intent; the pivot guard then
     abandoned the confirmation and EXECUTED the word 'confirm' as a modify
     request — destructive re-plan, re-block, endless re-ask. A bare answer

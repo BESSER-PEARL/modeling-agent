@@ -1,6 +1,6 @@
 """Deterministic repair for "two association ends with the same name".
 
-Live bug: the editor's validate-and-repair loop reported
+Bug: the editor's validate-and-repair loop reported
 "The class 'Doctor' cannot have two association ends with the same name:
 'department'", the agent replied "Modified: Updated relationship in
 Doctor - Department" — but it had only renamed the relationship LABEL

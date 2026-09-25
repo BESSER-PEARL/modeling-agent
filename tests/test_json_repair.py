@@ -1,12 +1,11 @@
 """Tolerant parsing of LLM JSON: a stray regex backslash must not discard a model.
 
-Live (2026-09-23, Qwen3 8B on the hotel spec): two of three complete
-class-diagram answers were rejected with "Invalid JSON: invalid escape at line
-193 column 61". The OCL rules held the email / phone regexes written with single
+Complete class-diagram answers were rejected with "Invalid JSON: invalid
+escape". The OCL rules held the email / phone regexes written with single
 backslashes (``\\.``, ``\\+``), which JSON does not allow inside strings. The
 agent then fell back to an empty six-class skeleton. OpenAI keys are immune
 (strict structured output); every JSON-mode provider (Anthropic, Mistral,
-Nebius, the free tier) was exposed.
+Nebius, local models) was exposed.
 
 The repair runs only after ``json.loads`` has failed, so every answer that
 parses today is untouched.
@@ -34,7 +33,7 @@ def _broken(value):
 
 
 # ---------------------------------------------------------------------------
-# The live failure
+# The observed failure
 # ---------------------------------------------------------------------------
 
 def test_single_backslash_regexes_are_recovered_exactly():

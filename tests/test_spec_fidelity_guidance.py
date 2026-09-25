@@ -1,7 +1,7 @@
 """The prompt must carry over what the user actually stated.
 
-One explicit hotel spec, run live 2026-09-17. Four things the user wrote in
-plain prose never reached the model:
+One explicit hotel spec: four things the user wrote in plain prose never
+reached the model:
 
   * "A booking offers five actions: produce the bill, check the guest in,
     check the guest out, cancel the booking, and compute the amount due."
@@ -25,7 +25,7 @@ which the model read as "written as a formal constraint".
 
 These are prompt-contract tests. They cannot prove the model complies — only
 a live run does that — but each one pins a specific instruction whose absence
-is the documented cause of a specific live failure.
+caused a specific failure.
 """
 import inspect
 
@@ -193,12 +193,10 @@ def test_rules_reach_the_complete_system_prompt_not_just_the_source():
 # ----------------------------------------------------------------------
 # Padding and invented requirements
 #
-# Measured 2026-09-17 across 8 live runs. Every run's instructions were
-# 54-197 characters; the hotel spec was 4,622. Run 0ceb8611's instructions
-# read "...Include user authentication and a responsive design" for a spec
-# that never mentions users or login, and the run built both. The prompt
-# had asked for auth twice by example ("Devise auth", "JWT"), and the
-# class-diagram prompt demanded status fields unconditionally.
+# Refined instructions ran to ~200 characters for a 4,600-character spec and
+# added "user authentication and a responsive design" to a spec that never
+# mentions users or login: the prompt asked for auth by example ("Devise
+# auth", "JWT"), and the class-diagram prompt demanded status fields.
 # ----------------------------------------------------------------------
 
 

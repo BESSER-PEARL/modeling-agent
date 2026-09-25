@@ -1,7 +1,7 @@
 """Retry classification — permanent billing/quota errors must fail fast.
 
-Regression for the incident where a depleted OpenAI key (``insufficient_quota``,
-delivered as a 429 ``RateLimitError``) was retried in a tight loop; under
+Regression for a depleted OpenAI key (``insufficient_quota``,
+delivered as a 429 ``RateLimitError``) being retried in a tight loop; under
 concurrency the pile-up of workers parked on a doomed backoff took the whole
 service unresponsive. Permanent codes must now short-circuit the retry.
 """

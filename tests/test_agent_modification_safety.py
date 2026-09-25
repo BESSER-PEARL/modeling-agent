@@ -1,11 +1,11 @@
 """Safety tests for AgentDiagram modifications.
 
-Covers the hackathon bugs:
-- #48 (DATA LOSS): a modify request must never delete/empty the diagram; a
+Covers:
+- DATA LOSS: a modify request must never delete/empty the diagram; a
   failed or empty modification must leave the model unchanged.
-- #47/#45/#42: no hallucinated removals/adds; stray-word input must ask for
+- no hallucinated removals/adds; stray-word input must ask for
   clarification rather than mutate the model.
-- #44: add_transition referencing a missing element must not be emitted.
+- add_transition referencing a missing element must not be emitted.
 """
 
 import json
@@ -70,7 +70,7 @@ def _mods_json(modifications):
 
 
 # ---------------------------------------------------------------------------
-# _looks_like_actionable_request  (ambiguity guard — #42/#45/#47)
+# _looks_like_actionable_request  (ambiguity guard)
 # ---------------------------------------------------------------------------
 
 class TestActionableHeuristic:
@@ -122,7 +122,7 @@ class TestValidateModifications:
         self.model = _agent_model_with(states=["welcome"], intents=["Greeting"])
 
     def test_remove_missing_element_dropped(self):
-        # #47: "Removed dfdf" when dfdf never existed -> must be dropped
+        # "Removed dfdf" when dfdf never existed -> must be dropped
         mods = [{"action": "remove_element", "target": {"intentName": "dfdf"}, "changes": {}}]
         res = self.h._validate_modifications(mods, self.model)
         assert res["kept"] == []
@@ -134,7 +134,7 @@ class TestValidateModifications:
         assert len(res["kept"]) == 1
 
     def test_add_duplicate_intent_dropped(self):
-        # #45: gggIntent / Greeting already exists -> don't re-add
+        # gggIntent / Greeting already exists -> don't re-add
         mods = [{"action": "add_intent", "target": {"intentName": "Greeting"},
                  "changes": {"trainingPhrases": ["hi"]}}]
         res = self.h._validate_modifications(mods, self.model)
@@ -154,7 +154,7 @@ class TestValidateModifications:
         assert res["kept"] == []
 
     def test_add_transition_missing_endpoint_dropped(self):
-        # #44: transition to an element that doesn't exist
+        # transition to an element that doesn't exist
         mods = [{"action": "add_transition",
                  "target": {"sourceStateName": "welcome", "targetStateName": "ghost"},
                  "changes": {}}]
@@ -187,7 +187,7 @@ class TestValidateModifications:
 
 class TestGenerateModificationSafety:
     def test_ambiguous_input_returns_clarification_no_mutation(self):
-        # #42/#45/#47: stray word must NOT mutate; returns assistant_message
+        # stray word must NOT mutate; returns assistant_message
         h = _handler(_mods_json([
             {"action": "add_intent", "target": {"intentName": "gggIntent"},
              "changes": {"trainingPhrases": ["x"]}},
@@ -198,7 +198,7 @@ class TestGenerateModificationSafety:
         assert "modification" not in result and "modifications" not in result
 
     def test_all_mods_invalid_returns_clarification_not_empty_modify(self):
-        # #48: nothing applicable -> must NOT emit a modify_model payload.
+        # nothing applicable -> must NOT emit a modify_model payload.
         h = _handler(_mods_json([
             {"action": "remove_element", "target": {"intentName": "dfdf"}, "changes": {}},
         ]))

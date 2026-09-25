@@ -1,7 +1,7 @@
 """Mixed "design X and generate Y" plans pause before generating — for EVERY
 generator type, not just web_app.
 
-Live bug: "design a hospital system and generate the Pydantic models" injected
+Bug: "design a hospital system and generate the Pydantic models" injected
 the model with a message asking "review or continue with generating?" and then
 immediately ran the generation anyway, self-answering its own question.
 
@@ -121,7 +121,7 @@ def _run_plan(plan, model_op_result="ClassDiagram", model_op_raises=False):
 
 class TestMixedPlanPause:
     def test_mixed_plan_pauses_pydantic_generation(self):
-        """The live repro shape: model step + pydantic generation step."""
+        """The repro shape: model step + pydantic generation step."""
         plan = [
             {"type": "model", "diagramType": "ClassDiagram",
              "mode": "complete_system", "request": "design a hospital system"},
@@ -267,8 +267,7 @@ class TestPausedGenerationConfirmation:
 
 
 # ---------------------------------------------------------------------------
-# Live-divergence regression (deployed defect, 2026-09-04): the unified
-# classifier stamps short answers as decline_intent — a literal "ok" at the
+# Classifier-misread regression: the unified classifier stamps short answers as decline_intent — a literal "ok" at the
 # pause was labelled a decline, and the mid-config opt-out check downstream
 # of the gate re-consulted that verdict and CANCELLED a deterministically
 # confirmed run. Precedence contract: exact affirmative phrases confirm
@@ -278,7 +277,7 @@ class TestPausedGenerationConfirmation:
 
 class TestClassifierMisreadPrecedence:
     def test_ok_fires_even_when_classifier_says_decline(self):
-        """The deployed defect, exactly: literal "ok" stamped decline_intent."""
+        """The defect, exactly: literal "ok" stamped decline_intent."""
         session = FakeSession()
         _arm_paused_generation(session, "pydantic")
         _cache_verdict(session, "decline_intent", flow_action="answer")
@@ -329,7 +328,7 @@ class TestClassifierMisreadPrecedence:
 
 # ---------------------------------------------------------------------------
 # Real routing funnel: genuine wire payload → parse_assistant_request →
-# _common_preamble intercept → generation handler. The live "ok" reached
+# _common_preamble intercept → generation handler. The "ok" reached
 # decline_state (decline_intent verdict); the preamble intercept must resolve
 # the exact answer from ANY state body, mirroring the smart-gen intercept.
 # ---------------------------------------------------------------------------
@@ -348,7 +347,7 @@ class TestRealRoutingFunnel:
         return session
 
     def test_ok_through_decline_state_fires_generation(self):
-        """The exact live route: "ok" stamped decline_intent as a new
+        """The exact route: "ok" stamped decline_intent as a new
         request lands in decline_state — the stashed generator must fire."""
         import state_bodies
         session = self._funnel_session("ok")

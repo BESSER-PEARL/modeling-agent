@@ -52,7 +52,7 @@ def test_terminal_reply_is_buffered_and_replays_on_a_reconnected_session():
 def test_trigger_github_import_is_a_terminal_reply_and_replays():
     """The continue-from-GitHub action is the turn's terminal reply — a
     reconnect that drops it must be able to replay it, exactly like
-    trigger_generator (live bug class 2026-09-03)."""
+    trigger_generator."""
     _reset()
     session = _FakeSession()
     payload = {"action": "trigger_github_import", "owner": "armen",

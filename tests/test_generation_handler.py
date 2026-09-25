@@ -402,7 +402,7 @@ class TestHandleGenerationRequest:
         assert "django" not in str(result).lower()
 
     def test_pivot_from_pending_django_config_to_smart(self, monkeypatch):
-        """Escalating to the smart generator mid-Django-config must abandon the
+        """Escalating to the Spec-Driven Agent mid-Django-config must abandon the
         pending flow (surface confirmation), not re-prompt for Django."""
         _patch_classifier(monkeypatch, GenerationClassification(
             route="smart",
@@ -679,7 +679,7 @@ class TestMismatchRegenChain:
 
 
 # ----------------------------------------------------------------------
-# Past-generation QUESTION guard (live bug 2026-09-01): "What we
+# Past-generation QUESTION guard: "What we
 # generated" after a finished smart run must be ANSWERED from the stashed
 # outcome, never re-arm a new generation confirmation.
 # ----------------------------------------------------------------------

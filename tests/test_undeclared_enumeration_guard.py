@@ -1,27 +1,14 @@
 """A closed value set must survive the model forgetting to declare its enum.
 
-Measured on Qwen3-30B-A3B against the verification corpus: of the seven
-archived full-pipeline runs, ZERO produced an enumeration, and the reading
-that followed was "Qwen models a three-valued state as a bare String". It
-does not. It types the attribute with an enumeration name and omits the
-enumeration from its ``classes`` list, and
-``_rewrite_class_typed_attributes`` - whose job is to kill hallucinated type
-references - then coerces that name to ``String``.
-
-The fingerprint is unambiguous. Across those seven runs every attribute the
-specification had closed is typed ``String`` with a capital S (12 of 12) and
-no other attribute is: the rest are lowercase ``str``/``int``/``float``/
-``date``, because ``String`` is not a token the model writes there. It is
-what ``a["type"] = "String"`` assigns. A logged run says it outright::
+Some models (e.g. Qwen3-30B-A3B) type an attribute with an enumeration name
+but omit the enumeration from ``classes``; ``_rewrite_class_typed_attributes``
+- whose job is to kill hallucinated type references - then coerced that name
+to ``String``, so every closed value set was silently lost::
 
     [ClassDiagram] Coerced unknown attribute type Ticket.status : StatusEnum -> String
-    [ClassDiagram] Coerced unknown attribute type Ticket.urgency : UrgencyEnum -> String
-    [ClassDiagram] Class-typed-attribute guard: 0 -> association, 2 -> String
 
-Expected enumerations across those runs: grants 2, hotel 2x4, inventory 1,
-library 1 = 12. Coerced attributes: 12. Every missing enumeration is this
-coercion, not a modelling choice - so the fix is deterministic and belongs
-here, not in a firmer sentence in the prompt.
+The missing enumerations were this coercion, not a modelling choice, so the
+fix is deterministic and belongs here, not in a firmer prompt sentence.
 """
 import os
 import sys
@@ -63,7 +50,7 @@ class _Recovering(ClassDiagramHandler):
 
 
 def _ticket_spec():
-    """What Qwen actually produced: the enum is referenced, never declared."""
+    """The observed output: the enum is referenced, never declared."""
     return {
         "systemName": "Ticketing",
         "classes": [

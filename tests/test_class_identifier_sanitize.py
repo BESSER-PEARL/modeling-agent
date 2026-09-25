@@ -3,8 +3,7 @@
 A class named with characters BUML rejects as an identifier (hyphens, spaces,
 dots) makes metamodel validation fail, and the editor's post-injection auto-fix
 loop can never repair it — it emits a "rename X" request, but X was never
-accepted as a class, so the modify handler can't find it and the loop spins
-(a real pilot incident: a user stuck ~25 min on an app named with hyphens).
+accepted as a class, so the modify handler can't find it and the loop spins.
 
 The guard rewrites such names to valid identifiers BEFORE the spec is injected,
 and rewrites every reference to a renamed class/enum (relationship endpoints,

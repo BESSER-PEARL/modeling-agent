@@ -1,4 +1,4 @@
-"""Tests for the confirm-before-smart gate (B-2).
+"""Tests for the confirm-before-smart gate.
 
 The Spec-Driven Agent runs on the USER'S OWN API key, so no code
 path may emit ``trigger_smart_generator`` without an explicit user

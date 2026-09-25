@@ -1,15 +1,14 @@
-"""Phase 0 quick-win tests for the GUINoCodeDiagram handler.
+"""Complete-system generation tests for the GUINoCodeDiagram handler.
 
-Covers three low-risk, high-visibility fixes to complete-system generation:
+Covers three fixes to complete-system generation:
 
 1. Truncation salvage — a truncated multi-page JSON keeps its complete pages
-   instead of collapsing to the one-line "Welcome" stub (the #1 quality killer
-   for ambitious requests).
+   instead of collapsing to the one-line "Welcome" stub.
 2. two_column — the recursive ``left``/``right`` sub-sections survive schema
    validation and render both halves (previously dropped by the strict schema,
-   leaving empty "Left"/"Content" boxes, issue #10).
-3. stats_grid — LLM-provided ``value`` figures are preserved (not discarded,
-   issue #7) and class-bound cards spread across DISTINCT numeric fields.
+   leaving empty "Left"/"Content" boxes).
+3. stats_grid — LLM-provided ``value`` figures are preserved (not discarded)
+   and class-bound cards spread across DISTINCT numeric fields.
 
 Plus a strict-outputs smoke test: the schema additions must not regress the
 OpenAI strict structured-output shape used by ``generate_single_element`` /

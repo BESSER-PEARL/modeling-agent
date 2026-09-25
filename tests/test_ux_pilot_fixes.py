@@ -1,8 +1,8 @@
-"""Focused tests for the pilot UX fixes (#3 new-diagram-tab wording,
-#4 AI-Generated screen-creation suggestion, #5 clickable API-key link).
+"""Focused tests for UX fixes: new-diagram-tab wording, the AI-Generated
+screen-creation suggestion, and the clickable API-key link.
 
-These exercise the exact strings and routing the pilot feedback called out,
-without requiring a live LLM (the classifier path is bypassed; the keyword
+These exercise the exact user-facing strings and routing, without requiring a
+live LLM (the classifier path is bypassed; the keyword
 fallback and the message builders are pure).
 """
 
@@ -27,7 +27,7 @@ from tests.conftest import FakeSession, make_session  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# #4 — the AI-Generated screen-creation suggestion
+# The AI-Generated screen-creation suggestion
 # ---------------------------------------------------------------------------
 
 _CLASS_DIAGRAM = {"elements": {"c1": {"type": "Class", "name": "Product"}}}
@@ -135,7 +135,7 @@ def test_fast_deterministic_still_takes_auto_path():
 
 
 # ---------------------------------------------------------------------------
-# #3 — "new diagram tab" wording in the existing-model confirmation
+# "New diagram tab" wording in the existing-model confirmation
 # ---------------------------------------------------------------------------
 
 def test_existing_model_confirmation_says_new_diagram_tab():
@@ -168,7 +168,7 @@ def test_existing_model_confirmation_says_new_diagram_tab():
 
 
 # ---------------------------------------------------------------------------
-# #5 — clickable "set up your own API key" link in the pre-gen confirmation
+# Clickable "set up your own API key" link in the pre-gen confirmation
 # ---------------------------------------------------------------------------
 
 def test_smart_gen_confirmation_has_clickable_key_link():
@@ -285,9 +285,9 @@ def test_confirmation_rebuild_resume_stays_from_scratch():
 
 
 # ---------------------------------------------------------------------------
-# The fix copy is PROJECT-scoped (live bug 2026-09-11)
+# The fix copy is PROJECT-scoped
 #
-# Reported sequence, all inside ONE brand-new project:
+# Failure sequence, all inside ONE brand-new project:
 #   1. "I want a todo app"                  → "I'll update your existing app…" [Fix it]
 #   2. "I want you to model a new todoapp"  → model built (no code generated)
 #   3. "generate the application"           → "I'll update your existing app…" [Fix it]
@@ -462,10 +462,9 @@ def test_failed_run_does_not_mark_the_project_as_generated():
     assert session.get(LAST_SMART_GEN_PROJECT_ID) is None
 
 def test_legacy_run_without_a_project_id_still_counts_as_an_app():
-    """Regression, live 2026-09-11: project attribution shipped mid-day, so runs
-    that had already finished carried only LAST_SMART_GEN_AT. Failing closed on
-    those silenced the SMART-GEN FOLLOW-UP signal, and "fix my app" started
-    getting prose instead of a fix run."""
+    """Runs recorded before project attribution carry only LAST_SMART_GEN_AT.
+    Failing closed on those silenced the follow-up signal, and "fix my app"
+    got prose instead of a fix run."""
     from handlers.generation_handler import _smart_gen_project_has_app
     from session_keys import LAST_SMART_GEN_AT
     import time as _t
@@ -498,8 +497,8 @@ def test_no_run_at_all_is_still_no_app():
 
 
 def test_gui_choice_is_asked_even_when_the_request_mentions_a_dashboard():
-    """Always ask how to create the screens. Live (2026-09-23): for "generate
-    an app end-to-end" the planner wrote its own GUI step request ("...screens:
+    """Always ask how to create the screens. For "generate an app end-to-end"
+    the planner wrote its own GUI step request ("...screens:
     Login screen, Dashboard, ..."); a keyword shortcut read "Dashboard", assumed
     the user wanted a custom GUI and skipped the question the user never saw."""
     session = FakeSession()

@@ -1,12 +1,11 @@
-"""Mandatory creation cycles (live runs 4efe04ff / 9a6063ed, 2026-09-18).
+"""Mandatory creation cycles.
 
-Both runs rendered "a booking covers at least one room and may cover several"
+The LLM rendered "a booking covers at least one room and may cover several"
 as ``Booking --[1..*]--> BookedRoom`` beside the link class's own
 ``BookedRoom --[1]--> Booking``. Neither instance can be created first, so the
 generated ``BookingCreate`` demanded a ``BookedRoom`` id and
-``BookedRoomCreate`` a ``Booking`` id; the delivered app served 69 routes and
-passed 2 of 15 workflow checks. BESSER's Phase 0 model-contract check now
-rejects the shape (``Mandatory creation cycle: Booking -> BookedRoom ->
+``BookedRoomCreate`` a ``Booking`` id, so neither could be created. BESSER's
+model-contract check rejects the shape (``Mandatory creation cycle: Booking -> BookedRoom ->
 Booking``).
 
 ``ClassDiagramHandler._break_mandatory_cycles`` relaxes one end per cycle to
@@ -63,9 +62,9 @@ def _constraints(spec):
     return spec.get("constraints") or []
 
 
-# -- the live defect --------------------------------------------------------
+# -- the observed defect ----------------------------------------------------
 def test_live_two_association_shape_becomes_constructible(handler):
-    """4efe04ff / 9a6063ed: Booking 1..* BookedRoom and BookedRoom 1 Booking as
+    """Booking 1..* BookedRoom and BookedRoom 1 Booking as
     two links. Both Booking-side "at least one" ends give way; the link's
     mandatory booking reference (the NOT NULL foreign key) survives."""
     spec = {"relationships": [

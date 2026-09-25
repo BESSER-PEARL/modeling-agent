@@ -1,11 +1,11 @@
 """``isAbstract`` on a leaf class instead of on the base.
 
-Measured on a 10-run live batch of the hotel benchmark prompt: 3 of 10 runs
-marked a SUBCLASS abstract while its base stayed concrete --
+On the hotel benchmark prompt, some runs marked a SUBCLASS abstract while its
+base stayed concrete --
 
-    run03  Guest abstract,  Person concrete
-    run04  Employee abstract, Person concrete
-    run07  BOTH Employee and Guest abstract, Person concrete
+    Guest abstract,  Person concrete
+    Employee abstract, Person concrete
+    BOTH Employee and Guest abstract, Person concrete
 
 An abstract leaf cannot be instantiated, so the delivered app could not create a
 guest at all, and nothing downstream objected: BUML happily holds an abstract
@@ -42,7 +42,7 @@ HIERARCHY = [{"type": "Inheritance", "source": "Guest", "target": "Person"},
 @pytest.mark.parametrize("abstract_leaves", [["Guest"], ["Employee"],
                                              ["Employee", "Guest"]])
 def test_the_flag_is_cleared_from_a_leaf(handler, abstract_leaves):
-    """runs 03, 04 and 07 of the live batch."""
+    """The three observed shapes."""
     spec = _spec([{"className": "Person"},
                   {"className": "Guest", "isAbstract": "Guest" in abstract_leaves},
                   {"className": "Employee", "isAbstract": "Employee" in abstract_leaves}],
