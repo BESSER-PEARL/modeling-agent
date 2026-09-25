@@ -18,13 +18,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Apply vendored BAF fix on top of the pip-installed framework.
 # Stock besser-agentic-framework 4.3.2 deletes the _connections slot
-# unconditionally when a websocket closes. With our stable ?user_id= param
-# (added so conversation memory survives reconnects), the two WS connections
-# a browser tab opens — the assistant widget + the workspace drawer — share
-# one session key, so a closing connection evicts the live one and the
-# agent's replies are silently dropped. The vendored file adds an
-# ownership-guarded delete + reply-route-to-sender. Remove this once the fix
-# is upstreamed to BAF. Pinned to 4.3.2 — re-vendor if the version bumps.
+# unconditionally when a websocket closes; two connections sharing one session
+# key (a stable ?user_id=) then evict each other and replies are silently
+# dropped. The vendored file adds an ownership-guarded delete + reply routing
+# to the sender. Remove once upstreamed; re-vendor if the BAF version bumps.
 COPY patches/websocket_platform.py \
     /usr/local/lib/python3.11/site-packages/baf/platforms/websocket/websocket_platform.py
 
@@ -61,10 +58,7 @@ platforms:\n\
     host: 0.0.0.0\n\
     port: 8765\n\
     # CORS. BAF passes this to websockets.serve(origins=...); when the key is\n\
-    # ABSENT every origin is accepted. It was absent from every image built\n\
-    # here until 2026-09-14 - config_example.yaml documented it, the generated\n\
-    # config.yaml never contained it - so the agent accepted a socket from\n\
-    # anywhere and nginx was the only gate. Override the two host entries per\n\
+    # ABSENT every origin is accepted. Override the two host entries per\n\
     # deployment; the localhost entries are for local development.\n\
     origins:\n\
       - "${BESSER_AGENT_WS_ORIGIN:-https://editor.besser-pearl.org}"\n\
@@ -89,10 +83,7 @@ exec python modeling_agent.py\n\
 # Health check
 # start-period must cover the FULL boot, not just process start: BAF trains a
 # NER model plus one intent classifier per state (~20s each, 10 states) and
-# only then opens the WebSocket. Measured 2026-09-11: container start to
-# listening socket was 3m38s. At the previous 40s every agent deploy reported
-# FAIL and sat `unhealthy` for three minutes while being perfectly fine, which
-# is how a REAL failure gets waved off as "probably just the slow boot".
+# only then opens the WebSocket, which takes several minutes.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
     CMD python -c "import socket; s=socket.socket(); s.connect(('localhost', 8765)); s.close()" || exit 1
 
