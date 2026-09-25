@@ -888,6 +888,18 @@ def _build_series(
     llm_data = _extract_sample_data(section_spec, chart_type, cls)
     fallback_data = llm_data or _dummy_chart_data(chart_type)
 
+    if _aggregation(section_spec.get("aggregation")) == "count":
+        # Records per label: one series, no value field to plot
+        series: Dict[str, Any] = {
+            "name": _clean_text(section_spec.get("title")) or cls["name"],
+            "data-source": cls["id"],
+            "color": _CHART_COLORS[0],
+            "data": fallback_data,
+        }
+        if label_attr:
+            series["label-field"] = label_attr["id"]
+        return json.dumps([series])
+
     series_list: List[Dict[str, Any]] = []
     # If the LLM provided explicit series, use them
     raw_series = section_spec.get("series")
@@ -990,22 +1002,31 @@ def _chart_component(
     if cls:
         label_attr = _find_attribute(cls, section_spec.get("labelField")) or _pick_label_field(cls)
         data_attr = _value_attribute(cls, section_spec.get("valueField")) or _pick_data_field(cls)
+        # Records are grouped by label: counted, or their value field reduced
+        aggregation = _aggregation(section_spec.get("aggregation"))
+        if aggregation:
+            chart_attrs["aggregation"] = aggregation
 
         # For pie-chart: data-source, label-field, data-field go directly on attrs
         if chart_type == "pie-chart":
             chart_attrs["data-source"] = cls["id"]
             if label_attr:
                 chart_attrs["label-field"] = label_attr["id"]
-            if data_attr:
+            if data_attr and aggregation != "count":
                 chart_attrs["data-field"] = data_attr["id"]
             # Use LLM-provided sample data for pie if available
             llm_pie = _extract_sample_data(section_spec, "pie-chart", cls)
-            chart_attrs["series"] = json.dumps([{
+            pie_series: Dict[str, Any] = {
                 "name": cls["name"],
                 "data-source": cls["id"],
                 "color": _PIE_COLORS[0],
                 "data": llm_pie or _dummy_pie_data(),
-            }])
+            }
+            # BESSER binds a pie through its series, not the chart attributes
+            for key in ("label-field", "data-field"):
+                if key in chart_attrs:
+                    pie_series[key] = chart_attrs[key]
+            chart_attrs["series"] = json.dumps([pie_series])
         else:
             # For line/bar/radar charts: binding goes inside the series
             chart_attrs["series"] = _build_series(chart_type, cls, section_spec)
@@ -1288,6 +1309,35 @@ def _card_wrap(title: str, inner: Dict[str, Any]) -> Dict[str, Any]:
 # Metric card component
 # ---------------------------------------------------------------------------
 
+_AGGREGATIONS = {
+    "count": "count", "sum": "sum", "total": "sum", "avg": "avg", "average": "avg",
+    "mean": "avg", "min": "min", "minimum": "min", "max": "max", "maximum": "max",
+}
+
+
+def _aggregation(value: Any) -> Optional[str]:
+    """The aggregation *value* names (count/sum/avg/min/max), else ``None``."""
+    return _AGGREGATIONS.get(_clean_text(value).lower())
+
+
+def _metric_binding(
+    cls: Dict[str, Any], value_field: Any, aggregation: Any,
+) -> tuple:
+    """``(data attribute or None, aggregation)`` of a metric card on *cls*.
+
+    With no value field (or a count) the card counts records; otherwise it
+    aggregates the numeric field, a sum unless another aggregation is asked.
+    A non-numeric field would show the last row's text/id as the "metric".
+    """
+    agg = _aggregation(aggregation)
+    if agg == "count" or (not _clean_text(value_field) and agg is None):
+        return None, "count"
+    attr = _value_attribute(cls, value_field) or _pick_data_field(cls)
+    if attr and attr.get("isNumeric"):
+        return attr, agg or "sum"
+    return None, "count"
+
+
 def _metric_card_component(
     section_spec: Dict[str, Any],
     class_metadata: Optional[List[Dict[str, Any]]],
@@ -1309,11 +1359,12 @@ def _metric_card_component(
 
     if cls:
         card_attrs["data-source"] = cls["id"]
-        # The requested numeric field, else the first numeric non-id one. A
-        # non-numeric field would show the last row's text/id as the "metric".
-        data_attr = _value_attribute(cls, section_spec.get("valueField")) or _pick_data_field(cls)
-        if data_attr and data_attr.get("isNumeric"):
+        data_attr, aggregation = _metric_binding(
+            cls, section_spec.get("valueField"), section_spec.get("aggregation"),
+        )
+        if data_attr:
             card_attrs["data-field"] = data_attr["id"]
+        card_attrs["aggregation"] = aggregation
 
     return {
         "type": "metric-card",
@@ -2112,7 +2163,9 @@ def _node_text(node: Any) -> str:
     return re.sub(r"\s+", " ", " ".join(parts)).strip()
 
 
-def _widget_fallback_title(kind: str, cls: Optional[Dict[str, Any]], value_field: str) -> str:
+def _widget_fallback_title(
+    kind: str, cls: Optional[Dict[str, Any]], value_field: str, aggregation: Any = None,
+) -> str:
     """A specific widget title from the bound class when the LLM gave none."""
     if not cls:
         return ""
@@ -2120,10 +2173,10 @@ def _widget_fallback_title(kind: str, cls: Optional[Dict[str, Any]], value_field
     if kind == "table":
         return f"{name} List"
     if kind == "metric_card":
-        attr = _value_attribute(cls, value_field) or _pick_data_field(cls)
-        if attr and attr.get("isNumeric"):
+        attr, _ = _metric_binding(cls, value_field, aggregation)
+        if attr:
             return f"{name} {attr['name'].replace('_', ' ')}".title()
-        return name
+        return f"{name} Count"
     return f"{name} Overview"
 
 
@@ -2151,7 +2204,7 @@ def _build_bind_widget(
         or _clean_text(section_spec.get("_chromeHeading"))
         or _widget_fallback_title(
             kind, _resolve_class_binding({"className": class_name}, class_metadata)
-            if class_name else None, value_field,
+            if class_name else None, value_field, bind.get("aggregation"),
         )
     )
 
@@ -2163,6 +2216,7 @@ def _build_bind_widget(
         "rows": bind.get("rows") or [],
         "labelField": _clean_text(bind.get("labelField")),
         "valueField": value_field,
+        "aggregation": _clean_text(bind.get("aggregation")),
     }
 
     if kind in _BIND_CHART_KINDS:
@@ -3265,6 +3319,7 @@ Each section is EXACTLY ONE of these two shapes:
     "className": "Entity name from the class diagram (when available)",
     "title": "Specific widget title, e.g. 'Overdue loans'",
     "labelField": "chart: category attribute", "valueField": "chart/metric: numeric attribute",
+    "aggregation": "chart/metric: count|sum|avg|min|max",
     "columns": ["Column", "headers"],
     "rows": [{{"cells": ["cell A1", "cell A2"]}}, {{"cells": ["cell B1", "cell B2"]}}],
     "series": ["series names"],
@@ -3275,7 +3330,7 @@ Each section is EXACTLY ONE of these two shapes:
    - Put a <!--WIDGET:kind--> comment inside the chrome where the widget belongs; the server splices the real, data-bound widget there.
    - The "html" chrome is OPTIONAL — omit it and the widget is card-wrapped automatically — but authoring chrome around it gives a far nicer result.
    - Whatever widget you place, populate it or it renders empty: a table needs "columns" + "rows" ("cells" aligned 1:1 to "columns"); a chart needs "sampleData" (name + numeric value; pie adds a "color" hex).
-   - Give every widget a specific "title" (never 'Data Table' / 'Bar Chart'). With a class diagram, set a chart's "labelField" (category attribute) and "valueField" (numeric attribute), and a metric_card's "valueField" (numeric attribute); a chart plots valueField per record, it does not aggregate.
+   - Give every widget a specific "title" (never 'Data Table' / 'Bar Chart'). With a class diagram, set a chart's "labelField" (category attribute) and its "aggregation": the chart groups records by labelField and shows per label the "count" of records (no valueField needed) or the "sum"/"avg"/"min"/"max" of "valueField" (numeric attribute) — e.g. count of books by genre, sum of amount by month; omit "aggregation" only to plot valueField of each record, labelled by a unique field. A metric_card shows the "count" of records (no valueField), or the "sum"/"avg"/"min"/"max" of its "valueField" — set its "aggregation" to match its title (e.g. 'Active members' = count, 'Average fine' = avg of fine).
    - Pick the widget that fits the content: a table suits tabular records (orders, bookings, transactions, inventory); a card grid (below) usually reads better for listings of people / products / profiles / features. Use your judgment.
 
 Utility classes, pre-styled for the {domain} theme (OPTIONAL helpers — reach for them for speed and widget chrome, not as your design ceiling):
@@ -3332,8 +3387,10 @@ Design judgment — build what THIS request actually needs; do not pad or force 
                     "is triggered (a button next to that class's table).\n"
                 )
                 chart_rule = (
-                    "A chart plots ONE numeric attribute per record (valueField), "
-                    "labelled by another attribute (labelField)."
+                    "A chart groups records by one attribute (labelField) and "
+                    "shows per group the count of records or the sum/avg/min/max "
+                    "of ONE numeric attribute (valueField); a metric card shows a "
+                    "count, sum, average, minimum or maximum over all records."
                 )
             else:
                 data_model_step = (

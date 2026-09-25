@@ -96,6 +96,16 @@ class GUIBindSpec(BaseModel):
             "y-axis or shown as the metric value."
         ),
     )
+    aggregation: Optional[Literal["count", "sum", "avg", "min", "max"]] = Field(
+        default=None,
+        description=(
+            "Chart / metric_card: how records are reduced. A chart groups them "
+            "by labelField: 'count' = records per label (no valueField needed), "
+            "'sum'/'avg'/'min'/'max' = of valueField per label. A metric_card "
+            "shows the count of records, or sum/avg/min/max of valueField. Omit "
+            "on a chart only to plot valueField of each record."
+        ),
+    )
     columns: List[str] = Field(
         default_factory=list,
         description="Column / field names for table and form widgets.",
