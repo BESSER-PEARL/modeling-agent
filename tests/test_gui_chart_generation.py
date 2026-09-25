@@ -213,10 +213,14 @@ class TestResolveClassBinding:
         assert result is not None
         assert result["name"] == "Author"
 
-    def test_fallback_to_first(self, metadata):
+    def test_unmatched_name_does_not_bind_to_first_class(self, metadata):
+        # Binding an unknown name to the first class showed the wrong entity's
+        # data under the section's heading.
         spec = {"className": "NonExistent"}
-        result = _resolve_class_binding(spec, metadata)
-        assert result is not None  # Falls back to first class with attributes
+        assert _resolve_class_binding(spec, metadata) is None
+
+    def test_plural_name_matches_class(self, metadata):
+        assert _resolve_class_binding({"className": "authors"}, metadata)["name"] == "Author"
 
     def test_no_metadata_returns_none(self):
         assert _resolve_class_binding({}, None) is None

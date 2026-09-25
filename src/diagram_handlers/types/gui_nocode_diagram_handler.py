@@ -612,7 +612,10 @@ def _resolve_class_binding(
     """Resolve which class from the metadata the section should bind to.
 
     The LLM may provide a ``className`` or ``classId`` in the section spec.
-    Falls back to the first class in metadata if nothing matches.
+    A name matches case- and plural-insensitively ("books" -> Book). An
+    unmatched name returns ``None`` so the caller renders static content: a
+    widget bound to an unrelated class shows the wrong data. With no name at
+    all, only a single-class diagram is unambiguous enough to bind.
     """
     if not class_metadata:
         return None
@@ -624,16 +627,40 @@ def _resolve_class_binding(
         for cls in class_metadata:
             if cls["id"] == class_id:
                 return cls
-    # Try matching by name (case-insensitive)
     if class_name:
         for cls in class_metadata:
             if cls["name"].lower() == class_name.lower():
                 return cls
-    # Fallback: first class with attributes
-    for cls in class_metadata:
-        if cls.get("attributes"):
-            return cls
-    return class_metadata[0] if class_metadata else None
+        for cls in class_metadata:
+            if _names_match(cls["name"], class_name):
+                return cls
+        logger.warning(
+            "[GUINoCode] no class matches %r; rendering static content instead of binding",
+            class_name,
+        )
+        return None
+    if len(class_metadata) == 1:
+        return class_metadata[0]
+    return None
+
+
+def _name_forms(text: Any) -> set:
+    """Comparable forms of a name: lowercase alphanumerics, plus singulars."""
+    key = re.sub(r"[^a-z0-9]", "", str(text or "").lower())
+    forms = {key}
+    if key.endswith("ies") and len(key) > 4:
+        forms.add(key[:-3] + "y")
+    if key.endswith("es") and len(key) > 3:
+        forms.add(key[:-2])
+    if key.endswith("s") and len(key) > 3:
+        forms.add(key[:-1])
+    forms.discard("")
+    return forms
+
+
+def _names_match(a: Any, b: Any) -> bool:
+    """Case/separator/plural-insensitive name equality (Books == book)."""
+    return bool(_name_forms(a) & _name_forms(b))
 
 
 def _pick_label_field(cls: Dict[str, Any]) -> Optional[Dict[str, Any]]:
