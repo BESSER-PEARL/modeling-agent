@@ -359,7 +359,80 @@ def html_to_components(html: str) -> List[Dict[str, Any]]:
     builder = _ComponentTreeBuilder()
     builder.feed(html)
     builder.close()
-    return builder.result()
+    return lift_actions_from_text(builder.result())
+
+
+# Tags BESSER's GUI processor turns into one plain Text, dropping every child
+# element (its TEXT_TAGS); only p and headings are block-level.
+TEXT_FLATTENED_TAGS = frozenset({
+    "p", "span", "label", "strong", "em", "small",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "strike", "u", "s", "del", "ins", "mark",
+    "code", "kbd", "samp", "var", "sub", "sup",
+    "abbr", "cite", "q", "dfn", "time", "b", "i",
+})
+_BLOCK_TEXT_TAGS = frozenset({"p", "h1", "h2", "h3", "h4", "h5", "h6"})
+
+
+def _is_action(node: Dict[str, Any]) -> bool:
+    return node.get("tagName") in ("a", "button") or node.get("type") in ("link", "action-button")
+
+
+def _holds_action(items: Any) -> bool:
+    return any(
+        isinstance(n, dict) and (_is_action(n) or _holds_action(n.get("components")))
+        for n in (items if isinstance(items, list) else [])
+    )
+
+
+def lift_actions_from_text(nodes: List[Any]) -> List[Any]:
+    """Make links and buttons inside text tags survive web-app generation, in place.
+
+    A text tag holding one becomes a ``div`` with the same attributes and
+    style; its loose text becomes ``span`` runs, so text and order are kept
+    (an inline tag keeps inline flow). Returns *nodes*.
+    """
+    for node in nodes if isinstance(nodes, list) else []:
+        if not isinstance(node, dict):
+            continue
+        children = node.get("components")
+        lift_actions_from_text(children)
+        if (
+            node.get("tagName") not in TEXT_FLATTENED_TAGS
+            or node.get("type") not in (None, "text")
+            or not _holds_action(children)
+        ):
+            continue
+        parts: List[Any] = [node["content"]] if isinstance(node.get("content"), str) else []
+        parts += [
+            c.get("content", "") if isinstance(c, dict) and c.get("type") == "textnode" else c
+            for c in children
+        ]
+        runs: List[Any] = []
+        for i, part in enumerate(parts):
+            if not isinstance(part, str):
+                runs.append(part)
+            elif part.strip():
+                # The generated app strips text, so the spaces around a run
+                # become margins.
+                span: Dict[str, Any] = {"tagName": "span", "content": part.strip()}
+                margins = {}
+                if part[0].isspace() and i > 0:
+                    margins["margin-left"] = "0.25em"
+                if part[-1].isspace() and i < len(parts) - 1:
+                    margins["margin-right"] = "0.25em"
+                if margins:
+                    span["style"] = margins
+                runs.append(span)
+        if node["tagName"] not in _BLOCK_TEXT_TAGS:
+            style = node.setdefault("style", {})
+            if isinstance(style, dict):
+                style.setdefault("display", "inline")
+        node["tagName"] = "div"
+        node["components"] = runs
+        for key in ("type", "editable", "content"):
+            node.pop(key, None)
+    return nodes
 
 
 def find_widget_slots(nodes: List[Dict[str, Any]]) -> List[str]:

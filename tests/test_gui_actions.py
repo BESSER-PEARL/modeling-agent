@@ -216,3 +216,70 @@ def test_method_without_table_navigates_to_the_class_page():
         btn = _by_text(_nodes(model, "Folio"), label)
         assert btn["attributes"]["data-action-type"] == "navigate"
         assert btn["attributes"]["data-target-screen"] == board_id
+
+
+# -- actions inside text tags -------------------------------------------------
+#
+# BESSER's GUI processor turns p / span / headings (its TEXT_TAGS) into one
+# plain Text, dropping every child element. A live hotel design lost its
+# breadcrumb link that way ('<p><a href="/bookings">Bookings</a> / Booking
+# #58241</p>' rendered as '<p>Bookings / Booking #58241</p>'), and a live
+# modification lost both a navigate button and a link wrapped in <p>.
+
+_FLATTENED = {"p", "span", "label", "strong", "em", "small", "b", "i",
+              "h1", "h2", "h3", "h4", "h5", "h6"}
+
+
+def _flattened_actions(node, inside=False):
+    """Links/buttons that sit under a tag BESSER flattens to text."""
+    if not isinstance(node, dict):
+        return []
+    tag = node.get("tagName")
+    hits = [node] if inside and (tag in ("a", "button") or node.get("type") in ("link", "action-button")) else []
+    for child in node.get("components") or []:
+        hits += _flattened_actions(child, inside or (tag in _FLATTENED and node.get("type") in (None, "text")))
+    return hits
+
+
+def test_converter_keeps_links_out_of_text_tags():
+    nodes = html_to_components(
+        "<p class='crumbs' style='color: red'><a href='/bookings'>Bookings</a> / Booking #58241</p>"
+    )
+    assert _flattened_actions({"components": nodes}) == []
+    crumb = nodes[0]
+    assert crumb["tagName"] == "div"
+    assert crumb["attributes"]["class"] == "crumbs"
+    assert crumb["style"]["color"] == "red"
+    # Same text, same order.
+    assert _text(crumb) == "Bookings / Booking #58241"
+    assert [c.get("tagName") for c in crumb["components"]] == ["a", "span"]
+    # The generated app strips text; the separating space becomes a margin.
+    assert crumb["components"][1]["content"] == "/ Booking #58241"
+    assert crumb["components"][1]["style"] == {"margin-left": "0.25em"}
+
+
+def test_converter_keeps_inline_flow_for_inline_text_tags():
+    node = html_to_components("<span class='hint'>Need help? <button>Contact</button></span>")[0]
+    assert node["tagName"] == "div"
+    assert node["style"]["display"] == "inline"
+    assert _text(node) == "Need help? Contact"
+
+
+def test_converter_leaves_plain_text_tags_alone():
+    node = html_to_components("<p>Just <strong>text</strong></p>")[0]
+    assert node["tagName"] == "p"
+
+
+def test_generated_actions_are_not_under_text_tags():
+    model = _generate([
+        {"name": "Overview", "sections": [
+            {"html": "<section class='s'><h2>Overview</h2>"
+                     "<p><button class='app-btn' data-page='Tasks'>Open the board</button></p>"
+                     "<p>Or <a href='/tasks'>see tasks</a>.</p></section>"},
+        ]},
+        {"name": "Tasks", "sections": [{"bind": {"kind": "table", "className": "Task"}}]},
+    ])
+    page = next(p for p in model["pages"] if p["name"] == "Overview")
+    assert _flattened_actions(page["frames"][0]["component"]) == []
+    btn = _by_text(_nodes(model, "Overview"), "Open the board")
+    assert btn["attributes"]["data-action-type"] == "navigate"

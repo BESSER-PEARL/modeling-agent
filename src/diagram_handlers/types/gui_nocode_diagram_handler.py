@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
 from .gui_html_converter import (
     html_to_components,
+    lift_actions_from_text,
     splice_widget,
 )
 from .gui_design_system import (
@@ -2664,9 +2665,10 @@ def _wire_model_actions(
     for wrapper, entry in zip(wrappers, page_index):
         _find_tables(wrapper, entry)
     for wrapper, entry in zip(wrappers, page_index):
-        # Designs made before surplus widget markers were dropped still carry
-        # them, and they survive the editor round-trip.
+        # Designs saved before these fixes still carry surplus widget markers
+        # and links in text tags, and both survive the editor round-trip.
         wrapper["components"], _ = splice_widget(wrapper["components"])
+        lift_actions_from_text(wrapper["components"])
         _wire_page_actions(
             wrapper["components"], entry, page_index, class_pages, class_metadata
         )
