@@ -1676,7 +1676,7 @@ def _nav_header_component(
 
     nav_links: List[Dict[str, Any]] = []
     for name in page_names:
-        route = f"/{re.sub(r'[^a-z0-9-]+', '-', name.lower()).strip('-') or 'page'}"
+        route = _page_route(name)
         is_active = name.lower() == active_page.lower()
         nav_links.append({
             "type": "link",
@@ -2287,6 +2287,313 @@ def _build_section_component(
         )
 
 
+# ---------------------------------------------------------------------------
+# Page actions: links, navigation buttons, method buttons
+# ---------------------------------------------------------------------------
+#
+# Authored markup states intent in a friendly vocabulary — ``<a href="/route">``,
+# ``<button data-page="Tasks">``, ``<button data-method="complete"
+# data-class="Task">`` — and this pass rewrites it into the encodings the BESSER
+# GUI processor and web-app generator already turn into behaviour:
+#   * link      -> ``href`` = the exact route the processor gives the page;
+#   * navigate  -> action-button, ``data-action-type=navigate`` +
+#                  ``data-target-screen=<page id>`` (the editor's own encoding);
+#   * method    -> action-button exactly as Basic CRUD builds it, with
+#                  ``data-instance-source`` = the page's table for that class.
+# Every bound table whose class has methods is followed by the missing method
+# buttons, like a Basic CRUD page.
+
+def _page_route(name: Any) -> str:
+    """The route BESSER's GUI processor gives a page: ``/`` + lowercased name,
+    spaces as hyphens. Any other spelling is redirected to the start page."""
+    return "/" + _clean_text(name).lower().replace(" ", "-")
+
+
+def _slug(text: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(text or "").lower()).strip("-")
+
+
+def _build_page_index(page_names: List[str]) -> List[Dict[str, str]]:
+    """Stable ``{name, id, route}`` per page; ids are unique and name-derived."""
+    index: List[Dict[str, str]] = []
+    used: set = set()
+    for name in page_names:
+        base = f"page-{_slug(name) or 'page'}"
+        page_id, n = base, 2
+        while page_id in used:
+            page_id, n = f"{base}-{n}", n + 1
+        used.add(page_id)
+        index.append({"name": name, "id": page_id, "route": _page_route(name)})
+    return index
+
+
+def _words(text: Any) -> List[str]:
+    spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", str(text or ""))
+    return re.findall(r"[a-z0-9]+", spaced.lower())
+
+
+def _contains_phrase(words: List[str], phrase: List[str]) -> bool:
+    n = len(phrase)
+    return n > 0 and any(
+        all(_names_match(words[i + j], phrase[j]) for j in range(n))
+        for i in range(len(words) - n + 1)
+    )
+
+
+def _find_page(
+    ref: Any,
+    page_index: List[Dict[str, str]],
+    class_pages: Dict[str, Dict[str, str]],
+) -> Optional[Dict[str, str]]:
+    """Resolve a route / page name / class name to a page entry."""
+    ref = _clean_text(ref)
+    if not ref:
+        return None
+    for page in page_index:
+        if ref in (page["route"], page["id"]) or ref.lower() == page["name"].lower():
+            return page
+    path = ref.split("?")[0].strip("/#")
+    candidates = [path] + [seg for seg in path.split("/") if seg]
+    for cand in candidates:
+        for page in page_index:
+            if _names_match(cand, page["name"]):
+                return page
+        for class_name, page in class_pages.items():
+            if _names_match(cand, class_name):
+                return page
+    return None
+
+
+def _page_from_label(
+    label: str,
+    page_index: List[Dict[str, str]],
+    class_pages: Dict[str, Dict[str, str]],
+    current: Dict[str, str],
+) -> Optional[Dict[str, str]]:
+    """Infer a navigation target from visible text ("View all tasks" -> Tasks).
+
+    Never returns the current page: a control that "navigates" to where the
+    user already is does nothing.
+    """
+    words = _words(label)
+    best, best_len = None, 0
+    for page in page_index:
+        phrase = _words(page["name"])
+        if page is not current and len(phrase) > best_len and _contains_phrase(words, phrase):
+            best, best_len = page, len(phrase)
+    if best:
+        return best
+    for class_name, page in class_pages.items():
+        if page is not current and any(_names_match(w, class_name) for w in words):
+            return page
+    return None
+
+
+def _find_method(
+    ref: Any,
+    classes: List[Dict[str, Any]],
+) -> Optional[tuple]:
+    """``(class, method)`` whose method name matches *ref*, if unique."""
+    key = _words(ref)
+    hits = [
+        (cls, m) for cls in classes for m in cls.get("methods", [])
+        if key and _words(m.get("name")) == key
+    ]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _method_from_label(label: str, classes: List[Dict[str, Any]]) -> Optional[tuple]:
+    """``(class, method)`` whose name words all appear in *label*, if unique."""
+    words = _words(label)
+    hits = []
+    for cls in classes:
+        for m in cls.get("methods", []):
+            mw = _words(m.get("name"))
+            if mw and all(any(_names_match(w, x) for x in words) for w in mw):
+                hits.append((cls, m))
+    return hits[0] if len(hits) == 1 else None
+
+
+def _make_method_button(node: Dict[str, Any], cls: Dict[str, Any], method: Dict[str, Any], table_id: str) -> None:
+    """Turn an authored button into a run-method action-button, in place.
+
+    Same props as ``_action_button_component`` (the Basic CRUD encoding); the
+    authored classes, content and style are kept so the design survives.
+    """
+    label = _node_text(node) or method["name"]
+    attrs = node.setdefault("attributes", {})
+    attrs.update({
+        "type": "button",
+        "data-button-label": label,
+        "data-action-type": "run-method",
+        "data-method-class": cls["id"],
+        "data-method": method["id"],
+        "data-instance-source": table_id,
+        "instance-method": "true" if method.get("isInstanceMethod") else "false",
+    })
+    node.update({
+        "type": "action-button",
+        "button-label": label,
+        "action-type": "run-method",
+        "method-class": cls["id"],
+        "method": method["id"],
+        "instance-source": table_id,
+        "confirmation-required": False,
+    })
+    # An explicit style keeps the editor's action-button default look off it.
+    node.setdefault("style", {})
+
+
+def _make_navigate_button(node: Dict[str, Any], page: Dict[str, str]) -> None:
+    """Turn an authored button into a navigate action-button, in place."""
+    label = _node_text(node) or page["name"]
+    attrs = node.setdefault("attributes", {})
+    attrs.update({
+        "type": "button",
+        "data-button-label": label,
+        "data-action-type": "navigate",
+        "data-target-screen": page["id"],
+    })
+    node.update({
+        "type": "action-button",
+        "button-label": label,
+        "action-type": "navigate",
+        "target-screen": f"page:{page['id']}",
+    })
+    node.setdefault("style", {})
+
+
+def _wire_page_actions(
+    components: List[Dict[str, Any]],
+    current: Dict[str, str],
+    page_index: List[Dict[str, str]],
+    class_pages: Dict[str, Dict[str, str]],
+    class_metadata: Optional[List[Dict[str, Any]]],
+) -> None:
+    """Wire links, buttons and method rows on one page's component tree, in place."""
+    classes_by_id = {c["id"]: c for c in (class_metadata or [])}
+    all_classes = list(classes_by_id.values())
+
+    entries: List[tuple] = []  # (node, parent list, inside a <form>)
+
+    def _collect(items: List[Any], in_form: bool) -> None:
+        for node in items:
+            if not isinstance(node, dict):
+                continue
+            entries.append((node, items, in_form))
+            children = node.get("components")
+            if isinstance(children, list):
+                _collect(children, in_form or node.get("tagName") == "form")
+
+    _collect(components, False)
+
+    # 1. Give each bound table a stable id so method buttons can target it.
+    first_table: Dict[str, tuple] = {}
+    page_slug = _slug(current["name"]) or "page"
+    used_ids: set = set()
+    for node, parent, _ in entries:
+        if node.get("type") != "table":
+            continue
+        attrs = node.setdefault("attributes", {})
+        class_id = attrs.get("data-source")
+        if class_id not in classes_by_id:
+            continue
+        base = attrs.get("id") or f"table-{_slug(classes_by_id[class_id]['name'])}-{page_slug}"
+        table_id, n = base, 2
+        while table_id in used_ids:
+            table_id, n = f"{base}-{n}", n + 1
+        used_ids.add(table_id)
+        attrs["id"] = table_id
+        first_table.setdefault(class_id, (table_id, node, parent))
+    page_classes = [classes_by_id[cid] for cid in first_table]
+
+    # 2. Authored buttons and links.
+    wired: set = set()
+    for node, _, in_form in entries:
+        attrs = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
+        if node.get("type") == "action-button":
+            if node.get("method-class") and node.get("method"):
+                wired.add((node["method-class"], node["method"]))
+            continue
+        tag = node.get("tagName")
+        if tag == "button":
+            method_ref = attrs.pop("data-method", None)
+            class_ref = attrs.pop("data-class", None)
+            page_ref = attrs.pop("data-page", None) or attrs.pop("data-target", None)
+            label = _node_text(node)
+            hit = target = None
+            if method_ref:
+                scope = all_classes
+                if class_ref:
+                    cls = _resolve_class_binding({"className": class_ref}, all_classes)
+                    scope = [cls] if cls else []
+                hit = _find_method(method_ref, scope) or _find_method(method_ref, page_classes)
+                if not hit:
+                    logger.warning("[GUINoCode] button method %r not in the class diagram", method_ref)
+            if not hit and page_ref:
+                target = _find_page(page_ref, page_index, class_pages)
+            if not hit and not target:
+                explicit = method_ref or page_ref
+                if in_form and not explicit and str(attrs.get("type", "submit")).lower() == "submit":
+                    continue  # the form's own submit
+                hit = _method_from_label(label, page_classes)
+                if not hit:
+                    target = _page_from_label(label, page_index, class_pages, current)
+            if hit:
+                cls, method = hit
+                table_id = first_table.get(cls["id"], ("",))[0]
+                _make_method_button(node, cls, method, table_id)
+                wired.add((cls["id"], method["id"]))
+            elif target:
+                _make_navigate_button(node, target)
+        elif tag == "a" or node.get("type") == "link":
+            href = _clean_text(attrs.get("href"))
+            page_ref = attrs.pop("data-page", None)
+            if href.startswith("#") and len(href) > 1 and not _find_page(href, page_index, {}):
+                continue  # an in-page anchor
+            target = (
+                _find_page(page_ref, page_index, class_pages)
+                or (_find_page(href, page_index, class_pages) if href not in ("", "#") else None)
+                or _page_from_label(_node_text(node), page_index, class_pages, current)
+            )
+            if target:
+                attrs["href"] = target["route"]
+            else:
+                # No better target: stay on this page. An empty/'#' href is
+                # rendered as '/', which silently jumps to the start page.
+                logger.info("[GUINoCode] link %r has no page target", _node_text(node)[:40])
+                attrs["href"] = current["route"]
+            node["attributes"] = attrs
+
+    # 3. Basic CRUD parity: every method of a bound class gets a button.
+    for class_id, (table_id, node, parent) in first_table.items():
+        cls = classes_by_id[class_id]
+        missing = [m for m in cls.get("methods", []) if (class_id, m["id"]) not in wired]
+        row = _method_buttons_row({**cls, "methods": missing}, table_id=table_id) if missing else None
+        if row:
+            pos = next(i for i, item in enumerate(parent) if item is node)
+            parent.insert(pos + 1, row)
+
+
+def _class_host_pages(
+    pages_spec: List[Dict[str, Any]],
+    page_index: List[Dict[str, str]],
+    class_metadata: Optional[List[Dict[str, Any]]],
+) -> Dict[str, Dict[str, str]]:
+    """Class name -> the first page with a table of it (where its records are
+    created and edited), so "Add book" can navigate there."""
+    hosts: Dict[str, Dict[str, str]] = {}
+    for page, entry in zip(pages_spec, page_index):
+        for section in page.get("sections") or []:
+            bind = section.get("bind") if isinstance(section, dict) else None
+            if not isinstance(bind, dict) or bind.get("kind") not in ("table", "dashboard"):
+                continue
+            cls = _resolve_class_binding({"className": bind.get("className")}, class_metadata)
+            if cls and bind.get("className"):
+                hosts.setdefault(cls["name"], entry)
+    return hosts
+
+
 def _collect_data_uri_assets(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Collect any embedded ``data:`` image sources as GrapesJS asset entries.
 
@@ -2463,8 +2770,15 @@ Rules:
         all_page_names: Optional[List[str]] = None,
         project_name: str = "BESSER",
         tokens: Optional[Dict[str, Any]] = None,
+        page_index: Optional[List[Dict[str, str]]] = None,
+        page_entry: Optional[Dict[str, str]] = None,
+        class_pages: Optional[Dict[str, Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
-        page_name = _sanitize_page_name(spec.get("name"), fallback="Page")
+        page_name = (page_entry or {}).get("name") or _sanitize_page_name(spec.get("name"), fallback="Page")
+        page_index = page_index or _build_page_index(all_page_names or [page_name])
+        page_entry = page_entry or next(
+            (p for p in page_index if p["name"] == page_name), None
+        ) or _build_page_index([page_name])[0]
         raw_sections = spec.get("sections") if isinstance(spec.get("sections"), list) else []
         sections = [item for item in raw_sections if isinstance(item, dict)]
 
@@ -2485,6 +2799,9 @@ Rules:
         page_components.extend(
             _build_section_component(section, class_metadata)
             for section in sections
+        )
+        _wire_page_actions(
+            page_components, page_entry, page_index, class_pages or {}, class_metadata
         )
 
         # Separate full-width components (hero, footer, nav) from card sections.
@@ -2522,8 +2839,9 @@ Rules:
         wrapper["components"] = final_components
 
         return {
+            "id": page_entry["id"],
             "name": page_name,
-            "route_path": f"/{re.sub(r'[^a-z0-9-]+', '-', page_name.lower()).strip('-') or 'page'}",
+            "route_path": page_entry["route"],
             "frames": [{"component": wrapper}],
         }
 
@@ -2637,6 +2955,25 @@ Rules:
             f"<!-- {name} -->\n{markup}" for name, markup in exemplars.items()
         )
 
+        method_rule = (
+            "\n- Class-method buttons: <button data-method='methodName' data-class='ClassName'> "
+            "using ONLY methods listed in the class diagram; place them next to that class's "
+            "table (the method runs on the selected row). Every method is also added under "
+            "its class's table automatically, so only place one where it adds value."
+            if class_metadata else ""
+        )
+        interactions_block = (
+            "INTERACTIONS — every link and button must DO something in the generated app:\n"
+            "- Page links: <a href='/route'> where route is the target page's name lowercased "
+            "with spaces replaced by hyphens (page 'Front Desk' -> '/front-desk'). Never "
+            "href='#' and never an external URL.\n"
+            "- Navigation buttons: <button data-page='Page Name'>."
+            f"{method_rule}\n"
+            "- Create / edit / delete of records is built into every data table: an 'Add X' "
+            "button navigates (data-page) to the page holding X's table.\n"
+            "- No action-less buttons (filters, sort toggles): use a styled span or badge."
+        )
+
         system_prompt = f"""You are a senior product designer AUTHORING a themed, production-realistic web app for the **{domain}** domain.
 
 You do NOT pick sections from a fixed widget menu. You AUTHOR the markup for each section using a shared design system, and you BIND real data widgets where the app shows data.
@@ -2704,9 +3041,11 @@ Realism directives (this is what makes the result credible, not generic):
 CARD GRID (a strong pattern for listings of people / products / profiles / features / plans):
   <section class='ds-section'><h2 class='ds-heading'>Featured Profiles</h2>
     <div class='ds-grid-3'>
-      <div class='ds-card'>{_SVG_THUMB_HINT}<h3 class='ds-heading'>Ava, 27</h3><p>Loves hiking & jazz. 92% match.</p><a class='ds-btn ds-btn-primary' href='#'>View</a></div>
+      <div class='ds-card'>{_SVG_THUMB_HINT}<h3 class='ds-heading'>Ava, 27</h3><p>Loves hiking & jazz. 92% match.</p><a class='ds-btn ds-btn-primary' href='/profiles'>View</a></div>
       ...one card per item, each with a real name/label + concrete copy + (optionally) a visual...
     </div></section>
+
+{interactions_block}
 
 Imagery (use it where it strengthens the design — heroes, profile/product cards, feature icons):
 - ONLY an inline <svg ...>...</svg> or an <img> whose src is a data: URI ever renders — external/http image URLs are blocked by CSP, so never use them.
@@ -2789,11 +3128,13 @@ Design judgment — build what THIS request actually needs; do not pad or force 
 
             pages_spec = spec.get("pages") if isinstance(spec.get("pages"), list) else []
             project_name = spec.get("projectName", "App")
+            pages_spec = [p for p in pages_spec if isinstance(p, dict)]
             all_page_names = [
-                _clean_text(p.get("name")) or f"Page{i}"
+                _sanitize_page_name(p.get("name"), fallback=f"Page{i}")
                 for i, p in enumerate(pages_spec, 1)
-                if isinstance(p, dict)
             ]
+            page_index = _build_page_index(all_page_names)
+            class_pages = _class_host_pages(pages_spec, page_index, class_metadata)
 
             # Resolve the theme FIRST — the nav header and page wrapper are
             # assembled from these tokens, so the whole page (not just the
@@ -2833,9 +3174,11 @@ Design judgment — build what THIS request actually needs; do not pad or force 
                     all_page_names=all_page_names,
                     project_name=project_name,
                     tokens=tokens,
+                    page_index=page_index,
+                    page_entry=entry,
+                    class_pages=class_pages,
                 )
-                for page in pages_spec
-                if isinstance(page, dict)
+                for page, entry in zip(pages_spec, page_index)
             ]
             if not pages:
                 return self._error_response(

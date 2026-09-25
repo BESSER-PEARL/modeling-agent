@@ -23,7 +23,8 @@ Design constraints baked in here:
   would break editability.
 * **Sanitised** — ``<script>``/``<style>`` dropped, ``on*`` handlers stripped,
   external ``href``/``src`` values dropped (CSP blocks them), only ``data:``
-  URIs and ``#`` anchors survive.
+  URIs and ``#`` anchors survive, plus in-app ``/route`` hrefs on links.
+  Raw button-action attributes are dropped too: the handler wires actions.
 * **Widget-spoof guarded** — LLM markup can never masquerade as a data-bound
   widget: ``data-gjs-type``/``data-source``/``series``/``columns`` attributes
   are dropped and no parsed node is ever given a top-level ``type`` of a widget.
@@ -79,6 +80,17 @@ _WIDGET_ATTR_BLOCKLIST = frozenset({
     "data-gjs-type", "data-source", "series", "columns", "data-widget-slot",
 })
 
+#: Raw action wiring the BESSER GUI processor reads off a button. Markup never
+#: sets these directly: the handler writes them from the friendly
+#: ``data-page`` / ``data-method`` vocabulary once it has resolved real page
+#: and method ids, so a guessed id can't produce a half-wired button.
+_ACTION_ATTR_BLOCKLIST = frozenset({
+    "action-type", "data-action-type", "target-screen", "data-target-screen",
+    "method-class", "data-method-class", "data-method-name", "method-name",
+    "instance-source", "data-instance-source", "entity-class", "data-entity-class",
+    "instance-method", "data-instance-method",
+})
+
 #: html.parser lowercases attribute names; restore the few camelCase SVG
 #: attributes that are case-sensitive so icons still render correctly.
 _SVG_ATTR_CASE = {
@@ -106,6 +118,12 @@ def _is_safe_url(value: str) -> bool:
     if not v:
         return False
     return v.lower().startswith("data:") or v.startswith("#")
+
+
+def _is_page_route(value: str) -> bool:
+    """An in-app route (``/tasks``) for a link ``href`` — not protocol-relative."""
+    v = (value or "").strip()
+    return v.startswith("/") and not v.startswith("//")
 
 
 def _split_declarations(style_str: str) -> List[str]:
@@ -215,14 +233,14 @@ class _ComponentTreeBuilder(HTMLParser):
 
             if name.startswith("on"):
                 continue  # strip event handlers (onclick, onerror, ...)
-            if name in _WIDGET_ATTR_BLOCKLIST:
-                continue  # never let markup spoof a data-bound widget
+            if name in _WIDGET_ATTR_BLOCKLIST or name in _ACTION_ATTR_BLOCKLIST:
+                continue  # never let markup spoof a data-bound widget or action
             if name == "style":
                 style.update(_parse_style(value))
                 continue
             if name in ("href", "src"):
-                if _is_safe_url(value):
-                    attributes[name] = value
+                if _is_safe_url(value) or (name == "href" and _is_page_route(value)):
+                    attributes[name] = value.strip()
                 continue  # external asset → drop the attribute, keep the element
             if name in ("class", "id"):
                 if value:
