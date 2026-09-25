@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _COST_PER_1K: Dict[str, Dict[str, float]] = {
+    "gpt-6-luna": {"prompt": 0.001, "completion": 0.004},
     "gpt-4.1-mini": {"prompt": 0.0004, "completion": 0.0016},
     "gpt-4.1": {"prompt": 0.002, "completion": 0.008},
     "gpt-4o-mini": {"prompt": 0.00015, "completion": 0.0006},

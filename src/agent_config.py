@@ -26,9 +26,9 @@ STREAM_BUFFER_THRESHOLD = 200
 # When changing either value, add the matching entry to _COST_PER_1K in
 # tracking/token_tracker.py; an unknown model falls back to placeholder pricing
 # and every reported cost silently becomes an estimate.
-LLM_MODEL_DEFAULT = "gpt-4.1-mini"
+LLM_MODEL_DEFAULT = "gpt-6-luna"
 # Image -> model conversion. Deliberately the full tier, not the mini.
-LLM_MODEL_VISION = "gpt-4.1"
+LLM_MODEL_VISION = "gpt-6-luna"
 
 # ── LLM parameters ───────────────────────────────────────────────────────
 LLM_TEMPERATURE = 0.2

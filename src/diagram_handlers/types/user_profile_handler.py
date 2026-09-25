@@ -41,6 +41,24 @@ ROOT_CLASS = "User"
 
 _OPERATORS = ("<", "<=", "==", ">=", ">")
 
+# Container classes that are hidden from the canvas. Their children are
+# displayed and linked directly under User. These containers still exist in
+# the backend B-UML metamodel (re-nested by flattenUserDiagramForBackend on
+# the frontend before transmission), so they remain in the metamodel JSON but
+# must NOT appear as intermediate boxes in the agent-generated canvas model.
+_HIDDEN_USER_MODEL_CONTAINERS = frozenset({"Competence", "Accessibility"})
+
+# Attributes of Personal_Information that are exposed as individual draggable
+# chips in the frontend palette (not as a single grouped box).  Each chip
+# carries exactly one of these attributes and has ``displayLabel`` set so the
+# frontend renders it as an icon chip instead of a class box.
+# key = metamodel attribute name, value = displayLabel shown on the chip header.
+_PI_CHIP_ATTRS: Dict[str, str] = {
+    "age": "age",
+    "nationality_iso3166": "nationality",
+    "gender": "gender",
+}
+
 
 MODIFY_SYSTEM_PROMPT_USER = f"""You are a user-profile modeling expert. The user wants to modify a user-profile model.
 
@@ -53,7 +71,8 @@ IMPORTANT RULES:
 4. {EXACT_NAMES_RULE}
 5. {REMOVE_ELEMENT_RULE}
 6. {MULTI_MOD_ARRAY_RULE}
-7. Use ONLY classes and attributes from the metamodel below; copy classId and attributeId verbatim — the frontend uses these ids to link the profile back to the metamodel."""
+7. Use ONLY classes and attributes from the metamodel below; copy classId and attributeId verbatim — the frontend uses these ids to link the profile back to the metamodel.
+8. Do NOT add Accessibility or Competence boxes — Disability, Skill, Language, and Education connect directly to User on the canvas (no intermediate grouping box)."""
 
 
 class UserProfileDiagramHandler(BaseDiagramHandler):
@@ -292,6 +311,23 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
                     }
                     queue.append(neighbor)
 
+        # Flatten hidden containers: re-parent their children directly under
+        # User so the generated canvas model never includes Accessibility or
+        # Competence boxes.  The containers are removed from parent_of; their
+        # former children keep their original cardinality flag.
+        for hc in list(_HIDDEN_USER_MODEL_CONTAINERS):
+            hc_info = parent_of.pop(hc, None)
+            if hc_info is None:
+                continue
+            # Collect all classes whose parent is this hidden container.
+            for cls, info in list(parent_of.items()):
+                if info["parent"] == hc:
+                    parent_of[cls] = {
+                        "parent": ROOT_CLASS,
+                        "assoc": info["assoc"],
+                        "many": info["many"],
+                    }
+
         self._assoc_graph_cache = parent_of
         return parent_of
 
@@ -416,7 +452,51 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
             })
             ensured.add(anc_l)
 
-        # 2) The target box itself.
+        # 2a) Personal_Information special case: emit one chip per valued chip
+        #     attribute so the frontend renders icon chips rather than a full box.
+        if class_name == "Personal_Information":
+            chip_attrs = [
+                a for a in changes.get("attributes", [])
+                if a.get("name") in _PI_CHIP_ATTRS and str(a.get("value", "")).strip()
+            ]
+            if chip_attrs:
+                user_ref = ref.get(ROOT_CLASS, ROOT_CLASS)
+                existing_pi_count = sum(
+                    1 for k in existing_by_class
+                    if k.startswith("personalinformation")
+                )
+                chip_idx = existing_pi_count + 1
+                for attr in chip_attrs:
+                    display_label = _PI_CHIP_ATTRS[attr["name"]]
+                    chip_name = f"personalInformation{chip_idx}"
+                    chip_idx += 1
+                    out.append({
+                        "action": "add_object",
+                        "target": {"profileName": chip_name},
+                        "changes": {
+                            "className": class_name,
+                            "classId": info["id"],
+                            "displayLabel": display_label,
+                            "icon": changes.get("icon"),
+                            "attributes": [attr],
+                        },
+                    })
+                    pair = (user_ref.lower(), "personal_information")
+                    out.append({
+                        "action": "add_link",
+                        "target": {"sourceProfile": user_ref, "targetProfile": chip_name},
+                        "changes": {
+                            "source": user_ref,
+                            "target": chip_name,
+                            "relationshipType": "",
+                        },
+                    })
+                    existing_links.add(pair)
+                ensured.add("personal_information")
+                return out
+            # No valued chip attributes — fall through to the normal path.
+
+        # 2b) The target box itself.
         leaf_l = class_name.lower()
         if self._is_singleton(class_name) and leaf_l in ensured:
             # Singleton already present — reuse it, don't add a duplicate box.
@@ -438,7 +518,10 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
             pair = (parent.lower(), child.lower())
             child_preexisting = child.lower() in existing_by_class
             already = pair in existing_links or (child.lower(), parent.lower()) in existing_links
-            if already and child_preexisting:
+            # For multi-instance (many) classes each new box needs its own link
+            # even when a same-class link already exists in the model.
+            is_multi = not self._is_singleton(child)
+            if already and child_preexisting and not is_multi:
                 continue
             out.append({
                 "action": "add_link",
@@ -677,7 +760,7 @@ IMPORTANT RULES:
    - religion -> Culture
    - a disability (name, description, affects) -> Disability
    - degree / field of study -> Education
-2. Do NOT output a "User" box, intermediate boxes (e.g. Competence, Accessibility), or any links — the root User element, the required intermediate boxes, and all connections are added automatically from the metamodel associations. Just emit the leaf boxes that carry criteria.
+2. Do NOT output a "User" box, Competence boxes, Accessibility boxes, or any links — the root User element and all connections are added automatically. Just emit the leaf boxes that carry criteria (Personal_Information, Culture, Language, Skill, Education, Disability). Disability, Skill, Language, and Education attach directly under User on the canvas.
 3. A profile may contain several boxes of the same class (e.g. multiple Language boxes for multiple languages).
 4. FILL IN EVERY attribute of each class you include — don't just set the one the user named. Infer plausible, coherent values for the rest from the persona. Examples:
    - "speaks Portuguese" (native/only language) -> Language: iso693_3 == "por", level == "C2"
@@ -737,6 +820,82 @@ IMPORTANT RULES:
             logger.error("[UserDiagram] generate_complete_system FAILED", exc_info=True)
             return self.generate_fallback_system()
 
+    def _post_process_chips(
+        self,
+        profiles: List[Dict[str, Any]],
+        links: List[Dict[str, str]],
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
+        """Replace Personal_Information boxes with individual attribute chips.
+
+        Each non-empty chip attribute (age, gender, nationality_iso3166) becomes
+        its own Personal_Information box carrying ``displayLabel`` and only that
+        one attribute.  This mirrors the frontend palette, which exposes these
+        three as separate draggable chips rather than a single grouping box.
+
+        When no chip attribute has a value the original box is kept unchanged
+        (e.g. the fallback starter profile).
+        """
+        user_name = next(
+            (p["profileName"] for p in profiles if p.get("className") == "User"), None
+        )
+        if not user_name:
+            return profiles, links
+
+        non_pi: List[Dict[str, Any]] = []
+        pi_boxes: List[Dict[str, Any]] = []
+        for p in profiles:
+            (pi_boxes if p.get("className") == "Personal_Information" else non_pi).append(p)
+
+        if not pi_boxes:
+            return profiles, links
+
+        # Collect valued chip attributes across all PI boxes (deduplicate by name).
+        chip_attrs: List[Dict[str, Any]] = []
+        pi_class_id: Optional[str] = None
+        pi_icon: Optional[str] = None
+        seen: set = set()
+        for box in pi_boxes:
+            pi_class_id = pi_class_id or box.get("classId")
+            pi_icon = pi_icon or box.get("icon")
+            for attr in box.get("attributes", []):
+                name = attr.get("name", "")
+                if name in _PI_CHIP_ATTRS and str(attr.get("value", "")).strip() and name not in seen:
+                    chip_attrs.append(attr)
+                    seen.add(name)
+
+        if not chip_attrs:
+            # No valued chip attributes — keep the full PI box(es) as-is.
+            return profiles, links
+
+        # Remove links that reference the original PI boxes.
+        pi_names = {p["profileName"] for p in pi_boxes}
+        filtered_links = [
+            lk for lk in links
+            if lk.get("source") not in pi_names and lk.get("target") not in pi_names
+        ]
+
+        # Create one chip box per valued chip attribute.
+        chip_profiles: List[Dict[str, Any]] = []
+        chip_links: List[Dict[str, str]] = []
+        for idx, attr in enumerate(chip_attrs, start=1):
+            display_label = _PI_CHIP_ATTRS[attr["name"]]
+            chip_name = f"personalInformation{idx}"
+            chip_profiles.append({
+                "profileName": chip_name,
+                "className": "Personal_Information",
+                "classId": pi_class_id,
+                "displayLabel": display_label,
+                "icon": pi_icon,
+                "attributes": [attr],
+            })
+            chip_links.append({
+                "source": user_name,
+                "target": chip_name,
+                "relationshipType": "",
+            })
+
+        return non_pi + chip_profiles, filtered_links + chip_links
+
     def _normalize_system(self, spec: Dict[str, Any], classes: Dict[str, Dict[str, Any]],
                           elements: Dict[str, Any], relationships: List[Dict[str, str]]) -> Dict[str, Any]:
         """Resolve LLM classes/attributes, then wire a metamodel-faithful tree.
@@ -757,6 +916,9 @@ IMPORTANT RULES:
                 enriched.append(box)
 
         profiles, links = self._assemble_structure(enriched, classes, elements)
+        # Split Personal_Information into individual attribute chips to match the
+        # frontend palette (age / gender / nationality are separate draggable chips).
+        profiles, links = self._post_process_chips(profiles, links)
 
         system_name = spec.get("systemName")
         if not isinstance(system_name, str) or not system_name.strip():

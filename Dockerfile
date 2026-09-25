@@ -19,16 +19,19 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the modeling agent code
 COPY . .
 
-# Expose the websocket port
+# Default WebSocket port — override with AGENT_WS_PORT env var at runtime.
 EXPOSE 8765
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app/src:/app
+ENV AGENT_WS_PORT=8765
 
 # Create entrypoint script that generates config.yaml from environment variables
 RUN echo '#!/bin/bash\n\
 set -e\n\
+\n\
+WS_PORT="${AGENT_WS_PORT:-8765}"\n\
 \n\
 # Generate config.yaml from environment variables\n\
 cat > /app/config.yaml << EOF\n\
@@ -47,22 +50,19 @@ nlp:\n\
 platforms:\n\
   websocket:\n\
     host: 0.0.0.0\n\
-    port: 8765\n\
-    streamlit:\n\
-      host: localhost\n\
-      port: 5000\n\
+    port: ${WS_PORT}\n\
 EOF\n\
 \n\
-echo "✅ config.yaml created successfully"\n\
+echo "✅ config.yaml created (WebSocket port: ${WS_PORT})"\n\
 cat /app/config.yaml\n\
 \n\
 # Run the modeling agent\n\
 exec python modeling_agent.py\n\
 ' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
-# Health check
+# Health check uses the configured port
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import socket; s=socket.socket(); s.connect(('localhost', 8765)); s.close()" || exit 1
+    CMD python -c "import os,socket; s=socket.socket(); s.connect(('localhost',int(os.environ.get('AGENT_WS_PORT',8765)))); s.close()" || exit 1
 
 # Run the entrypoint script
 ENTRYPOINT ["/app/entrypoint.sh"]

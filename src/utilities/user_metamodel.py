@@ -192,6 +192,15 @@ def _build_catalog(
     else:
         ordered_names = sorted(class_names)
 
+    # Flatten hidden containers: hoist their children directly under User so
+    # the guide's HOW ELEMENTS CONNECT section reflects the canvas structure.
+    _HIDDEN = {"Competence", "Accessibility"}
+    for hc in list(_HIDDEN):
+        hc_children = tree.pop(hc, [])
+        if _ROOT_CLASS in tree:
+            tree[_ROOT_CLASS] = [c for c in tree[_ROOT_CLASS] if c[0] != hc]
+            tree[_ROOT_CLASS].extend(hc_children)
+
     return classes, enums, tree, ordered_names
 
 
@@ -331,9 +340,10 @@ def build_user_profile_help_prompt(message: str) -> str:
         "the specific classes and the exact attributes / enumeration values to "
         "use, with an example criterion and operator (e.g. an old user → "
         "Personal_Information with age using '>' or '>='; sight issues → a "
-        "Disability with affects == 'Sight'). Mention the grouping/root elements "
-        "the boxes attach through (here, Disability attaches under Accessibility, "
-        "which attaches under User).\n"
+        "Disability with affects == 'Sight'). Note that Disability, Skill, "
+        "Language, and Education all attach directly under User on the canvas "
+        "(Accessibility and Competence are internal grouping elements used "
+        "only in the exported model, not shown as separate boxes).\n"
         "- Remember attribute rows are matching CRITERIA with a comparison "
         "operator, not fixed values.\n\n"
         "Keep the answer concise and well-formatted in Markdown. Where useful, "

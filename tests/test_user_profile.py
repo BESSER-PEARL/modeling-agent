@@ -66,7 +66,7 @@ def test_user_diagram_supported_and_registered():
     assert "UserDiagram" in SUPPORTED_DIAGRAM_TYPES
 
     class _LLM:
-        name = "gpt-4.1-mini"
+        name = "gpt-6-luna"
         client = None
 
     factory = DiagramHandlerFactory(_LLM())
@@ -147,9 +147,11 @@ def test_complete_system_resolves_ids_operators_and_drops_unknowns():
 
     profiles = result["systemSpec"]["profiles"]
     by_class = {p["className"] for p in profiles}
-    # Unknown class dropped; User root + Competence intermediate auto-inserted.
+    # Unknown class dropped; User root auto-inserted. Competence is a hidden
+    # container — it must NOT appear as a canvas box.
     assert "NotARealClass" not in by_class
-    assert {"User", "Personal_Information", "Competence", "Language"} <= by_class
+    assert "Competence" not in by_class
+    assert {"User", "Personal_Information", "Language"} <= by_class
     # Every box has a resolved metamodel classId.
     assert all(p["classId"] for p in profiles)
     # Unknown attribute dropped; known attrs carry attributeId + type + operator.
@@ -162,17 +164,16 @@ def test_complete_system_resolves_ids_operators_and_drops_unknowns():
     # Layout assigned positions.
     assert all("position" in p for p in profiles)
 
-    # Structure is a tree rooted at the single User box, wired via the
-    # metamodel associations: User->Personal_Information, User->Competence,
-    # Competence->Language.
+    # Structure is a tree rooted at the single User box. Language attaches
+    # directly to User (Competence is hidden from the canvas).
     name_to_class = {p["profileName"]: p["className"] for p in profiles}
     user_names = [p["profileName"] for p in profiles if p["className"] == "User"]
     assert len(user_names) == 1
     edges = {(name_to_class[l["source"]], name_to_class[l["target"]])
              for l in result["systemSpec"]["links"]}
     assert ("User", "Personal_Information") in edges
-    assert ("User", "Competence") in edges
-    assert ("Competence", "Language") in edges
+    assert ("User", "Language") in edges
+    assert ("User", "Competence") not in edges
 
 
 def test_complete_system_is_rooted_at_user_for_single_class():
@@ -311,8 +312,8 @@ def _add_disability_response():
 
 
 def test_modification_creates_missing_ancestor_and_links(monkeypatch):
-    """Adding a Disability to a User-only model also creates Accessibility and
-    wires User->Accessibility->Disability."""
+    """Adding a Disability to a User-only model wires User->Disability directly
+    (Accessibility is a hidden container, not an intermediate canvas box)."""
     from diagram_handlers.types.user_profile_handler import UserProfileDiagramHandler
 
     monkeypatch.setattr(UserProfileDiagramHandler, "predict_structured",
@@ -326,16 +327,18 @@ def test_modification_creates_missing_ancestor_and_links(monkeypatch):
 
     mods = _mods(result)
     added_classes = {m["changes"]["className"] for m in mods if m["action"] == "add_object"}
-    assert added_classes == {"Accessibility", "Disability"}
+    # Accessibility must NOT be created — Disability attaches directly to User.
+    assert "Accessibility" not in added_classes
+    assert "Disability" in added_classes
     link_pairs = {(m["target"]["sourceProfile"], m["target"]["targetProfile"])
                   for m in mods if m["action"] == "add_link"}
-    assert ("User", "Accessibility") in link_pairs
-    assert ("Accessibility", "disability1") in link_pairs
+    assert ("User", "disability1") in link_pairs
+    assert ("User", "Accessibility") not in link_pairs
 
 
-def test_modification_reuses_existing_ancestor(monkeypatch):
-    """When Accessibility already exists and is linked to User, adding a
-    Disability only adds the box + a single link to the existing Accessibility."""
+def test_modification_reuses_existing_user_and_links_directly(monkeypatch):
+    """Adding a second Disability to a model that already has a Disability only
+    adds the new box and links it directly to User (no Accessibility box)."""
     from diagram_handlers.types.user_profile_handler import UserProfileDiagramHandler
 
     monkeypatch.setattr(UserProfileDiagramHandler, "predict_structured",
@@ -344,22 +347,24 @@ def test_modification_reuses_existing_ancestor(monkeypatch):
     model = {
         "elements": {
             "u": {"type": "UserModelName", "name": "user_1", "className": "User", "attributes": []},
-            "a": {"type": "UserModelName", "name": "accessibility", "className": "Accessibility", "attributes": []},
+            "d0": {"type": "UserModelName", "name": "disability0", "className": "Disability",
+                   "attributes": []},
         },
         "relationships": {"r1": {"type": "ObjectLink",
-                                 "source": {"element": "u"}, "target": {"element": "a"}}},
+                                 "source": {"element": "u"}, "target": {"element": "d0"}}},
     }
     result = UserProfileDiagramHandler(None).generate_modification(
         "add the disability paraplegia", current_model=model)
 
     mods = _mods(result)
     added_classes = [m["changes"]["className"] for m in mods if m["action"] == "add_object"]
-    # Accessibility is NOT re-created.
+    # Only the new Disability is created — no Accessibility box.
     assert added_classes == ["Disability"]
+    assert "Accessibility" not in added_classes
     link_pairs = {(m["target"]["sourceProfile"], m["target"]["targetProfile"])
                   for m in mods if m["action"] == "add_link"}
-    # Only the new Disability link; no duplicate User->Accessibility link.
-    assert link_pairs == {("Accessibility", "disability1")}
+    # New Disability links directly to User.
+    assert ("User", "disability1") in link_pairs
 
 
 def test_fallback_system_envelope():
@@ -432,10 +437,12 @@ def test_metamodel_guide_lists_elements_enums_and_semantics():
     assert "affects" in guide
     assert "Sight" in guide          # AspectsEnum literal
     assert "CEFR" in guide and "B2" in guide
-    # Curated semantic prose is woven in.
-    assert "accessibility needs" in guide
-    # The connection tree is rendered.
-    assert "Accessibility -> Disability" in guide or "Accessibility ->" in guide
+    # Curated semantic prose is woven in (Accessibility still documented as internal grouping).
+    assert "Accessibility" in guide
+    assert "hidden from the canvas" in guide
+    # The connection tree shows the flat structure: Disability directly under User.
+    assert "User ->" in guide
+    assert "Disability" in guide
     # The criteria/operator note is present.
     assert "CRITERION" in guide
 

@@ -152,6 +152,26 @@ _QUICK_RESPONSES = {
         "- You can switch between diagram types anytime\n"
         "- Ask *\"What can you do?\"* for a full list of capabilities"
     ),
+    "personalization": (
+        "BESSER supports building personalized chatbot agents — ones that behave differently "
+        "depending on who they're talking to. The workflow is:\n\n"
+        "1. **Define your user profiles** — open a User Profile diagram and model your end-users "
+        "(age, preferences, accessibility needs, skills, etc.)\n"
+        "2. **Add personalization rules** — in the same environment, describe how the agent should "
+        "adapt for each user type. You can write rules manually on the agent diagram, or use the "
+        "*Personalize* button in the nav bar to generate them automatically from your profiles\n"
+        "3. **Personalize the agent model** — press the *Personalize Agent* button to apply the "
+        "rules and produce a personalized variant of your agent\n"
+        "4. **Deploy or generate code** — generate the agent code or deploy it directly from the editor\n\n"
+        "Start by describing your target users — I can create the User Profile diagram for you."
+    ),
+    "personalization_not_supported": (
+        "I can't configure personalization rules directly — that part is done by you, not me.\n\n"
+        "Two ways to set it up:\n"
+        "- **Manually**: open the agent diagram and add personalization rules to the relevant states or transitions yourself\n"
+        "- **Automatically**: use the *Personalize* button in the nav bar — it reads your User Profile diagrams and generates a recommendation you can review and apply\n\n"
+        "If you don't have user profiles yet, I can create them for you. Just describe your target users."
+    ),
 }
 
 # Patterns that trigger quick responses (checked in order)
@@ -168,6 +188,18 @@ _QUICK_PATTERNS = [
     (["help me", "i need help", "how does this work", "how do i use",
       "getting started", "quick start", "tutorial", "guide me"],
      "help"),
+    # Personalization — action requests (checked before the generic info entry)
+    (["propose a personalization", "set the personalization", "set personalization",
+      "configure personalization", "personalize for user", "personalization for user",
+      "personalize in ", "personalize the language", "change the language for",
+      "make it speak", "respond in french", "respond in spanish", "respond in german",
+      "switch language for", "language personalization"],
+     "personalization_not_supported"),
+    # Personalization — general info
+    (["personalization", "personalized app", "personalize", "personaliz",
+      "how to create personalized", "personalization services", "personalized agent",
+      "personalized chatbot", "adapt to user", "user-specific"],
+     "personalization"),
 ]
 
 
