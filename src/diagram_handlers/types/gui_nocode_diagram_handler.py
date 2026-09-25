@@ -3066,16 +3066,33 @@ Design judgment — build what THIS request actually needs; do not pad or force 
 
         try:
             # --- Two-pass generation for richer UI design ---
+            if class_metadata:
+                data_model_step = (
+                    "1. DATA MODEL (fixed). The app is built on this class diagram — "
+                    "do NOT invent entities, fields or methods; use these exact names:\n"
+                    f"{format_class_metadata_for_prompt(class_metadata)}\n"
+                    "Decide which page shows each class, and where each class method "
+                    "is triggered (a button next to that class's table).\n"
+                )
+                chart_rule = (
+                    "A chart plots ONE numeric attribute per record (valueField), "
+                    "labelled by another attribute (labelField)."
+                )
+            else:
+                data_model_step = (
+                    "1. DATA MODEL FIRST. Identify the 2-4 core entities this app "
+                    "revolves around. For EACH entity write its exact field names + "
+                    "types, e.g. Book: title:str, author:str, genre:str, year:int, "
+                    "available:bool. These field names are the contract for the whole "
+                    "UI — pick them once and do not vary them.\n"
+                )
+                chart_rule = "A chart aggregates ONE field (e.g. count of books by genre)."
             reasoning_prompt = (
                 "You are a UI/UX design expert. Think step by step about the "
                 "following web application request and plan the page layout.\n\n"
                 f"User Request: {user_request}\n\n"
                 "Work in this order:\n"
-                "1. DATA MODEL FIRST. Identify the 2-4 core entities this app "
-                "revolves around. For EACH entity write its exact field names + "
-                "types, e.g. Book: title:str, author:str, genre:str, year:int, "
-                "available:bool. These field names are the contract for the whole "
-                "UI — pick them once and do not vary them.\n"
+                f"{data_model_step}"
                 "2. Pages: decide how many screens THIS request needs — a full "
                 "app/platform/dashboard spans several (an overview/home plus a "
                 "screen per major feature or entity); a 'landing page' or single "
@@ -3085,10 +3102,10 @@ Design judgment — build what THIS request actually needs; do not pad or force 
                 "it — do NOT default to a marketing hero for a data app.\n"
                 "4. Binding (most important): every table/chart/form that shows an "
                 "entity MUST reuse the EXACT field names from step 1 — the same "
-                "entity must look identical on every page. A chart aggregates ONE "
-                "field (e.g. count of books by genre).\n"
-                "5. Navigation flow, and realistic domain sample data built from the "
-                "step-1 fields.\n"
+                f"entity must look identical on every page. {chart_rule}\n"
+                "5. Navigation flow — for EVERY link and button, the page it opens "
+                "or the method it runs — and realistic domain sample data built "
+                "from the step-1 fields.\n"
                 "6. DOMAIN: classify this app as ONE of government / finance / health / "
                 "startup / default — this sets the visual theme AND the tone of the copy "
                 f"(our heuristic guess is '{domain}'; confirm it or correct it). Then "
