@@ -1,11 +1,9 @@
 """Compact structured-output schema for complete-system class generation.
 
-WHY: complete-system generation cost ~56s, almost entirely completion tokens —
-~4,300 tokens of verbose JSON (one object per attribute/method, long key names
-repeated thousands of times). Measured on the live deployment (5 domains,
-scratch_speed_experiment/): the SAME model emitting the SAME modeling content
-through this compact schema needs ~1,600 tokens → ~2.4x faster, with
-structured-output enforcement intact (0 malformed member strings in 5/5 runs).
+WHY: complete-system generation time is almost entirely completion tokens, and
+the verbose schema (one object per attribute/method, long key names) needs ~2.7x
+more of them. The same content through this compact schema is ~2.4x faster, with
+structured-output enforcement intact.
 
 HOW: 1-letter keys and string-encoded members ("price: float",
 "decreasePrice(pct: float) -> None"). :func:`expand_compact_spec` converts the

@@ -1218,7 +1218,7 @@ def layout_class_system(
 
 
 def _deduplicate_layout_names(elements: List[Dict[str, Any]], name_key: str) -> None:
-    """Suffix duplicate element names in-place before layout (#57).
+    """Suffix duplicate element names in-place before layout.
 
     The system layouts key their lookups on ``{name: element}``. When two
     elements share a name the second collapses onto the first, leaving the
@@ -1286,7 +1286,7 @@ def layout_object_system(
         return system_spec
 
     # Make duplicate object names unique so none get dropped from the
-    # name-keyed lookups below (#57).
+    # name-keyed lookups below.
     _deduplicate_layout_names(objects, "objectName")
 
     links: List[Dict[str, Any]] = system_spec.get("links", [])
@@ -1450,7 +1450,7 @@ def layout_state_system(
         return system_spec
 
     # Make duplicate state names unique so none get dropped from the
-    # name-keyed lookups below (#57).
+    # name-keyed lookups below.
     _deduplicate_layout_names(states, "stateName")
 
     transitions: List[Dict[str, Any]] = system_spec.get("transitions", [])

@@ -81,7 +81,7 @@ class RelationshipSpec(BaseModel):
     def _normalize_multiplicity(cls, v):
         # LLMs emit many/N/n/0..n/* etc. which the BUML multiplicity parser
         # rejects, breaking export. Map them to accepted forms (1, 0..1, 0..*,
-        # 1..*) and pass valid values through. (#46)
+        # 1..*) and pass valid values through.
         if v is None:
             return "1"
         s = str(v).strip().lower().replace(" ", "")
@@ -161,8 +161,8 @@ class SystemClassSpec(BaseModel):
 # Hallucinated "placeholder" tokens the LLM invents for required name fields it
 # has no real value for (e.g. add_class.target.className). Matched
 # case-insensitively as a substring so any of these anywhere in the name flags
-# it as junk. Covers the live cases "...ClassNamePlaceholderHere" and
-# "ChatbotHandlerClassNamePlaceholder".
+# it as junk (e.g. "...ClassNamePlaceholderHere",
+# "ChatbotHandlerClassNamePlaceholder").
 # NOTE: substring-matched, so keep these specific enough not to collide with a
 # legitimate domain class name (e.g. a real "Todo" class). Avoid bare tokens
 # like "todo"/"tbd"/"xxx".

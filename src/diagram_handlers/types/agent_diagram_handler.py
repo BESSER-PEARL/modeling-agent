@@ -186,9 +186,8 @@ IMPORTANT RULES:
     def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a complete agent conversation flow with deterministic positioning."""
 
-        # Multi-agent guard (issue I): the editor models ONE agent per Agent
-        # diagram. Previously an explicit "multi-agent system" request was
-        # silently flattened into a single agent with a success message. Detect
+        # Multi-agent guard: the editor models ONE agent per Agent diagram, so
+        # a "multi-agent system" request must not be silently flattened. Detect
         # it on the RAW user message (not the context-enriched prompt, which
         # mentions existing AgentDiagrams) and explain instead of misleading.
         import re as _re
@@ -423,7 +422,7 @@ IMPORTANT RULES:
                 # A single-intent request with no usable training phrases used
                 # to raise here, get swallowed by the broad except in
                 # generate_single_element, and fall back to building a STATE —
-                # the opposite of what the user asked for (#53). Instead,
+                # the opposite of what the user asked for. Instead,
                 # synthesize a couple of starter phrases from the intent name
                 # so we still create an intent the user can flesh out.
                 intent_name = (
@@ -670,7 +669,7 @@ IMPORTANT RULES:
         state_names = {state["stateName"] for state in states}
         # Deterministic fallback target: the FIRST state in order, not an
         # arbitrary element of a set (which made unresolved transitions point
-        # to a nondeterministic state run-to-run). #51
+        # to a nondeterministic state run-to-run).
         primary_state = states[0].get("stateName")
 
         source = transition.get("source") or transition.get("from") or "initial"
@@ -776,7 +775,7 @@ IMPORTANT RULES:
     # Verbs/keywords that signal a genuine modeling instruction. A modify
     # request that contains none of these (and is just a stray word or two) is
     # treated as ambiguous: we ask for clarification rather than letting the
-    # LLM invent an arbitrary add/remove (#42, #45, #47).
+    # LLM invent an arbitrary add/remove.
     _MODIFY_INTENT_KEYWORDS = (
         "add", "create", "new", "make", "insert", "append",
         "remove", "delete", "drop", "erase",
@@ -808,7 +807,7 @@ IMPORTANT RULES:
 
         # Tokenise on word boundaries so a keyword must appear as a whole word.
         # This is deliberate: "gggIntent" must NOT match the keyword "intent"
-        # (that stray-word case is exactly bug #45), while "add intent" does.
+        # (a stray-word case), while "add intent" does.
         import re
         tokens = {t for t in re.split(r"[^a-z0-9]+", text.lower()) if t}
         if tokens & set(cls._MODIFY_INTENT_KEYWORDS):
@@ -880,13 +879,13 @@ IMPORTANT RULES:
     ) -> Dict[str, Any]:
         """Drop modifications that can't be safely applied to *current_model*.
 
-        Guards against the three failure classes the testers hit:
+        Guards against two failure classes:
 
-        * #47/#42/#45 — hallucinated removals / edits of elements that don't
+        * Hallucinated removals / edits of elements that don't
           exist. We verify the target exists before keeping a destructive or
           editing modification, so the agent never claims to have removed
           something that was never there.
-        * #45 — re-adding an element that already exists. We drop duplicate
+        * Re-adding an element that already exists. We drop duplicate
           ``add_*`` operations and report that it already exists.
 
         Returns ``{"kept": [...], "skipped": [{reason, mod}, ...]}``. The
@@ -901,8 +900,7 @@ IMPORTANT RULES:
         # A transition whose endpoint is a state/intent that is itself being
         # added in the SAME batch would otherwise be dropped as
         # "missing_target" (it isn't in the *existing* model yet), leaving the
-        # new state silently orphaned — the "add BMWIntegrationState and relate
-        # it to the flow" bug. We collect the normalized names of add ops that
+        # new state silently orphaned. We collect the normalized names of add ops that
         # will survive their own add-validation and treat them as "pending"
         # endpoints when validating transitions below. Normalization matches
         # ``_index_existing_agent_model`` (lowercased) so membership works.
@@ -990,12 +988,12 @@ IMPORTANT RULES:
                     src = names["sourceStateName"] or state_target or intent_target
                     tgt = names["targetStateName"]
                     # ``pending`` lets a transition into/out of a just-added
-                    # state or intent survive (FIX for same-batch orphans).
+                    # state or intent survive (same-batch orphans).
                     known = states | intents | pending | {"initial"}
                     # The source must resolve to a known element; the target,
                     # when specified, must also be known. An add_transition that
-                    # references an element that doesn't exist is exactly what
-                    # made #44 fail loudly and is a deletion risk in batches.
+                    # references an element that doesn't exist fails loudly
+                    # and is a deletion risk in batches.
                     if src and src in known and (tgt is None or tgt in known):
                         kept.append(mod)
                     else:
@@ -1089,7 +1087,7 @@ IMPORTANT RULES:
 
         Crucially this carries ``action == 'assistant_message'`` (not
         ``modify_model``) so the executor replies with text and the existing
-        diagram is left completely untouched — the data-loss guard for #48.
+        diagram is left completely untouched (data-loss guard).
         """
         return {
             "action": "assistant_message",
@@ -1106,7 +1104,7 @@ IMPORTANT RULES:
         and leave the diagram unchanged.
         """
 
-        # ── Ambiguity guard (#42 / #45 / #47) ────────────────────────────
+        # ── Ambiguity guard ──────────────────────────────────────────────
         # A stray word ("ggg", "gggIntent", "dfdf") is not an instruction.
         # Don't let the LLM invent an add/remove for it — ask what they mean.
         # Use the raw user message (not the context-enriched ``user_request``).
@@ -1154,11 +1152,11 @@ IMPORTANT RULES:
                 raise _EmptyModificationError()
             # Backstop: flag any just-added state that no kept transition wires
             # into the flow. Covers both the "LLM never emitted a connecting
-            # transition" case and anything FIX 1 couldn't rescue. We don't
+            # transition" case and anything the pending-name pass couldn't rescue. We don't
             # invent an edge — we tell the user honestly (message appended below).
             self._last_orphan_states = self._find_orphan_added_states(kept)
             # Guarantee every replyType="code" reply is a proper function block
-            # (merged from develop — modeling-agent#8) before it is applied.
+            # before it is applied.
             return self._fix_code_replies_in_modifications(kept)
 
         self._last_skipped = []
@@ -1212,7 +1210,7 @@ IMPORTANT RULES:
                 "so I didn't change anything. Please use the exact name of an existing state "
                 "or intent — or tell me to create it first."
             )
-        # Generic ambiguity / nonsense input (#42, #45, #47 stray-word cases).
+        # Generic ambiguity / nonsense input (stray-word cases).
         return (
             "I'm not sure what change you'd like me to make to the agent diagram, so I left "
             "it unchanged. Try something specific like *'Add an intent called Greeting'*, "

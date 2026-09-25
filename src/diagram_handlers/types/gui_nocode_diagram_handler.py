@@ -1283,8 +1283,7 @@ def _stats_grid_component(
     Reads the typed ``stats`` list (``{label, value}`` pairs) first, then
     falls back to ``items`` — which on the free-text complete-system path
     arrives as ``{label, value}`` dicts (or plain label strings). The
-    LLM-provided ``value`` is preserved on the card (issue #7: figures used
-    to be silently discarded). For the class-bound case each card binds to a
+    LLM-provided ``value`` is preserved on the card. For the class-bound case each card binds to a
     DISTINCT numeric attribute instead of all cards sharing the first field.
     """
     title = _clean_text(section_spec.get("title"), fallback="Key Metrics")
@@ -1882,7 +1881,7 @@ def _legacy_section_component(section_spec: Dict[str, Any], class_metadata: Opti
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 — LLM-authored HTML sections + structured widget binding
+# LLM-authored HTML sections + structured widget binding
 # ---------------------------------------------------------------------------
 #
 # A section may now be authored three ways (checked in this order):
@@ -2100,7 +2099,7 @@ def _build_section_component(
     section_spec: Dict[str, Any],
     class_metadata: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Turn one section spec into ONE GrapesJS section node (Phase 3 dispatch).
+    """Turn one section spec into ONE GrapesJS section node.
 
     Branches: ``bind`` -> typed widget in LLM chrome; ``html`` -> authored
     themed markup; else -> legacy typed builder. Each branch is guarded so any
@@ -2370,7 +2369,7 @@ Rules:
         # Separate full-width components (hero, footer, nav) from card sections.
         # Card sections are wrapped in a <main> container with max-width for
         # a clean centered layout. Covers both the legacy ``assistant-*`` skin
-        # and the Phase-3 ``ds-*`` design-system classes; the class attribute
+        # and the ``ds-*`` design-system classes; the class attribute
         # may carry several classes, so match on any token.
         final_components: List[Dict[str, Any]] = []
         main_children: List[Dict[str, Any]] = []
@@ -2919,7 +2918,7 @@ Rules:
             matched_page = None
             _old = raw_old.lower()
             # Exact match across ALL pages first, so "Management" can't hijack
-            # "User Management" just because it's earlier in the list (#58).
+            # "User Management" just because it's earlier in the list.
             for page in model.get("pages", []):
                 if isinstance(page, dict) and _clean_text(page.get("name")).lower() == _old:
                     matched_page = page

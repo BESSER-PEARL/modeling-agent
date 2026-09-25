@@ -1,10 +1,8 @@
-"""Per-domain design system for GUI No-Code generation (Phase 2).
+"""Per-domain design system for GUI No-Code generation.
 
-The GUINoCode generator historically ships every app with an empty GrapesJS
-``styles[]`` array, so the *only* visual identity a generated app has is the one
-hardcoded slate-blue skin baked into a handful of inline component styles. Every
-generated GUI therefore looks identical regardless of whether it is a government
-service portal or a playful SaaS landing page.
+Without a stylesheet, a generated app's only visual identity is the inline
+slate-blue skin of its component builders, so every GUI looks the same whatever
+its domain.
 
 This module gives generation a real, per-domain visual identity. It defines a
 small set of **design themes** (``government``, ``finance``, ``health``,
@@ -19,9 +17,10 @@ derives from those tokens:
    ``shared/types/project.ts``). Dropping this list into ``model["styles"]`` is
    what actually makes a generated app *look* like its domain.
 2. ``block_exemplars(domain)`` — domain-appropriate HTML block snippets built
-   from the reusable ``.ds-*`` component classes and semantic text tags. Phase 3
-   feeds these to the LLM as proven, editable-safe composition patterns; Phase 4
-   splices real data widgets into the ``<!--WIDGET:slot-->`` placeholders.
+   from the reusable ``.ds-*`` component classes and semantic text tags. The
+   generation prompt feeds these to the LLM as proven, editable-safe composition
+   patterns; real data widgets are spliced into the ``<!--WIDGET:slot-->``
+   placeholders.
 
 The module is deliberately **pure and standalone** — it imports nothing from the
 handler and has no side effects — so it can be unit-tested in isolation and
@@ -730,10 +729,10 @@ def stylesheet_rules_from_tokens(t: Dict) -> List[Dict]:
 # Block exemplars — proven, editable-safe HTML patterns per domain
 # ---------------------------------------------------------------------------
 #
-# Domain-flavoured copy so Phase 3's prompt shows the LLM realistic patterns.
+# Domain-flavoured copy so the authoring prompt shows the LLM realistic patterns.
 # Structure is identical across domains (same ``.ds-*`` classes + semantic
 # tags); only the sample text/labels change. Data blocks carry a
-# ``<!--WIDGET:slot-->`` placeholder that Phase 4 replaces with a live widget.
+# ``<!--WIDGET:slot-->`` placeholder that is replaced with a live widget.
 
 _CONTENT: Dict[str, Dict] = {
     "government": {
@@ -834,7 +833,7 @@ def block_exemplars(domain: str) -> Dict[str, str]:
     Keys: ``hero``, ``kpi_row``, ``table_card``, ``chart_card``, ``footer``,
     ``form``, ``notice``. All markup uses the ``.ds-*`` component classes plus
     semantic text tags; the ``table_card`` and ``chart_card`` data blocks embed
-    a ``<!--WIDGET:slot-->`` placeholder for Phase 4. No external images or
+    a ``<!--WIDGET:slot-->`` placeholder for a data widget. No external images or
     webfonts — imagery is CSS-driven or inline SVG only.
     """
     c = _CONTENT.get(domain) or _CONTENT[DEFAULT_DOMAIN]

@@ -245,8 +245,8 @@ TRANSITION DESIGN GUIDELINES:
         state_names = {s.get("stateName") for s in states}
 
         # Validate transition endpoints: a transition referencing a state that
-        # doesn't exist is dropped. Previously these were left in place and
-        # could appear as phantom nodes when the layout engine built the graph.
+        # doesn't exist is dropped; otherwise it could appear as a phantom node
+        # when the layout engine builds the graph.
         valid_transitions = []
         for t in transitions:
             src = t.get("source")
@@ -318,8 +318,8 @@ TRANSITION DESIGN GUIDELINES:
 
         # Connect orphan regular states into the flow. An orphan has no
         # incoming AND no outgoing transition, so it floats disconnected.
-        # Previously these were only logged; now we wire them into the happy
-        # path (initial -> orphan -> final) so the diagram stays connected.
+        # Wire them into the happy path (initial -> orphan -> final) so the
+        # diagram stays connected.
         sources = {t.get("source") for t in transitions}
         targets = {t.get("target") for t in transitions}
         initial_state = next(

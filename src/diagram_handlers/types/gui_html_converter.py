@@ -1,6 +1,6 @@
 """LLM-authored HTML → GrapesJS component-definition tree converter.
 
-Phase 1 of the no-code GUI rebuild. This module turns rich themed markup
+This module turns rich themed markup
 written by the LLM into the nested component-definition nodes the GUI editor
 already loads via ``loadProjectData`` — the same node shape the typed Python
 builders in ``gui_nocode_diagram_handler.py`` emit (e.g. ``_hero_component``).
@@ -27,7 +27,7 @@ Design constraints baked in here:
 * **Widget-spoof guarded** — LLM markup can never masquerade as a data-bound
   widget: ``data-gjs-type``/``data-source``/``series``/``columns`` attributes
   are dropped and no parsed node is ever given a top-level ``type`` of a widget.
-  Real widgets come only from the typed Python builders (a later phase).
+  Real widgets come only from the typed Python builders.
 
 The module is pure/standalone — it never imports the handler.
 """

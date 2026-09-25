@@ -283,7 +283,7 @@ def _operation_to_placements(operation: Dict[str, Any]) -> Tuple[Optional[int], 
         control_row = _to_int(operation.get("controlRow"), 0)
         target_row = _to_int(operation.get("targetRow"), max(control_row + 1, 1))
         # control and target must be different qubits, else the control dot and
-        # the gate symbol land in the same cell and one overwrites the other (#49).
+        # the gate symbol land in the same cell and one overwrites the other.
         if target_row == control_row:
             target_row = control_row + 1
         target_symbol = "X" if gate_name == "CNOT" else "Z" if gate_name == "CZ" else "Y"
@@ -296,14 +296,13 @@ def _operation_to_placements(operation: Dict[str, Any]) -> Tuple[Optional[int], 
         if ctrl2 == ctrl1:
             ctrl2 = ctrl1 + 1
         target_row = _to_int(operation.get("targetRow"), max(ctrl2 + 1, 2))
-        if target_row in (ctrl1, ctrl2):  # all three qubits must be distinct (#49)
+        if target_row in (ctrl1, ctrl2):  # all three qubits must be distinct
             target_row = max(ctrl1, ctrl2) + 1
         return column, [(ctrl1, "\u2022"), (ctrl2, "\u2022"), (target_row, "X")], None
 
     # --- SWAP (plain "SWAP" and legacy "SWAP_PAIR") --------------------------
-    # Plain SWAP used to fall through to the single-symbol default, dropping
-    # targetRow and rendering one broken marker \u2014 every prompt tells the model
-    # to use "SWAP", so handle both identically. (#24)
+    # The prompts tell the model to use "SWAP"; falling through to the
+    # single-symbol default would drop targetRow, so handle both identically.
     if gate_name in {"SWAP", "SWAP_PAIR"}:
         row = _to_int(operation.get("row", operation.get("controlRow")), 0)
         target_row = _to_int(operation.get("targetRow"), row + 1)
@@ -403,7 +402,7 @@ Rules:
 
         # Seed from the existing register ONLY when appending; a fresh
         # generation sizes to the actual operations instead of flooring at
-        # DEFAULT_QUBITS (#25 — a 2-qubit Bell state was padded to 5 qubits).
+        # DEFAULT_QUBITS (a 2-qubit Bell state must not be padded to 5 qubits).
         max_row = (normalized.get("qubitCount", DEFAULT_QUBITS) - 1) if append else -1
         for op in operations:
             _, placements, _ = _operation_to_placements(op)
@@ -441,8 +440,8 @@ Rules:
 
         normalized["cols"] = cols
         normalized["qubitCount"] = qubit_count
-        # Allocate one classical bit per measured qubit — classicalBitCount was
-        # always left at 0, so measurement results had nowhere to go (#50).
+        # Allocate one classical bit per measured qubit so measurement results
+        # have somewhere to go.
         existing_cbits = _to_int(normalized.get("classicalBitCount"), 0)
         normalized["classicalBitCount"] = max(existing_cbits, len(measured_rows))
         normalized["gateMetadata"] = gate_metadata

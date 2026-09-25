@@ -13,7 +13,7 @@ class GUISampleDataPoint(BaseModel):
     )
     # NOTE: This must be a CONCRETE type. ``Any`` renders a typeless JSON-schema
     # property which OpenAI strict structured-output mode rejects with a 400
-    # BadRequestError — that single field broke EVERY GUI modification call
+    # BadRequestError, failing every GUI modification call
     # (GUIModificationSpec embeds GUISectionSpec embeds this model). A concrete
     # Union of str/int/float renders as a clean ``anyOf`` that strict mode
     # accepts while still allowing both numeric and label values.
@@ -101,7 +101,7 @@ class GUIBindSpec(BaseModel):
 
 
 class GUISectionSpec(BaseModel):
-    # Phase 3: ``type`` is now OPTIONAL — a section may instead be authored as
+    # ``type`` is OPTIONAL — a section may instead be authored as
     # rich HTML (``html``) or bound to a typed widget (``bind``). Kept as a
     # concrete Optional[Literal] (never Any) so strict structured output still
     # validates. When absent, the legacy typed builder defaults to "content".
@@ -217,7 +217,7 @@ class SystemGUISpec(BaseModel):
     )
 
 
-# -- Complete-system wire schema (Phase 3 authoring) --
+# -- Complete-system wire schema (authored sections) --
 
 class AuthoredGUISectionSpec(BaseModel):
     """One authored section of a generated page — the structured mirror of the
