@@ -2509,8 +2509,11 @@ def _wire_page_actions(
     for node, _, in_form in entries:
         attrs = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
         if node.get("type") == "action-button":
-            if node.get("method-class") and node.get("method"):
-                wired.add((node["method-class"], node["method"]))
+            # The editor also keeps these as data-* attributes.
+            method_class = node.get("method-class") or attrs.get("data-method-class")
+            method_id = node.get("method") or attrs.get("data-method") or attrs.get("data-method-name")
+            if method_class and method_id:
+                wired.add((method_class, method_id))
             continue
         tag = node.get("tagName")
         if tag == "button":
@@ -2597,6 +2600,96 @@ def _class_host_pages(
             if cls and bind.get("className"):
                 hosts.setdefault(cls["name"], entry)
     return hosts
+
+
+def _interactions_block(has_classes: bool) -> str:
+    """How authored markup states link, navigation and method intent."""
+    method_rule = (
+        "\n- Class-method buttons: <button data-method='methodName' data-class='ClassName'> "
+        "using ONLY methods listed in the class diagram; place them next to that class's "
+        "table (the method runs on the selected row). Every method is also added under "
+        "its class's table automatically, so only place one where it adds value."
+        if has_classes else ""
+    )
+    return (
+        "INTERACTIONS — every link and button must DO something in the generated app:\n"
+        "- Page links: <a href='/route'> where route is the target page's name lowercased "
+        "with spaces replaced by hyphens (page 'Front Desk' -> '/front-desk'). Never "
+        "href='#' and never an external URL.\n"
+        "- Navigation buttons: <button data-page='Page Name'>."
+        f"{method_rule}\n"
+        "- Create / edit / delete of records is built into every data table: an 'Add X' "
+        "button navigates (data-page) to the page holding X's table.\n"
+        "- No action-less buttons (filters, sort toggles): use a styled span or badge."
+    )
+
+
+def _wire_model_actions(
+    model: Dict[str, Any],
+    class_metadata: Optional[List[Dict[str, Any]]],
+) -> None:
+    """Run the page action pass over every page of a whole GUI model, in place.
+
+    Used after a modification, so links and buttons resolve against all pages,
+    old and new. Existing page and table ids are kept and wired buttons are
+    skipped, so a model that is already wired comes out unchanged.
+    """
+    pages = [p for p in model.get("pages") or [] if isinstance(p, dict)]
+    used = {p["id"] for p in pages if isinstance(p.get("id"), str) and p["id"]}
+    page_index: List[Dict[str, str]] = []
+    for page in pages:
+        name = _clean_text(page.get("name"), fallback="Page")
+        if not (isinstance(page.get("id"), str) and page["id"]):
+            base = f"page-{_slug(name) or 'page'}"
+            page_id, n = base, 2
+            while page_id in used:
+                page_id, n = f"{base}-{n}", n + 1
+            used.add(page_id)
+            page["id"] = page_id
+        page_index.append({"name": name, "id": page["id"], "route": _page_route(name)})
+
+    classes_by_id = {c["id"]: c for c in (class_metadata or [])}
+    wrappers = [_ensure_page_wrapper(p) for p in pages]
+    class_pages: Dict[str, Dict[str, str]] = {}
+
+    def _find_tables(node: Any, entry: Dict[str, str]) -> None:
+        if not isinstance(node, dict):
+            return
+        attrs = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
+        if node.get("type") == "table" and attrs.get("data-source") in classes_by_id:
+            class_pages.setdefault(classes_by_id[attrs["data-source"]]["name"], entry)
+        for child in node.get("components") or []:
+            _find_tables(child, entry)
+
+    for wrapper, entry in zip(wrappers, page_index):
+        _find_tables(wrapper, entry)
+    for wrapper, entry in zip(wrappers, page_index):
+        # Designs made before surplus widget markers were dropped still carry
+        # them, and they survive the editor round-trip.
+        wrapper["components"], _ = splice_widget(wrapper["components"])
+        _wire_page_actions(
+            wrapper["components"], entry, page_index, class_pages, class_metadata
+        )
+
+
+def _retarget_links(model: Dict[str, Any], old_name: str, new_name: str) -> None:
+    """Point links at a renamed page's new route (the route follows the name)."""
+    old_route, new_route = _page_route(old_name), _page_route(new_name)
+    if old_route == new_route:
+        return
+
+    def _walk(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        attrs = node.get("attributes")
+        if isinstance(attrs, dict) and attrs.get("href") == old_route:
+            attrs["href"] = new_route
+        for child in node.get("components") or []:
+            _walk(child)
+
+    for page in model.get("pages") or []:
+        if isinstance(page, dict):
+            _walk(_ensure_page_wrapper(page))
 
 
 def _collect_data_uri_assets(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -2919,6 +3012,7 @@ Rules:
 
             model = _default_gui_model()
             model = self._append_section(model, page_name, section_component)
+            self._wire_model_safely(model, class_metadata)
             return {
                 "action": "inject_element",
                 "diagramType": self.get_diagram_type(),
@@ -2960,24 +3054,7 @@ Rules:
             f"<!-- {name} -->\n{markup}" for name, markup in exemplars.items()
         )
 
-        method_rule = (
-            "\n- Class-method buttons: <button data-method='methodName' data-class='ClassName'> "
-            "using ONLY methods listed in the class diagram; place them next to that class's "
-            "table (the method runs on the selected row). Every method is also added under "
-            "its class's table automatically, so only place one where it adds value."
-            if class_metadata else ""
-        )
-        interactions_block = (
-            "INTERACTIONS — every link and button must DO something in the generated app:\n"
-            "- Page links: <a href='/route'> where route is the target page's name lowercased "
-            "with spaces replaced by hyphens (page 'Front Desk' -> '/front-desk'). Never "
-            "href='#' and never an external URL.\n"
-            "- Navigation buttons: <button data-page='Page Name'>."
-            f"{method_rule}\n"
-            "- Create / edit / delete of records is built into every data table: an 'Add X' "
-            "button navigates (data-page) to the page holding X's table.\n"
-            "- No action-less buttons (filters, sort toggles): use a styled span or badge."
-        )
+        interactions_block = _interactions_block(bool(class_metadata))
 
         system_prompt = f"""You are a senior product designer AUTHORING a themed, production-realistic web app for the **{domain}** domain.
 
@@ -3267,6 +3344,7 @@ Design judgment — build what THIS request actually needs; do not pad or force 
             fast = self._try_deterministic_modify(model, raw_request, page_names)
             if fast is not None:
                 applied_model, message = fast
+                self._wire_model_safely(applied_model, class_metadata)
                 return {
                     "action": "modify_model",
                     "diagramType": self.get_diagram_type(),
@@ -3295,6 +3373,8 @@ For append_section / edit_section / add_page, author "section" in the app's desi
   DATA — a live bound widget: {{"bind": {{"kind": "table|bar_chart|pie_chart|line_chart|radar_chart|metric_card|form|dashboard", "className": "Entity from the class diagram", "columns": [...], "rows": [{{"cells": [...]}}], "sampleData": [{{"name": "...", "value": 42}}]}}, "html": "<section class='ds-section'><h3 class='ds-heading'>Title</h3><div class='ds-card'><!--WIDGET:kind--></div></section>"}}
    - Populate the widget (columns+rows for tables, sampleData for charts) or it renders empty.
 Design-system classes: ds-section, ds-hero, ds-heading, ds-card, ds-grid-2, ds-grid-3, ds-kpi, ds-kpi-value, ds-kpi-label, ds-table-wrap, ds-btn, ds-btn-primary, ds-notice, ds-badge, ds-field, ds-label, ds-input, ds-container, ds-footer.
+
+{_interactions_block(bool(class_metadata))}
 
 Rules:
 1. Choose the most specific operation — never append_section for a rename/recolor/reorder/remove/edit request.
@@ -3332,6 +3412,7 @@ Rules:
                 messages[0] if len(messages) == 1
                 else "\n".join(f"- {m}" for m in messages)
             )
+            self._wire_model_safely(model, class_metadata)
             return {
                 "action": "modify_model",
                 "diagramType": self.get_diagram_type(),
@@ -3370,6 +3451,16 @@ Rules:
     # ------------------------------------------------------------------
     # Modification helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _wire_model_safely(
+        model: Dict[str, Any], class_metadata: Optional[List[Dict[str, Any]]],
+    ) -> None:
+        """Wire links and buttons like generation does; never fails the edit."""
+        try:
+            _wire_model_actions(model, class_metadata)
+        except Exception:
+            logger.warning("[GUINoCode] action pass on the GUI model failed", exc_info=True)
 
     def _try_deterministic_modify(
         self,
@@ -3424,6 +3515,7 @@ Rules:
                     matched_page = suffix_matches[0]
             if matched_page is not None:
                 old_name = _clean_text(matched_page.get("name"))
+                _retarget_links(model, old_name, new_name)
                 matched_page["name"] = new_name
                 matched_page["route_path"] = (
                     f"/{re.sub(r'[^a-z0-9-]+', '-', new_name.lower()).strip('-') or 'page'}"
@@ -3597,6 +3689,7 @@ Rules:
             renamed = False
             for page in model.get("pages", []):
                 if isinstance(page, dict) and _clean_text(page.get("name")).lower() == page_name.lower():
+                    _retarget_links(model, _clean_text(page.get("name")), new_page_name)
                     page["name"] = new_page_name
                     page["route_path"] = (
                         f"/{re.sub(r'[^a-z0-9-]+', '-', new_page_name.lower()).strip('-') or 'page'}"
