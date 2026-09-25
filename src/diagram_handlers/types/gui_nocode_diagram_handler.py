@@ -2638,6 +2638,7 @@ def _wire_model_actions(
     pages = [p for p in model.get("pages") or [] if isinstance(p, dict)]
     used = {p["id"] for p in pages if isinstance(p.get("id"), str) and p["id"]}
     page_index: List[Dict[str, str]] = []
+    new_ids: set = set()  # a page a modification added has no id yet
     for page in pages:
         name = _clean_text(page.get("name"), fallback="Page")
         if not (isinstance(page.get("id"), str) and page["id"]):
@@ -2646,6 +2647,7 @@ def _wire_model_actions(
             while page_id in used:
                 page_id, n = f"{base}-{n}", n + 1
             used.add(page_id)
+            new_ids.add(page_id)
             page["id"] = page_id
         page_index.append({"name": name, "id": page["id"], "route": _page_route(name)})
 
@@ -2664,6 +2666,8 @@ def _wire_model_actions(
 
     for wrapper, entry in zip(wrappers, page_index):
         _find_tables(wrapper, entry)
+    if new_ids and len(new_ids) < len(page_index):
+        _add_new_pages_to_navs(wrappers, page_index, new_ids)
     for wrapper, entry in zip(wrappers, page_index):
         # Designs saved before these fixes still carry surplus widget markers
         # and links in text tags, and both survive the editor round-trip.
@@ -2674,18 +2678,187 @@ def _wire_model_actions(
         )
 
 
-def _retarget_links(model: Dict[str, Any], old_name: str, new_name: str) -> None:
-    """Point links at a renamed page's new route (the route follows the name)."""
-    old_route, new_route = _page_route(old_name), _page_route(new_name)
-    if old_route == new_route:
+def _is_link(node: Any) -> bool:
+    return isinstance(node, dict) and (node.get("tagName") == "a" or node.get("type") == "link")
+
+
+def _point_link(link: Dict[str, Any], page: Dict[str, str], relabel: bool = True) -> None:
+    """Aim *link* at *page*; with *relabel*, its first text becomes the page name."""
+    attrs = link.setdefault("attributes", {})
+    attrs["href"] = page["route"]
+    if "data-navigate-to" in attrs:
+        attrs["data-navigate-to"] = page["name"].lower().replace(" ", "-")
+    if not relabel:
         return
+
+    def _first_text(node: Dict[str, Any]) -> bool:
+        if isinstance(node.get("content"), str) and node["content"].strip():
+            node["content"] = page["name"]
+            return True
+        return any(
+            isinstance(c, dict) and _first_text(c) for c in node.get("components") or []
+        )
+
+    if not _first_text(link):
+        link["content"] = page["name"]
+
+
+def _single_link(node: Any) -> Optional[Dict[str, Any]]:
+    """The link that *node* is, or wraps as its only element (``li > a``)."""
+    while isinstance(node, dict):
+        if _is_link(node):
+            return node
+        kids = [
+            k for k in node.get("components") or []
+            if isinstance(k, dict) and k.get("type") != "textnode"
+        ]
+        if len(kids) != 1:
+            return None
+        node = kids[0]
+    return None
+
+
+def _nav_entries(nav: Dict[str, Any], routes: Dict[str, Any]) -> List[tuple]:
+    """``(entry, parent list, link)`` for each page link in *nav*; the entry is
+    the link or its single-child wrapper."""
+    found: List[tuple] = []
+
+    def _walk(items: Any) -> None:
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            link = _single_link(item)
+            if link is not None and (link.get("attributes") or {}).get("href") in routes:
+                found.append((item, items, link))
+            elif not _is_link(item):
+                _walk(item.get("components"))
+
+    _walk(nav.get("components"))
+    return found
+
+
+def _navs(node: Any) -> List[Dict[str, Any]]:
+    """Outermost ``<nav>`` elements under *node*."""
+    if not isinstance(node, dict):
+        return []
+    if node.get("tagName") == "nav":
+        return [node]
+    return [n for child in node.get("components") or [] for n in _navs(child)]
+
+
+def _page_list_entries(nav: Dict[str, Any], routes: Dict[str, Dict[str, str]]) -> List[tuple]:
+    """The nav's page entries when it lists pages, else ``[]``.
+
+    A page list names 2+ pages by their names; a nav of task links ("Manage
+    booking", "Staff sign in") that happen to open pages is not one.
+    """
+    entries = _nav_entries(nav, routes)
+    named = {
+        href for _, _, link in entries
+        for href in [link["attributes"]["href"]]
+        if _node_text(link).lower() == routes[href]["name"].lower()
+    }
+    return entries if len(named) >= 2 else []
+
+
+def _swap_look(a: Dict[str, Any], b: Dict[str, Any]) -> None:
+    """Swap the style and classes of two components."""
+    for key in ("style", "classes"):
+        if key in a or key in b:
+            a[key], b[key] = b.get(key), a.get(key)
+    aa, ba = a.setdefault("attributes", {}), b.setdefault("attributes", {})
+    if "class" in aa or "class" in ba:
+        aa["class"], ba["class"] = ba.get("class"), aa.get("class")
+    for node, attrs in ((a, aa), (b, ba)):
+        for key in ("style", "classes"):
+            if key in node and node[key] is None:
+                del node[key]
+        if "class" in attrs and attrs["class"] is None:
+            del attrs["class"]
+
+
+def _add_new_pages_to_navs(
+    wrappers: List[Dict[str, Any]],
+    page_index: List[Dict[str, str]],
+    new_ids: set,
+) -> None:
+    """List pages a modification added in every nav that lists pages, and give
+    a new page without a nav a copy of a sibling's navigation header."""
+    routes = {p["route"]: p for p in page_index}
+    new_pages = [p for p in page_index if p["id"] in new_ids]
+    for wrapper, current in zip(wrappers, page_index):
+        for nav in _navs(wrapper):
+            entries = _page_list_entries(nav, routes)
+            if not entries:
+                continue
+            listed = {link["attributes"]["href"] for _, _, link in entries}
+            # Copy an entry for another page so the active look stays put.
+            item, parent, _ = next(
+                (e for e in reversed(entries) if e[2]["attributes"]["href"] != current["route"]),
+                entries[-1],
+            )
+            pos = max(i for i, x in enumerate(parent) if any(x is e[0] for e in entries))
+            for page in new_pages:
+                if page["route"] in listed:
+                    continue
+                clone = copy.deepcopy(item)
+                _point_link(_single_link(clone), page)
+                pos += 1
+                parent.insert(pos, clone)
+
+    sibling = next(
+        (
+            (node, entry) for wrapper, entry in zip(wrappers, page_index)
+            if entry["id"] not in new_ids
+            for node in wrapper["components"]
+            if isinstance(node, dict) and "assistant-nav-header"
+            in str((node.get("attributes") or {}).get("class", "")).split()
+        ),
+        None,
+    )
+    if sibling is None:
+        return
+    header_src, sibling_page = sibling
+    for wrapper, entry in zip(wrappers, page_index):
+        if entry["id"] not in new_ids or _navs(wrapper):
+            continue
+        header = copy.deepcopy(header_src)
+        links = {l["attributes"]["href"]: l for _, _, l in _nav_entries(header, routes)}
+        if sibling_page["route"] in links and entry["route"] in links:
+            _swap_look(links[sibling_page["route"]], links[entry["route"]])
+        wrapper["components"].insert(0, header)
+
+
+def _drop_nav_entries(model: Dict[str, Any], page_name: str) -> None:
+    """Remove a deleted page's entries from every nav that lists pages."""
+    route = _page_route(page_name)
+    routes = {
+        _page_route(p.get("name")): {"name": _clean_text(p.get("name"))}
+        for p in model.get("pages") or [] if isinstance(p, dict)
+    }
+    routes[route] = {"name": page_name}
+    for page in model.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        for nav in _navs(_ensure_page_wrapper(page)):
+            for item, parent, link in _page_list_entries(nav, routes):
+                if link["attributes"]["href"] == route:
+                    parent.remove(item)
+
+
+def _retarget_links(model: Dict[str, Any], old_name: str, new_name: str) -> None:
+    """Point links at a renamed page's new route (the route follows the name);
+    a link labelled with the old name, like a nav entry, takes the new one."""
+    old_route, new_route = _page_route(old_name), _page_route(new_name)
 
     def _walk(node: Any) -> None:
         if not isinstance(node, dict):
             return
         attrs = node.get("attributes")
         if isinstance(attrs, dict) and attrs.get("href") == old_route:
-            attrs["href"] = new_route
+            _point_link(node, {"name": new_name, "route": new_route},
+                        relabel=_node_text(node) == old_name)
+            return
         for child in node.get("components") or []:
             _walk(child)
 
@@ -3726,6 +3899,9 @@ Rules:
             # SAFETY: never remove the last page — leave at least one.
             if filtered and len(filtered) < len(pages):
                 model["pages"] = filtered
+                for gone in pages:
+                    if gone not in filtered:
+                        _drop_nav_entries(model, _clean_text(gone.get("name")))
                 return model, f"Removed the **{page_name}** page from the GUI."
             return model, (
                 f"I couldn't remove the **{page_name}** page (it either doesn't exist or "

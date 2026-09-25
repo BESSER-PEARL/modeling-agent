@@ -14,7 +14,7 @@ from diagram_handlers.types.gui_nocode_diagram_handler import GUINoCodeDiagramHa
 from schemas import AuthoredSystemGUISpec
 from schemas.gui_diagram import GUIModificationBatchSpec
 
-from tests.test_gui_actions import PAGES, TASK_METADATA, _by_text, _nodes, _table
+from tests.test_gui_actions import PAGES, TASK_METADATA, _by_text, _nodes, _table, _text
 
 
 def _handler():
@@ -80,9 +80,11 @@ def test_added_page_gets_an_id_and_existing_ids_are_kept():
         p["name"]: p["id"] for p in after["pages"]
     }.items()
     assert _page(after, "Reports").get("id")
-    # Pages the edit did not touch are left exactly as they were.
-    assert _page(after, "Tasks") == _page(before, "Tasks")
-    assert _page(after, "Projects") == _page(before, "Projects")
+    # Pages the edit did not touch are left as they were, apart from the new
+    # page's entry in their nav header (components[0]).
+    for name in ("Tasks", "Projects"):
+        body = lambda m: _page(m, name)["frames"][0]["component"]["components"][1:]
+        assert body(after) == body(before)
 
 
 def test_added_page_links_and_buttons_are_wired():
@@ -204,3 +206,143 @@ def test_modification_prompt_states_the_interaction_vocabulary():
     )
     for marker in ("<a href='/route'>", "data-page='Page Name'", "data-method='methodName'"):
         assert marker in seen["prompt"]
+
+
+# -- navigation after page edits ---------------------------------------------
+
+def _nav_routes(model, page_name):
+    """Hrefs of the auto-injected nav header on *page_name*, in order."""
+    page = _page(model, page_name)
+    comps = page["frames"][0]["component"]["components"]
+    nav = next(c for c in comps if "assistant-nav-header" in c.get("attributes", {}).get("class", ""))
+    out = []
+
+    def _walk(n):
+        if isinstance(n, dict):
+            if n.get("type") == "link" or n.get("tagName") == "a":
+                out.append(n["attributes"]["href"])
+            for c in n.get("components") or []:
+                _walk(c)
+
+    _walk(nav)
+    return out
+
+
+def test_added_page_is_in_every_nav_header():
+    after = _modify(_generate(), ADD_REPORTS)
+    for name in ("Overview", "Tasks", "Projects"):
+        assert _nav_routes(after, name) == ["/overview", "/tasks", "/projects", "/reports"]
+
+
+def test_added_page_gets_the_sibling_header_with_itself_active():
+    after = _modify(_generate(), ADD_REPORTS)
+    assert _nav_routes(after, "Reports") == ["/overview", "/tasks", "/projects", "/reports"]
+    tasks_nav = _page(after, "Tasks")["frames"][0]["component"]["components"][0]
+    reports_nav = _page(after, "Reports")["frames"][0]["component"]["components"][0]
+    links = lambda nav: {l["attributes"]["href"]: l for l in _links_in(nav)}
+    # Active look moves from the sibling's own entry to the new page's entry.
+    assert links(reports_nav)["/reports"]["style"] == links(tasks_nav)["/tasks"]["style"]
+    assert links(reports_nav)["/tasks"]["style"] == links(tasks_nav)["/overview"]["style"]
+
+
+def _links_in(node):
+    out = []
+    if isinstance(node, dict):
+        if node.get("type") == "link" or node.get("tagName") == "a":
+            out.append(node)
+        for c in node.get("components") or []:
+            out += _links_in(c)
+    return out
+
+
+def test_nav_entries_are_not_duplicated_on_rerun():
+    from diagram_handlers.types.gui_nocode_diagram_handler import _wire_model_actions
+
+    after = _modify(_generate(), ADD_REPORTS)
+    again = copy.deepcopy(after)
+    _wire_model_actions(again, TASK_METADATA)
+    assert again == after
+    restyled = _handler().generate_modification(
+        "change the color to red", copy.deepcopy(after),
+        raw_request="change the color to red", class_metadata=TASK_METADATA,
+    )["model"]
+    assert _nav_routes(restyled, "Tasks") == ["/overview", "/tasks", "/projects", "/reports"]
+
+
+def test_authored_nav_listing_pages_gets_the_new_page():
+    handler = _handler()
+    pages = [dict(p) for p in PAGES]
+    pages[0] = {"name": "Overview", "sections": [
+        {"html": "<section class='s'><h2>Overview</h2><nav class='app-tabs'><ul>"
+                 "<li class='tab'><a href='/overview'>Overview</a></li>"
+                 "<li class='tab'><a href='/tasks'>Tasks</a></li></ul></nav></section>"},
+    ]}
+    handler.predict_two_pass_structured = (
+        lambda **kw: AuthoredSystemGUISpec(projectName="Tracker", pages=pages)
+    )
+    before = handler.generate_complete_system("tracker", class_metadata=TASK_METADATA)["model"]
+    after = _modify(before, ADD_REPORTS)
+    tabs = next(n for n in _nodes(after, "Overview") if n.get("tagName") == "ul")
+    assert [_links_in(li)[0]["attributes"]["href"] for li in tabs["components"]] == [
+        "/overview", "/tasks", "/reports"
+    ]
+    assert tabs["components"][-1]["attributes"]["class"] == "tab"
+    assert _text(tabs["components"][-1]) == "Reports"
+
+
+def test_removed_page_leaves_every_nav():
+    before = _generate()
+    after = _modify(before, [{"operation": "remove_page", "pageName": "Projects"}], "remove projects")
+    for name in ("Overview", "Tasks"):
+        assert _nav_routes(after, name) == ["/overview", "/tasks"]
+
+
+def test_renamed_page_is_renamed_in_every_nav():
+    before = _generate()
+    after = _modify(
+        before,
+        [{"operation": "rename_page", "pageName": "Projects", "newPageName": "Portfolio"}],
+        "rename projects",
+    )
+    for name in ("Overview", "Tasks", "Portfolio"):
+        links = _links_in(_page(after, name)["frames"][0]["component"]["components"][0])
+        assert [(l["attributes"]["href"], _text(l)) for l in links][-1] == ("/portfolio", "Portfolio")
+
+
+def test_modification_lifts_a_saved_link_out_of_a_paragraph():
+    # Exact node from the saved live hotel design (also after the editor
+    # round-trip, where the <p> may carry type 'text').
+    from tests.test_gui_actions import _flattened_actions
+
+    before = _generate()
+    crumb = {"tagName": "p", "type": "text", "components": [
+        {"tagName": "a", "attributes": {"href": "/tasks"}, "content": "Tasks"},
+        {"type": "textnode", "content": " / Task #58241"},
+    ]}
+    before["pages"][0]["frames"][0]["component"]["components"].append(crumb)
+    after = _modify(before, ADD_REPORTS)
+    for page in after["pages"]:
+        assert _flattened_actions(page["frames"][0]["component"]) == []
+    lifted = next(n for n in _nodes(after, "Overview") if _text(n) == "Tasks / Task #58241")
+    assert lifted["tagName"] == "div" and "type" not in lifted
+    assert _text(lifted) == "Tasks / Task #58241"
+
+
+def test_nav_of_task_links_is_not_treated_as_a_page_list():
+    # Live hotel design: a guest nav with "Manage booking" and "Staff sign in"
+    # (links to two pages, not named after them) got a staff "Billing" entry.
+    handler = _handler()
+    pages = [dict(p) for p in PAGES]
+    pages[0] = {"name": "Overview", "sections": [
+        {"html": "<section class='s'><h2>Overview</h2><nav class='guest-nav'>"
+                 "<a href='/tasks'>Manage my work</a><a href='/projects'>Staff sign in</a>"
+                 "</nav></section>"},
+    ]}
+    handler.predict_two_pass_structured = (
+        lambda **kw: AuthoredSystemGUISpec(projectName="Tracker", pages=pages)
+    )
+    before = handler.generate_complete_system("tracker", class_metadata=TASK_METADATA)["model"]
+    after = _modify(before, ADD_REPORTS)
+    guest = next(n for n in _nodes(after, "Overview") if n.get("tagName") == "nav"
+                 and n["attributes"].get("class") == "guest-nav")
+    assert [l["attributes"]["href"] for l in _links_in(guest)] == ["/tasks", "/projects"]
