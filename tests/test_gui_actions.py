@@ -26,7 +26,10 @@ TASK_METADATA = [
             {"id": "a-title", "name": "title", "type": "str", "isNumeric": False, "isString": True},
             {"id": "a-hours", "name": "estimate_hours", "type": "float", "isNumeric": True, "isString": False},
         ],
-        "methods": [{"id": "m-complete", "name": "complete", "isInstanceMethod": True, "params": []}],
+        "methods": [
+            {"id": "m-complete", "name": "complete", "isInstanceMethod": True, "params": []},
+            {"id": "m-archive", "name": "archive", "isInstanceMethod": False, "params": []},
+        ],
     },
     {
         "id": "cls-project",
@@ -182,8 +185,8 @@ def test_bound_table_gets_its_method_button_row():
     nodes = _nodes(model, "Tasks")
     table_id = _table(nodes, "cls-task")["attributes"]["id"]
     buttons = [n for n in nodes if n.get("type") == "action-button"]
-    assert [b["attributes"]["data-method"] for b in buttons] == ["m-complete"]
-    assert buttons[0]["attributes"]["data-instance-source"] == table_id
+    assert [b["attributes"]["data-method"] for b in buttons] == ["m-complete", "m-archive"]
+    assert {b["attributes"]["data-instance-source"] for b in buttons} == {table_id}
 
 
 def test_table_ids_are_unique_across_pages():
@@ -193,3 +196,23 @@ def test_table_ids_are_unique_across_pages():
     ])
     ids = [_table(_nodes(model, n), "cls-task")["attributes"]["id"] for n in ("A", "B")]
     assert len(set(ids)) == 2
+
+
+def test_method_without_table_navigates_to_the_class_page():
+    # Live hotel design: "Check in" on a folio page with no Booking table
+    # became a MethodButton with no instance source, so it called
+    # '/booking/{booking_id}/methods/...' literally and failed. The generated
+    # app addresses every method through a selected row, static or not.
+    model = _generate([
+        {"name": "Folio", "sections": [
+            {"html": "<section class='s'><h2>Folio</h2>"
+                     "<button data-method='complete' data-class='Task'>Finish</button>"
+                     "<button data-method='archive'>Archive</button></section>"},
+        ]},
+        {"name": "Board", "sections": [{"bind": {"kind": "table", "className": "Task"}}]},
+    ])
+    board_id = next(p["id"] for p in model["pages"] if p["name"] == "Board")
+    for label in ("Finish", "Archive"):
+        btn = _by_text(_nodes(model, "Folio"), label)
+        assert btn["attributes"]["data-action-type"] == "navigate"
+        assert btn["attributes"]["data-target-screen"] == board_id

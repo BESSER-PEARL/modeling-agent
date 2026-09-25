@@ -2542,9 +2542,17 @@ def _wire_page_actions(
             if hit:
                 cls, method = hit
                 table_id = first_table.get(cls["id"], ("",))[0]
-                _make_method_button(node, cls, method, table_id)
-                wired.add((cls["id"], method["id"]))
-            elif target:
+                if table_id:
+                    _make_method_button(node, cls, method, table_id)
+                    wired.add((cls["id"], method["id"]))
+                    continue
+                # The generated app calls every method as '/x/{x_id}/methods/..'
+                # on the row selected in the class's table; with no table here
+                # the id is never filled in. Send the user to that table's page.
+                target = class_pages.get(cls["name"])
+                if target is current:
+                    target = None
+            if target:
                 _make_navigate_button(node, target)
         elif tag == "a" or node.get("type") == "link":
             href = _clean_text(attrs.get("href"))
