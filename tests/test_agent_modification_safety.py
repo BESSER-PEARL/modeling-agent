@@ -109,7 +109,7 @@ class TestIndexModel:
 
     def test_empty_on_missing_model(self):
         idx = AgentDiagramHandler._index_existing_agent_model({})
-        assert idx == {"states": set(), "intents": set(), "rag": set()}
+        assert idx == {"states": set(), "intents": set(), "rag": set(), "components": {}}
 
 
 # ---------------------------------------------------------------------------
@@ -242,3 +242,81 @@ def test_clarify_response_shape():
     assert r["action"] == "assistant_message"
     assert r["diagramType"] == "AgentDiagram"
     assert r["message"] == "hello"
+
+
+# ---------------------------------------------------------------------------
+# Merge of develop's agent-component format (components section, new add_*)
+# ---------------------------------------------------------------------------
+
+def _new_format_model():
+    """Editor's new format: intents/components live in ``components``."""
+    return {
+        "type": "AgentDiagram",
+        "elements": {"s1": {"id": "s1", "name": "welcome", "type": "AgentState"}},
+        "relationships": {},
+        "components": {
+            "i1": {"id": "i1", "name": "Greeting", "type": "AgentIntent"},
+            "l1": {"id": "l1", "name": "gpt4", "type": "AgentLLM"},
+            "g1": {"id": "g1", "gui_id": "orderForm", "type": "AgentGUI"},
+        },
+    }
+
+
+class TestComponentFormatValidation:
+    def setup_method(self):
+        self.h = _handler()
+        self.model = _new_format_model()
+
+    def test_intent_in_components_is_an_existing_target(self):
+        mods = [{"action": "add_intent_training_phrase", "target": {"intentName": "Greeting"},
+                 "changes": {"trainingPhrase": "hey"}}]
+        res = self.h._validate_modifications(mods, self.model)
+        assert len(res["kept"]) == 1
+
+    def test_duplicate_intent_in_components_dropped(self):
+        mods = [{"action": "add_intent", "target": {"intentName": "Greeting"},
+                 "changes": {"trainingPhrases": ["hi"]}}]
+        res = self.h._validate_modifications(mods, self.model)
+        assert res["kept"] == []
+        assert res["skipped"][0]["reason"] == "exists"
+
+    @pytest.mark.parametrize("action", ["add_llm", "add_tool", "add_skill", "add_workspace"])
+    def test_new_component_add_kept(self, action):
+        mods = [{"action": action, "target": {"name": "fresh"}, "changes": {}}]
+        res = self.h._validate_modifications(mods, self.model)
+        assert len(res["kept"]) == 1
+
+    def test_duplicate_llm_dropped(self):
+        mods = [{"action": "add_llm", "target": {"name": "GPT4"}, "changes": {}}]
+        res = self.h._validate_modifications(mods, self.model)
+        assert res["kept"] == []
+        assert res["skipped"][0]["reason"] == "exists"
+
+    def test_duplicate_gui_by_gui_id_dropped(self):
+        mods = [{"action": "add_gui", "target": {"name": "Order"}, "changes": {"gui_id": "orderForm"}}]
+        res = self.h._validate_modifications(mods, self.model)
+        assert res["kept"] == []
+
+
+def test_modification_uses_shared_prompt_with_safety_rules():
+    """generate_modification must send MODIFY_SYSTEM_PROMPT_AGENT (develop's
+    component actions + reply types) and it must carry the safety rules."""
+    from diagram_handlers.types.agent_diagram_handler import MODIFY_SYSTEM_PROMPT_AGENT
+
+    seen = []
+
+    class _RecordingLLM(_FakeLLM):
+        def predict(self, prompt):
+            seen.append(prompt)
+            return super().predict(prompt)
+
+    h = AgentDiagramHandler(_RecordingLLM(_mods_json([
+        {"action": "add_llm", "target": {"name": "claude"}, "changes": {"provider": "anthropic"}},
+    ])))
+    result = h.generate_modification(
+        "add an LLM called claude", _new_format_model(), raw_request="add an LLM called claude",
+    )
+    assert result["action"] == "modify_model"
+    assert seen and "- add_llm:" in seen[0]
+    for rule in ("NEVER remove or rename", "Only ADD elements", "ALSO emit an add_transition"):
+        assert rule in MODIFY_SYSTEM_PROMPT_AGENT

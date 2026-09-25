@@ -509,17 +509,29 @@ ObjectDiagram Elements
 AgentDiagram Elements
 ~~~~~~~~~~~~~~~~~~~~~
 
+The agent handler emits specs (not editor JSON). States and the initial node
+get canvas positions from the layout engine; intents and the other components
+(LLMs, RAG databases, tools, skills, workspaces, GUIs) go to the editor's
+``components`` section without bounds.
+
 **State:**
 
 .. code-block:: json
 
    {
      "type": "state",
-     "name": "greeting_state",
-     "replies": ["Hello! How can I help you?", "Welcome!"],
-     "x": 100,
-     "y": 100
+     "stateName": "greetingState",
+     "replies": [
+       { "text": "Hello! How can I help you?", "replyType": "text" },
+       { "text": "Answer briefly.", "replyType": "llm", "llm_name": "gpt4" }
+     ],
+     "fallbackBodies": [
+       { "text": "Sorry, I did not get that.", "replyType": "text" }
+     ]
    }
+
+Each reply carries a ``replyType`` (one of the 17 ``ReplyType`` values, see
+:doc:`diagram_handlers`) plus the fields that type needs.
 
 **Intent:**
 
@@ -527,10 +539,9 @@ AgentDiagram Elements
 
    {
      "type": "intent",
-     "name": "hello_intent",
-     "trainingPhrases": ["hi", "hello", "hey", "good morning"],
-     "x": 300,
-     "y": 100
+     "intentName": "HelloIntent",
+     "intentDescription": "The user greets the agent",
+     "trainingPhrases": ["hi", "hello", "hey", "good morning"]
    }
 
 **Initial element:**
@@ -538,9 +549,7 @@ AgentDiagram Elements
 .. code-block:: json
 
    {
-     "type": "initial",
-     "x": 50,
-     "y": 50
+     "type": "initial"
    }
 
 **Transition:**
@@ -549,8 +558,26 @@ AgentDiagram Elements
 
    {
      "source": "initial",
-     "target": "greeting_state",
-     "intent": null
+     "target": "greetingState",
+     "condition": "auto",
+     "conditionValue": "",
+     "label": ""
+   }
+
+``condition`` is ``when_intent_matched`` (``conditionValue`` holds the intent
+name), ``when_no_intent_matched``, or ``auto``.
+
+**Components** (in a complete system, one list per type):
+
+.. code-block:: json
+
+   {
+     "llms": [{ "name": "gpt4", "provider": "openai", "num_previous_messages": 3 }],
+     "ragElements": [{ "name": "faqKB", "llm_name": "gpt4", "k": 4 }],
+     "tools": [{ "name": "getWeather", "description": "...", "code": "def get_weather(city): ..." }],
+     "skills": [{ "name": "politeness", "content": "Always greet the user." }],
+     "workspaces": [{ "name": "docs", "path": "./docs", "writable": false }],
+     "guis": [{ "gui_id": "orderForm", "is_form": true }]
    }
 
 GUINoCodeDiagram Schema (GrapesJS)
@@ -846,14 +873,66 @@ AgentDiagram Schemas
 
    * - Schema
      - Purpose
+   * - ``ReplyType``
+     - ``Literal`` of the 17 state action types: ``text``, ``llm``,
+       ``llm_chat``, ``rag``, ``db_reply``, ``code``, ``web_crawl_llm``,
+       ``ws_markdown``, ``ws_html``, ``ws_speech``, ``ws_options``,
+       ``ws_location``, ``ws_file``, ``ws_image``, ``ws_dataframe``,
+       ``ws_plotly``, ``gui_reply``. ``REPLY_TYPE_HINTS`` (checked against it at
+       import) and ``reply_type_help()`` feed the same list into the prompts.
+   * - ``AgentReplyFields``
+     - Shared base with the type-specific action fields: ``ragDatabaseName``,
+       ``system_message``, ``llm_name``, ``inputPromptMode``
+       (``Literal["last_user_message", "custom"]``), ``customInputPrompt``,
+       ``storeInSession``, ``sendReply``, ``dbSelectionType``
+       (``Literal["default", "custom"]``), ``dbCustomName``, ``dbQueryMode``
+       (``Literal["llm_query", "sql"]``), ``dbOperation``
+       (``Literal["any", "select", "insert", "update", "delete"]``),
+       ``dbSqlQuery``, ``initial_url``, ``ws_message``, ``ws_options``,
+       ``ws_latitude``, ``ws_longitude``, ``guiId``
+   * - ``AgentReplySpec``
+     - One state action: ``AgentReplyFields`` + ``text`` + ``replyType``
+       (default ``text``)
    * - ``AgentStateSpec``
-     - Agent state (``stateName`` max 30) with replies and fallbacks
+     - Agent state (``stateName`` max 30) with ``replies`` and ``fallbackBodies``
    * - ``AgentIntentSpec``
-     - Intent (``intentName`` max 30) with training phrases
+     - Intent (``intentName`` max 30) with ``intentDescription`` and
+       ``trainingPhrases``
+   * - ``AgentLLMSpec``, ``AgentRagSpec``, ``AgentToolSpec``,
+       ``AgentSkillSpec``, ``AgentWorkspaceSpec``, ``AgentGUISpec``
+     - Component specs (fields listed in :doc:`diagram_handlers`)
+   * - ``AgentSingleElementSpec``
+     - One element: ``type`` is ``state``, ``intent``, or ``initial``, with the
+       matching state / intent fields
+   * - ``AgentTransitionSpec``
+     - ``source``, ``target``, ``condition``
+       (``Literal["when_intent_matched", "when_no_intent_matched", "auto"]``),
+       ``conditionValue``, ``label``, ``sourceDirection``, ``targetDirection``
    * - ``SystemAgentSpec``
-     - Complete agent diagram (states + intents + transitions + RAG elements)
+     - Complete agent diagram: ``systemName``, ``hasInitialNode``,
+       ``initialNode``, ``states`` (at least one), ``transitions``, and the
+       component lists ``intents``, ``ragElements``, ``llms``, ``tools``,
+       ``skills``, ``workspaces``, ``guis``
+   * - ``AgentModificationTarget``
+     - ``stateName``, ``intentName``, ``sourceStateName``,
+       ``targetStateName``, ``transitionId``, and ``name`` (component name for
+       the ``add_*`` component actions)
+   * - ``AgentModificationChanges``
+     - ``AgentReplyFields`` + ``name``, ``replies``, ``trainingPhrases``,
+       ``intentDescription``, ``intentName``, ``condition``, ``text``,
+       ``replyType``, ``trainingPhrase``, and the component fields
+       (``provider``, ``num_previous_messages``, ``global_context``,
+       ``description``, ``code``, ``content``, ``path``, ``writable``,
+       ``llm_prompt``, ``k``, ``embedding_provider``, ``gui_id``, ``persist``,
+       ``is_form``, ``width``)
    * - ``AgentModification``
-     - Literal actions: ``add_state``, ``modify_state``, ``add_intent``, ``modify_intent``, ``add_transition``, ``remove_transition``, ``add_state_body``, ``add_intent_training_phrase``, ``add_rag_element``, ``remove_element``
+     - 15 ``Literal`` actions: ``add_state``, ``modify_state``, ``add_intent``,
+       ``modify_intent``, ``add_transition``, ``remove_transition``,
+       ``add_state_body``, ``add_intent_training_phrase``, ``add_rag_element``,
+       ``add_llm``, ``add_tool``, ``add_skill``, ``add_workspace``, ``add_gui``,
+       ``remove_element``
+   * - ``AgentModificationResponse``
+     - ``modifications`` (at least one ``AgentModification``)
 
 GUINoCode & QuantumCircuit Schemas
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

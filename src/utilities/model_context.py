@@ -7,7 +7,7 @@ variants live here so every handler and the workspace-context builder can
 share the same logic.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 # ---------------------------------------------------------------------------
 # Compact (one-line) model summary
@@ -19,7 +19,23 @@ def compact_model_summary(model_data: Any, diagram_type: str) -> str:
     if not isinstance(model_data, dict):
         return f"{diagram_type}: no structured model available."
 
-    if diagram_type in {"ClassDiagram", "ObjectDiagram", "StateMachineDiagram", "AgentDiagram", "BPMN"}:
+    if diagram_type == "AgentDiagram":
+        # Agent intents/components may live in ``components`` (new format),
+        # ``elements`` or ``agentComponents``; count states + components across all.
+        agent_elements = agent_model_elements(model_data)
+        relationships = model_data.get("relationships")
+        if agent_elements or isinstance(relationships, dict):
+            counted = [
+                el for el in agent_elements.values()
+                if isinstance(el, dict) and el.get("type") in _AGENT_COUNTED_TYPES
+            ]
+            rel_count = len(relationships) if isinstance(relationships, dict) else 0
+            return (
+                f"{diagram_type}: {len(counted)} element(s), "
+                f"{rel_count} relationship(s)."
+            )
+
+    if diagram_type in {"ClassDiagram", "ObjectDiagram", "StateMachineDiagram", "BPMN"}:
         elements = model_data.get("elements")
         relationships = model_data.get("relationships")
         if isinstance(elements, dict) and isinstance(relationships, dict):
@@ -56,28 +72,6 @@ def compact_model_summary(model_data: Any, diagram_type: str) -> str:
                         f"{diagram_type}: {state_count} state(s): "
                         f"{preview}{extra} and "
                         f"{len(relationships)} transition(s)."
-                    )
-            elif diagram_type == "AgentDiagram":
-                # Count actual states/intents — exclude the StateInitialNode
-                # pseudostate and per-element AgentStateBody/AgentIntentBody
-                # sub-elements.
-                state_count = sum(
-                    1 for el in elements.values()
-                    if isinstance(el, dict) and el.get("type") == "AgentState"
-                    and isinstance(el.get("name"), str) and el["name"].strip()
-                )
-                intent_names = [
-                    el.get("name") for el in elements.values()
-                    if isinstance(el, dict) and el.get("type") == "AgentIntent"
-                    and isinstance(el.get("name"), str) and el["name"].strip()
-                ]
-                if state_count > 0 or intent_names:
-                    preview = ", ".join(intent_names[:6])
-                    extra = f" (+{len(intent_names) - 6} more)" if len(intent_names) > 6 else ""
-                    intent_part = f", intents: {preview}{extra}" if intent_names else ""
-                    return (
-                        f"{diagram_type}: {state_count} state(s), "
-                        f"{len(intent_names)} intent(s){intent_part}."
                     )
             elif diagram_type == "ObjectDiagram":
                 # Count actual objects only — exclude attribute sub-elements.
@@ -468,107 +462,166 @@ def _summarize_gui_model(model: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def _summarize_agent_diagram(model: Dict[str, Any], *, max_items: int = 20) -> List[str]:
-    """Summarize an AgentDiagram model: real states/intents (with their reply
-    bodies / training phrases), and transitions.
+# Agent component element types (LLMs, intents, RAG DBs, tools, ...).  In the
+# editor's new format they live in ``model["components"]``; older projects keep
+# them in ``model["elements"]`` and a legacy schema used a top-level
+# ``agentComponents`` map.  Mirrors BESSER's agent_diagram_processor.
+_AGENT_COMPONENT_LABELS: List[Tuple[str, str]] = [
+    ("AgentIntent", "Intents"),
+    ("AgentLLM", "LLMs"),
+    ("AgentRagElement", "RAG databases"),
+    ("AgentTool", "Tools"),
+    ("AgentSkill", "Skills"),
+    ("AgentWorkspace", "Workspaces"),
+    ("AgentGUI", "GUIs"),
+]
+_AGENT_STATE_TYPES = ("AgentState", "AgentReasoningState")
+_AGENT_COUNTED_TYPES = set(_AGENT_STATE_TYPES) | {t for t, _ in _AGENT_COMPONENT_LABELS}
+_AGENT_TRANSITION_TYPES = {"AgentStateTransition", "AgentStateTransitionInit", "AgentTransition"}
 
-    Only genuine ``AgentState``/``AgentIntent`` elements are counted/listed —
-    the editor also creates a ``StateInitialNode`` pseudostate plus per-element
-    ``AgentStateBody`` (bot reply text) / ``AgentIntentBody`` (training phrase)
-    sub-elements, none of which are states or intents themselves (mirrors how
-    the class-diagram summary excludes attributes/methods from the class
-    count). Training phrases are surfaced so questions like "which intent
-    handles the user saying hello" are answerable from the summary alone.
+
+def agent_model_elements(model: Dict[str, Any]) -> Dict[str, Any]:
+    """Return every agent element regardless of storage format.
+
+    Merges ``elements`` (old projects keep intents/components on the canvas),
+    then ``agentComponents`` (legacy schema), then ``components`` (new format);
+    later sections win on duplicate ids — the same precedence BESSER's backend
+    processor and the editor use.
     """
-    elements = model.get("elements")
+    merged: Dict[str, Any] = {}
+    for key in ("elements", "agentComponents", "components"):
+        section = model.get(key)
+        if isinstance(section, dict):
+            merged.update(section)
+    return merged
+
+
+def _endpoint_id(endpoint: Any) -> str:
+    """Relationship endpoints are ``{"element": id, ...}`` in Apollon JSON; accept plain ids too."""
+    if isinstance(endpoint, dict):
+        endpoint = endpoint.get("element")
+    return endpoint if isinstance(endpoint, str) else ""
+
+
+def _join_names(names: List[str], limit: int = 10) -> str:
+    text = ', '.join(names[:limit])
+    if len(names) > limit:
+        text += f" …+{len(names) - limit} more"
+    return text
+
+
+def _summarize_agent_diagram(model: Dict[str, Any], *, max_items: int = 20) -> List[str]:
+    """Summarize an AgentDiagram model: states (with reply bodies), intents
+    (with training phrases), the other components (LLMs, RAG DBs, tools,
+    skills, workspaces, GUIs) and transitions.
+
+    Reads every storage format via ``agent_model_elements``. Only genuine
+    states/components are counted — the ``StateInitialNode`` pseudostate and
+    the ``AgentStateBody`` / ``AgentIntentBody`` sub-elements are not. Training
+    phrases are surfaced so "which intent handles hello" is answerable here.
+    """
     relationships = model.get("relationships")
-    if not isinstance(elements, dict):
+    elements = agent_model_elements(model)
+    if not elements:
         return []
 
     lines: List[str] = []
-    element_names: Dict[str, str] = {}  # id -> name (any element, for transition lookups)
     state_data: Dict[str, Dict[str, Any]] = {}   # id -> {name, replies}
     intent_data: Dict[str, Dict[str, Any]] = {}  # id -> {name, phrases}
 
     for eid, el in elements.items():
         if not isinstance(el, dict):
             continue
-        el_type = el.get("type")
-        name = el.get("name") or ""
-        if el_type == "AgentState":
-            if not name.strip():
-                continue
-            element_names[eid] = name.strip()
+        name = el.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if el.get("type") in _AGENT_STATE_TYPES:
             state_data[eid] = {"name": name.strip(), "replies": []}
-        elif el_type == "AgentIntent":
-            if not name.strip():
-                continue
-            element_names[eid] = name.strip()
+        elif el.get("type") == "AgentIntent":
             intent_data[eid] = {"name": name.strip(), "phrases": []}
-        elif el_type == "StateInitialNode":
-            element_names[eid] = name or "(initial)"
 
-    # Attach owned reply bodies / training phrases (owner-based, mirrors how
-    # the class-diagram summary attaches attributes/methods to classes).
+    def _body_text(body_id: Any) -> str:
+        body = elements.get(body_id) if isinstance(body_id, str) else None
+        text = body.get("name") if isinstance(body, dict) else None
+        return text.strip() if isinstance(text, str) else ""
+
+    # Attach reply bodies / training phrases: by ``owner`` on the body, or by
+    # the id list on the parent (``actions``/``bodies``/``ownedElements``).
     for el in elements.values():
         if not isinstance(el, dict):
             continue
         owner = el.get("owner")
-        el_type = el.get("type")
         text = el.get("name")
         if not isinstance(text, str) or not text.strip():
             continue
-        if el_type == "AgentStateBody" and owner in state_data:
+        if el.get("type") == "AgentStateBody" and owner in state_data:
             state_data[owner]["replies"].append(text.strip())
-        elif el_type == "AgentIntentBody" and owner in intent_data:
+        elif el.get("type") == "AgentIntentBody" and owner in intent_data:
             intent_data[owner]["phrases"].append(text.strip())
+    for eid, sd in state_data.items():
+        el = elements[eid]
+        for body_id in el.get("actions") or el.get("bodies") or []:
+            text = _body_text(body_id)
+            if text and text not in sd["replies"]:
+                sd["replies"].append(text)
+    for eid, idata in intent_data.items():
+        el = elements[eid]
+        for body_id in el.get("bodies") or el.get("ownedElements") or []:
+            text = _body_text(body_id)
+            if text and text not in idata["phrases"]:
+                idata["phrases"].append(text)
 
     # Explicit COUNT headers first — mirrors the class-diagram summary so
     # factual queries ("how many intents?") are answered from a stated
     # number instead of the LLM guessing from a flat element dump.
-    state_items = list(state_data.items())
+    state_items = list(state_data.values())
     if state_items:
-        names_preview = ", ".join(sd["name"] for _, sd in state_items[:max_items])
-        if len(state_items) > max_items:
-            names_preview += f" (+{len(state_items) - max_items} more)"
+        names_preview = _join_names([sd["name"] for sd in state_items], max_items)
         lines.append(f"States ({len(state_items)}): {names_preview}")
-        for _, sd in state_items[:max_items]:
+        for sd in state_items[:max_items]:
             if sd["replies"]:
                 lines.append(f"  - {sd['name']} | replies: {'; '.join(sd['replies'][:5])}")
             else:
                 lines.append(f"  - {sd['name']}")
 
-    intent_items = list(intent_data.items())
+    intent_items = list(intent_data.values())
     if intent_items:
-        names_preview = ", ".join(idata["name"] for _, idata in intent_items[:max_items])
-        if len(intent_items) > max_items:
-            names_preview += f" (+{len(intent_items) - max_items} more)"
+        names_preview = _join_names([idata["name"] for idata in intent_items], max_items)
         lines.append(f"Intents ({len(intent_items)}): {names_preview}")
-        for _, idata in intent_items[:max_items]:
+        for idata in intent_items[:max_items]:
             if idata["phrases"]:
                 lines.append(f"  - {idata['name']} | training phrases: {', '.join(idata['phrases'][:8])}")
             else:
                 lines.append(f"  - {idata['name']}")
 
-    # Transitions — real type is "AgentStateTransition" (plus
-    # "AgentStateTransitionInit" wiring the initial pseudostate). Annotate
-    # each with the intent that triggers it so "which intent leads to X" is
-    # answerable directly from this line.
+    for comp_type, label in _AGENT_COMPONENT_LABELS:
+        if comp_type == "AgentIntent":
+            continue  # listed above with training phrases
+        names: List[str] = []
+        for e in elements.values():
+            if not isinstance(e, dict) or e.get("type") != comp_type:
+                continue
+            # AgentGUI components are referenced by gui_id (gui_reply.guiId).
+            name = (e.get("gui_id") if comp_type == "AgentGUI" else None) or e.get("name")
+            if isinstance(name, str) and name.strip():
+                names.append(name.strip())
+        if names:
+            suffix = ", gui_id" if comp_type == "AgentGUI" else ""
+            lines.append(f"{label} ({len(names)}{suffix}): {_join_names(names, max_items)}")
+
+    # Transitions, annotated with the intent that triggers each one so
+    # "which intent leads to X" is answerable directly from this line.
     if isinstance(relationships, dict):
         transitions: List[str] = []
         for rel in relationships.values():
-            if not isinstance(rel, dict):
+            if not isinstance(rel, dict) or rel.get("type") not in _AGENT_TRANSITION_TYPES:
                 continue
-            if rel.get("type") not in ("AgentStateTransition", "AgentStateTransitionInit"):
-                continue
-            source = rel.get("source")
-            target = rel.get("target")
+            source = elements.get(_endpoint_id(rel.get("source")))
+            target = elements.get(_endpoint_id(rel.get("target")))
             if not isinstance(source, dict) or not isinstance(target, dict):
                 continue
-            src_id = source.get("element", "")
-            tgt_id = target.get("element", "")
-            src_name = element_names.get(src_id, src_id)
-            tgt_name = element_names.get(tgt_id, tgt_id)
+            src_name = source.get("name") or ("initial" if source.get("type") == "StateInitialNode" else "?")
+            tgt_name = target.get("name") or "?"
             predefined = rel.get("predefined")
             predefined_type = predefined.get("predefinedType", "") if isinstance(predefined, dict) else ""
             intent_name = predefined.get("intentName", "") if isinstance(predefined, dict) else ""

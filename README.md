@@ -37,6 +37,8 @@ BPMN's token is `BPMN` (not `BPMNDiagram`) and the user-profile token is `UserDi
 | `BPMN` | Yes | Yes | Yes |
 | `UserDiagram` | Yes | Yes | Yes |
 
+`AgentDiagram` also covers agent components (intents, LLMs, RAG databases, tools, skills, workspaces, GUIs) and all 17 state reply types.
+
 ## Supported Generators
 
 Deterministic BESSER generators (`GENERATOR_KEYWORDS` in `src/handlers/generation_handler.py`):
