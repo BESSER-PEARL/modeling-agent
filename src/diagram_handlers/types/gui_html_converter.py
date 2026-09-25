@@ -38,7 +38,7 @@ from __future__ import annotations
 import copy
 import re
 from html.parser import HTMLParser
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Whitelists
@@ -410,3 +410,33 @@ def replace_widget_slot(
         return out
 
     return _transform(nodes)
+
+
+def splice_widget(
+    nodes: List[Dict[str, Any]],
+    widget_node: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """Return ``(tree, placed)``: a NEW tree with *widget_node* at the first
+    widget-slot marker and every other marker removed.
+
+    The editor has no widget-slot component, so a marker left in the tree is a
+    node it cannot load. With no *widget_node* every marker is removed.
+    ``placed`` is False when the tree had no marker to splice into.
+    """
+    placed = False
+
+    def _transform(items: List[Any]) -> List[Any]:
+        nonlocal placed
+        out: List[Any] = []
+        for node in items:
+            if isinstance(node, dict) and node.get("type") == WIDGET_SLOT_TYPE:
+                if widget_node is not None and not placed:
+                    out.append(copy.deepcopy(widget_node))
+                    placed = True
+                continue
+            if isinstance(node, dict) and isinstance(node.get("components"), list):
+                node = {**node, "components": _transform(node["components"])}
+            out.append(node)
+        return out
+
+    return _transform(nodes), placed

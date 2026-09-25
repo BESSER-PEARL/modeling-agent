@@ -15,8 +15,7 @@ from typing import Any, Dict, List, Optional
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
 from .gui_html_converter import (
     html_to_components,
-    find_widget_slots,
-    replace_widget_slot,
+    splice_widget,
 )
 from .gui_design_system import (
     stylesheet_rules,
@@ -2199,10 +2198,8 @@ def _build_bound_section(
     )
 
     if _clean_text(chrome):
-        slots = find_widget_slots(nodes)
-        if slots:
-            nodes = replace_widget_slot(nodes, slots[0], widget_node)
-        else:
+        nodes, placed = splice_widget(nodes, widget_node)
+        if not placed:
             # Chrome without a marker: keep the authored skin AND append the
             # widget in a card so its data still renders (nothing lost).
             nodes = list(nodes) + [
@@ -2256,7 +2253,7 @@ def _build_section_component(
     # -- (2) HTML section: LLM-authored themed markup -----------------------
     if _clean_text(html):
         try:
-            nodes = html_to_components(html)
+            nodes, _ = splice_widget(html_to_components(html))  # no widget to place
             section = _normalize_html_section(
                 nodes, title=_clean_text(section_spec.get("title"), fallback="Section")
             )

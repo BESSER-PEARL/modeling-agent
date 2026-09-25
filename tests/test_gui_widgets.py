@@ -119,3 +119,31 @@ def test_unmatched_class_name_renders_static_not_first_class():
 def test_plural_class_name_binds_to_that_class():
     model = _generate([{"name": "Work", "sections": [{"bind": {"kind": "table", "className": "projects"}}]}])
     assert _table(_nodes(model, "Work"), "cls-project")
+
+
+# -- widget markers -----------------------------------------------------------
+
+def _slot_nodes(model):
+    return [
+        n for p in model["pages"] for n in _nodes(model, p["name"])
+        if n.get("type") == "widget-slot"
+    ]
+
+
+def test_surplus_widget_markers_leave_no_unloadable_node():
+    # The editor has no 'widget-slot' component: a second marker used to stay
+    # in the section as a node it cannot load.
+    model = _generate([
+        {"name": "Tasks", "sections": [
+            {"bind": {"kind": "table", "className": "Task", "title": "Open tasks"},
+             "html": "<section class='ds-section'><h2>Open tasks</h2>"
+                     "<div class='ds-card'><!--WIDGET:table--></div>"
+                     "<div class='ds-card'><!--WIDGET:chart--></div>"
+                     "<div class='ds-card'><!--WIDGET:table--></div></section>"},
+            {"html": "<section class='ds-section'><h2>Notes</h2><!--WIDGET:table--></section>"},
+        ]},
+    ])
+    assert _slot_nodes(model) == []
+    # One bind, one widget: a repeated marker does not duplicate the table.
+    tables = [n for n in _nodes(model, "Tasks") if n.get("type") == "table"]
+    assert len(tables) == 1
