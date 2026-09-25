@@ -78,6 +78,24 @@ class GUIBindSpec(BaseModel):
         default=None,
         description="Reference class name from the ClassDiagram for data binding.",
     )
+    title: Optional[str] = Field(
+        default=None,
+        description=(
+            "Specific title shown on the widget itself, e.g. 'Active loans' or "
+            "'Revenue by month'. Never a generic label like 'Data Table'."
+        ),
+    )
+    labelField: Optional[str] = Field(
+        default=None,
+        description="Chart only: attribute of className used for the category / x-axis labels.",
+    )
+    valueField: Optional[str] = Field(
+        default=None,
+        description=(
+            "Chart / metric_card: NUMERIC attribute of className plotted on the "
+            "y-axis or shown as the metric value."
+        ),
+    )
     columns: List[str] = Field(
         default_factory=list,
         description="Column / field names for table and form widgets.",

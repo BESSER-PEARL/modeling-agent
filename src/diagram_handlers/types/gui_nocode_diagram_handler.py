@@ -663,6 +663,27 @@ def _names_match(a: Any, b: Any) -> bool:
     return bool(_name_forms(a) & _name_forms(b))
 
 
+def _find_attribute(cls: Optional[Dict[str, Any]], name: Any) -> Optional[Dict[str, Any]]:
+    """The attribute of *cls* named *name* (fuzzy), or ``None``."""
+    if not cls or not _clean_text(name):
+        return None
+    for attr in cls.get("attributes", []):
+        if _names_match(attr.get("name"), name):
+            return attr
+    return None
+
+
+def _value_attribute(cls: Optional[Dict[str, Any]], name: Any) -> Optional[Dict[str, Any]]:
+    """The NUMERIC attribute of *cls* named *name*, or ``None``."""
+    attr = _find_attribute(cls, name)
+    return attr if attr and attr.get("isNumeric") else None
+
+
+def _is_id_like(attr: Dict[str, Any]) -> bool:
+    name = str(attr.get("name", "")).lower()
+    return name == "id" or name.endswith("_id")
+
+
 def _pick_label_field(cls: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Pick the best string attribute for chart label-field.
 
@@ -682,11 +703,14 @@ def _pick_label_field(cls: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def _pick_data_field(cls: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Pick the best numeric attribute for chart data-field."""
+    """Pick the best numeric attribute for chart data-field (an id last)."""
     attrs = cls.get("attributes", [])
-    for a in attrs:
-        if a.get("isNumeric"):
+    numeric = [a for a in attrs if a.get("isNumeric")]
+    for a in numeric:
+        if not _is_id_like(a):
             return a
+    if numeric:
+        return numeric[0]
     return attrs[0] if attrs else None
 
 
@@ -856,8 +880,9 @@ def _build_series(
     section_spec: Dict[str, Any],
 ) -> str:
     """Build the JSON-serialized series array for a chart component."""
-    label_attr = _pick_label_field(cls)
-    data_attr = _pick_data_field(cls)
+    label_attr = _find_attribute(cls, section_spec.get("labelField")) or _pick_label_field(cls)
+    value_attr = _value_attribute(cls, section_spec.get("valueField"))
+    data_attr = value_attr or _pick_data_field(cls)
 
     # Try to use LLM-provided contextual sample data, else generic fallback
     llm_data = _extract_sample_data(section_spec, chart_type, cls)
@@ -899,6 +924,9 @@ def _build_series(
         # so that e.g. the "Size" series shows size values and the "Price"
         # series shows price values (instead of all sharing one column).
         numeric_attrs = [a for a in cls.get("attributes", []) if a.get("isNumeric")]
+        numeric_attrs = [a for a in numeric_attrs if not _is_id_like(a)] or numeric_attrs
+        if value_attr:
+            numeric_attrs = [value_attr]
         if not numeric_attrs:
             numeric_attrs = cls.get("attributes", [])[:1]
 
@@ -960,8 +988,8 @@ def _chart_component(
     }
 
     if cls:
-        label_attr = _pick_label_field(cls)
-        data_attr = _pick_data_field(cls)
+        label_attr = _find_attribute(cls, section_spec.get("labelField")) or _pick_label_field(cls)
+        data_attr = _value_attribute(cls, section_spec.get("valueField")) or _pick_data_field(cls)
 
         # For pie-chart: data-source, label-field, data-field go directly on attrs
         if chart_type == "pie-chart":
@@ -1281,9 +1309,10 @@ def _metric_card_component(
 
     if cls:
         card_attrs["data-source"] = cls["id"]
-        # Pick the best numeric attribute for the metric
-        data_attr = _pick_data_field(cls)
-        if data_attr:
+        # The requested numeric field, else the first numeric non-id one. A
+        # non-numeric field would show the last row's text/id as the "metric".
+        data_attr = _value_attribute(cls, section_spec.get("valueField")) or _pick_data_field(cls)
+        if data_attr and data_attr.get("isNumeric"):
             card_attrs["data-field"] = data_attr["id"]
 
     return {
@@ -2052,6 +2081,52 @@ def _bind_default_title(bind: Dict[str, Any]) -> str:
     return _clean_text(bind.get("kind"), fallback="Data").replace("_", " ").title()
 
 
+def _first_heading_text(nodes: Any) -> str:
+    """Text of the first h1-h4 in a converted node tree, or ``""``."""
+    for node in nodes if isinstance(nodes, list) else []:
+        if not isinstance(node, dict):
+            continue
+        if node.get("tagName") in ("h1", "h2", "h3", "h4"):
+            text = _node_text(node)
+            if text:
+                return text
+        found = _first_heading_text(node.get("components"))
+        if found:
+            return found
+    return ""
+
+
+def _node_text(node: Any) -> str:
+    """All visible text under *node*, whitespace-collapsed."""
+    parts: List[str] = []
+
+    def _walk(n: Any) -> None:
+        if not isinstance(n, dict):
+            return
+        if isinstance(n.get("content"), str):
+            parts.append(n["content"])
+        for child in n.get("components") or []:
+            _walk(child)
+
+    _walk(node)
+    return re.sub(r"\s+", " ", " ".join(parts)).strip()
+
+
+def _widget_fallback_title(kind: str, cls: Optional[Dict[str, Any]], value_field: str) -> str:
+    """A specific widget title from the bound class when the LLM gave none."""
+    if not cls:
+        return ""
+    name = cls["name"]
+    if kind == "table":
+        return f"{name} List"
+    if kind == "metric_card":
+        attr = _value_attribute(cls, value_field) or _pick_data_field(cls)
+        if attr and attr.get("isNumeric"):
+            return f"{name} {attr['name'].replace('_', ' ')}".title()
+        return name
+    return f"{name} Overview"
+
+
 def _build_bind_widget(
     bind: Dict[str, Any],
     section_spec: Dict[str, Any],
@@ -2065,11 +2140,20 @@ def _build_bind_widget(
     type:'metric-card', ...) while the surrounding skin is LLM-authored.
     """
     kind = _clean_text(bind.get("kind")).lower()
-    title = _clean_text(section_spec.get("title"), fallback="")
     cta = _clean_text(section_spec.get("ctaLabel"), fallback="Submit")
     class_name = _clean_text(bind.get("className")) or _clean_text(section_spec.get("className"))
     columns = [c for c in (bind.get("columns") or []) if isinstance(c, str) and c.strip()]
     sample = bind.get("sampleData") or section_spec.get("sampleData") or []
+    value_field = _clean_text(bind.get("valueField"))
+    title = (
+        _clean_text(bind.get("title"))
+        or _clean_text(section_spec.get("title"))
+        or _clean_text(section_spec.get("_chromeHeading"))
+        or _widget_fallback_title(
+            kind, _resolve_class_binding({"className": class_name}, class_metadata)
+            if class_name else None, value_field,
+        )
+    )
 
     widget_spec: Dict[str, Any] = {
         "title": title,
@@ -2077,6 +2161,8 @@ def _build_bind_widget(
         "sampleData": sample,
         "fields": columns,
         "rows": bind.get("rows") or [],
+        "labelField": _clean_text(bind.get("labelField")),
+        "valueField": value_field,
     }
 
     if kind in _BIND_CHART_KINDS:
@@ -2099,12 +2185,20 @@ def _build_bound_section(
     class_metadata: Optional[List[Dict[str, Any]]],
 ) -> Dict[str, Any]:
     """Splice a typed widget into optional LLM chrome, or card-wrap it."""
-    widget_node = _build_bind_widget(bind, section_spec, class_metadata)
-    title = _clean_text(section_spec.get("title")) or _bind_default_title(bind)
-
     chrome = section_spec.get("html")
+    nodes = html_to_components(chrome) if _clean_text(chrome) else []
+    widget_node = _build_bind_widget(
+        bind, {**section_spec, "_chromeHeading": _first_heading_text(nodes)}, class_metadata
+    )
+    widget_attrs = widget_node.get("attributes") or {}
+    title = (
+        _clean_text(section_spec.get("title"))
+        or _clean_text(bind.get("title"))
+        or _clean_text(widget_attrs.get("chart-title") or widget_attrs.get("metric-title"))
+        or _bind_default_title(bind)
+    )
+
     if _clean_text(chrome):
-        nodes = html_to_components(chrome)
         slots = find_widget_slots(nodes)
         if slots:
             nodes = replace_widget_slot(nodes, slots[0], widget_node)
@@ -2575,6 +2669,8 @@ Each section is EXACTLY ONE of these two shapes:
   "bind": {{
     "kind": "table|bar_chart|pie_chart|line_chart|radar_chart|metric_card|form|dashboard",
     "className": "Entity name from the class diagram (when available)",
+    "title": "Specific widget title, e.g. 'Overdue loans'",
+    "labelField": "chart: category attribute", "valueField": "chart/metric: numeric attribute",
     "columns": ["Column", "headers"],
     "rows": [{{"cells": ["cell A1", "cell A2"]}}, {{"cells": ["cell B1", "cell B2"]}}],
     "series": ["series names"],
@@ -2585,6 +2681,7 @@ Each section is EXACTLY ONE of these two shapes:
    - Put a <!--WIDGET:kind--> comment inside the chrome where the widget belongs; the server splices the real, data-bound widget there.
    - The "html" chrome is OPTIONAL — omit it and the widget is card-wrapped automatically — but authoring chrome around it gives a far nicer result.
    - Whatever widget you place, populate it or it renders empty: a table needs "columns" + "rows" ("cells" aligned 1:1 to "columns"); a chart needs "sampleData" (name + numeric value; pie adds a "color" hex).
+   - Give every widget a specific "title" (never 'Data Table' / 'Bar Chart'). With a class diagram, set a chart's "labelField" (category attribute) and "valueField" (numeric attribute), and a metric_card's "valueField" (numeric attribute); a chart plots valueField per record, it does not aggregate.
    - Pick the widget that fits the content: a table suits tabular records (orders, bookings, transactions, inventory); a card grid (below) usually reads better for listings of people / products / profiles / features. Use your judgment.
 
 Utility classes, pre-styled for the {domain} theme (OPTIONAL helpers — reach for them for speed and widget chrome, not as your design ceiling):
