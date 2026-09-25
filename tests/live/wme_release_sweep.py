@@ -166,11 +166,11 @@ async def _run_webapp(sem, label, domain):
                         break
                     if not answered and ("generate the gui" in low
                                         or "create your screens" in low
-                                        or "fast & deterministic" in low):
+                                        or "basic crud pages" in low):
                         # Screens-first flow: the agent asks HOW to
                         # create the screens before the defer message appears.
-                        await _send(ws, sid, "fast & deterministic"
-                                    if "screens" in low or "deterministic" in low
+                        await _send(ws, sid, "Basic CRUD pages"
+                                    if "screens" in low or "crud" in low
                                     else "auto")
                         answered = True
                 flaws = []

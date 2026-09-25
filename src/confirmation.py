@@ -87,11 +87,9 @@ def keyword_matches(keyword: str, text: str) -> bool:
 # GUI generation-mode choice
 # ------------------------------------------------------------------
 
-_AUTO_KEYWORDS = ['auto', '1', 'deterministic', 'fast', 'standard', 'default', 'basic']
-# 'ai-generated' is the exact phrase the AI-Generated suggestion button now
-# sends (it replaced the opaque 'llm' token); 'llm' is kept for back-compat and
-# for anyone typing it. The classifier verdict (valid_answers auto/llm/cancel)
-# is the primary router — these keywords are the LLM-outage fallback.
+_AUTO_KEYWORDS = ['auto', '1', 'deterministic', 'fast', 'standard', 'default', 'basic', 'crud']
+# The classifier verdict (valid_answers auto/llm/cancel) is the primary router;
+# these keywords are the LLM-outage fallback. Older labels stay matched.
 _LLM_KEYWORDS = ['ai-generated', 'llm', '2', 'personali', 'ai', 'experimental', 'custom', 'design']
 
 

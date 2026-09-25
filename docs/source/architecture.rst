@@ -293,8 +293,8 @@ via ``_common_preamble()``, the generation ones via the generation state body.
    * - Complete-system confirmation (``src/confirmation.py``)
      - A model already exists — replace it, keep it, or use a new tab?
    * - GUI generation-mode choice (``src/confirmation.py``)
-     - "Fast & deterministic" (one screen per class, no LLM) or
-       "AI-Generated (experimental)"?
+     - "Basic CRUD pages" (one page per class, no LLM) or
+       "Experimental AI design"?
    * - Spec-Driven Agent confirmation (``src/handlers/generation_handler.py``)
      - Confirm before handing off to the LLM-authored Spec-Driven Agent
    * - Plan-generation pause (``src/handlers/generation_handler.py``)

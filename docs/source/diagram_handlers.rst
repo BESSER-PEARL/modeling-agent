@@ -499,9 +499,9 @@ GUINoCodeDiagram Generation Modes
 When a ClassDiagram exists in the project, the agent asks which mode to use
 and offers the choice as two quick actions:
 
-1. **Fast & deterministic:** one screen per class with data tables and method
-   buttons. No LLM call.
-2. **AI-Generated (experimental):** personalized screens with navigation,
+1. **Basic CRUD pages:** one page per class to list, create, edit and delete its
+   records. No LLM call.
+2. **Experimental AI design:** custom-designed screens with navigation,
    styling, and realistic content.
 
 If the user message already contains a customization hint (``chart``,

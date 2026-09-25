@@ -593,20 +593,17 @@ def execute_model_operation(
                 "action": "assistant_message",
                 "message": (
                     "How would you like me to create your screens?\n\n"
-                    "1️⃣ **Fast & deterministic** - One screen per class "
-                    "with data tables and method buttons.\n"
-                    "2️⃣ **AI-Generated** *(experimental)* — personalized screens "
-                    "with navigation, styling, and realistic content."
+                    "1️⃣ **Basic CRUD pages** — one page per class to list, "
+                    "create, edit and delete its records.\n"
+                    "2️⃣ **Experimental AI design** — custom-designed screens "
+                    "with navigation, styling and realistic content."
                 ),
-                # Neither option is pre-selected: the user actively picks one.
-                # The AI-Generated button sends the human-meaningful phrase
-                # "AI-Generated (experimental)" rather than the opaque "llm"
-                # token, which would show up as a cryptic user turn. The
-                # pending-GUI-choice handler still routes that phrase to the same
-                # AI-GUI generation path — see confirmation.handle_pending_gui_choice.
+                # Neither option is pre-selected. Each button sends its own label,
+                # which confirmation.handle_pending_gui_choice routes by keyword
+                # ("basic"/"crud" vs "experimental"/"ai"/"design").
                 "suggestedActions": [
-                    {"label": "Fast & deterministic", "prompt": "Fast & deterministic"},
-                    {"label": "AI-Generated (experimental)", "prompt": "AI-Generated (experimental)"},
+                    {"label": "Basic CRUD pages", "prompt": "Basic CRUD pages"},
+                    {"label": "Experimental AI design", "prompt": "Experimental AI design"},
                 ],
             })
             logger.info("[ModelOp] Asked user to choose GUI generation mode")

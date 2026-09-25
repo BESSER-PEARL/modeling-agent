@@ -10,6 +10,8 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import time  # noqa: E402
@@ -64,14 +66,14 @@ def test_gui_choice_ai_generated_suggestion_sends_human_phrase():
     actions = payload.get("suggestedActions") or []
     labels = {a["label"]: a["prompt"] for a in actions}
 
-    # The AI option is surfaced as "AI-Generated (experimental)" and its
+    # The AI option is surfaced as "Experimental AI design" and its
     # prompt is the SAME human-meaningful phrase — never the opaque "llm".
-    assert "AI-Generated (experimental)" in labels
-    assert labels["AI-Generated (experimental)"] == "AI-Generated (experimental)"
+    assert "Experimental AI design" in labels
+    assert labels["Experimental AI design"] == "Experimental AI design"
     assert all(a["prompt"] != "llm" for a in actions)
 
     # The deterministic option is preserved.
-    assert labels.get("Fast & deterministic") == "Fast & deterministic"
+    assert labels.get("Basic CRUD pages") == "Basic CRUD pages"
 
 
 def test_gui_choice_message_has_no_preselection():
@@ -108,7 +110,7 @@ def _route_gui_choice(answer: str):
 
 
 def test_ai_generated_phrase_reaches_ai_gui_generation():
-    handled, exec_mock, payloads = _route_gui_choice("AI-Generated (experimental)")
+    handled, exec_mock, payloads = _route_gui_choice("Experimental AI design")
     assert handled
     # LLM/AI-GUI path: execute_model_operation is invoked with the
     # skip-gui-choice flag (the same trigger "llm" used to fire).
@@ -126,8 +128,12 @@ def test_legacy_llm_token_still_routes_to_ai_gui():
     assert exec_mock.call_args.kwargs.get("_skip_gui_choice") is True
 
 
-def test_fast_deterministic_still_takes_auto_path():
-    handled, exec_mock, payloads = _route_gui_choice("Fast & deterministic")
+@pytest.mark.parametrize("answer", [
+    "Basic CRUD pages",
+    "Fast & deterministic",  # previous label, still typed by returning users
+])
+def test_basic_crud_takes_auto_path(answer):
+    handled, exec_mock, payloads = _route_gui_choice(answer)
     assert handled
     # Deterministic path emits auto_generate_gui and does NOT call the LLM path.
     assert any(p.get("action") == "auto_generate_gui" for p in payloads)
