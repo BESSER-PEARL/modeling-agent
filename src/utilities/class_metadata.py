@@ -151,6 +151,11 @@ def extract_class_metadata(model: Optional[Dict[str, Any]]) -> List[Dict[str, An
             "type": attr_type,
             "isNumeric": attr_type in _NUMERIC_TYPES,
             "isString": attr_type in _STRING_TYPES,
+            # Which attributes a create form must supply
+            "isId": bool(element.get("isId")),
+            "isOptional": bool(element.get("isOptional")),
+            "isDerived": bool(element.get("isDerived")),
+            "hasDefault": element.get("defaultValue") not in (None, ""),
         })
 
     # Third pass: attach ClassMethod elements to their owner class

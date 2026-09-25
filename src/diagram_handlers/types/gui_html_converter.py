@@ -359,7 +359,7 @@ def html_to_components(html: str) -> List[Dict[str, Any]]:
     builder = _ComponentTreeBuilder()
     builder.feed(html)
     builder.close()
-    return lift_actions_from_text(builder.result())
+    return lift_controls_from_labels(lift_actions_from_text(builder.result()))
 
 
 # Tags BESSER's GUI processor turns into one plain Text, dropping every child
@@ -430,6 +430,80 @@ def lift_actions_from_text(nodes: List[Any]) -> List[Any]:
                 style.setdefault("display", "inline")
         node["tagName"] = "div"
         node["components"] = runs
+        for key in ("type", "editable", "content"):
+            node.pop(key, None)
+    return nodes
+
+
+_FORM_CONTROL_TAGS = frozenset({"input", "select", "textarea"})
+
+
+def _holds_control(items: Any) -> bool:
+    return any(
+        isinstance(n, dict)
+        and (n.get("tagName") in _FORM_CONTROL_TAGS or _holds_control(n.get("components")))
+        for n in (items if isinstance(items, list) else [])
+    )
+
+
+def _text_of(node: Any) -> str:
+    if not isinstance(node, dict):
+        return ""
+    parts = [node["content"]] if isinstance(node.get("content"), str) else []
+    parts += [_text_of(c) for c in node.get("components") or []]
+    return re.sub(r"\s+", " ", " ".join(parts)).strip()
+
+
+def lift_controls_from_labels(nodes: List[Any]) -> List[Any]:
+    """Make inputs wrapped in a ``<label>`` survive web-app generation, in place.
+
+    BESSER's GUI processor turns a label into plain text and drops the input
+    inside it. ``<label class=x><span>Title</span><input></label>`` becomes
+    ``<div class=x><label for=..>Title</label><input></div>``: the label text
+    now names the input (``for`` its id or name) and the input is kept.
+    Returns *nodes*.
+    """
+    for node in nodes if isinstance(nodes, list) else []:
+        if not isinstance(node, dict):
+            continue
+        children = node.get("components")
+        lift_controls_from_labels(children)
+        if (
+            node.get("tagName") != "label"
+            or node.get("type") not in (None, "text")
+            or not _holds_control(children)
+        ):
+            continue
+        controls = [
+            c for c in children
+            if isinstance(c, dict) and (c.get("tagName") in _FORM_CONTROL_TAGS or _holds_control(c.get("components")))
+        ]
+        text = " ".join(
+            t for t in [node.get("content") if isinstance(node.get("content"), str) else ""]
+            + [_text_of(c) for c in children if c not in controls]
+            if t and t.strip()
+        ).strip()
+        runs: List[Any] = []
+        if text:
+            label: Dict[str, Any] = {"tagName": "label", "content": text}
+            # The text's own look (e.g. <span class='ds-label'>) stays on it
+            styled = next(
+                (c for c in children if isinstance(c, dict) and c not in controls and c.get("tagName")),
+                None,
+            )
+            if styled and isinstance(styled.get("attributes"), dict):
+                label["attributes"] = dict(styled["attributes"])
+            if isinstance(styled, dict) and styled.get("style"):
+                label["style"] = styled["style"]
+            first = controls[0]
+            ref = (first.get("attributes") or {}).get("id") or (first.get("attributes") or {}).get("name")
+            if ref and first.get("tagName") in _FORM_CONTROL_TAGS:
+                label.setdefault("attributes", {})["for"] = ref
+            runs.append(label)
+        attrs = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
+        attrs.pop("for", None)
+        node["tagName"] = "div"
+        node["components"] = runs + controls
         for key in ("type", "editable", "content"):
             node.pop(key, None)
     return nodes

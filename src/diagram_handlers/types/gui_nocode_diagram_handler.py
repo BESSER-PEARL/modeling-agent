@@ -16,6 +16,7 @@ from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
 from .gui_html_converter import (
     html_to_components,
     lift_actions_from_text,
+    lift_controls_from_labels,
     splice_widget,
 )
 from .gui_design_system import (
@@ -526,10 +527,78 @@ def _content_component(title: str, body: str) -> Dict[str, Any]:
     }
 
 
-def _form_component(title: str, fields: List[str], cta_label: str) -> Dict[str, Any]:
-    cleaned_fields = [field for field in (field.strip() for field in fields if isinstance(field, str)) if field]
-    if not cleaned_fields:
-        cleaned_fields = ["Name", "Email"]
+def _form_component(
+    title: str,
+    fields: List[str],
+    cta_label: str,
+    cls: Optional[Dict[str, Any]] = None,
+    classes: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """A styled form; with *cls*, a create form bound to that class.
+
+    A bound form carries ``data-source`` = the class id and one labelled
+    input per attribute, named after it: *fields* that name attributes, then
+    every other attribute a new record needs. BESSER generates it as a form
+    that POSTs the record.
+    """
+    input_style = {
+        "padding": "12px 14px",
+        "border": "1px solid #e2e8f0",
+        "border-radius": "10px",
+        "font-size": "0.95rem",
+        "background-color": "#f8fafc",
+        "outline": "none",
+    }
+    if cls:
+        attrs = _create_form_attributes(cls, fields, classes or [cls])
+        form_key = f"form-{_slug(cls['name'])}"
+        controls = [_labelled_input(attr, form_key, input_style) for attr in attrs]
+    else:
+        cleaned_fields = [field for field in (field.strip() for field in fields if isinstance(field, str)) if field]
+        if not cleaned_fields:
+            cleaned_fields = ["Name", "Email"]
+        controls = [
+            {
+                "tagName": "input",
+                "attributes": {
+                    "type": "text",
+                    "name": re.sub(r"[^a-z0-9_]+", "_", field.lower()),
+                    "placeholder": field,
+                },
+                "style": dict(input_style),
+            }
+            for field in cleaned_fields
+        ]
+
+    form: Dict[str, Any] = {
+        "tagName": "form",
+        "components": [
+            {
+                "tagName": "div",
+                "style": {"display": "grid", "gap": "14px"},
+                "components": controls,
+            },
+            {
+                "tagName": "button",
+                "content": cta_label,
+                # A bound form's button submits it; the action pass leaves it be
+                "attributes": {"type": "submit" if cls else "button"},
+                "style": {
+                    "margin-top": "16px",
+                    "padding": "12px 24px",
+                    "border": "none",
+                    "border-radius": "10px",
+                    "background-color": "#2563eb",
+                    "color": "#ffffff",
+                    "font-weight": "600",
+                    "font-size": "0.95rem",
+                    "cursor": "pointer",
+                },
+            },
+        ],
+    }
+    if cls:
+        form["attributes"] = {"data-source": cls["id"]}
 
     return {
         "tagName": "section",
@@ -553,49 +622,89 @@ def _form_component(title: str, fields: List[str], cta_label: str) -> Dict[str, 
                     "color": "#0f172a",
                 },
             },
+            form,
+        ],
+    }
+
+
+# Input type per attribute type; anything else is a text input.
+_INPUT_TYPES = {
+    "int": "number", "integer": "number", "float": "number", "double": "number",
+    "decimal": "number", "date": "date", "datetime": "datetime-local", "time": "time",
+    "bool": "checkbox", "boolean": "checkbox",
+}
+
+
+def _is_server_owned(attr: Dict[str, Any]) -> bool:
+    """BESSER's ``is_server_owned_attribute``: the surrogate ``id``, audit
+    timestamps and derived attributes are never sent on create."""
+    if attr.get("isId"):
+        return False
+    name = str(attr.get("name", ""))
+    return (
+        name == "id"
+        or name.lower().replace("_", "") in {"createdat", "updatedat"}
+        or bool(attr.get("isDerived"))
+    )
+
+
+def _is_required(attr: Dict[str, Any]) -> bool:
+    """Whether a new record must be given this attribute."""
+    return not (_is_server_owned(attr) or attr.get("isOptional") or attr.get("hasDefault"))
+
+
+def _all_attributes(cls: Dict[str, Any], classes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Own attributes of *cls*, then those it inherits."""
+    by_name = {c["name"]: c for c in classes}
+    out = list(cls.get("attributes", []))
+    seen, parents = {cls["name"]}, list(cls.get("inheritsFrom") or [])
+    while parents:
+        parent = by_name.get(parents.pop(0))
+        if parent and parent["name"] not in seen:
+            seen.add(parent["name"])
+            out.extend(parent.get("attributes", []))
+            parents.extend(parent.get("inheritsFrom") or [])
+    return out
+
+
+def _create_form_attributes(
+    cls: Dict[str, Any], fields: List[str], classes: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """The attributes a create form of *cls* asks for: those *fields* name,
+    then every other one a new record needs (all of them if *fields* name none
+    and none is required)."""
+    creatable = [a for a in _all_attributes(cls, classes) if not _is_server_owned(a)]
+    chosen: List[Dict[str, Any]] = []
+    for field in fields or []:
+        attr = next((a for a in creatable if _names_match(a["name"], field)), None)
+        if attr and attr not in chosen:
+            chosen.append(attr)
+    chosen += [a for a in creatable if _is_required(a) and a not in chosen]
+    return chosen or creatable
+
+
+def _labelled_input(attr: Dict[str, Any], form_key: str, input_style: Dict[str, str]) -> Dict[str, Any]:
+    """A ``<label>`` + ``<input name=attribute>`` pair for a create form."""
+    input_id = f"{form_key}-{_slug(attr['name'])}"
+    label = attr["name"].replace("_", " ").strip().capitalize()
+    input_type = _INPUT_TYPES.get(str(attr.get("type", "")).lower(), "text")
+    input_attrs = {"type": input_type, "name": attr["name"], "id": input_id}
+    if input_type != "checkbox":
+        input_attrs["placeholder"] = label
+    return {
+        "tagName": "div",
+        "style": {"display": "grid", "gap": "6px"},
+        "components": [
             {
-                "tagName": "form",
-                "components": [
-                    {
-                        "tagName": "div",
-                        "style": {"display": "grid", "gap": "14px"},
-                        "components": [
-                            {
-                                "tagName": "input",
-                                "attributes": {
-                                    "type": "text",
-                                    "name": re.sub(r"[^a-z0-9_]+", "_", field.lower()),
-                                    "placeholder": field,
-                                },
-                                "style": {
-                                    "padding": "12px 14px",
-                                    "border": "1px solid #e2e8f0",
-                                    "border-radius": "10px",
-                                    "font-size": "0.95rem",
-                                    "background-color": "#f8fafc",
-                                    "outline": "none",
-                                },
-                            }
-                            for field in cleaned_fields
-                        ],
-                    },
-                    {
-                        "tagName": "button",
-                        "content": cta_label,
-                        "attributes": {"type": "button"},
-                        "style": {
-                            "margin-top": "16px",
-                            "padding": "12px 24px",
-                            "border": "none",
-                            "border-radius": "10px",
-                            "background-color": "#2563eb",
-                            "color": "#ffffff",
-                            "font-weight": "600",
-                            "font-size": "0.95rem",
-                            "cursor": "pointer",
-                        },
-                    },
-                ],
+                "tagName": "label",
+                "attributes": {"for": input_id},
+                "content": label,
+                "style": {"font-size": "0.85rem", "font-weight": "600", "color": "#334155"},
+            },
+            {
+                "tagName": "input",
+                "attributes": input_attrs,
+                "style": dict(input_style) if input_type != "checkbox" else {},
             },
         ],
     }
@@ -1958,7 +2067,15 @@ def _legacy_section_component(section_spec: Dict[str, Any], class_metadata: Opti
     if section_type in {"feature_list", "features", "list"}:
         return _feature_list_component(title, [str(item) for item in items])
     if section_type in {"form", "contact_form", "signup_form"}:
-        return _form_component(title, [str(field) for field in fields], cta_label)
+        # Only a form naming its class creates records: a contact or search
+        # form in a one-class app must not post to that class.
+        form_cls = (
+            _resolve_class_binding(section_spec, class_metadata)
+            if _clean_text(section_spec.get("className")) else None
+        )
+        return _form_component(
+            title, [str(field) for field in fields], cta_label, form_cls, class_metadata,
+        )
     if section_type in {"footer"}:
         return _footer_component(title, body, [str(i) for i in items])
     if section_type in {"stats_grid", "stats-grid", "stats", "metrics_grid", "metrics"}:
@@ -2226,7 +2343,12 @@ def _build_bind_widget(
     if kind == "metric_card":
         return _metric_card_component(widget_spec, class_metadata)
     if kind == "form":
-        return _form_component(title or "Form", columns, cta)
+        form_cls = (
+            _resolve_class_binding({"className": class_name}, class_metadata) if class_name else None
+        )
+        if form_cls and not _clean_text(section_spec.get("ctaLabel")):
+            cta = f"Add {form_cls['name'].lower()}"
+        return _form_component(title or "Form", columns, cta, form_cls, class_metadata)
     if kind == "dashboard":
         return _dashboard_component(widget_spec, class_metadata)
     # Unknown kind — a data table is the safest generic widget.
@@ -2515,6 +2637,176 @@ def _make_navigate_button(node: Dict[str, Any], page: Dict[str, str]) -> None:
     node.setdefault("style", {})
 
 
+# Label verbs of a record button, and words that may stand in for the class
+# ("Delete selected" next to the page's only table).
+_CRUD_VERBS = {
+    "add": "create", "new": "create", "create": "create",
+    "edit": "update", "update": "update", "modify": "update",
+    "delete": "delete", "remove": "delete",
+}
+_CRUD_FILLER = {"new", "selected", "record", "item", "entry", "row", "this", "the", "a", "an"}
+# "Add to cart" / "Remove from list" link records; they do not create or delete one.
+_CRUD_RELATION_WORDS = {"to", "from", "into", "onto"}
+
+
+def _crud_intent(
+    label: str,
+    class_ref: Any,
+    classes: List[Dict[str, Any]],
+    page_classes: List[Dict[str, Any]],
+) -> Optional[tuple]:
+    """``(action, class)`` for an "Add book" / "Edit" / "Delete loan" label.
+
+    The class is the explicit ``data-class``, else the longest class name in
+    the label, else - for a bare "Edit" / "Delete selected" - the page's only
+    bound class.
+    """
+    words = _words(label)
+    action = next((_CRUD_VERBS[w] for w in words if w in _CRUD_VERBS), None)
+    if not action or _CRUD_RELATION_WORDS & set(words):
+        return None
+    cls = _resolve_class_binding({"className": class_ref}, classes) if _clean_text(class_ref) else None
+    if cls is None:
+        best = 0
+        for candidate in classes:
+            phrase = _words(candidate["name"])
+            if len(phrase) > best and _contains_phrase(words, phrase):
+                cls, best = candidate, len(phrase)
+    if cls is None and len(page_classes) == 1 and all(
+        w in _CRUD_VERBS or w in _CRUD_FILLER for w in words
+    ):
+        cls = page_classes[0]
+    return (action, cls) if cls else None
+
+
+def _make_crud_button(node: Dict[str, Any], action: str, cls: Dict[str, Any], table_id: str) -> None:
+    """Turn an authored button into a create/update/delete action-button, in place.
+
+    The editor's own encoding: ``data-entity-class`` = the class id and, when
+    the class's table is on this page, ``data-instance-source`` = its id. The
+    generated app runs the action through that table (its add dialog, or the
+    selected row); a create with no table here navigates to the table's page.
+    """
+    label = _node_text(node) or f"{action.title()} {cls['name']}"
+    attrs = node.setdefault("attributes", {})
+    attrs.update({
+        "type": "button",
+        "data-button-label": label,
+        "data-action-type": action,
+        "data-entity-class": cls["id"],
+    })
+    node.update({
+        "type": "action-button",
+        "button-label": label,
+        "action-type": action,
+        "entity-class": cls["id"],
+    })
+    if table_id:
+        attrs["data-instance-source"] = table_id
+        node["instance-source"] = table_id
+    if action == "delete":
+        # A string: the processor lowercases the flag
+        node["confirmation-required"] = "true"
+        node["confirmation-message"] = f"Delete the selected {cls['name'].lower()}?"
+    node.setdefault("style", {})
+
+
+# Form controls a create form posts (not its buttons or a search box).
+_FORM_CONTROL_TAGS = ("input", "select", "textarea")
+_NON_FIELD_INPUT_TYPES = {"submit", "button", "reset", "image", "hidden", "search"}
+
+
+def _form_controls(form: Dict[str, Any]) -> List[tuple]:
+    """``(control node, names it goes by)`` for each field of *form*, in order.
+
+    The names: its ``name``, ``id``, the text of its ``<label>`` (by ``for``,
+    else the label right before it) and its placeholder.
+    """
+    label_for: Dict[str, str] = {}
+    nodes: List[Dict[str, Any]] = []
+
+    def _walk(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        nodes.append(node)
+        attrs = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
+        if node.get("tagName") == "label" and attrs.get("for"):
+            label_for[str(attrs["for"])] = _node_text(node)
+        for child in node.get("components") or []:
+            _walk(child)
+
+    for child in form.get("components") or []:
+        _walk(child)
+
+    controls: List[tuple] = []
+    pending = ""
+    for node in nodes:
+        attrs = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
+        tag = node.get("tagName")
+        if tag == "label":
+            pending = "" if attrs.get("for") else _node_text(node)
+        elif tag in _FORM_CONTROL_TAGS:
+            if tag == "input" and str(attrs.get("type", "text")).lower() in _NON_FIELD_INPUT_TYPES:
+                continue
+            ref = str(attrs.get("id") or attrs.get("name") or "")
+            label = label_for.get(ref) or pending
+            names = [attrs.get("name"), attrs.get("id"), label, attrs.get("placeholder")]
+            controls.append((node, [n for n in names if _clean_text(n)]))
+            pending = ""
+    return controls
+
+
+def _control_attribute(names: List[str], attrs: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    for name in names:
+        attr = next((a for a in attrs if _names_match(a["name"], name)), None)
+        if attr:
+            return attr
+    return None
+
+
+def _bind_form(form: Dict[str, Any], classes: List[Dict[str, Any]]) -> None:
+    """Bind an authored ``<form>`` to the class it creates records of, in place.
+
+    The class is the form's ``data-class``, else the one class whose own (then
+    also inherited) attributes name every field. It is bound only when its
+    fields cover every attribute a new record needs, so a search, login or
+    lookup form stays a plain form. Binding sets ``data-source`` = the class
+    id and renames each field after its attribute.
+    """
+    attrs = form.get("attributes") if isinstance(form.get("attributes"), dict) else {}
+    if attrs.get("data-source"):
+        return  # already bound
+    class_ref = attrs.pop("data-class", None)
+    controls = _form_controls(form)
+    if not controls:
+        return
+    if _clean_text(class_ref):
+        cls = _resolve_class_binding({"className": class_ref}, classes)
+    else:
+        cls = None
+        for scope in (lambda c: c.get("attributes", []), lambda c: _all_attributes(c, classes)):
+            matches = [
+                c for c in classes
+                if all(_control_attribute(names, scope(c)) for _, names in controls)
+            ]
+            if matches:
+                cls = matches[0] if len(matches) == 1 else None
+                break
+    if cls is None:
+        return
+    class_attrs = _all_attributes(cls, classes)
+    fields = [(node, _control_attribute(names, class_attrs)) for node, names in controls]
+    covered = {attr["name"] for _, attr in fields if attr}
+    if any(_is_required(a) and a["name"] not in covered for a in class_attrs):
+        logger.info("[GUINoCode] form fields do not cover %s; left unbound", cls["name"])
+        return
+    attrs["data-source"] = cls["id"]
+    form["attributes"] = attrs
+    for node, attr in fields:
+        if attr:
+            node.setdefault("attributes", {})["name"] = attr["name"]
+
+
 def _wire_page_actions(
     components: List[Dict[str, Any]],
     current: Dict[str, str],
@@ -2526,18 +2818,18 @@ def _wire_page_actions(
     classes_by_id = {c["id"]: c for c in (class_metadata or [])}
     all_classes = list(classes_by_id.values())
 
-    entries: List[tuple] = []  # (node, parent list, inside a <form>)
+    entries: List[tuple] = []  # (node, parent list, the <form> it is in or None)
 
-    def _collect(items: List[Any], in_form: bool) -> None:
+    def _collect(items: List[Any], form: Optional[Dict[str, Any]]) -> None:
         for node in items:
             if not isinstance(node, dict):
                 continue
-            entries.append((node, items, in_form))
+            entries.append((node, items, form))
             children = node.get("components")
             if isinstance(children, list):
-                _collect(children, in_form or node.get("tagName") == "form")
+                _collect(children, node if node.get("tagName") == "form" else form)
 
-    _collect(components, False)
+    _collect(components, None)
 
     # 1. Give each bound table a stable id so method buttons can target it.
     first_table: Dict[str, tuple] = {}
@@ -2559,9 +2851,15 @@ def _wire_page_actions(
         first_table.setdefault(class_id, (table_id, node, parent))
     page_classes = [classes_by_id[cid] for cid in first_table]
 
-    # 2. Authored buttons and links.
+    # 2. Forms that create a record of a class post it.
+    for node, _, _ in entries:
+        if node.get("tagName") == "form" and all_classes:
+            _bind_form(node, all_classes)
+
+    # 3. Authored buttons and links.
     wired: set = set()
-    for node, _, in_form in entries:
+    for node, _, form in entries:
+        in_form = form is not None
         attrs = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
         if node.get("type") == "action-button":
             # The editor also keeps these as data-* attributes.
@@ -2576,6 +2874,10 @@ def _wire_page_actions(
             class_ref = attrs.pop("data-class", None)
             page_ref = attrs.pop("data-page", None) or attrs.pop("data-target", None)
             label = _node_text(node)
+            is_submit = str(attrs.get("type", "submit")).lower() == "submit"
+            form_bound = in_form and bool((form.get("attributes") or {}).get("data-source"))
+            if in_form and is_submit and not method_ref and (form_bound or not page_ref):
+                continue  # the form's own submit
             hit = target = None
             if method_ref:
                 scope = all_classes
@@ -2585,12 +2887,23 @@ def _wire_page_actions(
                 hit = _find_method(method_ref, scope) or _find_method(method_ref, page_classes)
                 if not hit:
                     logger.warning("[GUINoCode] button method %r not in the class diagram", method_ref)
+            crud = None
+            if not method_ref:
+                crud = _crud_intent(label, class_ref, all_classes, page_classes)
+                # Without an explicit page, a label naming a method runs it
+                if crud and not page_ref and _method_from_label(label, page_classes):
+                    crud = None
+            if crud:
+                action, cls = crud
+                table_id = first_table.get(cls["id"], ("",))[0]
+                # Update/delete act on the selected row of a table on this page;
+                # create opens the add dialog of the class's table, here or on its page.
+                if table_id or (action == "create" and cls["name"] in class_pages):
+                    _make_crud_button(node, action, cls, table_id)
+                    continue
             if not hit and page_ref:
                 target = _find_page(page_ref, page_index, class_pages)
             if not hit and not target:
-                explicit = method_ref or page_ref
-                if in_form and not explicit and str(attrs.get("type", "submit")).lower() == "submit":
-                    continue  # the form's own submit
                 hit = _method_from_label(label, page_classes)
                 if not hit:
                     target = _page_from_label(label, page_index, class_pages, current)
@@ -2628,7 +2941,7 @@ def _wire_page_actions(
                 attrs["href"] = current["route"]
             node["attributes"] = attrs
 
-    # 3. Basic CRUD parity: every method of a bound class gets a button.
+    # 4. Basic CRUD parity: every method of a bound class gets a button.
     for class_id, (table_id, node, parent) in first_table.items():
         cls = classes_by_id[class_id]
         missing = [m for m in cls.get("methods", []) if (class_id, m["id"]) not in wired]
@@ -2666,6 +2979,13 @@ def _interactions_block(has_classes: bool) -> str:
         "its class's table automatically, so only place one where it adds value."
         if has_classes else ""
     )
+    form_rule = (
+        "- A form that creates a record: <form data-class='ClassName'> with one input "
+        "per attribute a new record needs, each <input name='attribute_name'> carrying "
+        "the exact attribute name, with a <label>. Search, login and contact forms get "
+        "no data-class.\n"
+        if has_classes else ""
+    )
     return (
         "INTERACTIONS — every link and button must DO something in the generated app:\n"
         "- Page links: <a href='/route'> where route is the target page's name lowercased "
@@ -2673,8 +2993,11 @@ def _interactions_block(has_classes: bool) -> str:
         "href='#' and never an external URL.\n"
         "- Navigation buttons: <button data-page='Page Name'>."
         f"{method_rule}\n"
-        "- Create / edit / delete of records is built into every data table: an 'Add X' "
-        "button navigates (data-page) to the page holding X's table.\n"
+        "- Create / edit / delete buttons act through X's data table: 'Add X' / 'New X' "
+        "opens the table's add dialog (on this page, or the page holding X's table); "
+        "'Edit X' / 'Delete X' act on the row selected in X's table, so place them on a "
+        "page with that table. No data-page on these.\n"
+        f"{form_rule}"
         "- No action-less buttons (filters, sort toggles): use a styled span or badge."
     )
 
@@ -2727,6 +3050,7 @@ def _wire_model_actions(
         # and links in text tags, and both survive the editor round-trip.
         wrapper["components"], _ = splice_widget(wrapper["components"])
         lift_actions_from_text(wrapper["components"])
+        lift_controls_from_labels(wrapper["components"])
         _wire_page_actions(
             wrapper["components"], entry, page_index, class_pages, class_metadata
         )
