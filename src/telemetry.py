@@ -1,8 +1,8 @@
-"""Pilot-experiment telemetry — fire-and-forget event posting.
+"""Opt-in study telemetry — fire-and-forget event posting.
 
-During a pilot session (the frontend tab was opened via a facilitator's
-``?pilot=P3`` link) the frontend attaches a ``pilotParticipant`` label to the
-workspace context of every message. When that label is present, the agent
+When the frontend tags a session with a participant label, it attaches a
+``pilotParticipant`` value to the workspace context of every message. When
+that label is present, the agent
 posts one ``prompt`` event per handled user message to the BESSER backend's
 telemetry collector: what was asked and what the agent did with it.
 
@@ -59,7 +59,7 @@ def emit_prompt_event(
     """Fire-and-forget ``prompt`` telemetry event.
 
     Skipped silently unless BOTH a session id and a participant label are
-    present (i.e. outside pilot sessions this is a no-op). Never raises,
+    present (untagged sessions are a no-op). Never raises,
     never blocks the caller.
     """
     try:

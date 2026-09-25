@@ -12,12 +12,10 @@ SPEC_DRIVEN_NAME = "Spec-Driven Agent"
 
 
 def continue_generating_prompt(artifact: str = "web app") -> str:
-    """The single post-screens pause sentence (M5).
+    """The single post-screens pause sentence.
 
-    Two emit paths used to carry two hand-written variants ("your web
-    app" vs "your application"), which read as inconsistent polish and
-    broke text-matching test harnesses. Every pause now goes through
-    this one function.
+    Every pause goes through this one function so the wording stays
+    consistent across emit paths.
     """
     return (
         "You can now review or refine your model, or continue with "

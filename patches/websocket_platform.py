@@ -171,10 +171,8 @@ class WebSocketPlatform(Platform):
         # Per-session outbox: replies that can't be delivered right now (the
         # slot holds a stale/half-open socket, or the client is mid-reconnect)
         # are buffered here and flushed on the next slot reclaim (USER_MESSAGE
-        # / __heartbeat). This RECOVERS a fast reply produced during a reconnect
-        # gap instead of silently losing it -- the root cause of "generate did
-        # nothing": a ~4s smart-gen confirmation fired before any 15s heartbeat
-        # re-pointed the slot at the live socket. Bounded per session.
+        # / __heartbeat), so a fast reply produced during a reconnect gap is
+        # delivered late instead of lost. Bounded per session.
         self._outbox: dict[str, list[Payload]] = {}
         self._outbox_lock = threading.Lock()
         self._outbox_max = 50

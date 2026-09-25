@@ -16,7 +16,7 @@ def memory_session_key(session: Any, request: Optional[Any] = None) -> str:
     Prefers the v2 payload's ``sessionId`` (``AssistantRequest.session_id``)
     — it is stable across WebSocket reconnects, whereas the BAF session id
     changes on every reconnect without a stable user query param, which
-    would silently drop all conversation context (B-5). Falls back to the
+    would silently drop all conversation context. Falls back to the
     BAF session id when no parsed request / sessionId is available.
 
     Args:

@@ -100,8 +100,7 @@ def _build_auto_gui_message(request: Any, detected_gen: Optional[str] = None) ->
 
     The deterministic ("auto") path builds one page per class on the frontend.
     We resolve the class diagram here so the assistant can CONFIRM completion
-    and name the pages — previously the auto path only said "Generating GUI…"
-    and never reported that it was done (#3).
+    and name the pages rather than only saying "Generating GUI…".
 
     Falls back to a generic completion message if the class diagram can't be
     resolved (the frontend still generates the GUI; we just can't name pages).
@@ -272,7 +271,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
 
     # Restore the original request message for the operation. Use a copy:
     # ``request`` is the session-cached AssistantRequest, so mutating it in
-    # place would corrupt the cached object for any later read this turn (#63).
+    # place would corrupt the cached object for any later read this turn.
     working_request = replace(request, message=pending.get('operation_request', request.message))
 
     try:
@@ -342,22 +341,15 @@ def handle_pending_system_confirmation(session: Session) -> bool:
         session.set(PENDING_COMPLETE_SYSTEM, None)
         return False  # Let normal routing handle the new request
 
-    # PIVOT GUARD (live 4/4 destructive bug): "add a Member class" typed at
-    # the replace/keep prompt was labelled answer='keep' by the classifier
-    # ("they want to keep the model…") while its own INTENT verdict correctly
-    # said modify_model_intent — and honoring 'keep' RESUMED THE STASHED
-    # CREATE, burying the user's edit under a brand-new system. An edit
-    # instruction is a PIVOT, never an answer: the intent verdict wins over
-    # the answer label. Abandon the confirmation and let the modify route
-    # normally. Deterministic — phrasing cannot re-trigger the bug.
+    # PIVOT GUARD: an edit instruction typed at the replace/keep prompt
+    # ("add a Member class") can be labelled answer='keep' while the intent
+    # verdict says modify_model_intent; honoring 'keep' would resume the
+    # stashed create and bury the edit. The intent verdict wins: abandon the
+    # confirmation and let the modify route normally.
     #
-    # EXCEPT for bare flow-control tokens (live loop, 2026-09-02): the
-    # classifier labels the literal answers "replace"/"confirm" as
-    # modify_model_intent too, and the guard then abandoned the
-    # confirmation and EXECUTED the word "confirm" as a modify request —
-    # which re-planned a destructive change, re-blocked, and re-asked in
-    # an endless loop. A message that IS an answer token can never be a
-    # pivot, whatever intent the classifier stamped on it.
+    # EXCEPT for bare flow-control tokens: the classifier also labels the
+    # literal answers "replace"/"confirm" as modify_model_intent, and treating
+    # them as a pivot loops forever. An answer token is never a pivot.
     _bare_answer = _normalize_flow_token(user_msg) in _FLOW_ANSWER_TOKENS
     if (
         _flow_action == "answer"
@@ -500,7 +492,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
 
     # Rebuild a minimal request that carries the stored message. Use a copy:
     # ``request`` is the session-cached AssistantRequest, so mutating it in
-    # place would corrupt the cached object for any later read this turn (#63).
+    # place would corrupt the cached object for any later read this turn.
     working_request = replace(request, message=stored_message)
 
     # ── New tab path ──────────────────────────────────────────────────
@@ -598,8 +590,8 @@ def _resume_smart_gen_after_replace(session: Session) -> None:
 
     No-op when there are no stashed instructions (the common case — most
     replaces happen outside the mismatch flow). Must NOT auto-fire: the
-    smart generator spends the USER'S OWN API key, so the stash is
-    refreshed and the user gets an explicit run/cancel choice (B-2). The
+    Spec-Driven Agent spends the USER'S OWN API key, so the stash is
+    refreshed and the user gets an explicit run/cancel choice. The
     actual trigger is emitted by the confirm handler in
     ``handle_generation_request``.
     """

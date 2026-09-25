@@ -89,9 +89,8 @@ def json_intent_matches(session: Session, params: Dict[str, Any]) -> bool:
     # question in its context — whether this message ANSWERS it or is a NEW
     # REQUEST. Answers (and no-verdict, conservatively) stay in the current
     # state for the flow handler to consume; a new_request routes NORMALLY,
-    # so it can never land in the wrong state again. (The old unconditional
-    # suppression was the root cause of that whole bug class: modifies
-    # trapped in the create state, declines trapped in config flows, …)
+    # so it never lands in the wrong state (a modify trapped in the create
+    # state, a decline trapped in a config flow).
     if _pending_flow_context(session) is not None:
         _uc_flow = session.get(UNIFIED_CLASSIFICATION)
         if getattr(_uc_flow, "pending_flow_action", None) != "new_request":
@@ -109,10 +108,7 @@ def json_intent_matches(session: Session, params: Dict[str, Any]) -> bool:
 
     # Priority 2: BAF's description-based classifier. Fallback only —
     # runs when the unified classifier hook wasn't installed (tests,
-    # unusual state machines). The old keyword cross-validation layer
-    # (keyword and phrase heuristics) that
-    # used to rescue BAF from its own misclassifications has been
-    # deleted — if we're in this branch, we trust BAF's answer as-is.
+    # unusual state machines). BAF's answer is trusted as-is here.
     if hasattr(session.event, 'predicted_intent') and session.event.predicted_intent:
         matched_intent = session.event.predicted_intent.intent
         return matched_intent.name == target_intent_name
@@ -190,7 +186,7 @@ def replay_last_reply(session: Session, request: Any = None) -> bool:
 
 
 # ------------------------------------------------------------------
-# Pilot telemetry (research data collection)
+# Opt-in study telemetry
 # ------------------------------------------------------------------
 
 def _emit_prompt_telemetry(session: Session, action: str) -> None:
@@ -201,7 +197,7 @@ def _emit_prompt_telemetry(session: Session, action: str) -> None:
     through — instead of instrumenting individual handlers. Emits at most ONE
     ``prompt`` event per incoming user message (first reply wins, keyed on the
     event identity like the request-parse cache), and only when the request
-    carries a pilot participant label — regular sessions never produce
+    carries a participant label — untagged sessions never produce
     telemetry. Best-effort by contract: any failure is swallowed and logged
     at debug level so telemetry can never delay or break a reply.
     """
@@ -258,7 +254,7 @@ def reply_message(session: Session, message: str, *, telemetry_exempt: bool = Fa
     except Exception:
         pass
 
-    # Pilot telemetry: a plain message is an "assistant_message" reply.
+    # Telemetry: a plain message is an "assistant_message" reply.
     # ``telemetry_exempt`` marks the rare mid-turn notice (e.g. the long-
     # message truncation warning) that must not claim the turn's one event.
     if not telemetry_exempt:
@@ -288,7 +284,7 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
     # Buffer for reconnect recovery so a dropped terminal reply can be replayed.
     _buffer_terminal_reply(session, payload)
 
-    # Pilot telemetry: record the reply's action as what the agent did with
+    # Telemetry: record the reply's action as what the agent did with
     # the user's message (progress keep-alives are not the reply).
     action = payload.get('action')
     if isinstance(action, str) and action != 'progress':
@@ -327,7 +323,7 @@ def _record_assistant_response(session: Session, content: str) -> None:
     try:
         if content and len(content) > 5:  # skip trivial messages
             # Keyed on the stable payload sessionId so memory survives
-            # WebSocket reconnects (BAF session ids churn) — see B-5.
+            # WebSocket reconnects (BAF session ids churn).
             mem = get_memory(memory_session_key(session))
             mem.add_assistant(content[:500])  # cap to avoid bloating memory
     except Exception as exc:
@@ -371,7 +367,7 @@ def reply_stream_done(session: Session, stream_id: str, full_text: str = ""):
     }
     _send_to_session(session, payload)
 
-    # Pilot telemetry: a completed stream is a conversational reply — the
+    # Telemetry: a completed stream is a conversational reply — the
     # frontend renders it as an assistant message, so record it as one.
     _emit_prompt_telemetry(session, "assistant_message")
 

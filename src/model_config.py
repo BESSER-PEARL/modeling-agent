@@ -34,14 +34,10 @@ def _env(name: str, default: str) -> str:
 
 
 MODEL_CLASSIFIER = _env("CLASSIFIER", "gpt-4o-mini")
-# 2026-07: moved onto the newer gpt-5.6 family. gpt-5.6-terra ($2.50/$15) is a
-# generation newer than gpt-5.5 ($5/$30) at HALF the cost and is faster, and its
-# cached-input price ($0.25 vs $2.50) makes the stable system prompt ~10x cheaper
-# on input. reasoning_effort="low" + fixed-temperature handling apply
-# automatically (the "gpt-5" prefix already matches gpt-5.6). A/B terra vs
-# gpt-5.6-sol ($5/$30, max quality) on diagram quality and keep the winner.
-# Vision stays on gpt-5 until gpt-5.6 image support is confirmed. All
-# overridable via BESSER_AGENT_MODEL_* env vars.
+# gpt-5.6-terra: newer than gpt-5.5 at half the cost, faster, and ~10x cheaper
+# cached input for the stable system prompt. reasoning_effort="low" and the
+# fixed-temperature handling apply via the "gpt-5" prefix. Vision stays on
+# gpt-5. All overridable via BESSER_AGENT_MODEL_* env vars.
 MODEL_GENERATION_LARGE = _env("GENERATION_LARGE", "gpt-5.6-terra")
 # GUI complete-system generation gets its OWN knob: design quality tracks the
 # model's taste far more than diagram generation does, so it can run a

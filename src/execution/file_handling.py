@@ -36,7 +36,7 @@ def handle_file_attachments(session: Session, request: AssistantRequest) -> bool
 
     # Cap attachment count + per-file size BEFORE decoding — each attachment
     # triggers a sequential vision/LLM call, so an unbounded batch blocks the
-    # single-threaded agent for minutes and runs up cost (#31).
+    # single-threaded agent for minutes and runs up cost.
     MAX_ATTACHMENTS = 5
     MAX_FILE_B64_CHARS = 14_000_000  # ~10 MB once decoded
     attachments = list(request.attachments)

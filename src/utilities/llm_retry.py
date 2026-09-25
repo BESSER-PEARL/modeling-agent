@@ -3,13 +3,10 @@ LLM Retry
 ---------
 Retry-with-exponential-backoff for the *shared* server LLM's raw SDK call.
 
-Background: a 1544-question QA run at high concurrency showed ~26% of
-requests failing with a user-facing "AI service temporarily unavailable" /
-"couldn't process that modification" error. Almost all of those were
-transient upstream failures (OpenAI 429 rate-limits, timeouts, 5xx) under
-load, not logic bugs — the handlers were correctly surfacing the first
-exception the SDK raised. This module lets the SDK call retry a transient
-failure a bounded number of times before any handler ever sees it.
+Under load, transient upstream failures (429 rate-limits, timeouts, 5xx)
+otherwise surface to the user as "AI service temporarily unavailable". This
+module lets the SDK call retry a transient failure a bounded number of times
+before any handler ever sees it.
 
 Used exclusively by ``agent_setup.py``, which patches the shared OpenAI
 client's ``chat.completions.create`` / ``beta.chat.completions.parse``
@@ -28,10 +25,9 @@ Deliberately NOT retried here:
     ``insufficient_quota`` (a depleted account), ``invalid_api_key``,
     ``account_deactivated``, ``billing_hard_limit_reached``. These arrive
     as ``openai.RateLimitError`` (HTTP 429), so without an explicit code
-    check the "429 is transient" rule below would spin on a doomed request.
-    Under concurrency that pile-up of workers each parked on a backoff that
-    can never succeed is what took the whole box unresponsive; failing fast
-    turns it into an instant, correct "out of quota" error instead.
+    check the "429 is transient" rule below would spin on a doomed request
+    and, under concurrency, park every worker on a hopeless backoff. Failing
+    fast gives an instant, correct "out of quota" error instead.
   * BYOK's per-user client (``byok.BYOKClient``) — a different client
     object entirely, never patched by this module. A user's own key
     failing (or the shared key's retries being exhausted) must still

@@ -14,12 +14,11 @@ caller needs so we never re-prompt the LLM later:
     (``generator_type``) so the caller dispatches to django / pydantic /
     sql / etc. without any further keyword matching.
   * For ``route == "smart"``: a polished ``refined_instructions`` prompt
-    for the smart generator, plus a provider suggestion.
+    for the Spec-Driven Agent, plus a provider suggestion.
 
-The generation-only classifier prompt that used to live here (a second
-rulebook that drifted out of sync with the unified classifier) is
-retired — ``generation_handler._classification_to_legacy`` adapts the
-unified verdict into this shape instead. This module now only defines
+Routing is decided by the unified classifier;
+``generation_handler._classification_to_legacy`` adapts its verdict into
+this shape. This module only defines
 the :class:`GenerationClassification` dispatch schema and assembles the
 ``trigger_smart_generator`` payload.
 """
@@ -162,13 +161,9 @@ def build_trigger_smart_generator_payload(
 
     ``original_request`` is the user's verbatim app description. It is
     appended because ``refined_instructions`` is a 1-3 paragraph summary,
-    and the run's gap analyser diffs the request against the model: on the
-    2026-09-17 hotel run it recovered the check-in/check-out methods from
-    the phrase "stay management" but could not see the two status
-    vocabularies or the four business rules, whose sentences the summary
-    had dropped. It also attributed a JWT task to "personalized screens
-    and navigation" — assistant flow wording the summary had absorbed,
-    which the user never wrote.
+    and the run's gap analyser diffs the request against the model: the
+    summary drops details (status vocabularies, business rules) and can
+    absorb assistant wording the user never wrote.
     """
     if classification.route != "smart":
         raise ValueError(
@@ -182,8 +177,8 @@ def build_trigger_smart_generator_payload(
     validate_message_length(original, label="The original specification")
     if original and original not in instructions:
         # The summary is kept (it can carry a stack the user accepted with a
-        # plain "yes") but labelled: live, one said "PostgreSQL, login, roles"
-        # for a spec asking for SQLite and no login.
+        # plain "yes") but labelled as possibly inaccurate, since a summary can
+        # contradict the spec (e.g. name a database the user did not ask for).
         instructions = (
             "## Assistant's notes (may be inaccurate)\n\n"
             "Use these only for choices the user confirmed in the conversation "

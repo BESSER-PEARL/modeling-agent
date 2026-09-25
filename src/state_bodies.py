@@ -156,7 +156,7 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     # "review or continue with generating?" question is consumed here so it
     # fires (or cancels) the stashed generator no matter which state the
     # intent classifier routed the message to — the classifier stamps short
-    # answers like a bare "ok" as decline_intent (live bug).
+    # answers like a bare "ok" as decline_intent.
     if handle_pending_plan_generation_confirmation(session):
         return None
 
@@ -166,7 +166,7 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
         return None
 
     # Record user message in conversation memory. Keyed on the stable
-    # payload sessionId so memory survives WebSocket reconnects (B-5).
+    # payload sessionId so memory survives WebSocket reconnects.
     if request.message:
         try:
             session_id = memory_session_key(session, request)
@@ -391,10 +391,9 @@ def greetings_body(session: Session):
         session.set(HAS_GREETED, True)
         return
 
-    # First contact: full greeting. Afterwards: ALWAYS reply — this body used
-    # to gate the "welcome back" on BAF's event.predicted_intent, which JSON
-    # events routed by the unified classifier never carry, so a message could
-    # end here with NO reply at all (silent no-response bug).
+    # First contact: full greeting. Afterwards: ALWAYS reply — don't gate on
+    # BAF's event.predicted_intent, which JSON events routed by the unified
+    # classifier never carry, so the message would get no reply at all.
     if not session.get(HAS_GREETED):
         reply_message(session, greeting_message)
         session.set(HAS_GREETED, True)

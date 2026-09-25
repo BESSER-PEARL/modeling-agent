@@ -154,12 +154,9 @@ _TARGET_DIAGRAM_TYPES = Literal[
     "GUINoCodeDiagram",
     "QuantumCircuitDiagram",
     "BPMN",
-    # Step 4 of the add-a-diagram-type checklist was never done for User
-    # Profile: the handler and the rest of the scaffolding existed, but the
-    # classifier could not name this type, so a request only reached the
-    # handler when KEYWORD_TARGETS happened to catch "user profile" /
-    # "persona" / "target user" at layer 2. Phrasing that avoided that exact
-    # vocabulary fell through to the fallback (2026-09-14).
+    # User Profile must be nameable here too: otherwise a request only reaches
+    # its handler when KEYWORD_TARGETS catch "user profile" / "persona" /
+    # "target user" at layer 2, and other phrasing falls through to the fallback.
     "UserDiagram",
 ]
 
@@ -879,7 +876,7 @@ def classify_message(
         # Reasoning models (gpt-5* / o-series) burn hidden reasoning tokens
         # from the SAME completion budget. With only 800 tokens the visible
         # structured output is starved → parsed=None → _safe_fallback on
-        # EVERY message (#44). Give reasoning models headroom; keep the tight
+        # EVERY message. Give reasoning models headroom; keep the tight
         # budget for fast non-reasoning models like gpt-4o-mini.
         from model_config import supports_custom_temperature
 
@@ -1023,10 +1020,10 @@ def get_or_classify(
 
     # Frontend callbacks (``generator_result`` etc.) are protocol events,
     # not user prose — their routing is determined by the ``action``
-    # field, so classifying their text is pure waste AND wrong: in
-    # production a generation-completion echo was LLM-classified as
-    # ``hello_intent`` and routed to greetings, so the generation
-    # handler's frontend_event branch never ran.
+    # field, so classifying their text is pure waste AND wrong: a
+    # generation-completion echo can be LLM-classified as ``hello_intent``
+    # and routed to greetings, so the generation handler's
+    # frontend_event branch would never run.
     if getattr(request, "action", None) == "frontend_event":
         result = UnifiedClassification(
             intent="generation_intent",
@@ -1038,8 +1035,8 @@ def get_or_classify(
         # Project-scoped: the SMART-GEN FOLLOW-UP rule is about the app in the
         # project the user is looking at. LAST_SMART_GEN_AT alone survives a
         # project switch (the BAF session is keyed on the per-browser user_id),
-        # so using it raw told the classifier "you just generated an app" in a
-        # brand-new project. Deferred import — generation_handler owns both
+        # so using it raw would tell the classifier "you just generated an app" in
+        # a brand-new project. Deferred import — generation_handler owns both
         # ends of that signal and imports this module at load time.
         from handlers.generation_handler import recent_smart_gen_for_project
 
@@ -1060,8 +1057,7 @@ def _log_classification(
     request: AssistantRequest, result: UnifiedClassification
 ) -> None:
     """One concise INFO line per real classification — the agent's routing
-    decision. The only previously-invisible step in the pipeline; makes
-    "why did it route there?" answerable from the logs. Never raises."""
+    decision. Makes "why did it route there?" answerable from the logs. Never raises."""
     try:
         msg = (request.message or "").strip().replace("\n", " ")
         if len(msg) > 80:
@@ -1377,13 +1373,12 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
                 pending_flow_action="new_request",
                 reason="GitHub-continuation guard: continue-from-repo routes to the generation handler",
             )
-    # Data-model-first guard (live bug): a from-scratch build request classifies
-    # as create_complete_system with target=GUINoCodeDiagram (the LLM inherits
-    # the active tab / reads "app" as "screens"), so it jumps straight to
-    # AI-generating screens on an EMPTY data model — no specs, no class diagram,
-    # and without even asking the deterministic-vs-AI choice (that choice is
-    # gated on an existing class diagram downstream). Pilot users hit this on
-    # every "I want a todo app" and were (rightly) baffled: "where are my specs".
+    # Data-model-first guard: a from-scratch build request can classify as
+    # create_complete_system with target=GUINoCodeDiagram (the LLM inherits
+    # the active tab / reads "app" as "screens"), which would jump straight to
+    # AI-generating screens on an EMPTY data model — no class diagram, and
+    # without asking the deterministic-vs-AI choice (that choice is gated on
+    # an existing class diagram downstream).
     #
     # An APPLICATION request ("todo app", "webapp", "dashboard", "a system to
     # track X") is data-first: build the ClassDiagram (the specs) first; the user
@@ -1415,7 +1410,7 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
             reason="Data-model-first: a from-scratch app/system request builds the ClassDiagram; screens come as an explicit next step",
         )
     if result.intent == "generation_intent":
-        # GUI-diagram guard (live bug): "generate the GUI (model) / the
+        # GUI-diagram guard: "generate the GUI (model) / the
         # screens / the UI" means building the GUI DIAGRAM, but the LLM
         # sometimes reads it as web-app code generation — which then stashes
         # a smart-gen confirmation that re-creates itself on every retry
@@ -1441,8 +1436,8 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
                 pending_flow_action="new_request",
                 reason="GUI-diagram guard: 'generate the gui/screens' is modeling, not code generation",
             )
-        # Same guard, EDIT form (live bug: "add a Reports page" with an
-        # existing GUI stashed a spec-driven web-app confirmation). Adding/
+        # Same guard, EDIT form ("add a Reports page" with an existing GUI
+        # must not stash a spec-driven web-app confirmation). Adding/
         # removing/renaming a page or screen edits the GUI DIAGRAM — it is
         # never a code-generation request.
         if (
@@ -1519,7 +1514,7 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
                 result.generation_route = "deterministic"
                 result.generator_type = "smartdata"
             elif not (result.refined_instructions or "").strip():
-                # Keep the smart/vibe route — do NOT collapse to the
+                # Keep the smart route — do NOT collapse to the
                 # deterministic generator menu, which silently kills requests
                 # like "dashboard pls" or "vibe-code me something cool from my
                 # model". Fall back to the raw user message as the generator

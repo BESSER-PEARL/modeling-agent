@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 DIAGRAM_PREFIX_PATTERN = re.compile(r"^\[DIAGRAM_TYPE:(\w+)\]\s*(.+)$", re.DOTALL)
 
-# Pilot-experiment participant labels (P1…Pn style). Mirrors the telemetry
+# Opt-in study participant labels (short tokens). Mirrors the telemetry
 # collector's contract; anything else is dropped at the protocol boundary.
 PILOT_PARTICIPANT_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,16}$")
 

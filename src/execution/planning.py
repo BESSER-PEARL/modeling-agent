@@ -115,8 +115,8 @@ def execute_planned_operations(
 ) -> None:
     """Run the orchestrator planner and dispatch each resulting operation."""
     # Consume the unified classifier's diagram-type verdict (it read the full
-    # message + workspace) as the PRIMARY diagram target — previously this was
-    # produced but discarded, and the type was re-derived from keyword lists.
+    # message + workspace) as the PRIMARY diagram target; keyword lists are
+    # only the fallback.
     _llm_target = None
     try:
         from session_keys import UNIFIED_CLASSIFICATION
@@ -138,7 +138,7 @@ def execute_planned_operations(
 
     model_groups, gen_ops = _can_run_parallel(operations)
 
-    # ── BULLETPROOF PAUSE ────────────────────────────────────────────
+    # ── WEB-APP PAUSE ────────────────────────────────────────────────
     # A "create a web app" plan builds the model + GUI and would then auto-run
     # web_app code generation. STRIP that generation op from the plan at the
     # source, so there is nothing to auto-run on ANY execution path (this is the

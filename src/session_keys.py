@@ -7,7 +7,7 @@ Centralizes magic string keys to prevent typos and enable IDE navigation.
 PENDING_COMPLETE_SYSTEM = "pending_complete_system"
 PENDING_GUI_CHOICE = "pending_gui_choice"
 
-# Web-app pause (bulletproof): set when a "create a web app" plan builds a GUI.
+# Web-app pause: set when a "create a web app" plan builds a GUI.
 # The plan's auto-generation op is STRIPPED at the source so nothing can auto-run
 # on any execution path; this flag then drives the "generate the web app?" prompt
 # once the GUI is built. The user triggers generation explicitly afterwards
@@ -37,7 +37,7 @@ LAST_MATCHED_INTENT = "last_matched_intent"
 # Greeting state
 HAS_GREETED = "has_greeted"
 
-# Smart-gen confirmation gate: every path that would run the
+# Spec-Driven Agent confirmation gate: every path that would run the
 # Spec-Driven Agent (which spends the USER'S OWN API key) stashes
 # the smart-gen payload here and asks for explicit confirmation first.
 # Also used by the domain-mismatch handoff: on "Update model + generate"
@@ -47,7 +47,7 @@ PENDING_SMART_GEN_INSTRUCTIONS = "_pending_smart_gen_instructions"
 PENDING_SMART_GEN_PROVIDER = "_pending_smart_gen_provider"
 # Unix timestamp set whenever the stash is (re)created. Stashes older
 # than the TTL are rejected so an abandoned flow can never hijack a
-# later, unrelated request (B-2 stale-stash fix).
+# later, unrelated request.
 PENDING_SMART_GEN_TIMESTAMP = "_pending_smart_gen_timestamp"
 # Unix timestamp of the most recent COMPLETED smart/Spec-Driven generation.
 # The unified classifier reads this (freshness-gated) to apply its SMART-GEN
@@ -59,13 +59,12 @@ LAST_SMART_GEN_AT = "_last_smart_gen_at"
 # SURVIVES a project switch (the frontend only rotates the payload sessionId,
 # which scopes conversation memory — see AssistantClient.resetSession), so the
 # timestamp alone says "some app was generated recently", NOT "an app exists
-# for the project you are looking at". Observed failure: a brand-new project
-# + "I want a todo app" got the fix/modify confirmation copy ("I'll update
-# your existing app") because a run in a PREVIOUS project was still within
-# the 30-min window. Every consumer of LAST_SMART_GEN_AT must pair it with
-# this id (see generation_handler.recent_smart_gen_for_project).
+# for the project you are looking at" (a new project would otherwise get the
+# fix/modify copy for a run from a previous one). Every consumer of
+# LAST_SMART_GEN_AT must pair it with this id (see
+# generation_handler.recent_smart_gen_for_project).
 LAST_SMART_GEN_PROJECT_ID = "_last_smart_gen_project_id"
-# Project id observed when a smart-gen run was ARMED (the stash was created).
+# Project id observed when a Spec-Driven Agent run was ARMED (stash created).
 # Promoted to LAST_SMART_GEN_PROJECT_ID when the run reports success. Arm time
 # is the only place the project is knowable: the completion callback arrives as
 # a ``frontend_event``, which carries no workspace context at all (see
@@ -76,7 +75,7 @@ SMART_GEN_ARMED_PROJECT_ID = "_smart_gen_armed_project_id"
 # Human-readable one-paragraph summary of the last completed smart run
 # (outcome + file summary). Lets a follow-up QUESTION about the finished
 # run ("what we generated?") be ANSWERED instead of re-arming a brand-new
-# generation confirmation (live bug 2026-09-01).
+# generation confirmation.
 LAST_SMART_GEN_SUMMARY = "_last_smart_gen_summary"
 # When set to True, the next smart-route classification skips the
 # domain-mismatch guard. Used by the "Generate anyway" path so the same
@@ -98,7 +97,7 @@ VOICE_CONTEXT = "_voice_context"
 PARSED_ASSISTANT_REQUEST = "_parsed_assistant_request"
 PARSED_REQUEST_EVENT_ID = "_parsed_request_event_id"
 
-# Pilot telemetry: id of the incoming event a "prompt" telemetry event was
+# Telemetry: id of the incoming event a "prompt" telemetry event was
 # already emitted for, so one user message never produces two events even
 # when several replies flow out (see session_helpers._emit_prompt_telemetry).
 TELEMETRY_EMITTED_EVENT_ID = "_telemetry_emitted_event_id"
@@ -114,10 +113,10 @@ UNIFIED_CLASSIFICATION = "_unified_classification"
 UNIFIED_CLASSIFICATION_EVENT_ID = "_unified_classification_event_id"
 
 # The user's verbatim app description, captured when the class diagram was
-# built from it. The smart-gen payload carries only ``refined_instructions``
-# — an LLM summary of 1-3 paragraphs — so the gap analyser downstream never
-# saw the sentences stating status vocabularies, named actions or business
-# rules, and could not diff them against the model.
+# built from it. The Spec-Driven Agent payload otherwise carries only
+# ``refined_instructions`` (a 1-3 paragraph LLM summary), which drops the
+# status vocabularies, named actions and business rules the gap analyser
+# needs to diff against the model.
 ORIGINAL_APP_REQUEST = "_original_app_request"
 ORIGINAL_APP_REQUEST_PROJECT_ID = "_original_app_request_project_id"
 PENDING_SMART_GEN_ORIGINAL_REQUEST = "_pending_smart_gen_original_request"

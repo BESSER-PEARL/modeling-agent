@@ -744,8 +744,7 @@ def _convert_image(
 
     # A refusal (or a content-filter stop) is NOT the same as an empty reply:
     # the model actively declined, and retrying the identical request won't help.
-    # Say so honestly — the old path flattened this into "returned no content",
-    # which misled a pilot user whose perfectly benign mockup was refused.
+    # Say so honestly instead of reporting "returned no content".
     if not raw_text and (last_refusal or last_finish_reason == "content_filter"):
         logger.warning(
             "[FileConversion] Vision declined the image (model=%s, finish=%s) for %s",

@@ -47,12 +47,9 @@ def original_request_to_stash(request, operation_mode, target_diagram_type):
     """The user's verbatim app description, or None.
 
     Returns the USER'S OWN message, never the planner's ``operation.request``:
-    the planner rewrites a long spec into a short sub-request, and on the
-    2026-09-17 qwen run that rewrite was all the stash captured --
-    "create a hotel booking and stay management system with persons
-    (employees and guests), rooms, bookings, billing, and the..." -- so the
-    sentences naming the status values, the five booking actions and the
-    four business rules never reached the run's gap analyser.
+    the planner rewrites a long spec into a short sub-request, which drops
+    the sentences naming status values, actions and business rules before
+    they reach the run's gap analyser.
     """
     if operation_mode != "complete_system" or target_diagram_type != "ClassDiagram":
         return None
@@ -278,10 +275,9 @@ def _build_existing_model_confirmation(
 # ------------------------------------------------------------------
 # Destructive modify-model guard
 #
-# A 1544-question QA run found that the vague correction "that's wrong,
-# redo it" on an 11-class CRM class diagram produced a modify_model plan
-# with 49 remove_element operations that wiped the ENTIRE model -- applied
-# silently, with no confirmation. Every diagram handler's generate_modification
+# A vague correction ("that's wrong, redo it") can produce a modify_model
+# plan of remove_element operations that wipes the ENTIRE model. Every
+# diagram handler's generate_modification
 # (see diagram_handlers/core/base_handler.py::_execute_modification) returns
 # either a single "modification" dict or a batch "modifications" list of
 # {action, target, changes} entries; when that batch's *net effect* is to
@@ -538,11 +534,10 @@ def execute_model_operation(
     ):
         # Mismatch "Update model + generate" rebuild: the user ALREADY chose
         # to replace their model at the mismatch question. Re-asking replace/
-        # keep here derailed the resume for users whose model arrived via
-        # workspace context only (a fresh session on a loaded project) — the
-        # in-session case never hit this ask because the flow_answer path had
-        # consumed it. One consistent rule: the stashed rebuild prompt
-        # proceeds directly, replace semantics, no second question.
+        # keep here would derail the resume when the model arrived via
+        # workspace context only (a fresh session on a loaded project). One
+        # consistent rule: the stashed rebuild prompt proceeds directly,
+        # replace semantics, no second question.
         if _matches_regen_prompt(session, request):
             logger.info(
                 "[ModelOp] Mismatch rebuild prompt — skipping the replace/"
@@ -575,9 +570,8 @@ def execute_model_operation(
                 return None
 
     # ── GUI generation-mode choice ───────────────────────────────────────
-    # Always asked. A keyword shortcut ("dashboard", "chart", ...) used to skip
-    # it, but it read the planner's own rewritten step request, so screens the
-    # planner invented ("Login screen, Dashboard") skipped the user's choice.
+    # Always asked. A keyword shortcut would read the planner's rewritten step
+    # request, so screens the planner invented would skip the user's choice.
     _resolved_class_diagram = None
     if target_diagram_type == "GUINoCodeDiagram" and operation_mode in ("complete_system", None, ""):
         _resolved_class_diagram = resolve_class_diagram(request)
@@ -606,8 +600,8 @@ def execute_model_operation(
                 ),
                 # Neither option is pre-selected: the user actively picks one.
                 # The AI-Generated button sends the human-meaningful phrase
-                # "AI-Generated (experimental)" (NOT the opaque "llm" token that
-                # used to show up as a cryptic user turn in the chat). The
+                # "AI-Generated (experimental)" rather than the opaque "llm"
+                # token, which would show up as a cryptic user turn. The
                 # pending-GUI-choice handler still routes that phrase to the same
                 # AI-GUI generation path — see confirmation.handle_pending_gui_choice.
                 "suggestedActions": [
@@ -639,13 +633,12 @@ def execute_model_operation(
 
     # Inject conversation context for multi-turn awareness: the rolling
     # SUMMARY of older turns (so the agent remembers beyond the recent
-    # window — the summary was previously computed but never fed to the
-    # LLM) PLUS the last CONVERSATION_HISTORY_DEPTH messages verbatim.
+    # window) PLUS the last CONVERSATION_HISTORY_DEPTH messages verbatim.
     conversation_context = ""
     if not _skip_existing_check:
         try:
             from memory import get_memory, memory_session_key
-            # Stable payload sessionId so memory survives reconnects (B-5).
+            # Stable payload sessionId so memory survives reconnects.
             session_id = memory_session_key(session, request)
             mem = get_memory(session_id)
             summary = (mem.get_summary() or "").strip()
@@ -660,9 +653,8 @@ def execute_model_operation(
                 history_lines = []
                 for msg in recent[:-1]:
                     role = msg.get("role", "user")
-                    # A user turn is often the spec itself; 200 chars cut a
-                    # 4,622-char hotel description off inside its first
-                    # sentence, so the history could not stand in for it either.
+                    # A user turn is often the spec itself; 200 chars would
+                    # cut a long description off inside its first sentence.
                     limit = 2000 if role == "user" else 300
                     content = msg.get("content", "")[:limit]
                     history_lines.append(f"  {role}: {content}")
@@ -680,12 +672,9 @@ def execute_model_operation(
         except Exception as exc:
             logger.debug(f"Conversation memory retrieval failed (best-effort): {exc}")
 
-    # The planner rewrites a long spec into a one-line sub-request, and the
-    # conversation fallback clips every message to 200 chars, so a 4,622-char
-    # spec reached the class-diagram generator as "create a hotel booking and
-    # stay management system with persons, rooms, bookings, billing, and the...".
-    # That is why the model carried one merged status enum instead of the two
-    # the user described, two of five named actions, and no constraints.
+    # The planner rewrites a long spec into a one-line sub-request and the
+    # conversation history is clipped, so without this block the generator
+    # loses the described enums, named actions and constraints.
     spec_block = ""
     if spec_to_stash and spec_to_stash not in operation_request:
         spec_block = (
@@ -728,8 +717,7 @@ def execute_model_operation(
         if operation_mode == "complete_system":
             if target_diagram_type == "GUINoCodeDiagram":
                 # An AI-designed GUI legitimately takes ~2 minutes (reasoning
-                # pass + a large structured pass). The old generic steps ended
-                # at 35s, leaving the longest stretch silent — pace the story
+                # pass + a large structured pass): pace the progress steps
                 # across the REAL duration and set the expectation up front.
                 steps = [
                     (3, "Designing your screens — this takes about two minutes…"),
@@ -780,8 +768,8 @@ def execute_model_operation(
                     # No class diagram to instantiate from AND the object
                     # diagram is empty — this modify would create the first,
                     # unlinked object. Apply the same guard the complete_system
-                    # path uses instead of silently producing a dangling object
-                    # (#54). Edits to an EXISTING object diagram still proceed.
+                    # path uses instead of silently producing a dangling object.
+                    # Edits to an EXISTING object diagram still proceed.
                     logger.warning(
                         "[ModelOp] ObjectDiagram modify with no reference classes "
                         "and no existing objects — blocking unlinked object creation."
@@ -915,7 +903,7 @@ def execute_model_operation(
 
     # When a modify_model op was silently promoted to a full complete_system
     # build (no existing diagram to edit), tell the user the scope changed so
-    # they aren't surprised by a whole new diagram instead of a small edit (#60).
+    # they aren't surprised by a whole new diagram instead of a small edit.
     if _promoted_modify_to_complete and isinstance(result.get("message"), str):
         result["message"] = (
             f"There wasn't an existing {diagram_label} to modify, so I created a "

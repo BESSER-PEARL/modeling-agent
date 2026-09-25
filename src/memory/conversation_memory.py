@@ -192,8 +192,8 @@ class ConversationMemory:
             logger.warning(f"[Memory:{self.session_id}] Summarization failed: {exc}")
             # Summarization failed. Don't pass the raw transcript off as a real
             # summary — it would later be fed to the LLM under a "summary"
-            # heading and bury the rolling summary under truncated message text
-            # (#68). Store it explicitly LABELED as a partial transcript so the
+            # heading and bury the rolling summary under truncated message text.
+            # Store it explicitly LABELED as a partial transcript so the
             # downstream prompt frames it honestly.
             snippet = text_to_summarize[:_DEFAULT_MAX_SUMMARY_LEN].strip()
             new_summary = (

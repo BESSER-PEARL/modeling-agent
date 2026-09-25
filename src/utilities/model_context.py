@@ -298,7 +298,7 @@ def _summarize_state_machine(model: Dict[str, Any], *, max_items: int = 20) -> L
 
     # Explicit state COUNT header first — so factual queries ("how many
     # states?") are answered from a stated number instead of the LLM
-    # counting listed lines (which previously included the StateInitialNode
+    # counting listed lines (which would include the StateInitialNode
     # pseudostate as an extra "state").
     state_items = list(state_data.items())
     names_preview = ", ".join(sd["name"] for _, sd in state_items[:max_items])

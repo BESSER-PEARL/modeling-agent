@@ -2,7 +2,7 @@
 
 Models writing a regex into a JSON string often forget to double its
 backslashes (``\\.`` instead of ``\\\\.``), which JSON rejects as an invalid
-escape. The whole answer was then discarded over one character. Here a failed
+escape, which would discard the whole answer over one character. A failed
 parse is retried once with those backslashes doubled, i.e. taken literally, as
 the model meant them. Text that already parses is never modified.
 

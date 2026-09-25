@@ -103,13 +103,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
 
         gpt-5* / o-series models reject an explicit non-default temperature
         with a 400 ("Only the default (1) value is supported") — send
-        reasoning_effort instead. base_handler already guards its two call
-        sites this way; this one did not, so every file-conversion text
-        request failed once the configured model moved to a gpt-5 tier:
-
-            Failed to process the text file. The AI model encountered an error.
-
-        which is what a user saw after pasting a requirements document.
+        reasoning_effort instead, as base_handler does.
         """
         params: Dict[str, Any] = {
             'max_completion_tokens': LLM_MAX_TOKENS_LARGE,
@@ -251,9 +245,8 @@ def init_rag(agent: Agent):
 def init_stt(agent: Agent) -> OpenAISpeech2Text:
     """Initialize and return OpenAI speech-to-text for voice messages.
 
-    Language is auto-detected by default (the previous hard-pin to English
-    mis-transcribed non-English voice — e.g. the LIST/Luxembourg deployment,
-    #65). Set ``BESSER_AGENT_STT_LANGUAGE`` (e.g. ``en``, ``fr``, ``de``) to
+    Language is auto-detected by default (a hard-pin to English
+    mis-transcribes non-English voice). Set ``BESSER_AGENT_STT_LANGUAGE`` (e.g. ``en``, ``fr``, ``de``) to
     pin a specific language.
     """
     language = os.getenv("BESSER_AGENT_STT_LANGUAGE", "").strip() or None

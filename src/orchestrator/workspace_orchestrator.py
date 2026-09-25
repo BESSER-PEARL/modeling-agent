@@ -204,10 +204,10 @@ def _fallback_diagram_from_context(request: AssistantRequest, last_intent: Optio
     # structural ClassDiagram rather than inheriting whatever tab happens to be
     # active. "create a model about a library" is a structural request; if the
     # user were sitting on the GUINoCodeDiagram tab left over from an earlier
-    # web-app flow, inheriting it silently routed the request into GUI
-    # generation and reused the *old* class diagram instead of building the new
-    # model (the "why didn't it create a new model?" bug). Genuine GUI / BPMN /
-    # state-machine / … creations carry their own vocabulary and are resolved by
+    # web-app flow, inheriting it would silently route the request into GUI
+    # generation and reuse the *old* class diagram instead of building the new
+    # model. Genuine GUI / BPMN / state-machine / … creations carry their own
+    # vocabulary and are resolved by
     # the keyword/pattern layer *before* ever reaching this fallback, and each
     # operation in a multi-diagram web-app plan carries its own explicit
     # ``diagramType`` — so this only affects the otherwise-ambiguous generic
@@ -268,9 +268,8 @@ def determine_target_diagram_types(
     3. Active diagram fallback
 
     The keyword pipeline (1–3) is the fallback for when the LLM left
-    ``target_diagram_type`` null. This consumes the classifier verdict that
-    was previously produced but discarded — fixing wrong-diagram routing for
-    natural phrasing (e.g. "add a virtual assistant" → AgentDiagram, "I need
+    ``target_diagram_type`` null. Consuming the classifier verdict fixes
+    wrong-diagram routing for natural phrasing (e.g. "add a virtual assistant" → AgentDiagram, "I need
     screens" → GUINoCodeDiagram) that the keyword lists miss.
     """
     message_lower = (request.message or "").lower()
