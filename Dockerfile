@@ -4,6 +4,19 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
+# Build behind a TLS-inspecting proxy: drop its root + signing certs into
+# ca-certs-extra/ (gitignored) and pass --build-arg TRUST_EXTRA_CAS=1.
+# Build-time only: the trust is removed again after the dependencies install.
+ARG TRUST_EXTRA_CAS=0
+COPY ca-certs-extra/ /tmp/ca-certs-extra/
+RUN if [ "$TRUST_EXTRA_CAS" = "1" ]; then \
+        cp /tmp/ca-certs-extra/*.crt /usr/local/share/ca-certificates/ \
+        && update-ca-certificates; \
+    fi; \
+    rm -rf /tmp/ca-certs-extra
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
@@ -27,6 +40,12 @@ COPY patches/websocket_platform.py \
 
 # Copy the modeling agent code
 COPY . .
+
+# A build-time CA must not become runtime trust. Unconditional; the grep is an
+# assertion that fails the build if a known TLS-inspection CA is still trusted.
+RUN rm -f /usr/local/share/ca-certificates/*.crt /app/ca-certs-extra/*.crt \
+    && update-ca-certificates --fresh >/dev/null 2>&1 \
+    && ! grep -qi goskope /etc/ssl/certs/ca-certificates.crt
 
 # Expose the websocket port
 EXPOSE 8765
