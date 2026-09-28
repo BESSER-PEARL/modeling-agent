@@ -145,6 +145,8 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
                     logger.debug(f"Token tracking failed (best-effort): {exc}")
             if not completion.choices:
                 return ""
+            from errors import raise_if_openai_refusal
+            raise_if_openai_refusal(completion.choices[0])
             return completion.choices[0].message.content or ""
         return gpt.predict(prompt, parameters=_json_params_for(MODEL_CLASSIFIER))
 

@@ -7,7 +7,7 @@ from typing import Dict, Any, List, Optional, Set
 import logging
 import re
 
-from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
+from ..core.base_handler import BaseDiagramHandler, LLMPredictionError, ModelRefusal
 from ..core.prompt_fragments import (
     EXACT_NAMES_RULE,
     MULTI_MOD_ARRAY_RULE,
@@ -1183,6 +1183,9 @@ IMPORTANT RULES:
                 "returning clarification (diagram left unchanged)."
             )
             return self._clarify_response(self._build_clarification_message(user_request))
+        except ModelRefusal as e:
+            logger.warning(f"[AgentDiagram] generate_modification declined: {e}")
+            return self._error_response(e.user_message(), code="model_refusal", retryable=False)
         except LLMPredictionError as e:
             logger.error(f"[AgentDiagram] generate_modification LLM FAILED: {e}")
             return self._clarify_response(

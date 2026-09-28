@@ -12,7 +12,7 @@ import logging
 from html import escape as _html_escape
 from typing import Any, Dict, List, Optional
 
-from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
+from ..core.base_handler import BaseDiagramHandler, LLMPredictionError, ModelRefusal
 from .gui_html_converter import (
     html_to_components,
     lift_actions_from_text,
@@ -3974,6 +3974,14 @@ Rules:
                 "diagramType": self.get_diagram_type(),
                 "model": model,
                 "message": combined,
+            }
+        except ModelRefusal as exc:
+            logger.warning("[GUINoCode] generate_modification declined: %s", exc)
+            return {
+                "action": "modify_model",
+                "diagramType": self.get_diagram_type(),
+                "model": model,
+                "message": exc.user_message(),
             }
         except LLMPredictionError:
             logger.error("[GUINoCode] generate_modification LLM FAILED", exc_info=True)

@@ -375,6 +375,8 @@ class BYOKClient:
         self._track_openai(getattr(completion, "usage", None), model)
         if not completion.choices:
             return ""
+        from errors import raise_if_openai_refusal
+        raise_if_openai_refusal(completion.choices[0])
         return completion.choices[0].message.content or ""
 
     def _anthropic_call(
@@ -403,12 +405,14 @@ class BYOKClient:
             # Sonnet 5 & co. reject sampling params; cap adaptive thinking instead.
             kwargs["extra_body"] = {"output_config": {"effort": anthropic_effort(model)}}
         message = self._client.messages.create(**kwargs)
+        self._track_anthropic(getattr(message, "usage", None), model)
+        from errors import raise_if_anthropic_refusal
+        raise_if_anthropic_refusal(message)
         text = "".join(
             getattr(block, "text", "")
             for block in getattr(message, "content", []) or []
             if getattr(block, "type", None) == "text"
         )
-        self._track_anthropic(getattr(message, "usage", None), model)
         if json_mode:
             text = _strip_code_fences(text)
         return text

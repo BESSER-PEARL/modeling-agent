@@ -444,10 +444,13 @@ def stream_llm_response(
     except Exception as e:
         logger.error(f"❌ [Streaming] Error: {e}")
         if not full_text:
-            from errors import classify_error, get_recovery_hint
-            error_code = classify_error(e)
-            hint = get_recovery_hint(error_code)
-            full_text = f"{hint['message']} Please {hint['recovery']}."
+            from errors import ModelRefusal, classify_error, get_recovery_hint
+            if isinstance(e, ModelRefusal):
+                full_text = e.user_message()
+            else:
+                error_code = classify_error(e)
+                hint = get_recovery_hint(error_code)
+                full_text = f"{hint['message']} Please {hint['recovery']}."
             reply_stream_chunk(session, full_text, stream_id)
 
     reply_stream_done(session, stream_id, full_text)
@@ -502,6 +505,8 @@ def _stream_openai(
     stream = client.chat.completions.create(**stream_kwargs)
 
     usage = None
+    refusal = ""
+    finish_reason = None
     try:
         for event in stream:
             # Final chunk with usage stats
@@ -511,7 +516,11 @@ def _stream_openai(
             if not event.choices:
                 continue
 
+            finish_reason = getattr(event.choices[0], 'finish_reason', None) or finish_reason
             delta = event.choices[0].delta
+            delta_refusal = getattr(delta, 'refusal', None)
+            if isinstance(delta_refusal, str):
+                refusal += delta_refusal
             content = getattr(delta, 'content', None)
             if content:
                 full_text += content
@@ -536,6 +545,10 @@ def _stream_openai(
     if usage:
         tracker = get_tracker()
         tracker.record_from_usage(usage, model=model)
+
+    if not full_text:
+        from errors import raise_if_openai_refusal
+        raise_if_openai_refusal({"message": {"refusal": refusal}, "finish_reason": finish_reason})
 
     return full_text
 

@@ -11,6 +11,7 @@ from typing import Dict, Any, List, Optional
 from ..core.base_handler import (
     BaseDiagramHandler,
     LLMPredictionError,
+    ModelRefusal,
     SINGLE_CLASS_REQUIRED,
     SINGLE_CLASS_OPTIONAL,
     SYSTEM_CLASS_REQUIRED,
@@ -480,6 +481,10 @@ Examples:
                 "message": message
             }
 
+        except ModelRefusal as exc:
+            # The incremental fallback would re-send the same request.
+            logger.warning(f"[ClassDiagram] generate_complete_system declined: {exc}")
+            return self._error_response(exc.user_message(), code="model_refusal", retryable=False)
         except LLMPredictionError as exc:
             logger.error(f"❌ [ClassDiagram] generate_complete_system LLM FAILED: {exc}")
             return self._incremental_system_fallback(user_request, existing_model, raw_request=raw_request)

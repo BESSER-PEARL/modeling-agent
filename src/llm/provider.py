@@ -28,6 +28,7 @@ from typing import Any, Dict, Iterator, List, Optional, Type
 from pydantic import BaseModel
 
 from model_config import MODEL_CLASSIFIER, reasoning_effort_for, supports_custom_temperature
+from errors import raise_if_openai_refusal
 from tracking import get_tracker
 from utilities.json_repair import validate_llm_json
 
@@ -144,10 +145,10 @@ class LLMProvider:
         if not completion.choices:
             raise ValueError("LLM returned no choices (possible content filter)")
 
+        raise_if_openai_refusal(completion.choices[0])
         parsed = completion.choices[0].message.parsed
         if parsed is None:
-            refusal = getattr(completion.choices[0].message, 'refusal', None)
-            raise ValueError(f"LLM refused or returned empty: {refusal}")
+            raise ValueError("LLM returned empty structured output")
 
         return parsed
 

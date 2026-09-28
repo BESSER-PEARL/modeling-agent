@@ -26,6 +26,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from errors import ModelRefusal
 from model_config import MODEL_VISION, reasoning_effort_for, supports_custom_temperature
 
 
@@ -726,6 +727,8 @@ def _convert_image(
             refusal = choice["message"].get("refusal")
             if isinstance(refusal, str) and refusal.strip():
                 last_refusal = refusal.strip()
+            if last_refusal or last_finish_reason == "content_filter":
+                break  # a declined image is declined again on retry
             logger.warning(
                 "[FileConversion] Vision returned null content "
                 "(attempt %d/3, model=%s, finish=%s, refusal=%s) for %s",
@@ -770,6 +773,9 @@ def _run_llm_conversion(
     """Run LLM conversion for text-based files."""
     try:
         raw_response = llm_predict(prompt)
+    except ModelRefusal as e:
+        logger.warning(f"[FileConversion] Model declined the {source_label} file: {e}")
+        return _error_response(e.user_message())
     except Exception as e:
         logger.error(f"[FileConversion] LLM prediction failed for {source_label}: {e}")
         return _error_response(

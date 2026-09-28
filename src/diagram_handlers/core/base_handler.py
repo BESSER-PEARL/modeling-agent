@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import random
+import sys
 import time
 import uuid
 from typing import Callable, Dict, Any, List, Optional, Tuple, Type
@@ -27,7 +28,10 @@ from model_config import (
     supports_custom_temperature,
 )
 from .layout_engine import apply_layout
-from errors import ErrorCode, classify_error, build_error_response, _RECOVERY_HINTS
+from errors import (
+    ErrorCode, LLMPredictionError, ModelRefusal, build_error_response, classify_error,
+    raise_if_openai_refusal, _RECOVERY_HINTS,
+)
 
 from utilities.json_repair import loads_tolerant, validate_llm_json
 
@@ -39,11 +43,6 @@ logger = logging.getLogger(__name__)
 # restore INFO-level content logging for a debugging session.
 _LOG_PROMPTS = os.getenv("LOG_PROMPTS", "").strip().lower() in {"1", "true", "yes"}
 _log_content = logger.info if _LOG_PROMPTS else logger.debug
-
-class LLMPredictionError(Exception):
-    """Raised when the LLM fails to produce a usable response after retries."""
-    pass
-
 
 # ---------------------------------------------------------------------------
 # Lightweight schema validation helpers
@@ -182,6 +181,12 @@ class BaseDiagramHandler(ABC):
                 first-arg code detection).
             retryable: Override for the retryable flag.
         """
+        # Handlers call this from their ``except LLMPredictionError`` blocks with
+        # a canned message; a refusal must instead say the model declined.
+        handling = sys.exc_info()[1]
+        if isinstance(handling, ModelRefusal):
+            message, code, retryable = handling.user_message(), ErrorCode.MODEL_REFUSAL.value, False
+
         # Detect whether first arg is a known error code or a legacy message
         first_arg = error_code_or_message
         is_known_code = first_arg in _ERROR_RECOVERY
@@ -531,6 +536,7 @@ class BaseDiagramHandler(ABC):
             completion = client.chat.completions.create(**raw_kwargs)
             if not completion.choices:
                 return ""
+            raise_if_openai_refusal(completion.choices[0])
             return completion.choices[0].message.content or ""
         return self.llm.predict(prompt)
 
@@ -834,12 +840,10 @@ class BaseDiagramHandler(ABC):
                     )
                     truncated = True
 
+                if completion.choices:
+                    raise_if_openai_refusal(completion.choices[0])
                 parsed = completion.choices[0].message.parsed
                 if parsed is None:
-                    # Refusal or empty
-                    refusal = getattr(completion.choices[0].message, 'refusal', None)
-                    if refusal:
-                        raise LLMPredictionError(f"LLM refused: {refusal}")
                     raise LLMPredictionError("LLM returned empty structured output")
 
                 # Response content is DEBUG-only (LOG_PROMPTS=1 restores INFO)
@@ -978,6 +982,8 @@ class BaseDiagramHandler(ABC):
             reasoning = self.predict_with_retry(
                 reasoning_prompt, max_retries=1, model=reasoning_model,
             )
+        except ModelRefusal:
+            raise  # the single-pass fallback would only be declined again
         except Exception as exc:
             logger.warning(
                 f"[{self.get_diagram_type()}] Reasoning pass failed ({exc}), "
@@ -1196,6 +1202,8 @@ class BaseDiagramHandler(ABC):
             reasoning = self.predict_with_retry(
                 reasoning_prompt, max_retries=1, model=reasoning_model,
             )
+        except ModelRefusal:
+            raise  # the single-pass fallback would only be declined again
         except Exception as exc:
             logger.warning(
                 f"[{self.get_diagram_type()}] Reasoning pass failed ({exc}), "

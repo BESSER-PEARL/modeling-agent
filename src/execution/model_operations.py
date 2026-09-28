@@ -861,6 +861,14 @@ def execute_model_operation(
                 "retryable": True,
                 "suggestedRecovery": "Add your own API key",
             })
+        elif _code == ErrorCode.MODEL_REFUSAL:
+            reply_payload(session, {
+                "action": "agent_error",
+                "errorCode": "model_refusal",
+                "message": exc.user_message(),
+                "retryable": False,
+                "suggestedRecovery": "Rephrase the request or switch models",
+            })
         elif _code == ErrorCode.AUTH_ERROR:
             reply_payload(session, {
                 "action": "agent_error",

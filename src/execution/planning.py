@@ -17,7 +17,7 @@ from orchestrator import plan_assistant_operations
 from handlers.generation_handler import handle_generation_request
 from utilities.request_builders import build_request_for_target, build_generation_request
 from suggestions import get_suggested_actions
-from errors import ErrorCode, classify_error, build_error_response
+from errors import ErrorCode, ModelRefusal, classify_error, build_error_response
 from session_keys import (
     PENDING_COMPLETE_SYSTEM,
     PENDING_GENERATOR_CONFIG,
@@ -46,6 +46,7 @@ def _build_error_payload(operation: dict, error: Exception, error_code: str = "u
     logger.error(f"Operation error: {error}")
     return build_error_response(
         code_enum,
+        error.user_message() if isinstance(error, ModelRefusal) else "",
         operation=operation,
     )
 
