@@ -181,15 +181,21 @@ code::
 Temperature vs. reasoning_effort
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The gpt-5 family and the o-series reject an explicit ``temperature`` other
-than the default — the API returns HTTP 400. Call sites must therefore
-omit the parameter for those models and pass ``reasoning_effort`` instead.
+The gpt-5 and gpt-6 families and the o-series reject an explicit
+``temperature`` other than the default — the API returns HTTP 400. Call
+sites must therefore omit the parameter for those models and pass
+``reasoning_effort`` instead. They also take only ``max_completion_tokens``
+(``max_tokens`` is a 400). Claude generation 5 and later (Opus 5.5,
+Opus 5, Sonnet 5, Fable 5 / 5.1), Opus 4.7 / 4.8 and Mythos reject
+``temperature`` / ``top_p`` / ``top_k`` as well; a user's Anthropic key sends
+them an ``output_config.effort`` instead.
 ``model_config`` exposes two helpers that every call site uses:
 
 .. code-block:: python
 
    supports_custom_temperature(model) -> bool
-       # False for models whose name starts with gpt-5, o1, o3 or o4
+       # False for gpt-5 and later (gpt-6, ...), o1 / o3 / o4, and the
+       # Claude models listed above
 
    reasoning_effort_for(model) -> str | None
        # None for models that accept a temperature (they reject the param);
@@ -214,9 +220,11 @@ The pattern appears in ``diagram_handlers/core/base_handler.py`` and
      - Description
    * - ``BESSER_AGENT_MODEL_REASONING_EFFORT``
      - ``low``
-     - ``reasoning_effort`` passed for gpt-5 / o-series calls. ``low``
+     - ``reasoning_effort`` passed for gpt-5 / gpt-6 / o-series calls. ``low``
        keeps hidden reasoning small — structured diagram specs do not need
-       deep chain-of-thought. ``minimal`` is rejected by some models.
+       deep chain-of-thought, and it is a level every such model
+       accepts (``minimal`` is rejected by gpt-5.5 and gpt-6, ``none`` by
+       gpt-6-astra).
 
 
 Environment Variables

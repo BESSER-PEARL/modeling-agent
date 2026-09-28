@@ -32,7 +32,8 @@ Core Runtime Modules
   - ``MODEL_CLASSIFIER``, ``MODEL_GENERATION_LARGE``, ``MODEL_GENERATION_GUI``,
     ``MODEL_GENERATION_SMALL``, ``MODEL_REASONING``, ``MODEL_VISION``,
     ``MODEL_EMBEDDINGS`` — all overridable via ``BESSER_AGENT_MODEL_*``
-  - ``supports_custom_temperature(model)`` — False for gpt-5 / o-series
+  - ``supports_custom_temperature(model)`` — False for gpt-5+ / o-series and
+    the Claude models that reject sampling params
   - ``reasoning_effort_for(model)`` — the ``reasoning_effort`` to pass, or
     ``None`` for models that take a temperature instead
 

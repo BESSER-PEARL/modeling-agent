@@ -371,7 +371,7 @@ rate is bad. `probe_smoke.py` is fast enough to use as a post-deploy gate.
    `model=` explicitly from `src/model_config.py`. Passing the wrong instance to a call that
    expects the other's response format will break silently or raise a JSON-parse error deep
    in `predict_structured`.
-8. **gpt-5 / o-series models reject `temperature`.** Use
+8. **gpt-5+ (incl. gpt-6) / o-series models and Claude 5+ / Opus 4.7+ reject `temperature`.** Use
    `model_config.supports_custom_temperature(model)` and `reasoning_effort_for(model)` at
    every call site instead of hardcoding either parameter. And whenever a `MODEL_*` default
    changes, add the matching entry to `_COST_PER_1K` in `tracking/token_tracker.py` —
