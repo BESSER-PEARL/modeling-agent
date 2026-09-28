@@ -23,6 +23,7 @@ OpenAI default change can never alter RAG behavior.
 """
 
 import os
+import re
 
 _ENV_PREFIX = "BESSER_AGENT_MODEL_"
 
@@ -53,29 +54,42 @@ MODEL_VISION = _env("VISION", "gpt-5")
 MODEL_EMBEDDINGS = _env("EMBEDDINGS", "text-embedding-3-small")
 
 
-# Model families that reject an explicit ``temperature`` other than the
-# default (the OpenAI API returns 400 for gpt-5* / o-series reasoning
-# models). Call sites must omit the parameter for these models instead
-# of passing their usual 0.0–0.4 values.
-_FIXED_TEMPERATURE_PREFIXES = ("gpt-5", "o1", "o3", "o4")
-# Claude models that 400 on any temperature/top_p/top_k. Substring match so
-# gateway ids such as "us.anthropic.claude-sonnet-5" count too.
-_NO_SAMPLING_CLAUDE = ("claude-sonnet-5", "claude-opus-4-7", "claude-opus-4-8",
-                       "claude-opus-5", "claude-fable", "claude-mythos")
+# OpenAI reasoning models reject an explicit ``temperature`` other than the
+# default (400): gpt-5 and every later generation (gpt-6 probed 2026-09-28),
+# plus the o-series. Call sites must omit the parameter for these models
+# instead of passing their usual 0.0–0.4 values.
+_OPENAI_REASONING = re.compile(r"^(?:gpt-(?:[5-9]|\d{2,})|o[134])")
+# Claude models that 400 on any temperature/top_p/top_k: generation 5 and
+# later, Opus 4.7+, and every Fable / Mythos. Searched, not anchored, so
+# gateway ids such as "us.anthropic.claude-sonnet-5" count too; a date
+# suffix is never read as a minor version.
+_CLAUDE_VERSION = re.compile(r"claude-([a-z]+)(?:-(\d+)(?:-(\d{1,2})(?!\d))?)?")
+
+
+def _claude_rejects_sampling(name: str) -> bool:
+    match = _CLAUDE_VERSION.search(name)
+    if not match:
+        return False
+    family, major, minor = match.group(1), int(match.group(2) or 0), int(match.group(3) or 0)
+    return (family in ("fable", "mythos") or major >= 5
+            or (family == "opus" and (major, minor) >= (4, 7)))
 
 
 def supports_custom_temperature(model: str) -> bool:
     """True when *model* accepts an explicit ``temperature`` parameter."""
-    name = (model or "").lower()
-    if any(m in name for m in _NO_SAMPLING_CLAUDE):
-        return False
-    return not any(name.startswith(p) for p in _FIXED_TEMPERATURE_PREFIXES)
+    return not (_claude_rejects_sampling((model or "").lower()) or is_openai_reasoning_model(model))
+
+
+def is_openai_reasoning_model(model: str) -> bool:
+    """True for gpt-5 / gpt-6+ / o-series ids (``reasoning_effort`` models)."""
+    return bool(_OPENAI_REASONING.match((model or "").strip().lower()))
 
 
 # reasoning_effort for gpt-5* / o-series calls. "low" cuts gpt-5.5's
 # hidden reasoning from ~512 to ~50 tokens on diagram generation (42s →
 # 26s) with no measurable quality loss — structured diagram specs don't
-# need deep chain-of-thought. NOTE: "minimal" is rejected by gpt-5.5.
+# need deep chain-of-thought. NOTE: "minimal" is rejected by gpt-5.5 and
+# gpt-6, "none" by gpt-6-astra; "low" works on every one of them.
 MODEL_REASONING_EFFORT = _env("REASONING_EFFORT", "low")
 
 

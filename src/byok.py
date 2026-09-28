@@ -55,7 +55,12 @@ from agent_config import (
     LLM_TEMPERATURE,
     LLM_TEXT_TEMPERATURE,
 )
-from model_config import anthropic_effort, reasoning_effort_for, supports_custom_temperature
+from model_config import (
+    anthropic_effort,
+    is_openai_reasoning_model,
+    reasoning_effort_for,
+    supports_custom_temperature,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,14 +110,14 @@ def _tier_of(requested_model: Optional[str]) -> str:
     """Bucket a requested OpenAI-canonical model name into a BYOK tier.
 
     ``None``/empty means the call site used the instance default, which is
-    the cheap CLASSIFIER tier -> ``"small"``. gpt-5* / o-series reasoning
+    the cheap CLASSIFIER tier -> ``"small"``. gpt-5+ / o-series reasoning
     models are heavy -> ``"large"``. Everything else (gpt-4o, gpt-4o-mini)
     -> ``"small"``.
     """
     m = (requested_model or "").strip().lower()
     if not m:
         return "small"
-    if m.startswith(("gpt-5", "o1", "o3", "o4")):
+    if is_openai_reasoning_model(m):
         return "large"
     return "small"
 
