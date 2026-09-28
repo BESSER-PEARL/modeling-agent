@@ -48,19 +48,32 @@ _COST_PER_1K: Dict[str, Dict[str, float]] = {
     "gpt-5.5": {"prompt": 0.005, "completion": 0.03},
     # gpt-5.6 family (current defaults: terra for gen+reasoning, luna for
     # edits) + the 5.4/5.6 options offered in the BYOK model picker. Prices
-    # per 1K = per-1M list price / 1000 (sol $5/$30, terra $2.50/$15,
-    # luna $1/$6, 5.4-mini $0.75/$4.50, 5.4-nano $0.20/$1.25).
-    "gpt-5.6-sol": {"prompt": 0.005, "completion": 0.03},
-    "gpt-5.6-terra": {"prompt": 0.0025, "completion": 0.015},
-    "gpt-5.6-luna": {"prompt": 0.001, "completion": 0.006},
+    # per 1K = per-1M list price / 1000 (sol $4/$20, terra $2/$12,
+    # luna $0.20/$1.20, 5.4-mini $0.75/$4.50, 5.4-nano $0.20/$1.25).
+    "gpt-5.6-sol": {"prompt": 0.004, "completion": 0.02},
+    "gpt-5.6-terra": {"prompt": 0.002, "completion": 0.012},
+    "gpt-5.6-luna": {"prompt": 0.0002, "completion": 0.0012},
     "gpt-5.4-mini": {"prompt": 0.00075, "completion": 0.0045},
     "gpt-5.4-nano": {"prompt": 0.0002, "completion": 0.00125},
+    # gpt-6 family (astra $10/$50, sol $2/$10, luna $0.10/$0.50).
+    "gpt-6-astra": {"prompt": 0.01, "completion": 0.05},
+    "gpt-6-sol": {"prompt": 0.002, "completion": 0.01},
+    "gpt-6-luna": {"prompt": 0.0001, "completion": 0.0005},
     # Production large/reasoning override (BESSER_AGENT_MODEL_*).
     "gpt-5-mini": {"prompt": 0.00025, "completion": 0.002},
     # BYOK tier models (byok._PROVIDER_TIER_MODELS). Rates from the price file
     # BESSER vendors (spec_driven_agent/providers/data/model_prices.json).
     "claude-sonnet-4-6": {"prompt": 0.003, "completion": 0.015},
     "claude-haiku-4-5": {"prompt": 0.001, "completion": 0.005},
+    # Other current Claude models a user key can pick (Anthropic list prices).
+    "claude-fable-5-1": {"prompt": 0.01, "completion": 0.05},
+    "claude-fable-5": {"prompt": 0.01, "completion": 0.05},
+    "claude-opus-5-5": {"prompt": 0.004, "completion": 0.02},
+    "claude-opus-5": {"prompt": 0.005, "completion": 0.025},
+    "claude-sonnet-5": {"prompt": 0.002, "completion": 0.01},
+    "claude-opus-4-8": {"prompt": 0.005, "completion": 0.025},
+    "claude-opus-4-7": {"prompt": 0.005, "completion": 0.025},
+    "claude-opus-4-6": {"prompt": 0.005, "completion": 0.025},
     "mistral-large-latest": {"prompt": 0.0005, "completion": 0.0015},
     "mistral-small-latest": {"prompt": 0.00015, "completion": 0.0006},
     "Qwen/Qwen3-30B-A3B-Instruct-2507": {"prompt": 0.0001, "completion": 0.0003},
