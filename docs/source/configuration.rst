@@ -386,6 +386,35 @@ agent logs a warning and continues **without** RAG — UML spec queries fall
 back to LLM-only responses.
 
 
+Research Study Mode
+-------------------
+
+**Location:** ``src/telemetry.py``, with the label parsed in
+``src/protocol/adapters.py``.
+
+Study mode is an opt-in usage recording for facilitated research sessions. It
+is off unless the editor tab was opened with a study link
+(``?study=<label>``; ``?pilot=<label>`` is still accepted for links already
+handed out). The editor then adds ``context.pilotParticipant`` to every
+message. Without that field the agent records nothing.
+
+For a tagged message, the agent posts one ``prompt`` event to
+``{BESSER_BACKEND_URL}/besser_api/telemetry/event`` containing:
+
+- the per-tab session id and the participant label (a short token such as
+  ``P3``, validated against ``^[A-Za-z0-9_-]{1,16}$``, never a name or email);
+- the message text, truncated to 2000 characters;
+- what the agent did with it (the reply action, e.g. ``assistant_message``)
+  and the active diagram type.
+
+The post runs on a short-timeout background thread and every failure is
+swallowed, so a reply is never delayed or broken by it. The agent keeps no
+copy. The BESSER backend stores the event only when its own switch
+(``BESSER_TELEMETRY_ENABLED``) is on; storage and retention are described in
+the BESSER backend documentation. A participant stops the recording by
+closing the tab.
+
+
 Security Notes
 --------------
 
