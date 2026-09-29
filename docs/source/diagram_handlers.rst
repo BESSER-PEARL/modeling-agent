@@ -572,16 +572,6 @@ association graph, knows which classes are singletons, computes each class's
 path to the ``User`` root, and assembles the required intermediate boxes and
 links so a generated profile is always structurally connected.
 
-.. note::
-
-   Step 6 of the checklist below is currently **unfinished for this type**:
-   ``UserDiagram`` is not in ``_TARGET_DIAGRAM_TYPES`` and its vocabulary is not
-   in ``_SYSTEM_PROMPT``, so the classifier can never return it as a
-   ``target_diagram_type``. Profile requests still work because
-   ``KEYWORD_TARGETS`` resolves "user profile" / "persona" / "target user" at
-   Level 1, but a request that avoids that vocabulary will not reach this
-   handler.
-
 QuantumCircuitDiagramHandler
 ----------------------------
 
