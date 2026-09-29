@@ -247,5 +247,5 @@ def test_the_users_chosen_model_is_used_for_every_call(requested):
 
 
 def test_without_a_chosen_model_the_provider_defaults_apply():
-    assert byok.resolve_model("anthropic", "gpt-5.5", None) == "claude-sonnet-4-6"
+    assert byok.resolve_model("anthropic", "gpt-5.5", None) == "claude-sonnet-5"
     assert byok.resolve_model("anthropic", None, None) == "claude-haiku-4-5"

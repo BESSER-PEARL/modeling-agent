@@ -98,7 +98,7 @@ class BYOKError(RuntimeError):
 # routing / repair / classifier-tier calls inexpensive on the user's key.
 _PROVIDER_TIER_MODELS = {
     "openai":    {"large": "gpt-5.5",              "small": "gpt-4o-mini"},
-    "anthropic": {"large": "claude-sonnet-4-6",    "small": "claude-haiku-4-5"},
+    "anthropic": {"large": "claude-sonnet-5",      "small": "claude-haiku-4-5"},
     "mistral":   {"large": "mistral-large-latest", "small": "mistral-small-latest"},
     # One small-activation MoE serves both tiers (BESSER's Nebius default).
     "nebius":    {"large": "Qwen/Qwen3-30B-A3B-Instruct-2507",
