@@ -96,8 +96,11 @@ Not every message from the frontend is a ``user_message``:
        generator finishing). Routed deterministically to the generation
        state — never classified.
    * - ``replay_last_response``
-     - Asks the agent to re-send its last completed terminal reply. Used
-       after a reconnect that dropped a long-running reply mid-flight.
+     - Asks the agent to re-send buffered terminal replies after a reconnect
+       that dropped a long-running reply mid-flight. With ``turnId`` (and
+       ``appliedSeqs``, the ``replySeq`` values the client already applied),
+       only that turn's unacknowledged replies are re-sent; without it, the
+       session's last terminal reply. See `Turn ids and replay`_.
 
 V2 Payload Structure
 ~~~~~~~~~~~~~~~~~~~~
@@ -157,6 +160,10 @@ Field Reference
    * - ``message``
      - Yes
      - The user's natural-language message (max 12,000 characters)
+   * - ``turnId``
+     - No
+     - Client-generated id of this turn (string, at most 128 characters).
+       Echoed on every reply frame of the turn; see `Turn ids and replay`_.
    * - ``context.activeDiagramType``
      - No
      - Currently active diagram tab type (e.g., ``"ClassDiagram"``)
@@ -272,7 +279,41 @@ completed while the socket was reconnecting can be replayed on request:
 ``inject_complete_system``, ``modify_model``, ``auto_generate_gui``,
 ``trigger_generator``, ``trigger_github_import`` and ``assistant_message``
 (``_TERMINAL_REPLY_ACTIONS`` / ``replay_last_reply`` in
-``src/session_helpers.py``).
+``src/session_helpers.py``). A turn-scoped replay (see below) also covers
+``inject_element``, ``trigger_smart_generator``, ``agent_error``,
+``trigger_export``, ``trigger_deploy``, ``create_diagram_tab`` and ``stream_done``
+(``_TURN_REPLY_ACTIONS``). These are kept out of the legacy replay because it
+has no dedupe, so a trigger could fire twice.
+
+Turn ids and replay
+~~~~~~~~~~~~~~~~~~~
+
+On reconnect the client's first heartbeat flushes the platform outbox, which may
+deliver the reply the dead socket missed, and the client asks for a replay in
+the same tick. A replay that is not tied to a turn can therefore deliver the
+same reply twice, or the previous turn's reply while the current one is still
+running. Turn ids prevent both:
+
+* The frontend puts a fresh ``turnId`` on every v2 ``user_message``.
+* Every frame the agent sends for that turn (terminal replies, ``progress``,
+  ``stream_*``) carries ``turnId`` and ``replySeq``, a per-turn counter starting
+  at 1.
+* ``replay_last_response`` carries the awaited ``turnId`` and ``appliedSeqs``.
+  The agent re-sends only that turn's buffered terminal replies whose
+  ``replySeq`` is not in ``appliedSeqs``, in order, with their original stamps.
+* The client applies each ``(turnId, replySeq)`` at most once. It drops frames
+  for a turn it did not send, and frames for a turn older than the newest turn
+  that has already replied. The agent answers a session's turns in order, so
+  such a frame can only be a replay.
+* A stamped stream keeps its turn awaited until ``stream_done``, whose
+  ``fullText`` is what a replay re-sends if the reconnect cut the stream.
+* Starting a new conversation (``resetSession``) forgets all earlier turns, so
+  a late reply to the old conversation is dropped.
+
+Both directions stay compatible. A request without ``turnId``, from an older
+frontend or a voice turn, gets unstamped frames and the legacy replay of the
+session's last terminal reply. Frames without ``turnId``, from an older agent,
+are applied exactly as before.
 
 inject_element
 ~~~~~~~~~~~~~~

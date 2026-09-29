@@ -293,7 +293,15 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         raw_payload=raw_payload,
         attachments=attachments,
         pilot_participant=pilot_participant,
+        turn_id=_parse_turn_id(raw_payload),
     )
+
+
+def _parse_turn_id(raw_payload: Dict[str, Any]) -> Optional[str]:
+    turn_id = raw_payload.get("turnId")
+    if isinstance(turn_id, str) and 0 < len(turn_id) <= 128:
+        return turn_id
+    return None
 
 
 def parse_assistant_request(session: Session, default_diagram_type: str = "ClassDiagram") -> AssistantRequest:

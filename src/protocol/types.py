@@ -108,6 +108,9 @@ class AssistantRequest:
     # ``context.pilot_participant`` for convenient access at the reply
     # choke point (see ``session_helpers._emit_prompt_telemetry``).
     pilot_participant: Optional[str] = None
+    # Client-generated id of the user turn; echoed on every reply frame of the
+    # turn and used to scope ``replay_last_response``. None for older clients.
+    turn_id: Optional[str] = None
 
     @property
     def is_v2(self) -> bool:

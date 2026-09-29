@@ -9,6 +9,7 @@ they only use the ``session`` object and the protocol adapters.
 
 import json
 import logging
+import threading
 import uuid
 from collections import OrderedDict
 from typing import Any, Dict, Optional
@@ -141,12 +142,52 @@ def json_no_intent_matched(session: Session) -> bool:
 # last TERMINAL reply per STABLE session key (which survives reconnects — see
 # ``memory_session_key``) and re-send it when the frontend asks, via a
 # ``replay_last_response`` control message it fires on reconnect-while-waiting.
+#
+# Turn-scoped replay: a client that sends a ``turnId`` gets every frame of that
+# turn stamped with it plus a per-turn ``replySeq``, and its replay request names
+# the awaited turn and the seqs it already applied. Only that turn's
+# unacknowledged terminal replies are re-sent — never the previous turn's reply,
+# never one the reconnect's outbox flush already delivered.
 _TERMINAL_REPLY_ACTIONS = frozenset({
     "inject_complete_system", "modify_model", "auto_generate_gui",
     "trigger_generator", "trigger_github_import", "assistant_message",
 })
+# Replayed only within a turn, where the client applies each (turnId, replySeq)
+# at most once: a missed trigger is recovered, an applied one is never re-sent.
+# Kept out of the legacy replay above, which has no dedupe (a paid run could
+# start twice). create_diagram_tab precedes an injection with replaceExisting,
+# so it must replay with it; stream_done carries the assembled streamed text.
+_TURN_REPLY_ACTIONS = _TERMINAL_REPLY_ACTIONS | frozenset({
+    "inject_element", "trigger_smart_generator", "agent_error",
+    "trigger_export", "trigger_deploy", "create_diagram_tab", "stream_done",
+})
 _REPLY_BUFFER_MAX = 200
 _last_reply_buffer: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+# (session key, turn id) -> {"seq": last issued replySeq, "replies": [stamped terminal payloads]}
+_turn_replies: "OrderedDict[tuple, Dict[str, Any]]" = OrderedDict()
+_turn_lock = threading.Lock()
+
+
+def _stamp_turn(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of *payload* stamped with the request's turnId and the next
+    replySeq, or *payload* unchanged when the request carries no turnId."""
+    try:
+        request = parse_assistant_request(session)
+        turn_id = getattr(request, "turn_id", None)
+        if not turn_id:
+            return payload
+        key = (memory_session_key(session, request), turn_id)
+    except Exception as exc:
+        logger.debug(f"[ReplayBuffer] turn stamp skipped (best-effort): {exc}")
+        return payload
+    with _turn_lock:
+        state = _turn_replies.get(key)
+        if state is None:
+            state = _turn_replies[key] = {"seq": 0, "replies": []}
+            while len(_turn_replies) > _REPLY_BUFFER_MAX:
+                _turn_replies.popitem(last=False)
+        state["seq"] += 1
+        return {**payload, "turnId": turn_id, "replySeq": state["seq"]}
 
 
 def _buffer_terminal_reply(session: Session, payload: Dict[str, Any]) -> None:
@@ -154,31 +195,54 @@ def _buffer_terminal_reply(session: Session, payload: Dict[str, Any]) -> None:
     it can replay it. Best-effort — never breaks the actual reply. Bounded LRU
     so it can't grow without limit."""
     try:
-        if payload.get("action") not in _TERMINAL_REPLY_ACTIONS:
+        action = payload.get("action")
+        if action not in _TURN_REPLY_ACTIONS:
             return
         key = memory_session_key(session)
-        _last_reply_buffer[key] = payload
-        _last_reply_buffer.move_to_end(key)
-        while len(_last_reply_buffer) > _REPLY_BUFFER_MAX:
-            _last_reply_buffer.popitem(last=False)
+        if action in _TERMINAL_REPLY_ACTIONS:
+            _last_reply_buffer[key] = payload
+            _last_reply_buffer.move_to_end(key)
+            while len(_last_reply_buffer) > _REPLY_BUFFER_MAX:
+                _last_reply_buffer.popitem(last=False)
+        turn_id = payload.get("turnId")
+        if turn_id:
+            with _turn_lock:
+                state = _turn_replies.get((key, turn_id))
+                if state is not None:
+                    state["replies"].append(payload)
     except Exception as exc:
         logger.debug(f"[ReplayBuffer] store failed (best-effort): {exc}")
 
 
 def replay_last_reply(session: Session, request: Any = None) -> bool:
-    """Re-send this session's last buffered terminal reply (reconnect recovery).
+    """Re-send buffered terminal replies after a reconnect.
 
+    With a ``turnId`` in the request: that turn's terminal replies whose
+    ``replySeq`` is not in ``appliedSeqs``, in order, with their original stamps.
+    Without one (older client, voice turn): the session's last terminal reply.
     Sends to the session's CURRENT live connection (the heartbeat/slot-reclaim
-    has already rebound it). Returns True when a reply was replayed; safe no-op
-    when nothing is buffered. Never re-runs generation."""
+    has already rebound it). Returns True when something was replayed; safe
+    no-op otherwise. Never re-runs generation."""
     try:
         key = memory_session_key(session, request)
+        turn_id = getattr(request, "turn_id", None)
+        if turn_id:
+            raw = getattr(request, "raw_payload", None) or {}
+            applied = raw.get("appliedSeqs")
+            applied = set(applied) if isinstance(applied, list) else set()
+            with _turn_lock:
+                state = _turn_replies.get((key, turn_id)) or {}
+                pending = [p for p in state.get("replies", []) if p.get("replySeq") not in applied]
+            logger.info(f"[Replay] turn {turn_id!r}: re-sending {len(pending)} unacknowledged reply(ies)")
+            for payload in pending:
+                session.reply(json.dumps(payload))  # keep the original stamps
+            return bool(pending)
         payload = _last_reply_buffer.get(key)
         if payload is None:
             logger.info("[Replay] no buffered reply for this session — nothing to replay")
             return False
         logger.info(f"[Replay] re-sending last '{payload.get('action')}' reply after reconnect")
-        _send_to_session(session, payload)
+        session.reply(json.dumps(payload))  # keep the original stamps, if any
         return True
     except Exception as exc:
         logger.debug(f"[Replay] failed (best-effort): {exc}")
@@ -234,10 +298,10 @@ def reply_message(session: Session, message: str, *, telemetry_exempt: bool = Fa
     try:
         request = parse_assistant_request(session)
         if request.is_v2:
-            session.reply(json.dumps({
+            sent = _send_to_session(session, {
                 "action": "assistant_message",
                 "message": message,
-            }))
+            })
         else:
             session.reply(message)
     except Exception as exc:
@@ -250,7 +314,7 @@ def reply_message(session: Session, message: str, *, telemetry_exempt: bool = Fa
     # Buffer for reconnect recovery — assistant_message is the v2 terminal reply.
     try:
         if request.is_v2:
-            _buffer_terminal_reply(session, {"action": "assistant_message", "message": message})
+            _buffer_terminal_reply(session, sent)
     except Exception:
         pass
 
@@ -271,7 +335,7 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
     )
     logger.debug(f"[Reply] Full payload keys: {list(payload.keys())}")
     try:
-        session.reply(json.dumps(payload))
+        sent = _send_to_session(session, payload)
     except Exception as exc:
         logger.error(f"❌ [Reply] Failed to send payload: {exc}", exc_info=True)
         return
@@ -282,7 +346,7 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
         _record_assistant_response(session, message)
 
     # Buffer for reconnect recovery so a dropped terminal reply can be replayed.
-    _buffer_terminal_reply(session, payload)
+    _buffer_terminal_reply(session, sent)
 
     # Telemetry: record the reply's action as what the agent did with
     # the user's message (progress keep-alives are not the reply).
@@ -307,15 +371,15 @@ def emit_webapp_generate_prompt(session: Session) -> None:
     })
 
 
-def _send_to_session(session: Session, payload: Dict[str, Any]):
-    """Low-level helper: serialize *payload* as JSON and send it via the session.
-
-    This mirrors the mechanism used by :func:`reply_payload` — a single
-    ``session.reply(json.dumps(...))`` call — so streaming messages travel
-    through the exact same WebSocket path as every other server-initiated
-    message.
+def _send_to_session(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Low-level helper: stamp *payload* with the turn (if any), serialize it as
+    JSON and send it via the session. Every reply helper sends through here, so
+    streaming and progress frames take the same WebSocket path as terminal
+    replies. Returns the payload as sent.
     """
+    payload = _stamp_turn(session, payload)
     session.reply(json.dumps(payload))
+    return payload
 
 
 def _record_assistant_response(session: Session, content: str) -> None:
@@ -365,7 +429,7 @@ def reply_stream_done(session: Session, stream_id: str, full_text: str = ""):
         "fullText": full_text,
         "done": True,
     }
-    _send_to_session(session, payload)
+    _buffer_terminal_reply(session, _send_to_session(session, payload))
 
     # Telemetry: a completed stream is a conversational reply — the
     # frontend renders it as an assistant message, so record it as one.

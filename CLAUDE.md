@@ -175,7 +175,7 @@ Full reference: `docs/source/websocket_protocol.rst`. The traps:
 - Other inbound actions: `user_voice` (base64 audio → whisper-1), `user_set_variable` (arms BYOK via
   `user_api_key` / `user_api_provider` / `user_api_model` / `user_api_base`, passes `_voice_context`, carries the
   keep-alive heartbeat), `frontend_event` (generator result echo, routed deterministically, never classified),
-  `replay_last_response` (re-send the buffered terminal reply after a reconnect).
+  `replay_last_response` (after a reconnect: with `turnId` + `appliedSeqs`, re-send only that turn's unacknowledged terminal replies; without, the session's last terminal reply).
 - Emitted actions — terminal: `inject_element`, `inject_complete_system`, `modify_model`, `assistant_message`,
   `agent_error`, `create_diagram_tab`, `trigger_generator`, `trigger_smart_generator`, `trigger_github_import`,
   `trigger_export`, `trigger_deploy`, `auto_generate_gui`; non-terminal: `progress`, `stream_start`,
