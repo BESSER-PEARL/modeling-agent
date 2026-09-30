@@ -7,6 +7,7 @@ from baf.core.session import Session
 from baf.library.transition.events.base_events import ReceiveJSONEvent
 
 from .types import AssistantRequest, FileAttachment, WorkspaceContext, SUPPORTED_DIAGRAM_TYPES
+from .v4_to_v3 import normalize_model, normalize_project_snapshot
 from session_keys import PARSED_ASSISTANT_REQUEST, PARSED_REQUEST_EVENT_ID, VOICE_CONTEXT
 from utilities.message_limits import validate_message_length
 
@@ -172,8 +173,39 @@ def strip_diagram_prefix(message: str) -> Tuple[str, Optional[str]]:
     return match.group(2).strip(), match.group(1)
 
 
+def _normalize_context_models(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert v4 (React Flow) diagram models in ``context`` to the v3 shape.
+
+    This is the single inbound boundary for the diagram-model format: every
+    consumer downstream (summaries, handlers, layout, resolution) reads the v3
+    ``elements`` / ``relationships`` shape. ``projectSnapshot`` and the legacy
+    ``activeModel`` are normalized; v3 models and GUI / Quantum models pass
+    through untouched. Returns *raw_payload* itself when nothing changed,
+    otherwise a shallow copy with a new ``context`` (the input is not mutated).
+    """
+    context_payload = raw_payload.get("context")
+    if not isinstance(context_payload, dict):
+        return raw_payload
+
+    new_context = dict(context_payload)
+    snapshot = context_payload.get("projectSnapshot")
+    if isinstance(snapshot, dict):
+        new_context["projectSnapshot"] = normalize_project_snapshot(snapshot)
+    active_model = context_payload.get("activeModel")
+    if isinstance(active_model, dict):
+        active_type = context_payload.get("activeDiagramType")
+        new_context["activeModel"] = normalize_model(
+            active_model, active_type if isinstance(active_type, str) else None
+        )
+
+    if all(new_context.get(k) is context_payload.get(k) for k in ("projectSnapshot", "activeModel")):
+        return raw_payload
+    return {**raw_payload, "context": new_context}
+
+
 def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "ClassDiagram") -> AssistantRequest:
     raw_payload = _unwrap_v2_envelope(raw_payload)
+    raw_payload = _normalize_context_models(raw_payload)
 
     context_payload = raw_payload.get("context")
     context_payload = context_payload if isinstance(context_payload, dict) else {}

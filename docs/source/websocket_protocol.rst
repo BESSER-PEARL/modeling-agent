@@ -197,6 +197,46 @@ Field Reference
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)
 
+Diagram model format (v3 and v4)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Each tab's ``model`` arrives in one of two shapes:
+
+* **v3** (Apollon editor): ``{version: "3.x", elements: {id: …}, relationships: {id: …}}``.
+* **v4** (React Flow editor): ``{version: "4.x", nodes: [...], edges: [...]}``. Class
+  members, state bodies and intent phrases are inline rows on the parent node's
+  ``data``. Child positions are relative to ``parentId``. Association ends are
+  stored as ``edge.data.sourceRole`` / ``sourceMultiplicity`` / ``sourceNavigable``
+  and the matching ``target*`` keys.
+
+Everything downstream of the protocol layer reads **v3 only**. ``parse_v2_payload``
+therefore calls ``_normalize_context_models`` once, at the inbound boundary.
+It uses ``src/protocol/v4_to_v3.py`` (``normalize_project_snapshot`` /
+``normalize_model``) to convert every model whose ``version`` starts with
+``"4."`` or that has a ``nodes`` list, in ``projectSnapshot`` and in the legacy
+``activeModel``. The conversion is the Python inverse of the frontend migrator
+``packages/library/lib/utils/versionConverter.ts``. The canonical mapping is
+BESSER's ``docs/source/migrations/uml-v4-shape.md``. The conversion rules:
+
+* v3 models, ``GUINoCodeDiagram`` and ``QuantumCircuitDiagram`` pass through
+  untouched. The input is never mutated, and a model that fails to convert is
+  passed through as-is.
+* ``class`` + ``data.stereotype`` (``Abstract`` / ``Interface`` / ``Enumeration``,
+  case-insensitive) become ``AbstractClass`` / ``Interface`` / ``Enumeration``.
+  Inline ``attributes`` / ``methods`` / ``oclConstraints`` rows become owned
+  ``ClassAttribute`` / ``ClassMethod`` / ``ClassOCLConstraint`` elements.
+* State and agent-state ``bodies`` / ``fallbackBodies``, intent
+  ``training_phrases`` / ``entity_slots``, and object / user-profile
+  ``attributes`` become owned child elements. An agent state's ``data.initial``
+  becomes a ``StateInitialNode`` plus an ``AgentStateTransitionInit`` edge.
+* BPMN ``bpmnX`` nodes become ``BPMNX``. ``BPMNSequenceFlow`` and the other flow
+  edges become ``BPMNFlow`` with ``flowType`` set.
+* ``edge.data.sourceNavigable`` / ``targetNavigable`` become
+  ``source.navigable`` / ``target.navigable``.
+
+Outbound payloads do not depend on the model format, so they are unchanged. The
+frontend converts them itself.
+
 Supported Diagram Types
 ~~~~~~~~~~~~~~~~~~~~~~~~
 

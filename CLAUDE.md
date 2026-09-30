@@ -169,6 +169,11 @@ Full reference: `docs/source/websocket_protocol.rst`. The traps:
   whose inner JSON is `stream_start` / `stream_chunk` / `stream_done`. When probing the agent directly, replicate
   both layers and unwrap them in the order `AssistantClient.ts` does (`extractActionPayload`) — a single-level
   unwrap treats every response as unknown and hangs.
+- **Inbound diagram models may be v4 (React Flow `{nodes, edges}`)**. `parse_v2_payload` converts every
+  v4 model in `projectSnapshot` (and the legacy `activeModel`) to the v3 `{elements, relationships}` shape via
+  `protocol/v4_to_v3.py`. This inverts the frontend's `versionConverter.ts`; the mapping lives in BESSER's
+  `docs/source/migrations/uml-v4-shape.md`. All downstream code reads v3 only; never add a v4 branch downstream.
+  GUI and Quantum models pass through. Outbound specs are unchanged.
 - **`user_id` is a URL query param** (`wss://host/agent?user_id=…`), read by `_extract_user_id_from_request` in
   `patches/websocket_platform.py`. It keys the BAF session; conversation memory keys on the inner `sessionId`
   (`memory.memory_session_key`).
@@ -204,7 +209,7 @@ src/
   execution/                      planning.py (multi-op dispatch), model_operations.py, file_handling.py, progress.py
   handlers/                       generation_handler.py, smart_generation_handler.py, file_conversion_handler.py,
                                   validation_handler.py (bridge to the BESSER backend validator)
-  protocol/                       types.py, adapters.py
+  protocol/                       types.py, adapters.py, v4_to_v3.py (inbound v4 → v3 model normalizer)
   memory/                         Verbatim window + rolling LLM summary per session
   llm/provider.py                 Provider abstraction (structured outputs, streaming)
   tracking/token_tracker.py       Token/cost tracking (_COST_PER_1K)
