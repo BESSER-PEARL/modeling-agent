@@ -1,97 +1,81 @@
-BESSER Modeling Agent
-=====================
+Modeling Agent
+==============
 
-The **BESSER Modeling Agent** is the conversational AI backend for the
-`BESSER Web Modeling Editor <https://editor.besser-pearl.org>`_.
-It is part of the `BESSER <https://besser-pearl.github.io/BESSER/>`_ platform
-(*better software faster*) — an open-source low-code platform for smart software
-modeling developed by the `BESSER-PEARL <https://github.com/BESSER-PEARL>`_ team.
+The conversational backend of the BESSER Web Modeling Editor. It turns a
+message into diagram operations that the editor applies to your project.
 
-The agent is a WebSocket service that turns natural language into **diagram
-operations**. It interprets each request, decides what to do, and returns a
-structured action payload — ``inject_complete_system``, ``modify_model``,
-``trigger_generator``, ``trigger_smart_generator`` and friends — that the
-editor applies to the canvas or hands to a generator.
+.. container:: doc-lead
 
-**Key capabilities:**
+   **Here to use the assistant?** Open the
+   `editor <https://editor.besser-pearl.org>`_ and follow its
+   `assistant guide <https://besser.readthedocs.io/projects/besser-web-modeling-editor/en/latest/user-guide/ai-assistant.html>`_.
+   These pages explain how to run, integrate, and extend the service.
 
-- Create and modify diagrams from natural language
-- Multi-step orchestration (model first, then generate code)
-- 8 diagram types: Class, Object, State Machine, Agent, GUI (no-code),
-  Quantum Circuit, BPMN, and User Profile
-- Code generation via `BESSER generators <https://besser-pearl.github.io/BESSER/generators.html>`_
-  (Django, Python, Java, SQL, and more), plus the LLM-authored Spec-Driven Agent for
-  stacks BESSER has no built-in generator for
-- Bring-your-own-key (BYOK) routing, so generation can run on the user's own
-  OpenAI, Anthropic or Mistral key
-- UML specification Q&A via :term:`RAG` (ChromaDB)
-- File conversion from PlantUML, RDF/knowledge graphs, XMI, PDFs, images, and
-  plain text
-- Voice input via OpenAI speech-to-text
+Choose your starting point
+--------------------------
 
-**Part of the BESSER ecosystem:**
+.. container:: doc-path
 
-.. list-table::
-   :widths: 30 70
+   .. rubric:: 01 / Run the service
 
-   * - `BESSER platform <https://besser-pearl.github.io/BESSER/>`_
-     - The core modeling and code generation platform
-   * - `BESSER Agentic Framework <https://besser-pearl.github.io/BESSER/>`_
-     - State machine, WebSocket, and intent classification infrastructure
-   * - `BESSER Web Modeling Editor <https://editor.besser-pearl.org>`_
-     - The React/TypeScript frontend this agent powers
-   * - `BESSER Modeling Agent <https://github.com/BESSER-PEARL/modeling-agent>`_
-     - This repository — the conversational AI backend
+   Install the agent, configure a provider, and check that its socket opens.
 
-**New here?** Start with :doc:`getting_started`, then read :doc:`end_to_end_flow`
-for the full request lifecycle.
+   :doc:`Local setup <getting_started>`
 
-Contents
---------
+.. container:: doc-path
+
+   .. rubric:: 02 / Integrate a client
+
+   Send a request and handle diagram actions and reconnects.
+
+   :doc:`WebSocket protocol <websocket_protocol>`
+
+.. container:: doc-path
+
+   .. rubric:: 03 / Extend the agent
+
+   Add a diagram handler or change routing, then validate the contract.
+
+   :doc:`Contributor guide <contributing>`
+
+How it fits together
+--------------------
+
+The editor displays models. This service creates and modifies them from
+natural language. The BESSER backend generates application code; the
+Spec-Driven Agent customises that code when requested. Starting this service
+alone does not start the editor or a code-generation worker.
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Getting Started
+   :hidden:
+   :maxdepth: 1
+   :caption: Start and operate
 
    getting_started
    configuration
-   glossary
+   deployment
+   troubleshooting
 
 .. toctree::
-   :maxdepth: 2
-   :caption: How It Works
+   :hidden:
+   :maxdepth: 1
+   :caption: Understand and integrate
 
    end_to_end_flow
    architecture
    intent_recognition
    orchestration
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Reference
-
-   schema
    websocket_protocol
+   schema
    diagram_handlers
    usage
    api
+   glossary
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Operations & Contributing
-
-   deployment
-   contributing
-
-.. toctree::
+   :hidden:
    :maxdepth: 1
-   :caption: Release Notes
+   :caption: Maintain
 
+   contributing
    releases
-
-Indices and tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`

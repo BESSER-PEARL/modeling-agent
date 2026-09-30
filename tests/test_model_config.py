@@ -13,6 +13,7 @@ import model_config
 _ALL_ENV_VARS = [
     "BESSER_AGENT_MODEL_CLASSIFIER",
     "BESSER_AGENT_MODEL_GENERATION_LARGE",
+    "BESSER_AGENT_MODEL_GENERATION_GUI",
     "BESSER_AGENT_MODEL_GENERATION_SMALL",
     "BESSER_AGENT_MODEL_REASONING",
     "BESSER_AGENT_MODEL_VISION",
@@ -33,16 +34,18 @@ def test_defaults_without_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     mod = importlib.reload(model_config)
     assert mod.MODEL_CLASSIFIER == "gpt-4o-mini"
-    assert mod.MODEL_GENERATION_LARGE == "gpt-5.6-terra"
-    assert mod.MODEL_GENERATION_SMALL == "gpt-5.6-luna"
-    assert mod.MODEL_REASONING == "gpt-5.6-terra"
-    assert mod.MODEL_VISION == "gpt-5"
+    assert mod.MODEL_GENERATION_LARGE == "gpt-5-mini"
+    assert mod.MODEL_GENERATION_GUI == "gpt-6-sol"
+    assert mod.MODEL_GENERATION_SMALL == "gpt-6-luna"
+    assert mod.MODEL_REASONING == "gpt-5-mini"
+    assert mod.MODEL_VISION == "gpt-4o"
     assert mod.MODEL_EMBEDDINGS == "text-embedding-3-small"
 
 
 def test_env_overrides_take_effect(monkeypatch):
     monkeypatch.setenv("BESSER_AGENT_MODEL_CLASSIFIER", "my-router")
     monkeypatch.setenv("BESSER_AGENT_MODEL_GENERATION_LARGE", "my-frontier")
+    monkeypatch.setenv("BESSER_AGENT_MODEL_GENERATION_GUI", "my-gui")
     monkeypatch.setenv("BESSER_AGENT_MODEL_GENERATION_SMALL", "my-small")
     monkeypatch.setenv("BESSER_AGENT_MODEL_REASONING", "my-reasoner")
     monkeypatch.setenv("BESSER_AGENT_MODEL_VISION", "my-vision")
@@ -50,6 +53,7 @@ def test_env_overrides_take_effect(monkeypatch):
     mod = importlib.reload(model_config)
     assert mod.MODEL_CLASSIFIER == "my-router"
     assert mod.MODEL_GENERATION_LARGE == "my-frontier"
+    assert mod.MODEL_GENERATION_GUI == "my-gui"
     assert mod.MODEL_GENERATION_SMALL == "my-small"
     assert mod.MODEL_REASONING == "my-reasoner"
     assert mod.MODEL_VISION == "my-vision"
@@ -71,6 +75,7 @@ def test_routed_models_have_cost_table_entries():
     for model in {
         model_config.MODEL_CLASSIFIER,
         model_config.MODEL_GENERATION_LARGE,
+        model_config.MODEL_GENERATION_GUI,
         model_config.MODEL_GENERATION_SMALL,
         model_config.MODEL_REASONING,
         model_config.MODEL_VISION,
@@ -109,4 +114,3 @@ def test_reasoning_effort_only_for_reasoning_models(monkeypatch):
     mod = importlib.reload(model_config)
     assert mod.reasoning_effort_for("gpt-5.5") == "medium"
     assert mod.reasoning_effort_for("gpt-4o") is None
-

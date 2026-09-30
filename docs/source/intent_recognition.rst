@@ -97,7 +97,7 @@ Stage 2: The Unified Classifier
 ``classify_message(request, llm_provider, history, recent_smart_gen, pending_flow)``
 makes one structured-output call on the **classifier tier**
 (``MODEL_CLASSIFIER``, see :doc:`configuration`) at ``temperature=0.0``, with
-:class:`UnifiedClassification` as the Pydantic response schema. It **never
+``UnifiedClassification`` as the Pydantic response schema. It **never
 raises** — on any failure it returns a safe ``fallback_intent``
 classification and the agent degrades to its own fallback body.
 

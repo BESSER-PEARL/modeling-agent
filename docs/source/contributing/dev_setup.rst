@@ -22,7 +22,7 @@ Installation
 
 .. code-block:: bash
 
-   git clone <repository-url>
+   git clone --branch develop https://github.com/BESSER-PEARL/modeling-agent.git
    cd modeling-agent
    python -m venv venv
    source venv/bin/activate  # or .\venv\Scripts\Activate.ps1 on Windows
@@ -36,7 +36,7 @@ Verify your setup:
 
 .. code-block:: bash
 
-   python -m pytest -v
+   python -m pytest tests --ignore=tests/live -v
    python modeling_agent.py  # Should start WebSocket on :8765
 
 If the agent starts and logs ``WebSocket server listening on ws://localhost:8765``,

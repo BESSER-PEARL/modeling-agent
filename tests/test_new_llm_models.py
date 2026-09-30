@@ -81,6 +81,28 @@ def test_gpt6_vision_uses_max_completion_tokens(model, monkeypatch):
     assert params["max_completion_tokens"] > 0
 
 
+def test_gpt6_luna_streaming_uses_configured_low_effort(monkeypatch):
+    import session_helpers
+
+    monkeypatch.setattr(model_config, "MODEL_REASONING_EFFORT", "low")
+    monkeypatch.setattr(session_helpers, "reply_stream_chunk", lambda *_: None)
+    completions = _Completions()
+
+    def create(**kwargs):
+        completions.calls.append(kwargs)
+        return [SimpleNamespace(
+            choices=[SimpleNamespace(finish_reason="stop", delta=SimpleNamespace(
+                content="OK", refusal=None))], usage=None,
+        )]
+
+    completions.create = create
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    assert session_helpers._stream_openai(None, client, "describe", "", "stream", "gpt-6-luna") == "OK"
+    sent = completions.calls[0]
+    assert sent["reasoning_effort"] == "low"
+    assert "temperature" not in sent
+
+
 @pytest.mark.parametrize("model", CLAUDE_NO_SAMPLING + [
     "us.anthropic.claude-opus-5-5", "anthropic.claude-fable-5-1",
     # A later generation or point release needs no code change.

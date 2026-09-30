@@ -368,7 +368,8 @@ class BYOKClient:
         if supports_custom_temperature(model):
             kwargs["temperature"] = temperature
         else:
-            effort = reasoning_effort or reasoning_effort_for(model)
+            # A caller's effort only applies to models that accept the parameter.
+            effort = reasoning_effort_for(model) and (reasoning_effort or reasoning_effort_for(model))
             if effort:
                 kwargs["reasoning_effort"] = effort
         completion = self._client.chat.completions.create(**kwargs)

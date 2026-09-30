@@ -220,8 +220,8 @@ Spec-Driven Agent (smart route)
 Anything outside that list goes to the **Spec-Driven Agent** — an LLM-authored
 codebase rather than a template. Two kinds of request take this route:
 
-- A language or framework BESSER has no deterministic generator for
-  (Rails, Rust, Kotlin, Next.js, Spring Boot, Go, Laravel, .NET, …).
+- A language or framework outside the assistant's direct generator routes
+  (Rails, Rust, Kotlin, Next.js, Go, Laravel, .NET, …).
 - A BESSER stack **plus** extras the template cannot produce — auth, JWT,
   OAuth, Docker, migrations, tests, rate limiting, custom middleware.
 
@@ -230,8 +230,10 @@ codebase rather than a template. Two kinds of request take this route:
    build a Rails 7 app with Devise auth from my model
    generate a FastAPI backend with JWT and Docker
 
-Spec-Driven Agent runs spend the user's own API key, so the agent always **asks for
-explicit confirmation** before starting one. If the request describes a
+Runs can use a configured free or sponsored tier, or the user's provider key.
+A saved key can start a requested run immediately and incur provider charges;
+set the cost and time limits in the editor's key dialog before generating.
+If the request describes a
 different domain than the class diagram already on the canvas (classes say
 "Team/Player", the request says "a shoe store"), it offers three choices
 instead of silently rewriting: update the model and generate, generate
