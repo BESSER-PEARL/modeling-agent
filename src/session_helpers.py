@@ -550,12 +550,12 @@ def _stream_openai(
     # fluid streaming without overwhelming the connection.
     _BUFFER_THRESHOLD = STREAM_BUFFER_THRESHOLD
 
-    # Reasoning-family models (gpt-5*) reject ANY non-default temperature
+    # Reasoning-family models (GPT-5 and later) reject ANY non-default temperature
     # with a 400 — which surfaced to users as "The generated model had
     # structural issues" on EVERY describe-my-model call (the streaming
     # error handler's canned text). Only pass temperature to models that
     # accept a custom one.
-    from model_config import supports_custom_temperature
+    from model_config import reasoning_effort_for, supports_custom_temperature
     stream_kwargs: dict = {
         "model": model,
         "messages": messages,
@@ -565,6 +565,8 @@ def _stream_openai(
     }
     if supports_custom_temperature(model):
         stream_kwargs["temperature"] = LLM_TEXT_TEMPERATURE
+    elif reasoning_effort_for(model):
+        stream_kwargs["reasoning_effort"] = reasoning_effort_for(model)
 
     stream = client.chat.completions.create(**stream_kwargs)
 

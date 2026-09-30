@@ -154,11 +154,11 @@ variable name is the tier name prefixed with ``BESSER_AGENT_MODEL_``.
      - Complete-system structured diagram generation — the one place where
        output quality *is* the product
    * - ``MODEL_GENERATION_GUI``
-     - ``gpt-5.6-terra``
+     - ``gpt-6-sol``
      - GUI complete-system generation. Its own knob because design quality
        tracks the model's taste far more than diagram generation does.
    * - ``MODEL_GENERATION_SMALL``
-     - ``gpt-5.6-luna``
+     - ``gpt-6-luna``
      - Single-element and modification structured calls,
        ``describe_model`` streaming, and the file-conversion text path
    * - ``MODEL_REASONING``

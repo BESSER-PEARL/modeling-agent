@@ -70,8 +70,9 @@ Prerequisites
 -------------
 
 - Python 3.11 (3.10 minimum).
-- An OpenAI API key. The default model tiers are ``gpt-4o-mini`` for routing
-  and the gpt-5.6 family for generation — all env-overridable, see
+- An OpenAI API key. The default model tiers are ``gpt-4o-mini`` for routing,
+  ``gpt-5-mini`` for complete diagrams, and GPT-6 for GUI and small generation.
+  All tiers are env-overridable; see
   :doc:`configuration`.
 
 Install

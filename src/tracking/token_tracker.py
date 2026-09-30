@@ -46,8 +46,7 @@ _COST_PER_1K: Dict[str, Dict[str, float]] = {
     # falls back to ``_DEFAULT_COST`` and skews cost reporting.
     "gpt-5": {"prompt": 0.00125, "completion": 0.01},
     "gpt-5.5": {"prompt": 0.005, "completion": 0.03},
-    # gpt-5.6 family (current defaults: terra for gen+reasoning, luna for
-    # edits) + the 5.4/5.6 options offered in the BYOK model picker. Prices
+    # gpt-5.6 family and the 5.4/5.6 options offered in the BYOK model picker. Prices
     # per 1K = per-1M list price / 1000 (sol $4/$20, terra $2/$12,
     # luna $0.20/$1.20, 5.4-mini $0.75/$4.50, 5.4-nano $0.20/$1.25).
     "gpt-5.6-sol": {"prompt": 0.004, "completion": 0.02},
@@ -55,7 +54,8 @@ _COST_PER_1K: Dict[str, Dict[str, float]] = {
     "gpt-5.6-luna": {"prompt": 0.0002, "completion": 0.0012},
     "gpt-5.4-mini": {"prompt": 0.00075, "completion": 0.0045},
     "gpt-5.4-nano": {"prompt": 0.0002, "completion": 0.00125},
-    # gpt-6 family (astra $10/$50, sol $2/$10, luna $0.10/$0.50).
+    # gpt-6 family (current defaults: sol for GUI generation, luna for small
+    # generation; astra $10/$50, sol $2/$10, luna $0.10/$0.50).
     "gpt-6-astra": {"prompt": 0.01, "completion": 0.05},
     "gpt-6-sol": {"prompt": 0.002, "completion": 0.01},
     "gpt-6-luna": {"prompt": 0.0001, "completion": 0.0005},
