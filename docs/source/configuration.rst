@@ -150,11 +150,11 @@ variable name is the tier name prefixed with ``BESSER_AGENT_MODEL_``.
        Also the default model of the shared ``gpt`` / ``gpt_text``
        instances.
    * - ``MODEL_GENERATION_LARGE``
-     - ``gpt-5.6-terra``
+     - ``gpt-5-mini``
      - Complete-system structured diagram generation — the one place where
        output quality *is* the product
    * - ``MODEL_GENERATION_GUI``
-     - (falls back to ``MODEL_GENERATION_LARGE``)
+     - ``gpt-5.6-terra``
      - GUI complete-system generation. Its own knob because design quality
        tracks the model's taste far more than diagram generation does.
    * - ``MODEL_GENERATION_SMALL``
@@ -162,10 +162,10 @@ variable name is the tier name prefixed with ``BESSER_AGENT_MODEL_``.
      - Single-element and modification structured calls,
        ``describe_model`` streaming, and the file-conversion text path
    * - ``MODEL_REASONING``
-     - ``gpt-5.6-terra``
+     - ``gpt-5-mini``
      - The free-text design-reasoning pass of two-pass generation
    * - ``MODEL_VISION``
-     - ``gpt-5``
+     - ``gpt-4o``
      - File-conversion vision calls (image / PDF → diagram)
    * - ``MODEL_EMBEDDINGS``
      - ``text-embedding-3-small``

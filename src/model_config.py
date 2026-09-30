@@ -35,19 +35,17 @@ def _env(name: str, default: str) -> str:
 
 
 MODEL_CLASSIFIER = _env("CLASSIFIER", "gpt-4o-mini")
-# gpt-5.6-terra: newer than gpt-5.5 at half the cost, faster, and ~10x cheaper
-# cached input for the stable system prompt. reasoning_effort="low" and the
-# fixed-temperature handling apply via the "gpt-5" prefix. Vision stays on
-# gpt-5. All overridable via BESSER_AGENT_MODEL_* env vars.
-MODEL_GENERATION_LARGE = _env("GENERATION_LARGE", "gpt-5.6-terra")
-# GUI complete-system generation gets its OWN knob: design quality tracks the
-# model's taste far more than diagram generation does, so it can run a
-# stronger model without slowing down class-diagram creates. Defaults to the
-# LARGE tier when unset (BESSER_AGENT_MODEL_GENERATION_GUI overrides).
-MODEL_GENERATION_GUI = _env("GENERATION_GUI", "") or MODEL_GENERATION_LARGE
+# Defaults match the hosted deployment's configuration. reasoning_effort="low"
+# and the fixed-temperature handling apply via the "gpt-5" prefix. All
+# overridable via BESSER_AGENT_MODEL_* env vars.
+MODEL_GENERATION_LARGE = _env("GENERATION_LARGE", "gpt-5-mini")
+# GUI complete-system generation gets its own knob: design quality tracks the
+# model's taste far more than diagram generation does, so it runs a stronger
+# model without slowing down class-diagram creates.
+MODEL_GENERATION_GUI = _env("GENERATION_GUI", "gpt-5.6-terra")
 MODEL_GENERATION_SMALL = _env("GENERATION_SMALL", "gpt-5.6-luna")
-MODEL_REASONING = _env("REASONING", "gpt-5.6-terra")
-MODEL_VISION = _env("VISION", "gpt-5")
+MODEL_REASONING = _env("REASONING", "gpt-5-mini")
+MODEL_VISION = _env("VISION", "gpt-4o")
 
 # Pinned explicitly so a langchain/OpenAI default bump never silently
 # changes the RAG vector space (existing vectors would stop matching).
