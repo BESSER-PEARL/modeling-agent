@@ -41,9 +41,11 @@ Test Suites
    * - ``test_protocol.py``
      - Request parsing, v2 envelope unwrapping, diagram type extraction
    * - ``test_generation_handler.py``
-     - Generator detection, keyword matching, config parsing, safety nets,
-       modeling request guards, diagram creation detection, pattern-based
-       domain detection, cross-validation logic
+     - Generator detection, keyword matching, config parsing, prerequisite
+       checks, plan-pause and smart-gen confirmation flows
+   * - ``test_unified_classifier.py``
+     - The routing verdict: intent selection, sub-routing fields, the
+       deterministic unsupported-stack and pending-flow guards
    * - ``test_orchestrator.py``
      - Diagram type resolution (explicit keywords, discriminating patterns,
        context fallback)
@@ -51,7 +53,7 @@ Test Suites
      - Multi-step operation planning, heuristic decomposition, LLM planner
        decision logic
    * - ``test_diagram_handlers.py``
-     - Handler generation for all 6 diagram types
+     - Handler generation for all 8 diagram types
    * - ``test_schemas.py``
      - Pydantic schema validation for all diagram types
    * - ``test_base_handler.py``

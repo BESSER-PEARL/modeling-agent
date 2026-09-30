@@ -14,6 +14,14 @@ platforms:
   websocket:
     host: localhost
     port: 8765
+    # CORS: whitelist the browser origins allowed to open a WebSocket to this agent.
+    # BAF 4.3.2 reads ``platforms.websocket.origins`` and passes it to ``websockets.serve(origins=...)``.
+    # When unset, any origin is accepted; set to ``null`` or remove to disable CORS.
+    origins:
+      - "https://editor.besser-pearl.org"
+      - "http://localhost:3000"
+      - "http://localhost:5173"
+      - "http://localhost:8080"
     streamlit:
       host: localhost
       port: 5000

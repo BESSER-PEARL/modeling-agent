@@ -13,7 +13,8 @@ For the technical details of how requests are processed, see
 How Operation Mode is Selected
 ------------------------------
 
-The agent infers the operation mode from your phrasing:
+The agent infers the operation mode from your phrasing. There are two plan
+modes (``ALLOWED_MODEL_MODES``):
 
 .. list-table::
    :header-rows: 1
@@ -22,20 +23,32 @@ The agent infers the operation mode from your phrasing:
    * - Mode
      - Triggered by
      - Example
-   * - **Single element**
-     - Creating one specific item
-     - "create a User class", "add a Cancelled state"
-   * - **Complete system**
-     - Describing a whole domain or system
+   * - ``complete_system``
+     - Describing a whole domain or system to build from scratch
      - "create a class diagram for an e-commerce system"
-   * - **Modification**
-     - Referring to something that already exists
-     - "rename Order to PurchaseOrder", "add email to User"
+   * - ``modify_model``
+     - Referring to something that already exists, **or** creating one
+       specific element
+     - "rename Order to PurchaseOrder", "add email to User",
+       "create a User class", "add a Cancelled state"
+
+.. note::
+
+   A ``modify_model`` operation targeting a flow-style diagram that does not
+   exist yet is automatically promoted to ``complete_system``, so "add a task
+   to the order process" creates the process when there is none.
 
 .. note::
 
    **ObjectDiagram** requires a **ClassDiagram** to exist first — the agent
    uses class definitions to generate object instances with realistic values.
+   **UserDiagram** does not: its reference catalog is a bundled metamodel.
+
+The agent also judges how the request relates to what is already on the
+canvas (``model_disposition``): extend the current model, replace it, build in
+a new tab, or reuse it for generation without changing it. When a request
+would discard or overwrite an existing model, it **asks first** rather than
+guessing destructively.
 
 Common Modeling Requests
 ------------------------
@@ -105,6 +118,30 @@ Quantum Circuit Examples
    create a quantum circuit for Bell state
    create a 3-qubit Grover search circuit
 
+BPMN Examples
+~~~~~~~~~~~~~
+
+.. code-block:: text
+
+   # Complete system
+   model an order fulfillment process as a BPMN diagram
+   create a business process for document review with two reviewers
+
+   # Modification
+   add a task to the order fulfillment process
+   add an exclusive gateway after the review task
+
+User Profile Examples
+~~~~~~~~~~~~~~~~~~~~~
+
+Profiles describe a *target user* as matching criteria (``age >= 18``,
+``level == B2``) rather than concrete instance values.
+
+.. code-block:: text
+
+   create a target user profile for elderly users with sight issues
+   add a language competence of at least B2 to the profile
+
 Multi-step Requests
 -------------------
 
@@ -170,6 +207,49 @@ Supported generator types and their keywords:
    * - ``qiskit``
      - ``generate Qiskit code``
      - Quantum code trigger
+   * - ``rest_api``
+     - ``generate a REST API``
+     - REST API trigger
+   * - ``rdf``
+     - ``generate an RDF vocabulary``
+     - RDF trigger
+
+Spec-Driven Agent (smart route)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Anything outside that list goes to the **Spec-Driven Agent** — an LLM-authored
+codebase rather than a template. Two kinds of request take this route:
+
+- A language or framework BESSER has no deterministic generator for
+  (Rails, Rust, Kotlin, Next.js, Spring Boot, Go, Laravel, .NET, …).
+- A BESSER stack **plus** extras the template cannot produce — auth, JWT,
+  OAuth, Docker, migrations, tests, rate limiting, custom middleware.
+
+.. code-block:: text
+
+   build a Rails 7 app with Devise auth from my model
+   generate a FastAPI backend with JWT and Docker
+
+Spec-Driven Agent runs spend the user's own API key, so the agent always **asks for
+explicit confirmation** before starting one. If the request describes a
+different domain than the class diagram already on the canvas (classes say
+"Team/Player", the request says "a shoe store"), it offers three choices
+instead of silently rewriting: update the model and generate, generate
+anyway, or cancel.
+
+Continuing from GitHub
+~~~~~~~~~~~~~~~~~~~~~~
+
+A project that was generated and pushed to GitHub can be resumed:
+
+.. code-block:: text
+
+   continue from github.com/owner/repo
+   resume work on github.com/owner/repo on branch develop
+
+The agent hands the frontend a ``trigger_github_import`` action; the frontend
+calls the backend's import endpoint, loads the project, and arms incremental
+modification. The agent itself never contacts GitHub.
 
 Inline Configuration
 ~~~~~~~~~~~~~~~~~~~~
@@ -209,20 +289,48 @@ Attachments are converted into diagram specifications:
      - Extensions
      - Output
    * - PlantUML
-     - ``.puml``, ``.plantuml``, ``.wsd``
-     - ClassDiagram or StateMachineDiagram
+     - ``.puml``, ``.plantuml``, ``.pu``
+     - Diagram type detected from the PlantUML source
    * - Knowledge Graph
-     - ``.ttl``, ``.rdf``, ``.owl``, ``.n3``, ``.jsonld``
+     - ``.ttl``, ``.rdf``, ``.owl``, ``.n3``, ``.nt``, ``.nq``, ``.trig``,
+       ``.jsonld``
      - ClassDiagram
+   * - XMI / Ecore
+     - ``.xmi``, ``.uml``, ``.ecore``
+     - ClassDiagram
+   * - PDF
+     - ``.pdf``
+     - Converted via the vision model
    * - Images
-     - ``.png``, ``.jpg``, ``.jpeg``, ``.gif``, ``.webp``
-     - ClassDiagram (via OpenAI Vision)
+     - ``.png``, ``.jpg``, ``.jpeg``, ``.gif``, ``.webp``, ``.bmp``, ``.svg``
+     - Converted via the vision model
    * - Generic text
      - any other
      - ClassDiagram (via LLM interpretation)
 
-Upload a file alongside your message, and the agent will automatically convert
-it to the appropriate diagram type.
+Upload a file alongside your message and the agent converts it automatically.
+Conversion can target any of ``ClassDiagram``, ``StateMachineDiagram``,
+``ObjectDiagram``, ``AgentDiagram`` or ``BPMN``
+(``CONVERTIBLE_DIAGRAM_TYPES``); the target is auto-detected when you do not
+name one. If the resulting diagram would overwrite something already on the
+canvas, the agent asks whether to replace, keep, or use a new tab first.
+
+Voice Input
+-----------
+
+Voice messages are transcribed with OpenAI speech-to-text and then handled
+exactly like typed messages. The language is auto-detected by default; a
+deployment can pin one with ``BESSER_AGENT_STT_LANGUAGE``. Because a
+transcript arrives as plain text with no JSON context, the frontend sends the
+workspace context separately just before the audio.
+
+Using Your Own API Key
+----------------------
+
+If you supply your own OpenAI, Anthropic or Mistral key in the editor, the
+agent routes its generation and conversational calls through a per-request
+client built from that key instead of the shared server key. The Spec-Driven
+Agent always uses your key. See :doc:`configuration` for what is and is not routed.
 
 UML Specification Queries
 -------------------------

@@ -9,7 +9,11 @@ during a refactor and the helpers are not in use anywhere in src/ today
 """
 
 import pytest
-from utilities.model_context import compact_model_summary, detailed_model_summary
+from utilities.model_context import (
+    compact_model_summary,
+    detailed_model_summary,
+    is_diagram_nontrivial,
+)
 from utilities.model_resolution import (
     resolve_target_model,
     resolve_object_reference_diagram,
@@ -102,12 +106,30 @@ class TestResolveTargetModel:
         assert result is snapshot_model
 
     def test_fallback_to_current_model(self):
+        # Reconciled to feature behavior (commit b5ff3ec): current_model is
+        # only used as a last-resort fallback when the active diagram type
+        # MATCHES the requested target type. Returning current_model for a
+        # mismatched target used to hallucinate diagrams that don't exist
+        # (e.g. a brand-new AgentDiagram request resolving to the active
+        # ClassDiagram's model), so the active type must equal the target
+        # here for the fallback to fire.
+        request = AssistantRequest(
+            current_model=MINIMAL_CLASS_MODEL,
+            context=WorkspaceContext(active_diagram_type="ClassDiagram"),
+        )
+        result = resolve_target_model(request, "ClassDiagram")
+        assert result is MINIMAL_CLASS_MODEL
+
+    def test_fallback_withheld_on_type_mismatch(self):
+        # Companion case for the guard added in b5ff3ec: when the active
+        # diagram type does NOT match the requested target, current_model
+        # must NOT be used as a fallback.
         request = AssistantRequest(
             current_model=MINIMAL_CLASS_MODEL,
             context=WorkspaceContext(active_diagram_type="ObjectDiagram"),
         )
         result = resolve_target_model(request, "ClassDiagram")
-        assert result is MINIMAL_CLASS_MODEL
+        assert result is None
 
     def test_no_model_available(self):
         request = AssistantRequest(context=WorkspaceContext())
@@ -254,8 +276,12 @@ class TestDetailedModelSummaryClassDiagram:
         assert "login" in result
 
     def test_includes_relationships(self):
+        # Reconciled to feature behavior (commit 2cfcee9): relationship types
+        # are now rendered as human-readable lowercase labels (e.g.
+        # "association", "composition") via _REL_LABEL, not the raw
+        # "Association" element-type string.
         result = detailed_model_summary(CLASS_MODEL_FULL, "ClassDiagram")
-        assert "Association" in result
+        assert "(association)" in result
         assert "User" in result and "Order" in result
 
     def test_includes_multiplicities(self):
@@ -271,9 +297,14 @@ class TestDetailedModelSummaryClassDiagram:
         assert result.startswith("Current class diagram:")
 
     def test_empty_elements(self):
+        # Reconciled to feature behavior (commit 2cfcee9): the explicit
+        # "Classes (N):" count header is now always emitted (even for N=0)
+        # so factual queries ("how many classes?") have a stated number to
+        # read — this means an empty model no longer falls back to the
+        # compact summary (which is what previously carried the
+        # "ClassDiagram" substring this test used to check for).
         result = detailed_model_summary({"elements": {}, "relationships": {}}, "ClassDiagram")
-        # Falls back to compact
-        assert "ClassDiagram" in result
+        assert "Classes (0)" in result
 
     def test_non_dict_input(self):
         result = detailed_model_summary(None, "ClassDiagram")
@@ -329,9 +360,14 @@ class TestDetailedModelSummaryStateMachine:
         assert "Processing" in result
 
     def test_includes_state_types(self):
+        # StateInitialNode / StateFinalNode are pseudostates, not real states, and are now
+        # deliberately EXCLUDED from the state list/count (this fixed an
+        # off-by-one where the initial node was counted as an extra state).
+        # They're instead surfaced as a separate, non-counted pseudostate
+        # summary line — the literal type names no longer appear verbatim.
         result = detailed_model_summary(STATE_MODEL_FULL, "StateMachineDiagram")
-        assert "StateInitialNode" in result
-        assert "StateFinalNode" in result
+        assert "States (2)" in result  # Idle, Processing only — pseudostates excluded
+        assert "Pseudostates (not counted as states): 1 initial pseudostate(s), 1 final pseudostate(s)" in result
 
     def test_includes_entry_action(self):
         result = detailed_model_summary(STATE_MODEL_FULL, "StateMachineDiagram")
@@ -366,8 +402,11 @@ class TestDetailedModelSummaryStateMachine:
         assert result.startswith("Current state machine:")
 
     def test_empty_state_machine(self):
+        # Mirrors the class-diagram behaviour — the "States (N):" count header is always
+        # emitted (even for N=0), so an empty model no longer falls back to
+        # the compact summary that used to contain "StateMachineDiagram".
         result = detailed_model_summary({"elements": {}, "relationships": {}}, "StateMachineDiagram")
-        assert "StateMachineDiagram" in result
+        assert "States (0)" in result
 
 
 # ---------------------------------------------------------------------------
@@ -469,8 +508,15 @@ AGENT_MODEL = {
         "s1": {"type": "AgentState", "name": "Greeting", "stateType": "standard"},
         "s2": {"type": "AgentState", "name": "Farewell", "stateType": "standard"},
     },
+    # NOTE: relationship reconciled to the real element schema — the source
+    # code (_summarize_agent_diagram) only recognizes "AgentStateTransition"
+    # / "AgentStateTransitionInit" relationship types, and expects
+    # source/target as {"element": <id>} dicts (matching CLASS_MODEL_FULL /
+    # STATE_MODEL_FULL above). The original "AgentTransition" type with bare
+    # string source/target never matched, so no transition line was ever
+    # produced by this fixture.
     "relationships": {
-        "t1": {"type": "AgentTransition", "source": "s1", "target": "s2"},
+        "t1": {"type": "AgentStateTransition", "source": {"element": "s1"}, "target": {"element": "s2"}},
     },
     "components": {
         "i1": {"type": "AgentIntent", "name": "say_hello"},
@@ -495,8 +541,11 @@ class TestDetailedModelSummaryAgent:
         assert "say_bye" in result
 
     def test_includes_transitions(self):
+        # Reconciled to feature behavior: _summarize_agent_diagram renders
+        # transitions with an ASCII "->" (like the class/state-machine
+        # summaries), not a unicode "→" arrow.
         result = detailed_model_summary(AGENT_MODEL, "AgentDiagram")
-        assert "Greeting → Farewell" in result
+        assert "Greeting -> Farewell" in result
 
     def test_empty_agent_model(self):
         model = {"elements": {}, "relationships": {}}
@@ -543,24 +592,24 @@ AGENT_MODEL_OLD_FORMAT = {
 class TestDetailedModelSummaryAgentFormats:
     def test_new_format_lists_every_component_type(self):
         result = detailed_model_summary(AGENT_MODEL_NEW_FORMAT, "AgentDiagram")
-        assert "Intents: AskQuestion" in result
-        assert "LLMs: gpt4" in result
-        assert "RAG databases: faqDocs" in result
-        assert "Tools: webSearch" in result
-        assert "Skills: politeTone" in result
-        assert "Workspaces: dataDir" in result
-        assert "GUIs (gui_id): orderForm" in result
+        assert "Intents (1): AskQuestion" in result
+        assert "LLMs (1): gpt4" in result
+        assert "RAG databases (1): faqDocs" in result
+        assert "Tools (1): webSearch" in result
+        assert "Skills (1): politeTone" in result
+        assert "Workspaces (1): dataDir" in result
+        assert "GUIs (1, gui_id): orderForm" in result
 
     def test_new_format_transitions_with_element_endpoints(self):
         result = detailed_model_summary(AGENT_MODEL_NEW_FORMAT, "AgentDiagram")
-        assert "Greeting → Answer" in result
-        assert "initial → Greeting" in result
+        assert "Greeting -> Answer" in result
+        assert "initial -> Greeting" in result
 
     def test_old_format_intents_in_elements(self):
         result = detailed_model_summary(AGENT_MODEL_OLD_FORMAT, "AgentDiagram")
-        assert "Intents: say_hello" in result
-        assert "RAG databases: legacyKb" in result
-        assert "States: Greeting" in result
+        assert "Intents (1): say_hello" in result
+        assert "RAG databases (1): legacyKb" in result
+        assert "States (1): Greeting" in result
 
     def test_legacy_agent_components_key(self):
         model = {
@@ -568,7 +617,7 @@ class TestDetailedModelSummaryAgentFormats:
             "relationships": {},
             "agentComponents": {"l1": {"type": "AgentLLM", "name": "legacyLlm"}},
         }
-        assert "LLMs: legacyLlm" in detailed_model_summary(model, "AgentDiagram")
+        assert "LLMs (1): legacyLlm" in detailed_model_summary(model, "AgentDiagram")
 
     def test_components_win_over_elements_on_duplicate_id(self):
         from utilities.model_context import agent_model_elements
@@ -591,7 +640,7 @@ class TestDetailedModelSummaryAgentFormats:
 
     def test_reasoning_state_is_listed_as_a_state(self):
         model = {"elements": {"s1": {"type": "AgentReasoningState", "name": "think"}}, "relationships": {}}
-        assert "States: think" in detailed_model_summary(model, "AgentDiagram")
+        assert "States (1): think" in detailed_model_summary(model, "AgentDiagram")
 
     def test_transition_with_unnamed_endpoints_uses_question_mark(self):
         model = {
@@ -604,13 +653,13 @@ class TestDetailedModelSummaryAgentFormats:
             },
         }
         result = detailed_model_summary(model, "AgentDiagram")
-        assert "Transitions: ? → ?" in result
+        assert "Transitions (1): ? -> ?" in result
         assert "None" not in result
 
     def test_components_only_model_is_summarized(self):
         model = {"elements": {}, "relationships": {},
                  "components": {"i1": {"type": "AgentIntent", "name": "Greet"}}}
-        assert "Intents: Greet" in detailed_model_summary(model, "AgentDiagram")
+        assert "Intents (1): Greet" in detailed_model_summary(model, "AgentDiagram")
 
 
 # ---------------------------------------------------------------------------
@@ -706,3 +755,126 @@ class TestDetailedModelSummaryFallback:
 
     def test_string_model(self):
         assert "no model data" in detailed_model_summary("not a dict", "ClassDiagram")
+
+
+# ---------------------------------------------------------------------------
+# is_diagram_nontrivial — used by describe-model to filter empty/seed diagrams
+# ---------------------------------------------------------------------------
+
+class TestIsDiagramNontrivial:
+    # ClassDiagram
+    def test_class_diagram_with_named_class_is_nontrivial(self):
+        model = {
+            "elements": {
+                "c1": {"type": "Class", "name": "User"},
+            },
+            "relationships": {},
+        }
+        assert is_diagram_nontrivial(model, "ClassDiagram") is True
+
+    def test_class_diagram_empty_is_trivial(self):
+        assert is_diagram_nontrivial(
+            {"elements": {}, "relationships": {}}, "ClassDiagram"
+        ) is False
+
+    def test_class_diagram_unnamed_class_is_trivial(self):
+        model = {
+            "elements": {"c1": {"type": "Class", "name": "  "}},
+            "relationships": {},
+        }
+        assert is_diagram_nontrivial(model, "ClassDiagram") is False
+
+    # ObjectDiagram
+    def test_object_diagram_with_object_is_nontrivial(self):
+        model = {"elements": {"o1": {"type": "Object", "name": "alice"}}}
+        assert is_diagram_nontrivial(model, "ObjectDiagram") is True
+
+    def test_object_diagram_empty_is_trivial(self):
+        assert is_diagram_nontrivial({"elements": {}}, "ObjectDiagram") is False
+
+    # StateMachineDiagram
+    def test_state_machine_with_state_is_nontrivial(self):
+        model = {"elements": {"s1": {"type": "State", "name": "Idle"}}}
+        assert is_diagram_nontrivial(model, "StateMachineDiagram") is True
+
+    def test_state_machine_only_initial_is_trivial(self):
+        # Only an initial-node marker without a real state = seed content.
+        model = {"elements": {"i1": {"type": "StateInitialNode"}}}
+        assert is_diagram_nontrivial(model, "StateMachineDiagram") is False
+
+    def test_state_machine_empty_is_trivial(self):
+        assert is_diagram_nontrivial(
+            {"elements": {}, "relationships": {}}, "StateMachineDiagram"
+        ) is False
+
+    # AgentDiagram
+    def test_agent_diagram_with_state_is_nontrivial(self):
+        model = {"elements": {"a1": {"type": "AgentState", "name": "Greet"}}}
+        assert is_diagram_nontrivial(model, "AgentDiagram") is True
+
+    def test_agent_diagram_empty_is_trivial(self):
+        assert is_diagram_nontrivial({"elements": {}}, "AgentDiagram") is False
+
+    # GUINoCodeDiagram
+    def test_gui_with_pages_is_nontrivial(self):
+        model = {"pages": [{"name": "Home"}]}
+        assert is_diagram_nontrivial(model, "GUINoCodeDiagram") is True
+
+    def test_gui_without_pages_is_trivial(self):
+        assert is_diagram_nontrivial({"pages": []}, "GUINoCodeDiagram") is False
+        assert is_diagram_nontrivial({}, "GUINoCodeDiagram") is False
+
+    # QuantumCircuitDiagram
+    def test_quantum_circuit_no_gates_is_trivial(self):
+        model = {"qubitCount": 16, "cols": []}
+        assert is_diagram_nontrivial(model, "QuantumCircuitDiagram") is False
+
+    def test_quantum_circuit_three_random_gates_is_trivial(self):
+        # Reproduces the seed-content case described in the bug:
+        # 16 qubits, 3 single-qubit gates, no entanglement, no measurement.
+        model = {
+            "qubitCount": 16,
+            "cols": [
+                ["H"] + [1] * 15,
+                ["X"] + [1] * 15,
+                ["Y"] + [1] * 15,
+            ],
+        }
+        assert is_diagram_nontrivial(model, "QuantumCircuitDiagram") is False
+
+    def test_quantum_circuit_with_cnot_is_nontrivial(self):
+        # A control + target in the same column = real entanglement.
+        model = {
+            "qubitCount": 2,
+            "cols": [
+                ["H", 1],
+                ["•", "X"],
+            ],
+        }
+        assert is_diagram_nontrivial(model, "QuantumCircuitDiagram") is True
+
+    def test_quantum_circuit_with_measurement_is_nontrivial(self):
+        model = {
+            "qubitCount": 1,
+            "cols": [["H"], ["Measure"]],
+        }
+        assert is_diagram_nontrivial(model, "QuantumCircuitDiagram") is True
+
+    def test_quantum_circuit_dense_single_qubit_is_nontrivial(self):
+        # >3 gates total, even single-qubit only, counts as deliberate.
+        model = {
+            "qubitCount": 1,
+            "cols": [["H"], ["X"], ["Y"], ["Z"], ["S"]],
+        }
+        assert is_diagram_nontrivial(model, "QuantumCircuitDiagram") is True
+
+    # Misc
+    def test_non_dict_is_trivial(self):
+        assert is_diagram_nontrivial(None, "ClassDiagram") is False
+        assert is_diagram_nontrivial("nope", "ClassDiagram") is False
+        assert is_diagram_nontrivial({}, "ClassDiagram") is False
+
+    def test_unknown_diagram_type_is_permissive(self):
+        # Unknown types fall through to "True if non-empty dict".
+        assert is_diagram_nontrivial({"foo": "bar"}, "WeirdDiagram") is True
+        assert is_diagram_nontrivial({}, "WeirdDiagram") is False

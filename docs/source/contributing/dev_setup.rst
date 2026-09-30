@@ -13,7 +13,8 @@ Prerequisites
 -------------
 
 - **Python 3.11+** — the codebase uses modern typing features and f-strings
-- **An OpenAI API key** — for GPT-4.1-mini (the intent classifier and LLM planner)
+- **An OpenAI API key** — the model used per call site comes from the tier
+  table in ``src/model_config.py`` (all tiers env-overridable)
 - **Git** — for version control and branch management
 
 Installation
@@ -104,15 +105,22 @@ Key Module Responsibilities
    * - Module
      - Responsibility
    * - ``modeling_agent.py``
-     - Entry point. Defines all 8 intents, creates states, calls ``register_all()``
-       to wire transitions.
+     - Entry point. Defines all 10 states and 10 intents (each with the
+       ``training_sentences`` the local classifier needs), calls
+       ``register_all()`` to wire bodies and transitions, and starts the
+       session reaper.
    * - ``src/protocol/``
      - Parses the v2 WebSocket protocol. Unwraps the BESSER framework envelope,
        extracts ``AssistantRequest`` and ``WorkspaceContext``.
+   * - ``src/unified_classifier.py``
+     - The router. One structured-output LLM call per message returns the
+       intent plus all sub-routing fields; ``_SYSTEM_PROMPT`` is the
+       authoritative rulebook.
    * - ``src/handlers/generation_handler.py``
      - Code generation routing. Contains ``detect_generator_type()``,
-       ``_is_modeling_request()``, ``_is_diagram_creation_request()``, and all
-       pre-filter/safety-net logic for intent disambiguation.
+       ``GENERATOR_KEYWORDS`` / ``GENERATOR_REQUIRED_FIELDS`` /
+       ``GENERATOR_PREREQUISITES``, the config-prompt flows, and the
+       deterministic GitHub-continue guard.
    * - ``src/orchestrator/``
      - Multi-step planning (``request_planner.py``) and diagram type resolution
        (``workspace_orchestrator.py``). Converts a user message into an ordered
