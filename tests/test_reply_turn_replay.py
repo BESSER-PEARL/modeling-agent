@@ -221,3 +221,20 @@ def test_turn_id_is_parsed_from_the_wrapped_wire_envelope():
     assert parse_assistant_request(wrapped).turn_id == "t9"
     # Non-string / oversized values are ignored rather than echoed.
     assert parse_assistant_request(_turn(turn_id="x" * 500)).turn_id is None
+
+
+def test_a_long_turn_keeps_its_sequence_under_eviction_pressure():
+    # The table evicted by creation order, so a long turn was dropped mid-way:
+    # its final reply restarted at replySeq 1 and the client discarded it as a
+    # duplicate of the first progress frame.
+    # A long generation keeps sending progress while other sessions' turns come
+    # and go; each of its frames must keep it from being evicted.
+    long_turn = _turn(turn_id="long")
+    sh.reply_payload(long_turn, _system("Book"))
+    for i in range(sh._REPLY_BUFFER_MAX * 2):
+        sh.reply_payload(_turn(turn_id=f"other{i}", session_id=f"s{i}"), _system("X"))
+        if i % 50 == 49:
+            sh.reply_payload(long_turn, _system(f"progress{i}"))
+    sh.reply_payload(long_turn, _system("Loan"))
+    seqs = [f["replySeq"] for f in _sent(long_turn)]
+    assert seqs == list(range(1, len(seqs) + 1))

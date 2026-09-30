@@ -249,3 +249,33 @@ def test_the_users_chosen_model_is_used_for_every_call(requested):
 def test_without_a_chosen_model_the_provider_defaults_apply():
     assert byok.resolve_model("anthropic", "gpt-5.5", None) == "claude-sonnet-5"
     assert byok.resolve_model("anthropic", None, None) == "claude-haiku-4-5"
+
+
+def test_a_caller_effort_is_not_sent_to_a_model_that_rejects_it(monkeypatch):
+    """A gateway (openai provider + base_url) serving claude-sonnet-5 got the
+    OpenAI tier's reasoning_effort, which that model may reject."""
+    import openai
+
+    created = {}
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+        def _create(self, **kwargs):
+            created.update(kwargs)
+            message = SimpleNamespace(content='{"ok": true}')
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
+
+    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
+    monkeypatch.setenv("BESSER_AGENT_ALLOW_CUSTOM_BASE_URL", "true")
+    token = byok.set_current("openai", "gw-key", "claude-sonnet-5", "https://gateway.example/v1")
+    try:
+        client = byok.get_active_client()
+        assert client is not None
+        client.predict_raw("hi", json_mode=True, reasoning_effort="low")
+    finally:
+        byok.reset_current(token)
+    assert created["model"] == "claude-sonnet-5"
+    assert "reasoning_effort" not in created
+    assert "temperature" not in created

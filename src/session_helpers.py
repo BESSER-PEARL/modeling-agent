@@ -186,6 +186,10 @@ def _stamp_turn(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
             state = _turn_replies[key] = {"seq": 0, "replies": []}
             while len(_turn_replies) > _REPLY_BUFFER_MAX:
                 _turn_replies.popitem(last=False)
+        else:
+            # LRU on use, not creation: a long turn must not be evicted mid-way,
+            # or its replySeq restarts and the client drops the final reply.
+            _turn_replies.move_to_end(key)
         state["seq"] += 1
         return {**payload, "turnId": turn_id, "replySeq": state["seq"]}
 
