@@ -14,61 +14,66 @@ Debugging Intent Recognition
 
 When a user message is handled by the wrong state, check in this order:
 
-Step 1: Check the LLM Classification
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Step 1: Read the classification
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Enable debug logging to see what intent GPT-4.1-mini predicted and with what
-confidence:
+Every ``UnifiedClassification`` carries a ``reason`` field — one sentence
+explaining the verdict — and it is logged. That is usually the whole answer.
+Enable debug logging for more:
 
 .. code-block:: python
 
    import logging
    logging.getLogger("besser").setLevel(logging.DEBUG)
 
-Step 2: Check Pre-Filters
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+Step 2: Check which classifier answered
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Test whether the deterministic checks produce the expected result:
+A ``fallback_intent`` verdict with a reason like "LLM provider unavailable" or
+"LLM returned no result" means the unified call failed and BAF's local
+``SimpleIntentClassifier`` decided instead — expect lower accuracy.
+
+Step 3: Check the pending-flow gate
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If the assistant had a question outstanding, look at ``pending_flow_action``.
+An ``"answer"`` verdict deliberately keeps the message in the current state so
+``_common_preamble()`` can hand it to the flow handler; only
+``"new_request"`` lets it route away. A message that seems "stuck" in a state
+is usually this working as designed.
+
+Step 4: Check transition priority
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Is the message hitting **Priority 1** (``json_intent_matches``, reading the
+classifier verdict) or **Priority 2** (``route_to_generation``)? Priority 2
+fires only for ``frontend_event`` payloads and pending generator / smart-gen
+flows — it runs no LLM call and no text heuristics.
+
+.. note::
+
+   The old keyword pre-filters and cross-validation safety nets
+   (``_is_modeling_request()``, ``_is_diagram_creation_request()``, the
+   ``json_intent_matches`` keyword override) **no longer exist**. Routing
+   rules now live in ``unified_classifier._SYSTEM_PROMPT``, which is the
+   single place to change routing behavior.
+
+Step 5: Check the deterministic guards
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Two decisions override the LLM verdict and cannot be changed by prompting:
 
 .. code-block:: python
 
-   from handlers.generation_handler import (
-       detect_generator_type,
-       _is_modeling_request,
-       _is_diagram_creation_request,
-   )
+   from unified_classifier import _names_unsupported_stack
+   from handlers.generation_handler import detect_generator_type
 
    msg = "your test message here"
-   print(f"Generator type:  {detect_generator_type(msg)}")
-   print(f"Is modeling:     {_is_modeling_request(msg)}")
-   print(f"Is diagram:      {_is_diagram_creation_request(msg.lower())}")
+   print(f"Generator keyword:  {detect_generator_type(msg)}")
+   print(f"Unsupported stack:  {_names_unsupported_stack(msg)}")
 
-Step 3: Check Transition Priority
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Is the message hitting **Priority 1** (LLM intent match) or **Priority 2**
-(generation route via keyword detection)?
-
-If Priority 2, the LLM classifier likely misclassified the message. Check
-``route_to_generation()`` with the same message.
-
-Step 4: Check Handler Safety Nets
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-If the message reaches the wrong handler, does the safety net catch it? Check
-the response ``action`` field — if it's ``"assistant_message"`` with a redirect
-message, the safety net fired.
-
-Step 5: Check Cross-Validation
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The ``json_intent_matches()`` function in ``src/session_helpers.py`` performs
-cross-validation when the LLM says ``generation_intent``:
-
-- If ``detect_generator_type()`` returns ``None`` → classification is overridden
-- If ``_is_modeling_request()`` returns ``True`` → classification is overridden
-
-This prevents misrouted modeling requests from reaching the generation handler.
+``_names_unsupported_stack()`` forces the smart generation route; the
+GitHub-continue regexes in ``generation_handler`` force an import.
 
 Step 6: Check Keyword Detection
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -125,32 +130,35 @@ Common Pitfalls
    ``"sql"`` matches inside ``"sqlalchemy"``. Use ``_BOUNDARY_KEYWORDS`` for
    short keywords that might be substrings of other keywords.
 
-3. **Pending state suppresses intent matching**
+3. **A pending flow can suppress intent matching**
 
-   When ``pending_generator_type`` is set, ``json_intent_matches()`` returns
-   ``False`` for ALL intents, so the message stays in the current state for
-   ``_common_preamble`` to handle.
+   When the assistant is awaiting an answer, ``json_intent_matches()`` returns
+   ``False`` for ALL intents *unless* the classifier labelled the message
+   ``pending_flow_action="new_request"`` — so an answer stays in the current
+   state for ``_common_preamble`` to handle, while an unrelated instruction
+   still routes normally.
 
 4. **Frontend context can be stale**
 
    After injecting a diagram, the next message from the frontend may carry the
-   pre-injection model snapshot. Don't assume ``activeModel`` is up-to-date.
+   pre-injection model snapshot. The agent resolves the model from
+   ``projectSnapshot`` (``activeModel`` is ignored), but the snapshot itself
+   can still lag an injection.
 
 5. **Dict ordering in GENERATOR_KEYWORDS matters**
 
    Keywords are checked in insertion order. ``"sqlalchemy"`` must come before
    ``"sql"`` to avoid the shorter keyword matching first.
 
-6. **Pattern-based modeling detection uses "for" as a strong signal**
+6. **Routing rules live in one place now**
 
-   ``_is_modeling_request()`` treats ``"verb … for <anything>"`` as modeling.
-   This means ``"create a tool for generating code"`` would be classified as
-   modeling. The ``_EXPLICIT_GENERATION_PHRASES`` veto list catches common
-   false positives, but unusual phrasings may need new entries.
+   There is no keyword pre-filter layer to add a special case to. Routing
+   behavior changes belong in ``unified_classifier._SYSTEM_PROMPT``, or — for
+   decisions the LLM is unreliable at — in an explicit deterministic guard
+   like ``_names_unsupported_stack()``.
 
-7. **Cross-validation only applies to generation_intent**
+7. **Misclassification between non-generation intents**
 
-   The ``json_intent_matches()`` cross-validation in ``session_helpers.py``
-   only overrides when the LLM predicts ``generation_intent``. Misclassifications
-   between other intents (e.g. ``modify_model`` vs ``create_complete_system``)
-   are not cross-validated — they rely solely on the LLM and intent descriptions.
+   There is no override layer rescuing, say, ``modify_model_intent`` from
+   being read as ``create_complete_system_intent``. Such misclassifications
+   rely entirely on the classifier rulebook, so fix them there.

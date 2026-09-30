@@ -12,11 +12,12 @@ the project's code of conduct.
 Submitting a Pull Request
 --------------------------
 
-1. Create a feature branch from ``main``
+1. Create a feature branch from ``develop``
 2. Make your changes with tests
-3. Ensure ``python -m pytest`` passes with no failures
+3. Run ``python -m pytest tests --ignore=tests/live`` and fix failures
 4. Update documentation if behavior changed
-5. Submit a PR using the template in ``.github/pull_request_template.md``
+5. Submit a PR against ``develop`` using the template in
+   ``.github/pull_request_template.md``
 
 
 What Reviewers Look For

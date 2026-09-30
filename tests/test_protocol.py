@@ -146,12 +146,6 @@ class TestParseV2Payload:
         assert request.diagram_type == "ClassDiagram"
         assert request.is_v2
 
-    def test_with_active_model(self):
-        model = {"elements": {"cls-1": {"name": "Foo"}}}
-        raw = make_v2_payload("Modify User", "ClassDiagram", active_model=model)
-        request = parse_v2_payload(raw)
-        assert request.current_model == model
-
     def test_frontend_event_action(self):
         raw = make_v2_payload("", action="frontend_event")
         request = parse_v2_payload(raw)
@@ -167,3 +161,31 @@ class TestParseV2Payload:
         raw = {"action": "user_message", "message": json.dumps(inner)}
         request = parse_v2_payload(raw)
         assert request.diagram_type == "ClassDiagram"
+
+
+def test_full_spec_limit_is_preserved_or_explicitly_rejected_for_both_transports(monkeypatch):
+    from types import SimpleNamespace
+    from agent_config import MAX_USER_MESSAGE_CHARS
+    from protocol.adapters import parse_assistant_request
+    from utilities.message_limits import UserMessageTooLong
+    from tests.conftest import FakeSession
+    import state_bodies
+
+    spec = "x" * (MAX_USER_MESSAGE_CHARS - 17) + "FINAL REQUIREMENT"
+    assert len(spec) == 64_000
+    monkeypatch.setattr(state_bodies, "get_or_classify", lambda *args: pytest.fail("Rejected input reached an LLM"))
+    monkeypatch.setattr(state_bodies, "_get_llm_provider", lambda: pytest.fail("Rejected input requested a provider"))
+    for legacy in (False, True):
+        session = FakeSession(make_v2_payload(spec))
+        if legacy:
+            session.event = SimpleNamespace(message=spec)
+        assert parse_assistant_request(session).message == spec
+        oversized = "x" * (MAX_USER_MESSAGE_CHARS + 1)
+        session = FakeSession(make_v2_payload(oversized))
+        if legacy:
+            session.event = SimpleNamespace(message=oversized)
+        with pytest.raises(UserMessageTooLong, match="64,000"):
+            parse_assistant_request(session)
+        assert state_bodies._ensure_unified_classification(session) is True
+        assert state_bodies._common_preamble(session) is None
+        assert "Nothing was truncated or generated" in session.last_reply_json()["message"]

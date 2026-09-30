@@ -51,10 +51,10 @@ POSITION_DISCLAIMER = (
 # ---------------------------------------------------------------------------
 
 NAMING_PASCAL_RULE = (
-    "NAMING: Class names MUST be exactly ONE word in PascalCase: \"User\", "
-    "\"Book\", \"Order\", \"Payment\". NEVER concatenate words like "
-    "\"UserLibraryUser\", \"BookReading\", \"OrderPayment\". Just \"User\", "
-    "\"Reading\", \"Payment\"."
+    "NAMING: class names are PascalCase nouns, as short as the concept "
+    "allows (\"User\", \"Payment\", \"OrderStatus\", \"BookCopy\"). Don't "
+    "glue a neighbouring class or the domain onto a name: \"UserLibraryUser\", "
+    "\"OrderPayment\" should be \"User\", \"Payment\"."
 )
 
 RENAME_CASCADES_RULE = (
@@ -69,7 +69,16 @@ DELETE_CLASS_CASCADE_RULE = (
     "the removal in your message but skip the remove_element entries, the "
     "class WILL NOT be removed. Example: deleting \"Address\" with 2 "
     "relationships → 3 remove_element entries (1 for the class + 2 for the "
-    "relationships)."
+    "relationships).\n"
+    "Delete ONLY the class the user named. Never remove a neighbouring class "
+    "just because it was connected to it.\n"
+    "RECONNECT WHAT THE DELETION ORPHANS: if the deleted class was the only "
+    "path between two classes that both survive, add_relationship between "
+    "them so the model still means something, and say so in your message. "
+    "Example: with Book → BookCopy → Loan, deleting \"BookCopy\" leaves Loan "
+    "with nothing borrowable, so also add_relationship Loan → Book and tell "
+    "the user you reconnected them. If reconnecting is not obvious, still "
+    "name the classes left stranded rather than reporting a clean success."
 )
 
 ENUM_RULES_BLOCK = """ENUMERATION RULES:
