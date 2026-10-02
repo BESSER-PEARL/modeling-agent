@@ -56,6 +56,12 @@ from agent_config import (
     LLM_TEXT_TEMPERATURE,
 )
 from model_config import (
+    MODEL_CLASSIFIER,
+    MODEL_GENERATION_GUI,
+    MODEL_GENERATION_LARGE,
+    MODEL_GENERATION_SMALL,
+    MODEL_REASONING,
+    MODEL_VISION,
     anthropic_effort,
     is_openai_reasoning_model,
     reasoning_effort_for,
@@ -86,16 +92,14 @@ class BYOKError(RuntimeError):
 # ---------------------------------------------------------------------------
 # Tier -> per-provider canonical model mapping
 # ---------------------------------------------------------------------------
-# The agent requests OpenAI-canonical model names per call site (see
-# ``model_config``): gpt-4o-mini (classifier), gpt-4o (small generation),
-# gpt-5.5 (large generation), gpt-5 (reasoning / vision). BYOK bypasses any
-# PIA/Bedrock gateway, so we collapse those into two tiers — "large"
-# (quality / heavy) and "small" (cheap / latency-sensitive) — and map each
-# tier to the chosen provider's canonical equivalent.
+# Each call site requests its ``model_config`` tier model. BYOK collapses the
+# tiers into two and maps each to the chosen provider's model: "large"
+# (GENERATION_LARGE, GENERATION_GUI, REASONING, VISION) and "small"
+# (GENERATION_SMALL edits and the CLASSIFIER tier).
 #
 # A model the user explicitly chose (``user_api_model``) is used for every call,
 # both tiers. Without one, ``small`` uses the provider's cheap sibling to keep
-# routing / repair / classifier-tier calls inexpensive on the user's key.
+# small edits and routing / repair calls inexpensive on the user's key.
 _PROVIDER_TIER_MODELS = {
     "openai":    {"large": "gpt-5.5",              "small": "gpt-4o-mini"},
     "anthropic": {"large": "claude-sonnet-5",      "small": "claude-haiku-4-5"},
@@ -107,15 +111,17 @@ _PROVIDER_TIER_MODELS = {
 
 
 def _tier_of(requested_model: Optional[str]) -> str:
-    """Bucket a requested OpenAI-canonical model name into a BYOK tier.
-
-    ``None``/empty means the call site used the instance default, which is
-    the cheap CLASSIFIER tier -> ``"small"``. gpt-5+ / o-series reasoning
-    models are heavy -> ``"large"``. Everything else (gpt-4o, gpt-4o-mini)
-    -> ``"small"``.
-    """
+    """Bucket a requested model into a BYOK tier by the ``model_config`` tier it
+    names. ``None``/empty is the instance default, the CLASSIFIER tier. A large
+    tier wins when two tiers share a model; a name that is no tier's falls back
+    to "large" for gpt-5+ / o-series reasoning models, else "small"."""
     m = (requested_model or "").strip().lower()
     if not m:
+        return "small"
+    large = (MODEL_GENERATION_LARGE, MODEL_GENERATION_GUI, MODEL_REASONING, MODEL_VISION)
+    if m in {t.lower() for t in large}:
+        return "large"
+    if m in {MODEL_GENERATION_SMALL.lower(), MODEL_CLASSIFIER.lower()}:
         return "small"
     if is_openai_reasoning_model(m):
         return "large"

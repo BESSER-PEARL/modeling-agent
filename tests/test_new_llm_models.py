@@ -37,8 +37,8 @@ def test_gpt6_gets_reasoning_effort_not_temperature(model):
     assert reasoning_effort_for(model) == model_config.MODEL_REASONING_EFFORT
 
 
-@pytest.mark.parametrize("model", GPT6)
-def test_gpt6_is_a_large_tier_request_for_byok(model):
+@pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-5.5"])
+def test_a_reasoning_model_outside_the_tier_table_is_a_large_byok_request(model):
     assert byok._tier_of(model) == "large"
 
 
