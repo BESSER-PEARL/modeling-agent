@@ -31,6 +31,7 @@ from ..core.prompt_fragments import (
     REMOVE_ELEMENT_RULE,
     RENAME_CASCADES_RULE,
 )
+from errors import non_recoverable_cause
 from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
 from schemas import SingleClassSpec, SystemClassSpec, ClassModificationResponse
 from schemas.class_diagram import RecoveredEnumerationsSpec
@@ -485,11 +486,18 @@ Examples:
             # The incremental fallback would re-send the same request.
             logger.warning(f"[ClassDiagram] generate_complete_system declined: {exc}")
             return self._error_response(exc.user_message(), code="model_refusal", retryable=False)
-        except LLMPredictionError as exc:
-            logger.error(f"❌ [ClassDiagram] generate_complete_system LLM FAILED: {exc}")
-            return self._incremental_system_fallback(user_request, existing_model, raw_request=raw_request)
         except Exception as exc:
-            logger.error(f"❌ [ClassDiagram] generate_complete_system FAILED: {exc}", exc_info=True)
+            # Rate-limit / auth / bad-request / truncation: the per-class
+            # fallback would repeat the failing call up to 11 times and hide
+            # the error the caller turns into the "add your API key" prompt.
+            provider_error = non_recoverable_cause(exc)
+            if provider_error is not None:
+                logger.error(f"❌ [ClassDiagram] generate_complete_system failed, not retrying: {exc}")
+                raise provider_error from None
+            if isinstance(exc, LLMPredictionError):
+                logger.error(f"❌ [ClassDiagram] generate_complete_system LLM FAILED: {exc}")
+            else:
+                logger.error(f"❌ [ClassDiagram] generate_complete_system FAILED: {exc}", exc_info=True)
             return self._incremental_system_fallback(user_request, existing_model, raw_request=raw_request)
 
     # ------------------------------------------------------------------

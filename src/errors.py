@@ -68,6 +68,26 @@ def raise_if_openai_refusal(choice: Any) -> None:
         raise ModelRefusal("openai", category="content_filter")
 
 
+# Provider errors that a retry or a degraded re-generation cannot fix: the
+# same request fails again, so they must reach the user instead.
+_NON_RECOVERABLE_ERRORS = frozenset({
+    "RateLimitError", "AuthenticationError", "PermissionDeniedError",
+    "BadRequestError", "LengthFinishReasonError",
+})
+
+
+def non_recoverable_cause(error: Optional[BaseException]) -> Optional[BaseException]:
+    """The provider error in *error*'s cause/context chain listed in
+    ``_NON_RECOVERABLE_ERRORS`` (it may be wrapped in LLMPredictionError), else None."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if type(error).__name__ in _NON_RECOVERABLE_ERRORS:
+            return error
+        error = error.__cause__ or error.__context__
+    return None
+
+
 class ErrorCode(str, Enum):
     """Error taxonomy for the modeling agent."""
     GENERATION_ERROR = "generation_error"
@@ -195,6 +215,13 @@ def classify_error(error: Exception) -> ErrorCode:
     err_name = type(error).__name__.lower()
     err_msg = str(error).lower()
 
+    # SDK class names first: provider messages mention "api" / "openai"
+    # and would otherwise be read as a generic LLM failure.
+    if "rate" in err_name and "limit" in err_name:
+        return ErrorCode.RATE_LIMIT
+    if "auth" in err_name:
+        return ErrorCode.AUTH_ERROR
+
     # Timeout detection (both files check this)
     if "timeout" in err_name or "timeout" in err_msg or "timed out" in err_msg:
         return ErrorCode.TIMEOUT
@@ -215,12 +242,8 @@ def classify_error(error: Exception) -> ErrorCode:
     if any(kw in err_msg for kw in ("openai", "llm", "rate limit", "api")):
         return ErrorCode.LLM_FAILURE
 
-    # Rate-limit specifically
-    if "rate" in err_name and "limit" in err_name:
-        return ErrorCode.RATE_LIMIT
-
     # Auth errors
-    if "auth" in err_name or "unauthorized" in err_msg or "forbidden" in err_msg or "api_key" in err_msg or "invalid_api_key" in err_msg:
+    if "unauthorized" in err_msg or "forbidden" in err_msg or "api_key" in err_msg or "invalid_api_key" in err_msg:
         return ErrorCode.AUTH_ERROR
 
     # Default: base_handler used generation_error, execution used unknown.

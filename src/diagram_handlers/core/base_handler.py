@@ -30,7 +30,7 @@ from model_config import (
 from .layout_engine import apply_layout
 from errors import (
     ErrorCode, LLMPredictionError, ModelRefusal, build_error_response, classify_error,
-    raise_if_openai_refusal, _RECOVERY_HINTS,
+    non_recoverable_cause, raise_if_openai_refusal, _RECOVERY_HINTS,
 )
 
 from utilities.json_repair import loads_tolerant, validate_llm_json
@@ -632,7 +632,9 @@ class BaseDiagramHandler(ABC):
                 if "RateLimitError" in exc_name or "429" in exc_str or "rate limit" in exc_str:
                     raise LLMPredictionError(
                         f"API rate limit reached. Please wait a moment and try again. ({exc})"
-                    )
+                    ) from exc
+                if non_recoverable_cause(exc) is not None:
+                    raise LLMPredictionError(f"LLM call failed (non-retryable): {exc}") from exc
                 last_error = LLMPredictionError(str(exc))
                 last_error_type = "llm_failure"
                 logger.warning(
@@ -865,7 +867,7 @@ class BaseDiagramHandler(ABC):
                 # Non-retryable errors: bail immediately instead of wasting retries
                 exc_name = type(exc).__name__
                 if "BadRequestError" in exc_name or "AuthenticationError" in exc_name or "RateLimitError" in exc_name or "429" in str(exc):
-                    raise LLMPredictionError(f"Structured parse failed (non-retryable): {exc}")
+                    raise LLMPredictionError(f"Structured parse failed (non-retryable): {exc}") from exc
                 last_error = LLMPredictionError(f"Structured parse failed: {exc}")
                 logger.warning(
                     f"[{self.get_diagram_type()}] Structured parse attempt "
@@ -985,6 +987,8 @@ class BaseDiagramHandler(ABC):
         except ModelRefusal:
             raise  # the single-pass fallback would only be declined again
         except Exception as exc:
+            if non_recoverable_cause(exc) is not None:
+                raise  # the single-pass call would fail the same way
             logger.warning(
                 f"[{self.get_diagram_type()}] Reasoning pass failed ({exc}), "
                 "falling back to single-pass structured"
@@ -1205,6 +1209,8 @@ class BaseDiagramHandler(ABC):
         except ModelRefusal:
             raise  # the single-pass fallback would only be declined again
         except Exception as exc:
+            if non_recoverable_cause(exc) is not None:
+                raise  # the single-pass call would fail the same way
             logger.warning(
                 f"[{self.get_diagram_type()}] Reasoning pass failed ({exc}), "
                 "falling back to single-pass"
