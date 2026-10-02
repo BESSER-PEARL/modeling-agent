@@ -106,13 +106,22 @@ class LLMProvider:
             client = byok_client.openai_client
             if client is None:
                 # Anthropic / Mistral / custom endpoint: JSON mode + validation.
-                prompt = "\n".join(m["content"] for m in messages) + (
+                schema_note = (
                     "\n\nReturn ONLY a JSON object matching this JSON schema:\n"
                     + json.dumps(schema.model_json_schema())
                 )
+                system = None
+                if byok_client.provider == "anthropic":
+                    # Static system prompt + schema form the cached prefix,
+                    # ahead of the per-message content.
+                    system = "\n".join(m["content"] for m in messages if m["role"] == "system")
+                    system += schema_note
+                    prompt = "\n".join(m["content"] for m in messages if m["role"] != "system")
+                else:
+                    prompt = "\n".join(m["content"] for m in messages) + schema_note
                 raw = byok_client.predict_raw(
                     prompt, model=effective_model, json_mode=True,
-                    temperature=temperature, max_tokens=max_tokens,
+                    temperature=temperature, max_tokens=max_tokens, system=system,
                 )
                 return validate_llm_json(schema, _strip_code_fences(raw))
             cfg = get_current()

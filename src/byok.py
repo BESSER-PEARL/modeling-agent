@@ -327,6 +327,7 @@ class BYOKClient:
         temperature: Optional[float] = None,
         reasoning_effort: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        system: Optional[str] = None,
     ) -> str:
         """Single free-text chat-completion call, returning the text.
 
@@ -334,12 +335,16 @@ class BYOKClient:
         it is mapped to this provider's equivalent via :func:`resolve_model`.
         ``max_tokens`` overrides the default completion cap (used by the GUI
         complete-system path to keep large multi-page JSON from truncating).
+        ``system`` is a static instruction prefix: a cached system block on
+        Anthropic, prepended to the prompt elsewhere.
         """
         target = resolve_model(self.provider, model, self._user_model)
         temp = LLM_TEMPERATURE if temperature is None else temperature
         cap = max_tokens or LLM_MAX_TOKENS_LARGE
         if self.provider == "anthropic":
-            return self._anthropic_call(prompt, target, json_mode, temp, cap)
+            return self._anthropic_call(prompt, target, json_mode, temp, cap, system)
+        if system:
+            prompt = f"{system}\n{prompt}"
         return self._openai_call(prompt, target, json_mode, temp, reasoning_effort, cap)
 
     def predict_text(self, prompt: str) -> str:
@@ -393,6 +398,7 @@ class BYOKClient:
         json_mode: bool,
         temperature: float,
         max_tokens: int = LLM_MAX_TOKENS_LARGE,
+        system: Optional[str] = None,
     ) -> str:
         content = prompt
         if json_mode:
@@ -405,6 +411,11 @@ class BYOKClient:
             "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": content}],
         }
+        if system:
+            # Static prefix first, cached: later calls bill it at the cache-read rate.
+            kwargs["system"] = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}},
+            ]
         if supports_custom_temperature(model):
             # Anthropic accepts temperature in [0, 1]; the agent uses 0.2/0.4.
             kwargs["temperature"] = max(0.0, min(1.0, temperature))
