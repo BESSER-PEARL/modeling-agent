@@ -67,8 +67,9 @@ response and sends it to the frontend.
 
 Which model answers depends on the call site, not on one global setting:
 routing and repair run on the cheap classifier tier, complete-system
-generation on the large tier, single-element and modification calls on the
-small tier, and file conversion from an image or PDF on the vision tier. Every
+generation on the large tier (the GUI tier for a GUI, the classifier tier for
+BPMN and User Profile), single-element and modification calls on the small
+tier, and file conversion from an image or PDF on the vision tier. Every
 tier is env-overridable — see :doc:`configuration`.
 
 If the user supplied their own API key, the generation and conversational
