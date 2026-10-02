@@ -18,6 +18,7 @@ import uuid
 from typing import Callable, Dict, Any, List, Optional, Tuple, Type
 from abc import ABC, abstractmethod
 
+from openai import LengthFinishReasonError
 from pydantic import BaseModel
 
 from agent_config import LLM_MAX_TOKENS_SMALL, LLM_MAX_TOKENS_LARGE, LLM_TEMPERATURE
@@ -815,9 +816,24 @@ class BaseDiagramHandler(ABC):
                     parse_kwargs["temperature"] = temperature
                 elif reasoning_effort_for(effective_model):
                     parse_kwargs["reasoning_effort"] = reasoning_effort_for(effective_model)
-                completion = client.beta.chat.completions.parse(**parse_kwargs)
+                try:
+                    completion = client.beta.chat.completions.parse(**parse_kwargs)
+                except LengthFinishReasonError as exc:
+                    # parse() raises on finish_reason=length; the call is still billed.
+                    if exc.completion.usage:
+                        tracker.record_from_usage(exc.completion.usage, model=effective_model)
+                    if truncated or attempt + 1 >= total_attempts:
+                        raise LLMPredictionError(
+                            f"Structured output truncated at max_tokens={max_tokens}"
+                        ) from exc
+                    logger.warning(
+                        f"⚠️ [{self.get_diagram_type()}] Response TRUNCATED "
+                        f"(max_tokens={max_tokens}); retrying once with a concise instruction"
+                    )
+                    truncated = True
+                    continue
 
-                # Track tokens & detect truncation
+                # Track tokens
                 finish_reason = completion.choices[0].finish_reason if completion.choices else None
                 usage = completion.usage if hasattr(completion, 'usage') else None
                 raw_content = getattr(completion.choices[0].message, 'content', None) if completion.choices else None
@@ -831,16 +847,6 @@ class BaseDiagramHandler(ABC):
                         f"total={usage.total_tokens}, "
                         f"finish_reason={finish_reason}"
                     )
-
-                if finish_reason == "length":
-                    logger.warning(
-                        f"⚠️ [{self.get_diagram_type()}] Response TRUNCATED "
-                        f"(finish_reason=length, completion_tokens={usage.completion_tokens if usage else '?'}, "
-                        f"max_tokens={max_tokens}). "
-                        f"Raw content preview ({len(raw_content) if raw_content else 0} chars): "
-                        f"{raw_content[:2000] if raw_content else 'N/A'}...TRUNCATED"
-                    )
-                    truncated = True
 
                 if completion.choices:
                     raise_if_openai_refusal(completion.choices[0])
