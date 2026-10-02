@@ -125,6 +125,8 @@ NLP / LLM
        separately per request — see below.
 
 
+.. _model-routing:
+
 Model Routing
 -------------
 
@@ -148,11 +150,12 @@ variable name is the tier name prefixed with ``BESSER_AGENT_MODEL_``.
        self-correction / name-extraction recovery, the memory summarizer,
        UML RAG, help and fallback streaming, and ``gpt_predict_json``.
        Also the default model of the shared ``gpt`` / ``gpt_text``
-       instances.
+       instances, which is what BPMN and User Profile complete-system
+       generation run on (those handlers pass no model override).
    * - ``MODEL_GENERATION_LARGE``
      - ``gpt-5-mini``
-     - Complete-system structured diagram generation — the one place where
-       output quality *is* the product
+     - Complete-system generation for class, state machine, object, agent
+       and quantum circuit diagrams, where output quality *is* the product
    * - ``MODEL_GENERATION_GUI``
      - ``gpt-6-sol``
      - GUI complete-system generation. Its own knob because design quality
@@ -265,6 +268,10 @@ Environment Variables
    * - ``BESSER_AGENT_COMPACT_SPEC``
      - ``1`` (on)
      - Use the compact class-diagram spec schema for generation.
+   * - ``BESSER_AGENT_COST_LOG_INTERVAL``
+     - ``600``
+     - Seconds between the INFO log lines with the token and cost totals
+       (see :ref:`cost-and-model-routing`). ``0`` turns them off.
    * - ``LOG_PROMPTS``
      - unset (off)
      - Log full LLM prompts. Leave off outside local debugging.
@@ -322,12 +329,244 @@ and the shared server LLM is never mutated.
        configuration problems (unknown provider, missing SDK) raise
        ``BYOKError``.
 
-Because BYOK bypasses any gateway, the agent's OpenAI-canonical per-call
-model names are collapsed into two tiers and mapped to each provider's
-equivalent (``_PROVIDER_TIER_MODELS`` in ``src/byok.py``). A model the user
-explicitly chose is used for every call; only without one does ``small`` use
-the provider's cheap sibling so routing and repair calls stay inexpensive on
-the user's key.
+Because BYOK bypasses any gateway, the agent's per-call tiers are collapsed
+into two and mapped to each provider's equivalent (``_PROVIDER_TIER_MODELS``
+in ``src/byok.py``). A model the user explicitly chose is used for every call;
+only without one does ``small`` use the provider's cheap sibling, so small
+edits, routing and repair calls stay inexpensive on the user's key. The
+mapping and its cost effect are in :ref:`cost-and-model-routing`.
+
+
+.. _cost-and-model-routing:
+
+Cost and Model Routing
+----------------------
+
+What a message costs is decided by which call sites it reaches and which
+tier each one requests. This section is the reference for keeping that cost
+down without losing output quality.
+
+Calls per turn
+~~~~~~~~~~~~~~
+
+Counts are for the shared server key and a request that succeeds first time.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Turn type
+     - LLM calls
+   * - Every user message
+     - One unified-classifier call (``MODEL_CLASSIFIER``), cached per BAF
+       event so no transition condition repeats it. ``frontend_event``
+       messages and ``[auto-fix]`` repair requests skip it.
+   * - Greeting, help, "what can you do"
+     - Canned replies cost nothing more. Free-form help and fallback replies
+       stream one more ``MODEL_CLASSIFIER`` call; describing a model streams
+       one ``MODEL_GENERATION_SMALL`` call.
+   * - Single element or modification
+     - One structured call on ``MODEL_GENERATION_SMALL``. JSON repair or
+       self-correction adds a ``MODEL_CLASSIFIER`` call only when the output
+       fails to parse or validate.
+   * - Complete system: class diagram, state machine, GUI
+     - One structured call (``MODEL_GENERATION_LARGE``, or
+       ``MODEL_GENERATION_GUI`` for a GUI) below the two-pass gate; above it, a
+       ``MODEL_REASONING`` pass first, so two calls.
+   * - Complete system: object, agent, quantum circuit
+     - One structured call on ``MODEL_GENERATION_LARGE``.
+   * - Complete system: BPMN
+     - Two calls, both on the ``MODEL_CLASSIFIER`` tier (the handler passes no
+       model override). The gate is measured on the enriched prompt, so in
+       practice it almost always runs both passes.
+   * - Complete system: User Profile
+     - One structured call on the ``MODEL_CLASSIFIER`` tier.
+   * - Multi-step request
+     - One extra ``MODEL_CLASSIFIER`` call for the request planner, only for a
+       multi-clause message with several targets or a generation step; then
+       one of the rows above per planned operation.
+   * - Long conversation
+     - One ``MODEL_CLASSIFIER`` summarizer call each time the verbatim window
+       fills (16 messages), not every turn.
+
+Tiers
+~~~~~
+
+Routing is by call site: each call names the tier it needs (see
+:ref:`model routing <model-routing>` above for the overrides). Prices are USD
+per million tokens from ``_COST_PER_1K`` in ``src/tracking/token_tracker.py``.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 18 22 36
+
+   * - Tier
+     - Default
+     - Input / cached / output
+     - Why this tier
+   * - ``MODEL_CLASSIFIER``
+     - ``gpt-4o-mini``
+     - 0.15 / 0.075 / 0.60
+     - Runs on every message with a small, schema-constrained output, so it
+       is the cheapest model that routes reliably.
+   * - ``MODEL_GENERATION_LARGE``
+     - ``gpt-5-mini``
+     - 0.25 / 0.025 / 2.00
+     - Complete-system diagrams, where output quality is the product.
+   * - ``MODEL_GENERATION_GUI``
+     - ``gpt-6-sol``
+     - 2.00 / 0.20 / 10.00
+     - GUI design quality tracks the model's taste far more than diagram
+       generation does.
+   * - ``MODEL_GENERATION_SMALL``
+     - ``gpt-6-luna``
+     - 0.10 / 0.01 / 0.50
+     - Single-element and modification calls: latency-sensitive and
+       schema-constrained.
+   * - ``MODEL_REASONING``
+     - ``gpt-5-mini``
+     - 0.25 / 0.025 / 2.00
+     - The free-text design analysis of two-pass generation.
+   * - ``MODEL_VISION``
+     - ``gpt-4o``
+     - 2.50 / 1.25 / 10.00
+     - Image and PDF input for file conversion.
+   * - ``MODEL_EMBEDDINGS``
+     - ``text-embedding-3-small``
+     - 0.02 / — / —
+     - RAG vectors; pinned so the persisted store keeps matching.
+
+The ``gpt-6-sol`` and ``gpt-6-luna`` cached rates are not in the price file
+the table is sourced from; they assume the 10 % that ``gpt-6-astra`` lists.
+
+Static prefix first
+~~~~~~~~~~~~~~~~~~~
+
+Both providers bill a repeated prompt prefix at the cached rate (OpenAI
+caches automatically from 1024 prompt tokens; Anthropic needs a
+``cache_control`` marker and caches from 1024 tokens on Sonnet 5 and from 4096
+on Haiku 4.5). A cache hit needs the prefix to be byte-identical, so:
+
+- put the static instructions (system prompt, JSON schema) first and the
+  per-message content (history, workspace context, the user's message) last;
+- never interpolate a timestamp, id or other per-request value into a system
+  prompt.
+
+The unified classifier follows this rule: its ~9k-token system prompt is a
+separate system message ahead of the per-message user block. On a user's
+Anthropic key, ``LLMProvider.parse`` sends that prompt plus the schema as a
+``system`` block with ``cache_control: {"type": "ephemeral"}``; the first
+message in a five-minute window writes it at 1.25x the input rate and later
+ones read it at 0.1x.
+
+Output caps, reasoning effort and the two-pass gate
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- **Output caps** (``src/agent_config.py``): ``LLM_MAX_TOKENS_LARGE`` 8192 for
+  complete-system schemas, ``LLM_MAX_TOKENS_SMALL`` 2048 for single-element and
+  modification schemas, ``LLM_MAX_TOKENS_TEXT`` 4096 for free text, and
+  ``GUI_COMPLETE_SYSTEM_MAX_TOKENS`` 16384 for multi-page GUI output. The
+  classifier gets 800 tokens on a non-reasoning model and 4000 on a reasoning
+  model, whose hidden reasoning draws on the same budget. A structured call
+  that hits its cap is retried once with an instruction to be concise; a
+  second truncation fails the call instead of falling back to per-element
+  generation.
+- **Reasoning effort**: ``BESSER_AGENT_MODEL_REASONING_EFFORT`` (``low``) is
+  sent as ``reasoning_effort`` to gpt-5 / gpt-6 / o-series models and as
+  ``output_config.effort`` to Claude models that take no sampling
+  parameters. Hidden reasoning is billed as output, so raising it raises the
+  cost of every generation call.
+- **Two-pass gate**: the reasoning pass runs only when the raw user message
+  is at least ``_TWO_PASS_MIN_LENGTH`` (250) characters. The handler must pass
+  ``raw_request`` to ``predict_two_pass_structured``; without it the gate
+  measures the enriched prompt (history plus workspace context), which is
+  almost always longer, so the extra pass runs on trivial requests too. The
+  class diagram and state machine handlers pass it; the BPMN and GUI
+  handlers do not.
+
+Retries
+~~~~~~~
+
+- **Shared server clients**: ``src/utilities/llm_retry.py`` is the only
+  transport retry. The SDK's own retries are turned off (``max_retries=0``) so
+  they do not nest under it. A 429 or 5xx is tried up to ``MAX_ATTEMPTS`` (4)
+  times with 0.6 / 1.2 / 2.4 s backoff (about 5 s of sleep in the worst case,
+  on top of the failed attempts' own duration). ``insufficient_quota``,
+  ``invalid_api_key`` and other permanent codes fail on the first attempt.
+- **Handler retries**: ``predict_with_retry`` and ``predict_structured`` make
+  at most one more attempt, never for a rate-limit, authentication or
+  bad-request error. A 5xx that outlasts the transport retry can therefore
+  cost up to 8 HTTP requests for one logical call; it was 24 when the SDK
+  retries were nested in.
+- **No fan-out on provider errors**: a rate-limit, authentication,
+  bad-request or repeated-truncation error reaches the user (for a rate limit
+  on the shared key, the reply offers adding an own API key). It does not
+  trigger the two-pass single-pass fallback or the class diagram's per-class
+  fallback, which used to repeat the failing call up to 11 more times.
+- **BYOK clients** are not wrapped: the SDK default of 2 retries applies, so a
+  5xx costs at most 3 HTTP requests per attempt and 6 per logical call.
+
+BYOK cost behaviour
+~~~~~~~~~~~~~~~~~~~
+
+With a user's key the user pays for every routed call. Without a chosen model
+the tiers map as follows; a chosen model is used for every call.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 39 39
+
+   * - Provider
+     - ``large``: GENERATION_LARGE, GENERATION_GUI, REASONING, VISION
+     - ``small``: GENERATION_SMALL, CLASSIFIER
+   * - ``openai``
+     - ``gpt-5.5``
+     - ``gpt-4o-mini``
+   * - ``anthropic``
+     - ``claude-sonnet-5``
+     - ``claude-haiku-4-5``
+   * - ``mistral``
+     - ``mistral-large-latest``
+     - ``mistral-small-latest``
+   * - ``nebius``
+     - ``Qwen/Qwen3-30B-A3B-Instruct-2507``
+     - same model
+
+The tier is read from the model the call site requests, not from whether
+that model is a reasoning model. A small edit on an OpenAI key therefore runs
+on ``gpt-4o-mini`` ($0.15 / $0.60) rather than ``gpt-5.5`` ($5 / $30), and on
+an Anthropic key on ``claude-haiku-4-5`` rather than ``claude-sonnet-5``. BPMN
+and User Profile complete-system generation request the classifier tier, so
+they map to ``small``.
+
+Where to see spend
+~~~~~~~~~~~~~~~~~~
+
+``src/tracking/token_tracker.py`` accumulates the tokens and estimated cost
+of every recorded call for the whole process since it started. Every
+``BESSER_AGENT_COST_LOG_INTERVAL`` seconds (600 by default) the next call logs
+one INFO line, for example::
+
+   [TokenTracker] totals since start: calls=412 prompt=1893120 (cached=1204480) completion=96210 est_cost=$0.8123
+
+Real provider usage is recorded wherever the SDK returns it, cached prompt
+tokens are priced at the cached rate, and a truncated call is counted. Only
+BAF's own ``predict()``, which returns no usage, is estimated from text
+length. The tracker supports per-session buckets, but no call site passes a
+session id, so only the global totals are populated. The figures are
+estimates: the provider's billing dashboard is authoritative.
+
+Keeping ``_COST_PER_1K`` current
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When a ``MODEL_*`` default changes, or a model joins the BYOK picker, add an
+entry with ``prompt``, ``completion`` and ``cached`` rates per 1K tokens (the
+per-million list price divided by 1000), taken from the price file BESSER
+vendors in ``spec_driven_agent/providers/data/model_prices.json``. Dated and
+gateway ids (``claude-haiku-4-5-20251001``, ``us.anthropic.claude-sonnet-5``)
+are priced as their base entry; a different variant such as ``gpt-5.5-pro``
+needs its own. A model with no entry is priced with placeholder rates and
+logged once as a warning.
 
 
 Tunable Constants
@@ -347,7 +586,7 @@ live in one place instead of being scattered across modules.
      - ``5``
      - Maximum diagram tabs per type in a workspace
    * - ``MAX_USER_MESSAGE_CHARS``
-     - ``12_000``
+     - ``64_000``
      - Hard cap applied at the protocol boundary, so a huge paste cannot
        reach memory or an LLM prompt untruncated
    * - ``GRACE_PERIOD_SECONDS``

@@ -64,6 +64,9 @@ def _enable_shared_llm_retry(llm_instance: LLMOpenAI, label: str) -> None:
         original_initialize()
         client = getattr(llm_instance, "client", None)
         if client is not None:
+            # The wrapper is the only retry policy: the SDK's own default
+            # (2 retries) under its 4 attempts made up to 12 HTTP calls.
+            client.max_retries = 0
             patch_openai_client_for_retry(client, label=label)
 
     llm_instance.initialize = _initialize_then_patch_for_retry

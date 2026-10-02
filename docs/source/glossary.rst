@@ -9,13 +9,13 @@ Glossary
       An open-source low-code platform for smart software modeling — *better
       software faster*. The Modeling Agent is part of the BESSER ecosystem.
       See `BESSER on GitHub <https://github.com/BESSER-PEARL>`_ and the
-      `BESSER documentation <https://besser-pearl.github.io/BESSER/>`_.
+      `BESSER documentation <https://besser.readthedocs.io/en/latest/>`_.
 
    BESSER Agentic Framework
       The Python framework that provides the state machine, WebSocket platform,
       and intent classification infrastructure used by the Modeling Agent. Part
-      of the BESSER platform. See
-      `BESSER documentation <https://besser-pearl.github.io/BESSER/>`_.
+      of the BESSER platform. See the
+      `BESSER Agentic Framework documentation <https://besser-agentic-framework.readthedocs.io/latest/>`_.
 
    Apollon
       The third-party diagram editor library the Web Modeling Editor renders

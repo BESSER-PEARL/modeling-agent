@@ -18,6 +18,7 @@ import uuid
 from typing import Callable, Dict, Any, List, Optional, Tuple, Type
 from abc import ABC, abstractmethod
 
+from openai import LengthFinishReasonError
 from pydantic import BaseModel
 
 from agent_config import LLM_MAX_TOKENS_SMALL, LLM_MAX_TOKENS_LARGE, LLM_TEMPERATURE
@@ -30,7 +31,7 @@ from model_config import (
 from .layout_engine import apply_layout
 from errors import (
     ErrorCode, LLMPredictionError, ModelRefusal, build_error_response, classify_error,
-    raise_if_openai_refusal, _RECOVERY_HINTS,
+    non_recoverable_cause, raise_if_openai_refusal, _RECOVERY_HINTS,
 )
 
 from utilities.json_repair import loads_tolerant, validate_llm_json
@@ -43,6 +44,18 @@ logger = logging.getLogger(__name__)
 # restore INFO-level content logging for a debugging session.
 _LOG_PROMPTS = os.getenv("LOG_PROMPTS", "").strip().lower() in {"1", "true", "yes"}
 _log_content = logger.info if _LOG_PROMPTS else logger.debug
+
+
+def _track_usage(usage: Any, model: str) -> None:
+    """Record a completion's real usage (best effort)."""
+    if usage is None:
+        return
+    try:
+        from tracking import get_tracker
+        get_tracker().record_from_usage(usage, model=model)
+    except Exception as exc:
+        logger.debug(f"Token tracking failed (best-effort): {exc}")
+
 
 # ---------------------------------------------------------------------------
 # Lightweight schema validation helpers
@@ -498,7 +511,8 @@ class BaseDiagramHandler(ABC):
         model, so per-call routing (see ``model_config``) must go through
         the OpenAI client directly when an override is requested. Falls
         back to the BAF path when no override is given or the client is
-        unavailable. Token tracking stays with the caller.
+        unavailable. Records the call's usage (a length estimate on the BAF
+        path, which exposes none; BYOK records its own).
 
         BYOK: when the current request carries a user-supplied key (see
         ``byok.current_byok``), this free-text generation call is routed
@@ -534,11 +548,22 @@ class BaseDiagramHandler(ABC):
             elif reasoning_effort_for(model):
                 raw_kwargs["reasoning_effort"] = reasoning_effort_for(model)
             completion = client.chat.completions.create(**raw_kwargs)
+            _track_usage(getattr(completion, "usage", None), model)
             if not completion.choices:
                 return ""
             raise_if_openai_refusal(completion.choices[0])
             return completion.choices[0].message.content or ""
-        return self.llm.predict(prompt)
+        response = self.llm.predict(prompt)
+        try:
+            from tracking import get_tracker
+            get_tracker().record(
+                prompt_tokens=len(prompt) // 4,
+                completion_tokens=len(response) // 4 if response else 0,
+                model=getattr(self.llm, 'name', MODEL_CLASSIFIER),
+            )
+        except Exception as exc:
+            logger.debug(f"Token tracking failed (best-effort): {exc}")
+        return response
 
     # NOTE: This adds an extra LLM round-trip (2–4s latency).
     def predict_with_retry(
@@ -590,24 +615,6 @@ class BaseDiagramHandler(ABC):
                 )
                 response = self._predict_raw(effective_prompt, model=model, max_tokens=max_tokens)
 
-                # Track tokens from the last API call if available
-                try:
-                    from tracking import get_tracker
-                    client = getattr(self.llm, 'client', None)
-                    if client is not None:
-                        # OpenAI client stores last response in thread-local
-                        # We estimate tokens from response length as a fallback
-                        tracker = get_tracker()
-                        est_prompt = len(effective_prompt) // 4
-                        est_completion = len(response) // 4 if response else 0
-                        tracker.record(
-                            prompt_tokens=est_prompt,
-                            completion_tokens=est_completion,
-                            model=model or getattr(self.llm, 'name', MODEL_CLASSIFIER),
-                        )
-                except Exception as exc:
-                    logger.debug(f"Token tracking failed (best-effort): {exc}")
-
                 if response and response.strip():
                     return response
                 last_error = LLMPredictionError("LLM returned empty response")
@@ -632,7 +639,9 @@ class BaseDiagramHandler(ABC):
                 if "RateLimitError" in exc_name or "429" in exc_str or "rate limit" in exc_str:
                     raise LLMPredictionError(
                         f"API rate limit reached. Please wait a moment and try again. ({exc})"
-                    )
+                    ) from exc
+                if non_recoverable_cause(exc) is not None:
+                    raise LLMPredictionError(f"LLM call failed (non-retryable): {exc}") from exc
                 last_error = LLMPredictionError(str(exc))
                 last_error_type = "llm_failure"
                 logger.warning(
@@ -813,9 +822,24 @@ class BaseDiagramHandler(ABC):
                     parse_kwargs["temperature"] = temperature
                 elif reasoning_effort_for(effective_model):
                     parse_kwargs["reasoning_effort"] = reasoning_effort_for(effective_model)
-                completion = client.beta.chat.completions.parse(**parse_kwargs)
+                try:
+                    completion = client.beta.chat.completions.parse(**parse_kwargs)
+                except LengthFinishReasonError as exc:
+                    # parse() raises on finish_reason=length; the call is still billed.
+                    if exc.completion.usage:
+                        tracker.record_from_usage(exc.completion.usage, model=effective_model)
+                    if truncated or attempt + 1 >= total_attempts:
+                        raise LLMPredictionError(
+                            f"Structured output truncated at max_tokens={max_tokens}"
+                        ) from exc
+                    logger.warning(
+                        f"⚠️ [{self.get_diagram_type()}] Response TRUNCATED "
+                        f"(max_tokens={max_tokens}); retrying once with a concise instruction"
+                    )
+                    truncated = True
+                    continue
 
-                # Track tokens & detect truncation
+                # Track tokens
                 finish_reason = completion.choices[0].finish_reason if completion.choices else None
                 usage = completion.usage if hasattr(completion, 'usage') else None
                 raw_content = getattr(completion.choices[0].message, 'content', None) if completion.choices else None
@@ -829,16 +853,6 @@ class BaseDiagramHandler(ABC):
                         f"total={usage.total_tokens}, "
                         f"finish_reason={finish_reason}"
                     )
-
-                if finish_reason == "length":
-                    logger.warning(
-                        f"⚠️ [{self.get_diagram_type()}] Response TRUNCATED "
-                        f"(finish_reason=length, completion_tokens={usage.completion_tokens if usage else '?'}, "
-                        f"max_tokens={max_tokens}). "
-                        f"Raw content preview ({len(raw_content) if raw_content else 0} chars): "
-                        f"{raw_content[:2000] if raw_content else 'N/A'}...TRUNCATED"
-                    )
-                    truncated = True
 
                 if completion.choices:
                     raise_if_openai_refusal(completion.choices[0])
@@ -865,7 +879,7 @@ class BaseDiagramHandler(ABC):
                 # Non-retryable errors: bail immediately instead of wasting retries
                 exc_name = type(exc).__name__
                 if "BadRequestError" in exc_name or "AuthenticationError" in exc_name or "RateLimitError" in exc_name or "429" in str(exc):
-                    raise LLMPredictionError(f"Structured parse failed (non-retryable): {exc}")
+                    raise LLMPredictionError(f"Structured parse failed (non-retryable): {exc}") from exc
                 last_error = LLMPredictionError(f"Structured parse failed: {exc}")
                 logger.warning(
                     f"[{self.get_diagram_type()}] Structured parse attempt "
@@ -985,6 +999,8 @@ class BaseDiagramHandler(ABC):
         except ModelRefusal:
             raise  # the single-pass fallback would only be declined again
         except Exception as exc:
+            if non_recoverable_cause(exc) is not None:
+                raise  # the single-pass call would fail the same way
             logger.warning(
                 f"[{self.get_diagram_type()}] Reasoning pass failed ({exc}), "
                 "falling back to single-pass structured"
@@ -1205,6 +1221,8 @@ class BaseDiagramHandler(ABC):
         except ModelRefusal:
             raise  # the single-pass fallback would only be declined again
         except Exception as exc:
+            if non_recoverable_cause(exc) is not None:
+                raise  # the single-pass call would fail the same way
             logger.warning(
                 f"[{self.get_diagram_type()}] Reasoning pass failed ({exc}), "
                 "falling back to single-pass"
