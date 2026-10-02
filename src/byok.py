@@ -438,10 +438,15 @@ class BYOKClient:
         try:
             from tracking import get_tracker
 
+            # input_tokens excludes the cache reads and writes, which bill separately.
+            cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+            cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
             get_tracker().record(
-                prompt_tokens=getattr(usage, "input_tokens", 0) or 0,
+                prompt_tokens=(getattr(usage, "input_tokens", 0) or 0) + cache_read + cache_write,
                 completion_tokens=getattr(usage, "output_tokens", 0) or 0,
                 model=model,
+                cached_prompt_tokens=cache_read,
+                cache_write_tokens=cache_write,
             )
         except Exception as exc:  # pragma: no cover - tracking is best effort
             logger.debug("BYOK token tracking failed (best-effort): %s", exc)

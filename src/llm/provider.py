@@ -25,6 +25,7 @@ import logging
 import threading
 from typing import Any, Dict, Iterator, List, Optional, Type
 
+from openai import LengthFinishReasonError
 from pydantic import BaseModel
 
 from model_config import MODEL_CLASSIFIER, reasoning_effort_for, supports_custom_temperature
@@ -137,7 +138,13 @@ class LLMProvider:
             parse_kwargs["temperature"] = temperature
         elif reasoning_effort_for(effective_model):
             parse_kwargs["reasoning_effort"] = reasoning_effort_for(effective_model)
-        completion = client.beta.chat.completions.parse(**parse_kwargs)
+        try:
+            completion = client.beta.chat.completions.parse(**parse_kwargs)
+        except LengthFinishReasonError as exc:
+            # A truncated parse is still billed.
+            if exc.completion.usage:
+                self.tracker.record_from_usage(exc.completion.usage, model=effective_model)
+            raise
 
         if hasattr(completion, 'usage') and completion.usage:
             self.tracker.record_from_usage(completion.usage, model=effective_model)

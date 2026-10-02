@@ -45,6 +45,18 @@ logger = logging.getLogger(__name__)
 _LOG_PROMPTS = os.getenv("LOG_PROMPTS", "").strip().lower() in {"1", "true", "yes"}
 _log_content = logger.info if _LOG_PROMPTS else logger.debug
 
+
+def _track_usage(usage: Any, model: str) -> None:
+    """Record a completion's real usage (best effort)."""
+    if usage is None:
+        return
+    try:
+        from tracking import get_tracker
+        get_tracker().record_from_usage(usage, model=model)
+    except Exception as exc:
+        logger.debug(f"Token tracking failed (best-effort): {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Lightweight schema validation helpers
 # ---------------------------------------------------------------------------
@@ -499,7 +511,8 @@ class BaseDiagramHandler(ABC):
         model, so per-call routing (see ``model_config``) must go through
         the OpenAI client directly when an override is requested. Falls
         back to the BAF path when no override is given or the client is
-        unavailable. Token tracking stays with the caller.
+        unavailable. Records the call's usage (a length estimate on the BAF
+        path, which exposes none; BYOK records its own).
 
         BYOK: when the current request carries a user-supplied key (see
         ``byok.current_byok``), this free-text generation call is routed
@@ -535,11 +548,22 @@ class BaseDiagramHandler(ABC):
             elif reasoning_effort_for(model):
                 raw_kwargs["reasoning_effort"] = reasoning_effort_for(model)
             completion = client.chat.completions.create(**raw_kwargs)
+            _track_usage(getattr(completion, "usage", None), model)
             if not completion.choices:
                 return ""
             raise_if_openai_refusal(completion.choices[0])
             return completion.choices[0].message.content or ""
-        return self.llm.predict(prompt)
+        response = self.llm.predict(prompt)
+        try:
+            from tracking import get_tracker
+            get_tracker().record(
+                prompt_tokens=len(prompt) // 4,
+                completion_tokens=len(response) // 4 if response else 0,
+                model=getattr(self.llm, 'name', MODEL_CLASSIFIER),
+            )
+        except Exception as exc:
+            logger.debug(f"Token tracking failed (best-effort): {exc}")
+        return response
 
     # NOTE: This adds an extra LLM round-trip (2–4s latency).
     def predict_with_retry(
@@ -590,24 +614,6 @@ class BaseDiagramHandler(ABC):
                     f"prompt_len={len(effective_prompt)})"
                 )
                 response = self._predict_raw(effective_prompt, model=model, max_tokens=max_tokens)
-
-                # Track tokens from the last API call if available
-                try:
-                    from tracking import get_tracker
-                    client = getattr(self.llm, 'client', None)
-                    if client is not None:
-                        # OpenAI client stores last response in thread-local
-                        # We estimate tokens from response length as a fallback
-                        tracker = get_tracker()
-                        est_prompt = len(effective_prompt) // 4
-                        est_completion = len(response) // 4 if response else 0
-                        tracker.record(
-                            prompt_tokens=est_prompt,
-                            completion_tokens=est_completion,
-                            model=model or getattr(self.llm, 'name', MODEL_CLASSIFIER),
-                        )
-                except Exception as exc:
-                    logger.debug(f"Token tracking failed (best-effort): {exc}")
 
                 if response and response.strip():
                     return response
