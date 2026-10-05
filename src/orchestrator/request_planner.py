@@ -617,15 +617,23 @@ def _validate_and_fix_plan(
             if isinstance(dt, str):
                 planned_diagrams.add(dt)
 
-    # Check each generation op for missing prerequisites and inject them
+    # Check each generation op (and each GUI build) for missing prerequisites
+    # and inject them
     injected: List[Dict[str, Any]] = []
     for op in operations:
-        if op.get("type") != "generation":
+        if op.get("type") == "generation":
+            gen_type = op.get("generatorType")
+            if not isinstance(gen_type, str):
+                continue
+            prereqs = GENERATOR_PREREQUISITES.get(gen_type, [])
+        elif op.get("type") == "model":
+            # Screens bind to the class diagram; without one the GUI handler
+            # invents its own entities and no model exists.
+            if op.get("diagramType") != "GUINoCodeDiagram" or op.get("mode") != "complete_system":
+                continue
+            prereqs = ["ClassDiagram"]
+        else:
             continue
-        gen_type = op.get("generatorType")
-        if not isinstance(gen_type, str):
-            continue
-        prereqs = GENERATOR_PREREQUISITES.get(gen_type, [])
         for prereq in prereqs:
             if prereq not in planned_diagrams and prereq not in workspace_diagrams:
                 # Build a helpful sub-request from the original user message

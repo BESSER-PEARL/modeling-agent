@@ -177,3 +177,53 @@ class TestPlanAssistantOperations:
         ops = plan_assistant_operations(request, "complete_system", None, _noop_predict)
         # Even with empty message, should produce at least a fallback
         assert len(ops) >= 1
+
+
+# ---------------------------------------------------------------------------
+# GUI builds need a class diagram first
+# ---------------------------------------------------------------------------
+
+class TestGuiNeedsClassDiagram:
+    """Live report: "Build a complete library management platform with models
+    and UI" on an empty workspace. The classifier targeted GUINoCodeDiagram,
+    the plan was a lone GUI op, and the user got 9 invented screens with no
+    class diagram on the canvas (and no Basic/AI screen choice, which is only
+    asked when a class diagram exists)."""
+
+    MSG = "Build a complete library management platform with models and UI"
+
+    @staticmethod
+    def _shape(ops):
+        return [(o["type"], o.get("diagramType") or o.get("generatorType")) for o in ops]
+
+    def test_gui_create_on_empty_workspace_models_class_diagram_first(self):
+        request = _make_request(self.MSG)
+        ops = plan_assistant_operations(
+            request, "complete_system", "create_complete_system_intent",
+            _noop_predict, llm_target_type="GUINoCodeDiagram",
+        )
+        assert self._shape(ops) == [
+            ("model", "ClassDiagram"),
+            ("model", "GUINoCodeDiagram"),
+        ]
+        assert ops[0]["mode"] == "complete_system"
+        assert self.MSG in ops[0]["request"]
+
+    def test_existing_class_diagram_is_not_rebuilt(self):
+        request = _make_request("create a GUI for my model")
+        request.context.project_snapshot = {
+            "diagrams": {"ClassDiagram": [{"model": {"elements": {"c1": {"name": "Book"}}}}]},
+        }
+        ops = plan_assistant_operations(
+            request, "complete_system", "create_complete_system_intent",
+            _noop_predict, llm_target_type="GUINoCodeDiagram",
+        )
+        assert self._shape(ops) == [("model", "GUINoCodeDiagram")]
+
+    def test_gui_modify_does_not_add_class_diagram(self):
+        request = _make_request("add a footer to the home page", "GUINoCodeDiagram")
+        ops = plan_assistant_operations(
+            request, "modify_model", "modify_model_intent",
+            _noop_predict, llm_target_type="GUINoCodeDiagram",
+        )
+        assert ("model", "ClassDiagram") not in self._shape(ops)
