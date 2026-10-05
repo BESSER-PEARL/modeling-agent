@@ -10,6 +10,7 @@ from orchestrator.request_planner import (
     _should_use_llm_planner,
     _normalize_operations,
     _fallback_operations,
+    _validate_and_fix_plan,
 )
 from protocol.types import AssistantRequest, WorkspaceContext
 
@@ -196,18 +197,43 @@ class TestGuiNeedsClassDiagram:
     def _shape(ops):
         return [(o["type"], o.get("diagramType") or o.get("generatorType")) for o in ops]
 
-    def test_gui_create_on_empty_workspace_models_class_diagram_first(self):
+    @pytest.mark.parametrize("target", ["GUINoCodeDiagram", "ClassDiagram", None])
+    def test_ui_request_on_empty_workspace_takes_the_web_app_route(self, target):
+        # The classifier's target flips between runs; live, ClassDiagram gave
+        # a model with no screens and GUINoCodeDiagram gave screens with no model.
         request = _make_request(self.MSG)
         ops = plan_assistant_operations(
             request, "complete_system", "create_complete_system_intent",
-            _noop_predict, llm_target_type="GUINoCodeDiagram",
+            _noop_predict, llm_target_type=target,
+        )
+        assert self._shape(ops) == [
+            ("model", "ClassDiagram"),
+            ("model", "GUINoCodeDiagram"),
+            ("generation", "web_app"),
+        ]
+        assert ops[0]["mode"] == "complete_system"
+        assert self.MSG in ops[0]["request"]
+
+    def test_lone_gui_op_on_empty_workspace_gets_class_diagram_first(self):
+        # Prerequisite pass, independent of the web-app route.
+        request = _make_request(self.MSG)
+        ops = _validate_and_fix_plan(
+            [{"type": "model", "diagramType": "GUINoCodeDiagram",
+              "mode": "complete_system", "request": self.MSG}],
+            request,
         )
         assert self._shape(ops) == [
             ("model", "ClassDiagram"),
             ("model", "GUINoCodeDiagram"),
         ]
-        assert ops[0]["mode"] == "complete_system"
-        assert self.MSG in ops[0]["request"]
+
+    def test_create_without_ui_words_stays_a_class_diagram(self):
+        request = _make_request("Build a complete library management platform")
+        ops = plan_assistant_operations(
+            request, "complete_system", "create_complete_system_intent",
+            _noop_predict, llm_target_type="ClassDiagram",
+        )
+        assert self._shape(ops) == [("model", "ClassDiagram")]
 
     def test_existing_class_diagram_is_not_rebuilt(self):
         request = _make_request("create a GUI for my model")

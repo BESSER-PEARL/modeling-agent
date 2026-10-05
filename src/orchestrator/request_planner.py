@@ -9,6 +9,7 @@ from handlers.generation_handler import (
     detect_generator_type,
 )
 from protocol.types import AssistantRequest, SUPPORTED_DIAGRAM_TYPES
+from unified_classifier import EXPLICIT_SCREEN_VOCAB_RE
 
 from .workspace_orchestrator import KEYWORD_TARGETS, determine_target_diagram_types
 
@@ -712,6 +713,29 @@ def plan_assistant_operations(
             validated = _validate_and_fix_plan(normalized, request)
             logger.debug("Heuristic planner produced %d operations", len(validated))
             return validated
+
+    # ----- Phase 0b: from-scratch app that asks for a UI -----
+    # "Build a library platform with models and UI" takes the same route as
+    # "create a web app for X". Left to the classifier, the target flips
+    # between ClassDiagram (no screens) and GUINoCodeDiagram (screens on no
+    # model).
+    if (
+        matched_intent == "create_complete_system_intent"
+        and EXPLICIT_SCREEN_VOCAB_RE.search(request.message or "")
+        and not {"ClassDiagram", "GUINoCodeDiagram"} & _get_workspace_diagram_types(request)
+    ):
+        message = request.message.strip()
+        return _validate_and_fix_plan([
+            {"type": "model", "diagramType": "ClassDiagram", "mode": "complete_system",
+             "request": (
+                 f"create a class diagram for: {message}\n"
+                 "Model the domain data only. The screens are built in the next "
+                 "step, so add no UI, screen or view classes."
+             )},
+            {"type": "model", "diagramType": "GUINoCodeDiagram", "mode": "complete_system",
+             "request": f"create a GUI for: {message}"},
+            {"type": "generation", "generatorType": "web_app", "config": {}},
+        ], request)
 
     # ----- Phase 1: keyword-based fallback -----
     fallback = _fallback_operations(
