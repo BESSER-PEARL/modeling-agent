@@ -124,6 +124,13 @@ _UNSUPPORTED_STACK_RE = re.compile(
     re.I,
 )
 _UNSUPPORTED_STACK_LITERALS = ("c++", "c#", ".net", "f#")
+# Words that explicitly ask for screens. Shared with the planner's
+# from-scratch web-app route (orchestrator/request_planner.py).
+EXPLICIT_SCREEN_VOCAB_RE = re.compile(
+    r"\b(gui|screens?|ui|user interface|mockups?|wireframes?|"
+    r"pages?|frontend|front-end)\b",
+    re.I,
+)
 _BARE_LANG_RE = re.compile(
     r"\b(?:c|go)\b[\s\-]{0,3}(?:classes|class|code|program|programs|language|"
     r"structs?|headers?|files?|app|application)\b",
@@ -1390,11 +1397,7 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
         result.intent == "create_complete_system_intent"
         and result.target_diagram_type == "GUINoCodeDiagram"
         and result.model_disposition == "new_from_scratch"
-        and not re.search(
-            r"\b(gui|screens?|ui|user interface|mockups?|wireframes?|"
-            r"pages?|frontend|front-end)\b",
-            (message or "").lower(),
-        )
+        and not EXPLICIT_SCREEN_VOCAB_RE.search(message or "")
     ):
         logger.warning(
             "Data-model-first guard: from-scratch build request with no explicit "
