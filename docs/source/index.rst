@@ -46,6 +46,18 @@ natural language. The BESSER backend generates application code; the
 Spec-Driven Agent customises that code when requested. Starting this service
 alone does not start the editor or a code-generation worker.
 
+Related documentation
+---------------------
+
+This site is one of three BESSER documentation sites. The other two are:
+
+* `BESSER docs <https://besser.readthedocs.io/en/latest/>`__: the B-UML modeling
+  language, the Python library, and the code generators.
+* `Web Modeling Editor docs
+  <https://besser.readthedocs.io/projects/besser-web-modeling-editor/en/latest/>`__:
+  using the browser editor, from projects and diagrams to the AI assistant and
+  code generation.
+
 .. toctree::
    :hidden:
    :maxdepth: 1
@@ -79,3 +91,10 @@ alone does not start the editor or a code-generation worker.
 
    contributing
    releases
+
+.. toctree::
+   :hidden:
+   :caption: Related documentation
+
+   BESSER docs <https://besser.readthedocs.io/en/latest/>
+   Web Modeling Editor docs <https://besser.readthedocs.io/projects/besser-web-modeling-editor/en/latest/>

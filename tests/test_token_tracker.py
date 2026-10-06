@@ -164,6 +164,7 @@ def test_summary_format(tracker):
         "prompt_tokens",
         "completion_tokens",
         "total_tokens",
+        "cached_prompt_tokens",
         "estimated_cost_usd",
         "call_count",
         "cache_hits",

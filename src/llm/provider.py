@@ -25,6 +25,7 @@ import logging
 import threading
 from typing import Any, Dict, Iterator, List, Optional, Type
 
+from openai import LengthFinishReasonError
 from pydantic import BaseModel
 
 from model_config import MODEL_CLASSIFIER, reasoning_effort_for, supports_custom_temperature
@@ -105,13 +106,22 @@ class LLMProvider:
             client = byok_client.openai_client
             if client is None:
                 # Anthropic / Mistral / custom endpoint: JSON mode + validation.
-                prompt = "\n".join(m["content"] for m in messages) + (
+                schema_note = (
                     "\n\nReturn ONLY a JSON object matching this JSON schema:\n"
                     + json.dumps(schema.model_json_schema())
                 )
+                system = None
+                if byok_client.provider == "anthropic":
+                    # Static system prompt + schema form the cached prefix,
+                    # ahead of the per-message content.
+                    system = "\n".join(m["content"] for m in messages if m["role"] == "system")
+                    system += schema_note
+                    prompt = "\n".join(m["content"] for m in messages if m["role"] != "system")
+                else:
+                    prompt = "\n".join(m["content"] for m in messages) + schema_note
                 raw = byok_client.predict_raw(
                     prompt, model=effective_model, json_mode=True,
-                    temperature=temperature, max_tokens=max_tokens,
+                    temperature=temperature, max_tokens=max_tokens, system=system,
                 )
                 return validate_llm_json(schema, _strip_code_fences(raw))
             cfg = get_current()
@@ -137,7 +147,13 @@ class LLMProvider:
             parse_kwargs["temperature"] = temperature
         elif reasoning_effort_for(effective_model):
             parse_kwargs["reasoning_effort"] = reasoning_effort_for(effective_model)
-        completion = client.beta.chat.completions.parse(**parse_kwargs)
+        try:
+            completion = client.beta.chat.completions.parse(**parse_kwargs)
+        except LengthFinishReasonError as exc:
+            # A truncated parse is still billed.
+            if exc.completion.usage:
+                self.tracker.record_from_usage(exc.completion.usage, model=effective_model)
+            raise
 
         if hasattr(completion, 'usage') and completion.usage:
             self.tracker.record_from_usage(completion.usage, model=effective_model)

@@ -10,7 +10,8 @@ different model names) can re-point a tier without code changes:
   calls, the memory summarizer, UML RAG, help/fallback streaming, and
   ``gpt_predict_json``.
 * ``MODEL_GENERATION_LARGE`` — complete-system structured diagram
-  generation (the one place where output quality is the product).
+  generation (the one place where output quality is the product), except
+  BPMN and User Profile, which run on the CLASSIFIER tier.
 * ``MODEL_GENERATION_GUI`` — complete-system GUI generation.
 * ``MODEL_GENERATION_SMALL`` — single-element & modification structured
   calls, ``describe_model`` streaming, and the file-conversion TEXT path

@@ -8,11 +8,11 @@ System Overview
 ---------------
 
 The BESSER Modeling Agent is a WebSocket-based conversational AI system built on
-the `BESSER Agentic Framework <https://besser-pearl.github.io/BESSER/>`_. It
+the `BESSER Agentic Framework <https://besser-agentic-framework.readthedocs.io/latest/>`_. It
 connects the `BESSER Web Modeling Editor <https://editor.besser-pearl.org>`_ (a
 React/TypeScript SPA) with OpenAI models, routed per call site through the
 model tier table in ``src/model_config.py``. Code generation is powered by
-`BESSER generators <https://besser-pearl.github.io/BESSER/generators.html>`_
+`BESSER generators <https://besser.readthedocs.io/en/latest/generators.html>`_
 (Django, Python, Java, SQL, SQLAlchemy, and more).
 
 .. mermaid::
@@ -59,7 +59,7 @@ Technology Stack
      - Structured diagram output; gpt-5 / o-series use ``reasoning_effort``
        instead of ``temperature``
    * - Vision LLM
-     - ``MODEL_VISION`` (default ``gpt-5``)
+     - ``MODEL_VISION`` (default ``gpt-4o``)
      - Image / PDF → diagram conversion
    * - Local intent classifier
      - ``SimpleIntentClassifier`` (TensorFlow)
@@ -126,8 +126,10 @@ The system is organized into these layers, processed in order for each request:
 12. **Schemas** (``src/schemas/``): Pydantic models for each diagram type,
     used by the structured-output pass of diagram handlers.
 
-13. **Token Tracking** (``src/tracking/``): Per-session and global token
-    usage and cost accounting.
+13. **Token Tracking** (``src/tracking/``): Process-wide token usage and
+    estimated cost, logged periodically at INFO. Per-session buckets exist
+    but no call site passes a session id, so only the global totals are
+    populated — see :ref:`cost-and-model-routing`.
 
 14. **Suggestion Engine** (``src/suggestions.py``): Contextual next-step
     action suggestions returned to the frontend after each operation.
@@ -379,13 +381,17 @@ LLM's raw SDK call is patched once, at the client's network-call layer, so
 every path through it — BAF ``predict``/``chat``, the provider's ``parse()``
 and ``stream()``, and ``gpt_predict_json`` — inherits the same bounded
 backoff. ``MAX_ATTEMPTS = 4`` (1 try + 3 retries), base delay 0.6 s, per-attempt
-cap 6 s, ±0.3 s jitter — roughly 5 s of worst-case added latency, deliberately
-bounded so a live chat never stalls. BYOK's per-request client is a separate
-object this patch never touches.
+cap 6 s, ±0.3 s jitter — roughly 5 s of backoff sleep per call, on top of the
+failed attempts themselves. The SDK's own retries are disabled on these
+clients (``max_retries=0``) so the two do not multiply. BYOK's per-request
+client is a separate object this patch never touches; it keeps the SDK
+default of 2 retries.
 
 **Handler-level retry** (``base_handler.predict_with_retry``): jittered
 exponential backoff over ``1 + max_retries`` attempts (default 1 retry),
-then the graceful-degradation chain below.
+then the graceful-degradation chain below. Rate-limit, authentication and
+bad-request errors are not retried here and skip the degradation chain, so
+the user sees them. Worst cases are in :ref:`cost-and-model-routing`.
 
 **Parsed-Request Cache:** ``parse_assistant_request()`` caches its result
 per-event using ``id(session.event)`` as the key, avoiding redundant JSON
@@ -405,7 +411,10 @@ Every modeling operation follows a 4-level degradation chain:
 3. Type-specific fallback generator
 4. Error response with ``retryable: true``
 
-No exceptions propagate to the caller.
+No exceptions propagate to the caller, except provider rate-limit,
+authentication, bad-request and repeated-truncation errors: those reach
+``execution/model_operations.py``, which replies with an ``agent_error``
+(``rate_limit`` on the shared key offers adding an own API key).
 
 Design Patterns
 ---------------

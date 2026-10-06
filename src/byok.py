@@ -56,6 +56,12 @@ from agent_config import (
     LLM_TEXT_TEMPERATURE,
 )
 from model_config import (
+    MODEL_CLASSIFIER,
+    MODEL_GENERATION_GUI,
+    MODEL_GENERATION_LARGE,
+    MODEL_GENERATION_SMALL,
+    MODEL_REASONING,
+    MODEL_VISION,
     anthropic_effort,
     is_openai_reasoning_model,
     reasoning_effort_for,
@@ -86,16 +92,14 @@ class BYOKError(RuntimeError):
 # ---------------------------------------------------------------------------
 # Tier -> per-provider canonical model mapping
 # ---------------------------------------------------------------------------
-# The agent requests OpenAI-canonical model names per call site (see
-# ``model_config``): gpt-4o-mini (classifier), gpt-4o (small generation),
-# gpt-5.5 (large generation), gpt-5 (reasoning / vision). BYOK bypasses any
-# PIA/Bedrock gateway, so we collapse those into two tiers — "large"
-# (quality / heavy) and "small" (cheap / latency-sensitive) — and map each
-# tier to the chosen provider's canonical equivalent.
+# Each call site requests its ``model_config`` tier model. BYOK collapses the
+# tiers into two and maps each to the chosen provider's model: "large"
+# (GENERATION_LARGE, GENERATION_GUI, REASONING, VISION) and "small"
+# (GENERATION_SMALL edits and the CLASSIFIER tier).
 #
 # A model the user explicitly chose (``user_api_model``) is used for every call,
 # both tiers. Without one, ``small`` uses the provider's cheap sibling to keep
-# routing / repair / classifier-tier calls inexpensive on the user's key.
+# small edits and routing / repair calls inexpensive on the user's key.
 _PROVIDER_TIER_MODELS = {
     "openai":    {"large": "gpt-5.5",              "small": "gpt-4o-mini"},
     "anthropic": {"large": "claude-sonnet-5",      "small": "claude-haiku-4-5"},
@@ -107,15 +111,17 @@ _PROVIDER_TIER_MODELS = {
 
 
 def _tier_of(requested_model: Optional[str]) -> str:
-    """Bucket a requested OpenAI-canonical model name into a BYOK tier.
-
-    ``None``/empty means the call site used the instance default, which is
-    the cheap CLASSIFIER tier -> ``"small"``. gpt-5+ / o-series reasoning
-    models are heavy -> ``"large"``. Everything else (gpt-4o, gpt-4o-mini)
-    -> ``"small"``.
-    """
+    """Bucket a requested model into a BYOK tier by the ``model_config`` tier it
+    names. ``None``/empty is the instance default, the CLASSIFIER tier. A large
+    tier wins when two tiers share a model; a name that is no tier's falls back
+    to "large" for gpt-5+ / o-series reasoning models, else "small"."""
     m = (requested_model or "").strip().lower()
     if not m:
+        return "small"
+    large = (MODEL_GENERATION_LARGE, MODEL_GENERATION_GUI, MODEL_REASONING, MODEL_VISION)
+    if m in {t.lower() for t in large}:
+        return "large"
+    if m in {MODEL_GENERATION_SMALL.lower(), MODEL_CLASSIFIER.lower()}:
         return "small"
     if is_openai_reasoning_model(m):
         return "large"
@@ -321,6 +327,7 @@ class BYOKClient:
         temperature: Optional[float] = None,
         reasoning_effort: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        system: Optional[str] = None,
     ) -> str:
         """Single free-text chat-completion call, returning the text.
 
@@ -328,12 +335,16 @@ class BYOKClient:
         it is mapped to this provider's equivalent via :func:`resolve_model`.
         ``max_tokens`` overrides the default completion cap (used by the GUI
         complete-system path to keep large multi-page JSON from truncating).
+        ``system`` is a static instruction prefix: a cached system block on
+        Anthropic, prepended to the prompt elsewhere.
         """
         target = resolve_model(self.provider, model, self._user_model)
         temp = LLM_TEMPERATURE if temperature is None else temperature
         cap = max_tokens or LLM_MAX_TOKENS_LARGE
         if self.provider == "anthropic":
-            return self._anthropic_call(prompt, target, json_mode, temp, cap)
+            return self._anthropic_call(prompt, target, json_mode, temp, cap, system)
+        if system:
+            prompt = f"{system}\n{prompt}"
         return self._openai_call(prompt, target, json_mode, temp, reasoning_effort, cap)
 
     def predict_text(self, prompt: str) -> str:
@@ -387,6 +398,7 @@ class BYOKClient:
         json_mode: bool,
         temperature: float,
         max_tokens: int = LLM_MAX_TOKENS_LARGE,
+        system: Optional[str] = None,
     ) -> str:
         content = prompt
         if json_mode:
@@ -399,6 +411,11 @@ class BYOKClient:
             "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": content}],
         }
+        if system:
+            # Static prefix first, cached: later calls bill it at the cache-read rate.
+            kwargs["system"] = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}},
+            ]
         if supports_custom_temperature(model):
             # Anthropic accepts temperature in [0, 1]; the agent uses 0.2/0.4.
             kwargs["temperature"] = max(0.0, min(1.0, temperature))
@@ -438,10 +455,15 @@ class BYOKClient:
         try:
             from tracking import get_tracker
 
+            # input_tokens excludes the cache reads and writes, which bill separately.
+            cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+            cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
             get_tracker().record(
-                prompt_tokens=getattr(usage, "input_tokens", 0) or 0,
+                prompt_tokens=(getattr(usage, "input_tokens", 0) or 0) + cache_read + cache_write,
                 completion_tokens=getattr(usage, "output_tokens", 0) or 0,
                 model=model,
+                cached_prompt_tokens=cache_read,
+                cache_write_tokens=cache_write,
             )
         except Exception as exc:  # pragma: no cover - tracking is best effort
             logger.debug("BYOK token tracking failed (best-effort): %s", exc)

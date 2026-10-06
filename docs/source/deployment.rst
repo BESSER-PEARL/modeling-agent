@@ -253,12 +253,14 @@ Scaling Considerations
 - **Rate limiting:** handled by the provider API. The shared LLM client is
   patched once at its network-call layer (``src/utilities/llm_retry.py``) to
   retry 429 and 5xx with bounded backoff — ``MAX_ATTEMPTS = 4``, ~5 s of
-  worst-case added latency. Non-429 4xx responses fail fast rather than
+  backoff sleep per call, with the SDK's own retries off so they do not
+  multiply. Non-429 4xx responses fail fast rather than
   burning the backoff budget, because under concurrency a pile-up of workers
   each parked on a doomed retry is what wedges the service.
 - **Per-message LLM cost:** routing costs exactly one classifier-tier call per
   message (``get_or_classify`` caches on the BAF event id), not one per
-  transition condition.
+  transition condition. Calls per turn type, tier prices and where the
+  running totals are logged: :ref:`cost-and-model-routing`.
 - **Request parsing:** parsed requests are cached per-event via
   ``id(session.event)``, avoiding 3–5 redundant JSON parses per message.
 - **Session reaping:** BAF keeps sessions (and their event-loop threads) alive

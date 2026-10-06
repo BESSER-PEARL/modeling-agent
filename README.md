@@ -164,7 +164,11 @@ Optional environment overrides — the full list is in
 | `BESSER_BACKEND_URL` | BESSER backend base URL (diagram validation + telemetry) |
 | `BESSER_AGENT_ALLOW_CUSTOM_BASE_URL` | Whether a BYOK request may supply its own API base URL (required for PIA / Ollama / other OpenAI-compatible endpoints) |
 | `BESSER_AGENT_STT_LANGUAGE` | Pin speech-to-text to a language instead of auto-detect |
+| `BESSER_AGENT_COST_LOG_INTERVAL` | Seconds between INFO log lines with the token and cost totals (default 600, `0` disables) |
 | `LOG_PROMPTS` | Log full LLM prompts (local debugging only) |
+
+Which model each call uses, what a turn costs and how retries are bounded:
+see "Cost and Model Routing" in `docs/source/configuration.rst`.
 
 ## Deployment
 
