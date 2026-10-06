@@ -605,18 +605,34 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
     # Server-side ref guardrail (item 1)
     # ------------------------------------------------------------------
 
-    def _ref_exists(self, mod: Dict[str, Any], elements: Dict[str, Any]) -> bool:
-        """Return True if every element ref in this modification exists in the model."""
+    _NODE_ADDING_ACTIONS = ("add_task", "add_gateway", "add_event")
+
+    def _ref_exists(
+        self, mod: Dict[str, Any], elements: Dict[str, Any], added: frozenset = frozenset(),
+    ) -> bool:
+        """Return True if every element ref in this modification exists in the
+        model or names a node added by the same request (*added*, lowercased)."""
+        def _ok(ref: Optional[str]) -> bool:
+            return (
+                ref is None
+                or self._bpmn_resolve(ref, elements) is not None
+                or ref.strip().lower() in added
+            )
+
         action = mod.get("action", "")
         if action in ("remove_element", "modify_node"):
             ref = (mod.get("target") or {}).get("nodeId") or (mod.get("target") or {}).get("nodeName")
-            return ref is None or self._bpmn_resolve(ref, elements) is not None
-        if action in ("add_flow", "remove_flow"):
+            return _ok(ref)
+        if action == "add_flow":
+            changes = mod.get("changes") or {}
+            return _ok(changes.get("source")) and _ok(changes.get("target"))
+        if action == "remove_flow":
             changes = mod.get("changes") or {}
             src, tgt = changes.get("source"), changes.get("target")
-            src_ok = src is None or self._bpmn_resolve(src, elements) is not None
-            tgt_ok = tgt is None or self._bpmn_resolve(tgt, elements) is not None
-            return src_ok and tgt_ok
+            return (
+                (src is None or self._bpmn_resolve(src, elements) is not None)
+                and (tgt is None or self._bpmn_resolve(tgt, elements) is not None)
+            )
         return True
 
     def _validate_mod_refs(self, result: Dict[str, Any]) -> Dict[str, Any]:
@@ -631,10 +647,17 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
 
         if "modifications" in result:
             mods = result["modifications"]
-            valid = [m for m in mods if self._ref_exists(m, elements)]
+            added = frozenset(
+                ((m.get("target") or {}).get("nodeName") or "").strip().lower()
+                for m in mods
+                if m.get("action") in self._NODE_ADDING_ACTIONS
+                and (m.get("target") or {}).get("nodeName")
+            )
+            valid = [m for m in mods if self._ref_exists(m, elements, added)]
             dropped = len(mods) - len(valid)
-            if dropped:
-                logger.info(f"[BPMN] Dropped {dropped} modification(s) with unresolved element ref(s)")
+            if not dropped:
+                return result
+            logger.info(f"[BPMN] Dropped {dropped} modification(s) with unresolved element ref(s)")
             if not valid:
                 return {
                     "action": "assistant_message",
@@ -643,8 +666,16 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
                         "Please check the names and try again."
                     ),
                 }
-            result = dict(result)
-            result["modifications"] = valid
+            # The message listed every op; rebuild it from what survived.
+            result = {k: v for k, v in result.items() if k != "modifications"}
+            if len(valid) == 1:
+                result["modification"] = valid[0]
+            else:
+                result["modifications"] = valid
+            result["message"] = (
+                self._default_modification_message(result)
+                + f"\n\nI skipped {dropped} change(s) that referred to elements I couldn't find."
+            )
             return result
 
         if "modification" in result:

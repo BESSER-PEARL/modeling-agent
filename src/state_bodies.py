@@ -67,6 +67,7 @@ from reply_copy import (
     DECLINE_ACK as _DECLINE_ACK,
     META_ANSWER as _META_ANSWER,
     OUT_OF_SCOPE_REDIRECT as _OUT_OF_SCOPE_REDIRECT,
+    unsupported_editor_reply,
 )
 from unified_classifier import get_or_classify
 
@@ -1159,7 +1160,11 @@ def out_of_scope_body(session: Session):
     if request is None:
         return
     session.set(LAST_MATCHED_INTENT, 'out_of_scope_intent')
-    reply_message(session, _OUT_OF_SCOPE_REDIRECT)
+    # In an editor the assistant can't model yet (e.g. the NN editor) the
+    # request is in scope for BESSER, just not for the assistant: say so.
+    _raw_context = (request.raw_payload or {}).get("context")
+    _raw_active = _raw_context.get("activeDiagramType") if isinstance(_raw_context, dict) else None
+    reply_message(session, unsupported_editor_reply(_raw_active) or _OUT_OF_SCOPE_REDIRECT)
 
 
 def meta_question_body(session: Session):

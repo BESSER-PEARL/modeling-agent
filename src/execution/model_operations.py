@@ -39,6 +39,7 @@ from session_keys import (
     PENDING_SMART_GEN_INSTRUCTIONS,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
+    UNIFIED_CLASSIFICATION,
 )
 
 logger = logging.getLogger(__name__)
@@ -219,6 +220,19 @@ def _matches_regen_prompt(session: Session, request: AssistantRequest) -> bool:
     return msg == " ".join(_regen_prompt.strip().lower().split())
 
 
+def _classifier_asked_for_new_tab(
+    session: Session, request: AssistantRequest, target_diagram_type: str,
+) -> bool:
+    """True when this turn's verdict is disposition new_tab for this type and a tab is free."""
+    verdict = session.get(UNIFIED_CLASSIFICATION)
+    if getattr(verdict, "model_disposition", None) != "new_tab":
+        return False
+    if getattr(verdict, "target_diagram_type", None) not in (None, target_diagram_type):
+        return False
+    tabs = request.context.get_all_diagrams_of_type(target_diagram_type)
+    return (len(tabs) if tabs else 1) < MAX_TABS
+
+
 def _build_existing_model_confirmation(
     session: Session,
     request: AssistantRequest,
@@ -298,6 +312,8 @@ _CHILD_SCOPE_TARGET_KEYS = (
     "relationshipName", "relationshipId",
     "sourceClass", "targetClass",
     "sourceStateName", "targetStateName",
+    "sourceState", "targetState",
+    "sourceObject", "targetObject",
     "transitionName", "transitionId",
 )
 
@@ -545,7 +561,18 @@ def execute_model_operation(
             )
         else:
             existing_model = resolve_target_model(request, target_diagram_type)
-            if model_has_elements(existing_model):
+            if model_has_elements(existing_model) and _classifier_asked_for_new_tab(
+                session, request, target_diagram_type,
+            ):
+                # "In a new diagram tab, create ..." already answers the
+                # replace/keep/new-tab question.
+                logger.info(
+                    f"[ModelOp] Classifier disposition new_tab — creating the "
+                    f"{target_diagram_type} in a new tab without asking"
+                )
+                _create_new_tab = True
+                _replace_existing = True
+            elif model_has_elements(existing_model):
                 from utilities.model_context import compact_model_summary
 
                 summary = compact_model_summary(existing_model, target_diagram_type)

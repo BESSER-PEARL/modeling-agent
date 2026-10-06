@@ -704,7 +704,8 @@ class TestAdapterBoundary:
         assert "greet" in methods
         assert handler._enum_names_in_model(model) == {"Status"}
         impact = handler._build_impact_context(model)
-        assert "Customer: ClassBidirectional -> Order" in impact
+        # Person is abstract: its inheritance edge is part of the impact map too.
+        assert "Customer: ClassInheritance -> Person, ClassBidirectional -> Order" in impact
         # A removal naming an existing member survives the phantom-target check.
         spec = {"action": "modify_model", "modification": {
             "action": "remove_attribute",

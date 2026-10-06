@@ -262,9 +262,10 @@ class BaseDiagramHandler(ABC):
         'modify_state': 'Updated',
         'add_state': 'Added',
         'remove_state': 'Removed',
-        'add_transition': 'Added transition to',
-        'modify_transition': 'Updated transition in',
-        'remove_transition': 'Removed transition from',
+        'add_transition': 'Added transition',
+        'modify_transition': 'Updated transition',
+        'remove_transition': 'Removed transition',
+        'add_code_block': 'Added code block',
         'modify_intent': 'Updated',
         'add_intent': 'Added',
         'add_rag_element': 'Added knowledge base',
@@ -272,14 +273,15 @@ class BaseDiagramHandler(ABC):
         'add_intent_training_phrase': 'Added training phrase to',
         'modify_object': 'Updated',
         'add_object': 'Added',
+        'modify_attribute_value': 'Updated',
         'add_link': 'Added link to',
         'add_ocl_constraint': 'Added OCL constraint on',
         'add_task': 'Added',
         'add_gateway': 'Added',
         'add_event': 'Added',
-        'add_flow': 'Added flow to',
+        'add_flow': 'Added flow',
         'modify_node': 'Updated',
-        'remove_flow': 'Removed flow from',
+        'remove_flow': 'Removed flow',
     }
 
     @staticmethod
@@ -328,15 +330,19 @@ class BaseDiagramHandler(ABC):
             return f"{rel_source} → {rel_target}"
 
         # Sub-element (attribute or method) on a class
+        if class_name and attr_name and action == 'modify_attribute_value':
+            return f"{attr_name} of {class_name}"
         if class_name and attr_name and action in ('remove_element', 'modify_attribute', 'remove_attribute'):
             return f"attribute {attr_name} from {class_name}"
         if class_name and method_name and action in ('remove_element', 'modify_method', 'remove_method'):
             return f"method {method_name} from {class_name}"
 
-        # Agent transition endpoints (source → target state)
-        src_state = target.get('sourceStateName')
-        tgt_state = target.get('targetStateName')
+        # Transition endpoints (agent: *StateName; state machine: sourceState/targetState)
+        src_state = target.get('sourceStateName') or target.get('sourceState')
+        tgt_state = target.get('targetStateName') or target.get('targetState')
         if src_state and tgt_state:
+            if action == 'remove_element':
+                return f"transition {src_state} → {tgt_state}"
             return f"{src_state} → {tgt_state}"
         if src_state or tgt_state:
             return src_state or tgt_state
@@ -351,17 +357,43 @@ class BaseDiagramHandler(ABC):
         return (class_name or attr_name or method_name or intent_name
                 or rag_name or changes_name or 'element')
 
+    # Element edits whose changes.name is a rename of the element itself.
+    _RENAMING_ACTIONS = frozenset({
+        'modify_class', 'modify_state', 'modify_node', 'modify_object', 'modify_intent',
+    })
+
+    def _describe_mod(self, mod: dict) -> str:
+        """One friendly line for a single modification."""
+        act = mod.get('action', 'modification')
+        name = self._build_mod_target_name(act, mod.get('target', {}) or {}, mod)
+        changes = mod.get('changes') if isinstance(mod.get('changes'), dict) else {}
+        new_name = changes.get('name')
+        if (
+            act in self._RENAMING_ACTIONS
+            and isinstance(new_name, str) and new_name.strip()
+            and new_name.strip() != self._sanitize_target_name(name)
+        ):
+            return (
+                f"Renamed **{self._sanitize_target_name(name)}** to "
+                f"**{self._sanitize_target_name(new_name)}**."
+            )
+        return self._friendly_mod_message(act, name)
+
     def _friendly_batch_message(self, mods: list) -> str:
         """Produce a friendly summary for a batch of modifications."""
-        parts = []
-        for m in mods:
-            act = m.get('action', 'modification')
-            t = m.get('target', {})
-            name = self._build_mod_target_name(act, t, m)
-            parts.append(self._friendly_mod_message(act, name))
+        parts = [self._describe_mod(m) for m in mods if isinstance(m, dict)]
         if len(parts) == 1:
             return parts[0]
         return f"Applied {len(parts)} changes:\n" + "\n".join(f"- {p}" for p in parts)
+
+    def _default_modification_message(self, spec: Dict[str, Any]) -> str:
+        """Friendly summary built from the ops actually in *spec* ('' if none)."""
+        if isinstance(spec.get('modifications'), list):
+            return self._friendly_batch_message(spec['modifications'])
+        mod = spec.get('modification')
+        if isinstance(mod, dict):
+            return self._describe_mod(mod)
+        return ''
 
     def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """
@@ -457,15 +489,9 @@ class BaseDiagramHandler(ABC):
         modification_spec.setdefault('diagramType', self.get_diagram_type())
 
         if 'message' not in modification_spec:
-            if 'modifications' in modification_spec and isinstance(modification_spec['modifications'], list):
-                modification_spec['message'] = self._friendly_batch_message(modification_spec['modifications'])
-            elif 'modification' in modification_spec and isinstance(modification_spec['modification'], dict):
-                mod = modification_spec['modification']
-                act = mod.get('action', 'modification')
-                target = mod.get('target', {})
-                name = self._build_mod_target_name(act, target, mod)
-                name = self._sanitize_target_name(name)
-                modification_spec['message'] = self._friendly_mod_message(act, name)
+            message = self._default_modification_message(modification_spec)
+            if message:
+                modification_spec['message'] = message
 
         # Surface partial-validation skips so the user knows something was
         # dropped (otherwise a 4-of-5 batch silently looks like a 4-of-4).

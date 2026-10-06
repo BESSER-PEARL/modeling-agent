@@ -35,6 +35,24 @@ OUT_OF_SCOPE_REDIRECT = (
     "management system*."
 )
 
+# Editors the frontend has but the assistant cannot model in yet
+# (activeDiagramType outside protocol.types.SUPPORTED_DIAGRAM_TYPES).
+_UNSUPPORTED_EDITOR_LABELS = {"NNDiagram": "Neural Network"}
+
+
+def unsupported_editor_reply(active_diagram_type):
+    """Reply for a request typed in an editor the assistant doesn't support, else None."""
+    label = _UNSUPPORTED_EDITOR_LABELS.get(active_diagram_type)
+    if not label:
+        return None
+    return (
+        f"The assistant doesn't support the **{label}** editor yet, so please "
+        "build it directly on the canvas. I can help with class, object, state "
+        "machine, agent, BPMN, GUI, quantum and user diagrams, and generate code "
+        "from them."
+    )
+
+
 META_ANSWER = (
     "Here's what I do: describe what you want in plain words and I turn it "
     "into a real, editable **model** (a class diagram you can see and refine "

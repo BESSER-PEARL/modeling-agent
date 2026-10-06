@@ -1057,6 +1057,9 @@ def _clear_pending_smart_gen(session: Session) -> None:
             session.delete(key)
 
 
+_MODEL_CHANGING_INTENTS = {"create_complete_system_intent", "modify_model_intent"}
+
+
 def handle_pending_smart_gen_confirmation(session: Session) -> bool:
     """Intercept a pending smart-gen confirm/cancel before intent routing.
 
@@ -1088,6 +1091,16 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
         if (getattr(_uc, "pending_flow_action", None) == "answer"
                 and getattr(_uc, "pending_flow_answer", None) == "cancel"):
             decision = "cancel"
+        elif (getattr(_uc, "pending_flow_action", None) == "new_request"
+                and getattr(_uc, "intent", None) in _MODEL_CHANGING_INTENTS
+                and _norm_prompt(request.message) != _norm_prompt(session.get(MISMATCH_REGEN_PENDING) or "")):
+            # The prepared run was built for the model as it was. A create or
+            # modify replaces that context: drop the stash so it can neither
+            # resurface as a one-click "Continue" later nor keep feeding the
+            # classifier a pending "run the generator?" question every turn.
+            logger.info("[SmartGen] Model-changing request abandons the pending run")
+            _clear_pending_smart_gen(session)
+            return False
 
     if decision == "cancel":
         _clear_pending_smart_gen(session)

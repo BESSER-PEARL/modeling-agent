@@ -37,7 +37,8 @@ MODIFICATION RULES:
 2. add_state: set target.stateName to the new state name. Put stateType ("regular", "initial", or "final"), entryAction, exitAction, doActivity in "changes".
 3. modify_state: {EXACT_NAMES_RULE}
 4. add_transition: set target.sourceState and target.targetState. Put trigger, guard, effect in "changes".
-5. {REMOVE_ELEMENT_RULE}
+   modify_transition: identify the existing transition by target.sourceState and target.targetState; put the new trigger / guard / effect in "changes".
+5. {REMOVE_ELEMENT_RULE} To remove a state set target.stateName; to remove a transition set target.sourceState and target.targetState (no stateName).
 6. {CHANGES_FIELD_RULE}
 7. Use PascalCase for state names and camelCase for triggers
 8. Example: "add a Processing state" → add_state with target.stateName="Processing", changes.stateType="regular"

@@ -24,8 +24,6 @@ from model_utils import model_has_elements  # noqa: F401  (re-export for backwar
 from session_keys import (
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
-    PENDING_SMART_GEN_INSTRUCTIONS,
-    PENDING_SMART_GEN_PROVIDER,
     PENDING_WEBAPP_GENERATE,
     UNIFIED_CLASSIFICATION,
 )
@@ -153,6 +151,10 @@ def _maybe_emit_webapp_prompt(session: Session) -> None:
     the prompt. Idempotent: the flag is cleared on the first emit, so calling this
     from both the resume tail and the GUI-choice tail is safe.
     """
+    # A follow-up op just asked a new question (the screen-mode choice, or
+    # replace/keep): the screens don't exist yet. Keep the flag for later.
+    if session.get(PENDING_GUI_CHOICE) or session.get(PENDING_COMPLETE_SYSTEM):
+        return
     if session.get(PENDING_WEBAPP_GENERATE):
         session.set(PENDING_WEBAPP_GENERATE, None)
         emit_webapp_generate_prompt(session)
@@ -258,6 +260,8 @@ def handle_pending_gui_choice(session: Session) -> bool:
         # Note: _maybe_emit_webapp_prompt is intentionally NOT called here.
         # The artifact-aware follow-up is already embedded in the auto_generate_gui
         # message above, so a separate prompt would be premature and redundant.
+        # Consume the flag so a later turn doesn't announce the screens again.
+        session.set(PENDING_WEBAPP_GENERATE, None)
         return True
 
     # LLM-driven path
@@ -525,10 +529,6 @@ def handle_pending_system_confirmation(session: Session) -> bool:
                 stored_diagram_type, stored_default_mode, stored_message, pending,
             )
 
-        # Resume smart-gen handoff if a mismatch chain was pending — the
-        # new tab now holds the rebuilt domain model.
-        _resume_smart_gen_after_replace(session)
-
         return True
 
     # ── Replace / Keep path ───────────────────────────────────────────
@@ -570,60 +570,11 @@ def handle_pending_system_confirmation(session: Session) -> bool:
             stored_diagram_type, stored_default_mode, stored_message, pending,
         )
 
-    # ── Resume smart-gen handoff if a mismatch chain was pending ─────
-    # When the user reached this confirmation via the "Update model +
-    # generate" mismatch quick action, the mismatch handler stashed smart-gen
-    # instructions in the session and paused waiting for this answer.
-    # Now that the model has been replaced (the only path that makes
-    # sense to chain — keeping the old model would defeat the point of
-    # the mismatch fix), fire the Spec-Driven Agent handoff.
-    if replace_existing:
-        _resume_smart_gen_after_replace(session)
-
+    # No smart-gen resume here: the mismatch "Update model + generate" rebuild
+    # never reaches this question (model_operations skips the re-ask and owns
+    # that resume, scoped to the exact rebuild prompt). Any smart-gen stash
+    # still present belongs to an earlier, unrelated request.
     return True
-
-
-def _resume_smart_gen_after_replace(session: Session) -> None:
-    """Ask to run the stashed smart-gen handoff after a model replace.
-
-    No-op when there are no stashed instructions (the common case — most
-    replaces happen outside the mismatch flow). Must NOT auto-fire: the
-    Spec-Driven Agent spends the USER'S OWN API key, so the stash is
-    refreshed and the user gets an explicit run/cancel choice. The
-    actual trigger is emitted by the confirm handler in
-    ``handle_generation_request``.
-    """
-    stashed_instructions = session.get(PENDING_SMART_GEN_INSTRUCTIONS)
-    if not isinstance(stashed_instructions, str) or not stashed_instructions.strip():
-        return
-
-    stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic"
-
-    try:
-        from handlers.generation_handler import (
-            _build_smart_gen_confirmation,
-            _clear_pending_smart_gen,
-        )
-    except ImportError:  # pragma: no cover — defensive in case of refactor
-        logger.exception("[PendingConfirm] Could not import smart-gen handoff helpers")
-        return
-
-    try:
-        # _build_smart_gen_confirmation re-stashes with a fresh timestamp —
-        # the user just actively continued this flow.
-        payload = _build_smart_gen_confirmation(
-            session,
-            stashed_instructions,
-            stashed_provider,
-            reason_prefix="Model rebuilt and ready.",
-        )
-    except Exception:
-        logger.exception("[PendingConfirm] Failed to build smart-gen confirmation payload")
-        _clear_pending_smart_gen(session)
-        return
-
-    if isinstance(payload, dict):
-        reply_payload(session, payload)
 
 
 def _resume_remaining_ops(

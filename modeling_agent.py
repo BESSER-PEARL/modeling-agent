@@ -19,9 +19,16 @@ _SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+# Vendored BAF WebSocket fix (BYOK key redaction + use, reply outbox, slot
+# reclaim). The Docker image bakes it in; this makes non-Docker runs match.
+import baf_patch
+baf_patch.install()
+
 from baf.core.agent import Agent
 from baf import nlp
 from baf.exceptions.logger import logger
+
+baf_patch.verify()
 
 import agent_context as ctx
 from agent_setup import (

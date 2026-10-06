@@ -9,6 +9,12 @@ share the same logic.
 
 from typing import Any, Dict, List, Tuple
 
+# v3 class-like element types (abstract / interface / enum are stereotyped
+# classes in v4 and come back as their own v3 types).
+CLASS_ELEMENT_TYPES = frozenset({"Class", "AbstractClass", "Interface", "Enumeration"})
+# Object boxes: v3 wire form is "ObjectName"; "Object" is the legacy spelling.
+OBJECT_ELEMENT_TYPES = frozenset({"ObjectName", "Object"})
+
 # ---------------------------------------------------------------------------
 # Compact (one-line) model summary
 # ---------------------------------------------------------------------------
@@ -43,7 +49,7 @@ def compact_model_summary(model_data: Any, diagram_type: str) -> str:
                 # Count actual classes (not attributes/methods) for a clearer summary
                 class_names = [
                     el.get("name") for el in elements.values()
-                    if isinstance(el, dict) and el.get("type") == "Class"
+                    if isinstance(el, dict) and el.get("type") in CLASS_ELEMENT_TYPES
                     and isinstance(el.get("name"), str) and el["name"].strip()
                 ]
                 class_count = len(class_names)
@@ -77,7 +83,7 @@ def compact_model_summary(model_data: Any, diagram_type: str) -> str:
                 # Count actual objects only — exclude attribute sub-elements.
                 object_names = [
                     el.get("name") for el in elements.values()
-                    if isinstance(el, dict) and el.get("type") == "Object"
+                    if isinstance(el, dict) and el.get("type") in OBJECT_ELEMENT_TYPES
                     and isinstance(el.get("name"), str) and el["name"].strip()
                 ]
                 object_count = len(object_names)
@@ -136,6 +142,10 @@ def _clean_attr_name(raw: str) -> str:
     return name
 
 
+# Edges in a class diagram that are not associations between classes.
+_NON_ASSOCIATION_LINKS = frozenset({"ClassOCLLink", "ClassLinkRel", "Link"})
+
+
 def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, max_attrs: int = 10) -> List[str]:
     """Summarize a ClassDiagram model: classes, attributes, methods, relationships."""
     elements = model.get("elements")
@@ -145,15 +155,17 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
 
     lines: List[str] = []
 
-    # Collect classes
-    class_data: Dict[str, Dict[str, Any]] = {}  # id -> {name, attrs, methods}
+    # Collect classes (incl. abstract classes, interfaces and enumerations)
+    class_data: Dict[str, Dict[str, Any]] = {}  # id -> {name, kind, attrs, methods}
     for eid, el in elements.items():
-        if not isinstance(el, dict) or el.get("type") != "Class":
+        if not isinstance(el, dict) or el.get("type") not in CLASS_ELEMENT_TYPES:
             continue
         name = el.get("name")
         if not isinstance(name, str) or not name.strip():
             continue
-        class_data[eid] = {"name": name.strip(), "attrs": [], "methods": []}
+        class_data[eid] = {
+            "name": name.strip(), "kind": el.get("type"), "attrs": [], "methods": [],
+        }
 
     # Attach attributes and methods
     for eid, el in elements.items():
@@ -166,7 +178,9 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
         raw_name = el.get("name")
         if not isinstance(raw_name, str) or not raw_name.strip():
             continue
-        if el_type == "ClassAttribute":
+        if el_type == "ClassAttribute" and class_data[owner]["kind"] == "Enumeration":
+            class_data[owner]["attrs"].append(_clean_attr_name(raw_name))
+        elif el_type == "ClassAttribute":
             attr_type = el.get("attributeType", "")
             clean = _clean_attr_name(raw_name)
             if not attr_type and ":" in raw_name:
@@ -179,14 +193,16 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
 
     # Explicit class COUNT header first — so factual queries ("how many
     # classes?") are answered from a stated number, and relationships are
-    # never miscounted as classes.
-    class_items = list(class_data.items())
+    # never miscounted as classes. Enumerations are listed separately.
+    _KIND_TAG = {"AbstractClass": " (abstract)", "Interface": " (interface)"}
+    enum_items = [(cid, cd) for cid, cd in class_data.items() if cd["kind"] == "Enumeration"]
+    class_items = [(cid, cd) for cid, cd in class_data.items() if cd["kind"] != "Enumeration"]
     names_preview = ", ".join(cd["name"] for _, cd in class_items[:max_classes])
     if len(class_items) > max_classes:
         names_preview += f" (+{len(class_items) - max_classes} more)"
     lines.append(f"Classes ({len(class_items)}): {names_preview}")
     for cid, cd in class_items[:max_classes]:
-        parts = [f"  - {cd['name']}"]
+        parts = [f"  - {cd['name']}{_KIND_TAG.get(cd['kind'], '')}"]
         if cd["attrs"]:
             attrs_str = ", ".join(cd["attrs"][:max_attrs])
             if len(cd["attrs"]) > max_attrs:
@@ -195,6 +211,14 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
         if cd["methods"]:
             parts.append(f"methods: {', '.join(cd['methods'][:max_attrs])}")
         lines.append(" | ".join(parts))
+    if enum_items:
+        lines.append(
+            f"Enumerations ({len(enum_items)}): "
+            + "; ".join(
+                f"{cd['name']} {{{', '.join(cd['attrs'])}}}" if cd["attrs"] else cd["name"]
+                for _, cd in enum_items
+            )
+        )
 
     # Relationships — separate generalizations (inheritance) from associations
     # so "is X a subclass of Y?" is answerable and the two are never conflated.
@@ -208,7 +232,7 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
     assocs: List[str] = []
     if isinstance(relationships, dict):
         for rel in relationships.values():
-            if not isinstance(rel, dict):
+            if not isinstance(rel, dict) or rel.get("type") in _NON_ASSOCIATION_LINKS:
                 continue
             source = rel.get("source")
             target = rel.get("target")
@@ -233,6 +257,17 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
     if assocs:
         more = f" (+{len(assocs) - 15} more)" if len(assocs) > 15 else ""
         lines.append(f"Relationships ({len(assocs)}): " + "; ".join(assocs[:15]) + more)
+
+    constraints: List[str] = []
+    for el in elements.values():
+        if not isinstance(el, dict) or el.get("type") != "ClassOCLConstraint":
+            continue
+        text = el.get("constraint") or el.get("expression") or el.get("name")
+        if isinstance(text, str) and text.strip():
+            constraints.append(" ".join(text.split()))
+    if constraints:
+        more = f" (+{len(constraints) - 15} more)" if len(constraints) > 15 else ""
+        lines.append(f"OCL constraints ({len(constraints)}): " + "; ".join(constraints[:15]) + more)
 
     return lines
 
@@ -370,7 +405,7 @@ def _summarize_object_diagram(model: Dict[str, Any], *, max_objects: int = 15) -
 
     lines: List[str] = []
     for el in elements.values():
-        if not isinstance(el, dict) or el.get("type") != "Object":
+        if not isinstance(el, dict) or el.get("type") not in OBJECT_ELEMENT_TYPES:
             continue
         name = el.get("name", "Unnamed")
         class_name = el.get("className", "")
@@ -1000,7 +1035,7 @@ def is_diagram_nontrivial(model_data: Any, diagram_type: str) -> bool:
         for el in elements.values():
             if (
                 isinstance(el, dict)
-                and el.get("type") == "Class"
+                and el.get("type") in CLASS_ELEMENT_TYPES
                 and isinstance(el.get("name"), str)
                 and el["name"].strip()
             ):
@@ -1012,7 +1047,7 @@ def is_diagram_nontrivial(model_data: Any, diagram_type: str) -> bool:
         if not isinstance(elements, dict):
             return False
         for el in elements.values():
-            if isinstance(el, dict) and el.get("type") == "Object":
+            if isinstance(el, dict) and el.get("type") in OBJECT_ELEMENT_TYPES:
                 return True
         return False
 

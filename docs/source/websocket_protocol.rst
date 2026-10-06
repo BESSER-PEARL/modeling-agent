@@ -547,6 +547,24 @@ Structured Outputs rejects the response and the call retries.
    * - Any (generic)
      - ``modify_element`` — the base handler's fallback shape
 
+**State machine transitions** are addressed by their endpoint state *names*
+on ``target.sourceState`` / ``target.targetState`` (not the agent diagram's
+``sourceStateName`` / ``targetStateName``); the event goes on
+``changes.trigger``, with optional ``changes.guard`` and ``changes.effect``.
+``add_transition`` and ``modify_transition`` share this shape, and a transition
+is removed with ``remove_element`` carrying only the two endpoints:
+
+.. code-block:: json
+
+   {"action": "add_transition",
+    "target": {"sourceState": "Delivered", "targetState": "Returned"},
+    "changes": {"trigger": "return"}}
+   {"action": "modify_transition",
+    "target": {"sourceState": "Created", "targetState": "Paid"},
+    "changes": {"trigger": "payOrder", "guard": "amount > 0"}}
+   {"action": "remove_element",
+    "target": {"sourceState": "Paid", "targetState": "Created"}}
+
 assistant_message
 ~~~~~~~~~~~~~~~~~
 
