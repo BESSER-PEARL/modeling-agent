@@ -132,3 +132,63 @@ class TestUnsupportedEditorModelling:
     def test_naming_another_diagram_still_edits_it(self):
         plan, _ = self._execute("In the class diagram add a class Layer with name: str")
         plan.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 3. Later steps in a rename batch must use the class's new name
+# ---------------------------------------------------------------------------
+
+_NULL_TARGET = {"className": None, "attributeName": None, "methodName": None,
+                "sourceClass": None, "targetClass": None}
+
+
+class TestRenameBatchUsesNewNames:
+    _MODEL = {
+        "elements": {
+            "i": {"id": "i", "name": "Item", "type": "AbstractClass", "owner": None},
+            "m": {"id": "m", "name": "Member", "type": "Class", "owner": None},
+        },
+        "relationships": {
+            "r": {"id": "r", "type": "ClassBidirectional", "name": "borrows",
+                  "source": {"element": "m", "multiplicity": "0..1"},
+                  "target": {"element": "i", "multiplicity": "0..*", "role": "borrowedItems"}},
+        },
+    }
+
+    def _spec(self, mods):
+        from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
+        from schemas import ClassModificationResponse
+
+        parsed = ClassModificationResponse.model_validate({"modifications": mods})
+        with patch.object(ClassDiagramHandler, "predict_structured", return_value=parsed):
+            spec = ClassDiagramHandler(llm=None).generate_modification(
+                "Rename Member to Patron and change the borrows association into a composition.",
+                current_model=self._MODEL,
+            )
+        return spec, spec.get("modifications") or [spec.get("modification")]
+
+    def test_relationship_step_after_rename_targets_the_new_name(self):
+        """ws-A A2: modify_relationship kept sourceClass "Member" after the
+        modify_class rename; the browser applies in order, so the composition
+        change found no Member and was lost."""
+        spec, ops = self._spec([
+            {"action": "modify_class", "target": {**_NULL_TARGET, "className": "Member"},
+             "changes": {"name": "Patron"}},
+            {"action": "modify_relationship",
+             "target": {**_NULL_TARGET, "sourceClass": "Member", "targetClass": "Item"},
+             "changes": {"relationshipType": "Composition"}},
+        ])
+        assert [o["action"] for o in ops] == ["modify_class", "modify_relationship"]
+        assert ops[0]["target"]["className"] == "Member"
+        assert ops[1]["target"]["sourceClass"] == "Patron"
+        assert ops[1]["target"]["targetClass"] == "Item"
+        assert "Member → Item" not in spec["message"]
+
+    def test_class_step_after_rename_targets_the_new_name(self):
+        _, ops = self._spec([
+            {"action": "modify_class", "target": {**_NULL_TARGET, "className": "Member"},
+             "changes": {"name": "Patron"}},
+            {"action": "add_attribute", "target": {**_NULL_TARGET, "className": "member"},
+             "changes": {"name": "email", "type": "str"}},
+        ])
+        assert ops[1]["target"]["className"] == "Patron"

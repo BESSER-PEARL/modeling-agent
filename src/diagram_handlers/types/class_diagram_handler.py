@@ -2528,6 +2528,29 @@ Examples:
             isinstance(v, str) and v.strip().lower() in renamed for v in set_fields.values()
         )
 
+    @staticmethod
+    def _rewrite_renamed_class_refs(mod_list: List[Dict[str, Any]]) -> None:
+        """Point class references in steps after a rename at the new name.
+
+        The browser applies steps in order, so a later step that still names
+        the old class finds nothing.
+        """
+        renames: Dict[str, str] = {}
+        for mod in mod_list:
+            if not isinstance(mod, dict):
+                continue
+            target = mod.get("target")
+            if isinstance(target, dict) and renames:
+                for key in ("className", "sourceClass", "targetClass"):
+                    value = target.get(key)
+                    if isinstance(value, str) and value.strip().lower() in renames:
+                        target[key] = renames[value.strip().lower()]
+            changes = mod.get("changes")
+            if (mod.get("action") == "modify_class" and isinstance(target, dict)
+                    and isinstance(changes, dict) and isinstance(changes.get("name"), str)
+                    and changes["name"].strip() and isinstance(target.get("className"), str)):
+                renames[target["className"].strip().lower()] = changes["name"].strip()
+
     def _drop_phantom_target_ops(
         self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]],
     ) -> List[str]:
@@ -3171,6 +3194,7 @@ Examples:
                         f"[ClassDiagram] Stripped {before - len(mod_list)} "
                         "spurious modify_relationship entries from class rename"
                     )
+                self._rewrite_renamed_class_refs(mod_list)
 
                 # Normalize remove_element targets — some LLMs misplace the class
                 # name into other fields or leave className null. Promote any
