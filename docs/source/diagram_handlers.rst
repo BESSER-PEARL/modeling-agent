@@ -25,7 +25,9 @@ Handler Class Hierarchy
    ├── GUINoCodeDiagramHandler      # GrapesJS GUI models           → "GUINoCodeDiagram"
    ├── QuantumCircuitDiagramHandler # Quirk quantum circuits        → "QuantumCircuitDiagram"
    ├── BPMNDiagramHandler           # BPMN process diagrams         → "BPMN"
-   └── UserProfileDiagramHandler    # BESSER user-profile models    → "UserDiagram"
+   ├── UserProfileDiagramHandler    # BESSER user-profile models    → "UserDiagram"
+   ├── ComponentDiagramHandler      # UML component diagrams        → "ComponentDiagram"
+   └── DeploymentDiagramHandler     # UML deployment diagrams       → "DeploymentDiagram"
 
 .. note::
 
@@ -539,10 +541,31 @@ Features
   (message vs. sequence) is likewise derived on the editor side from pool
   membership — the agent never sets it.
 
-.. note::
+Agentic BPMN
+~~~~~~~~~~~~
 
-   Pools and lanes are **generation-only**. ``generate_modification`` does not
-   yet support ``add_pool`` / ``add_lane`` actions.
+``_is_agentic_bpmn_request`` switches the handler into **agentic mode** only on
+explicit agentic intent in the user's own message (word-boundary matches such
+as "agentic", "multi-agent", "agent swarm", "AI agent lane", "lane role",
+"trust score", "Governance DSL") or when the current model already contains a
+lane with ``isAgentic: true``. Pools, participants or orchestration wording
+alone stay on the base path, so collaboration processes such as the editor's
+Pizza Store and Car Wash templates are not treated as agent swarms.
+
+- **Prompts compose, they do not replace.** Agentic generation appends
+  ``AGENTIC_DESIGN_RULES`` to the base system prompt, and the agentic
+  modification prompt appends ``AGENTIC_MODIFY_RULES`` (pool / lane actions:
+  ``add_pool``, ``add_swimlane``, ``modify_swimlane``, ``remove_swimlane``,
+  ``remove_pool``) to the base modification prompt.
+- **Same repair pass.** Agentic generation runs ``_validate_and_refine`` too.
+- **Editor vocabulary.** Lane roles are ``solution`` / ``supervision``; lane
+  ``multiplicity`` is the integer swarm size; tasks carry ``reflectionMode``
+  and, for ``cross`` reflection, ``reflectionReviewerLaneId``; agentic
+  gateways carry ``gatewayRole`` and, when merging, ``governanceDsl``.
+- **Project-scoped references.** ``agentDiagramRef`` is a project AgentDiagram
+  id in the editor. ``model_operations`` passes the project's AgentDiagram ids
+  (``resolve_agent_diagram_refs``) to the handler, the prompt lists them, and
+  any other value is cleared after generation or modification.
 
 UserProfileDiagramHandler
 -------------------------
@@ -571,6 +594,44 @@ The handler also understands the metamodel's structure: it builds an
 association graph, knows which classes are singletons, computes each class's
 path to the ``User`` root, and assembles the required intermediate boxes and
 links so a generated profile is always structurally connected.
+
+ComponentDiagramHandler
+-----------------------
+
+**Location:** ``src/diagram_handlers/types/component_diagram_handler.py``
+
+Generates UML **component diagrams**: ``Subsystem`` containers, ``Component``
+elements and ``ComponentDependency`` edges. Stereotypes follow the editor's
+agentic vocabulary (``agentic-tokens.ts``): agent categories ``solution`` /
+``supervision``, capabilities ``skill`` / ``tool`` / ``llm`` / ``db`` /
+``rag``, and dependency kinds ``delegates`` / ``supervises`` / ``revises`` /
+``collaborates`` / ``has`` / ``uses`` / ``granted`` / ``implements``.
+Modification actions: ``add_component``, ``add_subsystem``,
+``add_dependency``, ``modify_element``, ``remove_element``,
+``remove_dependency``. Positions are computed by the editor's converter.
+
+DeploymentDiagramHandler
+------------------------
+
+**Location:** ``src/diagram_handlers/types/deployment_diagram_handler.py``
+
+Generates UML **deployment diagrams**: ``DeploymentNode`` execution
+environments, ``DeploymentArtifact`` packages hosted inside a node, logical
+``DeploymentComponent`` elements linked to their artifact via
+``manifestedBy``, and ``DeploymentDependency`` communication paths.
+Modification actions: ``add_node``, ``add_artifact``, ``add_component``,
+``add_dependency``, ``modify_element``, ``remove_element``,
+``remove_dependency``.
+
+Both handlers extend ``ArchitectureDiagramHandler``
+(``src/diagram_handlers/core/architecture_handler.py``), which owns the shared
+complete-system / modification / fallback flow and the shared modification
+rules. They also use the base handler's **reference guardrail**
+(``_validate_mod_refs``, shared with BPMN): a modification naming an element
+that is neither in the current model nor added or renamed earlier in the same
+batch is dropped instead of being applied to a substitute. The element map is
+passed to it explicitly per request — handlers are singletons shared by every
+session, so no request state is kept on the handler.
 
 QuantumCircuitDiagramHandler
 ----------------------------
@@ -670,6 +731,8 @@ never drift from the handler that owns it.
        QuantumCircuitDiagramHandler,
        BPMNDiagramHandler,
        UserProfileDiagramHandler,
+       ComponentDiagramHandler,
+       DeploymentDiagramHandler,
    )
 
 

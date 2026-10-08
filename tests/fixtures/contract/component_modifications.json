@@ -1,0 +1,14 @@
+{
+  "modifications": [
+    {"action": "add_subsystem", "target": {"elementName": "Tools"}, "changes": {"stereotype": "subsystem"}},
+    {"action": "add_component", "target": {"elementName": "Critic"}, "changes": {"stereotype": "supervision", "owner": "Agents"}},
+    {"action": "add_component", "target": {"elementName": "Calculator"}, "changes": {"stereotype": "tool", "owner": "Tools"}},
+    {"action": "add_dependency", "target": {}, "changes": {"source": "Critic", "target": "Writer", "dependencyStereotype": "supervises"}},
+    {"action": "add_dependency", "target": {}, "changes": {"source": "Writer", "target": "Calculator", "dependencyStereotype": "granted"}},
+    {"action": "modify_element", "target": {"elementName": "Writer"}, "changes": {"name": "Author", "stereotype": "solution"}},
+    {"action": "remove_dependency", "target": {}, "changes": {"source": "Planner", "target": "Retriever"}},
+    {"action": "remove_element", "target": {"elementId": "comp-legacy"}}
+  ],
+  "message": "Added a critic agent and a calculator tool.",
+  "elementFound": true
+}

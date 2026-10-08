@@ -1,0 +1,15 @@
+{
+  "modifications": [
+    {"action": "add_pool", "target": {"nodeName": "Review Swarm"}},
+    {"action": "add_swimlane", "target": {"nodeName": "Fact Checker"}, "changes": {"poolName": "Review Swarm", "isAgentic": true, "role": "solution", "trustScore": 70, "multiplicity": 2}},
+    {"action": "modify_swimlane", "target": {"swimlaneName": "Fact Checker"}, "changes": {"role": "supervision", "multiplicity": 3}},
+    {"action": "add_task", "target": {"nodeName": "Check Facts"}, "changes": {"taskType": "service", "owner": "Fact Checker"}},
+    {"action": "add_flow", "target": {}, "changes": {"source": "Draft Summary", "target": "Check Facts", "label": ""}},
+    {"action": "modify_node", "target": {"nodeName": "Draft Summary"}, "changes": {"isAgentic": true, "reflectionMode": "cross", "reflectionReviewerLaneId": "lane-fact-checker", "trustScore": 60}},
+    {"action": "modify_node", "target": {"nodeId": "gw-merge"}, "changes": {"isAgentic": true, "gatewayRole": "merging", "governanceDsl": "Policy: MajorityPolicy"}},
+    {"action": "remove_swimlane", "target": {"swimlaneName": "Old Lane"}},
+    {"action": "remove_pool", "target": {"poolName": "Legacy Pool"}}
+  ],
+  "message": "Added a fact-checking agent lane and governed the merge.",
+  "elementFound": true
+}

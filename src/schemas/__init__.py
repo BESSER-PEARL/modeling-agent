@@ -95,6 +95,27 @@ from .user_profile import (
     UserProfileModification,
     UserProfileModificationResponse,
 )
+from .component_diagram import (
+    ComponentSubsystemSpec,
+    ComponentSpec,
+    ComponentDependencySpec,
+    SystemComponentSpec,
+    ComponentModificationTarget,
+    ComponentModificationChanges,
+    ComponentModification,
+    ComponentModificationResponse,
+)
+from .deployment_diagram import (
+    DeploymentNodeSpec,
+    DeploymentArtifactSpec,
+    DeploymentComponentSpec,
+    DeploymentDependencySpec,
+    SystemDeploymentSpec,
+    DeploymentModificationTarget,
+    DeploymentModificationChanges,
+    DeploymentModification,
+    DeploymentModificationResponse,
+)
 
 __all__ = [
     # Class Diagram
@@ -126,7 +147,8 @@ __all__ = [
     "QuantumOperationSpec", "SingleQuantumGateSpec", "SystemQuantumCircuitSpec",
     "QuantumModificationSpec",
     # BPMN
-    "BPMNNodeSpec", "BPMNFlowSpec", "BPMNLaneSpec", "BPMNPoolSpec", "SystemBPMNSpec",
+    "BPMNNodeSpec", "BPMNFlowSpec", "SystemBPMNSpec",
+    "BPMNLaneSpec", "BPMNPoolSpec",
     "BPMNModificationTarget", "BPMNModificationChanges",
     "BPMNModification", "BPMNModificationResponse",
     # User Profile
@@ -134,4 +156,13 @@ __all__ = [
     "SystemUserProfileSpec",
     "UserProfileModificationTarget", "UserProfileModificationChanges",
     "UserProfileModification", "UserProfileModificationResponse",
+    # Component Diagram
+    "ComponentSubsystemSpec", "ComponentSpec", "ComponentDependencySpec",
+    "SystemComponentSpec", "ComponentModificationTarget", "ComponentModificationChanges",
+    "ComponentModification", "ComponentModificationResponse",
+    # Deployment Diagram
+    "DeploymentNodeSpec", "DeploymentArtifactSpec", "DeploymentComponentSpec",
+    "DeploymentDependencySpec", "SystemDeploymentSpec",
+    "DeploymentModificationTarget", "DeploymentModificationChanges",
+    "DeploymentModification", "DeploymentModificationResponse",
 ]

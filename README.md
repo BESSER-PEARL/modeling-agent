@@ -36,6 +36,13 @@ BPMN's token is `BPMN` (not `BPMNDiagram`) and the user-profile token is `UserDi
 | `QuantumCircuitDiagram` | Yes | Yes | Yes |
 | `BPMN` | Yes | Yes | Yes |
 | `UserDiagram` | Yes | Yes | Yes |
+| `ComponentDiagram` | Yes | Yes | Yes |
+| `DeploymentDiagram` | Yes | Yes | Yes |
+
+`BPMN` also covers **Agentic BPMN** (agent-swarm lanes with roles, trust scores, multiplicity,
+reflection modes and governed merging gateways). `ComponentDiagram` uses the editor's agentic
+stereotype vocabulary (`solution` / `supervision` agents, `skill` / `tool` / `llm` / `db` / `rag`
+capabilities, and agentic dependency kinds).
 
 `AgentDiagram` also covers agent components (intents, LLMs, RAG databases, tools, skills, workspaces, GUIs) and all 17 state reply types.
 

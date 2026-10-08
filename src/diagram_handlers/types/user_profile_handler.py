@@ -901,7 +901,9 @@ IMPORTANT RULES:
                 ),
             }
 
-    def _build_mod_target_name(self, action: str, target: dict, mod: dict = None) -> str:
+    def _build_mod_target_name(
+        self, action: str, target: dict, mod: dict = None, elements: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Resolve user-profile target names for friendly modification messages."""
         name = (
             target.get("profileName")

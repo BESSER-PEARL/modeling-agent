@@ -11,6 +11,8 @@ from ..core.base_handler import BaseDiagramHandler
 from ..types.agent_diagram_handler import AgentDiagramHandler
 from ..types.bpmn_diagram_handler import BPMNDiagramHandler
 from ..types.class_diagram_handler import ClassDiagramHandler
+from ..types.component_diagram_handler import ComponentDiagramHandler
+from ..types.deployment_diagram_handler import DeploymentDiagramHandler
 from ..types.gui_nocode_diagram_handler import GUINoCodeDiagramHandler
 from ..types.object_diagram_handler import ObjectDiagramHandler
 from ..types.quantum_circuit_diagram_handler import QuantumCircuitDiagramHandler
@@ -26,6 +28,8 @@ HANDLER_CLASSES = (
     QuantumCircuitDiagramHandler,
     BPMNDiagramHandler,
     UserProfileDiagramHandler,
+    ComponentDiagramHandler,
+    DeploymentDiagramHandler,
 )
 
 

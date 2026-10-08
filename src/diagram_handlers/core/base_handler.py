@@ -309,7 +309,9 @@ class BaseDiagramHandler(ABC):
         human = action.replace('_', ' ').capitalize()
         return f"{human} **{target_name}**."
 
-    def _build_mod_target_name(self, action: str, target: dict, mod: dict = None) -> str:
+    def _build_mod_target_name(
+        self, action: str, target: dict, mod: dict = None, elements: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Build a descriptive target name that includes sub-element context.
 
         For remove_element / modify_attribute / etc., if both a class name and
@@ -319,11 +321,21 @@ class BaseDiagramHandler(ABC):
         Subclasses may override to extend with diagram-specific resolution
         (e.g. BPMN flow endpoint lookup). The full ``mod`` dict is passed so
         overrides can inspect ``changes`` without needing a separate hook.
+        ``elements`` is the current model's element map for THIS request; it
+        is passed explicitly (never cached on the handler, which is a
+        singleton shared by every session).
         """
         class_name = (
             target.get('className') or target.get('stateName')
             or target.get('objectName') or target.get('nodeName')
+            or target.get('elementName')  # Component / Deployment diagram
         )
+        # Resolve elementId → name via the request's element map when elementName is absent
+        if not class_name and target.get('elementId'):
+            eid = target['elementId']
+            el = (elements or {}).get(eid)
+            class_name = (el.get('name') if isinstance(el, dict) else None) or eid
+
         attr_name = target.get('attributeName')
         method_name = target.get('methodName')
         rel_source = target.get('sourceClass')
@@ -369,10 +381,10 @@ class BaseDiagramHandler(ABC):
         'modify_class', 'modify_state', 'modify_node', 'modify_object', 'modify_intent',
     })
 
-    def _describe_mod(self, mod: dict) -> str:
+    def _describe_mod(self, mod: dict, elements: Optional[Dict[str, Any]] = None) -> str:
         """One friendly line for a single modification."""
         act = mod.get('action', 'modification')
-        name = self._build_mod_target_name(act, mod.get('target', {}) or {}, mod)
+        name = self._build_mod_target_name(act, mod.get('target', {}) or {}, mod, elements=elements)
         changes = mod.get('changes') if isinstance(mod.get('changes'), dict) else {}
         new_name = changes.get('name')
         if (
@@ -386,20 +398,22 @@ class BaseDiagramHandler(ABC):
             )
         return self._friendly_mod_message(act, name)
 
-    def _friendly_batch_message(self, mods: list) -> str:
+    def _friendly_batch_message(self, mods: list, elements: Optional[Dict[str, Any]] = None) -> str:
         """Produce a friendly summary for a batch of modifications."""
-        parts = [self._describe_mod(m) for m in mods if isinstance(m, dict)]
+        parts = [self._describe_mod(m, elements=elements) for m in mods if isinstance(m, dict)]
         if len(parts) == 1:
             return parts[0]
         return f"Applied {len(parts)} changes:\n" + "\n".join(f"- {p}" for p in parts)
 
-    def _default_modification_message(self, spec: Dict[str, Any]) -> str:
+    def _default_modification_message(
+        self, spec: Dict[str, Any], elements: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Friendly summary built from the ops actually in *spec* ('' if none)."""
         if isinstance(spec.get('modifications'), list):
-            return self._friendly_batch_message(spec['modifications'])
+            return self._friendly_batch_message(spec['modifications'], elements=elements)
         mod = spec.get('modification')
         if isinstance(mod, dict):
-            return self._describe_mod(mod)
+            return self._describe_mod(mod, elements=elements)
         return ''
 
     def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
@@ -431,6 +445,7 @@ class BaseDiagramHandler(ABC):
         *,
         post_processor: Optional[Callable[[list], list]] = None,
         spec_processor: Optional[Callable[["BaseDiagramHandler", Dict[str, Any]], Dict[str, Any]]] = None,
+        elements: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Execute a structured modification LLM call and build the response spec.
 
@@ -451,6 +466,8 @@ class BaseDiagramHandler(ABC):
                 *modification_spec* dict before validation (e.g., expand
                 refactoring actions).
                 Signature: ``(handler, spec) -> spec``.
+            elements: The current model's element map, used to name elements
+                referenced by id in the friendly reply message.
 
         Returns:
             Modification spec dict ready to send to the frontend.
@@ -496,7 +513,7 @@ class BaseDiagramHandler(ABC):
         modification_spec.setdefault('diagramType', self.get_diagram_type())
 
         if 'message' not in modification_spec:
-            message = self._default_modification_message(modification_spec)
+            message = self._default_modification_message(modification_spec, elements=elements)
             if message:
                 modification_spec['message'] = message
 
@@ -512,6 +529,166 @@ class BaseDiagramHandler(ABC):
             modification_spec['message'] = (existing + note).strip()
 
         return modification_spec
+
+    # ------------------------------------------------------------------
+    # Server-side reference guardrail (opt-in per handler)
+    # ------------------------------------------------------------------
+    # A handler opts in by declaring which actions reference existing
+    # elements; ``_validate_mod_refs`` then drops every modification whose
+    # reference resolves neither in the current model nor in an element
+    # added / renamed earlier in the SAME batch, so a hallucinated name is
+    # never applied to a substitute element.
+
+    #: Target keys holding the element id / display name.
+    _REF_ID_KEY = "elementId"
+    _REF_NAME_KEY = "elementName"
+    #: Actions whose ``target`` must name an existing element.
+    _REF_TARGET_ACTIONS: frozenset = frozenset()
+    #: Actions whose ``changes.source`` / ``changes.target`` must exist.
+    _REF_ENDPOINT_ACTIONS: frozenset = frozenset()
+    #: Add actions → element type they create (registered in the batch preview).
+    _REF_ADD_ACTIONS: Dict[str, str] = {}
+    #: Actions that rename (``changes.name``) / remove the target element.
+    _REF_RENAME_ACTIONS: frozenset = frozenset()
+    _REF_REMOVE_ACTIONS: frozenset = frozenset()
+    #: Element types a NAME lookup may match (None = any element).
+    _REF_NAMED_TYPES: Optional[frozenset] = None
+
+    def _resolve_element_ref(self, ref: Optional[str], elements: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Look up an element by id (exact key), then by name (case-insensitive)."""
+        if not ref or not isinstance(elements, dict):
+            return None
+        el = elements.get(ref)
+        if isinstance(el, dict):
+            return el
+        lower = ref.strip().lower()
+        for el in elements.values():
+            if not isinstance(el, dict):
+                continue
+            if self._REF_NAMED_TYPES is not None and el.get("type") not in self._REF_NAMED_TYPES:
+                continue
+            if (el.get("name") or "").strip().lower() == lower:
+                return el
+        return None
+
+    def _mod_target_ref(self, mod: Dict[str, Any]) -> Optional[str]:
+        target = mod.get("target") or {}
+        return target.get(self._REF_ID_KEY) or target.get(self._REF_NAME_KEY)
+
+    def _ref_exists(self, mod: Dict[str, Any], elements: Dict[str, Any]) -> bool:
+        """True when every element reference in *mod* resolves in *elements*."""
+        action = mod.get("action", "")
+        if action in self._REF_TARGET_ACTIONS:
+            ref = self._mod_target_ref(mod)
+            return ref is None or self._resolve_element_ref(ref, elements) is not None
+        if action in self._REF_ENDPOINT_ACTIONS:
+            changes = mod.get("changes") or {}
+            return all(
+                ref is None or self._resolve_element_ref(ref, elements) is not None
+                for ref in (changes.get("source"), changes.get("target"))
+            )
+        return True
+
+    def _preview_added_element(self, mod: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """The element an add action creates, as later batch entries will see it."""
+        element_type = self._REF_ADD_ACTIONS.get(mod.get("action", ""))
+        if element_type is None:
+            return None
+        target = mod.get("target") or {}
+        changes = mod.get("changes") or {}
+        name = target.get(self._REF_NAME_KEY) or changes.get("name")
+        if not name:
+            return None
+        return {"type": element_type, "name": name}
+
+    def _apply_preview_mod(self, mod: Dict[str, Any], elements: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the element map as it looks AFTER *mod* is applied.
+
+        Lets later modifications in the same batch reference elements added or
+        renamed earlier in the response, while references to elements that
+        never existed are still rejected.
+        """
+        preview = dict(elements)
+        target = mod.get("target") or {}
+        changes = mod.get("changes") or {}
+
+        added = self._preview_added_element(mod)
+        if added is not None:
+            for alias in (target.get(self._REF_ID_KEY), target.get(self._REF_NAME_KEY), changes.get("name")):
+                if alias:
+                    preview[alias] = added
+            return preview
+
+        action = mod.get("action", "")
+        if action not in self._REF_RENAME_ACTIONS and action not in self._REF_REMOVE_ACTIONS:
+            return preview
+        element = self._resolve_element_ref(self._mod_target_ref(mod), preview)
+        if element is None:
+            return preview
+        keys = [key for key, candidate in preview.items() if candidate is element]
+        if action in self._REF_REMOVE_ACTIONS:
+            for key in keys:
+                del preview[key]
+            return preview
+        new_name = changes.get("name")
+        if new_name and new_name != element.get("name"):
+            updated = {**element, "name": new_name}
+            for key in keys:
+                preview[key] = updated
+            preview.setdefault(new_name, updated)
+        return preview
+
+    def _validate_mod_refs(self, result: Dict[str, Any], elements: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Drop modifications whose element refs cannot be resolved.
+
+        *elements* is the current model's element map for this request. Refs
+        resolve against it plus the elements earlier modifications in the same
+        batch add or rename. If every modification is dropped, the result
+        becomes an ``assistant_message`` so the user gets an explanation
+        instead of a silent no-op.
+        """
+        if not elements or result.get("action") != "modify_model":
+            return result
+        tag = self.get_diagram_type()
+
+        if "modifications" in result:
+            mods = result["modifications"]
+            preview = dict(elements)
+            valid = []
+            for mod in mods:
+                if self._ref_exists(mod, preview):
+                    valid.append(mod)
+                    preview = self._apply_preview_mod(mod, preview)
+            dropped = len(mods) - len(valid)
+            if dropped:
+                logger.info(f"[{tag}] Dropped {dropped} modification(s) with unresolved element ref(s)")
+            if not valid:
+                return {
+                    "action": "assistant_message",
+                    "message": (
+                        "I couldn't find the element(s) you described in the current diagram. "
+                        "Please check the names and try again."
+                    ),
+                }
+            result = dict(result)
+            result["modifications"] = valid
+            if dropped:
+                result["message"] = (
+                    self._friendly_batch_message(valid, elements=elements)
+                    + f"\n\nI skipped {dropped} change(s) that referred to elements I couldn't find."
+                )
+            return result
+
+        if "modification" in result and not self._ref_exists(result["modification"], elements):
+            logger.info(f"[{tag}] Dropped modification with unresolved element ref")
+            return {
+                "action": "assistant_message",
+                "message": (
+                    "I couldn't find that element in the current diagram. "
+                    "Please check the name and try again."
+                ),
+            }
+        return result
 
     # ------------------------------------------------------------------
     # Layout helpers – deterministic positioning after LLM generation
@@ -697,6 +874,8 @@ class BaseDiagramHandler(ABC):
         "QuantumModificationSpec", "AgentModificationResponse",
         "BPMNModificationResponse",
         "UserProfileModificationResponse",
+        "ComponentModificationResponse",
+        "DeploymentModificationResponse",
     }
     _SMALL_OUTPUT_MAX_TOKENS = LLM_MAX_TOKENS_SMALL
     _LARGE_OUTPUT_MAX_TOKENS = LLM_MAX_TOKENS_LARGE

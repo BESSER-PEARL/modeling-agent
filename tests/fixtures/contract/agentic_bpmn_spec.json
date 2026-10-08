@@ -1,0 +1,33 @@
+{
+  "systemName": "Document Review Swarm",
+  "pools": [
+    {
+      "id": "swarm",
+      "name": "Review Swarm",
+      "lanes": [
+        {"id": "writer", "name": "Writer Agent", "isAgentic": true, "role": "solution", "trustScore": 75, "multiplicity": 1, "agentDiagramRef": null},
+        {"id": "reviewers", "name": "Reviewer Agents", "isAgentic": true, "role": "solution", "trustScore": 80, "multiplicity": 3, "agentDiagramRef": null},
+        {"id": "supervisor", "name": "Supervisor Agent", "isAgentic": true, "role": "supervision", "trustScore": 90, "multiplicity": 1, "agentDiagramRef": null}
+      ]
+    },
+    {"id": "author", "name": "Author", "lanes": []}
+  ],
+  "nodes": [
+    {"id": "submitted", "name": "Document submitted", "type": "startEvent", "poolId": "author", "laneId": null},
+    {"id": "draft", "name": "Draft Summary", "type": "task", "taskType": "service", "poolId": "swarm", "laneId": "writer", "owner": "writer", "isAgentic": true, "reflectionMode": "cross", "reflectionReviewerLaneId": "supervisor", "trustScore": 75},
+    {"id": "fan_out", "name": "", "type": "gateway", "gatewayType": "parallel", "poolId": "swarm", "laneId": "writer", "owner": "writer", "isAgentic": true, "gatewayRole": "diverging"},
+    {"id": "review", "name": "Review Summary", "type": "task", "taskType": "service", "poolId": "swarm", "laneId": "reviewers", "owner": "reviewers", "isAgentic": true, "reflectionMode": "self"},
+    {"id": "merge", "name": "", "type": "gateway", "gatewayType": "parallel", "poolId": "swarm", "laneId": "supervisor", "owner": "supervisor", "isAgentic": true, "gatewayRole": "merging", "governanceDsl": "Policy: MajorityPolicy"},
+    {"id": "approve", "name": "Approve Summary", "type": "task", "taskType": "user", "poolId": "swarm", "laneId": "supervisor", "owner": "supervisor", "isAgentic": true, "reflectionMode": "human"},
+    {"id": "published", "name": "Summary published", "type": "endEvent", "poolId": "author", "laneId": null}
+  ],
+  "flows": [
+    {"source": "submitted", "target": "draft", "name": ""},
+    {"source": "draft", "target": "fan_out", "name": ""},
+    {"source": "fan_out", "target": "review", "name": ""},
+    {"source": "fan_out", "target": "merge", "name": "skip review"},
+    {"source": "review", "target": "merge", "name": ""},
+    {"source": "merge", "target": "approve", "name": ""},
+    {"source": "approve", "target": "published", "name": ""}
+  ]
+}

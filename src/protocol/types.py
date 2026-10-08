@@ -17,6 +17,8 @@ SUPPORTED_DIAGRAM_TYPES = {
     "QuantumCircuitDiagram",
     "BPMN",
     "UserDiagram",
+    "ComponentDiagram",
+    "DeploymentDiagram",
 }
 
 

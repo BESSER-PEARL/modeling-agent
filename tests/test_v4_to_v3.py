@@ -568,7 +568,7 @@ class TestBPMN:
     def test_summary(self):
         v3 = convert_v4_model_to_v3(self.MODEL, "BPMN")
         detail = detailed_model_summary(v3, "BPMN")
-        assert "[task] Ship order (Task user)" in detail
+        assert "[task] Ship order (Task, taskType=user)" in detail
         assert "Flow: [task] Ship order -> [gw] Paid? [next]" in detail
         assert "3 relationship(s)" in compact_model_summary(v3, "BPMN")
 

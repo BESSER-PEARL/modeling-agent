@@ -59,6 +59,20 @@ DIAGRAM_TYPE_METADATA = {
         "description": "Model target user profiles with attribute matching criteria",
         "keywords": ["user profile", "persona", "user model", "target user", "audience"],
     },
+    "ComponentDiagram": {
+        "name": "Component Diagram",
+        "icon": "component",
+        "elements": ["Subsystem", "Component", "ComponentDependency"],
+        "description": "Model software components, subsystems, and their dependencies",
+        "keywords": ["component", "subsystem", "service", "dependency", "architecture", "module"],
+    },
+    "DeploymentDiagram": {
+        "name": "Deployment Diagram",
+        "icon": "deployment",
+        "elements": ["DeploymentNode", "DeploymentArtifact", "DeploymentComponent", "DeploymentDependency"],
+        "description": "Model deployment topology with nodes, artifacts, and communication paths",
+        "keywords": ["deployment", "node", "artifact", "server", "infrastructure", "cloud"],
+    },
 }
 
 
