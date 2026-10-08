@@ -248,7 +248,10 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
                 label = _REL_LABEL.get(rtype, "association")
                 src_mult = source.get("multiplicity", "")
                 tgt_mult = target.get("multiplicity", "")
-                mult = f" [{src_mult}..{tgt_mult}]" if (src_mult or tgt_mult) else ""
+                mult = (
+                    f" [{src_name} {src_mult or 'unspecified'}, {tgt_name} {tgt_mult or 'unspecified'}]"
+                    if (src_mult or tgt_mult) else ""
+                )
                 rel_name = rel.get("name", "")
                 name_str = f' "{rel_name}"' if rel_name else ""
                 assocs.append(f"{src_name} -> {tgt_name} ({label}){mult}{name_str}")

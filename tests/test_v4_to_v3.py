@@ -693,7 +693,7 @@ class TestAdapterBoundary:
         # The summary lists only plain ``Class`` elements (same for v3 input), so
         # the abstract parent is shown by id.
         assert "Generalizations (1): Customer extends" in detail
-        assert 'Customer -> Order (association) [1..0..*] "places"' in detail
+        assert 'Customer -> Order (association) [Customer 1, Order 0..*] "places"' in detail
 
     def test_class_modify_path_finds_v4_classes(self):
         model = parse_v2_payload(_v4_payload()).current_model

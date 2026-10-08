@@ -460,12 +460,12 @@ TRANSITION DESIGN GUIDELINES:
         system_name = spec.get("systemName", "StateMachine")
         states = spec.get("states", [])
         transitions = spec.get("transitions", [])
-        state_names = [s.get("stateName", "?") for s in states if s.get("stateType") == "regular"][:6]
-        msg = f"Built the **{system_name}** state machine with {len(states)} state(s)"
+        state_names = [s.get("stateName", "?") for s in states if s.get("stateType") == "regular"]
+        msg = f"Built the **{system_name}** state machine with {len(state_names)} state(s)"
         if state_names:
-            msg += f": {', '.join(f'**{n}**' for n in state_names)}"
-            if len(states) > len(state_names) + 2:  # account for initial/final
-                msg += " and more"
+            msg += f": {', '.join(f'**{n}**' for n in state_names[:6])}"
+            if len(state_names) > 6:
+                msg += f" (+{len(state_names) - 6} more)"
         if transitions:
             msg += f", connected by {len(transitions)} transition(s)"
         msg += ". Feel free to ask me to add or modify states and transitions!"

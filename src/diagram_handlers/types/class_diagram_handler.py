@@ -9,6 +9,7 @@ import re
 from typing import Dict, Any, List, Optional
 
 from ..core.base_handler import (
+    SKIPPED_PARTS_NOTE,
     BaseDiagramHandler,
     LLMPredictionError,
     ModelRefusal,
@@ -2354,13 +2355,7 @@ Examples:
             msg += f", with {len(rels)} relationship(s) between them"
         constraints = spec.get("constraints") or []
         if constraints:
-            # Honest message: the business rules are understood but the editor
-            # has no slot to display/store them yet, so don't claim they're
-            # shown on the canvas.
-            msg += (
-                f". I also noted {len(constraints)} rule(s) you mentioned, though "
-                "they aren't shown on the canvas yet"
-            )
+            msg += f", and {len(constraints)} rule(s) you stated"
         msg += "."
         return msg
 
@@ -2612,7 +2607,7 @@ Examples:
         if kept:
             # The message was built from the pre-drop list; describe only what remains.
             previous = spec.get("message") or ""
-            marker = "\n\nNote: I skipped"
+            marker = SKIPPED_PARTS_NOTE
             skip_note = previous[previous.find(marker):] if marker in previous else ""
             spec["message"] = self._default_modification_message(spec) + skip_note
         return notes

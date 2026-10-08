@@ -100,6 +100,10 @@ def validate_spec(
     return errors
 
 
+# Start of the partial-validation note; handlers that rebuild the message keep it.
+SKIPPED_PARTS_NOTE = "\n\nNote: I skipped"
+
+
 # Reusable required-key dicts for the most common specs -----------------
 
 SINGLE_CLASS_REQUIRED = {"className": str}
@@ -274,7 +278,7 @@ class BaseDiagramHandler(ABC):
         'modify_object': 'Updated',
         'add_object': 'Added',
         'modify_attribute_value': 'Updated',
-        'add_link': 'Added link to',
+        'add_link': 'Added link',
         'add_ocl_constraint': 'Added OCL constraint on',
         'add_task': 'Added',
         'add_gateway': 'Added',
@@ -328,6 +332,9 @@ class BaseDiagramHandler(ABC):
         # Relationship target
         if rel_source and rel_target:
             return f"{rel_source} → {rel_target}"
+        src_obj, tgt_obj = target.get('sourceObject'), target.get('targetObject')
+        if src_obj and tgt_obj:
+            return f"{src_obj} → {tgt_obj}"
 
         # Sub-element (attribute or method) on a class
         if class_name and attr_name and action == 'modify_attribute_value':
@@ -499,7 +506,7 @@ class BaseDiagramHandler(ABC):
         if skipped:
             existing = modification_spec.get('message') or ''
             note = (
-                f"\n\nNote: I skipped {len(skipped)} part(s) I couldn't "
+                f"{SKIPPED_PARTS_NOTE} {len(skipped)} part(s) I couldn't "
                 f"parse — the rest were applied."
             )
             modification_spec['message'] = (existing + note).strip()

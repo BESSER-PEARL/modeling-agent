@@ -278,3 +278,76 @@ class TestObjectGenerationFromHierarchy:
         _, _, system_prompt = self._generate([
             {"objectName": "dune", "className": "Book", "attributes": []}])
         assert "a book dune" in system_prompt
+
+
+# ---------------------------------------------------------------------------
+# 5. Reply quality
+# ---------------------------------------------------------------------------
+
+class TestReplyQuality:
+    def test_multiplicities_name_each_end(self):
+        """ws-A A3/A4: "multiplicities [0..1..0..*]" read as one malformed range."""
+        from utilities.model_context import detailed_model_summary
+        model = {
+            "elements": {
+                "p": {"id": "p", "name": "Patron", "type": "Class", "owner": None},
+                "i": {"id": "i", "name": "Item", "type": "Class", "owner": None},
+            },
+            "relationships": {
+                "r": {"id": "r", "type": "ClassBidirectional", "name": "borrowedItems",
+                      "source": {"element": "p", "multiplicity": "0..1"},
+                      "target": {"element": "i", "multiplicity": "0..*"}},
+            },
+        }
+        detail = detailed_model_summary(model, "ClassDiagram")
+        assert "0..1..0..*" not in detail
+        assert "Patron 0..1" in detail and "Item 0..*" in detail
+
+    def test_state_count_matches_the_listed_states(self):
+        """ws-B: "6 state(s): Red, Green, Amber, Fault" counted the initial and
+        final pseudostates but listed only the regular states."""
+        from diagram_handlers.types.state_machine_handler import StateMachineHandler
+        states = [{"stateName": n, "stateType": "regular"} for n in ("Red", "Green", "Amber", "Fault")]
+        states += [{"stateName": "start", "stateType": "initial"}, {"stateName": "end", "stateType": "final"}]
+        msg = StateMachineHandler(None)._build_system_message(
+            {"systemName": "TrafficLight", "states": states, "transitions": []})
+        assert "4 state(s): **Red**, **Green**, **Amber**, **Fault**" in msg
+        assert "6 state(s)" not in msg
+
+    def test_constraint_note_does_not_claim_they_are_off_canvas(self):
+        """ws-A A1: OCL constraints are drawn on the canvas now."""
+        from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
+        msg = ClassDiagramHandler(None)._build_system_message({
+            "systemName": "Library", "classes": [{"className": "Item"}], "relationships": [],
+            "constraints": ["context Item inv notEmptyTitle: not self.title.isEmpty()"]})
+        assert "aren't shown on the canvas" not in msg
+        assert "1 rule(s) you stated" in msg
+
+    def test_link_message_names_both_ends(self):
+        """ws-A A6: "Added link to element." for each add_link."""
+        from diagram_handlers.types.object_diagram_handler import ObjectDiagramHandler
+        msg = ObjectDiagramHandler(None)._describe_mod({
+            "action": "add_link",
+            "target": {"sourceObject": "patron1", "targetObject": "item1"},
+            "changes": {"relationshipType": "borrowedItems"}})
+        assert "element" not in msg
+        assert "patron1 → item1" in msg
+
+    def test_skip_note_marker_is_shared(self):
+        """class_diagram_handler searched for the literal base_handler writes."""
+        from diagram_handlers.core.base_handler import SKIPPED_PARTS_NOTE
+        from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
+        handler = ClassDiagramHandler(None)
+        spec = {
+            "action": "modify_model",
+            "modifications": [
+                {"action": "add_attribute", "target": {"className": "Book"},
+                 "changes": {"name": "year", "type": "int"}},
+                {"action": "remove_element", "target": {"className": "Ghost"}},
+            ],
+            "message": "Applied 2 changes." + SKIPPED_PARTS_NOTE + " 1 part(s) I couldn't parse.",
+        }
+        model = {"elements": {"b": {"id": "b", "name": "Book", "type": "Class", "owner": None}},
+                 "relationships": {}}
+        handler._drop_phantom_target_ops(spec, model)
+        assert SKIPPED_PARTS_NOTE in spec["message"]
