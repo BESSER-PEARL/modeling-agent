@@ -219,8 +219,10 @@ It uses ``src/protocol/v4_to_v3.py`` (``normalize_project_snapshot`` /
 BESSER's ``docs/source/migrations/uml-v4-shape.md``. The conversion rules:
 
 * v3 models, ``GUINoCodeDiagram`` and ``QuantumCircuitDiagram`` pass through
-  untouched. The input is never mutated, and a model that fails to convert is
-  passed through as-is.
+  untouched. The input is never mutated. An active model that fails to convert
+  fails the request with ``ModelConversionError`` (a readable reply, never an
+  edit against an apparently empty diagram); a background snapshot tab that
+  fails is passed through as-is.
 * ``class`` + ``data.stereotype`` (``Abstract`` / ``Interface`` / ``Enumeration``,
   case-insensitive) become ``AbstractClass`` / ``Interface`` / ``Enumeration``.
   Inline ``attributes`` / ``methods`` / ``oclConstraints`` rows become owned
