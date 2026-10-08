@@ -1,0 +1,372 @@
+"""Compact structured-output schema for complete-system class generation.
+
+WHY: complete-system generation time is almost entirely completion tokens, and
+the verbose schema (one object per attribute/method, long key names) needs ~2.7x
+more of them. The same content through this compact schema is ~2.4x faster, with
+structured-output enforcement intact.
+
+HOW: 1-letter keys and string-encoded members ("price: float",
+"decreasePrice(pct: float) -> None"). :func:`expand_compact_spec` converts the
+compact form into the canonical :class:`SystemClassSpec` deterministically, so
+everything downstream (guards, layout, frontend payload, generators) is
+untouched. Every parse is tolerant — a malformed member degrades to a sane
+default, never an exception.
+
+The encoding covers everything SystemClassSpec can express EXCEPT method
+implementation bodies (``implementationType``/``code``) — complete-system
+generation never emits those (they are authored via modify flows).
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from typing import List, Literal
+
+from pydantic import BaseModel, Field
+
+from schemas.class_diagram import (
+    AttributeSpec,
+    MethodParameterSpec,
+    MethodSpec,
+    OCLConstraintSpec,
+    RelationshipSpec,
+    SingleClassSpec,
+    SystemClassSpec,
+)
+
+
+# ---------------------------------------------------------------------------
+# The compact schema (what the LLM emits)
+# ---------------------------------------------------------------------------
+
+class CompactClassSpec(BaseModel):
+    n: str = Field(min_length=1, max_length=30,
+                   description="Class name in PascalCase, ONE word (e.g. Order)")
+    a: List[str] = Field(description=(
+        "Attributes, ONE string each: 'name: type'. Optional decorations: "
+        "visibility prefix '+','-','#','~'; '/' prefix for derived; "
+        "'= default' suffix for a default value; '?' suffix if optional; "
+        "'!' suffix if it is the natural/external identifier the user says "
+        "identifies the object (unique — e.g. 'roomNumber: str!'). "
+        "For an enumeration class the entries are BARE literal names "
+        "(UPPER_CASE, no type)."))
+    m: List[str] = Field(description=(
+        "Methods, ONE string each: 'name(param: type, ...) -> returnType'. "
+        "Omit '-> ...' for void; '()' when no parameters; optional "
+        "visibility prefix; '{abstract}' suffix for abstract methods."))
+    k: Literal["", "abstract", "enum"] = Field(
+        description="Class kind: '' normal, 'abstract', or 'enum'.")
+
+
+class CompactRelationshipSpec(BaseModel):
+    f: str = Field(description="Source class name (for inheritance: the SUBCLASS)")
+    t: str = Field(description="Target class name (for inheritance: the SUPERCLASS)")
+    k: Literal["assoc", "comp", "aggr", "inher", "real", "dep"] = Field(
+        description="Kind: assoc=Association, comp=Composition, "
+                    "aggr=Aggregation, inher=Inheritance, real=Realization, "
+                    "dep=Dependency")
+    how_many_TARGET_for_one_SOURCE: str = Field(description=(
+        "Take ONE <f> (the SOURCE). How many <t> (the TARGET) does it have? "
+        "Answer 1, 0..1, 0..* or 1..*, read off the user's own words. "
+        "'' for inheritance."))
+    how_many_SOURCE_for_one_TARGET: str = Field(description=(
+        "Now the opposite direction. Take ONE <t> (the TARGET). How many <f> "
+        "(the SOURCE) does it have? Answer this independently — it is usually "
+        "NOT the same as the other field, and copying or swapping the two is "
+        "the single most common mistake. 1, 0..1, 0..* or 1..*. "
+        "'' for inheritance."))
+    l: str = Field(description=(
+        "Name of the TARGET end — the role ONE <f> uses to reach its <t> "
+        "(Booking->Room: 'rooms'). ONE identifier, no slash, no space; "
+        "'' for inheritance or when there is genuinely no name."))
+    ls: str = Field(default="", description=(
+        "Name of the SOURCE end — the role ONE <t> uses to reach its <f> "
+        "(Booking->Room: 'bookings'). Name BOTH ends: a blank end falls back "
+        "to the lowercased class name, and those defaults collide across an "
+        "inheritance hierarchy. ONE identifier; '' for inheritance."))
+    ac: str = Field(default="", description=(
+        "For k=assoc only: name of the class in classes carrying per-link "
+        "attributes (e.g. Enrollment.grade on Student-Course). Attach it once "
+        "to this association, without extra links to its endpoints; '' otherwise."))
+
+
+class CompactSystemClassSpec(BaseModel):
+    """Compact complete class diagram — expanded via expand_compact_spec."""
+    name: str = Field(description="Descriptive system name, PascalCase")
+    classes: List[CompactClassSpec] = Field(min_length=1)
+    rels: List[CompactRelationshipSpec]
+    ocl: List[str] = Field(description=(
+        "Full B-OCL invariants ('context X inv name: expr') ONLY for business "
+        "rules the user EXPLICITLY stated; [] otherwise — never invent rules."))
+
+
+# Appended to the system generation prompt when the compact schema is active.
+# The COMPLETENESS emphasis is deliberate: the compact framing measurably
+# nudged the model leaner (6.8 vs 10.4 classes) without it.
+COMPACT_ENCODING_RULES = (
+    "\n\nCOMPACT OUTPUT ENCODING: respond via the provided compact schema. "
+    "Every modeling rule above still applies UNCHANGED — model the FULL "
+    "domain with the same completeness as ever: all the classes the domain "
+    "needs (typically 8-12 for a typical request), thorough attributes with "
+    "types, meaningful methods, and every relationship with sensible "
+    "multiplicities. ONLY the encoding is compact:\n"
+    "- classes: {n: PascalCase name, a: attribute strings, m: method "
+    "strings, k: ''|'abstract'|'enum'}\n"
+    "- attribute string: 'name: type' (types: str, int, float, bool, "
+    "datetime, date, time, or an enumeration name). Decorations when "
+    "needed: visibility prefix '+'/'-'/'#'/'~', '/' prefix for derived, "
+    "'= value' suffix for defaults, '?' suffix for optional, '!' suffix for "
+    "a natural/external identifier (isExternalId — 'roomNumber: str!' when "
+    "every room is identified by its room number). Enumeration "
+    "classes list BARE literal names in a (UPPER_CASE, no type).\n"
+    "- method string: 'name(param: type, ...) -> returnType' — omit "
+    "'-> ...' when it returns nothing; '()' for no parameters. Parameter "
+    "and return types are PLAIN type names — the '?' marker belongs to "
+    "attribute entries only, never inside a method string.\n"
+    "- rels: {f: source, t: target, k: assoc|comp|aggr|inher|real|dep, "
+    "how_many_TARGET_for_one_SOURCE and how_many_SOURCE_for_one_TARGET: "
+    "answer each direction SEPARATELY ('' for inheritance), l: target-end "
+    "name, ls: source-end name}. NAME BOTH ENDS, as rule 15 requires: l is "
+    "the end one <f> navigates to reach its <t> (Booking->Room: 'rooms'), "
+    "ls is the end one <t> navigates to reach its <f> ('bookings'). Each is "
+    "ONE identifier — never two names, never a slash, never a space; the "
+    "second name goes in ls, never inside l. Leave an end '' only for "
+    "inheritance or when it genuinely has no name. For inheritance f is the "
+    "SUBCLASS and t the SUPERCLASS. ac: association-class name or ''; when "
+    "values belong to a "
+    "pairing, declare their class in classes and attach it with ac on the "
+    "direct assoc between the paired classes. Do not add two ordinary "
+    "relationships from that association class to the endpoints.\n"
+    "- ocl: [] unless the user explicitly stated a business rule.\n"
+    "Do not add prose or extra fields."
+)
+
+
+# ---------------------------------------------------------------------------
+# Deterministic expansion (compact -> canonical SystemClassSpec)
+# ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
+
+_VISIBILITY = {"+": "public", "-": "private", "#": "protected", "~": "package"}
+
+_REL_KIND = {
+    "assoc": "Association",
+    "comp": "Composition",
+    "aggr": "Aggregation",
+    "inher": "Inheritance",
+    "real": "Realization",
+    "dep": "Dependency",
+}
+
+_OCL_RE = re.compile(r"context\s+(\w+)\s+inv\s*(\w*)\s*:", re.IGNORECASE)
+
+
+def _parse_attribute(raw: str, is_enum_class: bool) -> AttributeSpec:
+    """'[vis][/]name: type [= default] [?] [!]' → AttributeSpec. Never raises."""
+    s = (raw or "").strip()
+    visibility = "public"
+    derived = False
+    optional = False
+    external_id = False
+    default = None
+
+    if s[:1] in _VISIBILITY:
+        visibility = _VISIBILITY[s[0]]
+        s = s[1:].strip()
+    if s.startswith("/"):
+        derived = True
+        s = s[1:].strip()
+    if s.endswith("?"):
+        optional = True
+        s = s[:-1].strip()
+    if s.endswith("!"):
+        external_id = True
+        s = s[:-1].strip()
+    if "=" in s:
+        s, default = s.split("=", 1)
+        default = default.strip() or None
+        s = s.strip()
+
+    if ":" in s:
+        name, type_ = s.split(":", 1)
+        name = name.strip()
+        type_ = type_.strip() or None
+        # 'name: str?' / 'name: str!' — marker glued to the type instead of
+        # the entry ('str?' is not a BUML type).
+        if type_ and type_.endswith("!"):
+            external_id = True
+            type_ = type_.rstrip("!").strip() or None
+        if type_ and type_.endswith("?"):
+            optional = True
+            type_ = type_.rstrip("?").strip() or None
+    else:
+        # Bare name — an enum literal, or an untyped attribute.
+        name, type_ = s, None
+
+    if not name:
+        name = "attribute"
+    if is_enum_class:
+        type_ = None  # enum literals carry no type by convention
+
+    return AttributeSpec(
+        name=name[:50], type=type_, visibility=visibility,
+        isDerived=derived, defaultValue=default, isOptional=optional,
+        isExternalId=external_id,
+    )
+
+
+def _parse_method(raw: str) -> MethodSpec:
+    """'[vis]name(param: type, ...) [-> ret] [{abstract}]' → MethodSpec."""
+    s = (raw or "").strip()
+    visibility = "public"
+    is_abstract = False
+    return_type = "void"
+
+    if s[:1] in _VISIBILITY:
+        visibility = _VISIBILITY[s[0]]
+        s = s[1:].strip()
+    if "{abstract}" in s:
+        is_abstract = True
+        s = s.replace("{abstract}", "").strip()
+    if "->" in s:
+        s, return_type = s.rsplit("->", 1)
+        return_type = return_type.strip() or "void"
+        s = s.strip()
+
+    def _clean_type(token: str, fallback: str) -> str:
+        # 'str?' is not a BUML type — parameters/returns have no optionality
+        # in the metamodel, so the stray marker is simply dropped.
+        token = token.strip().rstrip("?").strip()
+        return token or fallback
+
+    params: List[MethodParameterSpec] = []
+    if "(" in s:
+        name, params_raw = s.split("(", 1)
+        before, sep, trailer = params_raw.rpartition(")")
+        if sep:
+            params_raw = before
+        else:
+            trailer = ""  # unterminated '(' — treat the rest as params
+        # 'name(...): ret' — colon-style return instead of '-> ret'.
+        trailer = trailer.strip()
+        if trailer.startswith(":") and return_type == "void":
+            return_type = trailer[1:].strip() or "void"
+        for chunk in params_raw.split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            if ":" in chunk:
+                p_name, p_type = chunk.split(":", 1)
+                params.append(MethodParameterSpec(
+                    name=(p_name.strip() or "param")[:50],
+                    type=_clean_type(p_type, "String"),
+                ))
+            else:
+                params.append(MethodParameterSpec(name=chunk[:50], type="String"))
+    else:
+        name = s
+
+    name = name.strip() or "method"
+    return_type = _clean_type(return_type, "void")
+    return MethodSpec(
+        name=name[:50], returnType=return_type, visibility=visibility,
+        parameters=params, isAbstract=is_abstract,
+    )
+
+
+def _usable_association_class(name: str, rel: "CompactRelationshipSpec",
+                              classes: List[SingleClassSpec],
+                              attached: set) -> bool:
+    """Mirror ``SystemClassSpec.validate_association_classes`` non-fatally.
+
+    That validator raises on five separate ``ac`` conditions, and the raise
+    escapes ``expand_compact_spec`` into ``generate_complete_system``'s
+    blanket ``except Exception`` — so ONE bad ``ac`` string throws away the
+    whole model and drops the request onto the incremental fallback. Losing
+    a link's per-link attributes is a far smaller loss than losing every
+    class, and this module's contract is that a malformed member "degrades
+    to a sane default, never an exception".
+    """
+    by_name = {c.className: c for c in classes}
+    if rel.k != "assoc":
+        return False
+    for referenced in (rel.f, rel.t, name):
+        cls = by_name.get(referenced)
+        if cls is None or cls.isEnumeration:
+            return False
+    if name in (rel.f, rel.t) or by_name[name].isAbstract:
+        return False
+    return name not in attached
+
+
+def expand_compact_spec(compact: CompactSystemClassSpec) -> SystemClassSpec:
+    """Deterministically expand the compact form into the canonical spec.
+
+    Constructing the canonical Pydantic models runs their validators (e.g.
+    the multiplicity normalizer), so the expanded spec is exactly as safe as
+    one the LLM had produced directly.
+    """
+    classes: List[SingleClassSpec] = []
+    for c in compact.classes:
+        is_enum = c.k == "enum"
+        classes.append(SingleClassSpec(
+            className=c.n[:30],
+            attributes=[_parse_attribute(a, is_enum) for a in c.a],
+            methods=[] if is_enum else [_parse_method(m) for m in c.m],
+            isAbstract=c.k == "abstract",
+            isEnumeration=is_enum,
+        ))
+
+    relationships: List[RelationshipSpec] = []
+    attached: set = set()
+    for r in compact.rels:
+        assoc_class = r.ac.strip() or None
+        if assoc_class and not _usable_association_class(assoc_class, r, classes,
+                                                         attached):
+            logger.warning(
+                "[CompactSpec] dropping unusable associationClass %r on %s->%s; "
+                "keeping the association and the rest of the model",
+                assoc_class, r.f, r.t,
+            )
+            assoc_class = None
+        if assoc_class:
+            attached.add(assoc_class)
+        relationships.append(RelationshipSpec(
+            type=_REL_KIND.get(r.k, "Association"),
+            source=r.f,
+            target=r.t,
+            # UML writes a multiplicity at the end it counts: the source end
+            # says how many sources exist per ONE target.
+            # A blank bound is missing information, not a stated "1" — the
+            # invented mandatory end is what rule 7 warns against.
+            sourceMultiplicity=(r.how_many_SOURCE_for_one_TARGET.strip()
+                                or ("1" if r.k == "inher" else "0..*")),
+            targetMultiplicity=(r.how_many_TARGET_for_one_SOURCE.strip()
+                                or ("1" if r.k == "inher" else "*")),
+            name=r.l.strip() or None,
+            sourceRole=r.ls.strip() or None,
+            associationClass=assoc_class,
+        ))
+
+    constraints: List[OCLConstraintSpec] = []
+    for inv in compact.ocl:
+        inv = (inv or "").strip()
+        if not inv:
+            continue
+        match = _OCL_RE.search(inv)
+        if not match:
+            continue  # not a recognizable invariant — drop rather than crash
+        constraints.append(OCLConstraintSpec(
+            context=match.group(1),
+            expression=inv,
+            name=match.group(2) or None,
+        ))
+
+    return SystemClassSpec(
+        systemName=compact.name,
+        classes=classes,
+        relationships=relationships,
+        constraints=constraints,
+    )

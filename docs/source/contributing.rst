@@ -20,3 +20,4 @@ environment.
    contributing/code_style
    contributing/debugging
    contributing/pull_requests
+   contributing/documentation

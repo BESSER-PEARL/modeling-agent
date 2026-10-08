@@ -10,6 +10,84 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class LLMPredictionError(Exception):
+    """Raised when the LLM fails to produce a usable response after retries."""
+    pass
+
+
+class ModelRefusal(LLMPredictionError):
+    """The model declined the request (safety refusal or content filter).
+
+    It arrives as a successful response, so no retry layer sees an error, and
+    the same prompt is declined again: callers must not retry it.
+    """
+
+    def __init__(
+        self, provider: str, category: Optional[str] = None, detail: Optional[str] = None,
+    ) -> None:
+        self.provider = provider
+        self.category = category
+        self.detail = detail
+        super().__init__(
+            f"{provider} model declined the request "
+            f"(category={category or 'unspecified'})"
+        )
+
+    def user_message(self) -> str:
+        """Polite, user-facing explanation (no raw model output)."""
+        reason = f" (safety category: {self.category.replace('_', ' ')})" if self.category else ""
+        return (
+            f"The AI model declined this request{reason}. Please try rephrasing "
+            "it, or switch to a different model in the assistant settings."
+        )
+
+
+def _field(obj: Any, name: str) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def raise_if_anthropic_refusal(message: Any) -> None:
+    """Raise :class:`ModelRefusal` when an Anthropic message has ``stop_reason == "refusal"``."""
+    if _field(message, "stop_reason") != "refusal":
+        return
+    details = _field(message, "stop_details")
+    raise ModelRefusal(
+        "anthropic", _field(details, "category"), _field(details, "explanation"),
+    )
+
+
+def raise_if_openai_refusal(choice: Any) -> None:
+    """Raise :class:`ModelRefusal` for an OpenAI choice carrying ``message.refusal``
+    or stopped by the content filter (``finish_reason == "content_filter"``)."""
+    refusal = _field(_field(choice, "message"), "refusal")
+    if isinstance(refusal, str) and refusal.strip():
+        raise ModelRefusal("openai", detail=refusal.strip())
+    if _field(choice, "finish_reason") == "content_filter":
+        raise ModelRefusal("openai", category="content_filter")
+
+
+# Provider errors that a retry or a degraded re-generation cannot fix: the
+# same request fails again, so they must reach the user instead.
+_NON_RECOVERABLE_ERRORS = frozenset({
+    "RateLimitError", "AuthenticationError", "PermissionDeniedError",
+    "BadRequestError", "LengthFinishReasonError",
+})
+
+
+def non_recoverable_cause(error: Optional[BaseException]) -> Optional[BaseException]:
+    """The provider error in *error*'s cause/context chain listed in
+    ``_NON_RECOVERABLE_ERRORS`` (it may be wrapped in LLMPredictionError), else None."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if type(error).__name__ in _NON_RECOVERABLE_ERRORS:
+            return error
+        error = error.__cause__ or error.__context__
+    return None
+
+
 class ErrorCode(str, Enum):
     """Error taxonomy for the modeling agent."""
     GENERATION_ERROR = "generation_error"
@@ -25,6 +103,7 @@ class ErrorCode(str, Enum):
     PREREQUISITE_MISSING = "prerequisite_missing"
     HANDLER_MISSING = "handler_missing"
     GENERATION_HANDLER_ERROR = "generation_handler_error"
+    MODEL_REFUSAL = "model_refusal"
     UNKNOWN = "unknown"
 
 
@@ -103,6 +182,11 @@ _RECOVERY_HINTS: Dict[str, Dict[str, Any]] = {
         "recovery": "try regenerating — if it persists, check the model for issues",
         "retryable": True,
     },
+    "model_refusal": {
+        "message": "The AI model declined this request.",
+        "recovery": "try rephrasing it, or switch to a different model",
+        "retryable": False,
+    },
     "unknown": {
         "message": "Something went wrong.",
         "recovery": "try rephrasing your request",
@@ -125,10 +209,18 @@ def classify_error(error: Exception) -> ErrorCode:
     1. Exception class name matching (most specific)
     2. Error message string matching (fallback)
     """
-    from diagram_handlers.core.base_handler import LLMPredictionError
+    if isinstance(error, ModelRefusal):
+        return ErrorCode.MODEL_REFUSAL
 
     err_name = type(error).__name__.lower()
     err_msg = str(error).lower()
+
+    # SDK class names first: provider messages mention "api" / "openai"
+    # and would otherwise be read as a generic LLM failure.
+    if "rate" in err_name and "limit" in err_name:
+        return ErrorCode.RATE_LIMIT
+    if "auth" in err_name:
+        return ErrorCode.AUTH_ERROR
 
     # Timeout detection (both files check this)
     if "timeout" in err_name or "timeout" in err_msg or "timed out" in err_msg:
@@ -150,12 +242,8 @@ def classify_error(error: Exception) -> ErrorCode:
     if any(kw in err_msg for kw in ("openai", "llm", "rate limit", "api")):
         return ErrorCode.LLM_FAILURE
 
-    # Rate-limit specifically
-    if "rate" in err_name and "limit" in err_name:
-        return ErrorCode.RATE_LIMIT
-
     # Auth errors
-    if "auth" in err_name or "unauthorized" in err_msg or "forbidden" in err_msg or "api_key" in err_msg or "invalid_api_key" in err_msg:
+    if "unauthorized" in err_msg or "forbidden" in err_msg or "api_key" in err_msg or "invalid_api_key" in err_msg:
         return ErrorCode.AUTH_ERROR
 
     # Default: base_handler used generation_error, execution used unknown.

@@ -9,33 +9,136 @@ Usage::
     from tracking import get_tracker
 
     tracker = get_tracker()
-    tracker.record(prompt_tokens=120, completion_tokens=80, model="gpt-4.1-mini")
+    tracker.record(prompt_tokens=120, completion_tokens=80, model=LLM_MODEL_DEFAULT)
 
     print(tracker.summary())           # global totals
     print(tracker.session_summary(sid)) # per-session totals
 """
 
 import logging
+import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
+from agent_config import LLM_MODEL_DEFAULT
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Cost table (USD per 1 000 tokens) — updated for gpt-4.1-mini pricing
+# Cost table (USD per 1 000 tokens)
+#
+# Every model the agent can be pointed at needs an entry here. A model that is
+# missing still records tokens, but its cost is computed from _DEFAULT_COST —
+# a placeholder, not that model's real pricing. That fallback is deliberately
+# quiet per call (this runs on every LLM response) but is reported once per
+# unknown model via _warn_unknown_model, so a model swap that forgets this
+# table shows up in the logs instead of silently producing wrong cost figures.
 # ---------------------------------------------------------------------------
 
+# "cached" is the cache-read input rate; a model without one is billed at its
+# full prompt rate for cached tokens. Rates come from the price file BESSER
+# vendors (spec_driven_agent/providers/data/model_prices.json).
 _COST_PER_1K: Dict[str, Dict[str, float]] = {
-    "gpt-4.1-mini": {"prompt": 0.0004, "completion": 0.0016},
-    "gpt-4.1": {"prompt": 0.002, "completion": 0.008},
-    "gpt-4o-mini": {"prompt": 0.00015, "completion": 0.0006},
-    "gpt-4o": {"prompt": 0.0025, "completion": 0.01},
+    "gpt-4.1-mini": {"prompt": 0.0004, "completion": 0.0016, "cached": 0.0001},
+    "gpt-4.1": {"prompt": 0.002, "completion": 0.008, "cached": 0.0005},
+    "gpt-4o-mini": {"prompt": 0.00015, "completion": 0.0006, "cached": 0.000075},
+    "gpt-4o": {"prompt": 0.0025, "completion": 0.01, "cached": 0.00125},
+    # Models used by the routing table in ``model_config.py`` — every
+    # routed model needs an entry here, otherwise its cost silently
+    # falls back to ``_DEFAULT_COST`` and skews cost reporting.
+    "gpt-5": {"prompt": 0.00125, "completion": 0.01, "cached": 0.000125},
+    "gpt-5.5": {"prompt": 0.005, "completion": 0.03, "cached": 0.0005},
+    # gpt-5.6 family and the 5.4/5.6 options offered in the BYOK model picker. Prices
+    # per 1K = per-1M list price / 1000 (sol $4/$20, terra $2/$12,
+    # luna $0.20/$1.20, 5.4-mini $0.75/$4.50, 5.4-nano $0.20/$1.25).
+    "gpt-5.6-sol": {"prompt": 0.004, "completion": 0.02, "cached": 0.0004},
+    "gpt-5.6-terra": {"prompt": 0.002, "completion": 0.012, "cached": 0.0002},
+    "gpt-5.6-luna": {"prompt": 0.0002, "completion": 0.0012, "cached": 0.00002},
+    "gpt-5.4-mini": {"prompt": 0.00075, "completion": 0.0045, "cached": 0.000075},
+    "gpt-5.4-nano": {"prompt": 0.0002, "completion": 0.00125, "cached": 0.00002},
+    # gpt-6 family (current defaults: sol for GUI generation, luna for small
+    # generation; astra $10/$50, sol $2/$10, luna $0.10/$0.50). sol/luna are
+    # not in the price file: their cached rate assumes astra's 10%.
+    "gpt-6-astra": {"prompt": 0.01, "completion": 0.05, "cached": 0.001},
+    "gpt-6-sol": {"prompt": 0.002, "completion": 0.01, "cached": 0.0002},
+    "gpt-6-luna": {"prompt": 0.0001, "completion": 0.0005, "cached": 0.00001},
+    # Production large/reasoning override (BESSER_AGENT_MODEL_*).
+    "gpt-5-mini": {"prompt": 0.00025, "completion": 0.002, "cached": 0.000025},
+    # BYOK tier models (byok._PROVIDER_TIER_MODELS). Rates from the price file
+    # BESSER vendors (spec_driven_agent/providers/data/model_prices.json).
+    # Claude cache reads are 0.1x input (0.025x on Fable 5.1, 0.05x on Opus 5.5).
+    "claude-sonnet-4-6": {"prompt": 0.003, "completion": 0.015, "cached": 0.0003},
+    "claude-haiku-4-5": {"prompt": 0.001, "completion": 0.005, "cached": 0.0001},
+    # Other current Claude models a user key can pick (Anthropic list prices).
+    "claude-fable-5-1": {"prompt": 0.01, "completion": 0.05, "cached": 0.00025},
+    "claude-fable-5": {"prompt": 0.01, "completion": 0.05, "cached": 0.001},
+    "claude-opus-5-5": {"prompt": 0.004, "completion": 0.02, "cached": 0.0002},
+    "claude-opus-5": {"prompt": 0.005, "completion": 0.025, "cached": 0.0005},
+    "claude-sonnet-5": {"prompt": 0.002, "completion": 0.01, "cached": 0.0002},
+    "claude-opus-4-8": {"prompt": 0.005, "completion": 0.025, "cached": 0.0005},
+    "claude-opus-4-7": {"prompt": 0.005, "completion": 0.025, "cached": 0.0005},
+    "claude-opus-4-6": {"prompt": 0.005, "completion": 0.025, "cached": 0.0005},
+    "mistral-large-latest": {"prompt": 0.0005, "completion": 0.0015},
+    "mistral-small-latest": {"prompt": 0.00015, "completion": 0.0006},
+    "Qwen/Qwen3-30B-A3B-Instruct-2507": {"prompt": 0.0001, "completion": 0.0003},
+    # RAG embeddings (MODEL_EMBEDDINGS).
+    "text-embedding-3-small": {"prompt": 0.00002, "completion": 0.0},
 }
 
-# Fallback for unknown models
+# Anthropic bills a 5-minute cache write at 1.25x the input rate.
+_CACHE_WRITE_MULTIPLIER = 1.25
+
+# Gateway prefixes in front of a canonical id (Bedrock "us.anthropic.", "openai/").
+_GATEWAY_PREFIX = re.compile(r"^(?:[a-z]{2}\.)?(?:anthropic|openai)[./]")
+# Snapshot suffixes after a canonical id: a date, a Vertex "@..." tag, a Bedrock "-v1:0".
+_SNAPSHOT_SUFFIX = re.compile(r"^(?:-\d{4}-?\d{2}-?\d{2}|@[\w.-]+)?(?:-v\d+(?::\d+)?)?$")
+
+
+def _cost_table_for(model: str) -> Optional[Dict[str, float]]:
+    """Rates for *model*: the exact id, else the longest table key it extends
+    by a gateway prefix and/or a snapshot suffix (claude-haiku-4-5-20251001,
+    us.anthropic.claude-sonnet-5). A different variant (gpt-5.5-pro) stays
+    unknown rather than inheriting its base model's price."""
+    table = _COST_PER_1K.get(model)
+    if table is not None:
+        return table
+    name = _GATEWAY_PREFIX.sub("", (model or "").strip().lower())
+    best = None
+    for key in _COST_PER_1K:
+        k = key.lower()
+        if name.startswith(k) and _SNAPSHOT_SUFFIX.match(name[len(k):]):
+            if best is None or len(k) > len(best):
+                best = key
+    return _COST_PER_1K[best] if best else None
+
+
+# Seconds between INFO lines with the global totals (0 disables them).
+_SUMMARY_INTERVAL_SECONDS = float(os.getenv("BESSER_AGENT_COST_LOG_INTERVAL", "600") or 0)
+
+# Fallback for unknown models — placeholder pricing, not any real model's rate.
 _DEFAULT_COST = {"prompt": 0.001, "completion": 0.004}
+
+# Models already reported as missing from _COST_PER_1K, so the warning is
+# emitted once per model rather than once per LLM call.
+_unknown_models_seen: set = set()
+_unknown_models_lock = threading.Lock()
+
+
+def _warn_unknown_model(model: str) -> None:
+    """Log once that `model` has no cost-table entry and is using placeholder pricing."""
+    with _unknown_models_lock:
+        if model in _unknown_models_seen:
+            return
+        _unknown_models_seen.add(model)
+    logger.warning(
+        "No cost-table entry for model %r; reported costs for it are estimated from "
+        "placeholder pricing (%s/1K prompt, %s/1K completion). Add it to _COST_PER_1K "
+        "in tracking/token_tracker.py.",
+        model, _DEFAULT_COST["prompt"], _DEFAULT_COST["completion"],
+    )
 
 
 @dataclass
@@ -44,6 +147,7 @@ class _UsageBucket:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cached_prompt_tokens: int = 0
     estimated_cost_usd: float = 0.0
     call_count: int = 0
     cache_hits: int = 0
@@ -58,6 +162,7 @@ class TokenTracker:
         self._lock = threading.Lock()
         self._global = _UsageBucket()
         self._sessions: Dict[str, _UsageBucket] = {}
+        self._last_summary_ts = time.time()
 
     # ------------------------------------------------------------------
     # Recording
@@ -67,15 +172,28 @@ class TokenTracker:
         self,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
-        model: str = "gpt-4.1-mini",
+        model: str = LLM_MODEL_DEFAULT,
         session_id: Optional[str] = None,
         cached: bool = False,
+        cached_prompt_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> None:
-        """Record a single LLM call's token usage."""
+        """Record a single LLM call's token usage.
+
+        ``prompt_tokens`` counts every input token; ``cached_prompt_tokens`` and
+        ``cache_write_tokens`` are the parts of it read from / written to a
+        prompt cache, billed at the cached and cache-write rates.
+        """
         total = prompt_tokens + completion_tokens
-        cost_table = _COST_PER_1K.get(model, _DEFAULT_COST)
+        cost_table = _cost_table_for(model)
+        if cost_table is None:
+            _warn_unknown_model(model)
+            cost_table = _DEFAULT_COST
+        uncached = max(prompt_tokens - cached_prompt_tokens - cache_write_tokens, 0)
         cost = (
-            (prompt_tokens / 1000) * cost_table["prompt"]
+            (uncached / 1000) * cost_table["prompt"]
+            + (cached_prompt_tokens / 1000) * cost_table.get("cached", cost_table["prompt"])
+            + (cache_write_tokens / 1000) * cost_table["prompt"] * _CACHE_WRITE_MULTIPLIER
             + (completion_tokens / 1000) * cost_table["completion"]
         )
 
@@ -86,6 +204,7 @@ class TokenTracker:
             self._global.prompt_tokens += prompt_tokens
             self._global.completion_tokens += completion_tokens
             self._global.total_tokens += total
+            self._global.cached_prompt_tokens += cached_prompt_tokens
             self._global.estimated_cost_usd += cost
             self._global.call_count += 1
             self._global.last_call_ts = now
@@ -98,11 +217,28 @@ class TokenTracker:
                 bucket.prompt_tokens += prompt_tokens
                 bucket.completion_tokens += completion_tokens
                 bucket.total_tokens += total
+                bucket.cached_prompt_tokens += cached_prompt_tokens
                 bucket.estimated_cost_usd += cost
                 bucket.call_count += 1
                 bucket.last_call_ts = now
                 if cached:
                     bucket.cache_hits += 1
+
+            log_summary = (
+                _SUMMARY_INTERVAL_SECONDS > 0
+                and now - self._last_summary_ts >= _SUMMARY_INTERVAL_SECONDS
+            )
+            if log_summary:
+                self._last_summary_ts = now
+
+        if log_summary:
+            g = self.summary()
+            logger.info(
+                "[TokenTracker] totals since start: calls=%d prompt=%d (cached=%d) "
+                "completion=%d est_cost=$%.4f",
+                g["call_count"], g["prompt_tokens"], g["cached_prompt_tokens"],
+                g["completion_tokens"], g["estimated_cost_usd"],
+            )
 
         logger.debug(
             f"[TokenTracker] +{total} tokens (p={prompt_tokens}, c={completion_tokens}) "
@@ -112,18 +248,20 @@ class TokenTracker:
     def record_from_usage(
         self,
         usage,
-        model: str = "gpt-4.1-mini",
+        model: str = LLM_MODEL_DEFAULT,
         session_id: Optional[str] = None,
     ) -> None:
         """Record from an OpenAI ``CompletionUsage`` object (or any obj with
         ``prompt_tokens`` and ``completion_tokens`` attributes)."""
         if usage is None:
             return
+        details = getattr(usage, "prompt_tokens_details", None)
         self.record(
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
             completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
             model=model,
             session_id=session_id,
+            cached_prompt_tokens=getattr(details, "cached_tokens", 0) or 0,
         )
 
     # ------------------------------------------------------------------
@@ -138,6 +276,7 @@ class TokenTracker:
                 "prompt_tokens": g.prompt_tokens,
                 "completion_tokens": g.completion_tokens,
                 "total_tokens": g.total_tokens,
+                "cached_prompt_tokens": g.cached_prompt_tokens,
                 "estimated_cost_usd": round(g.estimated_cost_usd, 6),
                 "call_count": g.call_count,
                 "cache_hits": g.cache_hits,

@@ -9,7 +9,9 @@ they only use the ``session`` object and the protocol adapters.
 
 import json
 import logging
+import threading
 import uuid
+from collections import OrderedDict
 from typing import Any, Dict, Optional
 
 from baf.core.session import Session
@@ -18,21 +20,24 @@ from protocol.adapters import parse_assistant_request
 from handlers.generation_handler import (
     should_route_to_generation,
     detect_generator_type,
-    _is_modeling_request,
-    _is_diagram_creation_request,
 )
 from agent_config import (
-    MAX_USER_MESSAGE_CHARS,
     STREAM_BUFFER_THRESHOLD,
     LLM_TEXT_TEMPERATURE,
     LLM_MAX_TOKENS_TEXT,
 )
-from memory import get_memory
+from model_config import MODEL_CLASSIFIER
+from memory import get_memory, memory_session_key
 from session_keys import (
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
     PENDING_GENERATOR_TYPE,
+    PENDING_SMART_GEN_INSTRUCTIONS,
+    TELEMETRY_EMITTED_EVENT_ID,
+    UNIFIED_CLASSIFICATION,
 )
+from telemetry import emit_prompt_event
+from unified_classifier import _pending_flow_context
 
 logger = logging.getLogger(__name__)
 
@@ -44,20 +49,7 @@ logger = logging.getLogger(__name__)
 def get_user_message(session: Session) -> str:
     """Extract normalized message using protocol adapters."""
     request = parse_assistant_request(session)
-    message = request.message or ""
-    if len(message) > MAX_USER_MESSAGE_CHARS:
-        original_len = len(message)
-        logger.warning(
-            f"User message truncated from {original_len} to {MAX_USER_MESSAGE_CHARS} chars"
-        )
-        message = message[:MAX_USER_MESSAGE_CHARS] + "\u2026[truncated]"
-        reply_message(
-            session,
-            f"Your message was quite long ({original_len:,} characters) and has been "
-            f"trimmed to {MAX_USER_MESSAGE_CHARS:,} characters. If important details "
-            "were near the end, consider splitting your request into smaller parts.",
-        )
-    return message
+    return request.message or ""
 
 
 def get_diagram_type(session: Session, default: str = 'ClassDiagram') -> str:
@@ -79,54 +71,47 @@ def get_current_model(session: Session) -> Optional[Dict[str, Any]]:
 def json_intent_matches(session: Session, params: Dict[str, Any]) -> bool:
     """Check if the predicted intent matches the target intent for JSON events.
 
-    Skips intent matching when a pending confirmation or selection flow is
-    active — the user's reply (e.g. "replace", "auto") should stay in the
-    current state so _common_preamble can handle it, instead of being
-    misrouted by the intent classifier.
-    """
-    # If awaiting generator selection, suppress intent matching so the
-    # route_to_generation condition (next priority) can capture the reply.
-    pending = session.get(PENDING_GENERATOR_TYPE)
-    if pending == "_awaiting_selection":
-        return False
+    Priority:
+      1. Unified classifier's non-fallback verdict
+         (``UNIFIED_CLASSIFICATION`` in session) — our own LLM call,
+         authoritative when it reached a decision.
+      2. BAF's built-in ``session.event.predicted_intent`` — fallback
+         when the unified classifier wasn't called (e.g. tests, or
+         if the ensure-classification hook is ever disabled).
 
-    # If a pending confirmation or GUI choice is active, suppress intent
-    # matching so the message stays in the current state and _common_preamble
-    # handles it.  This prevents "replace"/"keep"/"auto"/"llm" from being
-    # misclassified as modify_model_intent or fallback_intent.
-    if session.get(PENDING_COMPLETE_SYSTEM):
-        return False
-    if session.get(PENDING_GUI_CHOICE):
-        return False
+    Skips intent matching when a pending confirmation or selection flow
+    is active — the user's reply (e.g. "replace", "auto") should stay
+    in the current state so ``_common_preamble`` can handle it, instead
+    of being misrouted by the intent classifier.
+    """
+    # Pending-flow gate (ActiveFlow): when the assistant is awaiting a reply
+    # to a question (replace/keep, GUI choice, smart-gen confirmation,
+    # generator menu/config), the CLASSIFIER decides — with the pending
+    # question in its context — whether this message ANSWERS it or is a NEW
+    # REQUEST. Answers (and no-verdict, conservatively) stay in the current
+    # state for the flow handler to consume; a new_request routes NORMALLY,
+    # so it never lands in the wrong state (a modify trapped in the create
+    # state, a decline trapped in a config flow).
+    if _pending_flow_context(session) is not None:
+        _uc_flow = session.get(UNIFIED_CLASSIFICATION)
+        if getattr(_uc_flow, "pending_flow_action", None) != "new_request":
+            return False
 
     target_intent_name = params.get('intent_name')
     if not target_intent_name:
         return False
 
+    # Priority 1: the unified classifier, if it ran for this message.
+    # See ``ensure_unified_classification`` in state_bodies.py.
+    unified = session.get(UNIFIED_CLASSIFICATION)
+    if unified is not None and unified.intent != "fallback_intent":
+        return unified.intent == target_intent_name
+
+    # Priority 2: BAF's description-based classifier. Fallback only —
+    # runs when the unified classifier hook wasn't installed (tests,
+    # unusual state machines). BAF's answer is trusted as-is here.
     if hasattr(session.event, 'predicted_intent') and session.event.predicted_intent:
         matched_intent = session.event.predicted_intent.intent
-
-        # Cross-validation: when the LLM says generation_intent but
-        # deterministic checks disagree, override the classification.
-        # This catches cases where the LLM is fooled by generator keywords
-        # embedded in modeling requests (e.g. "create a web app for X").
-        if matched_intent.name == 'generation_intent' and target_intent_name == 'generation_intent':
-            request = parse_assistant_request(session)
-            message = request.message
-            if message:
-                lower = message.lower()
-                has_generator = detect_generator_type(message) is not None
-                is_modeling = _is_modeling_request(message)
-                is_diagram = _is_diagram_creation_request(lower)
-                # If it's a modeling/diagram request, don't match generation
-                if is_modeling or is_diagram:
-                    return False
-                # If the LLM says generation but no generator keyword found,
-                # don't match — let it fall through to fallback which will
-                # stream a helpful response.
-                if not has_generator:
-                    return False
-
         return matched_intent.name == target_intent_name
 
     return False
@@ -138,8 +123,10 @@ def json_no_intent_matched(session: Session) -> bool:
     Also returns True when a pending confirmation suppressed intent matching,
     so the message stays in the current state for _common_preamble to handle.
     """
-    if session.get(PENDING_COMPLETE_SYSTEM) or session.get(PENDING_GUI_CHOICE):
-        return True
+    if _pending_flow_context(session) is not None:
+        _uc_flow = session.get(UNIFIED_CLASSIFICATION)
+        if getattr(_uc_flow, "pending_flow_action", None) != "new_request":
+            return True
     if hasattr(session.event, 'predicted_intent') and session.event.predicted_intent:
         matched_intent = session.event.predicted_intent.intent
         return matched_intent.name == 'fallback_intent'
@@ -147,18 +134,178 @@ def json_no_intent_matched(session: Session) -> bool:
 
 
 # ------------------------------------------------------------------
+# Reconnect recovery: buffer the last completed reply per session
+# ------------------------------------------------------------------
+# A long generation can outlive its WebSocket connection: the socket reconnects
+# mid-flight and BAF routes the final reply to the now-dead connection, so the
+# frontend never sees it and stays stuck on "still working…". We remember the
+# last TERMINAL reply per STABLE session key (which survives reconnects — see
+# ``memory_session_key``) and re-send it when the frontend asks, via a
+# ``replay_last_response`` control message it fires on reconnect-while-waiting.
+#
+# Turn-scoped replay: a client that sends a ``turnId`` gets every frame of that
+# turn stamped with it plus a per-turn ``replySeq``, and its replay request names
+# the awaited turn and the seqs it already applied. Only that turn's
+# unacknowledged terminal replies are re-sent — never the previous turn's reply,
+# never one the reconnect's outbox flush already delivered.
+_TERMINAL_REPLY_ACTIONS = frozenset({
+    "inject_complete_system", "modify_model", "auto_generate_gui",
+    "trigger_generator", "trigger_github_import", "assistant_message",
+})
+# Replayed only within a turn, where the client applies each (turnId, replySeq)
+# at most once: a missed trigger is recovered, an applied one is never re-sent.
+# Kept out of the legacy replay above, which has no dedupe (a paid run could
+# start twice). create_diagram_tab precedes an injection with replaceExisting,
+# so it must replay with it; stream_done carries the assembled streamed text.
+_TURN_REPLY_ACTIONS = _TERMINAL_REPLY_ACTIONS | frozenset({
+    "inject_element", "trigger_smart_generator", "agent_error",
+    "trigger_export", "trigger_deploy", "create_diagram_tab", "stream_done",
+})
+_REPLY_BUFFER_MAX = 200
+_last_reply_buffer: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+# (session key, turn id) -> {"seq": last issued replySeq, "replies": [stamped terminal payloads]}
+_turn_replies: "OrderedDict[tuple, Dict[str, Any]]" = OrderedDict()
+_turn_lock = threading.Lock()
+
+
+def _stamp_turn(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of *payload* stamped with the request's turnId and the next
+    replySeq, or *payload* unchanged when the request carries no turnId."""
+    try:
+        request = parse_assistant_request(session)
+        turn_id = getattr(request, "turn_id", None)
+        if not turn_id:
+            return payload
+        key = (memory_session_key(session, request), turn_id)
+    except Exception as exc:
+        logger.debug(f"[ReplayBuffer] turn stamp skipped (best-effort): {exc}")
+        return payload
+    with _turn_lock:
+        state = _turn_replies.get(key)
+        if state is None:
+            state = _turn_replies[key] = {"seq": 0, "replies": []}
+            while len(_turn_replies) > _REPLY_BUFFER_MAX:
+                _turn_replies.popitem(last=False)
+        else:
+            # LRU on use, not creation: a long turn must not be evicted mid-way,
+            # or its replySeq restarts and the client drops the final reply.
+            _turn_replies.move_to_end(key)
+        state["seq"] += 1
+        return {**payload, "turnId": turn_id, "replySeq": state["seq"]}
+
+
+def _buffer_terminal_reply(session: Session, payload: Dict[str, Any]) -> None:
+    """Remember this session's last terminal reply so a reconnect that dropped
+    it can replay it. Best-effort — never breaks the actual reply. Bounded LRU
+    so it can't grow without limit."""
+    try:
+        action = payload.get("action")
+        if action not in _TURN_REPLY_ACTIONS:
+            return
+        key = memory_session_key(session)
+        if action in _TERMINAL_REPLY_ACTIONS:
+            _last_reply_buffer[key] = payload
+            _last_reply_buffer.move_to_end(key)
+            while len(_last_reply_buffer) > _REPLY_BUFFER_MAX:
+                _last_reply_buffer.popitem(last=False)
+        turn_id = payload.get("turnId")
+        if turn_id:
+            with _turn_lock:
+                state = _turn_replies.get((key, turn_id))
+                if state is not None:
+                    state["replies"].append(payload)
+    except Exception as exc:
+        logger.debug(f"[ReplayBuffer] store failed (best-effort): {exc}")
+
+
+def replay_last_reply(session: Session, request: Any = None) -> bool:
+    """Re-send buffered terminal replies after a reconnect.
+
+    With a ``turnId`` in the request: that turn's terminal replies whose
+    ``replySeq`` is not in ``appliedSeqs``, in order, with their original stamps.
+    Without one (older client, voice turn): the session's last terminal reply.
+    Sends to the session's CURRENT live connection (the heartbeat/slot-reclaim
+    has already rebound it). Returns True when something was replayed; safe
+    no-op otherwise. Never re-runs generation."""
+    try:
+        key = memory_session_key(session, request)
+        turn_id = getattr(request, "turn_id", None)
+        if turn_id:
+            raw = getattr(request, "raw_payload", None) or {}
+            applied = raw.get("appliedSeqs")
+            applied = set(applied) if isinstance(applied, list) else set()
+            with _turn_lock:
+                state = _turn_replies.get((key, turn_id)) or {}
+                pending = [p for p in state.get("replies", []) if p.get("replySeq") not in applied]
+            logger.info(f"[Replay] turn {turn_id!r}: re-sending {len(pending)} unacknowledged reply(ies)")
+            for payload in pending:
+                session.reply(json.dumps(payload))  # keep the original stamps
+            return bool(pending)
+        payload = _last_reply_buffer.get(key)
+        if payload is None:
+            logger.info("[Replay] no buffered reply for this session — nothing to replay")
+            return False
+        logger.info(f"[Replay] re-sending last '{payload.get('action')}' reply after reconnect")
+        session.reply(json.dumps(payload))  # keep the original stamps, if any
+        return True
+    except Exception as exc:
+        logger.debug(f"[Replay] failed (best-effort): {exc}")
+        return False
+
+
+# ------------------------------------------------------------------
+# Opt-in study telemetry
+# ------------------------------------------------------------------
+
+def _emit_prompt_telemetry(session: Session, action: str) -> None:
+    """Record what the user asked and what the agent did with it.
+
+    Called from the reply choke points (``reply_message`` / ``reply_payload``
+    / ``reply_stream_done``) — the single funnel every terminal reply flows
+    through — instead of instrumenting individual handlers. Emits at most ONE
+    ``prompt`` event per incoming user message (first reply wins, keyed on the
+    event identity like the request-parse cache), and only when the request
+    carries a participant label — untagged sessions never produce
+    telemetry. Best-effort by contract: any failure is swallowed and logged
+    at debug level so telemetry can never delay or break a reply.
+    """
+    try:
+        request = parse_assistant_request(session)
+        participant = getattr(request, "pilot_participant", None)
+        session_id = getattr(request, "session_id", None)
+        if not participant or not session_id:
+            return
+        event_id = id(session.event) if session and session.event else None
+        if event_id is not None and session.get(TELEMETRY_EMITTED_EVENT_ID) == event_id:
+            return
+        try:
+            session.set(TELEMETRY_EMITTED_EVENT_ID, event_id)
+        except Exception:
+            pass
+        emit_prompt_event(
+            session_id=session_id,
+            participant=participant,
+            text=request.message or "",
+            action_taken=action,
+            diagram_type=getattr(request, "diagram_type", None),
+        )
+    except Exception as exc:
+        logger.debug(f"[Telemetry] reply hook failed (best-effort): {exc}")
+
+
+# ------------------------------------------------------------------
 # Reply helpers
 # ------------------------------------------------------------------
 
-def reply_message(session: Session, message: str):
+def reply_message(session: Session, message: str, *, telemetry_exempt: bool = False):
     """Send assistant message, wrapped for v2 protocol clients."""
     try:
         request = parse_assistant_request(session)
         if request.is_v2:
-            session.reply(json.dumps({
+            sent = _send_to_session(session, {
                 "action": "assistant_message",
                 "message": message,
-            }))
+            })
         else:
             session.reply(message)
     except Exception as exc:
@@ -167,6 +314,19 @@ def reply_message(session: Session, message: str):
 
     # Record in conversation memory
     _record_assistant_response(session, message)
+
+    # Buffer for reconnect recovery — assistant_message is the v2 terminal reply.
+    try:
+        if request.is_v2:
+            _buffer_terminal_reply(session, sent)
+    except Exception:
+        pass
+
+    # Telemetry: a plain message is an "assistant_message" reply.
+    # ``telemetry_exempt`` marks the rare mid-turn notice (e.g. the long-
+    # message truncation warning) that must not claim the turn's one event.
+    if not telemetry_exempt:
+        _emit_prompt_telemetry(session, "assistant_message")
 
 
 def reply_payload(session: Session, payload: Dict[str, Any]):
@@ -179,7 +339,7 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
     )
     logger.debug(f"[Reply] Full payload keys: {list(payload.keys())}")
     try:
-        session.reply(json.dumps(payload))
+        sent = _send_to_session(session, payload)
     except Exception as exc:
         logger.error(f"❌ [Reply] Failed to send payload: {exc}", exc_info=True)
         return
@@ -189,24 +349,50 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
     if message:
         _record_assistant_response(session, message)
 
+    # Buffer for reconnect recovery so a dropped terminal reply can be replayed.
+    _buffer_terminal_reply(session, sent)
 
-def _send_to_session(session: Session, payload: Dict[str, Any]):
-    """Low-level helper: serialize *payload* as JSON and send it via the session.
+    # Telemetry: record the reply's action as what the agent did with
+    # the user's message (progress keep-alives are not the reply).
+    action = payload.get('action')
+    if isinstance(action, str) and action != 'progress':
+        _emit_prompt_telemetry(session, action)
 
-    This mirrors the mechanism used by :func:`reply_payload` — a single
-    ``session.reply(json.dumps(...))`` call — so streaming messages travel
-    through the exact same WebSocket path as every other server-initiated
-    message.
+
+def emit_webapp_generate_prompt(session: Session) -> None:
+    """The web-app pause prompt: after the app's spec + screens are built, ask the
+    user to review or generate — instead of auto-running code generation. Single
+    source of truth for the prompt (called from every path where a web-app GUI
+    completes)."""
+    from suggestions import get_post_spec_suggestions
+    from reply_copy import continue_generating_prompt
+    reply_payload(session, {
+        "action": "assistant_message",
+        "message": (
+            "Your screens are ready. " + continue_generating_prompt("web app")
+        ),
+        "suggestedActions": get_post_spec_suggestions("web_app"),
+    })
+
+
+def _send_to_session(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Low-level helper: stamp *payload* with the turn (if any), serialize it as
+    JSON and send it via the session. Every reply helper sends through here, so
+    streaming and progress frames take the same WebSocket path as terminal
+    replies. Returns the payload as sent.
     """
+    payload = _stamp_turn(session, payload)
     session.reply(json.dumps(payload))
+    return payload
 
 
 def _record_assistant_response(session: Session, content: str) -> None:
     """Best-effort recording of assistant response in conversation memory."""
     try:
         if content and len(content) > 5:  # skip trivial messages
-            session_id = getattr(session, 'id', None) or str(id(session))
-            mem = get_memory(session_id)
+            # Keyed on the stable payload sessionId so memory survives
+            # WebSocket reconnects (BAF session ids churn).
+            mem = get_memory(memory_session_key(session))
             mem.add_assistant(content[:500])  # cap to avoid bloating memory
     except Exception as exc:
         logger.debug(f"Recording assistant response failed (best-effort): {exc}")
@@ -247,7 +433,11 @@ def reply_stream_done(session: Session, stream_id: str, full_text: str = ""):
         "fullText": full_text,
         "done": True,
     }
-    _send_to_session(session, payload)
+    _buffer_terminal_reply(session, _send_to_session(session, payload))
+
+    # Telemetry: a completed stream is a conversational reply — the
+    # frontend renders it as an assistant message, so record it as one.
+    _emit_prompt_telemetry(session, "assistant_message")
 
 
 def reply_progress(session: Session, message: str, step: int = 0, total: int = 0):
@@ -262,7 +452,8 @@ def reply_progress(session: Session, message: str, step: int = 0, total: int = 0
 
 
 def stream_llm_response(
-    session: Session, llm_instance: Any, prompt: str, system_prompt: str = ""
+    session: Session, llm_instance: Any, prompt: str, system_prompt: str = "",
+    model: Optional[str] = None,
 ) -> str:
     """Stream an LLM response token-by-token to the frontend.
 
@@ -274,6 +465,8 @@ def stream_llm_response(
         llm_instance: The BESSER LLMOpenAI instance (has ``.client``).
         prompt: The user prompt.
         system_prompt: Optional system prompt.
+        model: Optional per-call model override (see ``model_config``);
+            defaults to the instance's configured model.
 
     Returns:
         The full completed text.
@@ -282,26 +475,50 @@ def stream_llm_response(
     full_text = ""
 
     try:
-        client = getattr(llm_instance, 'client', None)
-        if client is not None and hasattr(client, 'chat'):
-            # Real streaming via OpenAI SDK
-            full_text = _stream_openai(
-                session, client, prompt, system_prompt, stream_id,
-                model=getattr(llm_instance, 'name', 'gpt-4.1-mini'),
+        # BYOK: when the current request carries a user-supplied key, route
+        # this conversational/help/describe call through the user's own
+        # per-request client. Anthropic/Mistral don't share OpenAI's
+        # streaming chunk shape, so BYOK replies are fetched whole and sent
+        # as a single chunk through the same stream protocol. SDK
+        # auth/rate-limit errors propagate to the handler below.
+        from byok import get_active_client
+        byok_client = get_active_client()
+        if byok_client is not None:
+            # No system/user split in the free-text BYOK shape; fold the
+            # system prompt into the prompt when present.
+            byok_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+            full_text = byok_client.predict_raw(
+                byok_prompt,
+                model=model,
+                json_mode=False,
+                temperature=LLM_TEXT_TEMPERATURE,
             )
+            if full_text:
+                reply_stream_chunk(session, full_text, stream_id)
         else:
-            # Fallback: single-chunk non-streaming
-            response = llm_instance.predict(prompt)
-            full_text = response if isinstance(response, str) else str(response)
-            reply_stream_chunk(session, full_text, stream_id)
+            client = getattr(llm_instance, 'client', None)
+            if client is not None and hasattr(client, 'chat'):
+                # Real streaming via OpenAI SDK
+                full_text = _stream_openai(
+                    session, client, prompt, system_prompt, stream_id,
+                    model=model or getattr(llm_instance, 'name', MODEL_CLASSIFIER),
+                )
+            else:
+                # Fallback: single-chunk non-streaming
+                response = llm_instance.predict(prompt)
+                full_text = response if isinstance(response, str) else str(response)
+                reply_stream_chunk(session, full_text, stream_id)
 
     except Exception as e:
         logger.error(f"❌ [Streaming] Error: {e}")
         if not full_text:
-            from errors import classify_error, get_recovery_hint
-            error_code = classify_error(e)
-            hint = get_recovery_hint(error_code)
-            full_text = f"{hint['message']} Please {hint['recovery']}."
+            from errors import ModelRefusal, classify_error, get_recovery_hint
+            if isinstance(e, ModelRefusal):
+                full_text = e.user_message()
+            else:
+                error_code = classify_error(e)
+                hint = get_recovery_hint(error_code)
+                full_text = f"{hint['message']} Please {hint['recovery']}."
             reply_stream_chunk(session, full_text, stream_id)
 
     reply_stream_done(session, stream_id, full_text)
@@ -315,7 +532,7 @@ def _stream_openai(
     prompt: str,
     system_prompt: str,
     stream_id: str,
-    model: str = "gpt-4.1-mini",
+    model: str = MODEL_CLASSIFIER,
 ) -> str:
     """Real token-by-token streaming using the OpenAI SDK.
 
@@ -337,16 +554,29 @@ def _stream_openai(
     # fluid streaming without overwhelming the connection.
     _BUFFER_THRESHOLD = STREAM_BUFFER_THRESHOLD
 
-    stream = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=LLM_TEXT_TEMPERATURE,
-        max_completion_tokens=LLM_MAX_TOKENS_TEXT,
-        stream=True,
-        stream_options={"include_usage": True},
-    )
+    # Reasoning-family models (GPT-5 and later) reject ANY non-default temperature
+    # with a 400 — which surfaced to users as "The generated model had
+    # structural issues" on EVERY describe-my-model call (the streaming
+    # error handler's canned text). Only pass temperature to models that
+    # accept a custom one.
+    from model_config import reasoning_effort_for, supports_custom_temperature
+    stream_kwargs: dict = {
+        "model": model,
+        "messages": messages,
+        "max_completion_tokens": LLM_MAX_TOKENS_TEXT,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    if supports_custom_temperature(model):
+        stream_kwargs["temperature"] = LLM_TEXT_TEMPERATURE
+    elif reasoning_effort_for(model):
+        stream_kwargs["reasoning_effort"] = reasoning_effort_for(model)
+
+    stream = client.chat.completions.create(**stream_kwargs)
 
     usage = None
+    refusal = ""
+    finish_reason = None
     try:
         for event in stream:
             # Final chunk with usage stats
@@ -356,7 +586,11 @@ def _stream_openai(
             if not event.choices:
                 continue
 
+            finish_reason = getattr(event.choices[0], 'finish_reason', None) or finish_reason
             delta = event.choices[0].delta
+            delta_refusal = getattr(delta, 'refusal', None)
+            if isinstance(delta_refusal, str):
+                refusal += delta_refusal
             content = getattr(delta, 'content', None)
             if content:
                 full_text += content
@@ -381,6 +615,10 @@ def _stream_openai(
     if usage:
         tracker = get_tracker()
         tracker.record_from_usage(usage, model=model)
+
+    if not full_text:
+        from errors import raise_if_openai_refusal
+        raise_if_openai_refusal({"message": {"refusal": refusal}, "finish_reason": finish_reason})
 
     return full_text
 

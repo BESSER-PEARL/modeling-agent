@@ -1,131 +1,78 @@
-Getting Started
-===============
+Run the Modeling Agent locally
+==============================
 
-Overview
---------
+**Goal:** start a WebSocket service the editor can connect to. You need
+Python **3.11**, Git, and a provider key that can access the configured models.
+The Docker image uses Python 3.11. Documentation builds use Python 3.12.
 
-The BESSER Modeling Agent is the conversational AI backend for the
-`BESSER Web Modeling Editor <https://editor.besser-pearl.org>`_. It receives
-user requests over WebSocket, normalizes them into a unified protocol, plans one
-or more operations, and returns structured responses for model updates or
-code-generation triggers via
-`BESSER generators <https://besser-pearl.github.io/BESSER/generators.html>`_.
+Clone and install
+-----------------
 
-Key capabilities:
+.. code-block:: console
 
-- UML diagram creation and modification via natural language.
-- Multi-operation orchestration (modeling + generation in a single request).
-- UML specification Q&A with RAG (Retrieval-Augmented Generation) over the OMG
-  UML 2.5.1 specification. See :doc:`configuration` for RAG setup.
-- File conversion from PlantUML, knowledge-graph files, images, and plain text.
-
-For a detailed walkthrough of the request lifecycle, see :doc:`end_to_end_flow`.
-
-Supported Diagram Types
------------------------
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 40 30
-
-   * - Diagram Type
-     - Description
-     - Output Format
-   * - ``ClassDiagram``
-     - UML class diagrams
-     - `Apollon <https://apollon-library.readthedocs.io/>`_-compatible JSON
-   * - ``ObjectDiagram``
-     - UML object/instance diagrams
-     - Apollon-compatible JSON
-   * - ``StateMachineDiagram``
-     - UML state machine diagrams
-     - Apollon-compatible JSON
-   * - ``AgentDiagram``
-     - BESSER conversational agent diagrams
-     - Custom state/intent JSON
-   * - ``GUINoCodeDiagram``
-     - No-code GUI models
-     - GrapesJS project JSON
-   * - ``QuantumCircuitDiagram``
-     - Quantum circuit diagrams
-     - Quirk-format JSON
-
-Prerequisites
--------------
-
-- Python 3.11+ (3.10 minimum).
-- OpenAI API key with GPT-4.1-mini access.
-
-Install
--------
-
-.. code-block:: bash
-
+   git clone --branch develop https://github.com/BESSER-PEARL/modeling-agent.git
+   cd modeling-agent
    python -m venv .venv
 
-   # Windows PowerShell
-   .\\.venv\\Scripts\\Activate.ps1
+Activate the environment for your shell:
 
-   # Linux/macOS
+.. code-block:: powershell
+
+   # Windows PowerShell
+   .\.venv\Scripts\Activate.ps1
+
+.. code-block:: bash
+
+   # Linux or macOS
    source .venv/bin/activate
 
-   python -m pip install --upgrade pip
-   pip install -r requirements.txt
+.. code-block:: console
 
-Configuration
--------------
+   python -m pip install -r requirements.txt
 
-1. Copy ``config_example.yaml`` to ``config.yaml``.
-2. Set ``nlp.openai.api_key`` with your OpenAI key.
+Copy ``config_example.yaml`` to ``config.yaml``. Set ``nlp.openai.api_key``
+to your server provider key and allow your editor origin under
+``platforms.websocket.origins``. Keep ``config.yaml`` out of version control.
 
-.. code-block:: bash
+See :doc:`configuration` to change model tiers, use a compatible gateway,
+or configure RAG. Default model names must be accessible to your provider.
 
-   copy config_example.yaml config.yaml   # Windows
-   cp config_example.yaml config.yaml     # Linux/macOS
+Start and verify
+----------------
 
-See :doc:`configuration` for all available settings.
-
-Run
----
-
-.. code-block:: bash
+.. code-block:: console
 
    python modeling_agent.py
 
-Default host/port are configured in ``config.yaml`` under ``platforms.websocket``.
-The agent listens on ``ws://localhost:8765`` by default. You should see output
-like::
+Wait for startup to finish. The framework prepares its local classifiers
+before opening the socket; this can take several minutes. The default socket
+address is ``ws://localhost:8765``.
 
-   WebSocket server started on ws://localhost:8765
+From another terminal, check that the port opens:
 
-If you see an ``OPENAI_API_KEY`` error, check your ``config.yaml`` or ``.env``
-file. See :doc:`configuration` for details.
+.. code-block:: console
 
-Validation
+   python -c "import socket; s = socket.create_connection(('localhost', 8765), timeout=5); print('Agent port is open'); s.close()"
+
+This checks listening status. To check actual responses, connect the editor
+or a client following :doc:`websocket_protocol` and ask it to create a class.
+
+Connect the editor
+------------------
+
+Configure the editor's ``UML_BOT_WS_URL`` as ``ws://localhost:8765`` and allow
+the editor's origin, normally ``http://localhost:8080``, in ``config.yaml``.
+The editor and BESSER backend run separately. Use the
+`editor setup guide <https://besser.readthedocs.io/projects/besser-web-modeling-editor/en/latest/overview/getting-started.html>`_
+for those services.
+
+For a deployment behind TLS and nginx, use :doc:`deployment`. It also
+documents the vendored WebSocket patch applied by the Docker image.
+
+Next steps
 ----------
 
-.. code-block:: bash
-
-   # Full test suite
-   python -m pytest
-
-   # Focused suites
-   python -m pytest tests/test_diagram_handlers.py
-   python -m pytest tests/test_protocol.py
-   python -m pytest tests/test_request_planner.py
-
-Documentation Build
--------------------
-
-.. code-block:: bash
-
-   pip install -r docs/requirements.txt
-   cd docs
-
-   # Windows
-   make.bat html
-
-   # Linux/macOS
-   make html
-
-The built documentation will be in ``docs/build/html/``.
+* :doc:`end_to_end_flow`: follow a request through the service.
+* :doc:`websocket_protocol`: request and response shapes.
+* :doc:`contributing/dev_setup`: development setup, including the framework patch.
+* :doc:`troubleshooting`: startup, connection, and provider problems.

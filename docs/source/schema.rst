@@ -31,15 +31,15 @@ normalized into this structure by ``src/protocol/adapters.py``.
      "context": {
        "activeDiagramType": "ClassDiagram",
        "activeDiagramId": "550e8400-e29b-41d4-a716-446655440000",
-       "activeModel": {},
        "projectSnapshot": {
-         "ClassDiagram": {},
-         "StateMachineDiagram": null,
-         "ObjectDiagram": null
+         "name": "MyProject",
+         "diagrams": {
+           "ClassDiagram": [
+             { "id": "diag-1", "title": "Main", "model": {} }
+           ]
+         }
        },
-       "diagramSummaries": {
-         "ClassDiagram": "3 classes, 2 relationships"
-       }
+       "currentDiagramIndices": { "ClassDiagram": 0 }
      },
      "attachments": [
        {
@@ -59,13 +59,17 @@ normalized into this structure by ``src/protocol/adapters.py``.
      - Description
    * - ``action``
      - ``str``
-     - Request type: ``"user_message"``, ``"frontend_event"``
+     - Request type: ``"user_message"`` (default), ``"frontend_event"``,
+       ``"replay_last_response"``. Voice and session-variable messages arrive
+       as ``"user_voice"`` / ``"user_set_variable"`` and are handled before
+       this object is built.
    * - ``protocolVersion``
      - ``str``
      - Always ``"2.0"`` for v2 clients
    * - ``clientMode``
      - ``str``
-     - ``"workspace"`` or ``"simple"``
+     - Which surface sent the message — ``"workspace"`` (the drawer, the
+       adapter's default) or ``"widget"``
    * - ``message``
      - ``str``
      - Natural language request text
@@ -90,21 +94,21 @@ WorkspaceContext
    {
      "activeDiagramType": "ClassDiagram",
      "activeDiagramId": "uuid-string",
-     "activeModel": {
-       "elements": {},
-       "relationships": {}
-     },
      "projectSnapshot": {
-       "ClassDiagram": { "elements": {}, "relationships": {} },
-       "StateMachineDiagram": null,
-       "ObjectDiagram": null,
-       "AgentDiagram": null,
-       "GUINoCodeDiagram": null,
-       "QuantumCircuitDiagram": null
+       "name": "MyProject",
+       "diagrams": {
+         "ClassDiagram": [
+           { "id": "diag-1", "title": "Main", "model": { "elements": {}, "relationships": {} } }
+         ],
+         "StateMachineDiagram": []
+       }
      },
-     "diagramSummaries": {
-       "ClassDiagram": "3 classes, 2 relationships"
-     }
+     "diagramSummaries": [
+       { "diagramType": "ClassDiagram", "diagramId": "diag-1", "title": "Main" }
+     ],
+     "currentDiagramIndices": { "ClassDiagram": 0 },
+     "sessionId": "abc-123",
+     "pilotParticipant": null
    }
 
 .. list-table:: WorkspaceContext Fields
@@ -116,19 +120,32 @@ WorkspaceContext
      - Description
    * - ``activeDiagramType``
      - ``str``
-     - Currently active diagram tab
+     - Currently active diagram tab. Normalized to ``ClassDiagram`` if it is
+       not in ``SUPPORTED_DIAGRAM_TYPES``.
    * - ``activeDiagramId``
      - ``str``
      - UUID of active diagram
    * - ``activeModel``
      - ``object``
-     - Full model JSON currently displayed
-   * - ``projectSnapshot``
+     - **Deprecated and ignored.** The active model is resolved from
+       ``projectSnapshot`` using ``activeDiagramType`` and
+       ``currentDiagramIndices``; a first-tab-with-a-model fallback applies.
+   * - ``projectSnapshot.diagrams``
      - ``object``
-     - All diagrams keyed by type (null if empty)
+     - Maps each diagram type to an **array** of tabs
+       (``{id, title, model}``). A bare dict is accepted as the legacy
+       single-diagram format.
    * - ``diagramSummaries``
+     - ``array``
+     - ``{diagramType, diagramId, title}`` entries. Derived from
+       ``projectSnapshot`` when absent.
+   * - ``currentDiagramIndices``
      - ``object``
-     - Compact per-diagram summaries
+     - Active tab index per diagram type (default 0)
+   * - ``pilotParticipant``
+     - ``str``
+     - Optional opt-in study participant label, validated against
+       ``^[A-Za-z0-9_-]{1,16}$`` and dropped otherwise
 
 FileAttachment
 ~~~~~~~~~~~~~~
@@ -144,36 +161,33 @@ FileAttachment
 Response Schemas
 ----------------
 
-inject_single_element
-~~~~~~~~~~~~~~~~~~~~~
+.. important::
+
+   The agent emits its own **simple** spec format, not the editor's Apollon
+   element/relationship maps. The frontend's ``ConverterFactory`` translates
+   between them — it generates UUIDs, bounds and Apollon type names. Nothing
+   below carries editor UUIDs or bounds.
+
+inject_element
+~~~~~~~~~~~~~~
 
 Returned when a single element is created (e.g., one class, one state).
 
 .. code-block:: json
 
    {
-     "action": "inject_single_element",
+     "action": "inject_element",
      "diagramType": "ClassDiagram",
      "diagramId": "uuid",
-     "elementSpec": {
-       "elements": {
-         "elem-uuid": {
-           "id": "elem-uuid",
-           "name": "User",
-           "type": "Class",
-           "bounds": { "x": 100, "y": 100, "width": 200, "height": 150 },
-           "attributes": {
-             "attr-uuid": {
-               "id": "attr-uuid",
-               "name": "email",
-               "type": "ClassAttribute",
-               "bounds": { "x": 0, "y": 40, "width": 200, "height": 30 }
-             }
-           }
-         }
-       },
-       "relationships": {}
-     }
+     "element": {
+       "className": "User",
+       "attributes": [
+         { "name": "id", "type": "String", "visibility": "public" },
+         { "name": "email", "type": "String", "visibility": "private" }
+       ],
+       "methods": []
+     },
+     "message": "Added **User** …"
    }
 
 inject_complete_system
@@ -189,44 +203,66 @@ Returned when a full diagram is generated (e.g., complete class model).
      "diagramId": "uuid",
      "replaceExisting": true,
      "systemSpec": {
-       "elements": {
-         "class-1": { "id": "class-1", "name": "User", "type": "Class", "bounds": {}, "attributes": [], "methods": [] },
-         "class-2": { "id": "class-2", "name": "Order", "type": "Class", "bounds": {}, "attributes": [], "methods": [] }
-       },
-       "relationships": {
-         "rel-1": {
-           "id": "rel-1",
-           "type": "ClassBidirectional",
-           "source": { "element": "class-1", "multiplicity": "1" },
-           "target": { "element": "class-2", "multiplicity": "*" }
+       "systemName": "E-commerce System",
+       "classes": [
+         {
+           "className": "User",
+           "attributes": [ { "name": "id", "type": "String", "visibility": "public" } ],
+           "methods": []
+         },
+         {
+           "className": "Order",
+           "attributes": [ { "name": "total", "type": "Float", "visibility": "public" } ],
+           "methods": []
          }
-       }
-     }
+       ],
+       "relationships": [
+         {
+           "type": "Association",
+           "source": "User",
+           "target": "Order",
+           "sourceMultiplicity": "1",
+           "targetMultiplicity": "0..*",
+           "name": "places"
+         }
+       ]
+     },
+     "message": "Built the **E-commerce System** with 2 classes."
    }
 
-inject_modification
-~~~~~~~~~~~~~~~~~~~
+Each diagram type has its own ``systemSpec`` shape — ``SystemClassSpec``,
+``SystemStateMachineSpec``, ``SystemObjectSpec``, ``SystemAgentSpec``,
+``SystemGUISpec``, ``SystemQuantumCircuitSpec``, ``SystemBPMNSpec``,
+``SystemUserProfileSpec``. See `Structured Output Schemas (Pydantic)`_.
 
-Returned when modifying an existing diagram.
+modify_model
+~~~~~~~~~~~~
+
+Returned when modifying an existing diagram. Single modifications use
+``modification``; batches use ``modifications``.
 
 .. code-block:: json
 
    {
-     "action": "inject_modification",
+     "action": "modify_model",
      "diagramType": "ClassDiagram",
      "diagramId": "uuid",
-     "modificationSpec": {
-       "elementsToAdd": {
-         "new-elem": { "id": "new-elem", "name": "NewClass", "type": "Class" }
+     "modifications": [
+       {
+         "action": "add_attribute",
+         "target": { "className": "User" },
+         "changes": { "name": "phone", "type": "String", "visibility": "public" }
        },
-       "elementsToUpdate": {
-         "existing-elem": { "name": "RenamedClass" }
-       },
-       "elementsToRemove": ["old-elem-id"],
-       "relationshipsToAdd": {},
-       "relationshipsToRemove": ["old-rel-id"]
-     }
+       {
+         "action": "remove_element",
+         "target": { "className": "LegacyOrder" }
+       }
+     ],
+     "message": "Applied 2 changes."
    }
+
+The nested ``action`` is a ``Literal`` on each diagram's modification schema —
+see :doc:`websocket_protocol` for the per-type list.
 
 trigger_generator
 ~~~~~~~~~~~~~~~~~
@@ -263,7 +299,38 @@ trigger_deploy
 
    {
      "action": "trigger_deploy",
-     "target": "render"
+     "platform": "render",
+     "config": {},
+     "message": "Opening the **Deploy to Render** dialog…"
+   }
+
+trigger_smart_generator
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Returned when the request needs the LLM-authored generator rather than a
+BESSER built-in.
+
+.. code-block:: json
+
+   {
+     "action": "trigger_smart_generator",
+     "instructions": "Rails 7, PostgreSQL via Active Record, Devise auth",
+     "provider": "anthropic",
+     "llmModel": "claude-sonnet-4-6",
+     "message": "Generating your application from your specs…"
+   }
+
+trigger_github_import
+~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: json
+
+   {
+     "action": "trigger_github_import",
+     "owner": "besser-pearl",
+     "repo": "my-generated-app",
+     "branch": null,
+     "message": "Importing **besser-pearl/my-generated-app** from GitHub…"
    }
 
 assistant_message
@@ -281,14 +348,31 @@ Generic text response (help, errors, confirmations).
 auto_generate_gui
 ~~~~~~~~~~~~~~~~~
 
-Triggers automatic GUI generation from ClassDiagram (no LLM).
+Triggers automatic GUI generation from the ClassDiagram (no LLM). The
+frontend builds one page per class.
 
 .. code-block:: json
 
    {
      "action": "auto_generate_gui",
      "diagramType": "GUINoCodeDiagram",
-     "sourceType": "ClassDiagram"
+     "message": "I created screens for Book, Author and Member.",
+     "suggestedActions": [
+       { "label": "Generate the web app", "prompt": "generate the web app" }
+     ]
+   }
+
+create_diagram_tab
+~~~~~~~~~~~~~~~~~~
+
+Creates a new tab for a diagram type. Emitted when the user answers a
+replace/keep confirmation with "new tab".
+
+.. code-block:: json
+
+   {
+     "action": "create_diagram_tab",
+     "diagramType": "ClassDiagram"
    }
 
 Diagram Element Schemas
@@ -425,17 +509,29 @@ ObjectDiagram Elements
 AgentDiagram Elements
 ~~~~~~~~~~~~~~~~~~~~~
 
+The agent handler emits specs (not editor JSON). States and the initial node
+get canvas positions from the layout engine; intents and the other components
+(LLMs, RAG databases, tools, skills, workspaces, GUIs) go to the editor's
+``components`` section without bounds.
+
 **State:**
 
 .. code-block:: json
 
    {
      "type": "state",
-     "name": "greeting_state",
-     "replies": ["Hello! How can I help you?", "Welcome!"],
-     "x": 100,
-     "y": 100
+     "stateName": "greetingState",
+     "replies": [
+       { "text": "Hello! How can I help you?", "replyType": "text" },
+       { "text": "Answer briefly.", "replyType": "llm", "llm_name": "gpt4" }
+     ],
+     "fallbackBodies": [
+       { "text": "Sorry, I did not get that.", "replyType": "text" }
+     ]
    }
+
+Each reply carries a ``replyType`` (one of the 17 ``ReplyType`` values, see
+:doc:`diagram_handlers`) plus the fields that type needs.
 
 **Intent:**
 
@@ -443,10 +539,9 @@ AgentDiagram Elements
 
    {
      "type": "intent",
-     "name": "hello_intent",
-     "trainingPhrases": ["hi", "hello", "hey", "good morning"],
-     "x": 300,
-     "y": 100
+     "intentName": "HelloIntent",
+     "intentDescription": "The user greets the agent",
+     "trainingPhrases": ["hi", "hello", "hey", "good morning"]
    }
 
 **Initial element:**
@@ -454,9 +549,7 @@ AgentDiagram Elements
 .. code-block:: json
 
    {
-     "type": "initial",
-     "x": 50,
-     "y": 50
+     "type": "initial"
    }
 
 **Transition:**
@@ -465,8 +558,26 @@ AgentDiagram Elements
 
    {
      "source": "initial",
-     "target": "greeting_state",
-     "intent": null
+     "target": "greetingState",
+     "condition": "auto",
+     "conditionValue": "",
+     "label": ""
+   }
+
+``condition`` is ``when_intent_matched`` (``conditionValue`` holds the intent
+name), ``when_no_intent_matched``, or ``auto``.
+
+**Components** (in a complete system, one list per type):
+
+.. code-block:: json
+
+   {
+     "llms": [{ "name": "gpt4", "provider": "openai", "num_previous_messages": 3 }],
+     "ragElements": [{ "name": "faqKB", "llm_name": "gpt4", "k": 4 }],
+     "tools": [{ "name": "getWeather", "description": "...", "code": "def get_weather(city): ..." }],
+     "skills": [{ "name": "politeness", "content": "Always greet the user." }],
+     "workspaces": [{ "name": "docs", "path": "./docs", "writable": false }],
+     "guis": [{ "gui_id": "orderForm", "is_form": true }]
    }
 
 GUINoCodeDiagram Schema (GrapesJS)
@@ -509,21 +620,52 @@ Internal Schemas
 Operation (Request Planner Output)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+Field names are camelCase and the mode is one of ``complete_system`` /
+``modify_model`` (``ALLOWED_MODEL_MODES`` in
+``src/orchestrator/request_planner.py``).
+
 .. code-block:: json
 
    {
      "type": "model",
-     "diagram_type": "ClassDiagram",
+     "diagramType": "ClassDiagram",
      "mode": "complete_system",
-     "request_text": "create a bookstore class diagram"
+     "request": "create a bookstore class diagram"
    }
 
 .. code-block:: json
 
    {
      "type": "generation",
-     "generator": "django",
+     "generatorType": "django",
      "config": { "project_name": "myapp" }
+   }
+
+UnifiedClassification (Router Output)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The Pydantic object returned by the single per-message classification call
+(``src/unified_classifier.py``). Every downstream state body reads from it, so
+no second LLM call is ever needed to refine routing. See
+:doc:`intent_recognition` for the full field reference.
+
+.. code-block:: json
+
+   {
+     "intent": "generation_intent",
+     "generation_route": "smart",
+     "generator_type": null,
+     "refined_instructions": "Rails 7 with PostgreSQL and Devise auth",
+     "provider": "anthropic",
+     "domain_mismatch": false,
+     "suggested_new_domain": null,
+     "target_diagram_type": null,
+     "model_disposition": "reuse_for_generation",
+     "needs_clarification": false,
+     "clarifying_question": null,
+     "pending_flow_action": null,
+     "pending_flow_answer": null,
+     "reason": "User named a non-BESSER stack, so the smart route applies."
    }
 
 Quality Suggestion
@@ -666,7 +808,23 @@ ClassDiagram Schemas
 ``add_class``, ``modify_class``, ``add_attribute``, ``modify_attribute``,
 ``add_method``, ``modify_method``, ``add_relationship``, ``modify_relationship``,
 ``remove_element``, ``extract_class``, ``split_class``, ``merge_classes``,
-``promote_attribute``, ``add_enum``
+``promote_attribute``, ``add_enum``, ``add_ocl_constraint``
+
+**OCL constraints:** ``SystemClassSpec`` may carry a ``constraints`` list of
+``OCLConstraintSpec`` invariants. The agent generates and emits them, but the
+frontend converter and the editor's class-diagram JSON have no slot for them
+yet, so they are not persisted. See :doc:`websocket_protocol`.
+
+Compact Class Diagram Schema
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Location:** ``src/schemas/compact_class_diagram.py``
+
+A trimmed generation schema — ``CompactClassSpec``,
+``CompactRelationshipSpec``, ``CompactSystemClassSpec`` — used instead of the
+full ``SystemClassSpec`` when ``BESSER_AGENT_COMPACT_SPEC`` is enabled (the
+default). Fewer tokens on both the prompt and the completion side for the same
+diagram.
 
 StateMachine Schemas
 ~~~~~~~~~~~~~~~~~~~~
@@ -715,22 +873,141 @@ AgentDiagram Schemas
 
    * - Schema
      - Purpose
+   * - ``ReplyType``
+     - ``Literal`` of the 17 state action types: ``text``, ``llm``,
+       ``llm_chat``, ``rag``, ``db_reply``, ``code``, ``web_crawl_llm``,
+       ``ws_markdown``, ``ws_html``, ``ws_speech``, ``ws_options``,
+       ``ws_location``, ``ws_file``, ``ws_image``, ``ws_dataframe``,
+       ``ws_plotly``, ``gui_reply``. ``REPLY_TYPE_HINTS`` (checked against it at
+       import) and ``reply_type_help()`` feed the same list into the prompts.
+   * - ``AgentReplyFields``
+     - Shared base with the type-specific action fields: ``ragDatabaseName``,
+       ``system_message``, ``llm_name``, ``inputPromptMode``
+       (``Literal["last_user_message", "custom"]``), ``customInputPrompt``,
+       ``storeInSession``, ``sendReply``, ``dbSelectionType``
+       (``Literal["default", "custom"]``), ``dbCustomName``, ``dbQueryMode``
+       (``Literal["llm_query", "sql"]``), ``dbOperation``
+       (``Literal["any", "select", "insert", "update", "delete"]``),
+       ``dbSqlQuery``, ``initial_url``, ``ws_message``, ``ws_options``,
+       ``ws_latitude``, ``ws_longitude``, ``guiId``
+   * - ``AgentReplySpec``
+     - One state action: ``AgentReplyFields`` + ``text`` + ``replyType``
+       (default ``text``)
    * - ``AgentStateSpec``
-     - Agent state (``stateName`` max 30) with replies and fallbacks
+     - Agent state (``stateName`` max 30) with ``replies`` and ``fallbackBodies``
    * - ``AgentIntentSpec``
-     - Intent (``intentName`` max 30) with training phrases
+     - Intent (``intentName`` max 30) with ``intentDescription`` and
+       ``trainingPhrases``
+   * - ``AgentLLMSpec``, ``AgentRagSpec``, ``AgentToolSpec``,
+       ``AgentSkillSpec``, ``AgentWorkspaceSpec``, ``AgentGUISpec``
+     - Component specs (fields listed in :doc:`diagram_handlers`)
+   * - ``AgentSingleElementSpec``
+     - One element: ``type`` is ``state``, ``intent``, or ``initial``, with the
+       matching state / intent fields
+   * - ``AgentTransitionSpec``
+     - ``source``, ``target``, ``condition``
+       (``Literal["when_intent_matched", "when_no_intent_matched", "auto"]``),
+       ``conditionValue``, ``label``, ``sourceDirection``, ``targetDirection``
    * - ``SystemAgentSpec``
-     - Complete agent diagram (states + intents + transitions + RAG elements)
+     - Complete agent diagram: ``systemName``, ``hasInitialNode``,
+       ``initialNode``, ``states`` (at least one), ``transitions``, and the
+       component lists ``intents``, ``ragElements``, ``llms``, ``tools``,
+       ``skills``, ``workspaces``, ``guis``
+   * - ``AgentModificationTarget``
+     - ``stateName``, ``intentName``, ``sourceStateName``,
+       ``targetStateName``, ``transitionId``, and ``name`` (component name for
+       the ``add_*`` component actions)
+   * - ``AgentModificationChanges``
+     - ``AgentReplyFields`` + ``name``, ``replies``, ``trainingPhrases``,
+       ``intentDescription``, ``intentName``, ``condition``, ``text``,
+       ``replyType``, ``trainingPhrase``, and the component fields
+       (``provider``, ``num_previous_messages``, ``global_context``,
+       ``description``, ``code``, ``content``, ``path``, ``writable``,
+       ``llm_prompt``, ``k``, ``embedding_provider``, ``gui_id``, ``persist``,
+       ``is_form``, ``width``)
    * - ``AgentModification``
-     - Literal actions: ``add_state``, ``modify_state``, ``add_intent``, ``modify_intent``, ``add_transition``, ``remove_transition``, ``add_state_body``, ``add_intent_training_phrase``, ``add_rag_element``, ``remove_element``
+     - 15 ``Literal`` actions: ``add_state``, ``modify_state``, ``add_intent``,
+       ``modify_intent``, ``add_transition``, ``remove_transition``,
+       ``add_state_body``, ``add_intent_training_phrase``, ``add_rag_element``,
+       ``add_llm``, ``add_tool``, ``add_skill``, ``add_workspace``, ``add_gui``,
+       ``remove_element``
+   * - ``AgentModificationResponse``
+     - ``modifications`` (at least one ``AgentModification``)
 
 GUINoCode & QuantumCircuit Schemas
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Location:** ``src/schemas/gui_diagram.py``, ``src/schemas/quantum_circuit.py``
 
-These schemas follow the same pattern. GUI pages have ``pageName`` (max 50).
-Quantum circuits define ``qubitCount`` and a list of ``QuantumOperationSpec``.
+Quantum circuits define ``SystemQuantumCircuitSpec`` over
+``QuantumOperationSpec`` entries, with ``SingleQuantumGateSpec`` for a single
+gate and ``QuantumModificationSpec`` for edits.
+
+The GUI schemas come in two families:
+
+- **Typed builders** — ``SystemGUISpec`` / ``GUIPageSpec`` / ``GUISectionSpec``
+  with ``GUIBindSpec`` describing a data-bound widget (kind, source class,
+  columns, rows, sample data), plus ``GUIStatItem``, ``GUITableRow`` and
+  ``GUISampleDataPoint``.
+- **Authored HTML** — ``AuthoredSystemGUISpec`` / ``AuthoredGUIPageSpec`` /
+  ``AuthoredGUISectionSpec`` plus ``GUIThemeSpec``. Here the LLM writes themed
+  ``.ds-*`` markup containing ``<!--WIDGET:kind-->`` markers, and the server
+  splices real data-bound widgets into those slots. See
+  :doc:`diagram_handlers`.
+
+Modifications use ``GUIModificationSpec`` / ``GUIModificationBatchSpec``.
+
+BPMN Schemas
+~~~~~~~~~~~~
+
+**Location:** ``src/schemas/bpmn.py``
+
+.. list-table::
+   :header-rows: 1
+   :widths: 32 68
+
+   * - Schema
+     - Purpose
+   * - ``BPMNNodeSpec``
+     - A process node — event, task (with ``taskType``) or gateway (with
+       ``gatewayType``)
+   * - ``BPMNFlowSpec``
+     - A flow between two nodes. The agent never sets the flow *type*; the
+       editor derives message vs. sequence from pool membership.
+   * - ``BPMNPoolSpec`` / ``BPMNLaneSpec``
+     - Participants and the roles within them. Generation-only — the
+       modification path has no ``add_pool`` / ``add_lane`` action.
+   * - ``SystemBPMNSpec``
+     - Complete process: nodes + flows + optional pools/lanes
+   * - ``BPMNModification``
+     - Literal actions: ``add_task``, ``add_gateway``, ``add_event``,
+       ``add_flow``, ``modify_node``, ``remove_flow``, ``remove_element``
+
+UserProfile Schemas
+~~~~~~~~~~~~~~~~~~~
+
+**Location:** ``src/schemas/user_profile.py``
+
+.. list-table::
+   :header-rows: 1
+   :widths: 32 68
+
+   * - Schema
+     - Purpose
+   * - ``UserProfileAttributeSpec``
+     - One matching **criterion**: a name, a comparison operator
+       (``<``, ``<=``, ``==``, ``>=``, ``>``) and a value — not a plain
+       instance value
+   * - ``SingleUserProfileSpec``
+     - One class-instance box drawn from the bundled metamodel, carrying the
+       metamodel's ``classId`` verbatim
+   * - ``UserProfileLinkSpec``
+     - A link between two boxes
+   * - ``SystemUserProfileSpec``
+     - Complete profile: boxes + links
+   * - ``UserProfileModification``
+     - Literal actions: ``add_object``, ``modify_object``,
+       ``modify_attribute_value``, ``add_link``, ``remove_element``
 
 Schema Validation Guarantees
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -754,6 +1031,7 @@ Supported Type Constants
 
 .. code-block:: python
 
+   # src/protocol/types.py
    SUPPORTED_DIAGRAM_TYPES = {
        "ClassDiagram",
        "ObjectDiagram",
@@ -761,21 +1039,36 @@ Supported Type Constants
        "AgentDiagram",
        "GUINoCodeDiagram",
        "QuantumCircuitDiagram",
+       "BPMN",
+       "UserDiagram",
    }
 
-   GENERATOR_KEYWORDS = {
-       "django": ["django"],
-       "backend": ["full backend", "backend"],
-       "web_app": ["web app", "web application"],
-       "sqlalchemy": ["sqlalchemy", "sql alchemy"],
-       "sql": ["sql ddl", "sql schema"],
-       "python": ["python classes", "generate python"],
-       "java": ["java classes", "generate java"],
-       "pydantic": ["pydantic"],
-       "jsonschema": ["json schema", "jsonschema"],
-       "smartdata": ["smart data", "smartdata"],
-       "agent": ["besser agent", "agent generator"],
-       "qiskit": ["qiskit", "quantum code"],
-       "export": ["export project", "export to json"],
-       "deploy": ["deploy to render", "deploy app"],
+   # src/handlers/generation_handler.py — keys only; each maps to a
+   # keyword list. "export" and "deploy" are actions, not generators.
+   GENERATOR_KEYWORDS.keys() == {
+       "django", "web_app", "backend", "sqlalchemy", "sql", "python",
+       "java", "pydantic", "jsonschema", "smartdata", "agent", "qiskit",
+       "rest_api", "rdf", "export", "deploy",
    }
+
+   # Required config fields, asked for before trigger_generator is emitted.
+   GENERATOR_REQUIRED_FIELDS = {
+       "django": [], "backend": [], "sql": ["dialect"],
+       "sqlalchemy": ["dbms"], "jsonschema": ["mode"], "smartdata": [],
+       "qiskit": ["backend", "shots"], "rest_api": [], "rdf": [],
+       "export": ["format"], "deploy": [],
+   }
+
+   EXPORT_FORMATS = ["json", "buml"]
+   DIALECT_VALUES = ["sqlite", "postgresql", "mysql", "mssql", "mariadb", "oracle"]
+   MODE_VALUES = ["regular", "smart_data"]
+   QISKIT_BACKENDS = ["aer_simulator", "fake_backend", "ibm_quantum"]
+
+   # src/diagram_handlers/registry/factory.py — registered handler classes.
+   # The registry key is each handler's own get_diagram_type() value.
+   HANDLER_CLASSES = (
+       ClassDiagramHandler, ObjectDiagramHandler, StateMachineHandler,
+       AgentDiagramHandler, GUINoCodeDiagramHandler,
+       QuantumCircuitDiagramHandler, BPMNDiagramHandler,
+       UserProfileDiagramHandler,
+   )

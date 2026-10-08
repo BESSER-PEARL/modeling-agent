@@ -1,0 +1,38 @@
+Version 8.0.0
+=============
+
+This release aligns the Modeling Agent with the BESSER v8 editor and its
+Spec-Driven Agent workflow.
+
+What's new
+----------
+
+* **Application generation hand-off.** The agent routes generation requests
+  to deterministic generators or the Spec-Driven Agent and sends the editor
+  the corresponding action payload.
+* **Reconnect recovery.** Replies carry ``turnId`` and ``replySeq`` when the
+  client provides a turn id. Replay returns replies the client has not
+  applied, including streamed completion and generation triggers. Clients
+  without turn ids retain the legacy behavior.
+* **Model configuration.** GUI generation defaults to ``gpt-6-sol`` and small
+  generation to ``gpt-6-luna``. All tiers remain environment-overridable.
+  Anthropic keys support Claude 5; reasoning and sampling parameters are
+  shaped for models that accept them.
+
+Fixes
+-----
+
+Long active turns keep their replay sequence even when other sessions fill
+the replay table. Streamed replies send the configured reasoning effort.
+Caller-supplied effort is gated by model support.
+
+Upgrade notes
+-------------
+
+Deploy alongside the v8 editor and BESSER backend. Reapply or re-vendor
+``patches/websocket_platform.py`` if the pinned framework changes; the Docker
+image applies it during the build. Check that your provider exposes the
+configured default model ids, or set ``BESSER_AGENT_MODEL_*`` overrides.
+
+See :doc:`../configuration`, :doc:`../websocket_protocol`, and
+:doc:`../deployment` for the exact contracts and service setup.

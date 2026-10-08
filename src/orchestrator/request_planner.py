@@ -3,8 +3,13 @@ import logging
 import re
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from handlers.generation_handler import GENERATOR_KEYWORDS, detect_generator_type
+from handlers.generation_handler import (
+    GENERATOR_KEYWORDS,
+    GENERATOR_PREREQUISITES,
+    detect_generator_type,
+)
 from protocol.types import AssistantRequest, SUPPORTED_DIAGRAM_TYPES
+from unified_classifier import EXPLICIT_SCREEN_VOCAB_RE
 
 from .workspace_orchestrator import KEYWORD_TARGETS, determine_target_diagram_types
 
@@ -19,24 +24,6 @@ ALLOWED_MODEL_MODES: Set[str] = {
 }
 
 ALLOWED_GENERATORS: Set[str] = set(GENERATOR_KEYWORDS.keys())
-
-# Maps generator type → diagram types that must exist before generation can run.
-GENERATOR_PREREQUISITES: Dict[str, List[str]] = {
-    "web_app": ["ClassDiagram", "GUINoCodeDiagram"],
-    "react": ["ClassDiagram", "GUINoCodeDiagram"],
-    "flutter": ["ClassDiagram", "GUINoCodeDiagram"],
-    "django": ["ClassDiagram"],
-    "backend": ["ClassDiagram"],
-    "sql": ["ClassDiagram"],
-    "sqlalchemy": ["ClassDiagram"],
-    "python": ["ClassDiagram"],
-    "java": ["ClassDiagram"],
-    "pydantic": ["ClassDiagram"],
-    "jsonschema": ["ClassDiagram"],
-    "rest_api": ["ClassDiagram"],
-    "agent": ["AgentDiagram"],
-    "qiskit": ["QuantumCircuitDiagram"],
-}
 
 PLANNER_CONNECTORS = (
     " and ",
@@ -276,7 +263,6 @@ _MODELING_INTENTS = {
     "modify_model_intent",
     "modeling_help_intent",
     "describe_model_intent",
-    "workflow_intent",
 }
 
 
@@ -284,8 +270,11 @@ def _fallback_operations(
     request: AssistantRequest,
     default_mode: str,
     matched_intent: Optional[str],
+    llm_target_type: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    targets = determine_target_diagram_types(request, last_intent=matched_intent, max_targets=3)
+    targets = determine_target_diagram_types(
+        request, last_intent=matched_intent, max_targets=3, llm_target_type=llm_target_type
+    )
 
     # ClassDiagram is a prerequisite for other diagram types (GUI, Object, etc.)
     # so it must always be processed first when present alongside others.
@@ -629,15 +618,23 @@ def _validate_and_fix_plan(
             if isinstance(dt, str):
                 planned_diagrams.add(dt)
 
-    # Check each generation op for missing prerequisites and inject them
+    # Check each generation op (and each GUI build) for missing prerequisites
+    # and inject them
     injected: List[Dict[str, Any]] = []
     for op in operations:
-        if op.get("type") != "generation":
+        if op.get("type") == "generation":
+            gen_type = op.get("generatorType")
+            if not isinstance(gen_type, str):
+                continue
+            prereqs = GENERATOR_PREREQUISITES.get(gen_type, [])
+        elif op.get("type") == "model":
+            # Screens bind to the class diagram; without one the GUI handler
+            # invents its own entities and no model exists.
+            if op.get("diagramType") != "GUINoCodeDiagram" or op.get("mode") != "complete_system":
+                continue
+            prereqs = ["ClassDiagram"]
+        else:
             continue
-        gen_type = op.get("generatorType")
-        if not isinstance(gen_type, str):
-            continue
-        prereqs = GENERATOR_PREREQUISITES.get(gen_type, [])
         for prereq in prereqs:
             if prereq not in planned_diagrams and prereq not in workspace_diagrams:
                 # Build a helpful sub-request from the original user message
@@ -698,6 +695,7 @@ def plan_assistant_operations(
     default_mode: str,
     matched_intent: Optional[str],
     llm_predict: Callable[[str], str],
+    llm_target_type: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Build an ordered operation plan for the assistant.
@@ -716,9 +714,37 @@ def plan_assistant_operations(
             logger.debug("Heuristic planner produced %d operations", len(validated))
             return validated
 
+    # ----- Phase 0b: from-scratch app that asks for a UI -----
+    # "Build a library platform with models and UI" takes the same route as
+    # "create a web app for X". Left to the classifier, the target flips
+    # between ClassDiagram (no screens) and GUINoCodeDiagram (screens on no
+    # model).
+    if (
+        matched_intent == "create_complete_system_intent"
+        and EXPLICIT_SCREEN_VOCAB_RE.search(request.message or "")
+        and not {"ClassDiagram", "GUINoCodeDiagram"} & _get_workspace_diagram_types(request)
+    ):
+        message = request.message.strip()
+        return _validate_and_fix_plan([
+            {"type": "model", "diagramType": "ClassDiagram", "mode": "complete_system",
+             "request": (
+                 f"create a class diagram for: {message}\n"
+                 "Model the domain data only. The screens are built in the next "
+                 "step, so add no UI, screen or view classes."
+             )},
+            {"type": "model", "diagramType": "GUINoCodeDiagram", "mode": "complete_system",
+             "request": f"create a GUI for: {message}"},
+            {"type": "generation", "generatorType": "web_app", "config": {}},
+        ], request)
+
     # ----- Phase 1: keyword-based fallback -----
-    fallback = _fallback_operations(request, default_mode=default_mode, matched_intent=matched_intent)
-    inferred_targets = determine_target_diagram_types(request, last_intent=matched_intent, max_targets=6)
+    fallback = _fallback_operations(
+        request, default_mode=default_mode, matched_intent=matched_intent,
+        llm_target_type=llm_target_type,
+    )
+    inferred_targets = determine_target_diagram_types(
+        request, last_intent=matched_intent, max_targets=6, llm_target_type=llm_target_type,
+    )
     # Cache detect_generator_type — called once and reused
     detected_gen = detect_generator_type(request.message)
     has_generation_request = detected_gen is not None

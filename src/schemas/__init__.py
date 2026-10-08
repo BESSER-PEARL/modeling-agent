@@ -11,6 +11,7 @@ from .class_diagram import (
     MethodParameterSpec,
     MethodSpec,
     RelationshipSpec,
+    OCLConstraintSpec,
     SingleClassSpec,
     SystemClassSpec,
     ClassModificationTarget,
@@ -39,6 +40,10 @@ from .object_diagram import (
     ObjectModificationResponse,
 )
 from .agent_diagram import (
+    ReplyType,
+    REPLY_TYPE_HINTS,
+    reply_type_help,
+    AgentReplyFields,
     AgentReplySpec,
     AgentStateSpec,
     AgentIntentSpec,
@@ -52,10 +57,16 @@ from .agent_diagram import (
 )
 from .gui_diagram import (
     GUISectionSpec,
+    GUIBindSpec,
     SingleGUIElementSpec,
     GUIPageSpec,
     SystemGUISpec,
+    AuthoredGUISectionSpec,
+    AuthoredGUIPageSpec,
+    AuthoredSystemGUISpec,
+    GUIThemeSpec,
     GUIModificationSpec,
+    GUIModificationBatchSpec,
 )
 from .quantum_circuit import (
     QuantumOperationSpec,
@@ -73,6 +84,16 @@ from .bpmn import (
     BPMNModificationChanges,
     BPMNModification,
     BPMNModificationResponse,
+)
+from .user_profile import (
+    UserProfileAttributeSpec,
+    SingleUserProfileSpec,
+    UserProfileLinkSpec,
+    SystemUserProfileSpec,
+    UserProfileModificationTarget,
+    UserProfileModificationChanges,
+    UserProfileModification,
+    UserProfileModificationResponse,
 )
 from .component_diagram import (
     ComponentSubsystemSpec,
@@ -99,7 +120,7 @@ from .deployment_diagram import (
 __all__ = [
     # Class Diagram
     "AttributeSpec", "MethodParameterSpec", "MethodSpec",
-    "RelationshipSpec", "SingleClassSpec", "SystemClassSpec",
+    "RelationshipSpec", "OCLConstraintSpec", "SingleClassSpec", "SystemClassSpec",
     "ClassModificationTarget", "ClassModificationChanges",
     "ClassModification", "ClassModificationResponse",
     # State Machine
@@ -111,13 +132,17 @@ __all__ = [
     "ObjectModificationTarget", "ObjectModificationChanges",
     "ObjectModification", "ObjectModificationResponse",
     # Agent Diagram
+    "ReplyType", "REPLY_TYPE_HINTS", "reply_type_help", "AgentReplyFields",
     "AgentReplySpec", "AgentStateSpec", "AgentIntentSpec",
     "AgentSingleElementSpec", "AgentTransitionSpec", "SystemAgentSpec",
     "AgentModificationTarget", "AgentModificationChanges",
     "AgentModification", "AgentModificationResponse",
     # GUI Diagram
-    "GUISectionSpec", "SingleGUIElementSpec", "GUIPageSpec", "SystemGUISpec",
-    "GUIModificationSpec",
+    "GUISectionSpec", "GUIBindSpec", "SingleGUIElementSpec", "GUIPageSpec",
+    "AuthoredGUISectionSpec", "AuthoredGUIPageSpec", "AuthoredSystemGUISpec",
+    "GUIThemeSpec",
+    "GUIModificationBatchSpec",
+    "SystemGUISpec", "GUIModificationSpec",
     # Quantum Circuit
     "QuantumOperationSpec", "SingleQuantumGateSpec", "SystemQuantumCircuitSpec",
     "QuantumModificationSpec",
@@ -126,6 +151,11 @@ __all__ = [
     "BPMNLaneSpec", "BPMNPoolSpec",
     "BPMNModificationTarget", "BPMNModificationChanges",
     "BPMNModification", "BPMNModificationResponse",
+    # User Profile
+    "UserProfileAttributeSpec", "SingleUserProfileSpec", "UserProfileLinkSpec",
+    "SystemUserProfileSpec",
+    "UserProfileModificationTarget", "UserProfileModificationChanges",
+    "UserProfileModification", "UserProfileModificationResponse",
     # Component Diagram
     "ComponentSubsystemSpec", "ComponentSpec", "ComponentDependencySpec",
     "SystemComponentSpec", "ComponentModificationTarget", "ComponentModificationChanges",

@@ -7,7 +7,7 @@ variants live here so every handler and the workspace-context builder can
 share the same logic.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 # ---------------------------------------------------------------------------
 # Compact (one-line) model summary
@@ -19,7 +19,23 @@ def compact_model_summary(model_data: Any, diagram_type: str) -> str:
     if not isinstance(model_data, dict):
         return f"{diagram_type}: no structured model available."
 
-    if diagram_type in {"ClassDiagram", "ObjectDiagram", "StateMachineDiagram", "AgentDiagram", "BPMN", "ComponentDiagram", "DeploymentDiagram"}:
+    if diagram_type == "AgentDiagram":
+        # Agent intents/components may live in ``components`` (new format),
+        # ``elements`` or ``agentComponents``; count states + components across all.
+        agent_elements = agent_model_elements(model_data)
+        relationships = model_data.get("relationships")
+        if agent_elements or isinstance(relationships, dict):
+            counted = [
+                el for el in agent_elements.values()
+                if isinstance(el, dict) and el.get("type") in _AGENT_COUNTED_TYPES
+            ]
+            rel_count = len(relationships) if isinstance(relationships, dict) else 0
+            return (
+                f"{diagram_type}: {len(counted)} element(s), "
+                f"{rel_count} relationship(s)."
+            )
+
+    if diagram_type in {"ClassDiagram", "ObjectDiagram", "StateMachineDiagram", "BPMN", "ComponentDiagram", "DeploymentDiagram"}:
         elements = model_data.get("elements")
         relationships = model_data.get("relationships")
         if isinstance(elements, dict) and isinstance(relationships, dict):
@@ -39,9 +55,57 @@ def compact_model_summary(model_data: Any, diagram_type: str) -> str:
                         f"{preview}{extra} and "
                         f"{len(relationships)} relationship(s)."
                     )
+            elif diagram_type == "StateMachineDiagram":
+                # Count actual states only — exclude the StateInitialNode
+                # pseudostate and per-state StateBody/StateFallbackBody/
+                # StateCodeBlock sub-elements.
+                state_names = [
+                    el.get("name") for el in elements.values()
+                    if isinstance(el, dict) and el.get("type") == "State"
+                    and isinstance(el.get("name"), str) and el["name"].strip()
+                ]
+                state_count = len(state_names)
+                if state_count > 0:
+                    preview = ", ".join(state_names[:6])
+                    extra = f" (+{state_count - 6} more)" if state_count > 6 else ""
+                    return (
+                        f"{diagram_type}: {state_count} state(s): "
+                        f"{preview}{extra} and "
+                        f"{len(relationships)} transition(s)."
+                    )
+            elif diagram_type == "ObjectDiagram":
+                # Count actual objects only — exclude attribute sub-elements.
+                object_names = [
+                    el.get("name") for el in elements.values()
+                    if isinstance(el, dict) and el.get("type") == "Object"
+                    and isinstance(el.get("name"), str) and el["name"].strip()
+                ]
+                object_count = len(object_names)
+                if object_count > 0:
+                    preview = ", ".join(object_names[:6])
+                    extra = f" (+{object_count - 6} more)" if object_count > 6 else ""
+                    return f"{diagram_type}: {object_count} object(s): {preview}{extra}."
             return (
                 f"{diagram_type}: {len(elements)} element(s), "
                 f"{len(relationships)} relationship(s)."
+            )
+
+    if diagram_type == "UserDiagram":
+        elements = model_data.get("elements")
+        relationships = model_data.get("relationships")
+        if isinstance(elements, dict):
+            box_names = [
+                el.get("className") or el.get("name")
+                for el in elements.values()
+                if isinstance(el, dict) and el.get("type") == "UserModelName"
+            ]
+            rel_count = len(relationships) if isinstance(relationships, dict) else 0
+            preview = ", ".join(n for n in box_names[:6] if n)
+            extra = f" (+{len(box_names) - 6} more)" if len(box_names) > 6 else ""
+            return (
+                f"{diagram_type}: {len(box_names)} profile box(es)"
+                + (f": {preview}{extra}" if preview else "")
+                + f" and {rel_count} link(s)."
             )
 
     if diagram_type == "GUINoCodeDiagram":
@@ -113,81 +177,155 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
             clean = _clean_attr_name(raw_name)
             class_data[owner]["methods"].append(clean)
 
-    # Format class lines
+    # Explicit class COUNT header first — so factual queries ("how many
+    # classes?") are answered from a stated number, and relationships are
+    # never miscounted as classes.
     class_items = list(class_data.items())
+    names_preview = ", ".join(cd["name"] for _, cd in class_items[:max_classes])
+    if len(class_items) > max_classes:
+        names_preview += f" (+{len(class_items) - max_classes} more)"
+    lines.append(f"Classes ({len(class_items)}): {names_preview}")
     for cid, cd in class_items[:max_classes]:
-        parts = [f"Class {cd['name']}"]
+        parts = [f"  - {cd['name']}"]
         if cd["attrs"]:
             attrs_str = ", ".join(cd["attrs"][:max_attrs])
             if len(cd["attrs"]) > max_attrs:
                 attrs_str += f" (+{len(cd['attrs']) - max_attrs} more)"
             parts.append(f"attributes: {attrs_str}")
         if cd["methods"]:
-            methods_str = ", ".join(cd["methods"][:max_attrs])
-            parts.append(f"methods: {methods_str}")
+            parts.append(f"methods: {', '.join(cd['methods'][:max_attrs])}")
         lines.append(" | ".join(parts))
-    if len(class_items) > max_classes:
-        lines.append(f"  …and {len(class_items) - max_classes} more class(es)")
 
-    # Format relationships
+    # Relationships — separate generalizations (inheritance) from associations
+    # so "is X a subclass of Y?" is answerable and the two are never conflated.
+    _GEN_TYPES = {"ClassInheritance", "ClassGeneralization", "ClassRealization"}
+    _REL_LABEL = {
+        "ClassComposition": "composition", "ClassAggregation": "aggregation",
+        "ClassBidirectional": "association", "ClassUnidirectional": "directed association",
+        "ClassDependency": "dependency", "ClassAssociation": "association",
+    }
+    gens: List[str] = []
+    assocs: List[str] = []
     if isinstance(relationships, dict):
-        rel_items = list(relationships.values())
-        for rel in rel_items[:15]:
+        for rel in relationships.values():
             if not isinstance(rel, dict):
                 continue
             source = rel.get("source")
             target = rel.get("target")
             if not isinstance(source, dict) or not isinstance(target, dict):
                 continue
-            src_id = source.get("element", "")
-            tgt_id = target.get("element", "")
-            src_name = class_data.get(src_id, {}).get("name", src_id)
-            tgt_name = class_data.get(tgt_id, {}).get("name", tgt_id)
-            rel_type = rel.get("type", "Association")
-            rel_name = rel.get("name", "")
-            src_mult = source.get("multiplicity", "")
-            tgt_mult = target.get("multiplicity", "")
-            mult_str = ""
-            if src_mult or tgt_mult:
-                mult_str = f" [{src_mult}..{tgt_mult}]"
-            name_str = f' "{rel_name}"' if rel_name else ""
-            lines.append(f"{rel_type}: {src_name} -> {tgt_name}{mult_str}{name_str}")
-        if len(rel_items) > 15:
-            lines.append(f"  …and {len(rel_items) - 15} more relationship(s)")
+            src_name = class_data.get(source.get("element", ""), {}).get("name", source.get("element", ""))
+            tgt_name = class_data.get(target.get("element", ""), {}).get("name", target.get("element", ""))
+            rtype = rel.get("type", "ClassBidirectional")
+            if rtype in _GEN_TYPES:
+                # Apollon inheritance arrow points child -> parent.
+                gens.append(f"{src_name} extends {tgt_name}")
+            else:
+                label = _REL_LABEL.get(rtype, "association")
+                src_mult = source.get("multiplicity", "")
+                tgt_mult = target.get("multiplicity", "")
+                mult = f" [{src_mult}..{tgt_mult}]" if (src_mult or tgt_mult) else ""
+                rel_name = rel.get("name", "")
+                name_str = f' "{rel_name}"' if rel_name else ""
+                assocs.append(f"{src_name} -> {tgt_name} ({label}){mult}{name_str}")
+    if gens:
+        lines.append(f"Generalizations ({len(gens)}): " + "; ".join(gens[:15]))
+    if assocs:
+        more = f" (+{len(assocs) - 15} more)" if len(assocs) > 15 else ""
+        lines.append(f"Relationships ({len(assocs)}): " + "; ".join(assocs[:15]) + more)
 
     return lines
 
 
 def _summarize_state_machine(model: Dict[str, Any], *, max_items: int = 20) -> List[str]:
-    """Summarize a StateMachineDiagram model: states with actions, transitions."""
+    """Summarize a StateMachineDiagram model: real states, bodies, transitions.
+
+    Only genuine ``State`` elements are counted/listed as states — the editor
+    also creates a ``StateInitialNode`` pseudostate plus per-state
+    ``StateBody``/``StateFallbackBody``/``StateCodeBlock`` sub-elements, none
+    of which are states themselves (mirrors how the class-diagram summary
+    excludes attributes/methods from the class count).
+    """
     elements = model.get("elements")
     relationships = model.get("relationships")
     if not isinstance(elements, dict):
         return []
 
     lines: List[str] = []
-    element_names: Dict[str, str] = {}  # id -> name
+    element_names: Dict[str, str] = {}  # id -> name (any element, for transition lookups)
+    state_data: Dict[str, Dict[str, Any]] = {}  # id -> {name, bodies, fallbacks, entry, exit, do}
+    initial_count = 0
+    final_count = 0
 
-    # States
     for eid, el in elements.items():
         if not isinstance(el, dict):
             continue
         el_type = el.get("type")
-        if el_type not in ("State", "StateInitialNode", "StateFinalNode"):
+        name = el.get("name") or ""
+        if el_type == "State":
+            if not name.strip():
+                continue
+            element_names[eid] = name.strip()
+            state_data[eid] = {
+                "name": name.strip(), "bodies": [], "fallbacks": [],
+                "entry": el.get("entryAction", "") or "",
+                "exit": el.get("exitAction", "") or "",
+                "do": el.get("doActivity", "") or "",
+            }
+        elif el_type == "StateInitialNode":
+            initial_count += 1
+            element_names[eid] = name or "(initial)"
+        elif el_type == "StateFinalNode":
+            final_count += 1
+            element_names[eid] = name or "(final)"
+
+    # Attach per-state body/fallback function names (owner-based, mirrors
+    # how the class-diagram summary attaches attributes/methods to classes).
+    for el in elements.values():
+        if not isinstance(el, dict):
             continue
-        name = el.get("name", "Unnamed")
-        element_names[eid] = name
-        parts = [f"State {name} ({el_type})"]
-        entry = el.get("entryAction", "")
-        exit_a = el.get("exitAction", "")
-        do_act = el.get("doActivity", "")
-        if entry:
-            parts.append(f"entry={entry}")
-        if exit_a:
-            parts.append(f"exit={exit_a}")
-        if do_act:
-            parts.append(f"do={do_act}")
+        owner = el.get("owner")
+        if not isinstance(owner, str) or owner not in state_data:
+            continue
+        el_type = el.get("type")
+        body_name = el.get("name")
+        if not isinstance(body_name, str) or not body_name.strip():
+            continue
+        if el_type == "StateBody":
+            state_data[owner]["bodies"].append(body_name.strip())
+        elif el_type == "StateFallbackBody":
+            state_data[owner]["fallbacks"].append(body_name.strip())
+
+    # Explicit state COUNT header first — so factual queries ("how many
+    # states?") are answered from a stated number instead of the LLM
+    # counting listed lines (which would include the StateInitialNode
+    # pseudostate as an extra "state").
+    state_items = list(state_data.items())
+    names_preview = ", ".join(sd["name"] for _, sd in state_items[:max_items])
+    if len(state_items) > max_items:
+        names_preview += f" (+{len(state_items) - max_items} more)"
+    lines.append(f"States ({len(state_items)}): {names_preview}")
+    for _, sd in state_items[:max_items]:
+        parts = [f"  - {sd['name']}"]
+        if sd["bodies"]:
+            parts.append(f"body: {', '.join(sd['bodies'])}")
+        if sd["fallbacks"]:
+            parts.append(f"fallback: {', '.join(sd['fallbacks'])}")
+        if sd["entry"]:
+            parts.append(f"entry={sd['entry']}")
+        if sd["exit"]:
+            parts.append(f"exit={sd['exit']}")
+        if sd["do"]:
+            parts.append(f"do={sd['do']}")
         lines.append(" | ".join(parts))
+
+    if initial_count or final_count:
+        bits = []
+        if initial_count:
+            bits.append(f"{initial_count} initial pseudostate(s)")
+        if final_count:
+            bits.append(f"{final_count} final pseudostate(s)")
+        lines.append("Pseudostates (not counted as states): " + ", ".join(bits))
 
     # Transitions
     if isinstance(relationships, dict):
@@ -261,6 +399,43 @@ def _summarize_object_diagram(model: Dict[str, Any], *, max_objects: int = 15) -
     return lines
 
 
+def _summarize_user_profile(model: Dict[str, Any], *, max_boxes: int = 15) -> List[str]:
+    """Summarize a UserDiagram model: profile boxes with their criteria rows.
+
+    Each box is a ``UserModelName`` element; its ``UserModelAttribute`` children
+    already embed the operator+value in their ``name`` (e.g. ``age < 18``).
+    """
+    elements = model.get("elements")
+    if not isinstance(elements, dict):
+        return []
+
+    lines: List[str] = []
+    for el in elements.values():
+        if not isinstance(el, dict) or el.get("type") != "UserModelName":
+            continue
+        class_name = el.get("className") or el.get("name", "Profile")
+        instance = el.get("name", "")
+        instance_part = f" ({instance})" if instance and instance != class_name else ""
+        criteria: List[str] = []
+        for attr_id in el.get("attributes", []) or []:
+            attr = elements.get(attr_id)
+            if isinstance(attr, dict) and attr.get("name"):
+                criteria.append(str(attr["name"]).strip())
+        summary = f"Box {class_name}{instance_part}"
+        if criteria:
+            shown = criteria[:8]
+            if len(criteria) > 8:
+                shown.append(f"…+{len(criteria) - 8} more")
+            summary += f" | criteria: {', '.join(shown)}"
+        lines.append(summary)
+
+    if len(lines) > max_boxes:
+        overflow = len(lines) - max_boxes
+        lines = lines[:max_boxes]
+        lines.append(f"  …and {overflow} more box(es)")
+    return lines
+
+
 def _summarize_gui_model(model: Dict[str, Any]) -> List[str]:
     """Summarize a GUINoCodeDiagram model: pages and section types."""
     pages = model.get("pages")
@@ -287,45 +462,182 @@ def _summarize_gui_model(model: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def _summarize_agent_diagram(model: Dict[str, Any]) -> List[str]:
-    """Summarize an AgentDiagram model: states, intents, transitions."""
-    elements = model.get("elements")
+# Agent component element types (LLMs, intents, RAG DBs, tools, ...).  In the
+# editor's new format they live in ``model["components"]``; older projects keep
+# them in ``model["elements"]`` and a legacy schema used a top-level
+# ``agentComponents`` map.  Mirrors BESSER's agent_diagram_processor.
+_AGENT_COMPONENT_LABELS: List[Tuple[str, str]] = [
+    ("AgentIntent", "Intents"),
+    ("AgentLLM", "LLMs"),
+    ("AgentRagElement", "RAG databases"),
+    ("AgentTool", "Tools"),
+    ("AgentSkill", "Skills"),
+    ("AgentWorkspace", "Workspaces"),
+    ("AgentGUI", "GUIs"),
+]
+_AGENT_STATE_TYPES = ("AgentState", "AgentReasoningState")
+_AGENT_COUNTED_TYPES = set(_AGENT_STATE_TYPES) | {t for t, _ in _AGENT_COMPONENT_LABELS}
+_AGENT_TRANSITION_TYPES = {"AgentStateTransition", "AgentStateTransitionInit", "AgentTransition"}
+
+
+def agent_model_elements(model: Dict[str, Any]) -> Dict[str, Any]:
+    """Return every agent element regardless of storage format.
+
+    Merges ``elements`` (old projects keep intents/components on the canvas),
+    then ``agentComponents`` (legacy schema), then ``components`` (new format);
+    later sections win on duplicate ids — the same precedence BESSER's backend
+    processor and the editor use.
+    """
+    merged: Dict[str, Any] = {}
+    for key in ("elements", "agentComponents", "components"):
+        section = model.get(key)
+        if isinstance(section, dict):
+            merged.update(section)
+    return merged
+
+
+def _endpoint_id(endpoint: Any) -> str:
+    """Relationship endpoints are ``{"element": id, ...}`` in Apollon JSON; accept plain ids too."""
+    if isinstance(endpoint, dict):
+        endpoint = endpoint.get("element")
+    return endpoint if isinstance(endpoint, str) else ""
+
+
+def _join_names(names: List[str], limit: int = 10) -> str:
+    text = ', '.join(names[:limit])
+    if len(names) > limit:
+        text += f" …+{len(names) - limit} more"
+    return text
+
+
+def _summarize_agent_diagram(model: Dict[str, Any], *, max_items: int = 20) -> List[str]:
+    """Summarize an AgentDiagram model: states (with reply bodies), intents
+    (with training phrases), the other components (LLMs, RAG DBs, tools,
+    skills, workspaces, GUIs) and transitions.
+
+    Reads every storage format via ``agent_model_elements``. Only genuine
+    states/components are counted — the ``StateInitialNode`` pseudostate and
+    the ``AgentStateBody`` / ``AgentIntentBody`` sub-elements are not. Training
+    phrases are surfaced so "which intent handles hello" is answerable here.
+    """
     relationships = model.get("relationships")
-    if not isinstance(elements, dict):
+    elements = agent_model_elements(model)
+    if not elements:
         return []
 
     lines: List[str] = []
+    state_data: Dict[str, Dict[str, Any]] = {}   # id -> {name, replies}
+    intent_data: Dict[str, Dict[str, Any]] = {}  # id -> {name, phrases}
 
-    states = [e.get("name") for e in elements.values()
-              if isinstance(e, dict) and e.get("type") == "AgentState" and e.get("name")]
-    if states:
-        state_str = ', '.join(states[:10])
-        if len(states) > 10:
-            state_str += f" …+{len(states) - 10} more"
-        lines.append(f"States: {state_str}")
+    for eid, el in elements.items():
+        if not isinstance(el, dict):
+            continue
+        name = el.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if el.get("type") in _AGENT_STATE_TYPES:
+            state_data[eid] = {"name": name.strip(), "replies": []}
+        elif el.get("type") == "AgentIntent":
+            intent_data[eid] = {"name": name.strip(), "phrases": []}
 
-    intents = [e.get("name") for e in elements.values()
-               if isinstance(e, dict) and e.get("type") == "AgentIntent" and e.get("name")]
-    if intents:
-        intent_str = ', '.join(intents[:10])
-        if len(intents) > 10:
-            intent_str += f" …+{len(intents) - 10} more"
-        lines.append(f"Intents: {intent_str}")
+    def _body_text(body_id: Any) -> str:
+        body = elements.get(body_id) if isinstance(body_id, str) else None
+        text = body.get("name") if isinstance(body, dict) else None
+        return text.strip() if isinstance(text, str) else ""
 
+    # Attach reply bodies / training phrases: by ``owner`` on the body, or by
+    # the id list on the parent (``actions``/``bodies``/``ownedElements``).
+    for el in elements.values():
+        if not isinstance(el, dict):
+            continue
+        owner = el.get("owner")
+        text = el.get("name")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        if el.get("type") == "AgentStateBody" and owner in state_data:
+            state_data[owner]["replies"].append(text.strip())
+        elif el.get("type") == "AgentIntentBody" and owner in intent_data:
+            intent_data[owner]["phrases"].append(text.strip())
+    for eid, sd in state_data.items():
+        el = elements[eid]
+        for body_id in el.get("actions") or el.get("bodies") or []:
+            text = _body_text(body_id)
+            if text and text not in sd["replies"]:
+                sd["replies"].append(text)
+    for eid, idata in intent_data.items():
+        el = elements[eid]
+        for body_id in el.get("bodies") or el.get("ownedElements") or []:
+            text = _body_text(body_id)
+            if text and text not in idata["phrases"]:
+                idata["phrases"].append(text)
+
+    # Explicit COUNT headers first — mirrors the class-diagram summary so
+    # factual queries ("how many intents?") are answered from a stated
+    # number instead of the LLM guessing from a flat element dump.
+    state_items = list(state_data.values())
+    if state_items:
+        names_preview = _join_names([sd["name"] for sd in state_items], max_items)
+        lines.append(f"States ({len(state_items)}): {names_preview}")
+        for sd in state_items[:max_items]:
+            if sd["replies"]:
+                lines.append(f"  - {sd['name']} | replies: {'; '.join(sd['replies'][:5])}")
+            else:
+                lines.append(f"  - {sd['name']}")
+
+    intent_items = list(intent_data.values())
+    if intent_items:
+        names_preview = _join_names([idata["name"] for idata in intent_items], max_items)
+        lines.append(f"Intents ({len(intent_items)}): {names_preview}")
+        for idata in intent_items[:max_items]:
+            if idata["phrases"]:
+                lines.append(f"  - {idata['name']} | training phrases: {', '.join(idata['phrases'][:8])}")
+            else:
+                lines.append(f"  - {idata['name']}")
+
+    for comp_type, label in _AGENT_COMPONENT_LABELS:
+        if comp_type == "AgentIntent":
+            continue  # listed above with training phrases
+        names: List[str] = []
+        for e in elements.values():
+            if not isinstance(e, dict) or e.get("type") != comp_type:
+                continue
+            # AgentGUI components are referenced by gui_id (gui_reply.guiId).
+            name = (e.get("gui_id") if comp_type == "AgentGUI" else None) or e.get("name")
+            if isinstance(name, str) and name.strip():
+                names.append(name.strip())
+        if names:
+            suffix = ", gui_id" if comp_type == "AgentGUI" else ""
+            lines.append(f"{label} ({len(names)}{suffix}): {_join_names(names, max_items)}")
+
+    # Transitions, annotated with the intent that triggers each one so
+    # "which intent leads to X" is answerable directly from this line.
     if isinstance(relationships, dict):
         transitions: List[str] = []
         for rel in relationships.values():
-            if not isinstance(rel, dict) or rel.get("type") != "AgentTransition":
+            if not isinstance(rel, dict) or rel.get("type") not in _AGENT_TRANSITION_TYPES:
                 continue
-            source = elements.get(rel.get("source", ""))
-            target = elements.get(rel.get("target", ""))
-            if isinstance(source, dict) and isinstance(target, dict):
-                transitions.append(f"{source.get('name')} → {target.get('name')}")
+            source = elements.get(_endpoint_id(rel.get("source")))
+            target = elements.get(_endpoint_id(rel.get("target")))
+            if not isinstance(source, dict) or not isinstance(target, dict):
+                continue
+            src_name = source.get("name") or ("initial" if source.get("type") == "StateInitialNode" else "?")
+            tgt_name = target.get("name") or "?"
+            predefined = rel.get("predefined")
+            predefined_type = predefined.get("predefinedType", "") if isinstance(predefined, dict) else ""
+            intent_name = predefined.get("intentName", "") if isinstance(predefined, dict) else ""
+            if intent_name:
+                detail = f" (on intent: {intent_name})"
+            elif predefined_type == "auto":
+                detail = " (auto)"
+            elif predefined_type:
+                detail = f" ({predefined_type})"
+            else:
+                detail = ""
+            transitions.append(f"{src_name} -> {tgt_name}{detail}")
         if transitions:
-            trans_str = ', '.join(transitions[:5])
-            if len(transitions) > 5:
-                trans_str += f" …+{len(transitions) - 5} more"
-            lines.append(f"Transitions: {trans_str}")
+            trans_str = "; ".join(transitions[:15])
+            more = f" (+{len(transitions) - 15} more)" if len(transitions) > 15 else ""
+            lines.append(f"Transitions ({len(transitions)}): {trans_str}{more}")
 
     return lines
 
@@ -738,6 +1050,164 @@ def _summarize_deployment_diagram(model: Dict[str, Any], *, max_items: int = 25)
 
 
 # ---------------------------------------------------------------------------
+# "Is this diagram non-trivial?" — used by describe-model to skip empty
+# / seed-content diagrams so they don't drown out diagrams the user built.
+# ---------------------------------------------------------------------------
+
+
+def _quantum_circuit_is_nontrivial(model: Dict[str, Any]) -> bool:
+    """Decide whether a quantum circuit was deliberately authored by the user.
+
+    The editor often inserts ambient default content (e.g. a few qubits with a
+    handful of single-qubit gates) when a tab is created.  We treat a circuit
+    as trivial unless it has at least one of:
+
+    - more than 3 gate operations total, OR
+    - at least one entangling / multi-qubit gate (control dot + target, SWAP,
+      multi-qubit functional block, etc.), OR
+    - at least one measurement gate (suggests a real experiment), OR
+    - more than 6 occupied columns (a wide circuit is unlikely to be seed).
+
+    A circuit with 0 gates is always trivial.
+    """
+    cols = model.get("cols")
+    if not isinstance(cols, list) or not cols:
+        return False
+
+    gate_total = 0
+    occupied_cols = 0
+    has_control = False
+    has_swap = False
+    has_measurement = False
+    has_multiqubit_func = False
+
+    for col in cols:
+        if not isinstance(col, list):
+            continue
+        col_has_gate = False
+        swaps_in_col = 0
+        controls_in_col = 0
+        targets_in_col = 0
+        for cell in col:
+            if cell == 1 or cell is None:
+                continue
+            symbol = str(cell)
+            col_has_gate = True
+            gate_total += 1
+            if symbol == "•" or symbol == "*":
+                has_control = True
+                controls_in_col += 1
+            elif symbol == "◦":
+                has_control = True
+                controls_in_col += 1
+            elif symbol == "Swap":
+                swaps_in_col += 1
+                has_swap = True
+            elif symbol in {"Measure", "Measure X", "Measure Y"}:
+                has_measurement = True
+            elif symbol.startswith("__FUNC__") or symbol.startswith("<<"):
+                has_multiqubit_func = True
+            else:
+                targets_in_col += 1
+        if col_has_gate:
+            occupied_cols += 1
+        # A column with both controls and targets is an actual entangling op.
+        if controls_in_col >= 1 and targets_in_col >= 1:
+            has_control = True
+        if swaps_in_col >= 2:
+            has_swap = True
+
+    if gate_total == 0:
+        return False
+
+    if has_control or has_swap or has_measurement or has_multiqubit_func:
+        return True
+
+    if gate_total > 3:
+        return True
+
+    if occupied_cols > 6:
+        return True
+
+    return False
+
+
+def is_diagram_nontrivial(model_data: Any, diagram_type: str) -> bool:
+    """Return True if a diagram contains user-authored content worth describing.
+
+    Used by the describe-model flow so empty / seed diagrams are skipped
+    instead of being enumerated as "0 elements" noise.
+
+    Rules (conservative — when in doubt, prefer True):
+
+    - ClassDiagram: at least one user-named class.
+    - StateMachineDiagram / AgentDiagram / ObjectDiagram: at least one
+      element the user added (any element is enough).
+    - GUINoCodeDiagram: at least one page.
+    - QuantumCircuitDiagram: see :func:`_quantum_circuit_is_nontrivial` —
+      filters out the 0-gate / sparse-default circuits the editor seeds.
+    - Unknown types: True if the model dict is non-empty.
+    """
+    if not isinstance(model_data, dict) or not model_data:
+        return False
+
+    if diagram_type == "ClassDiagram":
+        elements = model_data.get("elements")
+        if not isinstance(elements, dict):
+            return False
+        for el in elements.values():
+            if (
+                isinstance(el, dict)
+                and el.get("type") == "Class"
+                and isinstance(el.get("name"), str)
+                and el["name"].strip()
+            ):
+                return True
+        return False
+
+    if diagram_type == "ObjectDiagram":
+        elements = model_data.get("elements")
+        if not isinstance(elements, dict):
+            return False
+        for el in elements.values():
+            if isinstance(el, dict) and el.get("type") == "Object":
+                return True
+        return False
+
+    if diagram_type == "StateMachineDiagram":
+        elements = model_data.get("elements")
+        if not isinstance(elements, dict):
+            return False
+        # Any State element counts; pure initial/final markers without a
+        # named state are seed content.
+        for el in elements.values():
+            if isinstance(el, dict) and el.get("type") == "State":
+                return True
+        return False
+
+    if diagram_type == "AgentDiagram":
+        elements = model_data.get("elements")
+        if not isinstance(elements, dict):
+            return False
+        for el in elements.values():
+            if isinstance(el, dict) and el.get("type") in {
+                "AgentState", "AgentIntent", "AgentStateBody", "AgentIntentBody",
+            }:
+                return True
+        return False
+
+    if diagram_type == "GUINoCodeDiagram":
+        pages = model_data.get("pages")
+        return isinstance(pages, list) and len(pages) > 0
+
+    if diagram_type == "QuantumCircuitDiagram":
+        return _quantum_circuit_is_nontrivial(model_data)
+
+    # Unknown diagram type — be permissive.
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -791,6 +1261,10 @@ def detailed_model_summary(model_data: Any, diagram_type: str) -> str:
         if lines:
             return "Current BPMN process:\n- " + "\n- ".join(lines)
 
+    elif diagram_type == "UserDiagram":
+        lines = _summarize_user_profile(model_data)
+        if lines:
+            return "Current user profile:\n- " + "\n- ".join(lines)
     elif diagram_type == "ComponentDiagram":
         lines = _summarize_component_diagram(model_data)
         if lines:

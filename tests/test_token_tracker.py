@@ -164,6 +164,7 @@ def test_summary_format(tracker):
         "prompt_tokens",
         "completion_tokens",
         "total_tokens",
+        "cached_prompt_tokens",
         "estimated_cost_usd",
         "call_count",
         "cache_hits",
@@ -221,3 +222,79 @@ def test_zero_tokens(tracker):
     assert s["total_tokens"] == 0
     assert s["estimated_cost_usd"] == 0.0
     assert s["call_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Cost-table coverage
+#
+# A model with no _COST_PER_1K entry still records tokens but prices them from
+# a placeholder, so every reported cost for it is wrong without any error. The
+# configured models must therefore always be present in the table.
+# ---------------------------------------------------------------------------
+
+def test_configured_models_have_cost_entries():
+    from agent_config import LLM_MODEL_DEFAULT, LLM_MODEL_VISION
+    from tracking.token_tracker import _COST_PER_1K
+
+    for model in (LLM_MODEL_DEFAULT, LLM_MODEL_VISION):
+        assert model in _COST_PER_1K, (
+            f"{model!r} is configured in agent_config.py but has no _COST_PER_1K "
+            f"entry, so its reported costs would silently use placeholder pricing"
+        )
+
+
+def test_unknown_model_warns_once(caplog):
+    import logging
+    from tracking import token_tracker as tt
+
+    tt._unknown_models_seen.discard("totally-made-up-model")
+    tracker = tt.get_tracker()
+    with caplog.at_level(logging.WARNING):
+        tracker.record(prompt_tokens=10, completion_tokens=5, model="totally-made-up-model")
+        tracker.record(prompt_tokens=10, completion_tokens=5, model="totally-made-up-model")
+
+    warnings = [r for r in caplog.records if "totally-made-up-model" in r.getMessage()]
+    assert len(warnings) == 1, f"expected exactly one warning, got {len(warnings)}"
+
+
+def test_every_model_a_user_key_can_route_to_has_a_price():
+    """BYOK maps each call to a provider tier model; an unpriced one reports
+    placeholder costs, as happened for the Nebius Qwen model and for
+    gpt-5-mini."""
+    from byok import _PROVIDER_TIER_MODELS
+    from tracking.token_tracker import _COST_PER_1K
+
+    routed = {model for tiers in _PROVIDER_TIER_MODELS.values() for model in tiers.values()}
+    for model in routed | {"gpt-5-mini"}:
+        assert model in _COST_PER_1K, f"no cost entry for {model!r}"
+
+
+# USD per 1K tokens (= per-1M list price / 1000), input / output.
+PRICES = {
+    "gpt-6-astra": (0.01, 0.05),
+    "gpt-6-sol": (0.002, 0.01),
+    "gpt-6-luna": (0.0001, 0.0005),
+    # The 5.6 entries carried the wrong list prices (sol 5/30, terra 2.5/15, luna 1/6).
+    "gpt-5.6-sol": (0.004, 0.02),
+    "gpt-5.6-terra": (0.002, 0.012),
+    "gpt-5.6-luna": (0.0002, 0.0012),
+    "claude-fable-5-1": (0.01, 0.05),
+    "claude-fable-5": (0.01, 0.05),
+    "claude-opus-5-5": (0.004, 0.02),
+    "claude-opus-5": (0.005, 0.025),
+    "claude-sonnet-5": (0.002, 0.01),
+    "claude-opus-4-8": (0.005, 0.025),
+    "claude-opus-4-7": (0.005, 0.025),
+    "claude-opus-4-6": (0.005, 0.025),
+    "claude-sonnet-4-6": (0.003, 0.015),
+    "claude-haiku-4-5": (0.001, 0.005),
+}
+
+
+@pytest.mark.parametrize("model,price", sorted(PRICES.items()))
+def test_model_has_its_list_price(model, price):
+    from tracking.token_tracker import _COST_PER_1K
+
+    assert model in _COST_PER_1K, f"{model} would be costed from placeholder pricing"
+    entry = _COST_PER_1K[model]
+    assert (entry["prompt"], entry["completion"]) == pytest.approx(price)
