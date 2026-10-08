@@ -205,7 +205,7 @@ Element ids are short lowercase slugs (e.g. 'prod_server', 'webapp_artifact') re
             ],
             "deployComponents": [
                 {"id": "web_comp", "name": "WebApp", "stereotype": "solution", "manifestedBy": "webapp_artifact"},
-                {"id": "db_comp", "name": "PostgresDB", "stereotype": "database", "manifestedBy": "db_artifact"},
+                {"id": "db_comp", "name": "PostgresDB", "stereotype": "db", "manifestedBy": "db_artifact"},
             ],
             "dependencies": [
                 {"source": "webapp_artifact", "target": "db_artifact", "name": "JDBC"},

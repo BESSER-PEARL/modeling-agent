@@ -52,8 +52,8 @@ class ComponentDiagramHandler(BaseDiagramHandler):
 DESIGN RULES:
 1. Use Subsystems to group related components (e.g., 'Backend', 'Frontend', 'AI Layer', 'Database').
 2. Use Components for software units: services, agents, models, databases, tools. Clear noun names ('UserService', 'LLM', 'ProductDB').
-3. Component stereotypes: 'solution' (general component/agent), 'llm' (language model), 'db' (database/storage), 'rag' (retrieval-augmented), 'tool' (utility/function), 'skill' (capability).
-4. Use ComponentDependency to show interactions. Stereotypes: 'uses' (service call/library use), 'supervises' (supervision->solution), 'collaborates' (peer exchange), 'revises' (feedback/revision loop), 'delegates' (task handoff).
+3. Component stereotypes. Agents: 'solution' (does the work), 'supervision' (oversees other agents). Capabilities (not agents): 'llm' (language model), 'db' (database/storage), 'rag' (retrieval-augmented knowledge), 'tool' (callable utility), 'skill' (reusable capability).
+4. Use ComponentDependency to show interactions. Agent->agent: 'delegates', 'supervises', 'revises', 'collaborates'. Agent->capability: 'has', 'uses', 'granted'. Capability: 'implements'.
 5. Components can be owned by subsystems (set owner to subsystem id). Subsystems can be top-level (owner: null).
 6. Keep focused (typically 3-10 components). Do NOT add positions — the editor handles layout.
 

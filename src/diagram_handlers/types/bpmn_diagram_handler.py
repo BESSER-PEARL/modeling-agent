@@ -70,7 +70,7 @@ MODIFICATION RULES:
 2. The `*_swimlane` action names are WME API names. Call the modeled
    constructs lanes in explanations and never generate pools[].swimlanes.
 3. add_swimlane: set target.nodeName and changes.poolName. Allowed role values:
-   solution, supervision, collaboration, consensus.
+   solution, supervision.
 4. Use changes.owner only to place a newly added node in an existing lane.
 5. Use modify_node for task fields: isAgentic, reflectionMode, trustScore,
    agentDiagramRef; or gateway fields: isAgentic, gatewayRole, trustScore,
@@ -205,7 +205,7 @@ AgenticSwarm BPMN process from the user's request.
 DESIGN RULES:
 1. Emit pools[].lanes. Never emit pools[].swimlanes.
 2. Use pools for distinct participants and lanes for distinct roles inside a pool.
-3. Agentic lane roles are exactly: solution, supervision, collaboration, consensus.
+3. Agentic lane roles are exactly: solution (does the work) or supervision (oversees other agents).
 4. Preserve lane metadata where relevant: isAgentic, role, trustScore,
 multiplicity, agentDiagramRef.
 5. Every node in a pool must set poolId. Every node in a lane must set laneId.
@@ -225,7 +225,7 @@ flow fields, collaborationMode, or mergingStrategy.
             "following collaboration request and plan it before producing JSON.\n\n"
             f"User Request: {user_request}\n\n"
             "Analyze:\n"
-            "1. Who are the participants and which lane role fits each: solution, supervision, collaboration, or consensus?\n"
+            "1. Who are the participants and which lane role fits each: solution or supervision?\n"
             "2. How many instances of each participant are needed (multiplicity)?\n"
             "3. What tasks does each participant perform?\n"
             "4. How do they coordinate (what sequence flows cross lanes)?\n"
