@@ -2,8 +2,12 @@
 
 Field descriptions are used by OpenAI Structured Outputs to guide generation.
 Base BPMN plus collaboration diagrams — start/end events, tasks, gateways,
-sequence flows, and optional pools/lanes for multi-participant processes.
-No other agentic concepts (roles, governance, collaboration, trust).
+sequence flows, and optional pools/lanes for multi-participant processes —
+plus the editor's Agentic BPMN attributes (agentic lanes with a role, trust
+score and swarm multiplicity; agentic tasks with a reflection mode; agentic
+parallel/inclusive gateways with a diverging/merging role and a Governance
+DSL). The agentic vocabulary mirrors the editor's
+``packages/editor/src/main/packages/bpmn/common/types.ts``.
 
 Layout is handled on the WME side; the agent emits no positions. Message vs.
 sequence flow type is also derived on the WME side from pool membership, not
@@ -21,6 +25,26 @@ _TASK_TYPE = Literal[
     "manual", "business-rule", "script",
 ]
 _GATEWAY_TYPE = Literal["exclusive", "parallel", "inclusive", "event-based", "complex"]
+
+# Editor ``BPMNAgentProfile`` — the authorable lane-role presets.
+AGENT_ROLE_VALUES = ("solution", "supervision")
+_AGENT_ROLE = Literal["solution", "supervision"]
+# Editor ``BPMNReflectionMode``.
+REFLECTION_MODE_VALUES = ("none", "self", "cross", "human")
+_REFLECTION_MODE = Literal["none", "self", "cross", "human"]
+# Editor ``BPMNGatewayRole``.
+GATEWAY_ROLE_VALUES = ("diverging", "merging")
+_GATEWAY_ROLE = Literal["diverging", "merging"]
+
+_TRUST_SCORE_DESCRIPTION = (
+    "Agentic only: trust in this agent's output as a 0-100 percentage. "
+    "Leave null unless the request states or clearly implies a trust level."
+)
+_AGENT_DIAGRAM_REF_DESCRIPTION = (
+    "Agentic only: the id of an EXISTING AgentDiagram in the project that defines "
+    "this agent's behavior. Use ONLY an id from the 'Agent diagrams in this "
+    "project' list in the request; never invent one. Null when none is listed."
+)
 
 
 # -- Generation schemas --
@@ -89,6 +113,51 @@ class BPMNNodeSpec(BaseModel):
             "nodes move with their lane and export correctly."
         ),
     )
+    # Agentic task and gateway attributes. Each is meaningful only for its
+    # node type; one shared node schema keeps a single complete-system payload.
+    isAgentic: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Task or gateway: true when an AI agent performs the task, or when the "
+            "gateway splits/merges agent work. Null for an ordinary BPMN node."
+        ),
+    )
+    reflectionMode: Optional[_REFLECTION_MODE] = Field(
+        default=None,
+        description=(
+            "Agentic task only: how its output is reviewed. 'none', 'self' (the agent "
+            "reviews itself), 'cross' (another agent lane reviews it, see "
+            "reflectionReviewerLaneId) or 'human' (a person reviews it)."
+        ),
+    )
+    reflectionReviewerLaneId: Optional[str] = Field(
+        default=None,
+        description=(
+            "Agentic task with reflectionMode='cross' only: the lanes[].id of the "
+            "reviewing agent lane. Must be a lane declared in pools; null otherwise."
+        ),
+    )
+    trustScore: Optional[int] = Field(
+        default=None, ge=0, le=100, description=_TRUST_SCORE_DESCRIPTION,
+    )
+    agentDiagramRef: Optional[str] = Field(
+        default=None, description=_AGENT_DIAGRAM_REF_DESCRIPTION,
+    )
+    gatewayRole: Optional[_GATEWAY_ROLE] = Field(
+        default=None,
+        description=(
+            "Agentic gateway only: 'diverging' when it fans work out to agents, "
+            "'merging' when it combines their results."
+        ),
+    )
+    governanceDsl: Optional[str] = Field(
+        default=None,
+        description=(
+            "Agentic merging gateway only: the Governance DSL policy that decides how "
+            "the merged agent results are accepted (e.g. 'Policy: MajorityPolicy'). "
+            "Null on every other node."
+        ),
+    )
 
 
 class BPMNLaneSpec(BaseModel):
@@ -104,6 +173,34 @@ class BPMNLaneSpec(BaseModel):
         default="",
         max_length=60,
         description="Role/department display name (e.g. 'Pizza Chef').",
+    )
+    isAgentic: bool = Field(
+        default=False,
+        description=(
+            "True when this lane is an AI agent (an Agentic BPMN swarm member) rather "
+            "than a person or department."
+        ),
+    )
+    role: Optional[_AGENT_ROLE] = Field(
+        default=None,
+        description=(
+            "Agentic lane only: 'solution' for an agent that does the work, "
+            "'supervision' for an agent that oversees or approves other agents."
+        ),
+    )
+    trustScore: Optional[int] = Field(
+        default=None, ge=0, le=100, description=_TRUST_SCORE_DESCRIPTION,
+    )
+    multiplicity: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Agentic lane only: swarm size, i.e. how many identical copies of this "
+            "agent work in parallel (e.g. 3 reviewers). Integer >= 1."
+        ),
+    )
+    agentDiagramRef: Optional[str] = Field(
+        default=None, max_length=100, description=_AGENT_DIAGRAM_REF_DESCRIPTION,
     )
 
 
@@ -125,7 +222,7 @@ class BPMNPoolSpec(BaseModel):
         default_factory=list,
         description=(
             "Optional role/department lanes inside this pool. Leave empty if the "
-            "pool is a single undivided participant."
+            "pool is a single undivided participant. Use `lanes`, never `swimlanes`."
         ),
     )
 
@@ -145,7 +242,7 @@ class BPMNFlowSpec(BaseModel):
 
 
 class SystemBPMNSpec(BaseModel):
-    """Schema for a complete base-BPMN process."""
+    """Schema for a complete BPMN process (base or agentic)."""
 
     systemName: str = Field(
         default="",
@@ -196,12 +293,21 @@ class BPMNModificationTarget(BaseModel):
         default=None,
         description=(
             "Existing node display name for modify_node / remove_element / add_* naming. "
-            "For named nodes this is sufficient; for unnamed nodes use nodeId instead."
+            "For named nodes this is sufficient; for unnamed nodes use nodeId instead. "
+            "Also the new pool name for add_pool and the new lane name for add_swimlane."
         ),
     )
     flowId: Optional[str] = Field(
         default=None,
         description="Id of a flow to remove (optional; remove_flow may use source/target instead).",
+    )
+    poolName: Optional[str] = Field(
+        default=None,
+        description="Existing pool name or [id] for remove_pool.",
+    )
+    swimlaneName: Optional[str] = Field(
+        default=None,
+        description="Existing lane name or [id] for modify_swimlane / remove_swimlane.",
     )
 
 
@@ -209,7 +315,7 @@ class BPMNModificationChanges(BaseModel):
     name: Optional[str] = Field(
         default=None,
         max_length=60,
-        description="New name for modify_node (rename), or the name for an added node.",
+        description="New name for modify_node / modify_swimlane (rename), or the name for an added node.",
     )
     taskType: Optional[_TASK_TYPE] = Field(
         default=None,
@@ -242,12 +348,67 @@ class BPMNModificationChanges(BaseModel):
         max_length=40,
         description="Optional flow label for add_flow (branch condition).",
     )
+    # Agentic attributes. The WME modifier keeps its `*_swimlane` action
+    # spelling; generated pool specifications always use `lanes`.
+    role: Optional[_AGENT_ROLE] = Field(
+        default=None,
+        description=(
+            "Lane role for add_swimlane / modify_swimlane: 'solution' (does the work) "
+            "or 'supervision' (oversees other agents)."
+        ),
+    )
+    isAgentic: Optional[bool] = Field(
+        default=None,
+        description=(
+            "add_swimlane / modify_swimlane / modify_node: mark the lane, task or "
+            "gateway as agentic (true) or ordinary (false)."
+        ),
+    )
+    trustScore: Optional[int] = Field(
+        default=None, ge=0, le=100, description=_TRUST_SCORE_DESCRIPTION,
+    )
+    multiplicity: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="add_swimlane / modify_swimlane: agent swarm size, an integer >= 1.",
+    )
+    agentDiagramRef: Optional[str] = Field(
+        default=None, description=_AGENT_DIAGRAM_REF_DESCRIPTION,
+    )
+    reflectionMode: Optional[_REFLECTION_MODE] = Field(
+        default=None,
+        description="modify_node on an agentic task: 'none', 'self', 'cross' or 'human'.",
+    )
+    reflectionReviewerLaneId: Optional[str] = Field(
+        default=None,
+        description=(
+            "modify_node on an agentic task with reflectionMode='cross': the [id] of "
+            "the existing reviewer lane from the context."
+        ),
+    )
+    gatewayRole: Optional[_GATEWAY_ROLE] = Field(
+        default=None,
+        description="modify_node on an agentic gateway: 'diverging' or 'merging'.",
+    )
+    governanceDsl: Optional[str] = Field(
+        default=None,
+        description="modify_node on an agentic MERGING gateway: the Governance DSL policy text.",
+    )
+    poolName: Optional[str] = Field(
+        default=None,
+        description="add_swimlane: the existing pool name or [id] the new lane goes into.",
+    )
+    owner: Optional[str] = Field(
+        default=None,
+        description="add_task / add_gateway / add_event: existing lane name or [id] to place the new node in.",
+    )
 
 
 class BPMNModification(BaseModel):
     action: Literal[
         "add_task", "add_gateway", "add_event",
         "add_flow", "modify_node", "remove_flow", "remove_element",
+        "add_pool", "add_swimlane", "modify_swimlane", "remove_swimlane", "remove_pool",
     ] = Field(description="Action to perform.")
     target: BPMNModificationTarget = Field(description="Identifies the element to act on.")
     changes: Optional[BPMNModificationChanges] = Field(

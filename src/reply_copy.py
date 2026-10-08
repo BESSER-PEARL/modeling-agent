@@ -30,7 +30,8 @@ DECLINE_ACK = (
 
 OUT_OF_SCOPE_REDIRECT = (
     "That's a bit outside what I do — I model **software systems** (class "
-    "diagrams, state machines, BPMN, agents, and more) and generate code from "
+    "diagrams, state machines, BPMN, component and deployment diagrams, agents, "
+    "and more) and generate code from "
     "them. What would you like to model? For example: *Create a library "
     "management system*."
 )
@@ -44,6 +45,7 @@ META_ANSWER = (
     "a general chatbot, the model stays your single source of truth: evolve "
     "it and regenerate any time instead of ending up with one-shot code "
     "that drifts. I also modify and describe diagrams, design state "
-    "machines, BPMN processes, agents, and quantum circuits, and import "
+    "machines, BPMN processes (including agentic swarms), component and "
+    "deployment diagrams, agents, and quantum circuits, and import "
     "PlantUML or diagram images.\n\nWhat would you like to build?"
 )

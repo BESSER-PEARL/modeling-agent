@@ -1,0 +1,44 @@
+{
+  "_source": {
+    "repository": "BESSER-PEARL/BESSER-WEB-MODELING-EDITOR",
+    "commit": "749a1495",
+    "files": [
+      "packages/editor/src/main/packages/bpmn/common/types.ts",
+      "packages/editor/src/main/packages/bpmn/bpmn-task/bpmn-task.ts",
+      "packages/editor/src/main/packages/bpmn/bpmn-gateway/bpmn-gateway.ts",
+      "packages/editor/src/main/packages/bpmn/bpmn-swimlane/bpmn-swimlane.ts",
+      "packages/editor/src/main/packages/common/agentic/agentic-tokens.ts",
+      "packages/webapp/src/main/features/assistant/services/converters/BPMNDiagramConverter.ts",
+      "packages/webapp/src/main/features/assistant/services/converters/ComponentDiagramConverter.ts",
+      "packages/webapp/src/main/features/assistant/services/converters/DeploymentDiagramConverter.ts"
+    ],
+    "note": "Copy of the editor-side vocabulary the modeling agent must emit. Update it together with the editor."
+  },
+  "bpmn": {
+    "BPMNAgentProfile": ["solution", "supervision"],
+    "BPMNReflectionMode": ["none", "self", "cross", "human"],
+    "BPMNGatewayRole": ["diverging", "merging"],
+    "BPMNTaskType": ["default", "user", "service", "send", "receive", "manual", "business-rule", "script"],
+    "BPMNGatewayType": ["complex", "event-based", "exclusive", "inclusive", "parallel"],
+    "laneFields": ["id", "name", "isAgentic", "role", "trustScore", "multiplicity", "agentDiagramRef"],
+    "taskFields": ["isAgentic", "reflectionMode", "trustScore", "agentDiagramRef", "reflectionReviewerLaneId"],
+    "gatewayFields": ["isAgentic", "gatewayRole", "trustScore", "governanceDsl"],
+    "poolFields": ["id", "name", "lanes"],
+    "flowFields": ["source", "target", "name"]
+  },
+  "component": {
+    "AGENT_CATEGORY_TOKENS": ["solution", "supervision"],
+    "CAPABILITY_TOKENS": ["skill", "tool", "llm", "db", "rag"],
+    "AGENTIC_EDGE_KIND_TOKENS": ["delegates", "supervises", "revises", "collaborates", "has", "uses", "granted", "implements"],
+    "specKeys": ["systemName", "subsystems", "components", "dependencies"],
+    "componentFields": ["id", "name", "owner", "stereotype"],
+    "dependencyFields": ["source", "target", "stereotype"]
+  },
+  "deployment": {
+    "specKeys": ["systemName", "nodes", "artifacts", "deployComponents", "dependencies"],
+    "nodeFields": ["id", "name", "stereotype"],
+    "artifactFields": ["id", "name", "owner"],
+    "componentFields": ["id", "name", "stereotype", "manifestedBy"],
+    "dependencyFields": ["source", "target", "name"]
+  }
+}

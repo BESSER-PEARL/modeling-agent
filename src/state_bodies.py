@@ -215,7 +215,8 @@ _QUICK_RESPONSES = {
         "**BESSER** (Better Smart Software Engineering Research) is an open-source "
         "low-code platform for building software through model-driven engineering.\n\n"
         "It lets you:\n"
-        "- Design domain models visually (class diagrams, state machines, GUIs, agents, quantum circuits, BPMN processes)\n"
+        "- Design domain models visually (class diagrams, state machines, GUIs, agents, quantum circuits, "
+        "BPMN processes, component and deployment diagrams)\n"
         "- Generate production code automatically (Django, FastAPI, React, Flutter, SQL, and more)\n"
         "- Deploy full-stack web applications from your models\n\n"
         "Learn more at [besser.readthedocs.io](https://besser.readthedocs.io/) "
@@ -231,7 +232,9 @@ _QUICK_RESPONSES = {
         "- **Agent Diagrams** — *\"Create a pizza-ordering chatbot agent\"*\n"
         "- **Quantum Circuits** — *\"Create Grover's search algorithm\"*\n"
         "- **BPMN Diagrams** — *\"Model an order fulfillment process\"*\n"
-        "- **User Profiles** — *\"Create a target user profile for elderly users with sight issues\"*\n\n"
+        "- **User Profiles** — *\"Create a target user profile for elderly users with sight issues\"*\n"
+        "- **Component Diagrams** — *\"Create a component diagram for a RAG agent swarm\"*\n"
+        "- **Deployment Diagrams** — *\"Create a deployment diagram for agent services\"*\n\n"
         "**Modify diagrams:**\n"
         "- *\"Add email attribute to User\"*, *\"Rename Order to Purchase\"*, *\"Add a transition from Idle to Active\"*\n\n"
         "**Generate code:**\n"
@@ -252,8 +255,8 @@ _QUICK_RESPONSES = {
         "   *Example: \"Generate Django\"* or *\"Generate a web app\"*\n\n"
         "**Tips:**\n"
         "- Be specific about what you want — more detail = better results\n"
-        "- I support 8 diagram types: Class, State Machine, Object, GUI, Agent, "
-        "Quantum Circuit, BPMN, and User Profile\n"
+        "- I support 10 diagram types: Class, State Machine, Object, GUI, Agent, "
+        "Quantum Circuit, BPMN, User Profile, Component, and Deployment\n"
         "- You can switch between diagram types anytime\n"
         "- Ask *\"What can you do?\"* for a full list of capabilities"
     ),
@@ -322,11 +325,13 @@ def _fallback_llm_reply(session: Session, user_message: str) -> None:
     try:
         prompt = (
             f"You are a modeling assistant that helps with UML diagrams, quantum circuits, "
-            f"GUI design, agent diagrams, BPMN business-process diagrams, user profiles, "
+            f"GUI design, agent diagrams, BPMN business-process diagrams (including agentic "
+            f"BPMN swarms), user profiles, component diagrams, deployment diagrams, "
             f"and code generation. "
             f"The user said: '{user_message}'. "
             "If this is related to any kind of modeling (class diagrams, quantum circuits, "
-            "state machines, GUI design, BPMN processes, user profiles, etc.), suggest how "
+            "state machines, GUI design, BPMN processes, user profiles, component or "
+            "deployment diagrams, etc.), suggest how "
             "you can help them. "
             "Otherwise, politely explain your capabilities."
         )
@@ -695,11 +700,57 @@ def modeling_help_body(session: Session):
             "- BPMN elements: start/end events, tasks (user, service, send, receive, manual, script), "
             "gateways (exclusive, parallel, inclusive), sequence flows\n"
             "- Process design patterns: sequential flows, exclusive decisions, parallel work, loops\n"
+            "- Agentic BPMN: agentic lanes, roles (solution, supervision), "
+            "trust scores, multiplicity, reflection modes, and AgentDiagram references\n"
+            "- Governance: Agentic parallel/inclusive gateways, diverging/merging roles, and Governance DSL "
+            "on governed merging gateways\n"
             "- Best practices: clear verb-phrase task names, gateway labeling, start/end event placement\n\n"
             "Provide clear, practical advice about BPMN modeling. "
             "If they ask about a process pattern, explain the key elements and how to express it in BPMN. "
             "If they want to build something, tell them they can ask you to create it "
             "(e.g., 'Create a BPMN process for order fulfillment').\n\n"
+            "Keep your response conversational, encouraging, and technically accurate."
+        )
+    elif diagram_type == "ComponentDiagram":
+        help_prompt = (
+            f'You are an expert software architecture assistant. '
+            f'The user asked: "{request.message}"\n\n'
+            f'They are working with the UML Component Diagram editor.\n\n'
+            "You have deep knowledge of:\n"
+            "- Component diagram elements: Subsystems (containers grouping related components), "
+            "Components (services, agents, models, databases, tools), and ComponentDependencies\n"
+            "- Agent stereotypes: «solution» (an agent that does the work), «supervision» (an agent "
+            "that oversees other agents)\n"
+            "- Capability stereotypes (not agents): «llm» (language model), «db» (database/storage), "
+            "«rag» (retrieval-augmented knowledge), «tool» (callable utility), «skill» (reusable capability)\n"
+            "- Dependency stereotypes: agent→agent delegates (task handoff), supervises "
+            "(supervision→solution), revises (feedback loop), collaborates (peer exchange); "
+            "agent→capability has, uses, granted; capability implements\n"
+            "- Architecture patterns: layered systems, microservices, agent pipelines, AI-assisted workflows\n\n"
+            "Provide clear, practical advice about component architecture modeling. "
+            "If they ask about an architecture pattern, explain the key components and how to express it. "
+            "If they want to build something, tell them they can ask you to create it "
+            "(e.g., 'Create a component diagram for a RAG-based question-answering system').\n\n"
+            "Keep your response conversational, encouraging, and technically accurate."
+        )
+    elif diagram_type == "DeploymentDiagram":
+        help_prompt = (
+            f'You are an expert deployment architecture assistant. '
+            f'The user asked: "{request.message}"\n\n'
+            f'They are working with the UML Deployment Diagram editor.\n\n'
+            "You have deep knowledge of:\n"
+            "- Deployment diagram elements: DeploymentNodes (servers, VMs, Docker hosts, cloud services), "
+            "DeploymentArtifacts (physical deployments inside nodes), "
+            "DeploymentComponents (logical software units), and DeploymentDependencies\n"
+            "- Node stereotypes: node (generic), device (hardware), cloud (cloud environment), server\n"
+            "- Typical patterns: 3-tier architectures, microservice deployments, "
+            "containerized workloads, cloud-native topologies\n"
+            "- Artifact-to-component correspondence: artifacts represent physical packages; "
+            "components represent the logical system they implement (linked via manifestedBy)\n\n"
+            "Provide clear, practical advice about deployment topology modeling. "
+            "If they ask about an infrastructure pattern, explain the nodes, artifacts, and communication paths. "
+            "If they want to build something, tell them they can ask you to create it "
+            "(e.g., 'Create a deployment diagram for a containerized microservices setup').\n\n"
             "Keep your response conversational, encouraging, and technically accurate."
         )
     elif diagram_type == "QuantumCircuitDiagram":
@@ -959,7 +1010,8 @@ def describe_model_body(session: Session):
     qa_prompt = (
         "You are an expert assistant for the BESSER Web Modeling Editor. "
         "The user has a project that may contain multiple diagrams "
-        "(class, state machine, object, GUI, quantum circuit, agent, user profile).\n\n"
+        "(class, state machine, object, GUI, quantum circuit, agent, user profile, "
+        "BPMN, component, deployment).\n\n"
         f"Here is a detailed summary of their project \u2014 note that empty or "
         f"default-seed diagrams have already been filtered out, so describe "
         f"ONLY the diagrams listed below:\n\n"

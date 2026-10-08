@@ -34,6 +34,15 @@ KEYWORD_TARGETS = [
     ("target user", "UserDiagram"),
     ("user persona", "UserDiagram"),
     ("persona", "UserDiagram"),
+    # Component / Deployment: only tokens that NAME the diagram. Generic
+    # architecture vocabulary ("system architecture", "subsystem",
+    # "service architecture") is everyday class-diagram phrasing and must
+    # not pull a request onto these diagrams.
+    ("component diagram", "ComponentDiagram"),
+    ("component model", "ComponentDiagram"),
+    ("uml component", "ComponentDiagram"),
+    ("deployment diagram", "DeploymentDiagram"),
+    ("deployment model", "DeploymentDiagram"),
     # Agent
     ("agent diagram", "AgentDiagram"),
     ("agent model", "AgentDiagram"),
@@ -127,6 +136,13 @@ _IMPLICIT_PATTERNS: List[Tuple[str, re.Pattern]] = [
         r"|(?:frontend|screens?|pages?|layouts?|dashboards?)\b.{0,30}\b(?:design|create|build|diagram)"
         r"|(?:create|build|design)\b.{0,30}\b(?:frontend|screens?|pages?|layouts?))\b", re.I)),
 
+    # ── Component / Deployment Diagram (diagram-naming phrases only, see
+    #    KEYWORD_TARGETS; these add the plural / "uml" spellings) ──
+    ("ComponentDiagram", re.compile(
+        r"\b(?:uml\s+)?components?\s+(?:diagram|model)s?\b", re.I)),
+    ("DeploymentDiagram", re.compile(
+        r"\b(?:uml\s+)?deployments?\s+(?:diagram|model)s?\b", re.I)),
+
     # ── Class Diagram (structural vocabulary — checked last among specifics) ──
     # Either a strong standalone signal (structural, domain model) or
     # class/entity co-occurring with attribute/method/relationship.
@@ -147,6 +163,8 @@ FALLBACK_PRIORITY: Tuple[str, ...] = (
     "QuantumCircuitDiagram",
     "BPMN",
     "UserDiagram",
+    "ComponentDiagram",
+    "DeploymentDiagram",
 )
 
 
@@ -284,9 +302,13 @@ def determine_target_diagram_types(
                 "[diagram-target] LLM=%s keyword=%s -> using LLM",
                 llm_target_type, keyword_primary,
             )
-        # Keyword hits only contribute ADDITIONAL targets (multi-diagram
-        # requests); the LLM verdict leads.
-        extras = [t for t in (explicit_targets + implicit_targets) if t != llm_target_type]
+        # Only diagrams the message explicitly NAMES contribute ADDITIONAL
+        # targets ("a class diagram and a state machine"); the LLM verdict
+        # leads. Implicit pattern hits are weak vocabulary signals that the
+        # classifier already weighed — letting them append a second diagram
+        # turned "a class diagram for the system architecture of a hotel"
+        # into a class diagram PLUS a component diagram.
+        extras = [t for t in explicit_targets if t != llm_target_type]
         return ([llm_target_type] + extras)[:max_targets]
 
     if explicit_targets:

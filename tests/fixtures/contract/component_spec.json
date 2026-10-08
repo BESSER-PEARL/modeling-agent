@@ -1,0 +1,27 @@
+{
+  "systemName": "RAG Agent Swarm",
+  "subsystems": [
+    {"id": "agents", "name": "Agents", "owner": null, "stereotype": "subsystem"},
+    {"id": "capabilities", "name": "Capabilities", "owner": null, "stereotype": "subsystem"}
+  ],
+  "components": [
+    {"id": "planner", "name": "Planner", "owner": "agents", "stereotype": "supervision"},
+    {"id": "retriever", "name": "Retriever", "owner": "agents", "stereotype": "solution"},
+    {"id": "writer", "name": "Writer", "owner": "agents", "stereotype": "solution"},
+    {"id": "llm", "name": "GPT", "owner": "capabilities", "stereotype": "llm"},
+    {"id": "store", "name": "VectorStore", "owner": "capabilities", "stereotype": "db"},
+    {"id": "kb", "name": "Knowledge Base", "owner": "capabilities", "stereotype": "rag"},
+    {"id": "search", "name": "WebSearch", "owner": "capabilities", "stereotype": "tool"},
+    {"id": "summarize", "name": "Summarize", "owner": "capabilities", "stereotype": "skill"}
+  ],
+  "dependencies": [
+    {"source": "planner", "target": "retriever", "stereotype": "delegates"},
+    {"source": "planner", "target": "writer", "stereotype": "supervises"},
+    {"source": "writer", "target": "retriever", "stereotype": "collaborates"},
+    {"source": "planner", "target": "writer", "stereotype": "revises"},
+    {"source": "writer", "target": "summarize", "stereotype": "has"},
+    {"source": "writer", "target": "llm", "stereotype": "uses"},
+    {"source": "retriever", "target": "search", "stereotype": "granted"},
+    {"source": "kb", "target": "store", "stereotype": "implements"}
+  ]
+}

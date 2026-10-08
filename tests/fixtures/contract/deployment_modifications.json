@@ -1,0 +1,13 @@
+{
+  "modifications": [
+    {"action": "add_node", "target": {"elementName": "Edge Gateway"}, "changes": {"stereotype": "device"}},
+    {"action": "add_artifact", "target": {"elementName": "GatewayService"}, "changes": {"owner": "Edge Gateway"}},
+    {"action": "add_component", "target": {"elementName": "Router"}, "changes": {"stereotype": "solution"}},
+    {"action": "add_dependency", "target": {}, "changes": {"source": "GatewayService", "target": "AgentAPI", "label": "MQTT"}},
+    {"action": "modify_element", "target": {"elementName": "Agent Cloud"}, "changes": {"name": "Agent Cloud EU", "stereotype": "cloud"}},
+    {"action": "remove_dependency", "target": {}, "changes": {"source": "KioskApp", "target": "AgentAPI"}},
+    {"action": "remove_element", "target": {"elementName": "Kiosk"}}
+  ],
+  "message": "Added an edge gateway.",
+  "elementFound": true
+}
