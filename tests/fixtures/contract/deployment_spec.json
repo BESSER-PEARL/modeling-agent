@@ -1,0 +1,23 @@
+{
+  "systemName": "Agent Services Deployment",
+  "nodes": [
+    {"id": "cloud", "name": "Agent Cloud", "stereotype": "cloud"},
+    {"id": "db_server", "name": "Database Server", "stereotype": "server"},
+    {"id": "kiosk", "name": "Kiosk", "stereotype": "device"},
+    {"id": "host", "name": "Docker Host", "stereotype": "node"}
+  ],
+  "artifacts": [
+    {"id": "agent_api", "name": "AgentAPI", "owner": "cloud"},
+    {"id": "vector_db", "name": "VectorDB", "owner": "db_server"},
+    {"id": "kiosk_app", "name": "KioskApp", "owner": "kiosk"}
+  ],
+  "deployComponents": [
+    {"id": "planner_comp", "name": "Planner", "stereotype": "supervision", "manifestedBy": "agent_api"},
+    {"id": "store_comp", "name": "VectorStore", "stereotype": "db", "manifestedBy": "vector_db"},
+    {"id": "ui_comp", "name": "KioskUI", "stereotype": "solution", "manifestedBy": "kiosk_app"}
+  ],
+  "dependencies": [
+    {"source": "agent_api", "target": "vector_db", "name": "gRPC"},
+    {"source": "kiosk_app", "target": "agent_api", "name": "HTTPS"}
+  ]
+}
