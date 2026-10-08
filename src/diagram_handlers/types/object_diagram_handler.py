@@ -26,12 +26,47 @@ from utilities.model_context import detailed_model_summary
 
 logger = logging.getLogger(__name__)
 
+_GENERALIZATION_TYPES = {"ClassInheritance", "ClassGeneralization", "ClassRealization"}
+
+
+def _class_parents(relationships: Any) -> Dict[str, List[str]]:
+    """child class id -> parent class ids (Apollon arrows point child -> parent)."""
+    parents: Dict[str, List[str]] = {}
+    if not isinstance(relationships, dict):
+        return parents
+    for rel in relationships.values():
+        if not isinstance(rel, dict) or rel.get("type") not in _GENERALIZATION_TYPES:
+            continue
+        source, target = rel.get("source"), rel.get("target")
+        child = source.get("element") if isinstance(source, dict) else None
+        parent = target.get("element") if isinstance(target, dict) else None
+        if child and parent and child != parent:
+            parents.setdefault(child, []).append(parent)
+    return parents
+
+
+def _lineage(class_id: str, parents: Dict[str, List[str]]) -> List[str]:
+    """Ancestor class ids first, then class_id itself."""
+    order: List[str] = []
+    seen: set = set()
+
+    def visit(cid: str) -> None:
+        if cid in seen:
+            return
+        seen.add(cid)
+        for parent in parents.get(cid, []):
+            visit(parent)
+        order.append(cid)
+
+    visit(class_id)
+    return order
+
 
 MODIFY_SYSTEM_PROMPT_OBJECT = f"""You are a UML modeling expert. The user wants to modify an object diagram.
 
 IMPORTANT RULES:
 1. Actions available: "add_object", "modify_object", "modify_attribute_value", "add_link", "remove_element"
-2. add_object: set target.objectName to a short lowercase instance identifier (e.g. "user2", "order1"). NEVER include the class name or a colon in objectName. Put className, classId, and attributes (with concrete values) in "changes".
+2. add_object: set target.objectName to a short lowercase instance identifier (e.g. "user2", "order1"), or the name the user gives (e.g. "a book foundation" -> "foundation"). NEVER include the class name or a colon in objectName. Put className, classId, and attributes (with concrete values) in "changes".
 3. {EXACT_NAMES_RULE}
 4. {REMOVE_ELEMENT_RULE}
 5. {MULTI_MOD_ARRAY_RULE}
@@ -129,6 +164,8 @@ class ObjectDiagramHandler(BaseDiagramHandler):
 
         classes: Dict[str, Dict[str, Any]] = {}
         by_id: Dict[str, Dict[str, Any]] = {}
+        own_attrs: Dict[str, List[Dict[str, str]]] = {}
+        abstract_ids: set = set()
 
         for class_id, element in elements.items():
             if not isinstance(element, dict):
@@ -161,18 +198,41 @@ class ObjectDiagramHandler(BaseDiagramHandler):
                     }
                 )
 
-            class_info = {
-                "name": class_name,
-                "id": class_id,
-                "attributes": class_attrs,
-            }
-            classes[class_name.lower()] = class_info
-            by_id[class_id] = class_info
+            own_attrs[class_id] = class_attrs
+            if element.get("type") == "AbstractClass":
+                abstract_ids.add(class_id)
+            by_id[class_id] = {"name": class_name, "id": class_id}
+
+        # Objects carry inherited attributes too; abstract classes are not instantiable.
+        parents = _class_parents(relationships)
+        for class_id, class_info in by_id.items():
+            merged: Dict[str, Dict[str, str]] = {}
+            for cid in _lineage(class_id, parents):
+                for attr in own_attrs.get(cid, []):
+                    merged[attr["name"].lower()] = attr
+            class_info["attributes"] = list(merged.values())
+            if class_id not in abstract_ids:
+                classes[class_info["name"].lower()] = class_info
+
+        children: Dict[str, List[str]] = {}
+        for child, parent_ids in parents.items():
+            for parent in parent_ids:
+                children.setdefault(parent, []).append(child)
+
+        def concrete_family(cid: str) -> List[str]:
+            family, stack = [], [cid]
+            while stack:
+                current = stack.pop()
+                if current in family:
+                    continue
+                family.append(current)
+                stack.extend(children.get(current, []))
+            return [c for c in family if c in by_id and c not in abstract_ids]
 
         class_relationships: List[Dict[str, str]] = []
         if isinstance(relationships, dict):
             for relation in relationships.values():
-                if not isinstance(relation, dict):
+                if not isinstance(relation, dict) or relation.get("type") in _GENERALIZATION_TYPES:
                     continue
                 source = relation.get("source")
                 target = relation.get("target")
@@ -185,13 +245,15 @@ class ObjectDiagramHandler(BaseDiagramHandler):
                 rel_name = relation.get("name")
                 if not isinstance(rel_name, str) or not rel_name.strip():
                     rel_name = "relatedTo"
-                class_relationships.append(
-                    {
-                        "sourceClass": by_id[source_element_id]["name"],
-                        "targetClass": by_id[target_element_id]["name"],
-                        "name": rel_name.strip(),
-                    }
-                )
+                for source_id in concrete_family(source_element_id):
+                    for target_id in concrete_family(target_element_id):
+                        class_relationships.append(
+                            {
+                                "sourceClass": by_id[source_id]["name"],
+                                "targetClass": by_id[target_id]["name"],
+                                "name": rel_name.strip(),
+                            }
+                        )
 
         return classes, class_relationships
 
@@ -428,7 +490,7 @@ class ObjectDiagramHandler(BaseDiagramHandler):
 CRITICAL RULES:
 1. If a REFERENCE CLASS DIAGRAM is provided below, you MUST use ONLY the attributes from that diagram
 2. DO NOT invent new attributes - use exactly what's defined in the reference class
-3. objectName must be a short lowercase instance identifier like "user1", "orderA", "task2". NEVER include the class name or a colon in objectName — just the instance identifier.
+3. objectName must be a short lowercase instance identifier like "user1", "orderA", "task2". NEVER include the class name or a colon in objectName — just the instance identifier. If the user names the object (e.g. "a book dune"), use that name ("dune").
 4. ClassName and classId MUST match the reference diagram (if provided)
 5. ENUMERATIONS — STRICT RULE: If an attribute's type matches the name of an enumeration listed in the reference, the value MUST be one of that enumeration's valid literals (shown as "valid values: ..."). NEVER invent enum values like "Fiction" or "Active" if they are not in the listed literals. Pick the closest matching literal from the list.
 6. Each attribute MUST have:
@@ -450,7 +512,8 @@ CRITICAL RULES:
         
         if reference_diagram and reference_diagram.get('elements'):
             user_prompt += "\n\nREFERENCE CLASS DIAGRAM (use these exact class and attribute definitions):\n"
-            user_prompt += self._format_reference_classes(reference_diagram['elements'])
+            user_prompt += self._format_reference_classes(
+                reference_diagram['elements'], reference_diagram.get('relationships'))
         
         try:
             # Single element → SMALL generation tier (latency-sensitive).
@@ -506,13 +569,13 @@ Before generating, think through:
 IMPORTANT RULES:
 1. Create 3-6 related object instances
 2. Each object should have 2-4 attributes with ACTUAL VALUES
-3. Object names: lowercase instance name + number (user1, order1, product2). NEVER use the class name as the object name — "Order: Order" is WRONG, use "order1: Order".
+3. Object names: when the user names an object (e.g. "a book dune, a patron alice"), use that name in lowercase ("dune", "alice"). Otherwise use lowercase instance name + number (user1, order1, product2). NEVER use the class name as the object name — "Order: Order" is WRONG, use "order1: Order".
 4. Include meaningful links between objects
 5. Values should be realistic and coherent
 6. {POSITION_DISCLAIMER}
 7. Keep the scenario focused
 8. If a REFERENCE CLASS DIAGRAM is provided, STRICTLY derive objects from it:
-   - Use ONLY class names from the reference classes.
+   - Use ONLY class names from the reference classes, and NEVER instantiate a class marked ABSTRACT.
    - Every object MUST include className + classId from reference.
    - Every object attribute MUST include name + attributeId from reference.
    - Do NOT invent classes such as User/Order/Product unless they exist in the reference.
@@ -521,7 +584,8 @@ IMPORTANT RULES:
         user_prompt = user_request
         if classes:
             user_prompt += "\n\nREFERENCE CLASS DIAGRAM (use these exact classes and attributes):\n"
-            user_prompt += self._format_reference_classes(reference_diagram.get("elements", {}))
+            user_prompt += self._format_reference_classes(
+                reference_diagram.get("elements", {}), reference_diagram.get("relationships"))
             user_prompt += "\n\nREFERENCE CLASS RELATIONSHIPS:\n"
             user_prompt += self._format_reference_relationships(class_relationships)
 
@@ -660,7 +724,7 @@ IMPORTANT RULES:
                 attr['attributeId'] = attr_name_to_id.get(attr.get('name', ''))
             attr['type'] = attr_type or 'str'
 
-    def _format_reference_classes(self, elements: Dict[str, Any]) -> str:
+    def _format_reference_classes(self, elements: Dict[str, Any], relationships: Any = None) -> str:
         """Format reference diagram classes for LLM context"""
         formatted = []
 
@@ -692,14 +756,22 @@ IMPORTANT RULES:
 
         # Group elements by class
         classes = {k: v for k, v in elements.items() if v.get('type') in ('Class', 'AbstractClass')}
+        parents = _class_parents(relationships)
 
         for class_id, class_data in classes.items():
             class_name = class_data.get('name', 'Unknown')
-            formatted.append(f"\nClass: {class_name} (classId: {class_id})")
-            formatted.append("Attributes:")
+            lineage = [cid for cid in _lineage(class_id, parents) if cid in classes]
+            header = f"\nClass: {class_name} (classId: {class_id})"
+            supers = [classes[p].get('name', p) for p in parents.get(class_id, []) if p in classes]
+            if supers:
+                header += f" extends {', '.join(supers)}"
+            if class_data.get('type') == 'AbstractClass':
+                header += " — ABSTRACT: never instantiate it; instantiate a subclass instead"
+            formatted.append(header)
+            formatted.append("Attributes (including inherited):" if len(lineage) > 1 else "Attributes:")
 
-            # Get all attributes for this class
-            for attr_id in class_data.get('attributes', []):
+            # Inherited attribute ids point at the declaring class's attribute.
+            for attr_id in [a for cid in lineage for a in classes[cid].get('attributes', [])]:
                 if attr_id in elements:
                     attr = elements[attr_id]
                     attr_name = attr.get('name', '').replace('+ ', '').replace('- ', '').replace('# ', '')
@@ -761,7 +833,8 @@ IMPORTANT RULES:
         if reference_diagram and isinstance(reference_diagram, dict):
             ref_elements = reference_diagram.get("elements")
             if isinstance(ref_elements, dict):
-                ref_classes = self._format_reference_classes(ref_elements)
+                ref_classes = self._format_reference_classes(
+                    ref_elements, reference_diagram.get("relationships"))
                 if ref_classes:
                     reference_context = (
                         "\n\nReference class diagram (use these classes and attributes "

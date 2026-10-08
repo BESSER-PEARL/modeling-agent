@@ -192,3 +192,89 @@ class TestRenameBatchUsesNewNames:
              "changes": {"name": "email", "type": "str"}},
         ])
         assert ops[1]["target"]["className"] == "Patron"
+
+
+# ---------------------------------------------------------------------------
+# 4. Object generation sees inherited attributes, skips abstract classes, keeps names
+# ---------------------------------------------------------------------------
+
+def _library_reference():
+    """ws-A A1 class diagram (v3): abstract Item(title) <- Book(isbn), Member(name)."""
+    return {
+        "elements": {
+            "item": {"id": "item", "name": "Item", "type": "AbstractClass", "owner": None,
+                     "attributes": ["item-title"]},
+            "item-title": {"id": "item-title", "name": "+ title: str", "type": "ClassAttribute",
+                           "owner": "item", "attributeType": "str"},
+            "book": {"id": "book", "name": "Book", "type": "Class", "owner": None,
+                     "attributes": ["book-isbn"]},
+            "book-isbn": {"id": "book-isbn", "name": "+ isbn: str", "type": "ClassAttribute",
+                          "owner": "book", "attributeType": "str"},
+            "member": {"id": "member", "name": "Member", "type": "Class", "owner": None,
+                       "attributes": ["member-name"]},
+            "member-name": {"id": "member-name", "name": "+ name: str", "type": "ClassAttribute",
+                            "owner": "member", "attributeType": "str"},
+        },
+        "relationships": {
+            "gen": {"id": "gen", "type": "ClassInheritance",
+                    "source": {"element": "book"}, "target": {"element": "item"}},
+            "borrows": {"id": "borrows", "type": "ClassBidirectional", "name": "borrows",
+                        "source": {"element": "member", "multiplicity": "0..1"},
+                        "target": {"element": "item", "multiplicity": "0..*"}},
+        },
+    }
+
+
+class TestObjectGenerationFromHierarchy:
+    def _generate(self, objects, links=()):
+        from diagram_handlers.types.object_diagram_handler import ObjectDiagramHandler
+        from schemas import SystemObjectSpec
+
+        parsed = SystemObjectSpec.model_validate(
+            {"systemName": "Library", "objects": objects, "links": list(links)})
+        handler = ObjectDiagramHandler(llm=None)
+        with patch.object(ObjectDiagramHandler, "predict_structured", return_value=parsed) as llm:
+            result = handler.generate_complete_system(
+                'Create an object diagram with a book dune (title "Dune", isbn "123") '
+                'and a patron alice (name "Alice").',
+                reference_diagram=_library_reference(),
+            )
+        prompt = llm.call_args.args[0]
+        system_prompt = llm.call_args.kwargs["system_prompt"]
+        return result["systemSpec"], prompt, system_prompt
+
+    def test_prompt_lists_inherited_attributes_and_flags_abstract_classes(self):
+        """ws-A A5: Book was offered only isbn (title lives on abstract Item),
+        so the model instantiated Item separately as item1."""
+        _, prompt, _ = self._generate([
+            {"objectName": "dune", "className": "Book",
+             "attributes": [{"name": "isbn", "value": "123"}]}])
+        book_block = prompt.split("Class: Book")[1].split("Class: ")[0]
+        assert "title (attributeId: item-title" in book_block
+        item_block = prompt.split("Class: Item")[1].split("Class: ")[0]
+        assert "abstract" in item_block.lower()
+
+    def test_abstract_objects_are_dropped_and_inherited_values_kept(self):
+        spec, _, _ = self._generate(
+            [
+                {"objectName": "dune", "className": "Book",
+                 "attributes": [{"name": "title", "value": "Dune"}, {"name": "isbn", "value": "123"}]},
+                {"objectName": "alice", "className": "Member",
+                 "attributes": [{"name": "name", "value": "Alice"}]},
+                {"objectName": "item1", "className": "Item",
+                 "attributes": [{"name": "title", "value": "Dune"}]},
+            ],
+            links=[{"source": "alice", "target": "dune"}, {"source": "dune", "target": "item1"}],
+        )
+        assert [o["objectName"] for o in spec["objects"]] == ["dune", "alice"]
+        dune = spec["objects"][0]
+        assert {a["name"]: a["value"] for a in dune["attributes"]} == {"title": "Dune", "isbn": "123"}
+        assert {a["name"]: a["attributeId"] for a in dune["attributes"]}["title"] == "item-title"
+        # The association to abstract Item names the link to its subclass.
+        assert [(l["source"], l["target"], l["relationshipType"]) for l in spec["links"]] == [
+            ("alice", "dune", "borrows")]
+
+    def test_prompt_honours_object_names_the_user_gives(self):
+        _, _, system_prompt = self._generate([
+            {"objectName": "dune", "className": "Book", "attributes": []}])
+        assert "a book dune" in system_prompt
