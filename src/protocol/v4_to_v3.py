@@ -11,7 +11,10 @@ This module is the Python inverse of the frontend's v3 -> v4 migrator
 (``packages/library/lib/utils/versionConverter.ts``: ``convertV3ToV4`` and its
 ``convertV4ToV3Class`` / ``...StateMachine`` / ``...Agent`` / ``...User``
 counterparts). The canonical mapping is documented in BESSER's
-``docs/source/migrations/uml-v4-shape.md``.
+``docs/source/migrations/uml-v4-shape.md``. Component, Deployment and agentic
+BPMN fields (stereotypes, lane / task / gateway agentic metadata, A2A tags on
+agent states and transitions) carry the v3 field names on ``node.data`` /
+``edge.data`` and are copied through verbatim.
 
 Rules:
 
@@ -84,6 +87,14 @@ _NODE_TYPE_V4_TO_V3: Dict[str, str] = {
     "bpmnPool": "BPMNPool",
     "bpmnSwimlane": "BPMNSwimlane",
     "bpmnGroup": "BPMNGroup",
+    # Component / Deployment (lowerCamelCase in v4; v3 subsystem is "Subsystem")
+    "component": "Component",
+    "componentInterface": "ComponentInterface",
+    "componentSubsystem": "Subsystem",
+    "deploymentNode": "DeploymentNode",
+    "deploymentComponent": "DeploymentComponent",
+    "deploymentArtifact": "DeploymentArtifact",
+    "deploymentInterface": "DeploymentInterface",
 }
 
 # v4 BPMN edge types -> v3 ``BPMNFlow`` + ``flowType`` discriminator.
@@ -98,7 +109,19 @@ _BPMN_EDGE_FLOW_TYPES: Dict[str, str] = {
 _EDGE_TYPE_V4_TO_V3: Dict[str, str] = {
     "CommentLink": "Link",
     "FlowChartFlowline": "FlowchartFlowline",
+    "ComponentProvidedInterface": "ComponentInterfaceProvided",
+    "ComponentRequiredInterface": "ComponentInterfaceRequired",
+    "ComponentRequiredQuarterInterface": "ComponentInterfaceRequiredQuarter",
+    "ComponentRequiredThreeQuarterInterface": "ComponentInterfaceRequiredThreeQuarter",
+    "DeploymentProvidedInterface": "DeploymentInterfaceProvided",
+    "DeploymentRequiredInterface": "DeploymentInterfaceRequired",
+    "DeploymentRequiredQuarterInterface": "DeploymentInterfaceRequiredQuarter",
+    "DeploymentRequiredThreeQuarterInterface": "DeploymentInterfaceRequiredThreeQuarter",
 }
+
+# v4 header-visibility flags of component / subsystem / deployment boxes; v3
+# stores the same switch as ``displayStereotype``.
+_HEADER_FLAG_KEYS = ("isComponentHeaderShown", "isComponentSubsystemHeaderShown")
 
 # v4 handle id -> v3 direction (inverse of ``convertV3HandleToV4``).
 _HANDLE_V4_TO_V3: Dict[str, str] = {
@@ -496,6 +519,9 @@ def _convert_node(node: Dict[str, Any], abs_pos, elements: Dict[str, Any]) -> Di
     data = _as_dict(node.get("data"))
     v3_type = _v3_node_type(node.get("type"))
     element = _base_element(node, v3_type, abs_pos)
+    for flag in _HEADER_FLAG_KEYS:
+        if flag in element:
+            element.setdefault("displayStereotype", element.pop(flag) is not False)
 
     if v3_type in _V3_CLASS_TYPES:
         _convert_class_node(node, data, element, elements)

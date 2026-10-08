@@ -231,6 +231,21 @@ BESSER's ``docs/source/migrations/uml-v4-shape.md``. The conversion rules:
   becomes a ``StateInitialNode`` plus an ``AgentStateTransitionInit`` edge.
 * BPMN ``bpmnX`` nodes become ``BPMNX``. ``BPMNSequenceFlow`` and the other flow
   edges become ``BPMNFlow`` with ``flowType`` set.
+* Component / Deployment nodes ``component`` / ``componentSubsystem`` /
+  ``componentInterface`` / ``deploymentNode`` / ``deploymentComponent`` /
+  ``deploymentArtifact`` / ``deploymentInterface`` become ``Component`` /
+  ``Subsystem`` / ``ComponentInterface`` / ``DeploymentNode`` / … .
+  ``data.isComponentHeaderShown`` (``isComponentSubsystemHeaderShown``) becomes
+  ``displayStereotype``. ``ComponentProvidedInterface``-style interface edges
+  become ``ComponentInterfaceProvided`` (and the Deployment equivalents).
+* Every other ``node.data`` / ``edge.data`` field is copied to the v3 element or
+  relationship under the same name. This carries the agentic metadata the
+  handlers read: component / dependency ``stereotype``, ``realizes``,
+  ``processModelRefs``, ``agentModelRef``, artifact ``manifests``; BPMN lane
+  ``isAgentic`` / ``role`` / ``trustScore`` / ``multiplicity`` /
+  ``agentDiagramRef``, task ``reflectionMode`` / ``reflectionReviewerLaneId``,
+  gateway ``gatewayRole`` / ``governanceDsl``, flow ``isDefault``; and the A2A
+  tags in an agent state's ``description`` and a transition's ``name``.
 * ``edge.data.sourceNavigable`` / ``targetNavigable`` become
   ``source.navigable`` / ``target.navigable``.
 

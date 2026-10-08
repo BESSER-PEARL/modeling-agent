@@ -574,6 +574,355 @@ class TestBPMN:
 
 
 # ---------------------------------------------------------------------------
+# Component / Deployment / agentic BPMN / A2A: v3 -> v4 -> v3 round trips
+#
+# Each v4 fixture is hand-built the way the frontend's ``convertV3ToV4`` emits
+# it: v3 element fields on ``node.data`` under the same names, ``owner`` as
+# ``parentId`` with a parent-relative position, relationships as edges whose
+# ``data`` carries the relationship fields and absolute ``points``.
+# ---------------------------------------------------------------------------
+
+def _bounds(x, y, width, height):
+    return {"x": x, "y": y, "width": width, "height": height}
+
+
+def _v3_element(eid, name, etype, owner, bounds, **fields):
+    return {"id": eid, "name": name, "type": etype, "owner": owner, "bounds": bounds, **fields}
+
+
+def _v3_relationship(rid, etype, source, target, points, name="", **fields):
+    """A v3 relationship whose bounds/path derive from absolute *points*."""
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    x, y = min(xs), min(ys)
+    return {
+        "id": rid, "name": name, "type": etype, "owner": None,
+        "bounds": _bounds(x, y, max(xs) - x, max(ys) - y),
+        "path": [{"x": px - x, "y": py - y} for px, py in points],
+        "source": {"element": source[0], "direction": source[1]},
+        "target": {"element": target[0], "direction": target[1]},
+        **fields,
+    }
+
+
+def _v4_node(nid, ntype, position, size, data, parent=None):
+    node = {
+        "id": nid, "type": ntype, "position": {"x": position[0], "y": position[1]},
+        "width": size[0], "height": size[1], "measured": {"width": size[0], "height": size[1]},
+        "data": data,
+    }
+    if parent:
+        node["parentId"] = parent
+    return node
+
+
+_V4_HANDLE = {"Up": "top", "Right": "right", "Down": "bottom", "Left": "left"}
+
+
+def _v4_edge(rid, etype, source, target, points, label="", **data):
+    return {
+        "id": rid, "type": etype,
+        "source": source[0], "target": target[0],
+        "sourceHandle": _V4_HANDLE[source[1]], "targetHandle": _V4_HANDLE[target[1]],
+        "data": {
+            "label": label, **({"name": label} if label else {}),
+            "isManuallyLayouted": False, "messages": [],
+            "points": [{"x": x, "y": y} for x, y in points],
+            **data,
+        },
+    }
+
+
+def _v3_view(model):
+    """What the handlers read: the diagram type and the element / relationship maps."""
+    return {"type": model["type"], "elements": model["elements"],
+            "relationships": model["relationships"]}
+
+
+def _v4_model(diagram_type, nodes, edges):
+    return {"version": "4.0.0", "id": f"{diagram_type}-tab", "title": "Tab",
+            "type": diagram_type, "nodes": nodes, "edges": edges, "assessments": {}}
+
+
+# ComponentDiagram ----------------------------------------------------------
+
+V3_COMPONENT = {
+    "version": "3.0.0",
+    "type": "ComponentDiagram",
+    "elements": {
+        "swarm": _v3_element("swarm", "Review Swarm", "Subsystem", None, _bounds(20, 20, 600, 300),
+                             stereotype="subsystem", displayStereotype=True),
+        "planner": _v3_element("planner", "Planner", "Component", "swarm", _bounds(60, 80, 200, 100),
+                               stereotype="supervision", displayStereotype=True, realizes=["cls-task"],
+                               processModelRefs=["bpmn-review"], agentModelRef="agent-planner"),
+        "writer": _v3_element("writer", "Writer", "Component", "swarm", _bounds(360, 80, 200, 100),
+                              stereotype="solution", displayStereotype=False, realizes=[],
+                              processModelRefs=[], agentModelRef=None),
+        "llm": _v3_element("llm", "GPT", "Component", None, _bounds(700, 80, 160, 80),
+                           stereotype="llm", displayStereotype=True, realizes=[],
+                           processModelRefs=[], agentModelRef=None),
+        "llm-api": _v3_element("llm-api", "Completion API", "ComponentInterface", None,
+                               _bounds(770, 260, 20, 20)),
+    },
+    "relationships": {
+        "delegates": _v3_relationship("delegates", "ComponentDependency", ("planner", "Right"),
+                                      ("writer", "Left"), [(260, 130), (360, 130)],
+                                      stereotype="delegates"),
+        "uses": _v3_relationship("uses", "ComponentDependency", ("writer", "Right"), ("llm", "Left"),
+                                 [(560, 130), (700, 120)], name="prompts", stereotype="uses"),
+        "provides": _v3_relationship("provides", "ComponentInterfaceProvided", ("llm", "Down"),
+                                     ("llm-api", "Up"), [(780, 160), (780, 260)]),
+    },
+}
+
+V4_COMPONENT = _v4_model("ComponentDiagram", [
+    _v4_node("swarm", "componentSubsystem", (20, 20), (600, 300),
+             {"name": "Review Swarm", "stereotype": "subsystem", "isComponentSubsystemHeaderShown": True}),
+    _v4_node("planner", "component", (40, 60), (200, 100),
+             {"name": "Planner", "stereotype": "supervision", "isComponentHeaderShown": True,
+              "realizes": ["cls-task"], "processModelRefs": ["bpmn-review"],
+              "agentModelRef": "agent-planner"}, parent="swarm"),
+    _v4_node("writer", "component", (340, 60), (200, 100),
+             {"name": "Writer", "stereotype": "solution", "isComponentHeaderShown": False,
+              "realizes": [], "processModelRefs": [], "agentModelRef": None}, parent="swarm"),
+    _v4_node("llm", "component", (700, 80), (160, 80),
+             {"name": "GPT", "stereotype": "llm", "isComponentHeaderShown": True,
+              "realizes": [], "processModelRefs": [], "agentModelRef": None}),
+    _v4_node("llm-api", "componentInterface", (770, 260), (20, 20), {"name": "Completion API"}),
+], [
+    _v4_edge("delegates", "ComponentDependency", ("planner", "Right"), ("writer", "Left"),
+             [(260, 130), (360, 130)], stereotype="delegates"),
+    _v4_edge("uses", "ComponentDependency", ("writer", "Right"), ("llm", "Left"),
+             [(560, 130), (700, 120)], label="prompts", stereotype="uses"),
+    _v4_edge("provides", "ComponentProvidedInterface", ("llm", "Down"), ("llm-api", "Up"),
+             [(780, 160), (780, 260)]),
+])
+
+
+# DeploymentDiagram ---------------------------------------------------------
+
+V3_DEPLOYMENT = {
+    "version": "3.0.0",
+    "type": "DeploymentDiagram",
+    "elements": {
+        "cloud": _v3_element("cloud", "Cloud Host", "DeploymentNode", None, _bounds(0, 0, 500, 300),
+                             stereotype="cloud", displayStereotype=True),
+        "worker": _v3_element("worker", "worker.jar", "DeploymentArtifact", "cloud",
+                              _bounds(40, 60, 160, 60), manifests=["planner"],
+                              agentModelRef="agent-planner"),
+        "api": _v3_element("api", "Planner Service", "DeploymentComponent", "cloud",
+                           _bounds(260, 60, 200, 100), stereotype="component", displayStereotype=True),
+        "db": _v3_element("db", "Memory Store", "DeploymentNode", None, _bounds(700, 0, 200, 150),
+                          stereotype="database", displayStereotype=True),
+        "db-port": _v3_element("db-port", "SQL", "DeploymentInterface", None, _bounds(590, 200, 20, 20)),
+    },
+    "relationships": {
+        "link": _v3_relationship("link", "DeploymentAssociation", ("cloud", "Right"), ("db", "Left"),
+                                 [(500, 75), (700, 75)], name="jdbc", stereotype="TCP/IP"),
+        "dep": _v3_relationship("dep", "DeploymentDependency", ("api", "Left"), ("worker", "Right"),
+                                [(260, 110), (200, 90)]),
+        "requires": _v3_relationship("requires", "DeploymentInterfaceRequired", ("api", "Down"),
+                                     ("db-port", "Left"), [(360, 160), (360, 210), (590, 210)]),
+    },
+}
+
+V4_DEPLOYMENT = _v4_model("DeploymentDiagram", [
+    _v4_node("cloud", "deploymentNode", (0, 0), (500, 300),
+             {"name": "Cloud Host", "stereotype": "cloud", "isComponentHeaderShown": True}),
+    _v4_node("worker", "deploymentArtifact", (40, 60), (160, 60),
+             {"name": "worker.jar", "manifests": ["planner"], "agentModelRef": "agent-planner"},
+             parent="cloud"),
+    _v4_node("api", "deploymentComponent", (260, 60), (200, 100),
+             {"name": "Planner Service", "stereotype": "component", "isComponentHeaderShown": True},
+             parent="cloud"),
+    _v4_node("db", "deploymentNode", (700, 0), (200, 150),
+             {"name": "Memory Store", "stereotype": "database", "isComponentHeaderShown": True}),
+    _v4_node("db-port", "deploymentInterface", (590, 200), (20, 20), {"name": "SQL"}),
+], [
+    _v4_edge("link", "DeploymentAssociation", ("cloud", "Right"), ("db", "Left"),
+             [(500, 75), (700, 75)], label="jdbc", stereotype="TCP/IP"),
+    _v4_edge("dep", "DeploymentDependency", ("api", "Left"), ("worker", "Right"),
+             [(260, 110), (200, 90)]),
+    _v4_edge("requires", "DeploymentRequiredInterface", ("api", "Down"), ("db-port", "Left"),
+             [(360, 160), (360, 210), (590, 210)]),
+])
+
+
+# Agentic BPMN --------------------------------------------------------------
+
+_GOVERNANCE_DSL = "Policy: MajorityPolicy\n  quorum: 2\n  tie: supervisor"
+
+V3_AGENTIC_BPMN = {
+    "version": "3.0.0",
+    "type": "BPMNDiagram",
+    "elements": {
+        "pool": _v3_element("pool", "Review Swarm", "BPMNPool", None, _bounds(0, 0, 1000, 600)),
+        "writer": _v3_element("writer", "Writer Agent", "BPMNSwimlane", "pool", _bounds(40, 0, 960, 200),
+                              isAgentic=True, role="solution", trustScore=75, multiplicity=1,
+                              agentDiagramRef="agent-writer"),
+        "reviewers": _v3_element("reviewers", "Reviewer Agents", "BPMNSwimlane", "pool",
+                                 _bounds(40, 200, 960, 200), isAgentic=True, role="solution",
+                                 trustScore=80, multiplicity=3, agentDiagramRef=None),
+        "supervisor": _v3_element("supervisor", "Supervisor Agent", "BPMNSwimlane", "pool",
+                                  _bounds(40, 400, 960, 200), isAgentic=True, role="supervision",
+                                  trustScore=90, multiplicity=1, agentDiagramRef=None),
+        "start": _v3_element("start", "Document submitted", "BPMNStartEvent", "writer",
+                             _bounds(80, 80, 40, 40), eventType="default"),
+        "draft": _v3_element("draft", "Draft Summary", "BPMNTask", "writer", _bounds(180, 60, 160, 80),
+                             taskType="service", marker="none", isAgentic=True, reflectionMode="cross",
+                             reflectionReviewerLaneId="supervisor", trustScore=75,
+                             agentDiagramRef="agent-writer"),
+        "fan_out": _v3_element("fan_out", "", "BPMNGateway", "writer", _bounds(400, 75, 50, 50),
+                               gatewayType="parallel", isAgentic=True, gatewayRole="diverging",
+                               trustScore=70),
+        "review": _v3_element("review", "Review Summary", "BPMNTask", "reviewers",
+                              _bounds(500, 260, 160, 80), taskType="service", marker="none",
+                              isAgentic=True, reflectionMode="self", trustScore=80),
+        "merge": _v3_element("merge", "", "BPMNGateway", "supervisor", _bounds(700, 475, 50, 50),
+                             gatewayType="parallel", isAgentic=True, gatewayRole="merging",
+                             trustScore=90, governanceDsl=_GOVERNANCE_DSL),
+        "published": _v3_element("published", "Summary published", "BPMNEndEvent", "supervisor",
+                                 _bounds(850, 480, 40, 40), eventType="default"),
+    },
+    "relationships": {
+        "f1": _v3_relationship("f1", "BPMNFlow", ("start", "Right"), ("draft", "Left"),
+                               [(120, 100), (180, 100)], flowType="sequence"),
+        "f2": _v3_relationship("f2", "BPMNFlow", ("draft", "Right"), ("fan_out", "Left"),
+                               [(340, 100), (400, 100)], flowType="sequence"),
+        "f3": _v3_relationship("f3", "BPMNFlow", ("fan_out", "Down"), ("review", "Left"),
+                               [(425, 125), (425, 300), (500, 300)], flowType="sequence"),
+        "f4": _v3_relationship("f4", "BPMNFlow", ("fan_out", "Right"), ("merge", "Up"),
+                               [(450, 100), (725, 100), (725, 475)], name="skip review",
+                               flowType="sequence", isDefault=True),
+        "f5": _v3_relationship("f5", "BPMNFlow", ("review", "Right"), ("merge", "Left"),
+                               [(660, 300), (700, 500)], flowType="sequence"),
+        "f6": _v3_relationship("f6", "BPMNFlow", ("merge", "Right"), ("published", "Left"),
+                               [(750, 500), (850, 500)], flowType="sequence"),
+    },
+}
+
+V4_AGENTIC_BPMN = _v4_model("BPMNDiagram", [
+    _v4_node("pool", "bpmnPool", (0, 0), (1000, 600), {"name": "Review Swarm"}),
+    _v4_node("writer", "bpmnSwimlane", (40, 0), (960, 200),
+             {"name": "Writer Agent", "isAgentic": True, "role": "solution", "trustScore": 75,
+              "multiplicity": 1, "agentDiagramRef": "agent-writer"}, parent="pool"),
+    _v4_node("reviewers", "bpmnSwimlane", (40, 200), (960, 200),
+             {"name": "Reviewer Agents", "isAgentic": True, "role": "solution", "trustScore": 80,
+              "multiplicity": 3, "agentDiagramRef": None}, parent="pool"),
+    _v4_node("supervisor", "bpmnSwimlane", (40, 400), (960, 200),
+             {"name": "Supervisor Agent", "isAgentic": True, "role": "supervision", "trustScore": 90,
+              "multiplicity": 1, "agentDiagramRef": None}, parent="pool"),
+    _v4_node("start", "bpmnStartEvent", (40, 80), (40, 40),
+             {"name": "Document submitted", "eventType": "default"}, parent="writer"),
+    _v4_node("draft", "bpmnTask", (140, 60), (160, 80),
+             {"name": "Draft Summary", "taskType": "service", "marker": "none", "isAgentic": True,
+              "reflectionMode": "cross", "reflectionReviewerLaneId": "supervisor", "trustScore": 75,
+              "agentDiagramRef": "agent-writer"}, parent="writer"),
+    _v4_node("fan_out", "bpmnGateway", (360, 75), (50, 50),
+             {"name": "", "gatewayType": "parallel", "isAgentic": True, "gatewayRole": "diverging",
+              "trustScore": 70}, parent="writer"),
+    _v4_node("review", "bpmnTask", (460, 60), (160, 80),
+             {"name": "Review Summary", "taskType": "service", "marker": "none", "isAgentic": True,
+              "reflectionMode": "self", "trustScore": 80}, parent="reviewers"),
+    _v4_node("merge", "bpmnGateway", (660, 75), (50, 50),
+             {"name": "", "gatewayType": "parallel", "isAgentic": True, "gatewayRole": "merging",
+              "trustScore": 90, "governanceDsl": _GOVERNANCE_DSL}, parent="supervisor"),
+    _v4_node("published", "bpmnEndEvent", (810, 80), (40, 40),
+             {"name": "Summary published", "eventType": "default"}, parent="supervisor"),
+], [
+    _v4_edge("f1", "BPMNSequenceFlow", ("start", "Right"), ("draft", "Left"),
+             [(120, 100), (180, 100)], flowType="sequence"),
+    _v4_edge("f2", "BPMNSequenceFlow", ("draft", "Right"), ("fan_out", "Left"),
+             [(340, 100), (400, 100)], flowType="sequence"),
+    _v4_edge("f3", "BPMNSequenceFlow", ("fan_out", "Down"), ("review", "Left"),
+             [(425, 125), (425, 300), (500, 300)], flowType="sequence"),
+    _v4_edge("f4", "BPMNSequenceFlow", ("fan_out", "Right"), ("merge", "Up"),
+             [(450, 100), (725, 100), (725, 475)], label="skip review", flowType="sequence",
+             isDefault=True),
+    _v4_edge("f5", "BPMNSequenceFlow", ("review", "Right"), ("merge", "Left"),
+             [(660, 300), (700, 500)], flowType="sequence"),
+    _v4_edge("f6", "BPMNSequenceFlow", ("merge", "Right"), ("published", "Left"),
+             [(750, 500), (850, 500)], flowType="sequence"),
+])
+
+
+# AgentDiagram A2A tags -----------------------------------------------------
+
+_A2A_OUT = "a2a:out;peer=Reviewer;ref=agent-reviewer;flow=f3;order=1;kind=request"
+_A2A_IN = "a2a:in;peer=Reviewer;ref=agent-reviewer;flow=f5;order=2;kind=response"
+
+V3_A2A_AGENT = {
+    "version": "3.0.0",
+    "type": "AgentDiagram",
+    "elements": {
+        "drafting": _v3_element("drafting", "Drafting", "AgentState", None, _bounds(100, 100, 200, 100),
+                                description=_A2A_OUT, bodies=[], fallbackBodies=[],
+                                hasBody=False, hasFallbackBody=False, replyType="text"),
+        "waiting": _v3_element("waiting", "AwaitReview", "AgentState", None, _bounds(500, 100, 200, 100),
+                               bodies=[], fallbackBodies=[], hasBody=False, hasFallbackBody=False,
+                               replyType="text"),
+    },
+    "relationships": {
+        "t1": _v3_relationship("t1", "AgentStateTransition", ("drafting", "Right"), ("waiting", "Left"),
+                               [(300, 150), (500, 150)], name=_A2A_IN,
+                               transitionType="predefined",
+                               predefined={"predefinedType": "when_intent_matched", "intentName": "done"},
+                               custom={"condition": []}),
+    },
+}
+
+V4_A2A_AGENT = _v4_model("AgentDiagram", [
+    _v4_node("drafting", "AgentState", (100, 100), (200, 100),
+             {"name": "Drafting", "description": _A2A_OUT, "replyType": "text",
+              "bodies": [], "fallbackBodies": []}),
+    _v4_node("waiting", "AgentState", (500, 100), (200, 100),
+             {"name": "AwaitReview", "replyType": "text", "bodies": [], "fallbackBodies": []}),
+], [
+    _v4_edge("t1", "AgentStateTransition", ("drafting", "Right"), ("waiting", "Left"),
+             [(300, 150), (500, 150)], label=_A2A_IN, transitionType="predefined",
+             predefined={"predefinedType": "when_intent_matched", "intentName": "done"},
+             legacyShape=1),
+])
+
+
+class TestArchitectureAndAgenticRoundTrip:
+    @pytest.mark.parametrize("v3, v4, bucket", [
+        (V3_COMPONENT, V4_COMPONENT, "ComponentDiagram"),
+        (V3_DEPLOYMENT, V4_DEPLOYMENT, "DeploymentDiagram"),
+        (V3_AGENTIC_BPMN, V4_AGENTIC_BPMN, "BPMN"),
+        (V3_A2A_AGENT, V4_A2A_AGENT, "AgentDiagram"),
+    ], ids=["component", "deployment", "agentic-bpmn", "a2a-agent"])
+    def test_v4_normalizes_back_to_the_original_v3(self, v3, v4, bucket):
+        snapshot = copy.deepcopy(v4)
+        converted = normalize_model(v4, bucket)
+        assert converted["version"].startswith("3.")
+        assert _v3_view(converted) == _v3_view(v3)
+        assert v4 == snapshot
+
+    def test_component_summary_reads_converted_stereotypes(self):
+        detail = detailed_model_summary(normalize_model(V4_COMPONENT, "ComponentDiagram"),
+                                        "ComponentDiagram")
+        assert "[swarm] Review Swarm (Subsystem:subsystem)" in detail
+        assert "[planner] Planner (Component:supervision [in Review Swarm])" in detail
+        assert "Dependency: [planner] Planner --delegates--> [writer] Writer" in detail
+
+    def test_deployment_summary_reads_converted_nodes(self):
+        detail = detailed_model_summary(normalize_model(V4_DEPLOYMENT, "DeploymentDiagram"),
+                                        "DeploymentDiagram")
+        assert "[cloud] Cloud Host (Node:cloud)" in detail
+        assert "[worker] worker.jar (Artifact [in Cloud Host])" in detail
+        assert "[api] Planner Service (Component:component)" in detail
+        assert "Dependency: [api] Planner Service ---> [worker] worker.jar" in detail
+
+    def test_agentic_bpmn_summary_reads_lane_and_node_metadata(self):
+        detail = detailed_model_summary(normalize_model(V4_AGENTIC_BPMN, "BPMN"), "BPMN")
+        assert "Lane: [reviewers] Reviewer Agents (role=solution, agentic=true, multiplicity=3)" in detail
+        assert ("[draft] Draft Summary (Task, taskType=service, lane=Writer Agent, agentic=true, "
+                "trust=75, reflection=cross, agentDiagramRef=set)") in detail
+        assert "[merge] (Gateway, gatewayType=parallel, lane=Supervisor Agent, agentic=true" in detail
+        assert "role=merging, governanceDsl=set" in detail
+
+
+# ---------------------------------------------------------------------------
 # NNDiagram (generic structural conversion) and non-UML pass-through
 # ---------------------------------------------------------------------------
 
