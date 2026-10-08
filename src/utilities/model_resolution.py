@@ -182,3 +182,19 @@ def resolve_class_diagram(request: AssistantRequest) -> Optional[Dict[str, Any]]
     if request.context.active_diagram_type == "ClassDiagram" and isinstance(request.current_model, dict):
         return request.current_model
     return None
+
+
+def resolve_agent_diagram_refs(request: AssistantRequest) -> Dict[str, str]:
+    """Map each AgentDiagram id in the project snapshot to its tab title.
+
+    A BPMN lane/task ``agentDiagramRef`` is a project diagram id in the editor
+    (``DiagramTabs`` matches it against the tab's id), so these ids are the
+    only values the agent may emit for it.
+    """
+    refs: Dict[str, str] = {}
+    for diagram in request.context.get_all_diagrams_of_type("AgentDiagram"):
+        diagram_id = diagram.get("id")
+        if isinstance(diagram_id, str) and diagram_id.strip():
+            title = diagram.get("title")
+            refs[diagram_id] = title if isinstance(title, str) else ""
+    return refs

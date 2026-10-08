@@ -166,6 +166,8 @@ create_complete_system_intent = agent.new_intent(
         "make a new agent diagram for a pizza chatbot",
         "model a quantum circuit for grover's search",
         "model a business process as a BPMN diagram",
+        "create a component diagram for a rag agent swarm",
+        "create a deployment diagram for the agent services",
     ],
 )
 modify_model_intent = agent.new_intent(

@@ -165,6 +165,8 @@ _TARGET_DIAGRAM_TYPES = Literal[
     # its handler when KEYWORD_TARGETS catch "user profile" / "persona" /
     # "target user" at layer 2, and other phrasing falls through to the fallback.
     "UserDiagram",
+    "ComponentDiagram",
+    "DeploymentDiagram",
 ]
 
 
@@ -412,13 +414,24 @@ _SYSTEM_PROMPT = (
     "support bot' → ALL create_complete_system_intent + "
     "target_diagram_type='AgentDiagram'. Do NOT classify these as "
     "modify_model_intent just because the user said 'add ... to the "
-    "app'.\n\n"
+    "app'.\n"
+    "CRITICAL (OTHER DIAGRAM KINDS): 'create / generate a BPMN process', "
+    "'generate an Agentic BPMN process', 'create an Agentic BPMN swarm "
+    "for document review', 'create a component diagram for a RAG agent "
+    "swarm', 'generate a deployment diagram for agent services' all "
+    "build a DIAGRAM — create_complete_system_intent, NEVER "
+    "generation_intent.\n\n"
     "modify_model_intent: user wants to ADD / REMOVE / CHANGE "
     "elements in an existing diagram. 'add a class', 'remove the "
     "Book class', 'rename', 'delete', 'connect', 'add an attribute', "
     "'modify method', 'I also want to include', 'extend with', 'add "
     "a gate to the circuit'. Also single-element creation: 'create "
-    "a class called User', 'make a state'. GUI PAGES: 'add a Reports "
+    "a class called User', 'make a state'. BPMN and architecture edits: "
+    "'add a BPMN task', 'change a lane role to supervision', 'add "
+    "Governance DSL to the merging gateway', 'add a component "
+    "dependency', 'place a component on a cloud node'. Placing or "
+    "moving an artifact / component onto a node of a deployment diagram "
+    "is a model edit, NOT the deploy action. GUI PAGES:'add a Reports "
     "page', 'remove the Settings screen', 'rename the Home page' edit "
     "the GUI DIAGRAM — modify_model_intent with "
     "target_diagram_type='GUINoCodeDiagram', NEVER generation_intent. EXCEPTION: adding an "
@@ -790,7 +803,19 @@ _SYSTEM_PROMPT = (
     "'model our target audience', 'who are the personas for this app' "
     "are all UserDiagram. Contrast with ClassDiagram: a `User` ENTITY "
     "with fields the system stores (email, password, role) is a class, "
-    "not a user profile.\n\n"
+    "not a user profile. Set target_diagram_type='BPMN' for business "
+    "processes and workflows, including AGENTIC BPMN (agent swarms with "
+    "solution/supervision lanes, trust scores, reflection, governed "
+    "merging gateways). Set target_diagram_type='ComponentDiagram' only "
+    "when the user names a component diagram / component model / UML "
+    "components, or edits an existing one (subsystems, components, "
+    "component dependencies). Set target_diagram_type='DeploymentDiagram' "
+    "only when the user names a deployment diagram / deployment model, or "
+    "edits an existing one (deployment nodes, artifacts). Words like "
+    "'system architecture', 'software architecture', 'subsystem' or "
+    "'service architecture' alone do NOT name a component diagram: 'model "
+    "the system architecture of a library with classes Book and Author' is "
+    "ClassDiagram.\n\n"
     "=== model_disposition (use WORKSPACE CONTEXT) ===\n"
     "Read WORKSPACE CONTEXT to see what already exists, then say how the "
     "request relates to it. 'reuse_for_generation' = generate code/an app "
@@ -1227,6 +1252,8 @@ _RELEVANT_DIAGRAM_TYPES = [
     ("QuantumCircuitDiagram", "quantum element(s)"),
     ("BPMN", "process element(s)"),
     ("UserDiagram", "user profile element(s)"),
+    ("ComponentDiagram", "component element(s)"),
+    ("DeploymentDiagram", "deployment element(s)"),
 ]
 
 
