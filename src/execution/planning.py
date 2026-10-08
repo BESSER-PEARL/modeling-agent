@@ -14,6 +14,8 @@ import agent_context as ctx
 from protocol.types import AssistantRequest
 from session_helpers import reply_message, reply_payload, emit_webapp_generate_prompt
 from orchestrator import plan_assistant_operations
+from orchestrator.workspace_orchestrator import _collect_explicit_targets
+from reply_copy import unsupported_editor_reply
 from handlers.generation_handler import handle_generation_request
 from utilities.request_builders import build_request_for_target, build_generation_request
 from suggestions import get_suggested_actions
@@ -115,6 +117,15 @@ def execute_planned_operations(
     matched_intent: Optional[str],
 ) -> None:
     """Run the orchestrator planner and dispatch each resulting operation."""
+    # The frontend has editors the assistant cannot model in (their type is
+    # normalized to ClassDiagram); without an explicitly named target, a
+    # request typed there would edit the class diagram instead.
+    _raw_context = (request.raw_payload or {}).get("context")
+    _raw_active = _raw_context.get("activeDiagramType") if isinstance(_raw_context, dict) else None
+    _unsupported = unsupported_editor_reply(_raw_active)
+    if _unsupported and not _collect_explicit_targets((request.message or "").lower()):
+        reply_message(session, _unsupported)
+        return
     # Consume the unified classifier's diagram-type verdict (it read the full
     # message + workspace) as the PRIMARY diagram target; keyword lists are
     # only the fallback.

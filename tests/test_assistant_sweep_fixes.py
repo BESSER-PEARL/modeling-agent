@@ -95,3 +95,40 @@ class TestAbandonedRunForgetsInjectedRequest:
                                      pending_flow_action="new_request"),
         )
         assert self._turn("yes, continue", gh._original_for_smart_generation, "yes, continue") == ""
+
+
+# ---------------------------------------------------------------------------
+# 2. A modelling request typed in an unsupported editor must not edit another diagram
+# ---------------------------------------------------------------------------
+
+def _nn_request(message):
+    return AssistantRequest(
+        message=message,
+        context=WorkspaceContext(active_diagram_type="ClassDiagram"),
+        raw_payload={"context": {"activeDiagramType": "NNDiagram"}},
+    )
+
+
+class TestUnsupportedEditorModelling:
+    def _execute(self, message):
+        from execution import planning
+        session = FakeSession()
+        with patch.object(planning, "plan_assistant_operations", return_value=[]) as plan, \
+             patch.object(planning, "reply_message") as reply:
+            planning.execute_planned_operations(
+                session=session, request=_nn_request(message),
+                default_mode="modify_model", matched_intent="modify_model_intent",
+            )
+        return plan, [c.args[1] for c in reply.call_args_list]
+
+    def test_nn_editor_request_gets_the_unsupported_reply(self):
+        """ws-NN B9: typed in the NN editor, the request added the classes
+        ConvolutionalLayer and DenseLayer to the class diagram."""
+        plan, replies = self._execute(
+            "Add a convolutional layer with 32 filters followed by a dense layer with 10 outputs.")
+        plan.assert_not_called()
+        assert replies and "doesn't support the **Neural Network** editor" in replies[0]
+
+    def test_naming_another_diagram_still_edits_it(self):
+        plan, _ = self._execute("In the class diagram add a class Layer with name: str")
+        plan.assert_called_once()
