@@ -104,7 +104,7 @@ _COMPONENT_SUGGESTIONS = [
 
 _DEPLOYMENT_SUGGESTIONS = [
     ("Add a deployment node", "add a cloud deployment node"),
-    ("Deploy a component", "deploy a component to a node"),
+    ("Place an artifact", "place a new artifact on a cloud node"),
     ("Describe the topology", "describe my deployment diagram"),
 ]
 

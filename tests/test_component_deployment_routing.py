@@ -97,3 +97,32 @@ def test_classifier_component_verdict_leads():
     assert determine_target_diagram_type(
         _request(message), last_intent=CREATE, llm_target_type="ComponentDiagram",
     ) == "ComponentDiagram"
+
+
+# ---------------------------------------------------------------------------
+# Example / suggestion wording must not look like a code-generation request
+# ---------------------------------------------------------------------------
+
+def test_deploy_wording_would_trigger_the_deploy_generator():
+    """Why the wording below matters: the deploy fuzzy pattern fires on this."""
+    from handlers.generation_handler import detect_generator_type
+
+    assert detect_generator_type("deploy a component to a cloud node") == "deploy"
+
+
+def test_classifier_modify_example_is_not_a_generator_request():
+    from handlers.generation_handler import detect_generator_type
+    from unified_classifier import _SYSTEM_PROMPT
+
+    example = "place a component on a cloud node"
+    assert f"'{example}'" in _SYSTEM_PROMPT
+    assert detect_generator_type(example) is None
+
+
+@pytest.mark.parametrize("diagram_type", ["ComponentDiagram", "DeploymentDiagram"])
+def test_suggestion_chips_are_not_generator_requests(diagram_type):
+    from handlers.generation_handler import detect_generator_type
+    from suggestions import get_suggested_actions
+
+    for action in get_suggested_actions(diagram_type, "complete_system", []):
+        assert detect_generator_type(action["prompt"]) is None, action
