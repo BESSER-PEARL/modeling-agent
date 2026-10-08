@@ -215,7 +215,8 @@ _QUICK_RESPONSES = {
         "**BESSER** (Better Smart Software Engineering Research) is an open-source "
         "low-code platform for building software through model-driven engineering.\n\n"
         "It lets you:\n"
-        "- Design domain models visually (class diagrams, state machines, GUIs, agents, quantum circuits, BPMN processes)\n"
+        "- Design domain models visually (class diagrams, state machines, GUIs, agents, quantum circuits, "
+        "BPMN processes, component and deployment diagrams)\n"
         "- Generate production code automatically (Django, FastAPI, React, Flutter, SQL, and more)\n"
         "- Deploy full-stack web applications from your models\n\n"
         "Learn more at [besser.readthedocs.io](https://besser.readthedocs.io/) "
@@ -324,11 +325,13 @@ def _fallback_llm_reply(session: Session, user_message: str) -> None:
     try:
         prompt = (
             f"You are a modeling assistant that helps with UML diagrams, quantum circuits, "
-            f"GUI design, agent diagrams, BPMN business-process diagrams, user profiles, "
+            f"GUI design, agent diagrams, BPMN business-process diagrams (including agentic "
+            f"BPMN swarms), user profiles, component diagrams, deployment diagrams, "
             f"and code generation. "
             f"The user said: '{user_message}'. "
             "If this is related to any kind of modeling (class diagrams, quantum circuits, "
-            "state machines, GUI design, BPMN processes, user profiles, etc.), suggest how "
+            "state machines, GUI design, BPMN processes, user profiles, component or "
+            "deployment diagrams, etc.), suggest how "
             "you can help them. "
             "Otherwise, politely explain your capabilities."
         )
@@ -1004,7 +1007,8 @@ def describe_model_body(session: Session):
     qa_prompt = (
         "You are an expert assistant for the BESSER Web Modeling Editor. "
         "The user has a project that may contain multiple diagrams "
-        "(class, state machine, object, GUI, quantum circuit, agent, user profile).\n\n"
+        "(class, state machine, object, GUI, quantum circuit, agent, user profile, "
+        "BPMN, component, deployment).\n\n"
         f"Here is a detailed summary of their project \u2014 note that empty or "
         f"default-seed diagrams have already been filtered out, so describe "
         f"ONLY the diagrams listed below:\n\n"

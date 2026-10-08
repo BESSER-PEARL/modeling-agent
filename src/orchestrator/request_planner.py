@@ -477,6 +477,22 @@ _HEURISTIC_BPMN = re.compile(
     re.IGNORECASE,
 )
 
+_HEURISTIC_COMPONENT = re.compile(
+    r"^(?:create|build|design|make)\s+(?:a\s+|an\s+|the\s+)?"
+    r"(?:uml\s+)?component\s*(?:diagram|model)"
+    r"(?:\s+(?:for|of|with)\s+(?P<domain>.+))?"
+    r"\s*$",
+    re.IGNORECASE,
+)
+
+_HEURISTIC_DEPLOYMENT = re.compile(
+    r"^(?:create|build|design|make)\s+(?:a\s+|an\s+|the\s+)?"
+    r"(?:uml\s+)?deployment\s*(?:diagram|model)"
+    r"(?:\s+(?:for|of|with)\s+(?P<domain>.+))?"
+    r"\s*$",
+    re.IGNORECASE,
+)
+
 # Map of (pattern, diagramType) for the single-diagram heuristics
 _SINGLE_DIAGRAM_HEURISTICS = [
     (_HEURISTIC_GUI, "GUINoCodeDiagram"),
@@ -486,6 +502,8 @@ _SINGLE_DIAGRAM_HEURISTICS = [
     (_HEURISTIC_OBJECT, "ObjectDiagram"),
     (_HEURISTIC_CLASS, "ClassDiagram"),
     (_HEURISTIC_BPMN, "BPMN"),
+    (_HEURISTIC_COMPONENT, "ComponentDiagram"),
+    (_HEURISTIC_DEPLOYMENT, "DeploymentDiagram"),
 ]
 
 

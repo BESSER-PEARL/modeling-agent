@@ -11,6 +11,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
+from model_config import MODEL_GENERATION_LARGE, MODEL_REASONING
 from ..core.prompt_fragments import EXACT_NAMES_RULE, POSITION_DISCLAIMER, REMOVE_ELEMENT_RULE
 from schemas import SystemComponentSpec, ComponentModificationResponse
 from utilities.model_context import detailed_model_summary
@@ -63,15 +64,24 @@ Component ids are short lowercase slugs (e.g. 'user_service', 'llm_core') refere
     # ------------------------------------------------------------------
 
     def generate_complete_system(
-        self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs,
+        self,
+        user_request: str,
+        existing_model: Dict[str, Any] = None,
+        raw_request: Optional[str] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
+        """Generate a complete diagram with two-pass structured output.
+
+        ``raw_request`` is the user message before context enrichment; it
+        drives the two-pass length check and keeps the reasoning prompt lean.
+        """
         system_prompt = self.get_system_prompt()
         logger.info(f"[ComponentDiagram] generate_complete_system called with: {user_request!r}")
 
         reasoning_prompt = (
             "You are a software architecture expert. Think step by step about the "
             "following component architecture request and plan it before producing JSON.\n\n"
-            f"User Request: {user_request}\n\n"
+            f"User Request: {raw_request or user_request}\n\n"
             "Analyze:\n"
             "1. What subsystems are needed to group related concerns?\n"
             "2. What components go in each subsystem (services, agents, models, DBs)?\n"
@@ -86,6 +96,9 @@ Component ids are short lowercase slugs (e.g. 'user_service', 'llm_core') refere
                 user_request=user_request,
                 system_prompt=system_prompt,
                 reasoning_prompt=reasoning_prompt,
+                raw_request=raw_request,
+                model=MODEL_GENERATION_LARGE,
+                reasoning_model=MODEL_REASONING,
                 response_schema=SystemComponentSpec,
             )
             system_spec = parsed.model_dump()

@@ -131,6 +131,19 @@ BPMN Examples
    add a task to the order fulfillment process
    add an exclusive gateway after the review task
 
+Component and Deployment Examples
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Name the diagram explicitly: generic words such as "system architecture"
+stay on the class diagram.
+
+.. code-block:: text
+
+   create a component diagram for a RAG agent swarm
+   add a supervises dependency from Supervisor to Writer
+   create a deployment diagram for the agent services
+   add a WebApp artifact to the Production Server node
+
 User Profile Examples
 ~~~~~~~~~~~~~~~~~~~~~
 

@@ -213,6 +213,8 @@ Supported Diagram Types
    QuantumCircuitDiagram
    BPMN            # NOT "BPMNDiagram" — the editor's converter sets that itself
    UserDiagram     # User Profile models
+   ComponentDiagram
+   DeploymentDiagram
 
 
 Outbound Messages (Backend → Frontend)
@@ -503,7 +505,16 @@ Structured Outputs rejects the response and the call retries.
        ``remove_element``
    * - ``BPMN``
      - ``add_task``, ``add_gateway``, ``add_event``, ``add_flow``,
-       ``modify_node``, ``remove_flow``, ``remove_element``
+       ``modify_node``, ``remove_flow``, ``remove_element``, ``add_pool``,
+       ``add_swimlane``, ``modify_swimlane``, ``remove_swimlane``,
+       ``remove_pool``
+   * - ``ComponentDiagram``
+     - ``add_component``, ``add_subsystem``, ``add_dependency``,
+       ``modify_element``, ``remove_element``, ``remove_dependency``
+   * - ``DeploymentDiagram``
+     - ``add_node``, ``add_artifact``, ``add_component``,
+       ``add_dependency``, ``modify_element``, ``remove_element``,
+       ``remove_dependency``
    * - Any (generic)
      - ``modify_element`` — the base handler's fallback shape
 

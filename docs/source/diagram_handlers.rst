@@ -25,7 +25,9 @@ Handler Class Hierarchy
    ├── GUINoCodeDiagramHandler      # GrapesJS GUI models           → "GUINoCodeDiagram"
    ├── QuantumCircuitDiagramHandler # Quirk quantum circuits        → "QuantumCircuitDiagram"
    ├── BPMNDiagramHandler           # BPMN process diagrams         → "BPMN"
-   └── UserProfileDiagramHandler    # BESSER user-profile models    → "UserDiagram"
+   ├── UserProfileDiagramHandler    # BESSER user-profile models    → "UserDiagram"
+   ├── ComponentDiagramHandler      # UML component diagrams        → "ComponentDiagram"
+   └── DeploymentDiagramHandler     # UML deployment diagrams       → "DeploymentDiagram"
 
 .. note::
 
@@ -572,6 +574,34 @@ association graph, knows which classes are singletons, computes each class's
 path to the ``User`` root, and assembles the required intermediate boxes and
 links so a generated profile is always structurally connected.
 
+ComponentDiagramHandler
+-----------------------
+
+**Location:** ``src/diagram_handlers/types/component_diagram_handler.py``
+
+Generates UML **component diagrams**: ``Subsystem`` containers, ``Component``
+elements and ``ComponentDependency`` edges. Stereotypes follow the editor's
+agentic vocabulary (``agentic-tokens.ts``): agent categories ``solution`` /
+``supervision``, capabilities ``skill`` / ``tool`` / ``llm`` / ``db`` /
+``rag``, and dependency kinds ``delegates`` / ``supervises`` / ``revises`` /
+``collaborates`` / ``has`` / ``uses`` / ``granted`` / ``implements``.
+Modification actions: ``add_component``, ``add_subsystem``,
+``add_dependency``, ``modify_element``, ``remove_element``,
+``remove_dependency``. Positions are computed by the editor's converter.
+
+DeploymentDiagramHandler
+------------------------
+
+**Location:** ``src/diagram_handlers/types/deployment_diagram_handler.py``
+
+Generates UML **deployment diagrams**: ``DeploymentNode`` execution
+environments, ``DeploymentArtifact`` packages hosted inside a node, logical
+``DeploymentComponent`` elements linked to their artifact via
+``manifestedBy``, and ``DeploymentDependency`` communication paths.
+Modification actions: ``add_node``, ``add_artifact``, ``add_component``,
+``add_dependency``, ``modify_element``, ``remove_element``,
+``remove_dependency``.
+
 QuantumCircuitDiagramHandler
 ----------------------------
 
@@ -670,6 +700,8 @@ never drift from the handler that owns it.
        QuantumCircuitDiagramHandler,
        BPMNDiagramHandler,
        UserProfileDiagramHandler,
+       ComponentDiagramHandler,
+       DeploymentDiagramHandler,
    )
 
 

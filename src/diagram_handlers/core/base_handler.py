@@ -672,6 +672,8 @@ class BaseDiagramHandler(ABC):
         "QuantumModificationSpec", "AgentModificationResponse",
         "BPMNModificationResponse",
         "UserProfileModificationResponse",
+        "ComponentModificationResponse",
+        "DeploymentModificationResponse",
     }
     _SMALL_OUTPUT_MAX_TOKENS = LLM_MAX_TOKENS_SMALL
     _LARGE_OUTPUT_MAX_TOKENS = LLM_MAX_TOKENS_LARGE

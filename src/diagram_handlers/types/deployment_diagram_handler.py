@@ -12,6 +12,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
+from model_config import MODEL_GENERATION_LARGE, MODEL_REASONING
 from ..core.prompt_fragments import EXACT_NAMES_RULE, POSITION_DISCLAIMER, REMOVE_ELEMENT_RULE
 from schemas import SystemDeploymentSpec, DeploymentModificationResponse
 from utilities.model_context import detailed_model_summary
@@ -65,15 +66,24 @@ Element ids are short lowercase slugs (e.g. 'prod_server', 'webapp_artifact') re
     # ------------------------------------------------------------------
 
     def generate_complete_system(
-        self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs,
+        self,
+        user_request: str,
+        existing_model: Dict[str, Any] = None,
+        raw_request: Optional[str] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
+        """Generate a complete diagram with two-pass structured output.
+
+        ``raw_request`` is the user message before context enrichment; it
+        drives the two-pass length check and keeps the reasoning prompt lean.
+        """
         system_prompt = self.get_system_prompt()
         logger.info(f"[DeploymentDiagram] generate_complete_system called with: {user_request!r}")
 
         reasoning_prompt = (
             "You are a deployment architecture expert. Think step by step about the "
             "following deployment request and plan it before producing JSON.\n\n"
-            f"User Request: {user_request}\n\n"
+            f"User Request: {raw_request or user_request}\n\n"
             "Analyze:\n"
             "1. What execution environments (nodes) are needed?\n"
             "2. What artifacts are deployed in each node?\n"
@@ -88,6 +98,9 @@ Element ids are short lowercase slugs (e.g. 'prod_server', 'webapp_artifact') re
                 user_request=user_request,
                 system_prompt=system_prompt,
                 reasoning_prompt=reasoning_prompt,
+                raw_request=raw_request,
+                model=MODEL_GENERATION_LARGE,
+                reasoning_model=MODEL_REASONING,
                 response_schema=SystemDeploymentSpec,
             )
             system_spec = parsed.model_dump()
