@@ -26,3 +26,13 @@ def original_request_for_project(session, project_id):
 
 def clear_original_request(session):
     remember_original_request(session, "", None)
+
+
+def snapshot_original_request(session):
+    return {"message": session.get(ORIGINAL_APP_REQUEST) or "",
+            "project_id": session.get(ORIGINAL_APP_REQUEST_PROJECT_ID)}
+
+
+def restore_original_request(session, snapshot):
+    session.set(ORIGINAL_APP_REQUEST, snapshot.get("message") or "")
+    session.set(ORIGINAL_APP_REQUEST_PROJECT_ID, snapshot.get("project_id"))

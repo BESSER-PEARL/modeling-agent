@@ -37,6 +37,7 @@ from session_keys import (
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
     PENDING_SMART_GEN_INSTRUCTIONS,
+    PENDING_SMART_GEN_PRIOR_ORIGINAL,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
     UNIFIED_CLASSIFICATION,
@@ -538,6 +539,9 @@ def execute_model_operation(
         # Resume requests may contain only the planner summary or the mismatch
         # button's synthesized prompt. Reuse only a proven same-project source.
         spec_to_stash = original_request_for_project(session, request_project_id(request)) or operation_request
+        if session.get(PENDING_SMART_GEN_PRIOR_ORIGINAL):
+            # The model is rebuilt from the pending spec: abandoning the run no longer reverts it.
+            session.delete(PENDING_SMART_GEN_PRIOR_ORIGINAL)
     elif spec_to_stash and not resuming_spec:
         # Confirmation resumes and mismatch buttons can carry synthesized
         # sub-prompts. They must not overwrite the original create request.
