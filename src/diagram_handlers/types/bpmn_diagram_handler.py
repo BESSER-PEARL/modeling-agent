@@ -1,20 +1,23 @@
 """
 BPMN Diagram Handler
 Handles generation and modification of BPMN process diagrams, including
-multi-participant collaboration diagrams.
+multi-participant collaboration diagrams and Agentic BPMN.
 
 Emits a process (start/end events, tasks, exclusive/parallel/inclusive
 gateways, flows) optionally grouped into pools (participants) and lanes
-(roles within a pool). No other agentic concepts (governance, trust, etc).
-Positions are NOT generated here: the WME injector lays the process (and any
-pools/lanes) out and the editor's layouter routes the flows. Message vs.
-sequence flow type is also derived on the WME side from pool membership —
-the agent never sets a flow type. Pools/lanes are generation-only for now;
-the modification path (generate_modification) does not yet support
-add_pool/add_lane actions.
+(roles within a pool). Agentic mode — selected only on explicit agentic intent
+or an existing agentic lane (``_is_agentic_bpmn_request``) — adds the editor's
+Agentic BPMN attributes (agentic lanes with a role, trust score and swarm
+multiplicity; reflection modes; governed merging gateways) on top of the base
+rules, and runs the same deterministic repair pass. Positions are NOT
+generated here: the WME injector lays the process (and any pools/lanes) out
+and the editor's layouter routes the flows. Message vs. sequence flow type is
+also derived on the WME side from pool membership — the agent never sets a
+flow type.
 """
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
@@ -55,35 +58,64 @@ Partial matches are valid (e.g. "Reviewer 1" matching "Review by Reviewer 1"). O
 If the user says 'undo', 'undo that', 'revert', or similar, do not emit any modifications. Reply with modifications: [], elementFound: false,
 and set message to: 'To undo, use Ctrl+Z or the undo button in the editor toolbar.'"""
 
-MODIFY_SYSTEM_PROMPT_AGENTIC_BPMN = f"""You are an Agentic BPMN modeling expert.
+AGENT_DIAGRAM_REF_RULE = (
+    "agentDiagramRef links an agent to an EXISTING AgentDiagram of the project. Use ONLY an id "
+    "from the 'Agent diagrams in this project' list in the request; when the list is empty or "
+    "none fits, leave agentDiagramRef null. Never invent an id."
+)
 
-READING THE CONTEXT:
-Each pool appears as: Pool: [id] Name
-Each lane appears as: Lane: [id] Name (role=..., agentic=..., multiplicity=...)
-Each node appears as: [id] Name (type) [in lane: LaneName]
-Each flow appears as: Flow: [src-id] Name -> [tgt-id] Name
+AGENTIC_MODIFY_RULES = f"""AGENTIC BPMN RULES (the process has agentic lanes or the user asked for agentic changes):
+The context also lists pools and lanes:
+  Pool: [id] Name
+  Lane: [id] Name (role=..., agentic=..., multiplicity=...)
+and flow nodes may show lane=..., agentic=true, trust=..., reflection=..., role=..., governanceDsl=set/unset.
+A1. Additional actions: "add_pool", "add_swimlane", "modify_swimlane", "remove_swimlane", "remove_pool". The *_swimlane names are the editor's API names for LANES; call them lanes in your message.
+A2. add_pool: target.nodeName = the new pool's name. add_swimlane: target.nodeName = the new lane's name and changes.poolName = the existing pool's name or [id]; optional changes.isAgentic, changes.role, changes.trustScore, changes.multiplicity.
+A3. modify_swimlane / remove_swimlane: target.swimlaneName = the lane's name or [id]. remove_pool: target.poolName = the pool's name or [id].
+A4. Lane role is exactly 'solution' (an agent that does the work) or 'supervision' (an agent that oversees other agents). multiplicity is the swarm size, an integer >= 1.
+A5. To place a NEW node in an existing lane, set changes.owner to the lane's name or [id].
+A6. modify_node on a task may set isAgentic, reflectionMode ('none', 'self', 'cross', 'human'), reflectionReviewerLaneId (the reviewing lane's [id], only with reflectionMode 'cross'), trustScore (0-100) and agentDiagramRef; on a gateway: isAgentic, gatewayRole ('diverging' or 'merging'), trustScore and governanceDsl. An agentic gateway must be parallel or inclusive; governanceDsl belongs only on a merging gateway.
+A7. {AGENT_DIAGRAM_REF_RULE}
+A8. Flows contain only endpoints and labels — never agentic message-flow notation, collaborationMode, or mergingStrategy."""
 
-MODIFICATION RULES:
-1. Actions are: "add_task", "add_gateway", "add_event", "add_flow",
-   "modify_node", "remove_flow", "remove_element", "add_pool",
-   "add_swimlane", "modify_swimlane", "remove_swimlane", "remove_pool".
-2. The `*_swimlane` action names are WME API names. Call the modeled
-   constructs lanes in explanations and never generate pools[].swimlanes.
-3. add_swimlane: set target.nodeName and changes.poolName. Allowed role values:
-   solution, supervision.
-4. Use changes.owner only to place a newly added node in an existing lane.
-5. Use modify_node for task fields: isAgentic, reflectionMode, trustScore,
-   agentDiagramRef; or gateway fields: isAgentic, gatewayRole, trustScore,
-   governanceDsl.
-6. An agentic gateway must be parallel or inclusive. governanceDsl is only
-   meaningful for a merging gateway.
-7. Flows contain only normal endpoints and labels. Do not use agentic
-   message-flow notation, collaborationMode, or mergingStrategy.
-8. {REMOVE_ELEMENT_RULE}
-9. {EXACT_NAMES_RULE}
+# The agentic prompt EXTENDS the base prompt: unnamed-node [id] references,
+# partial matching, "add exactly ONE" and the flow-endpoint rules still apply.
+MODIFY_SYSTEM_PROMPT_AGENTIC_BPMN = f"{MODIFY_SYSTEM_PROMPT_BPMN}\n\n{AGENTIC_MODIFY_RULES}"
 
-If an element is not present in context, set elementFound: false and emit
-no modifications."""
+AGENTIC_DESIGN_RULES = f"""AGENTIC BPMN RULES (the user asked for an agentic process / agent swarm; they extend the rules above):
+A1. Put the agents in a pool and give each agent role its own lane with isAgentic=true. Use pools[].lanes, never pools[].swimlanes. Human or system participants stay ordinary (isAgentic=false) lanes or pools.
+A2. Lane role is exactly 'solution' (an agent that does the work) or 'supervision' (an agent that oversees, approves or reviews other agents).
+A3. multiplicity is the swarm size of an agentic lane (e.g. three reviewer agents → 3); leave it null when the request gives none. Set trustScore (0-100) only when the request states or clearly implies it.
+A4. Every node in a pool sets poolId and every node in a lane sets laneId (owner may repeat laneId). Never use a generated WME/Apollon element id.
+A5. A task performed by an agent sets isAgentic=true and may set reflectionMode: 'self', 'human', or 'cross' with reflectionReviewerLaneId = the id of the reviewing agent lane.
+A6. A gateway that fans work out to agents or merges their results is agentic (isAgentic=true), must be parallel or inclusive, and sets gatewayRole 'diverging' or 'merging'. A merging agentic gateway that decides how the results are accepted carries a non-empty governanceDsl (e.g. 'Policy: MajorityPolicy').
+A7. {AGENT_DIAGRAM_REF_RULE}
+A8. Flows contain only source, target, and name. Never emit flowType, agentic flow fields, collaborationMode, or mergingStrategy."""
+
+# Explicit agentic intent. Word-boundary matched: substrings such as "pool"
+# (carpool), "participant" or "orchestrat" describe ordinary collaboration
+# processes, not agent swarms.
+_AGENTIC_INTENT_RE = re.compile(
+    r"\b(?:agentic"
+    r"|multi[- ]?agents?"
+    r"|agent[- ]?swarms?|swarms?\s+of\s+(?:ai\s+)?agents"
+    r"|(?:ai[- ])?agent\s+lanes?"
+    r"|(?:solution|supervision)\s+(?:agents?|lanes?|roles?)"
+    r"|lane\s+roles?"
+    r"|trust\s+scores?"
+    r"|reflection\s+modes?"
+    r"|governance\s+dsl)\b",
+    re.IGNORECASE,
+)
+
+
+def format_agent_diagram_refs(agent_diagram_refs: Optional[Dict[str, str]]) -> str:
+    """The per-request list of AgentDiagram ids the LLM may use as agentDiagramRef."""
+    if not agent_diagram_refs:
+        return "Agent diagrams in this project: none — leave every agentDiagramRef null."
+    lines = [f"- {diagram_id}: {title or 'untitled'}" for diagram_id, title in agent_diagram_refs.items()]
+    return "Agent diagrams in this project (the only valid agentDiagramRef values):\n" + "\n".join(lines)
+
 
 class BPMNDiagramHandler(BaseDiagramHandler):
     """Handler for base BPMN process generation and modification."""
@@ -114,30 +146,31 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
 
     @staticmethod
     def _is_agentic_bpmn_request(user_request: str, current_model: Dict[str, Any] = None) -> bool:
-        """Detect if the user wants an agentic BPMN (with pools/swimlanes)."""
-        lower = (user_request or "").lower()
-        agentic_keywords = [
-            "pool", "swimlane", "participant", "multi-agent", "multiagent",
-            "swarm", "agentic bpmn", "agentic process", "orchestrat",
-        ]
-        if any(kw in lower for kw in agentic_keywords):
+        """True only on explicit agentic intent or an existing agentic lane.
+
+        Pools, participants or orchestration alone describe an ordinary
+        collaboration process (e.g. the WME Pizza Store / Car Wash templates).
+        """
+        if _AGENTIC_INTENT_RE.search(user_request or ""):
             return True
-        if isinstance(current_model, dict):
-            elements = current_model.get("elements", {})
-            if isinstance(elements, dict):
-                return any(
-                    isinstance(el, dict) and el.get("type") in ("BPMNPool", "BPMNSwimlane")
-                    for el in elements.values()
-                )
+        elements = current_model.get("elements") if isinstance(current_model, dict) else None
+        if isinstance(elements, dict):
+            return any(
+                isinstance(el, dict) and el.get("type") == "BPMNSwimlane" and el.get("isAgentic") is True
+                for el in elements.values()
+            )
         return False
 
     def generate_complete_system(
         self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs,
     ) -> Dict[str, Any]:
         logger.info(f"[BPMN] generate_complete_system called with: {user_request!r}")
+        agent_diagram_refs = kwargs.get("agent_diagram_refs") or {}
 
-        if self._is_agentic_bpmn_request(user_request, existing_model):
-            return self._generate_agentic_complete_system(user_request)
+        # Detect on the user's own words: the enriched request also carries
+        # conversation history and workspace context.
+        if self._is_agentic_bpmn_request(kwargs.get("raw_request") or user_request, existing_model):
+            return self._generate_agentic_complete_system(user_request, agent_diagram_refs)
 
         system_prompt = self.get_system_prompt()
 
@@ -179,6 +212,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
             )
             system_spec = parsed.model_dump()
             system_spec = self._validate_and_refine(system_spec)
+            self._sanitize_agentic_refs(system_spec, agent_diagram_refs)
 
             return {
                 "action": "inject_complete_system",
@@ -197,50 +231,41 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
             logger.error(f"[BPMN] generate_complete_system FAILED: {exc}", exc_info=True)
             return self.generate_fallback_system()
 
-    def _generate_agentic_complete_system(self, user_request: str) -> Dict[str, Any]:
-        """Generate a BPMN process with pools and swimlanes (agentic BPMN)."""
-        system_prompt = """You are an agentic BPMN modeling expert. Create an
-AgenticSwarm BPMN process from the user's request.
-
-DESIGN RULES:
-1. Emit pools[].lanes. Never emit pools[].swimlanes.
-2. Use pools for distinct participants and lanes for distinct roles inside a pool.
-3. Agentic lane roles are exactly: solution (does the work) or supervision (oversees other agents).
-4. Preserve lane metadata where relevant: isAgentic, role, trustScore,
-multiplicity, agentDiagramRef.
-5. Every node in a pool must set poolId. Every node in a lane must set laneId.
-owner may match laneId for backend normalization; never use a generated
-WME/Apollon element id.
-6. Agentic tasks may use isAgentic, reflectionMode, trustScore, and
-agentDiagramRef.
-7. Agentic gateways must be parallel or inclusive. They may use isAgentic,
-gatewayRole, trustScore, and governanceDsl. A governed merge must have
-gatewayRole="merging" and a non-empty governanceDsl.
-8. Flows contain only source, target, and name. Never emit flowType, agentic
-flow fields, collaborationMode, or mergingStrategy.
-9. Use one start event and at least one end event. Do not emit positions."""
+    def _generate_agentic_complete_system(
+        self, user_request: str, agent_diagram_refs: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """Generate an Agentic BPMN process: the base rules plus the agentic ones,
+        followed by the same deterministic repair pass as the base path."""
+        system_prompt = f"{self.get_system_prompt()}\n\n{AGENTIC_DESIGN_RULES}"
+        refs_block = format_agent_diagram_refs(agent_diagram_refs)
 
         reasoning_prompt = (
             "You are an agentic process-design expert. Think step by step about the "
-            "following collaboration request and plan it before producing JSON.\n\n"
+            "following agent-swarm request and plan it before producing JSON.\n\n"
             f"User Request: {user_request}\n\n"
             "Analyze:\n"
-            "1. Who are the participants and which lane role fits each: solution or supervision?\n"
-            "2. How many instances of each participant are needed (multiplicity)?\n"
-            "3. What tasks does each participant perform?\n"
-            "4. How do they coordinate (what sequence flows cross lanes)?\n"
-            "5. What is the trigger and the completion conditions?\n\n"
-            "Focus on correct lane ownership — every task must be owned by a swimlane."
+            "1. Which agent roles are there, and is each a 'solution' agent (does the work) or a "
+            "'supervision' agent (oversees other agents)? Which participants are humans or systems?\n"
+            "2. How many instances of each agent are needed (multiplicity)?\n"
+            "3. What is the trigger (start event), and what tasks does each lane perform?\n"
+            "4. Where does work fan out to agents or merge back (agentic parallel/inclusive gateways), "
+            "and which merge needs a Governance DSL policy?\n"
+            "5. Which agent outputs are reviewed (reflection: self, cross with a reviewer lane, or human)?\n"
+            "6. What are the possible outcomes (end events), and does every branch reach one?\n\n"
+            "Focus on correct lane ownership — every task must be owned by a lane — and on the "
+            "SEQUENCE FLOWS between them."
         )
 
         try:
             parsed = self.predict_two_pass_structured(
-                user_request=user_request,
+                user_request=f"{user_request}\n\n{refs_block}",
                 system_prompt=system_prompt,
                 reasoning_prompt=reasoning_prompt,
                 response_schema=SystemBPMNSpec,
             )
             system_spec = parsed.model_dump()
+            system_spec = self._validate_and_refine(system_spec)
+            self._sanitize_agentic_refs(system_spec, agent_diagram_refs)
             return {
                 "action": "inject_complete_system",
                 "systemSpec": system_spec,
@@ -249,10 +274,38 @@ flow fields, collaborationMode, or mergingStrategy.
             }
         except LLMPredictionError as exc:
             logger.error(f"[BPMN] _generate_agentic_complete_system LLM FAILED: {exc}")
-            return self._error_response("I couldn't generate that agentic process. Please try again.")
+            return self._error_response(
+                "I couldn't generate that agentic process. Please try again or rephrase your request.",
+                code="llm_failure",
+            )
         except Exception as exc:
             logger.error(f"[BPMN] _generate_agentic_complete_system FAILED: {exc}", exc_info=True)
             return self.generate_fallback_system()
+
+    @staticmethod
+    def _sanitize_agentic_refs(spec: Dict[str, Any], agent_diagram_refs: Dict[str, str]) -> None:
+        """Drop references the editor could not resolve (mutates *spec*).
+
+        - agentDiagramRef is a project AgentDiagram UUID in the editor: keep it
+          only when it is one of this project's AgentDiagram ids.
+        - reflectionReviewerLaneId must name a declared lane, and only on a
+          task whose reflectionMode is 'cross'.
+        """
+        valid_refs = set(agent_diagram_refs or {})
+        lane_ids = set()
+        for pool in spec.get("pools") or []:
+            for lane in pool.get("lanes") or []:
+                lane_ids.add(lane.get("id"))
+                if lane.get("agentDiagramRef") and lane["agentDiagramRef"] not in valid_refs:
+                    logger.info(f"[BPMN] Dropped invented lane agentDiagramRef {lane['agentDiagramRef']!r}")
+                    lane["agentDiagramRef"] = None
+        for node in spec.get("nodes") or []:
+            if node.get("agentDiagramRef") and node["agentDiagramRef"] not in valid_refs:
+                logger.info(f"[BPMN] Dropped invented node agentDiagramRef {node['agentDiagramRef']!r}")
+                node["agentDiagramRef"] = None
+            reviewer = node.get("reflectionReviewerLaneId")
+            if reviewer and (node.get("reflectionMode") != "cross" or reviewer not in lane_ids):
+                node["reflectionReviewerLaneId"] = None
 
     def _build_agentic_message(self, spec: Dict[str, Any]) -> str:
         name = spec.get("systemName") or "process"
@@ -518,11 +571,9 @@ flow fields, collaborationMode, or mergingStrategy.
     def generate_modification(
         self, user_request: str, current_model: Dict[str, Any] = None, **kwargs,
     ) -> Dict[str, Any]:
-        system_prompt = (
-            MODIFY_SYSTEM_PROMPT_AGENTIC_BPMN
-            if self._is_agentic_bpmn_request(user_request, current_model)
-            else MODIFY_SYSTEM_PROMPT_BPMN
-        )
+        agentic = self._is_agentic_bpmn_request(kwargs.get("raw_request") or user_request, current_model)
+        system_prompt = MODIFY_SYSTEM_PROMPT_AGENTIC_BPMN if agentic else MODIFY_SYSTEM_PROMPT_BPMN
+        agent_diagram_refs = kwargs.get("agent_diagram_refs") or {}
 
         # The element map is passed explicitly to every helper: handlers are
         # singletons shared by all sessions, so per-request state on `self`
@@ -538,6 +589,9 @@ flow fields, collaborationMode, or mergingStrategy.
             summary = detailed_model_summary(current_model, "BPMN")
             if summary:
                 context_block = f"\n\n{summary}"
+
+        if agentic:
+            context_block += f"\n\n{format_agent_diagram_refs(agent_diagram_refs)}"
 
         user_prompt = f"Modify the BPMN process: {user_request}{context_block}"
         logger.info(f"[BPMN] generate_modification called with: {user_request!r}")
@@ -592,6 +646,7 @@ flow fields, collaborationMode, or mergingStrategy.
 
                 normalized: List[Dict[str, Any]] = []
                 expanded_flows = 0
+                self._sanitize_modification_refs(mod_list, elements, agent_diagram_refs)
 
                 for mod in mod_list:
                     if not isinstance(mod, dict):
@@ -675,6 +730,38 @@ flow fields, collaborationMode, or mergingStrategy.
                     "*'rename Check Inventory to Verify Stock'*."
                 ),
             }
+
+    @staticmethod
+    def _sanitize_modification_refs(
+        mod_list: List[Dict[str, Any]], elements: Dict[str, Any], agent_diagram_refs: Dict[str, str],
+    ) -> None:
+        """Clear agentDiagramRef / reflectionReviewerLaneId values the editor could not resolve.
+
+        agentDiagramRef must be one of the project's AgentDiagram ids; a
+        reflectionReviewerLaneId must resolve (by [id] or name) to an existing
+        lane and is normalized to that lane's id. Mutates the changes in place.
+        """
+        valid_refs = set(agent_diagram_refs or {})
+        lanes = {
+            eid: el for eid, el in (elements or {}).items()
+            if isinstance(el, dict) and el.get("type") == "BPMNSwimlane"
+        }
+        for mod in mod_list:
+            changes = mod.get("changes") if isinstance(mod, dict) else None
+            if not isinstance(changes, dict):
+                continue
+            ref = changes.get("agentDiagramRef")
+            if ref and ref not in valid_refs:
+                logger.info(f"[BPMN] Dropped invented agentDiagramRef {ref!r}")
+                changes["agentDiagramRef"] = None
+            reviewer = changes.get("reflectionReviewerLaneId")
+            if reviewer:
+                lane_id = reviewer if reviewer in lanes else next(
+                    (eid for eid, el in lanes.items()
+                     if (el.get("name") or "").strip().lower() == reviewer.strip().lower()),
+                    None,
+                )
+                changes["reflectionReviewerLaneId"] = lane_id
 
     # ------------------------------------------------------------------
     # Single element + fallbacks (required by BaseDiagramHandler)

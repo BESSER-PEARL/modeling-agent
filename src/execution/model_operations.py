@@ -21,6 +21,7 @@ from utilities.model_resolution import (
     resolve_target_model,
     resolve_object_reference_diagram,
     count_reference_classes,
+    resolve_agent_diagram_refs,
     resolve_class_diagram,
 )
 from utilities.workspace_context import build_workspace_context_block, record_session_action
@@ -745,6 +746,12 @@ def execute_model_operation(
     else:
         progress_thread = None
 
+    # BPMN agentDiagramRef must point at one of the project's AgentDiagrams.
+    bpmn_kwargs: Dict[str, Any] = (
+        {"agent_diagram_refs": resolve_agent_diagram_refs(request)}
+        if target_diagram_type == "BPMN" else {}
+    )
+
     try:
         if operation_mode == "modify_model":
             # ``raw_request`` lets handlers distinguish the user's actual
@@ -753,6 +760,7 @@ def execute_model_operation(
             extra_kwargs: Dict[str, Any] = {
                 "class_metadata": gui_class_metadata,
                 "raw_request": operation_request,
+                **bpmn_kwargs,
             }
             if target_diagram_type == "ObjectDiagram":
                 reference_diagram = resolve_object_reference_diagram(request, target_model)
@@ -817,6 +825,7 @@ def execute_model_operation(
                     existing_model=target_model,
                     class_metadata=gui_class_metadata,
                     raw_request=spec_to_stash or operation_request,
+                    **bpmn_kwargs,
                 )
     except Exception as exc:
         logger.error(f"❌ [ModelOp] Handler exception: {exc}", exc_info=True)

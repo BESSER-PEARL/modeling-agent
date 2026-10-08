@@ -131,6 +131,10 @@ BPMN Examples
    add a task to the order fulfillment process
    add an exclusive gateway after the review task
 
+   # Agentic BPMN (say "agentic", "multi-agent" or "agent swarm")
+   create an agentic BPMN swarm for document review with three reviewer agents
+   change the lane role of Reviewer to supervision
+
 Component and Deployment Examples
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

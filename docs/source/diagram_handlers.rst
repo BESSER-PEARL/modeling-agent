@@ -541,10 +541,31 @@ Features
   (message vs. sequence) is likewise derived on the editor side from pool
   membership — the agent never sets it.
 
-.. note::
+Agentic BPMN
+~~~~~~~~~~~~
 
-   Pools and lanes are **generation-only**. ``generate_modification`` does not
-   yet support ``add_pool`` / ``add_lane`` actions.
+``_is_agentic_bpmn_request`` switches the handler into **agentic mode** only on
+explicit agentic intent in the user's own message (word-boundary matches such
+as "agentic", "multi-agent", "agent swarm", "AI agent lane", "lane role",
+"trust score", "Governance DSL") or when the current model already contains a
+lane with ``isAgentic: true``. Pools, participants or orchestration wording
+alone stay on the base path, so collaboration processes such as the editor's
+Pizza Store and Car Wash templates are not treated as agent swarms.
+
+- **Prompts compose, they do not replace.** Agentic generation appends
+  ``AGENTIC_DESIGN_RULES`` to the base system prompt, and the agentic
+  modification prompt appends ``AGENTIC_MODIFY_RULES`` (pool / lane actions:
+  ``add_pool``, ``add_swimlane``, ``modify_swimlane``, ``remove_swimlane``,
+  ``remove_pool``) to the base modification prompt.
+- **Same repair pass.** Agentic generation runs ``_validate_and_refine`` too.
+- **Editor vocabulary.** Lane roles are ``solution`` / ``supervision``; lane
+  ``multiplicity`` is the integer swarm size; tasks carry ``reflectionMode``
+  and, for ``cross`` reflection, ``reflectionReviewerLaneId``; agentic
+  gateways carry ``gatewayRole`` and, when merging, ``governanceDsl``.
+- **Project-scoped references.** ``agentDiagramRef`` is a project AgentDiagram
+  id in the editor. ``model_operations`` passes the project's AgentDiagram ids
+  (``resolve_agent_diagram_refs``) to the handler, the prompt lists them, and
+  any other value is cleared after generation or modification.
 
 UserProfileDiagramHandler
 -------------------------
