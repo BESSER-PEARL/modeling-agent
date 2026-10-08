@@ -25,11 +25,11 @@ _MODIFICATION_STEREOTYPE = Literal[
     "solution", "supervision", "skill", "tool", "llm", "db", "rag",
 ]
 
-_NODE_STEREOTYPE_DESCRIPTION = (
+NODE_STEREOTYPE_DESCRIPTION = (
     "'node' (generic execution environment), 'device' (physical hardware), "
     "'cloud' (cloud environment / managed service), 'server' (a server or VM)."
 )
-_DEPLOY_COMPONENT_STEREOTYPE_DESCRIPTION = (
+DEPLOY_COMPONENT_STEREOTYPE_DESCRIPTION = (
     "Agents: 'solution' or 'supervision'. Capabilities: 'llm', 'db', 'rag', "
     "'tool', 'skill'. Use 'solution' for an ordinary application component."
 )
@@ -40,7 +40,7 @@ _DEPLOY_COMPONENT_STEREOTYPE_DESCRIPTION = (
 class DeploymentNodeSpec(BaseModel):
     id: str = Field(min_length=1, max_length=40, description="Short unique slug (e.g. 'prod_server'). Lowercase, no spaces.")
     name: str = Field(max_length=60, description="Human-readable name (e.g. 'Production Server').")
-    stereotype: _NODE_STEREOTYPE = Field(default="node", description=_NODE_STEREOTYPE_DESCRIPTION)
+    stereotype: _NODE_STEREOTYPE = Field(default="node", description=NODE_STEREOTYPE_DESCRIPTION)
 
 
 class DeploymentArtifactSpec(BaseModel):
@@ -52,7 +52,7 @@ class DeploymentArtifactSpec(BaseModel):
 class DeploymentComponentSpec(BaseModel):
     id: str = Field(min_length=1, max_length=40, description="Short unique slug (e.g. 'web_comp').")
     name: str = Field(max_length=60, description="Logical component name (e.g. 'WebApp').")
-    stereotype: _DEPLOY_COMPONENT_STEREOTYPE = Field(default="solution", description=_DEPLOY_COMPONENT_STEREOTYPE_DESCRIPTION)
+    stereotype: _DEPLOY_COMPONENT_STEREOTYPE = Field(default="solution", description=DEPLOY_COMPONENT_STEREOTYPE_DESCRIPTION)
     manifestedBy: Optional[str] = Field(default=None, description="Id of the DeploymentArtifact that physically contains this component.")
 
 
@@ -83,8 +83,8 @@ class DeploymentModificationChanges(BaseModel):
     stereotype: Optional[_MODIFICATION_STEREOTYPE] = Field(
         default=None,
         description=(
-            "add_node / modify_element on a node: " + _NODE_STEREOTYPE_DESCRIPTION
-            + " add_component / modify_element on a component: " + _DEPLOY_COMPONENT_STEREOTYPE_DESCRIPTION
+            "add_node / modify_element on a node: " + NODE_STEREOTYPE_DESCRIPTION
+            + " add_component / modify_element on a component: " + DEPLOY_COMPONENT_STEREOTYPE_DESCRIPTION
         ),
     )
     owner: Optional[str] = Field(default=None, description="add_artifact: the existing node name/id that hosts the artifact.")

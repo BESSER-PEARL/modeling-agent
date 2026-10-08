@@ -524,13 +524,14 @@ flow fields, collaborationMode, or mergingStrategy.
             else MODIFY_SYSTEM_PROMPT_BPMN
         )
 
-        # Store elements on the instance so _build_mod_target_name can resolve
-        # element names without needing a separate parameter thread.
-        self._elements: Dict[str, Any] = {}
+        # The element map is passed explicitly to every helper: handlers are
+        # singletons shared by all sessions, so per-request state on `self`
+        # would race between concurrent requests.
+        elements: Dict[str, Any] = {}
         if current_model and isinstance(current_model, dict):
             raw = current_model.get("elements")
             if isinstance(raw, dict):
-                self._elements = raw
+                elements = raw
 
         context_block = ""
         if current_model and isinstance(current_model, dict):
@@ -656,8 +657,9 @@ flow fields, collaborationMode, or mergingStrategy.
             result = self._execute_modification(
                 user_prompt, system_prompt, BPMNModificationResponse,
                 post_processor=_normalize_bpmn_mods,
+                elements=elements,
             )
-            return self._validate_mod_refs(result)
+            return self._validate_mod_refs(result, elements)
         except LLMPredictionError as exc:
             logger.error(f"[BPMN] generate_modification LLM FAILED: {exc}")
             return self._error_response(
@@ -816,15 +818,17 @@ flow fields, collaborationMode, or mergingStrategy.
     # Base-class extension: BPMN-aware target name resolution
     # ------------------------------------------------------------------
 
-    def _build_mod_target_name(self, action: str, target: dict, mod: dict = None) -> str:
+    def _build_mod_target_name(
+        self, action: str, target: dict, mod: dict = None, elements: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Extend base name resolution for BPMN-specific operations.
 
         - Flow operations (add_flow/remove_flow) display endpoint names joined
-          by an arrow, resolved from self._elements when available.
+          by an arrow, resolved from the request's ``elements`` map.
         - Node operations on unnamed elements fall back to the type label
           (e.g. "Parallel Gateway") instead of the raw Apollon UUID.
         """
-        elements = getattr(self, "_elements", {})
+        elements = elements or {}
 
         if action in ("add_flow", "remove_flow"):
             changes = (mod or {}).get("changes") or {}
@@ -846,174 +850,34 @@ flow fields, collaborationMode, or mergingStrategy.
             if el is not None:
                 return el.get("name") or self._bpmn_el_type_label(el)
 
-        return super()._build_mod_target_name(action, target, mod)
+        return super()._build_mod_target_name(action, target, mod, elements=elements)
 
     # ------------------------------------------------------------------
-    # Server-side ref guardrail (item 1)
+    # Server-side reference guardrail (BaseDiagramHandler._validate_mod_refs)
     # ------------------------------------------------------------------
 
-    def _ref_exists(self, mod: Dict[str, Any], elements: Dict[str, Any]) -> bool:
-        """Return True if every element ref in this modification exists in the model."""
-        action = mod.get("action", "")
-        if action in ("remove_element", "modify_node"):
-            ref = (mod.get("target") or {}).get("nodeId") or (mod.get("target") or {}).get("nodeName")
-            return ref is None or self._bpmn_resolve(ref, elements) is not None
-        if action in ("add_flow", "remove_flow"):
-            changes = mod.get("changes") or {}
-            src, tgt = changes.get("source"), changes.get("target")
-            src_ok = src is None or self._bpmn_resolve(src, elements) is not None
-            tgt_ok = tgt is None or self._bpmn_resolve(tgt, elements) is not None
-            return src_ok and tgt_ok
-        return True
+    _REF_ID_KEY = "nodeId"
+    _REF_NAME_KEY = "nodeName"
+    _REF_TARGET_ACTIONS = frozenset({"remove_element", "modify_node"})
+    _REF_ENDPOINT_ACTIONS = frozenset({"add_flow", "remove_flow"})
+    _REF_ADD_ACTIONS = {"add_task": "BPMNTask", "add_gateway": "BPMNGateway", "add_event": "BPMNEvent"}
+    _REF_RENAME_ACTIONS = frozenset({"modify_node"})
+    _REF_REMOVE_ACTIONS = frozenset({"remove_element"})
 
-    @staticmethod
-    def _preview_register_element(
-        preview: Dict[str, Any], element: Dict[str, Any], *aliases: Optional[str],
-    ) -> Dict[str, Any]:
-        for alias in aliases:
-            if alias:
-                preview[alias] = element
-        return preview
+    def _resolve_element_ref(self, ref: Optional[str], elements: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        return self._bpmn_resolve(ref, elements)
 
-    @staticmethod
-    def _preview_remove_element(preview: Dict[str, Any], element: Dict[str, Any]) -> Dict[str, Any]:
-        keys_to_remove = [key for key, candidate in preview.items() if candidate is element]
-        for key in keys_to_remove:
-            preview.pop(key, None)
-        return preview
-
-    def _apply_preview_mod(self, mod: Dict[str, Any], elements: Dict[str, Any]) -> Dict[str, Any]:
-        """Return a preview element map after applying the modification.
-
-        This lets later modifications in the same batch resolve refs to nodes
-        added or renamed earlier in the response, while preserving the existing
-        guardrail against references to elements that never existed.
-        """
-        if not isinstance(elements, dict):
-            return {}
-
-        preview = dict(elements)
-        action = mod.get("action", "")
-        target = mod.get("target") or {}
+    def _preview_added_element(self, mod: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Carry the task/gateway/event subtype so type-label lookups still work."""
+        element = super()._preview_added_element(mod)
+        if element is None:
+            return None
         changes = mod.get("changes") or {}
-
+        action = mod.get("action")
         if action == "add_task":
-            name = target.get("nodeName") or changes.get("name")
-            if name:
-                element = {"type": "BPMNTask", "name": name, "taskType": changes.get("taskType", "default")}
-                preview = self._preview_register_element(
-                    preview, element, target.get("nodeId"), target.get("nodeName"), changes.get("name"),
-                )
-            return preview
-
-        if action == "add_gateway":
-            name = target.get("nodeName") or changes.get("name")
-            if name:
-                element = {
-                    "type": "BPMNGateway", "name": name, "gatewayType": changes.get("gatewayType", "exclusive"),
-                }
-                preview = self._preview_register_element(
-                    preview, element, target.get("nodeId"), target.get("nodeName"), changes.get("name"),
-                )
-            return preview
-
-        if action == "add_event":
-            name = target.get("nodeName") or changes.get("name")
-            event_kind = changes.get("eventKind", "intermediate")
-            if name:
-                element = {"type": f"BPMN{event_kind.capitalize()}Event", "name": name}
-                preview = self._preview_register_element(
-                    preview, element, target.get("nodeId"), target.get("nodeName"), changes.get("name"),
-                )
-            return preview
-
-        if action == "modify_node":
-            ref = target.get("nodeId") or target.get("nodeName")
-            element = self._bpmn_resolve(ref, preview)
-            if element is None:
-                return preview
-            new_name = changes.get("name")
-            if new_name and new_name != element.get("name"):
-                updated = dict(element)
-                updated["name"] = new_name
-
-                matched_key = None
-                for key, candidate in preview.items():
-                    if candidate is element:
-                        matched_key = key
-                        break
-
-                if matched_key is not None:
-                    for key, candidate in list(preview.items()):
-                        if candidate is element:
-                            preview[key] = updated
-                    preview.setdefault(new_name, updated)
-                return preview
-
-            return preview
-
-        if action == "remove_element":
-            ref = target.get("nodeId") or target.get("nodeName")
-            matched_key = None
-            matched_element = None
-            for key, candidate in preview.items():
-                if key == ref:
-                    matched_key = key
-                    matched_element = candidate
-                    break
-                if isinstance(candidate, dict) and (candidate.get("name") or "").lower() == (ref or "").lower():
-                    matched_key = key
-                    matched_element = candidate
-                    break
-
-            if matched_key is not None:
-                preview = self._preview_remove_element(preview, matched_element)
-            return preview
-
-        return preview
-
-    def _validate_mod_refs(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        """Drop modifications whose element refs cannot be resolved in the current model.
-
-        If all modifications are dropped, converts the result to an assistant_message
-        so the user gets a clear explanation rather than a silent no-op.
-        """
-        elements = self._elements
-        if not elements or result.get("action") != "modify_model":
-            return result
-
-        if "modifications" in result:
-            mods = result["modifications"]
-            preview_elements = dict(elements)
-            valid = []
-            for mod in mods:
-                if self._ref_exists(mod, preview_elements):
-                    valid.append(mod)
-                    preview_elements = self._apply_preview_mod(mod, preview_elements)
-            dropped = len(mods) - len(valid)
-            if dropped:
-                logger.info(f"[BPMN] Dropped {dropped} modification(s) with unresolved element ref(s)")
-            if not valid:
-                return {
-                    "action": "assistant_message",
-                    "message": (
-                        "I couldn't find the element(s) you described in the current diagram. "
-                        "Please check the names and try again."
-                    ),
-                }
-            result = dict(result)
-            result["modifications"] = valid
-            return result
-
-        if "modification" in result:
-            if not self._ref_exists(result["modification"], elements):
-                logger.info("[BPMN] Dropped modification with unresolved element ref")
-                return {
-                    "action": "assistant_message",
-                    "message": (
-                        "I couldn't find that element in the current diagram. "
-                        "Please check the name and try again."
-                    ),
-                }
-
-        return result
+            element["taskType"] = changes.get("taskType") or "default"
+        elif action == "add_gateway":
+            element["gatewayType"] = changes.get("gatewayType") or "exclusive"
+        elif action == "add_event":
+            element["type"] = f"BPMN{(changes.get('eventKind') or 'intermediate').capitalize()}Event"
+        return element

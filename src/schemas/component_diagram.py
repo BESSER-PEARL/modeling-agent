@@ -38,13 +38,13 @@ _MODIFICATION_STEREOTYPE = Literal[
     "solution", "supervision", "skill", "tool", "llm", "db", "rag", "subsystem",
 ]
 
-_COMPONENT_STEREOTYPE_DESCRIPTION = (
+COMPONENT_STEREOTYPE_DESCRIPTION = (
     "Agents: 'solution' (an agent that does the work) or 'supervision' (an agent "
     "that oversees other agents). Capabilities (not agents): 'llm' (language "
     "model), 'db' (database/storage), 'rag' (retrieval-augmented knowledge "
     "source), 'tool' (callable utility), 'skill' (reusable capability)."
 )
-_DEPENDENCY_STEREOTYPE_DESCRIPTION = (
+DEPENDENCY_STEREOTYPE_DESCRIPTION = (
     "Agent→agent: 'delegates' (hands off a task), 'supervises' (supervision agent "
     "over a solution agent), 'revises' (feedback/revision loop), 'collaborates' "
     "(peer exchange). Agent→capability: 'has' (owns the capability), 'uses' "
@@ -66,13 +66,13 @@ class ComponentSpec(BaseModel):
     id: str = Field(min_length=1, max_length=40, description="Short unique slug (e.g. 'user_service').")
     name: str = Field(max_length=60, description="Human-readable component name (e.g. 'UserService').")
     owner: Optional[str] = Field(default=None, description="Id of the subsystem that contains this component, or null.")
-    stereotype: _COMPONENT_STEREOTYPE = Field(default="solution", description=_COMPONENT_STEREOTYPE_DESCRIPTION)
+    stereotype: _COMPONENT_STEREOTYPE = Field(default="solution", description=COMPONENT_STEREOTYPE_DESCRIPTION)
 
 
 class ComponentDependencySpec(BaseModel):
     source: str = Field(description="Source component/subsystem id.")
     target: str = Field(description="Target component/subsystem id.")
-    stereotype: _DEPENDENCY_STEREOTYPE = Field(default="uses", description=_DEPENDENCY_STEREOTYPE_DESCRIPTION)
+    stereotype: _DEPENDENCY_STEREOTYPE = Field(default="uses", description=DEPENDENCY_STEREOTYPE_DESCRIPTION)
 
 
 class SystemComponentSpec(BaseModel):
@@ -94,14 +94,14 @@ class ComponentModificationChanges(BaseModel):
     name: Optional[str] = Field(default=None, max_length=60, description="New name for modify_element, or the name for add_component/add_subsystem.")
     stereotype: Optional[_MODIFICATION_STEREOTYPE] = Field(
         default=None,
-        description="add_component / modify_element: a component stereotype (" + _COMPONENT_STEREOTYPE_DESCRIPTION
+        description="add_component / modify_element: a component stereotype (" + COMPONENT_STEREOTYPE_DESCRIPTION
         + ") — or 'subsystem' for add_subsystem.",
     )
     owner: Optional[str] = Field(default=None, description="Parent subsystem name/id for add_component/add_subsystem (null for top-level).")
     source: Optional[str] = Field(default=None, description="Source element name/id for add_dependency/remove_dependency.")
     target: Optional[str] = Field(default=None, description="Target element name/id for add_dependency/remove_dependency.")
     dependencyStereotype: Optional[_DEPENDENCY_STEREOTYPE] = Field(
-        default=None, description="add_dependency: " + _DEPENDENCY_STEREOTYPE_DESCRIPTION,
+        default=None, description="add_dependency: " + DEPENDENCY_STEREOTYPE_DESCRIPTION,
     )
 
 

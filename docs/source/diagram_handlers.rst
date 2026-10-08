@@ -602,6 +602,16 @@ Modification actions: ``add_node``, ``add_artifact``, ``add_component``,
 ``add_dependency``, ``modify_element``, ``remove_element``,
 ``remove_dependency``.
 
+Both handlers extend ``ArchitectureDiagramHandler``
+(``src/diagram_handlers/core/architecture_handler.py``), which owns the shared
+complete-system / modification / fallback flow and the shared modification
+rules. They also use the base handler's **reference guardrail**
+(``_validate_mod_refs``, shared with BPMN): a modification naming an element
+that is neither in the current model nor added or renamed earlier in the same
+batch is dropped instead of being applied to a substitute. The element map is
+passed to it explicitly per request — handlers are singletons shared by every
+session, so no request state is kept on the handler.
+
 QuantumCircuitDiagramHandler
 ----------------------------
 
