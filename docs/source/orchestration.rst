@@ -162,7 +162,9 @@ Three-Level Resolution
 .. code-block:: text
 
    Level 0: The classifier's target_diagram_type
-     When the unified classifier named a target, it wins.
+     When the unified classifier named a target, it wins. Only diagrams
+     the message explicitly NAMES (Level 1 keywords) are added as extra
+     targets; Level 2 pattern hits never append a second diagram.
             │
             ▼ (classifier left it NULL)
    Level 1: Explicit keywords (KEYWORD_TARGETS)
@@ -174,6 +176,8 @@ Three-Level Resolution
      "quantum circuit" → QuantumCircuitDiagram
      "bpmn" / "business process" → BPMN
      "user profile" / "persona" → UserDiagram
+     "component diagram" → ComponentDiagram
+     "deployment diagram" → DeploymentDiagram
             │
             ▼ (no keyword match)
    Level 2: Discriminating pattern rules (_IMPLICIT_PATTERNS)
@@ -186,7 +190,7 @@ Three-Level Resolution
      project snapshot in priority order:
        ClassDiagram > ObjectDiagram > StateMachineDiagram >
        AgentDiagram > GUINoCodeDiagram > QuantumCircuitDiagram >
-       BPMN > UserDiagram
+       BPMN > UserDiagram > ComponentDiagram > DeploymentDiagram
 
 Level 1: Keyword Matching
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -219,6 +223,18 @@ Direct string matching against the user message (``KEYWORD_TARGETS``):
    * - ``"user profile"``, ``"user model"``, ``"user diagram"``,
        ``"target user"``, ``"user persona"``, ``"persona"``
      - ``UserDiagram``
+   * - ``"component diagram"``, ``"component model"``, ``"uml component"``
+     - ``ComponentDiagram``
+   * - ``"deployment diagram"``, ``"deployment model"``
+     - ``DeploymentDiagram``
+
+.. note::
+
+   Component and Deployment keywords are deliberately limited to phrases that
+   **name** the diagram. Generic architecture vocabulary ("system
+   architecture", "software architecture", "subsystem", "service
+   architecture") is ordinary class-diagram phrasing and resolves through the
+   normal levels instead.
 
 Level 2: Discriminating Pattern Rules
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -273,6 +289,9 @@ How patterns work:
      - ``gui``, ``user interface``, ``wireframe``, ``no-code``, ``grapesjs``,
        or ``frontend``/``screen``/``page``/``layout``/``dashboard``
        co-occurring with ``design``/``create``/``build``
+   * - ``ComponentDiagram`` / ``DeploymentDiagram``
+     - the diagram-naming phrases above, including plurals and a ``uml``
+       prefix (``components diagram``, ``uml deployment model``)
    * - ``ClassDiagram``
      - ``structural``, ``domain model``, ``business model``,
        ``system model``, or ``class``/``entity`` co-occurring with
