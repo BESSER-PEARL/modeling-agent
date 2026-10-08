@@ -22,6 +22,7 @@ from model_config import MODEL_GENERATION_SMALL
 from protocol.adapters import parse_assistant_request
 from protocol.types import AssistantRequest
 from utilities.message_limits import UserMessageTooLong
+from protocol.v4_to_v3 import ModelConversionError
 from memory import get_memory, memory_session_key
 from session_helpers import (
     get_user_message,
@@ -119,7 +120,7 @@ def _ensure_unified_classification(session: Session) -> bool:
             classification.generator_type,
             classification.reason,
         )
-    except UserMessageTooLong:
+    except (UserMessageTooLong, ModelConversionError):
         return True
     except Exception:
         logger.exception("unified classifier hook failed; falling back to BAF")
@@ -138,7 +139,7 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     # and stop — never re-run generation or consume a pending flow.
     try:
         _replay_req = parse_assistant_request(session)
-    except UserMessageTooLong as error:
+    except (UserMessageTooLong, ModelConversionError) as error:
         # reply_message parses the request again; use the wire envelope here
         # so rejection itself cannot recurse into the same parsing error.
         session.reply(json.dumps({"action": "assistant_message", "message": str(error), "isError": True}))

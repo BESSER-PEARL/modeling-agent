@@ -28,9 +28,14 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+class ModelConversionError(ValueError):
+    """A v4 diagram could not be read; the message is safe to show the user."""
 
 __all__ = [
     "NON_UML_DIAGRAM_TYPES",
@@ -834,8 +839,9 @@ def normalize_model(model: Any, diagram_type: Optional[str] = None) -> Any:
     """Return a v3 view of *model*: v4 is converted, everything else is returned as-is.
 
     A v3 model that embeds a v4 ``referenceDiagramData`` gets that reference
-    converted (in a shallow copy). Conversion errors are logged and the
-    original model is returned, so a malformed diagram never breaks a request.
+    converted (in a shallow copy). A conversion error raises
+    ``ModelConversionError``: downstream reads only v3, so passing the v4 model
+    through would look like an empty diagram that a create could overwrite.
     """
     if not isinstance(model, dict):
         return model
@@ -847,12 +853,14 @@ def normalize_model(model: Any, diagram_type: Optional[str] = None) -> Any:
         ref = model.get("referenceDiagramData")
         if is_v4_model(ref):
             return {**model, "referenceDiagramData": convert_v4_model_to_v3(ref)}
-    except Exception:  # pragma: no cover — defensive: keep the request alive
-        logger.warning(
-            "[v4_to_v3] Could not convert %s model; passing it through unchanged",
-            diagram_type or model.get("type") or "diagram",
-            exc_info=True,
-        )
+    except Exception as error:
+        kind = str(diagram_type or model.get("type") or "diagram")
+        logger.error("[v4_to_v3] Could not convert %s model", kind, exc_info=True)
+        label = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", kind)
+        raise ModelConversionError(
+            f"I couldn't read your {label}, so I stopped rather than risk changing it. "
+            "Please reload the editor and try again."
+        ) from error
     return model
 
 

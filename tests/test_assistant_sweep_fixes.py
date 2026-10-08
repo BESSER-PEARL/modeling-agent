@@ -351,3 +351,44 @@ class TestReplyQuality:
                  "relationships": {}}
         handler._drop_phantom_target_ops(spec, model)
         assert SKIPPED_PARTS_NOTE in spec["message"]
+
+
+# ---------------------------------------------------------------------------
+# 6. A v4 model that fails to convert must fail the request, not look empty
+# ---------------------------------------------------------------------------
+
+_V4_CLASS_MODEL = {
+    "version": "4.0.0", "id": "m1", "title": "Class Diagram", "type": "ClassDiagram",
+    "nodes": [{"id": "n1", "type": "class", "position": {"x": 0, "y": 0},
+               "data": {"name": "Book", "attributes": [], "methods": []}}],
+    "edges": [],
+}
+
+
+class TestV4ConversionFailure:
+    def test_conversion_error_is_raised_not_passed_through(self):
+        """Passing the v4 model through left downstream (which reads v3
+        ``elements``) with an empty diagram, so a create could replace it."""
+        import pytest
+        from protocol import v4_to_v3
+
+        with patch.object(v4_to_v3, "convert_v4_model_to_v3", side_effect=KeyError("data")):
+            with pytest.raises(v4_to_v3.ModelConversionError):
+                v4_to_v3.normalize_model(_V4_CLASS_MODEL, "ClassDiagram")
+
+    def test_request_is_answered_with_an_error(self):
+        from protocol import v4_to_v3
+        import state_bodies
+        from tests.conftest import make_session
+
+        session = make_session(
+            "create a complete library system",
+            project_snapshot={"id": "p1", "diagrams": {
+                "ClassDiagram": [{"id": "t1", "title": "Class Diagram", "model": _V4_CLASS_MODEL}]}},
+        )
+        with patch.object(v4_to_v3, "convert_v4_model_to_v3", side_effect=KeyError("data")):
+            assert state_bodies._ensure_unified_classification(session) is True
+            assert state_bodies._common_preamble(session) is None
+        reply = session.last_reply_json()
+        assert reply["isError"] is True
+        assert "class diagram" in reply["message"].lower()
