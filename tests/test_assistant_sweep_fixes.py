@@ -383,6 +383,7 @@ class TestV4ConversionFailure:
 
         session = make_session(
             "create a complete library system",
+            active_model=_V4_CLASS_MODEL,
             project_snapshot={"id": "p1", "diagrams": {
                 "ClassDiagram": [{"id": "t1", "title": "Class Diagram", "model": _V4_CLASS_MODEL}]}},
         )
@@ -392,3 +393,12 @@ class TestV4ConversionFailure:
         reply = session.last_reply_json()
         assert reply["isError"] is True
         assert "class diagram" in reply["message"].lower()
+
+    def test_broken_background_tab_does_not_block_requests(self):
+        """Only the active model fails the request; another tab is kept as-is."""
+        from protocol import v4_to_v3
+
+        snapshot = {"id": "p1", "diagrams": {
+            "ClassDiagram": [{"id": "t1", "title": "Class Diagram", "model": _V4_CLASS_MODEL}]}}
+        with patch.object(v4_to_v3, "convert_v4_model_to_v3", side_effect=KeyError("data")):
+            assert v4_to_v3.normalize_project_snapshot(snapshot) is snapshot

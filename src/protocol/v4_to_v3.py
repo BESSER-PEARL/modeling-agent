@@ -865,14 +865,22 @@ def normalize_model(model: Any, diagram_type: Optional[str] = None) -> Any:
 
 
 def _normalize_entry(entry: Any, diagram_type: str) -> Any:
-    """One project-snapshot tab: ``{id, title, model}`` (or a bare model)."""
+    """One project-snapshot tab: ``{id, title, model}`` (or a bare model).
+
+    A tab that cannot be converted is kept as-is (already logged): only the
+    active model must fail the request, so one broken background tab does not
+    block every request.
+    """
     if not isinstance(entry, dict):
         return entry
-    if isinstance(entry.get("model"), dict):
-        converted = normalize_model(entry["model"], diagram_type)
-        return entry if converted is entry["model"] else {**entry, "model": converted}
-    if is_v4_model(entry):
-        return normalize_model(entry, diagram_type)
+    try:
+        if isinstance(entry.get("model"), dict):
+            converted = normalize_model(entry["model"], diagram_type)
+            return entry if converted is entry["model"] else {**entry, "model": converted}
+        if is_v4_model(entry):
+            return normalize_model(entry, diagram_type)
+    except ModelConversionError:
+        return entry
     return entry
 
 
