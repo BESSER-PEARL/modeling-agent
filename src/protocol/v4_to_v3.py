@@ -890,12 +890,13 @@ def normalize_model(model: Any, diagram_type: Optional[str] = None) -> Any:
     return model
 
 
-def _normalize_entry(entry: Any, diagram_type: str) -> Any:
+def _normalize_entry(entry: Any, diagram_type: str, is_active: bool = False) -> Any:
     """One project-snapshot tab: ``{id, title, model}`` (or a bare model).
 
-    A tab that cannot be converted is kept as-is (already logged): only the
-    active model must fail the request, so one broken background tab does not
-    block every request.
+    A tab that cannot be converted raises ``ModelConversionError`` when it is
+    the active tab. Any other failed tab keeps its id and title with
+    ``model: None`` (a bare model becomes ``None``), so one broken background
+    tab neither blocks every request nor reads as an empty v3 diagram.
     """
     if not isinstance(entry, dict):
         return entry
@@ -906,11 +907,17 @@ def _normalize_entry(entry: Any, diagram_type: str) -> Any:
         if is_v4_model(entry):
             return normalize_model(entry, diagram_type)
     except ModelConversionError:
-        return entry
+        if is_active:
+            raise
+        return {**entry, "model": None} if isinstance(entry.get("model"), dict) else None
     return entry
 
 
-def normalize_project_snapshot(snapshot: Any) -> Any:
+def normalize_project_snapshot(
+    snapshot: Any,
+    active_diagram_type: Optional[str] = None,
+    active_index: Any = 0,
+) -> Any:
     """Convert every v4 diagram model in a project snapshot to v3.
 
     Handles both the multi-tab (``diagrams[T] = [tab, ...]``) and the legacy
@@ -918,6 +925,10 @@ def normalize_project_snapshot(snapshot: Any) -> Any:
     ``GUINoCodeDiagram`` / ``QuantumCircuitDiagram`` buckets are left untouched.
     Returns the input object itself when nothing needed converting, otherwise a
     new snapshot (the input is never mutated).
+
+    The tab at ``active_index`` of ``active_diagram_type`` is the active tab: if
+    it cannot be converted, ``ModelConversionError`` propagates (see
+    ``_normalize_entry``).
     """
     if not isinstance(snapshot, dict):
         return snapshot
@@ -931,15 +942,19 @@ def normalize_project_snapshot(snapshot: Any) -> Any:
         if diagram_type in NON_UML_DIAGRAM_TYPES:
             new_diagrams[diagram_type] = payload
             continue
+        is_active_type = diagram_type == active_diagram_type
         if isinstance(payload, list):
-            new_list = [_normalize_entry(item, diagram_type) for item in payload]
+            new_list = [
+                _normalize_entry(item, diagram_type, is_active_type and index == active_index)
+                for index, item in enumerate(payload)
+            ]
             if any(a is not b for a, b in zip(new_list, payload)):
                 changed = True
                 new_diagrams[diagram_type] = new_list
             else:
                 new_diagrams[diagram_type] = payload
         else:
-            new_entry = _normalize_entry(payload, diagram_type)
+            new_entry = _normalize_entry(payload, diagram_type, is_active_type)
             changed = changed or new_entry is not payload
             new_diagrams[diagram_type] = new_entry
 

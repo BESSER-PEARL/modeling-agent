@@ -394,11 +394,60 @@ class TestV4ConversionFailure:
         assert reply["isError"] is True
         assert "class diagram" in reply["message"].lower()
 
+    def test_active_snapshot_tab_fails_the_request_without_active_model(self):
+        """The model is read from ``projectSnapshot``; the guard must not depend
+        on the deprecated ``activeModel`` field being sent alongside it."""
+        from protocol import v4_to_v3
+        import state_bodies
+        from tests.conftest import make_session
+
+        session = make_session(
+            "create a complete library system",
+            project_snapshot={"id": "p1", "diagrams": {
+                "ClassDiagram": [{"id": "t1", "title": "Class Diagram", "model": _V4_CLASS_MODEL}]}},
+        )
+        with patch.object(v4_to_v3, "convert_v4_model_to_v3", side_effect=KeyError("data")):
+            assert state_bodies._ensure_unified_classification(session) is True
+            assert state_bodies._common_preamble(session) is None
+        reply = session.last_reply_json()
+        assert reply["isError"] is True
+        assert "class diagram" in reply["message"].lower()
+
     def test_broken_background_tab_does_not_block_requests(self):
-        """Only the active model fails the request; another tab is kept as-is."""
+        """Only the active tab fails the request. A broken background tab keeps
+        its id and title with ``model: None``, so it never reads as an empty diagram."""
+        from protocol import v4_to_v3
+        from protocol.adapters import parse_v2_payload
+
+        payload = {
+            "message": "add a state Idle",
+            "context": {
+                "activeDiagramType": "StateMachineDiagram",
+                "projectSnapshot": {"id": "p1", "diagrams": {
+                    "ClassDiagram": [{"id": "t1", "title": "Class Diagram", "model": _V4_CLASS_MODEL}],
+                    "StateMachineDiagram": [{"id": "s1", "title": "States", "model": {
+                        "version": "3.0.0", "type": "StateMachineDiagram",
+                        "elements": {}, "relationships": {}}}],
+                }},
+            },
+        }
+        with patch.object(v4_to_v3, "convert_v4_model_to_v3", side_effect=KeyError("data")):
+            request = parse_v2_payload(payload)
+        tab = request.context.project_snapshot["diagrams"]["ClassDiagram"][0]
+        assert tab == {"id": "t1", "title": "Class Diagram", "model": None}
+        assert request.context.active_model["type"] == "StateMachineDiagram"
+
+    def test_only_the_selected_tab_of_the_active_type_fails(self):
+        """A broken tab of the active type that is not the selected one is a background tab."""
+        import pytest
         from protocol import v4_to_v3
 
-        snapshot = {"id": "p1", "diagrams": {
-            "ClassDiagram": [{"id": "t1", "title": "Class Diagram", "model": _V4_CLASS_MODEL}]}}
+        v3_tab = {"id": "t0", "title": "Ok", "model": {
+            "version": "3.0.0", "type": "ClassDiagram", "elements": {}, "relationships": {}}}
+        broken = {"id": "t1", "title": "Broken", "model": _V4_CLASS_MODEL}
+        snapshot = {"id": "p1", "diagrams": {"ClassDiagram": [v3_tab, broken]}}
         with patch.object(v4_to_v3, "convert_v4_model_to_v3", side_effect=KeyError("data")):
-            assert v4_to_v3.normalize_project_snapshot(snapshot) is snapshot
+            out = v4_to_v3.normalize_project_snapshot(snapshot, "ClassDiagram", 0)
+            assert out["diagrams"]["ClassDiagram"] == [v3_tab, {**broken, "model": None}]
+            with pytest.raises(v4_to_v3.ModelConversionError):
+                v4_to_v3.normalize_project_snapshot(snapshot, "ClassDiagram", 1)

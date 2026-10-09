@@ -212,17 +212,19 @@ Each tab's ``model`` arrives in one of two shapes:
 Everything downstream of the protocol layer reads **v3 only**. ``parse_v2_payload``
 therefore calls ``_normalize_context_models`` once, at the inbound boundary.
 It uses ``src/protocol/v4_to_v3.py`` (``normalize_project_snapshot`` /
-``normalize_model``) to convert every model whose ``version`` starts with
-``"4."`` or that has a ``nodes`` list, in ``projectSnapshot`` and in the legacy
-``activeModel``. The conversion is the Python inverse of the frontend migrator
+``normalize_model``) to convert every model in ``projectSnapshot`` whose
+``version`` starts with ``"4."`` or that has a ``nodes`` list. A legacy
+``activeModel`` field is ignored: the current model is always read from the
+snapshot. The conversion is the Python inverse of the frontend migrator
 ``packages/library/lib/utils/versionConverter.ts``. The canonical mapping is
 BESSER's ``docs/source/migrations/uml-v4-shape.md``. The conversion rules:
 
 * v3 models, ``GUINoCodeDiagram`` and ``QuantumCircuitDiagram`` pass through
-  untouched. The input is never mutated. An active model that fails to convert
-  fails the request with ``ModelConversionError`` (a readable reply, never an
-  edit against an apparently empty diagram); a background snapshot tab that
-  fails is passed through as-is.
+  untouched. The input is never mutated. If the active tab (``activeDiagramType``
+  at its ``currentDiagramIndices`` entry) fails to convert, the request fails
+  with ``ModelConversionError`` (a readable reply, never an edit against an
+  apparently empty diagram). A background tab that fails keeps its ``id`` and
+  ``title`` with ``model: null``.
 * ``class`` + ``data.stereotype`` (``Abstract`` / ``Interface`` / ``Enumeration``,
   case-insensitive) become ``AbstractClass`` / ``Interface`` / ``Enumeration``.
   Inline ``attributes`` / ``methods`` / ``oclConstraints`` rows become owned

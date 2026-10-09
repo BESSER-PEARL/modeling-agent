@@ -1061,11 +1061,13 @@ class TestAdapterBoundary:
             "target": {"className": "Order", "attributeName": "total"}}}
         assert handler._drop_phantom_target_ops(spec, model) == []
 
-    def test_active_model_is_normalized_too(self):
-        payload = make_v2_payload("hi", "ClassDiagram", active_model=copy.deepcopy(V4_CLASS))
+    def test_legacy_active_model_is_ignored(self):
+        """The model comes from ``projectSnapshot``; ``activeModel`` is neither read nor converted."""
+        snapshot = {"diagrams": {"ClassDiagram": [{"id": "c", "model": copy.deepcopy(V4_CLASS)}]}}
+        payload = make_v2_payload("hi", "ClassDiagram", active_model={"version": "4.0.0", "nodes": "broken"},
+                                  project_snapshot=snapshot)
         request = parse_v2_payload(payload)
-        active = request.raw_payload["context"]["activeModel"]
-        assert "elements" in active and "nodes" not in active
+        assert "elements" in request.current_model and "nodes" not in request.current_model
 
     def test_v3_payload_is_unchanged(self):
         snapshot = {"diagrams": {"ClassDiagram": [{"id": "c", "model": copy.deepcopy(MINIMAL_CLASS_MODEL)}]}}
