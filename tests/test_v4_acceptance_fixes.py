@@ -4,7 +4,6 @@ Each test reproduces one live finding from the browser sweep
 (``wave/agent-behaviour/results.jsonl``) and failed against the pre-fix code.
 """
 
-import json
 import time
 from unittest.mock import MagicMock, patch
 

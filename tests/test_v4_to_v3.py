@@ -8,6 +8,8 @@ hand-written to match what that migrator emits for the paired v3 fixtures.
 """
 
 import copy
+import json
+from pathlib import Path
 
 import pytest
 
@@ -920,6 +922,56 @@ class TestArchitectureAndAgenticRoundTrip:
                 "trust=75, reflection=cross, agentDiagramRef=set)") in detail
         assert "[merge] (Gateway, gatewayType=parallel, lane=Supervisor Agent, agentic=true" in detail
         assert "role=merging, governanceDsl=set" in detail
+
+
+# ---------------------------------------------------------------------------
+# Editor-produced fixture: the Agentic Bug-fixing template as the editor's own
+# migrator writes it (v4) and as the v3 editor shipped it.
+# ---------------------------------------------------------------------------
+
+_EDITOR_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "editor_v4"
+# Layout and styling fields the v4 shape stores differently (positions are
+# parent-relative, paths are recomputed); everything else must survive.
+_LAYOUT_FIELDS = {"bounds", "owner", "path", "id", "highlight", "fillColor", "strokeColor", "textColor",
+                  "direction"}
+
+
+def _empty(value):
+    return value in (None, "", [], {}, False)
+
+
+def _editor_project(version):
+    path = _EDITOR_FIXTURES / f"bug_fixing.{version}.json"
+    return json.loads(path.read_text(encoding="utf-8"))["project"]
+
+
+class TestEditorProducedFixture:
+    def test_bug_fixing_template_normalizes_to_the_v3_template(self):
+        converted = normalize_project_snapshot(_editor_project("v4"))
+        reference = _editor_project("v3")
+        assert set(converted["diagrams"]) == set(reference["diagrams"])
+        mismatches = []
+        for diagram_type, tabs in reference["diagrams"].items():
+            for index, tab in enumerate(tabs):
+                model = converted["diagrams"][diagram_type][index]["model"]
+                assert model["version"].startswith("3."), (diagram_type, index)
+                for kind in ("elements", "relationships"):
+                    for element_id, expected in tab["model"][kind].items():
+                        actual = model[kind].get(element_id)
+                        if actual is None:
+                            mismatches.append((diagram_type, kind, element_id, "missing"))
+                            continue
+                        for key, value in expected.items():
+                            # v3 ``actions`` is an alias of ``bodies`` (model_context reads either).
+                            if key in _LAYOUT_FIELDS or (key == "actions" and expected["type"] == "AgentState"):
+                                continue
+                            if key in ("source", "target") and isinstance(value, dict):
+                                if actual[key].get("element") != value.get("element"):
+                                    mismatches.append((diagram_type, element_id, key))
+                                continue
+                            if actual.get(key) != value and not (_empty(value) and _empty(actual.get(key))):
+                                mismatches.append((diagram_type, element_id, key, value, actual.get(key)))
+        assert mismatches == []
 
 
 # ---------------------------------------------------------------------------
