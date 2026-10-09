@@ -280,6 +280,12 @@ def test_component_guardrail_drops_dependency_with_missing_source(monkeypatch):
     assert result["action"] == "assistant_message"
 
 
+def test_component_rename_reads_as_a_rename():
+    from diagram_handlers.types.component_diagram_handler import ComponentDiagramHandler
+    mod = {"action": "modify_element", "target": {"elementName": "Planner"}, "changes": {"name": "Orchestrator"}}
+    assert ComponentDiagramHandler(None)._describe_mod(mod) == "Renamed **Planner** to **Orchestrator**."
+
+
 # ---------------------------------------------------------------------------
 # Suggestions
 # ---------------------------------------------------------------------------

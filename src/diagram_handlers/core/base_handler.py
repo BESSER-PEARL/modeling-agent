@@ -379,6 +379,7 @@ class BaseDiagramHandler(ABC):
     # Element edits whose changes.name is a rename of the element itself.
     _RENAMING_ACTIONS = frozenset({
         'modify_class', 'modify_state', 'modify_node', 'modify_object', 'modify_intent',
+        'modify_element',
     })
 
     def _describe_mod(self, mod: dict, elements: Optional[Dict[str, Any]] = None) -> str:
