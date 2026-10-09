@@ -49,8 +49,8 @@ def unsupported_editor_reply(active_diagram_type):
     return (
         f"The assistant doesn't support the **{label}** editor yet, so please "
         "build it directly on the canvas. I can help with class, object, state "
-        "machine, agent, BPMN, GUI, quantum and user diagrams, and generate code "
-        "from them."
+        "machine, agent, BPMN, component, deployment, GUI, quantum and user "
+        "diagrams, and generate code from them."
     )
 
 

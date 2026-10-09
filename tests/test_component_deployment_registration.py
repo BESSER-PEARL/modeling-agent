@@ -10,7 +10,7 @@ import pytest
 from diagram_handlers.core.base_handler import BaseDiagramHandler
 from orchestrator.request_planner import _try_heuristic_decomposition
 from protocol.types import AssistantRequest, SUPPORTED_DIAGRAM_TYPES, WorkspaceContext
-from reply_copy import META_ANSWER, OUT_OF_SCOPE_REDIRECT
+from reply_copy import META_ANSWER, OUT_OF_SCOPE_REDIRECT, unsupported_editor_reply
 from unified_classifier import (
     _RELEVANT_DIAGRAM_TYPES,
     _SYSTEM_PROMPT,
@@ -82,6 +82,11 @@ def test_planner_single_diagram_heuristic(message, diagram_type):
 def test_capability_copy_mentions_new_types():
     for text in (OUT_OF_SCOPE_REDIRECT, META_ANSWER):
         assert "component and" in text and "deployment diagrams" in text
+
+
+def test_unsupported_editor_reply_lists_new_types():
+    text = unsupported_editor_reply("NNDiagram")
+    assert "component" in text and "deployment" in text
 
 
 def test_fallback_and_quick_responses_list_new_types():
