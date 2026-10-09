@@ -558,7 +558,7 @@ def test_agentic_bpmn_schema_preserves_lanes_and_governance():
                 "isAgentic": True,
                 "gatewayRole": "merging",
                 "trustScore": 90,
-                "governanceDsl": "Policy: MajorityPolicy",
+                "governancePolicy": "MajorityPolicy",
             },
         ],
     ).model_dump()
@@ -566,7 +566,7 @@ def test_agentic_bpmn_schema_preserves_lanes_and_governance():
     assert spec["pools"][0]["lanes"][0]["role"] == "supervision"
     assert spec["pools"][0]["lanes"][1]["multiplicity"] == 3
     assert "swimlanes" not in spec["pools"][0]
-    assert spec["nodes"][1]["governanceDsl"] == "Policy: MajorityPolicy"
+    assert spec["nodes"][1]["governancePolicy"] == "MajorityPolicy"
     assert spec["nodes"][1]["laneId"] == "supervisor"
 
 

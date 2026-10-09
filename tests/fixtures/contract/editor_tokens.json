@@ -10,7 +10,8 @@
       "packages/editor/src/main/packages/common/agentic/agentic-tokens.ts",
       "packages/webapp/src/main/features/assistant/services/converters/BPMNDiagramConverter.ts",
       "packages/webapp/src/main/features/assistant/services/converters/ComponentDiagramConverter.ts",
-      "packages/webapp/src/main/features/assistant/services/converters/DeploymentDiagramConverter.ts"
+      "packages/webapp/src/main/features/assistant/services/converters/DeploymentDiagramConverter.ts",
+      "packages/library/lib/services/bpmnCollaborationBlocks.ts"
     ],
     "note": "Copy of the editor-side vocabulary the modeling agent must emit. Update it together with the editor."
   },
@@ -22,7 +23,8 @@
     "BPMNGatewayType": ["complex", "event-based", "exclusive", "inclusive", "parallel"],
     "laneFields": ["id", "name", "isAgentic", "role", "trustScore", "multiplicity", "agentDiagramRef"],
     "taskFields": ["isAgentic", "reflectionMode", "trustScore", "agentDiagramRef", "reflectionReviewerLaneId"],
-    "gatewayFields": ["isAgentic", "gatewayRole", "trustScore", "governanceDsl"],
+    "gatewayFields": ["isAgentic", "gatewayRole", "trustScore", "governancePolicy"],
+    "GovPolicyType": ["MajorityPolicy", "AbsoluteMajorityPolicy", "LeaderDrivenPolicy", "ConsensusPolicy"],
     "poolFields": ["id", "name", "lanes"],
     "flowFields": ["source", "target", "name"]
   },

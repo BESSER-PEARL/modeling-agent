@@ -74,7 +74,7 @@ A2. add_pool: target.nodeName = the new pool's name. add_swimlane: target.nodeNa
 A3. modify_swimlane / remove_swimlane: target.swimlaneName = the lane's name or [id]. remove_pool: target.poolName = the pool's name or [id].
 A4. Lane role is exactly 'solution' (an agent that does the work) or 'supervision' (an agent that oversees other agents). multiplicity is the swarm size, an integer >= 1.
 A5. To place a NEW node in an existing lane, set changes.owner to the lane's name or [id].
-A6. modify_node on a task may set isAgentic, reflectionMode ('none', 'self', 'cross', 'human'), reflectionReviewerLaneId (the reviewing lane's [id], only with reflectionMode 'cross'), trustScore (0-100) and agentDiagramRef; on a gateway: isAgentic, gatewayRole ('diverging' or 'merging'), trustScore and governanceDsl. An agentic gateway must be parallel or inclusive; governanceDsl belongs only on a merging gateway.
+A6. modify_node on a task may set isAgentic, reflectionMode ('none', 'self', 'cross', 'human'), reflectionReviewerLaneId (the reviewing lane's [id], or the name of a lane an earlier add_swimlane of this response creates; only with reflectionMode 'cross'), trustScore (0-100) and agentDiagramRef; on a gateway: isAgentic, gatewayRole ('diverging' or 'merging'), trustScore and governancePolicy. An agentic gateway must be parallel or inclusive; governancePolicy belongs only on a merging gateway and is one of 'MajorityPolicy', 'AbsoluteMajorityPolicy', 'LeaderDrivenPolicy' or 'ConsensusPolicy' (majority, absolute majority, leader-driven, consensus). The editor writes the Governance DSL from it; never write DSL text.
 A7. {AGENT_DIAGRAM_REF_RULE}
 A8. Flows contain only endpoints and labels — never agentic message-flow notation, collaborationMode, or mergingStrategy."""
 
@@ -88,7 +88,7 @@ A2. Lane role is exactly 'solution' (an agent that does the work) or 'supervisio
 A3. multiplicity is the swarm size of an agentic lane (e.g. three reviewer agents → 3); leave it null when the request gives none. Set trustScore (0-100) only when the request states or clearly implies it.
 A4. Every node in a pool sets poolId and every node in a lane sets laneId (owner may repeat laneId). Never use a generated WME/Apollon element id.
 A5. A task performed by an agent sets isAgentic=true and may set reflectionMode: 'self', 'human', or 'cross' with reflectionReviewerLaneId = the id of the reviewing agent lane.
-A6. A gateway that fans work out to agents or merges their results is agentic (isAgentic=true), must be parallel or inclusive, and sets gatewayRole 'diverging' or 'merging'. A merging agentic gateway that decides how the results are accepted carries a non-empty governanceDsl (e.g. 'Policy: MajorityPolicy').
+A6. A gateway that fans work out to agents or merges their results is agentic (isAgentic=true), must be parallel or inclusive, and sets gatewayRole 'diverging' or 'merging'. A merging agentic gateway that decides how the results are accepted sets governancePolicy: 'MajorityPolicy', 'AbsoluteMajorityPolicy', 'LeaderDrivenPolicy' or 'ConsensusPolicy' (the editor writes the Governance DSL from it).
 A7. {AGENT_DIAGRAM_REF_RULE}
 A8. Flows contain only source, target, and name. Never emit flowType, agentic flow fields, collaborationMode, or mergingStrategy."""
 
@@ -739,15 +739,23 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
 
         agentDiagramRef must be one of the project's AgentDiagram ids; a
         reflectionReviewerLaneId must resolve (by [id] or name) to an existing
-        lane and is normalized to that lane's id. Mutates the changes in place.
+        lane and is normalized to that lane's id, or name a lane an earlier
+        add_swimlane of the same batch creates (the editor applies the batch in
+        order and resolves it by name). Mutates the changes in place.
         """
         valid_refs = set(agent_diagram_refs or {})
         lanes = {
             eid: el for eid, el in (elements or {}).items()
             if isinstance(el, dict) and el.get("type") == "BPMNSwimlane"
         }
+        new_lanes: Dict[str, str] = {}
         for mod in mod_list:
-            changes = mod.get("changes") if isinstance(mod, dict) else None
+            if not isinstance(mod, dict):
+                continue
+            new_lane = (mod.get("target") or {}).get("nodeName") if mod.get("action") == "add_swimlane" else None
+            if isinstance(new_lane, str) and new_lane.strip():
+                new_lanes[new_lane.strip().lower()] = new_lane.strip()
+            changes = mod.get("changes")
             if not isinstance(changes, dict):
                 continue
             ref = changes.get("agentDiagramRef")
@@ -761,7 +769,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
                      if (el.get("name") or "").strip().lower() == reviewer.strip().lower()),
                     None,
                 )
-                changes["reflectionReviewerLaneId"] = lane_id
+                changes["reflectionReviewerLaneId"] = lane_id or new_lanes.get(reviewer.strip().lower())
 
     # ------------------------------------------------------------------
     # Single element + fallbacks (required by BaseDiagramHandler)

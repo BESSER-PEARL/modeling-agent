@@ -86,7 +86,7 @@ def test_agentic_bpmn_fixture_survives_the_handler_repair_pass():
     ]
     nodes = {node["id"]: node for node in refined["nodes"]}
     assert nodes["draft"]["reflectionReviewerLaneId"] == "supervisor"
-    assert nodes["merge"]["governanceDsl"] == "Policy: MajorityPolicy"
+    assert nodes["merge"]["governancePolicy"] == "MajorityPolicy"
     assert nodes["review"]["owner"] == "reviewers"
 
 
@@ -112,6 +112,9 @@ class TestBPMNContract:
         assert _enum(node["gatewayRole"]) == self.bpmn["BPMNGatewayRole"]
         assert _enum(node["taskType"]) == self.bpmn["BPMNTaskType"]
         assert set(_enum(node["gatewayType"])) == set(self.bpmn["BPMNGatewayType"])
+        # The agent names a policy; the editor writes the Governance DSL from it.
+        assert _enum(node["governancePolicy"]) == self.bpmn["GovPolicyType"]
+        assert "governanceDsl" not in node
 
     def test_pool_and_flow_fields(self):
         _schema, defs = _defs(SystemBPMNSpec)
@@ -125,6 +128,8 @@ class TestBPMNContract:
         assert _enum(changes["reflectionMode"]) == self.bpmn["BPMNReflectionMode"]
         assert _enum(changes["gatewayRole"]) == self.bpmn["BPMNGatewayRole"]
         assert set(self.bpmn["taskFields"]) | set(self.bpmn["gatewayFields"]) <= set(changes)
+        assert _enum(changes["governancePolicy"]) == self.bpmn["GovPolicyType"]
+        assert "governanceDsl" not in changes
 
 
 class TestComponentContract:

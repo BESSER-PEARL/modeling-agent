@@ -561,11 +561,16 @@ Pizza Store and Car Wash templates are not treated as agent swarms.
 - **Editor vocabulary.** Lane roles are ``solution`` / ``supervision``; lane
   ``multiplicity`` is the integer swarm size; tasks carry ``reflectionMode``
   and, for ``cross`` reflection, ``reflectionReviewerLaneId``; agentic
-  gateways carry ``gatewayRole`` and, when merging, ``governanceDsl``.
+  gateways carry ``gatewayRole`` and, when merging, a ``governancePolicy``
+  keyword (``MajorityPolicy``, ``AbsoluteMajorityPolicy``,
+  ``LeaderDrivenPolicy``, ``ConsensusPolicy``) that the editor expands into the
+  gateway's Governance DSL; the agent never writes DSL text.
 - **Project-scoped references.** ``agentDiagramRef`` is a project AgentDiagram
-  id in the editor. ``model_operations`` passes the project's AgentDiagram ids
-  (``resolve_agent_diagram_refs``) to the handler, the prompt lists them, and
-  any other value is cleared after generation or modification.
+  id in the editor. ``model_operations`` passes the ids of the project's
+  non-empty AgentDiagrams (``resolve_agent_diagram_refs``) to the handler, the
+  prompt lists them, and any other value is cleared after generation or
+  modification. A ``reflectionReviewerLaneId`` must name an existing lane or a
+  lane an earlier ``add_swimlane`` of the same batch creates.
 
 UserProfileDiagramHandler
 -------------------------
