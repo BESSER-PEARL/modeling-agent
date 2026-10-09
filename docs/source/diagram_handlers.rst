@@ -535,7 +535,9 @@ Features
   pool/lane membership, ``_unique_id`` de-duplicates ids.
 - **Reference validation on modification** (``_validate_mod_refs``): a
   modification naming a node that does not exist is rejected rather than
-  applied to an arbitrary substitute.
+  applied to an arbitrary substitute. When only some modifications of a batch
+  are dropped, the reply ends with "I skipped N change(s) that referred to
+  elements I couldn't find."
 - **Positions are not generated here.** The editor's injector lays out the
   process (and any pools/lanes) and routes the flows itself. Flow *type*
   (message vs. sequence) is likewise derived on the editor side from pool
@@ -634,7 +636,8 @@ complete-system / modification / fallback flow and the shared modification
 rules. They also use the base handler's **reference guardrail**
 (``_validate_mod_refs``, shared with BPMN): a modification naming an element
 that is neither in the current model nor added or renamed earlier in the same
-batch is dropped instead of being applied to a substitute. The element map is
+batch is dropped instead of being applied to a substitute, and the reply
+notes how many changes were skipped. The element map is
 passed to it explicitly per request — handlers are singletons shared by every
 session, so no request state is kept on the handler.
 

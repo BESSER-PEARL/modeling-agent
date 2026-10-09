@@ -119,7 +119,8 @@ in manual testing. Walkthrough: `docs/source/contributing/howto_guides.rst`.
    the `_fallback_llm_reply` prompt (shared by `global_fallback_body` and `greetings_body`), optionally a
    `modeling_help_body` branch
 7. `src/protocol/types.py` — `SUPPORTED_DIAGRAM_TYPES`; an `activeDiagramType` outside it is silently normalized
-   to `ClassDiagram`
+   to `ClassDiagram`. In `src/protocol/v4_to_v3.py`, map the type's v4 node / edge types whose v3 name differs in
+   `_NODE_TYPE_V4_TO_V3` / `_EDGE_TYPE_V4_TO_V3`; an unmapped type keeps its v4 name and handlers miss it
 8. `src/diagram_handlers/registry/metadata.py` — `DIAGRAM_TYPE_METADATA`
 9. `src/suggestions.py` — a suggestion list + `_DIAGRAM_SUGGESTION_HANDLERS` entry
 10. Tests — `tests/test_diagram_handlers.py` plus a dedicated `tests/test_<type>.py`
