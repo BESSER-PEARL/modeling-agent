@@ -92,6 +92,14 @@ _AUTO_KEYWORDS = ['auto', '1', 'deterministic', 'fast', 'standard', 'default', '
 # these keywords are the LLM-outage fallback. Older labels stay matched.
 _LLM_KEYWORDS = ['ai-generated', 'llm', '2', 'personali', 'ai', 'experimental', 'custom', 'design']
 
+# The choice buttons send their exact label (model_operations.py). An exact
+# label is unambiguous, so it decides before the classifier, which on
+# 2026-10-12 mapped "Experimental AI design" to the basic CRUD answer.
+_GUI_CHOICE_LABELS = {
+    "basic crud pages": "auto",
+    "experimental ai design": "llm",
+}
+
 
 def _build_auto_gui_message(request: Any, detected_gen: Optional[str] = None) -> str:
     """Build the auto-generate GUI success message, naming the pages created.
@@ -195,6 +203,10 @@ def handle_pending_gui_choice(session: Session) -> bool:
     _flow_answer = getattr(_uc, "pending_flow_answer", None)
     _verdict_usable = _flow_action == "answer" and _flow_answer in (
         "auto", "llm", "cancel")
+
+    _label_answer = _GUI_CHOICE_LABELS.get(_normalize_flow_token(user_msg))
+    if _label_answer:
+        _verdict_usable, _flow_answer = True, _label_answer
 
     if _verdict_usable:
         wants_cancel = _flow_answer == "cancel"

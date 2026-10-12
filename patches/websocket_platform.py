@@ -106,6 +106,17 @@ def _extract_user_id_from_request(request) -> str | None:
     return None
 
 
+def _tab_id_of(payload_str) -> str | None:
+    """The sending tab's id: the editor puts its per-tab session id in the raw
+    payload's ``user_id``, which ``Payload.decode`` drops."""
+    try:
+        data = json.loads(payload_str) if isinstance(payload_str, (str, bytes)) else payload_str
+    except (TypeError, ValueError):
+        return None
+    value = data.get("user_id") if isinstance(data, dict) else None
+    return str(value) if value else None
+
+
 if TYPE_CHECKING:
     from baf.core.agent import Agent
 
@@ -168,6 +179,11 @@ class WebSocketPlatform(Platform):
         self._use_ui: bool = use_ui
         self._authenticate_users = authenticate_users
         self._connections: dict[str, ServerConnection] = {}
+        # Browser tab (the payload's per-tab ``user_id``) whose connection holds
+        # each session's reply slot. Every tab of one browser shares the session
+        # key (the stable ``?user_id=``), so without this a heartbeat from another
+        # open editor tab steals the slot and the in-flight reply goes there.
+        self._slot_tab: dict[str, str | None] = {}
         # Per-session outbox: replies that can't be delivered right now (the
         # slot holds a stale/half-open socket, or the client is mid-reconnect)
         # are buffered here and flushed on the next slot reclaim (USER_MESSAGE
@@ -191,7 +207,11 @@ class WebSocketPlatform(Platform):
             header_user = headers.get("X-User-ID") if hasattr(headers, "get") else None
             query_user = _extract_user_id_from_request(request)
             session_key = header_user or query_user or str(conn.id)
-            self._connections[str(session_key)] = conn
+            # Take only an empty slot: a new socket does not yet know its tab, and
+            # another tab may have a reply in flight. Its first heartbeat (sent on
+            # connect) claims the slot when it is this tab's.
+            if str(session_key) not in self._connections:
+                self._claim_slot(str(session_key), conn, None, sender=True)
             session = self._agent.get_or_create_session(session_key, self)
             try:
 
@@ -199,6 +219,7 @@ class WebSocketPlatform(Platform):
                     if not self.running:
                         raise ConnectionClosedError(None, None)
                     payload: Payload = Payload.decode(payload_str)
+                    tab_id = _tab_id_of(payload_str)
 
                     if payload.action == PayloadAction.FETCH_USER_MESSAGES.value:
                         try:
@@ -220,7 +241,7 @@ class WebSocketPlatform(Platform):
                             logger.error(f"Error fetching chat history: {e}")
                     elif payload.action == PayloadAction.USER_MESSAGE.value:
                         # Route replies back to whichever conn sent this message
-                        self._connections[str(session_key)] = conn
+                        self._claim_slot(str(session_key), conn, tab_id, sender=True)
                         logger.info("REPLY_ROUTE: key=%r -> conn=%r (message sender)" % (session_key, conn.id))
                         # Deliver anything buffered during a prior reconnect gap.
                         self._flush_outbox(str(session_key), conn)
@@ -284,10 +305,10 @@ class WebSocketPlatform(Platform):
                         # the client currently holds -- even after reconnects. Then
                         # skip without setting a variable or spamming the logs.
                         if '__heartbeat' in payload.message:
-                            self._connections[str(session_key)] = conn
-                            # A heartbeat proves this socket is live -> flush any
-                            # replies buffered while the slot was stale/absent.
-                            self._flush_outbox(str(session_key), conn)
+                            if self._claim_slot(str(session_key), conn, tab_id, sender=False):
+                                # A heartbeat proves this socket is live -> flush any
+                                # replies buffered while the slot was stale/absent.
+                                self._flush_outbox(str(session_key), conn)
                             continue
                         for key, value in payload.message.items():
                             session.set(key, value)
@@ -309,6 +330,7 @@ class WebSocketPlatform(Platform):
                     session_id = str(session.id)
                     if session_id in self._connections and self._connections[session_id] is conn:
                         del self._connections[session_id]
+                        self._slot_tab.pop(session_id, None)
                 logger.info('Session finished')
                 # self._agent.delete_session(session.id)
                 # del self._connections[session.id]
@@ -455,6 +477,23 @@ class WebSocketPlatform(Platform):
                 session_id, getattr(payload, "action", "?"),
             )
         self._buffer_reply(session_id, payload)
+
+    def _claim_slot(self, session_key: str, conn: ServerConnection, tab_id: str | None, *, sender: bool) -> bool:
+        """Point the session's reply slot at ``conn``; return whether it did.
+
+        A message always claims the slot: replies go to whoever asked. A
+        heartbeat re-claims it only for the same tab (a reconnect after a
+        dropped socket) or when no live connection holds it, never from a
+        different tab that happens to share the browser's session key.
+        """
+        current = self._connections.get(session_key)
+        owner_tab = self._slot_tab.get(session_key)
+        if not sender and current is not None and current is not conn:
+            if tab_id is not None and owner_tab is not None and tab_id != owner_tab:
+                return False
+        self._connections[session_key] = conn
+        self._slot_tab[session_key] = tab_id
+        return True
 
     def _buffer_reply(self, session_id: str, payload: Payload) -> None:
         """Buffer an undeliverable reply for redelivery, bounded per session."""
