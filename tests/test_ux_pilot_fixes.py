@@ -23,6 +23,7 @@ from session_keys import (  # noqa: E402
     LAST_SMART_GEN_PROJECT_ID,
     PENDING_GUI_CHOICE,
     SMART_GEN_ARMED_PROJECT_ID,
+    UNIFIED_CLASSIFICATION,
 )
 from handlers.generation_handler import _build_smart_gen_confirmation  # noqa: E402
 from tests.conftest import FakeSession, make_session  # noqa: E402
@@ -86,10 +87,14 @@ def test_gui_choice_message_has_no_preselection():
         assert set(a.keys()) == {"label", "prompt"}
 
 
-def _route_gui_choice(answer: str):
+def _route_gui_choice(answer: str, verdict=None):
     """Drive handle_pending_gui_choice with a pending GUI choice and a given
-    answer (no UNIFIED_CLASSIFICATION set → keyword-fallback path)."""
+    answer. Without ``verdict`` no UNIFIED_CLASSIFICATION is set (keyword
+    fallback); with one, the classifier's pending-flow answer is stubbed."""
     session = FakeSession()
+    if verdict is not None:
+        session.set(UNIFIED_CLASSIFICATION, MagicMock(
+            pending_flow_action="answer", pending_flow_answer=verdict))
     session.set(PENDING_GUI_CHOICE, {
         "operation_request": "create a web app",
         "operation": {"diagramType": "GUINoCodeDiagram"},
@@ -118,6 +123,23 @@ def test_ai_generated_phrase_reaches_ai_gui_generation():
     assert exec_mock.call_args.kwargs.get("_skip_gui_choice") is True
     # It did NOT take the deterministic auto path.
     assert all(p.get("action") != "auto_generate_gui" for p in payloads)
+
+
+def test_ai_design_button_wins_over_a_wrong_classifier_verdict():
+    # Live 2026-10-12 13:17 (prod): the button sent "Experimental AI design",
+    # the classifier answered "auto", and the user got basic CRUD pages.
+    handled, exec_mock, payloads = _route_gui_choice("Experimental AI design", verdict="auto")
+    assert handled
+    assert exec_mock.called
+    assert exec_mock.call_args.kwargs.get("_skip_gui_choice") is True
+    assert all(p.get("action") != "auto_generate_gui" for p in payloads)
+
+
+def test_basic_crud_button_wins_over_a_wrong_classifier_verdict():
+    handled, exec_mock, payloads = _route_gui_choice("Basic CRUD pages", verdict="llm")
+    assert handled
+    assert any(p.get("action") == "auto_generate_gui" for p in payloads)
+    assert not exec_mock.called
 
 
 def test_legacy_llm_token_still_routes_to_ai_gui():

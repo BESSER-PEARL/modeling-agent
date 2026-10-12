@@ -946,7 +946,10 @@ def _pending_flow_context(session: Any) -> Optional[dict]:
                 "kind": "gui_choice",
                 "question": (
                     "How should I create your screens — 1 basic CRUD pages "
-                    "(one page per class), or 2 experimental AI design?"
+                    "(one page per class), or 2 experimental AI design? "
+                    "Answer 'auto' = option 1, basic CRUD pages; 'llm' = "
+                    "option 2, experimental AI design (custom AI-designed "
+                    "screens); 'cancel' = neither."
                 ),
                 "valid_answers": ["auto", "llm", "cancel"],
             }
