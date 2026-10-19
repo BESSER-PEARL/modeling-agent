@@ -184,7 +184,9 @@ BPMN_SCHEMA = """{
     {"source": "check_stock", "target": "gw", "name": ""},
     {"source": "gw", "target": "ship", "name": "yes"}
   ],
-  "pools": []
+  "pools": [],
+  "dataObjects": [{"id": "order", "name": "Order"}],
+  "dataAssociations": [{"dataObject": "order", "node": "check_stock", "direction": "input"}]
 }"""
 # node "type" is one of: startEvent, endEvent, intermediateEvent, task, gateway.
 # "taskType" (for task nodes) is one of: default, user, service, send, receive,
@@ -194,6 +196,9 @@ BPMN_SCHEMA = """{
 # participants/organizations (pool) or roles within one organization (pool
 # lanes); each pool is {"id", "name", "lanes": [{"id", "name"}]} and referenced
 # from a node via optional "poolId"/"laneId". Leave pools empty otherwise.
+# "dataObjects" lists the data, documents or materials a step uses or produces;
+# "dataAssociations" links each one to its node ("direction": input or output).
+# Leave both empty when the text names none.
 
 ALL_SCHEMAS = f"""
 === ClassDiagram (for entity/data models, schemas, class structures) ===
@@ -1211,8 +1216,21 @@ def _validate_bpmn_spec(
     # reconnection, dangling pool/lane ref cleanup) so file-converted specs get the
     # same guarantees as agent-generated ones.
     from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    data_objects = spec.get("dataObjects")
+    data_associations = spec.get("dataAssociations")
     system_spec = BPMNDiagramHandler(None)._validate_and_refine({
         "nodes": validated_nodes, "flows": validated_flows, "pools": validated_pools,
+        "dataObjects": [
+            {"id": str(o["id"]), "name": str(o.get("name") or "")}
+            for o in (data_objects if isinstance(data_objects, list) else [])
+            if isinstance(o, dict) and o.get("id")
+        ],
+        "dataAssociations": [
+            {"dataObject": a.get("dataObject"), "node": a.get("node"),
+             "direction": "output" if a.get("direction") == "output" else "input"}
+            for a in (data_associations if isinstance(data_associations, list) else [])
+            if isinstance(a, dict)
+        ],
     })
 
     task_count = sum(1 for n in system_spec["nodes"] if n["type"] == "task")

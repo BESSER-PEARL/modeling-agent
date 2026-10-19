@@ -816,6 +816,41 @@ class TestBpmnConversion:
         assert {p["id"] for p in pools} == {"customer", "vendor"}
         assert "2 pool" in result["message"]
 
+    def test_bpmn_keeps_data_objects(self):
+        """BESSER-PEARL/BESSER#627: inputs named in a process document reach the editor."""
+        def mock_with_inputs(prompt: str) -> str:
+            return json.dumps({
+                "diagramType": "BPMN",
+                "nodes": [
+                    {"id": "start", "name": "Started", "type": "startEvent"},
+                    {"id": "mixing", "name": "Mixing", "type": "task"},
+                    {"id": "end", "name": "Done", "type": "endEvent"},
+                ],
+                "flows": [
+                    {"source": "start", "target": "mixing", "name": ""},
+                    {"source": "mixing", "target": "end", "name": ""},
+                ],
+                "dataObjects": [{"id": "binder", "name": "Binder"}, {"id": "slurry", "name": "Slurry"}],
+                "dataAssociations": [
+                    {"dataObject": "binder", "node": "mixing", "direction": "input"},
+                    {"dataObject": "slurry", "node": "mixing", "direction": "output"},
+                    {"dataObject": "binder", "node": "ghost", "direction": "input"},
+                ],
+            })
+
+        result = convert_file_to_diagram_spec(
+            file_content_b64=_make_b64("Mixing uses binder and produces slurry."),
+            filename="process.txt",
+            llm_predict=mock_with_inputs,
+        )
+        spec = result["systemSpec"]
+        assert [o["name"] for o in spec["dataObjects"]] == ["Binder", "Slurry"]
+        assert spec["dataAssociations"] == [
+            {"dataObject": "binder", "node": "mixing", "direction": "input"},
+            {"dataObject": "slurry", "node": "mixing", "direction": "output"},
+        ]
+        assert len(spec["flows"]) == 2
+
     def test_bpmn_with_lane_sets_owner(self):
         def mock_lane_process(prompt: str) -> str:
             return json.dumps({
