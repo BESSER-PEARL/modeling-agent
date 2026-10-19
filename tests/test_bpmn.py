@@ -607,3 +607,124 @@ def test_bpmn_model_summary_includes_agentic_lane_and_governance():
     assert "lane=Supervisor" in summary
     assert "role=merging" in summary
     assert "governanceDsl=set" in summary
+
+
+# ---------------------------------------------------------------------------
+# Data objects (BESSER-PEARL/BESSER#627): the assistant used to have no way to
+# emit them, so "show each input as a data object" was silently dropped, and
+# a follow-up asking for the missing data objects could not be applied.
+# ---------------------------------------------------------------------------
+
+def _battery_spec():
+    """Two steps of the battery-cell process from the issue, with their inputs."""
+    return {
+        "systemName": "Cell Production",
+        "nodes": [
+            {"id": "start", "name": "Cell production started", "type": "startEvent"},
+            {"id": "mixing", "name": "Mixing", "type": "task"},
+            {"id": "coating", "name": "Coating", "type": "task"},
+            {"id": "end", "name": "Cell ready", "type": "endEvent"},
+        ],
+        "flows": [
+            {"source": "start", "target": "mixing", "name": ""},
+            {"source": "mixing", "target": "coating", "name": ""},
+            {"source": "coating", "target": "end", "name": ""},
+        ],
+        "dataObjects": [
+            {"id": "binder", "name": "Binder"},
+            {"id": "solvent", "name": "Solvent"},
+            {"id": "slurry", "name": "Slurry"},
+        ],
+        "dataAssociations": [
+            {"dataObject": "binder", "node": "mixing", "direction": "input"},
+            {"dataObject": "solvent", "node": "mixing", "direction": "input"},
+            {"dataObject": "slurry", "node": "mixing", "direction": "output"},
+            {"dataObject": "slurry", "node": "coating", "direction": "input"},
+        ],
+    }
+
+
+def test_bpmn_schema_data_objects_default_empty():
+    from schemas import SystemBPMNSpec
+    d = SystemBPMNSpec(nodes=[{"id": "t", "name": "Do", "type": "task"}]).model_dump()
+    assert d["dataObjects"] == []
+    assert d["dataAssociations"] == []
+
+
+def test_bpmn_schema_data_objects_round_trip():
+    from schemas import SystemBPMNSpec
+    d = SystemBPMNSpec.model_validate(_battery_spec()).model_dump()
+    assert [o["name"] for o in d["dataObjects"]] == ["Binder", "Solvent", "Slurry"]
+    assert d["dataAssociations"][2] == {"dataObject": "slurry", "node": "mixing", "direction": "output"}
+
+
+def test_bpmn_validation_keeps_data_objects_out_of_the_sequence_flow():
+    """The repair pass must not wire data objects into the process."""
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine(_battery_spec())
+
+    assert len(spec["dataObjects"]) == 3
+    assert len(spec["dataAssociations"]) == 4
+    data_ids = {o["id"] for o in spec["dataObjects"]}
+    assert not any(f["source"] in data_ids or f["target"] in data_ids for f in spec["flows"])
+    assert len(spec["flows"]) == 3
+    assert not any(n["id"] in data_ids for n in spec["nodes"])
+
+
+def test_bpmn_validation_drops_dangling_and_duplicate_data_associations():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    raw = _battery_spec()
+    raw["dataAssociations"] += [
+        {"dataObject": "ghost", "node": "mixing", "direction": "input"},
+        {"dataObject": "binder", "node": "no_such_task", "direction": "input"},
+        {"dataObject": "binder", "node": "mixing", "direction": "input"},
+    ]
+    spec = BPMNDiagramHandler(None)._validate_and_refine(raw)
+    assert len(spec["dataAssociations"]) == 4
+
+
+def test_bpmn_validation_renames_data_object_colliding_with_node_id():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    raw = _battery_spec()
+    raw["dataObjects"].append({"id": "coating", "name": "Coating Recipe"})
+    raw["dataAssociations"].append({"dataObject": "coating", "node": "coating", "direction": "input"})
+    spec = BPMNDiagramHandler(None)._validate_and_refine(raw)
+
+    recipe = next(o for o in spec["dataObjects"] if o["name"] == "Coating Recipe")
+    assert recipe["id"] != "coating"
+    assert {"dataObject": recipe["id"], "node": "coating", "direction": "input"} in spec["dataAssociations"]
+
+
+def test_bpmn_system_message_mentions_data_objects():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    h = BPMNDiagramHandler(None)
+    assert "3 data object(s)" in h._build_system_message(h._validate_and_refine(_battery_spec()))
+
+
+def test_bpmn_modification_adds_data_object_and_connects_it(monkeypatch):
+    """The follow-up from the issue ("add the missing data objects") must reach
+    the editor as add_data_object + add_flow, not be rejected by the guardrail."""
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    from schemas.bpmn import BPMNModification, BPMNModificationResponse, BPMNModificationTarget
+
+    model = {"elements": {"task-mixing": {"type": "BPMNTask", "name": "Mixing"}}}
+    response = BPMNModificationResponse(
+        elementFound=True,
+        modifications=[
+            BPMNModification(action="add_data_object", target=BPMNModificationTarget(nodeName="Binder")),
+            BPMNModification(
+                action="add_flow", target=BPMNModificationTarget(),
+                changes={"source": "Binder", "target": "task-mixing"},
+            ),
+        ],
+        message="Added the Binder input to Mixing.",
+    )
+
+    monkeypatch.setattr(BPMNDiagramHandler, "predict_structured", lambda self, *a, **k: response)
+    result = BPMNDiagramHandler(None).generate_modification(
+        "add binder as an input data object of Mixing", current_model=model,
+    )
+
+    assert result["action"] == "modify_model"
+    actions = [m["action"] for m in result["modifications"]]
+    assert actions == ["add_data_object", "add_flow"]
