@@ -566,8 +566,10 @@ Pizza Store and Car Wash templates are not treated as agent swarms.
   gateways carry ``gatewayRole`` and, when merging, a ``governancePolicy``
   keyword (``MajorityPolicy``, ``AbsoluteMajorityPolicy``,
   ``LeaderDrivenPolicy``, ``ConsensusPolicy``) that the v4 editor expands into
-  the gateway's Governance DSL; the agent never writes DSL text. The keyword is
-  mirrored to ``governanceDsl``, the only field the v3 editor reads.
+  the gateway's Governance DSL; the LLM never writes DSL text. For the v3
+  editor, which reads only ``governanceDsl``, the handler also sends the
+  document the v4 editor would generate (``utilities/governance_dsl.py``, a
+  port of the editor's ``generateGovernanceDsl``).
 - **Project-scoped references.** ``agentDiagramRef`` is a project AgentDiagram
   id in the editor. ``model_operations`` passes the ids of the project's
   non-empty AgentDiagrams (``resolve_agent_diagram_refs``) to the handler, the

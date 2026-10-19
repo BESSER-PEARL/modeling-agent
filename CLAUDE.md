@@ -178,7 +178,7 @@ Full reference: `docs/source/websocket_protocol.rst`. The traps:
   GUI and Quantum models pass through.
 - **Outbound specs must work in both editors**: the production v3 editor and the v4 (React Flow) editor apply
   them with their own modifiers, and the agent ships first. Changed specs (state-machine `remove_transition` by
-  `transitionId` and `add_transition` endpoints in `changes`, BPMN `governanceDsl` mirroring `governancePolicy`,
+  `transitionId` and `add_transition` endpoints in `changes`, BPMN `governanceDsl` generated from `governancePolicy`,
   …) are listed in `websocket_protocol.rst`; check a new spec shape against both editors' `modifiers/`.
 - **`user_id` is a URL query param** (`wss://host/agent?user_id=…`), read by `_extract_user_id_from_request` in
   `patches/websocket_platform.py`. It keys the BAF session; conversation memory keys on the inner `sessionId`

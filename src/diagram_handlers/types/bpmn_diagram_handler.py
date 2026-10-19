@@ -23,6 +23,9 @@ from typing import Any, Dict, List, Optional
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
 from ..core.prompt_fragments import EXACT_NAMES_RULE, POSITION_DISCLAIMER, REMOVE_ELEMENT_RULE
 from schemas import SystemBPMNSpec, BPMNModificationResponse
+from utilities.governance_dsl import (
+    GOV_POLICY_TYPES, clamp_trust_score, generate_governance_dsl, graph_from_spec, graph_from_v3_model,
+)
 from utilities.model_context import detailed_model_summary
 
 logger = logging.getLogger(__name__)
@@ -117,15 +120,76 @@ def format_agent_diagram_refs(agent_diagram_refs: Optional[Dict[str, str]]) -> s
     return "Agent diagrams in this project (the only valid agentDiagramRef values):\n" + "\n".join(lines)
 
 
-def _mirror_governance_dsl(fields: Dict[str, Any]) -> None:
-    """Copy a governancePolicy keyword to governanceDsl (mutates *fields*).
+# The production (v3) editor stores only ``governanceDsl`` and BESSER parses it,
+# so a requested governancePolicy also goes out as the DSL document the v4
+# editor generates from it. Like the v4 editor, only an agentic gateway gets one.
 
-    The production (v3) editor stores only ``governanceDsl``; the v4 editor
-    expands a policy keyword found in either field into the generated DSL.
+def _spec_governance_dsl(spec: Dict[str, Any]) -> None:
+    """Write ``governanceDsl`` on generated agentic gateways that name a policy (mutates *spec*)."""
+    graph = None
+    for node in spec.get("nodes") or []:
+        policy = node.get("governancePolicy")
+        if policy in GOV_POLICY_TYPES and node.get("type") == "gateway" and node.get("isAgentic") is True:
+            graph = graph or graph_from_spec(spec)
+            node["governanceDsl"] = generate_governance_dsl(str(node.get("id")), graph, policy)
+
+
+def _find_gateway(elements: Dict[str, Any], target: Dict[str, Any]) -> Optional[str]:
+    node_id = target.get("nodeId")
+    if node_id in elements and (elements[node_id] or {}).get("type") == "BPMNGateway":
+        return node_id
+    name = target.get("nodeName")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    gateways = [(eid, el) for eid, el in elements.items() if isinstance(el, dict) and el.get("type") == "BPMNGateway"]
+    return next((eid for eid, el in gateways if el.get("name") == name), None) or next(
+        (eid for eid, el in gateways if (el.get("name") or "").strip().lower() == name.strip().lower()), None)
+
+
+def _modification_governance_dsl(mod_list: List[Dict[str, Any]], current_model: Optional[Dict[str, Any]]) -> None:
+    """Write ``governanceDsl`` next to a gateway's requested governancePolicy (mutates the changes).
+
+    The gateway is read as the editor sees it after this step: its name, agentic
+    switch, role and trust score from the same changes.
     """
-    policy = fields.get("governancePolicy")
-    if isinstance(policy, str) and policy:
-        fields["governanceDsl"] = policy
+    model = current_model if isinstance(current_model, dict) else {}
+    elements = model.get("elements") if isinstance(model.get("elements"), dict) else {}
+    for mod in mod_list:
+        changes = mod.get("changes") if isinstance(mod, dict) else None
+        if not isinstance(changes, dict) or changes.get("governancePolicy") not in GOV_POLICY_TYPES:
+            continue
+        target = mod.get("target") if isinstance(mod.get("target"), dict) else {}
+        if mod.get("action") == "modify_node":
+            gateway_id = _find_gateway(elements, target)
+            if gateway_id is None:
+                continue
+            current = elements[gateway_id]
+            was_agentic = current.get("isAgentic") is True
+            if not (changes["isAgentic"] if isinstance(changes.get("isAgentic"), bool) else was_agentic):
+                continue
+            graph = graph_from_v3_model(model)
+            data = dict(current, isAgentic=True)
+            if not was_agentic:
+                data.update(gatewayRole="diverging", trustScore=0)
+            if changes.get("name"):
+                data["name"] = changes["name"]
+            if isinstance(changes.get("gatewayRole"), str):
+                data["gatewayRole"] = changes["gatewayRole"]
+            if isinstance(changes.get("trustScore"), (int, float)) and not isinstance(changes["trustScore"], bool):
+                data["trustScore"] = clamp_trust_score(changes["trustScore"])
+            for node in graph["nodes"]:
+                if node["id"] == gateway_id:
+                    node["data"] = data
+        elif mod.get("action") == "add_gateway" and changes.get("isAgentic") is True:
+            gateway_id = target.get("nodeId") or "gateway"
+            graph = {"nodes": [{"id": gateway_id, "type": "bpmnGateway", "parentId": None, "data": {
+                "name": target.get("nodeName") or changes.get("name") or "", "isAgentic": True,
+                "gatewayRole": changes.get("gatewayRole") or "diverging",
+                "trustScore": clamp_trust_score(changes.get("trustScore")),
+            }}], "edges": []}
+        else:
+            continue
+        changes["governanceDsl"] = generate_governance_dsl(gateway_id, graph, changes["governancePolicy"])
 
 
 class BPMNDiagramHandler(BaseDiagramHandler):
@@ -301,7 +365,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
           only when it is one of this project's AgentDiagram ids.
         - reflectionReviewerLaneId must name a declared lane, and only on a
           task whose reflectionMode is 'cross'.
-        - governancePolicy is mirrored to governanceDsl for the v3 editor.
+        - An agentic gateway's governancePolicy also gets its governanceDsl.
         """
         valid_refs = set(agent_diagram_refs or {})
         lane_ids = set()
@@ -318,7 +382,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
             reviewer = node.get("reflectionReviewerLaneId")
             if reviewer and (node.get("reflectionMode") != "cross" or reviewer not in lane_ids):
                 node["reflectionReviewerLaneId"] = None
-            _mirror_governance_dsl(node)
+        _spec_governance_dsl(spec)
 
     def _build_agentic_message(self, spec: Dict[str, Any]) -> str:
         name = spec.get("systemName") or "process"
@@ -660,6 +724,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
                 normalized: List[Dict[str, Any]] = []
                 expanded_flows = 0
                 self._sanitize_modification_refs(mod_list, elements, agent_diagram_refs)
+                _modification_governance_dsl(mod_list, current_model)
 
                 for mod in mod_list:
                     if not isinstance(mod, dict):
@@ -754,8 +819,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
         reflectionReviewerLaneId must resolve (by [id] or name) to an existing
         lane and is normalized to that lane's id, or name a lane an earlier
         add_swimlane of the same batch creates (the editor applies the batch in
-        order and resolves it by name). governancePolicy is mirrored to
-        governanceDsl for the v3 editor. Mutates the changes in place.
+        order and resolves it by name). Mutates the changes in place.
         """
         valid_refs = set(agent_diagram_refs or {})
         lanes = {
@@ -772,7 +836,6 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
             changes = mod.get("changes")
             if not isinstance(changes, dict):
                 continue
-            _mirror_governance_dsl(changes)
             ref = changes.get("agentDiagramRef")
             if ref and ref not in valid_refs:
                 logger.info(f"[BPMN] Dropped invented agentDiagramRef {ref!r}")

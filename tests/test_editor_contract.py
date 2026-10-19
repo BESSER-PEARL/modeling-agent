@@ -87,8 +87,9 @@ def test_agentic_bpmn_fixture_survives_the_handler_repair_pass():
     nodes = {node["id"]: node for node in refined["nodes"]}
     assert nodes["draft"]["reflectionReviewerLaneId"] == "supervisor"
     assert nodes["merge"]["governancePolicy"] == "MajorityPolicy"
-    # The production (v3) editor reads only governanceDsl; v4 expands the keyword.
-    assert nodes["merge"]["governanceDsl"] == "MajorityPolicy"
+    # The production (v3) editor reads only governanceDsl: the generated document.
+    assert nodes["merge"]["governanceDsl"].splitlines()[2] == "Scopes:"
+    assert "MajorityPolicy MergeDecision_mergePolicy {" in nodes["merge"]["governanceDsl"]
     assert not nodes["fan_out"].get("governanceDsl")
     assert nodes["review"]["owner"] == "reviewers"
 

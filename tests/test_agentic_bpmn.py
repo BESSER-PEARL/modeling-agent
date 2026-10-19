@@ -285,8 +285,10 @@ class TestSameRequestReviewerLaneAndPolicy:
         result, _seen = self._modify(monkeypatch, mods)
         changes = result["modification"]["changes"]
         assert changes["governancePolicy"] == "ConsensusPolicy"
-        # The production (v3) editor reads only governanceDsl; v4 expands the keyword.
-        assert changes["governanceDsl"] == "ConsensusPolicy"
+        # Never the bare keyword as DSL text: the Governance DSL parser rejects it.
+        # (Draft Answer is a task; gateways get a generated document, see
+        # tests/test_dual_editor_compat.py.)
+        assert "governanceDsl" not in changes
 
     def test_no_policy_sets_no_governance_dsl(self, monkeypatch):
         mods = [{"action": "modify_node", "target": {"nodeName": "Draft Answer"},

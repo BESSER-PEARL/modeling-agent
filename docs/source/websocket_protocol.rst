@@ -268,9 +268,11 @@ the specs, and how each editor reads it:
   ``target``. ``modify_transition`` is applied by the v4 editor only; the v3
   editor skips it in a batch.
 * **BPMN**: a merging agentic gateway's policy is a ``governancePolicy``
-  keyword, mirrored to ``governanceDsl``. The v3 editor stores the keyword as
-  the gateway's DSL text; the v4 editor expands it into the generated
-  Governance DSL. A ``reflectionReviewerLaneId`` may name a lane an earlier
+  keyword, and ``governanceDsl`` carries the Governance DSL document the v4
+  editor generates from that keyword (``utilities/governance_dsl.py`` ports its
+  ``generateGovernanceDsl``). The v3 editor stores ``governanceDsl`` as is and
+  BESSER parses it for swarm generation, so it is never the bare keyword; the
+  v4 editor regenerates the document from ``governancePolicy``. A ``reflectionReviewerLaneId`` may name a lane an earlier
   ``add_swimlane`` of the same batch creates, and ``add_flow`` may name a node
   added earlier in the batch (both editors apply a batch in order and resolve
   names).
