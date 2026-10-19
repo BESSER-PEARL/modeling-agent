@@ -107,6 +107,17 @@ class TestStateMachineTransitionAdd:
         assert mods[0]["target"]["sourceState"] == "initial"
         assert (mods[0]["changes"]["source"], mods[0]["changes"]["target"]) == ("", "Green")
 
+    def test_star_endpoint_resolves_by_role_even_when_final_comes_first(self):
+        model = _sm_model()
+        model["elements"] = {"fin": {"id": "fin", "type": "StateFinalNode", "name": "", "owner": None},
+                             **model["elements"]}
+        _, mods = _sm_modify([
+            {"action": "add_transition", "target": {"sourceState": "[*]", "targetState": "Green"}, "changes": {}},
+            {"action": "add_transition", "target": {"sourceState": "Amber", "targetState": "[*]"}, "changes": {}},
+        ], model)
+        assert (mods[0]["target"]["sourceState"], mods[0]["changes"]["source"]) == ("initial", "")
+        assert (mods[1]["target"]["targetState"], mods[1]["changes"]["target"]) == ("final", "")
+
 
 def test_agent_posts_no_diagram_model_to_the_backend_validator():
     """``validate_diagram`` had no callers and posted the agent's internal v3

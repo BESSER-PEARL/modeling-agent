@@ -96,8 +96,8 @@ def _name_transition_endpoints_in_changes(mods: List[Dict[str, Any]], current_mo
             name = target.get(end)
             if not name or changes.get(field) is not None:
                 continue
-            ids = _find_state_ids(elements, name)
-            if ids and elements[ids[0]].get("type") == pseudo:
+            # "[*]" names both pseudostates: the role picks initial or final.
+            if any(elements[i].get("type") == pseudo for i in _find_state_ids(elements, name)):
                 target[end] = keyword
                 changes[field] = ""
             else:
