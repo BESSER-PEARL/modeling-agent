@@ -565,8 +565,9 @@ Pizza Store and Car Wash templates are not treated as agent swarms.
   and, for ``cross`` reflection, ``reflectionReviewerLaneId``; agentic
   gateways carry ``gatewayRole`` and, when merging, a ``governancePolicy``
   keyword (``MajorityPolicy``, ``AbsoluteMajorityPolicy``,
-  ``LeaderDrivenPolicy``, ``ConsensusPolicy``) that the editor expands into the
-  gateway's Governance DSL; the agent never writes DSL text.
+  ``LeaderDrivenPolicy``, ``ConsensusPolicy``) that the v4 editor expands into
+  the gateway's Governance DSL; the agent never writes DSL text. The keyword is
+  mirrored to ``governanceDsl``, the only field the v3 editor reads.
 - **Project-scoped references.** ``agentDiagramRef`` is a project AgentDiagram
   id in the editor. ``model_operations`` passes the ids of the project's
   non-empty AgentDiagrams (``resolve_agent_diagram_refs``) to the handler, the

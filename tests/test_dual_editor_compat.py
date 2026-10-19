@@ -118,3 +118,16 @@ def test_agent_posts_no_diagram_model_to_the_backend_validator():
         if "validate-diagram" in path.read_text(encoding="utf-8")
     ]
     assert offenders == []
+
+
+def test_docs_list_the_outbound_spec_changes():
+    """websocket_protocol.rst and CLAUDE.md said outbound specs were unchanged."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    protocol = (root / "docs" / "source" / "websocket_protocol.rst").read_text(encoding="utf-8")
+    guide = (root / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "so they are unchanged" not in protocol
+    assert "Outbound specs are unchanged" not in guide
+    for token in ("remove_transition", "transitionId", "governanceDsl", "changes.source"):
+        assert token in protocol

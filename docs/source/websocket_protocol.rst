@@ -253,8 +253,32 @@ BESSER's ``docs/source/migrations/uml-v4-shape.md``. The conversion rules:
 * ``edge.data.sourceNavigable`` / ``targetNavigable`` become
   ``source.navigable`` / ``target.navigable``.
 
-Outbound payloads do not depend on the model format, so they are unchanged. The
-frontend converts them itself.
+Outbound specs keep the format-independent shape and are applied by the
+frontend's own converters and modifiers, so they must work in both the
+production (v3, Apollon) editor and the React Flow (v4) editor; the agent can
+be deployed before the v4 editor. The action set is unchanged. What changed in
+the specs, and how each editor reads it:
+
+* **State machine**: a transition removal is ``remove_transition`` with
+  ``target.transitionId`` (resolved from the current model) instead of
+  ``remove_element`` naming the endpoints, which the v3 editor mis-matched to
+  the unnamed initial pseudostate. ``add_transition`` repeats its endpoints in
+  ``changes.source`` / ``changes.target`` and the trigger in ``changes.label``
+  for v3; a pseudostate endpoint is ``""`` there and ``initial`` / ``final`` in
+  ``target``. ``modify_transition`` is applied by the v4 editor only; the v3
+  editor skips it in a batch.
+* **BPMN**: a merging agentic gateway's policy is a ``governancePolicy``
+  keyword, mirrored to ``governanceDsl``. The v3 editor stores the keyword as
+  the gateway's DSL text; the v4 editor expands it into the generated
+  Governance DSL. A ``reflectionReviewerLaneId`` may name a lane an earlier
+  ``add_swimlane`` of the same batch creates, and ``add_flow`` may name a node
+  added earlier in the batch (both editors apply a batch in order and resolve
+  names).
+* **Class diagram**: steps after a class rename name the class by its new
+  name, and a ``modify_relationship`` with real changes is kept next to the
+  rename.
+* **Object diagram**: an object's attributes include inherited ones, whose
+  ``attributeId`` is the declaring superclass's attribute.
 
 Supported Diagram Types
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -553,7 +577,8 @@ Structured Outputs rejects the response and the call retries.
        ``promote_attribute``, ``add_enum``, ``add_ocl_constraint``
    * - ``StateMachineDiagram``
      - ``add_state``, ``modify_state``, ``add_transition``,
-       ``modify_transition``, ``add_code_block``, ``remove_element``
+       ``modify_transition``, ``remove_transition``, ``add_code_block``,
+       ``remove_element``
    * - ``ObjectDiagram``, ``UserDiagram``
      - ``add_object``, ``modify_object``, ``modify_attribute_value``,
        ``add_link``, ``remove_element``
@@ -581,19 +606,23 @@ Structured Outputs rejects the response and the call retries.
 on ``target.sourceState`` / ``target.targetState`` (not the agent diagram's
 ``sourceStateName`` / ``targetStateName``); the event goes on
 ``changes.trigger``, with optional ``changes.guard`` and ``changes.effect``.
-``add_transition`` and ``modify_transition`` share this shape, and a transition
-is removed with ``remove_element`` carrying only the two endpoints:
+``add_transition`` and ``modify_transition`` share this shape; ``add_transition``
+also repeats the endpoints and trigger in ``changes.source`` /
+``changes.target`` / ``changes.label``, where the v3 editor reads them. The LLM
+removes a transition with ``remove_element`` naming the two endpoints; the
+handler turns that into one ``remove_transition`` per matching transition,
+keyed by ``target.transitionId``:
 
 .. code-block:: json
 
    {"action": "add_transition",
     "target": {"sourceState": "Delivered", "targetState": "Returned"},
-    "changes": {"trigger": "return"}}
+    "changes": {"trigger": "return", "source": "Delivered", "target": "Returned", "label": "return"}}
    {"action": "modify_transition",
     "target": {"sourceState": "Created", "targetState": "Paid"},
     "changes": {"trigger": "payOrder", "guard": "amount > 0"}}
-   {"action": "remove_element",
-    "target": {"sourceState": "Paid", "targetState": "Created"}}
+   {"action": "remove_transition",
+    "target": {"sourceState": "Paid", "targetState": "Created", "transitionId": "t-42"}}
 
 assistant_message
 ~~~~~~~~~~~~~~~~~
