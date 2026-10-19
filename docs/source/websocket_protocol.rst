@@ -256,8 +256,9 @@ BESSER's ``docs/source/migrations/uml-v4-shape.md``. The conversion rules:
 Outbound specs keep the format-independent shape and are applied by the
 frontend's own converters and modifiers, so they must work in both the
 production (v3, Apollon) editor and the React Flow (v4) editor; the agent can
-be deployed before the v4 editor. The action set is unchanged. What changed in
-the specs, and how each editor reads it:
+be deployed before the v4 editor. The top-level actions are unchanged; the
+only new nested action is the state machine's ``remove_transition``, which both
+editors already handle. What changed in the specs, and how each editor reads it:
 
 * **State machine**: a transition removal is ``remove_transition`` with
   ``target.transitionId`` (resolved from the current model) instead of

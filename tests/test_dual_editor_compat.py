@@ -141,6 +141,7 @@ def test_docs_list_the_outbound_spec_changes():
     protocol = (root / "docs" / "source" / "websocket_protocol.rst").read_text(encoding="utf-8")
     guide = (root / "CLAUDE.md").read_text(encoding="utf-8")
     assert "so they are unchanged" not in protocol
+    assert "The action set is unchanged" not in protocol  # state machines now emit remove_transition
     assert "Outbound specs are unchanged" not in guide
     for token in ("remove_transition", "transitionId", "governanceDsl", "changes.source"):
         assert token in protocol
