@@ -47,6 +47,69 @@ MODIFICATION RULES:
 
 logger = logging.getLogger(__name__)
 
+_PSEUDOSTATE_KEYWORDS = {
+    "StateInitialNode": {"initial", "start", "[*]"},
+    "StateFinalNode": {"final", "end", "[*]"},
+}
+
+
+def _find_state_ids(elements: Dict[str, Any], name: Optional[str]) -> List[str]:
+    """Ids of the states a transition endpoint names: a State by name, else
+    the initial / final pseudostate by keyword ("initial", "(final)", …)."""
+    key = (name or "").strip()
+    if not key:
+        return []
+    states = [(i, e) for i, e in elements.items() if isinstance(e, dict) and e.get("type") == "State"]
+    exact = [i for i, e in states if e.get("name") == key]
+    if exact:
+        return exact
+    folded = [i for i, e in states if (e.get("name") or "").strip().lower() == key.lower()]
+    if folded:
+        return folded
+    keyword = key.strip("()").strip().lower()
+    return [
+        i for i, e in elements.items()
+        if isinstance(e, dict) and keyword in _PSEUDOSTATE_KEYWORDS.get(e.get("type"), ())
+    ]
+
+
+def _resolve_transition_removals(mods: List[Dict[str, Any]], current_model: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Turn transition removals into ``remove_transition`` ops keyed by id.
+
+    The LLM removes a transition as ``remove_element`` naming its endpoints. The
+    production (v3) editor's ``remove_element`` only looks at ``stateName``, so an
+    empty one matches the unnamed initial pseudostate and deletes it. Both
+    editors remove exactly ``target.transitionId`` under ``remove_transition``;
+    the endpoint names stay for the reply and the v4 editor's own lookup. A
+    ``remove_element`` with no state name and no endpoints is dropped.
+    """
+    model = current_model if isinstance(current_model, dict) else {}
+    elements = model.get("elements") if isinstance(model.get("elements"), dict) else {}
+    relationships = model.get("relationships") if isinstance(model.get("relationships"), dict) else {}
+    out: List[Dict[str, Any]] = []
+    for mod in mods:
+        target = (mod.get("target") or {}) if isinstance(mod, dict) else {}
+        if not isinstance(mod, dict) or mod.get("action") != "remove_element" or (target.get("stateName") or "").strip():
+            out.append(mod)
+            continue
+        source, dest = target.get("sourceState"), target.get("targetState")
+        if not (source and dest):
+            logger.warning(f"[StateMachine] Dropping remove_element with no state or transition: {target}")
+            continue
+        sources, dests = set(_find_state_ids(elements, source)), set(_find_state_ids(elements, dest))
+        ids = [
+            rid for rid, rel in relationships.items()
+            if isinstance(rel, dict) and rel.get("type") == "StateTransition"
+            and (rel.get("source") or {}).get("element") in sources
+            and (rel.get("target") or {}).get("element") in dests
+        ]
+        endpoints = {"sourceState": source, "targetState": dest}
+        if not ids:
+            out.append({"action": "remove_transition", "target": endpoints, "changes": None})
+        for rid in ids:
+            out.append({"action": "remove_transition", "target": {**endpoints, "transitionId": rid}, "changes": None})
+    return out
+
 
 class StateMachineHandler(BaseDiagramHandler):
     """Handler for State Machine Diagram generation"""
@@ -494,6 +557,7 @@ TRANSITION DESIGN GUIDELINES:
         try:
             return self._execute_modification(
                 user_prompt, system_prompt, StateMachineModificationResponse,
+                post_processor=lambda mods: _resolve_transition_removals(mods, current_model),
             )
 
         except LLMPredictionError as exc:
