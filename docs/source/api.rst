@@ -333,12 +333,6 @@ Auxiliary Handlers
      ``handle_file_attachments(session, request)`` lives in
      ``src/execution/file_handling.py``, not here.
 
-``src/handlers/validation_handler.py``
-  Bridge to the BESSER backend's diagram validator:
-
-  - ``validate_diagram(diagram_json, diagram_type, api_url=None)`` — POSTs to
-    ``{BESSER_BACKEND_URL}/besser_api/validate-diagram``
-
 Utilities
 ---------
 

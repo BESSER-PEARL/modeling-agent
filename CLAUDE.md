@@ -209,8 +209,7 @@ src/
                                   type + gui_design_system.py, gui_html_converter.py), registry/ (factory, metadata)
   schemas/<type>.py               Structured-output schemas
   execution/                      planning.py (multi-op dispatch), model_operations.py, file_handling.py, progress.py
-  handlers/                       generation_handler.py, smart_generation_handler.py, file_conversion_handler.py,
-                                  validation_handler.py (bridge to the BESSER backend validator)
+  handlers/                       generation_handler.py, smart_generation_handler.py, file_conversion_handler.py
   protocol/                       types.py, adapters.py, v4_to_v3.py (inbound v4 → v3 model normalizer)
   memory/                         Verbatim window + rolling LLM summary per session
   llm/provider.py                 Provider abstraction (structured outputs, streaming)

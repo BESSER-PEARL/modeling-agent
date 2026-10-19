@@ -80,3 +80,17 @@ class TestStateMachineTransitionRemoval:
         ])
         assert mods == [{"action": "remove_transition",
                          "target": {"sourceState": "Red", "targetState": "Amber"}, "changes": None}]
+
+
+def test_agent_posts_no_diagram_model_to_the_backend_validator():
+    """``validate_diagram`` had no callers and posted the agent's internal v3
+    model to ``/besser_api/validate-diagram``; the v4 backend reads only
+    ``{nodes, edges}``."""
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parent.parent / "src"
+    offenders = [
+        str(path.relative_to(src)) for path in src.rglob("*.py")
+        if "validate-diagram" in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
