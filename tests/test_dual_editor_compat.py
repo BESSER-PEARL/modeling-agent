@@ -82,6 +82,30 @@ class TestStateMachineTransitionRemoval:
                          "target": {"sourceState": "Red", "targetState": "Amber"}, "changes": None}]
 
 
+class TestStateMachineTransitionAdd:
+    """v3 ``add_transition`` reads ``changes.source`` / ``changes.target``; with
+    only ``target.sourceState`` set it drew a self-loop on the initial node."""
+
+    def test_endpoints_and_label_are_also_in_changes(self):
+        spec, mods = _sm_modify([
+            {"action": "add_transition", "target": {"sourceState": "Red", "targetState": "Amber"},
+             "changes": {"trigger": "skip"}},
+        ])
+        assert mods[0]["target"] == {"sourceState": "Red", "targetState": "Amber", "stateName": None}
+        changes = mods[0]["changes"]
+        assert (changes["source"], changes["target"], changes["label"]) == ("Red", "Amber", "skip")
+        assert changes["trigger"] == "skip"
+        assert spec["message"] == "Added transition **Red → Amber**."
+
+    def test_pseudostate_endpoint_is_empty_for_v3_and_a_keyword_for_v4(self):
+        _, mods = _sm_modify([
+            {"action": "add_transition", "target": {"sourceState": "(initial)", "targetState": "Green"},
+             "changes": {}},
+        ])
+        assert mods[0]["target"]["sourceState"] == "initial"
+        assert (mods[0]["changes"]["source"], mods[0]["changes"]["target"]) == ("", "Green")
+
+
 def test_agent_posts_no_diagram_model_to_the_backend_validator():
     """``validate_diagram`` had no callers and posted the agent's internal v3
     model to ``/besser_api/validate-diagram``; the v4 backend reads only

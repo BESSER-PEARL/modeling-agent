@@ -73,6 +73,41 @@ def _find_state_ids(elements: Dict[str, Any], name: Optional[str]) -> List[str]:
     ]
 
 
+def _name_transition_endpoints_in_changes(mods: List[Dict[str, Any]], current_model: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Also name an ``add_transition``'s endpoints where the v3 editor reads them.
+
+    The production (v3) editor reads ``changes.source`` / ``changes.target`` and
+    the label from ``changes.label``; with neither set its empty-name lookup hit
+    the initial pseudostate and drew a self-loop on it. A pseudostate endpoint
+    is sent as "" there (v3 matches the unnamed node) and as the keyword
+    "initial" / "final" in ``target`` (the v4 editor's lookup). Mutates *mods*.
+    """
+    model = current_model if isinstance(current_model, dict) else {}
+    elements = model.get("elements") if isinstance(model.get("elements"), dict) else {}
+    for mod in mods:
+        if not isinstance(mod, dict) or mod.get("action") != "add_transition":
+            continue
+        target = mod.get("target") if isinstance(mod.get("target"), dict) else {}
+        changes = mod.get("changes") if isinstance(mod.get("changes"), dict) else {}
+        for end, field, pseudo, keyword in (
+            ("sourceState", "source", "StateInitialNode", "initial"),
+            ("targetState", "target", "StateFinalNode", "final"),
+        ):
+            name = target.get(end)
+            if not name or changes.get(field) is not None:
+                continue
+            ids = _find_state_ids(elements, name)
+            if ids and elements[ids[0]].get("type") == pseudo:
+                target[end] = keyword
+                changes[field] = ""
+            else:
+                changes[field] = name
+        if changes.get("trigger") and not changes.get("label"):
+            changes["label"] = changes["trigger"]
+        mod["target"], mod["changes"] = target, changes
+    return mods
+
+
 def _resolve_transition_removals(mods: List[Dict[str, Any]], current_model: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Turn transition removals into ``remove_transition`` ops keyed by id.
 
@@ -557,7 +592,9 @@ TRANSITION DESIGN GUIDELINES:
         try:
             return self._execute_modification(
                 user_prompt, system_prompt, StateMachineModificationResponse,
-                post_processor=lambda mods: _resolve_transition_removals(mods, current_model),
+                post_processor=lambda mods: _name_transition_endpoints_in_changes(
+                    _resolve_transition_removals(mods, current_model), current_model,
+                ),
             )
 
         except LLMPredictionError as exc:
