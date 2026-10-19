@@ -117,6 +117,17 @@ def format_agent_diagram_refs(agent_diagram_refs: Optional[Dict[str, str]]) -> s
     return "Agent diagrams in this project (the only valid agentDiagramRef values):\n" + "\n".join(lines)
 
 
+def _mirror_governance_dsl(fields: Dict[str, Any]) -> None:
+    """Copy a governancePolicy keyword to governanceDsl (mutates *fields*).
+
+    The production (v3) editor stores only ``governanceDsl``; the v4 editor
+    expands a policy keyword found in either field into the generated DSL.
+    """
+    policy = fields.get("governancePolicy")
+    if isinstance(policy, str) and policy:
+        fields["governanceDsl"] = policy
+
+
 class BPMNDiagramHandler(BaseDiagramHandler):
     """Handler for base BPMN process generation and modification."""
 
@@ -290,6 +301,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
           only when it is one of this project's AgentDiagram ids.
         - reflectionReviewerLaneId must name a declared lane, and only on a
           task whose reflectionMode is 'cross'.
+        - governancePolicy is mirrored to governanceDsl for the v3 editor.
         """
         valid_refs = set(agent_diagram_refs or {})
         lane_ids = set()
@@ -306,6 +318,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
             reviewer = node.get("reflectionReviewerLaneId")
             if reviewer and (node.get("reflectionMode") != "cross" or reviewer not in lane_ids):
                 node["reflectionReviewerLaneId"] = None
+            _mirror_governance_dsl(node)
 
     def _build_agentic_message(self, spec: Dict[str, Any]) -> str:
         name = spec.get("systemName") or "process"
@@ -741,7 +754,8 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
         reflectionReviewerLaneId must resolve (by [id] or name) to an existing
         lane and is normalized to that lane's id, or name a lane an earlier
         add_swimlane of the same batch creates (the editor applies the batch in
-        order and resolves it by name). Mutates the changes in place.
+        order and resolves it by name). governancePolicy is mirrored to
+        governanceDsl for the v3 editor. Mutates the changes in place.
         """
         valid_refs = set(agent_diagram_refs or {})
         lanes = {
@@ -758,6 +772,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
             changes = mod.get("changes")
             if not isinstance(changes, dict):
                 continue
+            _mirror_governance_dsl(changes)
             ref = changes.get("agentDiagramRef")
             if ref and ref not in valid_refs:
                 logger.info(f"[BPMN] Dropped invented agentDiagramRef {ref!r}")

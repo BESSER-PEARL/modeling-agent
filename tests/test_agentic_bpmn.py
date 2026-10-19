@@ -285,7 +285,14 @@ class TestSameRequestReviewerLaneAndPolicy:
         result, _seen = self._modify(monkeypatch, mods)
         changes = result["modification"]["changes"]
         assert changes["governancePolicy"] == "ConsensusPolicy"
-        assert "governanceDsl" not in changes
+        # The production (v3) editor reads only governanceDsl; v4 expands the keyword.
+        assert changes["governanceDsl"] == "ConsensusPolicy"
+
+    def test_no_policy_sets_no_governance_dsl(self, monkeypatch):
+        mods = [{"action": "modify_node", "target": {"nodeName": "Draft Answer"},
+                 "changes": {"trustScore": 40}}]
+        result, _seen = self._modify(monkeypatch, mods)
+        assert "governanceDsl" not in result["modification"]["changes"]
 
     def test_free_text_policy_is_rejected_by_the_schema(self):
         with pytest.raises(ValueError):
