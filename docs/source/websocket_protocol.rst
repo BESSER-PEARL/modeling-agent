@@ -282,6 +282,10 @@ editors already handle. What changed in the specs, and how each editor reads it:
   process and every sequence flow to it fails validation. In a process with
   lanes, ``add_task`` / ``add_gateway`` / ``add_event`` name their lane id in
   ``changes.owner``, which both editors resolve.
+  Both editors turn a flow between pools into a message flow, so a flow that
+  cannot be one (a gateway end, a start event sending, an end event
+  receiving) is kept inside one pool: its stray end moves, or the two pools
+  merge into one with all their lanes.
 * **Class diagram**: steps after a class rename name the class by its new
   name, and a ``modify_relationship`` with real changes is kept next to the
   rename.

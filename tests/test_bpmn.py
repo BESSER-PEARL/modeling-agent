@@ -783,3 +783,62 @@ def test_bpmn_modifications_always_carry_a_changes_object(monkeypatch):
     ])
     assert [m["action"] for m in mods] == ["add_task", "add_gateway", "add_event", "remove_element"]
     assert all(isinstance(m["changes"], dict) for m in mods), [m["changes"] for m in mods]
+
+
+# -- A flow that cannot be a message flow stays inside one pool -------------
+# Both editors turn a flow between pools into a message flow, which a gateway
+# cannot carry (nor a start event send or an end event receive); the backend
+# drops it. Live two-pool shape: join gateway -> Merge task was lost (7 of 8).
+
+def _pools_of(spec):
+    return {n["id"]: n["poolId"] for n in spec["nodes"]}
+
+
+def test_bpmn_pools_split_by_a_gateway_flow_merge_and_keep_their_lanes():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine(_pr_review_spec())
+    assert [p["id"] for p in spec["pools"]] == ["reviewerAgents"]
+    assert [lane["id"] for lane in spec["pools"][0]["lanes"]] == ["reviewer", "merger"]
+    assert set(_pools_of(spec).values()) == {"reviewerAgents"}
+    _assert_every_node_placed(spec)
+    nodes = {n["id"]: n for n in spec["nodes"]}
+    assert (nodes["merge"]["laneId"], nodes["join"]["laneId"]) == ("merger", "reviewer")
+
+
+def _collaboration(extra_nodes=(), extra_flows=()):
+    def node(nid, ntype, pool):
+        return {"id": nid, "name": nid, "type": ntype, "poolId": pool}
+
+    return {
+        "pools": [{"id": "customer", "name": "Customer", "lanes": []},
+                  {"id": "vendor", "name": "Vendor", "lanes": [{"id": "clerk", "name": "Clerk"}]}],
+        "nodes": [node("hungry", "startEvent", "customer"), node("order", "task", "customer"),
+                  node("sent", "endEvent", "customer"),
+                  node("received", "startEvent", "vendor"), node("bake", "task", "vendor"),
+                  node("done", "endEvent", "vendor"), *extra_nodes],
+        "flows": [{"source": "hungry", "target": "order"}, {"source": "order", "target": "sent"},
+                  {"source": "received", "target": "bake"}, {"source": "bake", "target": "done"},
+                  # real collaboration: task -> task and end event -> start event
+                  {"source": "order", "target": "bake"}, {"source": "sent", "target": "received"},
+                  *extra_flows],
+    }
+
+
+def test_bpmn_message_flows_between_tasks_and_events_keep_both_pools():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine(_collaboration())
+    assert [p["id"] for p in spec["pools"]] == ["customer", "vendor"]
+    assert _pools_of(spec) == {"hungry": "customer", "order": "customer", "sent": "customer",
+                               "received": "vendor", "bake": "vendor", "done": "vendor"}
+
+
+def test_bpmn_stray_gateway_moves_to_the_pool_of_all_its_neighbours():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine(_collaboration(
+        extra_nodes=[{"id": "ok", "name": "Dough ok?", "type": "gateway", "poolId": "customer"}],
+        extra_flows=[{"source": "bake", "target": "ok"}, {"source": "ok", "target": "done", "name": "yes"},
+                     {"source": "ok", "target": "bake", "name": "no"}],
+    ))
+    assert [p["id"] for p in spec["pools"]] == ["customer", "vendor"]
+    ok = next(n for n in spec["nodes"] if n["id"] == "ok")
+    assert (ok["poolId"], ok["laneId"], ok["owner"]) == ("vendor", "clerk", "clerk")

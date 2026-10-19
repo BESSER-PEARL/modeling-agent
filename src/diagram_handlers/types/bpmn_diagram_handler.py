@@ -448,6 +448,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
         self._connect_orphaned_nodes(nodes, flows)
         self._normalize_pool_refs(spec, nodes)
         self._place_nodes_in_pools(spec, nodes, flows)
+        self._keep_sequence_flows_in_one_pool(spec, nodes, flows)
 
         spec["nodes"] = nodes
         spec["flows"] = flows
@@ -552,6 +553,86 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
                 logger.info(f"[BPMN] Validation: placed {node.get('id')!r} in pool {pool_id!r} (no placed neighbour)")
             node.setdefault("laneId", None)
             node["owner"] = node["laneId"]
+
+    # Message-flow ends (BPMN 2.0 §9.3): a gateway carries none, a start event
+    # only receives one and an end event only sends one.
+    _MESSAGE_SOURCE_TYPES = frozenset({"task", "endEvent", "intermediateEvent"})
+    _MESSAGE_TARGET_TYPES = frozenset({"task", "startEvent", "intermediateEvent"})
+
+    @classmethod
+    def _keep_sequence_flows_in_one_pool(
+        cls, spec: Dict[str, Any], nodes: List[Dict[str, Any]], flows: List[Dict[str, Any]]
+    ) -> None:
+        """Keep each flow that cannot be a message flow inside one pool (mutates *spec* and *nodes*).
+
+        Both editors turn a flow between two pools into a message flow, and the
+        backend drops one whose end cannot carry it. The offending end moves to
+        the other pool when all its neighbours are there; otherwise the two
+        pools merge, keeping every lane. Task-to-task and end-to-start event
+        flows stay message flows between their pools.
+        """
+        if len(spec.get("pools") or []) < 2:
+            return
+        by_id = {node["id"]: node for node in nodes if node.get("id")}
+        neighbours: Dict[str, List[str]] = {}
+        for flow in flows:
+            neighbours.setdefault(flow.get("source"), []).append(flow.get("target"))
+            neighbours.setdefault(flow.get("target"), []).append(flow.get("source"))
+
+        def ends(flow: Dict[str, Any]):
+            source, target = by_id.get(flow.get("source")), by_id.get(flow.get("target"))
+            if not source or not target or source["poolId"] == target["poolId"]:
+                return None
+            bad = [node for node, ok in ((source, source["type"] in cls._MESSAGE_SOURCE_TYPES),
+                                         (target, target["type"] in cls._MESSAGE_TARGET_TYPES)) if not ok]
+            return (source, target, bad) if bad else None
+
+        for flow in flows:
+            found = ends(flow)
+            if not found:
+                continue
+            source, target, bad = found
+            for node in bad:
+                other = target if node is source else source
+                pool_ids = {by_id[nid]["poolId"] for nid in neighbours.get(node["id"], []) if nid in by_id}
+                if pool_ids == {other["poolId"]}:
+                    node["poolId"], node["laneId"] = other["poolId"], other.get("laneId")
+                    node["owner"] = node["laneId"]
+                    logger.info(f"[BPMN] Validation: moved {node['id']!r} into pool {other['poolId']!r}")
+                    break
+
+        for flow in flows:
+            found = ends(flow)
+            if found:
+                cls._merge_pools(spec, nodes, found[0]["poolId"], found[1]["poolId"])
+
+    @classmethod
+    def _merge_pools(cls, spec: Dict[str, Any], nodes: List[Dict[str, Any]], first: str, second: str) -> None:
+        """Fold the later of two pools into the earlier one as extra lanes (mutates *spec* and *nodes*)."""
+        pools = spec["pools"]
+        keep, gone = sorted((p for p in pools if p["id"] in (first, second)), key=pools.index)
+        members = {pool["id"]: [n for n in nodes if n.get("poolId") == pool["id"]] for pool in (keep, gone)}
+        if keep["lanes"] or gone["lanes"]:
+            for pool in (keep, gone):
+                if not pool["lanes"]:
+                    pool["lanes"] = [{"id": pool["id"], "name": pool.get("name") or "", "isAgentic": False}]
+                    for node in members[pool["id"]]:
+                        node["laneId"] = pool["id"]
+            taken = {lane["id"] for lane in keep["lanes"]}
+            for lane in gone["lanes"]:
+                if lane["id"] in taken:
+                    new_id = cls._unique_id(lane["id"], taken)
+                    for node in members[gone["id"]]:
+                        if node.get("laneId") == lane["id"]:
+                            node["laneId"] = new_id
+                    lane["id"] = new_id
+                taken.add(lane["id"])
+            keep["lanes"] = keep["lanes"] + gone["lanes"]
+        for node in members[keep["id"]] + members[gone["id"]]:
+            node["poolId"] = keep["id"]
+            node["owner"] = node.get("laneId")
+        pools.remove(gone)
+        logger.info(f"[BPMN] Validation: merged pool {gone['id']!r} into {keep['id']!r} (a flow between them cannot be a message flow)")
 
     @staticmethod
     def _connect_orphaned_nodes(nodes: List[Dict[str, Any]], flows: List[Dict[str, Any]]) -> None:
