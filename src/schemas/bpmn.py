@@ -101,16 +101,17 @@ class BPMNNodeSpec(BaseModel):
         default=None,
         description=(
             "Id of the pool (participant) this node belongs to, matching one of the "
-            "top-level pools[].id. Leave null for a flat process with no pools (the "
-            "common case)."
+            "top-level pools[].id. When pools are declared, EVERY node sets it — "
+            "start/end events and gateways included. Leave null only for a flat "
+            "process with no pools (the common case)."
         ),
     )
     laneId: Optional[str] = Field(
         default=None,
         description=(
             "Id of the lane (role/department) within poolId this node belongs to, "
-            "matching one of that pool's lanes[].id. Only set when that pool declares "
-            "lanes; leave null otherwise."
+            "matching one of that pool's lanes[].id. Required on every node of a pool "
+            "that declares lanes, start/end events and gateways included; null otherwise."
         ),
     )
     owner: Optional[str] = Field(
@@ -274,9 +275,9 @@ class SystemBPMNSpec(BaseModel):
         description=(
             "Participants/organizations — only when the request involves 2+ "
             "distinct actors communicating (e.g. customer/vendor, system A/system B) "
-            "or explicit roles within one organization. Each node with a non-null "
-            "poolId must reference one of these pool ids. Leave empty for a "
-            "single-actor flat process (the common case)."
+            "or explicit roles within one organization. Once pools are declared, "
+            "every node's poolId must reference one of these pool ids. Leave empty "
+            "for a single-actor flat process (the common case)."
         ),
     )
 
@@ -403,7 +404,10 @@ class BPMNModificationChanges(BaseModel):
     )
     owner: Optional[str] = Field(
         default=None,
-        description="add_task / add_gateway / add_event: existing lane name or [id] to place the new node in.",
+        description=(
+            "add_task / add_gateway / add_event: existing lane name or [id] to place the new node in. "
+            "Set it whenever the process has lanes."
+        ),
     )
 
 

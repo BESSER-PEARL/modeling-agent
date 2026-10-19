@@ -531,8 +531,10 @@ Features
 - **Deterministic post-generation repair** (``_validate_and_refine``): pure
   Python fixes for structural invariants the LLM violates despite the system
   prompt — ``_connect_orphaned_nodes`` reattaches nodes with no incoming
-  flow, ``_normalize_pool_refs`` and ``_infer_missing_lane_owners`` fix
-  pool/lane membership, ``_unique_id`` de-duplicates ids.
+  flow, ``_normalize_pool_refs`` and ``_place_nodes_in_pools`` fix
+  pool/lane membership (every node of a pooled process gets a pool, and a
+  lane when its pool has lanes), ``_place_added_nodes`` does the same for
+  added nodes, ``_unique_id`` de-duplicates ids.
 - **Reference validation on modification** (``_validate_mod_refs``): a
   modification naming a node that does not exist is rejected rather than
   applied to an arbitrary substitute. When only some modifications of a batch

@@ -121,7 +121,7 @@ def test_bpmn_validation_connects_orphaned_task_falls_back_to_previous_node():
     assert new_flow["source"] == "a"
 
 
-def test_bpmn_validation_drops_dangling_pool_ref():
+def test_bpmn_validation_replaces_dangling_pool_ref_with_a_declared_pool():
     from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
     spec = BPMNDiagramHandler(None)._validate_and_refine({
         "nodes": [{"id": "t", "name": "Do", "type": "task", "poolId": "ghost", "laneId": "ghost_lane"}],
@@ -129,12 +129,12 @@ def test_bpmn_validation_drops_dangling_pool_ref():
         "pools": [{"id": "real", "name": "Real Pool", "lanes": []}],
     })
     node = next(n for n in spec["nodes"] if n["id"] == "t")
-    assert node["poolId"] is None
+    assert node["poolId"] == "real"
     assert node["laneId"] is None
     assert node["owner"] is None
 
 
-def test_bpmn_validation_drops_dangling_lane_ref_keeps_pool():
+def test_bpmn_validation_replaces_dangling_lane_ref_with_a_lane_of_the_pool():
     from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
     spec = BPMNDiagramHandler(None)._validate_and_refine({
         "nodes": [{"id": "t", "name": "Do", "type": "task", "poolId": "vendor", "laneId": "ghost_lane"}],
@@ -143,8 +143,8 @@ def test_bpmn_validation_drops_dangling_lane_ref_keeps_pool():
     })
     node = next(n for n in spec["nodes"] if n["id"] == "t")
     assert node["poolId"] == "vendor"
-    assert node["laneId"] is None
-    assert node["owner"] is None
+    assert node["laneId"] == "chef"
+    assert node["owner"] == "chef"
 
 
 def test_bpmn_validation_keeps_valid_pool_and_lane_refs():
@@ -607,3 +607,165 @@ def test_bpmn_model_summary_includes_agentic_lane_and_governance():
     assert "lane=Supervisor" in summary
     assert "role=merging" in summary
     assert "governanceDsl=set" in summary
+
+
+# -- Every flow node of a pooled process sits in a pool (and lane) ----------
+# Live repro (agentic PR review): the start event, both gateways and the end
+# events came back with poolId/laneId null, landed outside every pool, and the
+# validator reported "SequenceFlow crosses a process boundary" for each flow
+# between them and the pooled review tasks.
+
+def _pr_review_spec():
+    def node(nid, ntype, pool=None, lane=None, **extra):
+        return {"id": nid, "name": nid, "type": ntype, "poolId": pool, "laneId": lane, "owner": lane, **extra}
+
+    return {
+        "systemName": "Pull Request Review Process",
+        "pools": [
+            {"id": "reviewerAgents", "name": "Reviewer Agents",
+             "lanes": [{"id": "reviewer", "name": "Reviewer", "isAgentic": True, "role": "solution"}]},
+            {"id": "mergeAgent", "name": "Merge Agent",
+             "lanes": [{"id": "merger", "name": "Merge Agent", "isAgentic": True, "role": "supervision"}]},
+        ],
+        "nodes": [
+            node("startEvent", "startEvent"),
+            node("split", "gateway", gatewayType="parallel", isAgentic=True, gatewayRole="diverging"),
+            node("security", "task", "reviewerAgents", "reviewer"),
+            node("style", "task", "reviewerAgents", "reviewer"),
+            node("join", "gateway", gatewayType="parallel", isAgentic=True, gatewayRole="merging"),
+            node("merge", "task", "mergeAgent", "merger"),
+            node("merged", "endEvent"),
+            node("failed", "endEvent"),
+        ],
+        "flows": [
+            {"source": "startEvent", "target": "split"},
+            {"source": "split", "target": "security"},
+            {"source": "split", "target": "style"},
+            {"source": "security", "target": "join"},
+            {"source": "style", "target": "join"},
+            {"source": "join", "target": "merge"},
+            {"source": "merge", "target": "merged"},
+            {"source": "merge", "target": "failed"},
+        ],
+    }
+
+
+def _assert_every_node_placed(spec):
+    lanes_of = {p["id"]: {lane["id"] for lane in p["lanes"]} for p in spec["pools"]}
+    for node in spec["nodes"]:
+        assert node["poolId"] in lanes_of, node
+        assert node["laneId"] in lanes_of[node["poolId"]], node
+        assert node["owner"] == node["laneId"], node
+
+
+def test_bpmn_pooled_process_places_events_and_gateways_by_their_neighbours():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine(_pr_review_spec())
+    _assert_every_node_placed(spec)
+    nodes = {n["id"]: n for n in spec["nodes"]}
+    # Chained through the unplaced split gateway to the reviewer tasks.
+    assert (nodes["startEvent"]["poolId"], nodes["startEvent"]["laneId"]) == ("reviewerAgents", "reviewer")
+    assert nodes["split"]["laneId"] == "reviewer"
+    # A predecessor's lane wins over a successor's.
+    assert nodes["join"]["laneId"] == "reviewer"
+    assert nodes["merged"]["laneId"] == nodes["failed"]["laneId"] == "merger"
+
+
+def test_bpmn_pooled_process_without_placed_neighbours_uses_the_first_lane():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": [
+            {"id": "start", "name": "Start", "type": "startEvent"},
+            {"id": "do", "name": "Do", "type": "task"},
+            {"id": "end", "name": "End", "type": "endEvent", "poolId": "shop"},
+        ],
+        "flows": [{"source": "start", "target": "do"}, {"source": "do", "target": "end"}],
+        "pools": [{"id": "shop", "name": "Shop", "lanes": [{"id": "clerk", "name": "Clerk"},
+                                                          {"id": "chef", "name": "Chef"}]}],
+    })
+    _assert_every_node_placed(spec)
+    assert {n["laneId"] for n in spec["nodes"]} == {"clerk"}
+
+
+def test_bpmn_node_in_a_laneless_pool_keeps_no_lane():
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": [
+            {"id": "order", "name": "Order", "type": "task", "poolId": "customer"},
+            {"id": "start", "name": "Hungry", "type": "startEvent"},
+        ],
+        "flows": [{"source": "start", "target": "order"}],
+        "pools": [{"id": "customer", "name": "Customer", "lanes": []}],
+    })
+    assert {(n["poolId"], n["laneId"], n["owner"]) for n in spec["nodes"]} == {("customer", None, None)}
+
+
+def test_bpmn_prompts_require_pool_membership_for_events_and_gateways():
+    from diagram_handlers.types.bpmn_diagram_handler import (
+        AGENTIC_DESIGN_RULES, MODIFY_SYSTEM_PROMPT_BPMN, BPMNDiagramHandler,
+    )
+    from schemas.bpmn import BPMNNodeSpec
+    for text in (BPMNDiagramHandler(None).get_system_prompt(), AGENTIC_DESIGN_RULES,
+                 BPMNNodeSpec.model_fields["poolId"].description):
+        assert "start/end events and gateways" in text
+    assert "changes.owner" in MODIFY_SYSTEM_PROMPT_BPMN
+
+
+_LANED_MODEL = {"elements": {
+    "pool-1": {"type": "BPMNPool", "name": "Review Swarm", "owner": None},
+    "lane-w": {"type": "BPMNSwimlane", "name": "Writer", "owner": "pool-1"},
+    "lane-s": {"type": "BPMNSwimlane", "name": "Supervisor", "owner": "pool-1"},
+    "t-draft": {"type": "BPMNTask", "name": "Draft Answer", "owner": "lane-w"},
+    "t-check": {"type": "BPMNTask", "name": "Check Answer", "owner": "lane-s"},
+}, "relationships": {}}
+
+
+def _bpmn_modify(monkeypatch, model, mods):
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    from schemas import BPMNModificationResponse
+
+    monkeypatch.setattr(
+        BPMNDiagramHandler, "predict_structured",
+        lambda self, prompt, schema, **kw: BPMNModificationResponse.model_validate(
+            {"modifications": mods, "message": "ok"}),
+    )
+    result = BPMNDiagramHandler(None).generate_modification("add it", current_model=model)
+    return result.get("modifications") or [result.get("modification")]
+
+
+def _added_owners(mods):
+    return {m["target"]["nodeName"]: (m.get("changes") or {}).get("owner")
+            for m in mods if m["action"] in ("add_task", "add_gateway", "add_event")}
+
+
+def test_bpmn_added_nodes_go_into_the_lane_of_the_node_they_connect_to(monkeypatch):
+    mods = _bpmn_modify(monkeypatch, _LANED_MODEL, [
+        {"action": "add_gateway", "target": {"nodeName": "Approved?"}},
+        {"action": "add_event", "target": {"nodeName": "Published"}, "changes": {"eventKind": "end"}},
+        {"action": "add_flow", "target": {}, "changes": {"source": "t-check", "target": "Approved?"}},
+        {"action": "add_flow", "target": {}, "changes": {"source": "Approved?", "target": "Published"}},
+    ])
+    assert _added_owners(mods) == {"Approved?": "lane-s", "Published": "lane-s"}
+
+
+def test_bpmn_added_node_without_a_neighbour_goes_into_the_first_lane(monkeypatch):
+    mods = _bpmn_modify(monkeypatch, _LANED_MODEL, [
+        {"action": "add_task", "target": {"nodeName": "Log Result"}},
+        {"action": "add_task", "target": {"nodeName": "Escalate"}, "changes": {"owner": "Supervisor"}},
+    ])
+    assert _added_owners(mods) == {"Log Result": "lane-w", "Escalate": "Supervisor"}
+
+
+def test_bpmn_added_node_is_not_forced_into_a_lane_when_a_pool_has_none(monkeypatch):
+    model = {"elements": {
+        "c-pool": {"type": "BPMNPool", "name": "Customer", "owner": None},
+        "v-pool": {"type": "BPMNPool", "name": "Vendor", "owner": None},
+        "v-lane": {"type": "BPMNSwimlane", "name": "Clerk", "owner": "v-pool"},
+        "c-order": {"type": "BPMNTask", "name": "Order Pizza", "owner": "c-pool"},
+    }, "relationships": {}}
+    mods = _bpmn_modify(monkeypatch, model, [
+        {"action": "add_task", "target": {"nodeName": "Pay"}},
+        {"action": "add_task", "target": {"nodeName": "Eat"}},
+        {"action": "add_flow", "target": {}, "changes": {"source": "Order Pizza", "target": "Eat"}},
+    ])
+    assert _added_owners(mods) == {"Pay": None, "Eat": None}

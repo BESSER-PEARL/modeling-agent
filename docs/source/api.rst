@@ -269,7 +269,7 @@ Diagram Handlers
 ``src/diagram_handlers/types/bpmn_diagram_handler.py``
   - ``BPMNDiagramHandler(llm)`` — diagram type ``"BPMN"``
   - ``_validate_and_refine`` / ``_connect_orphaned_nodes`` /
-    ``_normalize_pool_refs`` / ``_infer_missing_lane_owners`` — deterministic
+    ``_normalize_pool_refs`` / ``_place_nodes_in_pools`` — deterministic
     post-generation repair
   - ``_validate_mod_refs`` — rejects modifications naming a nonexistent node
 

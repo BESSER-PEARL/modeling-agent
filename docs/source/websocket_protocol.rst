@@ -277,6 +277,11 @@ editors already handle. What changed in the specs, and how each editor reads it:
   ``add_swimlane`` of the same batch creates, and ``add_flow`` may name a node
   added earlier in the batch (both editors apply a batch in order and resolve
   names).
+  In a process with pools every flow node carries a ``poolId``, and a ``laneId``
+  when its pool has lanes; a node outside the pools lands in another BPMN
+  process and every sequence flow to it fails validation. In a process with
+  lanes, ``add_task`` / ``add_gateway`` / ``add_event`` name their lane id in
+  ``changes.owner``, which both editors resolve.
 * **Class diagram**: steps after a class rename name the class by its new
   name, and a ``modify_relationship`` with real changes is kept next to the
   rename.
