@@ -723,7 +723,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
 
                         updated_mod = dict(mod)
                         updated_mod["target"] = target
-                        updated_mod["changes"] = changes or None
+                        updated_mod["changes"] = changes
                         normalized.append(updated_mod)
 
                         if embedded_source and embedded_target:
@@ -752,7 +752,8 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
                         normalized.append(updated_mod)
                         continue
 
-                    normalized.append(mod)
+                    # Both editors' modifiers read changes.<field> unguarded.
+                    normalized.append({**mod, "changes": mod.get("changes") or {}})
 
                 if expanded_flows:
                     logger.info(

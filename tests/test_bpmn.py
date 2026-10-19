@@ -769,3 +769,17 @@ def test_bpmn_added_node_is_not_forced_into_a_lane_when_a_pool_has_none(monkeypa
         {"action": "add_flow", "target": {}, "changes": {"source": "Order Pizza", "target": "Eat"}},
     ])
     assert _added_owners(mods) == {"Pay": None, "Eat": None}
+
+
+def test_bpmn_modifications_always_carry_a_changes_object(monkeypatch):
+    """Both editors' BPMN modifiers read m.changes.<field> unguarded; an add with
+    no changes went out as changes: null and threw, e.g. reading 'gatewayType'."""
+    flat = {"elements": {"t-check": {"type": "BPMNTask", "name": "Check", "owner": None}}, "relationships": {}}
+    mods = _bpmn_modify(monkeypatch, flat, [
+        {"action": "add_task", "target": {"nodeName": "Ship"}},
+        {"action": "add_gateway", "target": {"nodeName": "Paid?"}},
+        {"action": "add_event", "target": {"nodeName": "Done"}},
+        {"action": "remove_element", "target": {"nodeName": "Check"}},
+    ])
+    assert [m["action"] for m in mods] == ["add_task", "add_gateway", "add_event", "remove_element"]
+    assert all(isinstance(m["changes"], dict) for m in mods), [m["changes"] for m in mods]
