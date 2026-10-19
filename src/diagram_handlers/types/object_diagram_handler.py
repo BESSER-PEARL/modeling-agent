@@ -823,6 +823,25 @@ IMPORTANT RULES:
     # Modification Support
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _mirror_object_rename(mod_list: list, elements: Dict[str, Any]) -> None:
+        """Copy a modify_object rename into ``changes.name``, the field both editors read (mutates *mod_list*).
+
+        A v3 object without a classId carries its class in the name
+        ("book1: Book"); the suffix is kept so the box still shows its class.
+        """
+        for mod in mod_list:
+            changes = mod.get("changes") if isinstance(mod, dict) and mod.get("action") == "modify_object" else None
+            new_name = (changes or {}).get("objectName")
+            if not isinstance(new_name, str) or not new_name.strip():
+                continue
+            ref = ((mod.get("target") or {}).get("objectName") or "").strip().lower()
+            current = next((el.get("name") or "" for el in elements.values()
+                            if isinstance(el, dict) and el.get("type") in ("ObjectName", "Object")
+                            and (el.get("name") or "").strip().lower() == ref), "")
+            suffix = current.split(":", 1)[1].strip() if ":" in current and ":" not in new_name else ""
+            changes["name"] = f"{new_name.strip()}: {suffix}" if suffix else new_name.strip()
+
     def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate modifications for existing object diagram elements."""
 
@@ -902,10 +921,17 @@ IMPORTANT RULES:
                 mod["changes"] = changes
             return mod_list
 
+        elements = current_model.get("elements") if isinstance(current_model, dict) else None
+
+        def _post_process(mod_list: list) -> list:
+            mod_list = _resolve_class_references(mod_list)
+            self._mirror_object_rename(mod_list, elements or {})
+            return mod_list
+
         try:
             return self._execute_modification(
                 user_prompt, system_prompt, ObjectModificationResponse,
-                post_processor=_resolve_class_references,
+                post_processor=_post_process,
             )
 
         except LLMPredictionError as exc:

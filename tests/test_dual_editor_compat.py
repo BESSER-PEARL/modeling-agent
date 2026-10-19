@@ -272,3 +272,51 @@ class TestGovernanceDslIsAValidDocument:
         [mod] = _bpmn_modify([{"action": "modify_node", "target": {"nodeId": "bpmn_merge_gw1"},
                                "changes": {"governancePolicy": "ConsensusPolicy"}}], model)
         assert "governanceDsl" not in mod["changes"]
+
+
+# ---------------------------------------------------------------------------
+# Object rename: both editors' ObjectDiagramModifier.modifyObject read only
+# changes.name; the agent sent changes.objectName, so "rename book1 to dune"
+# was reported as done and changed nothing (live test, shot 111).
+# ---------------------------------------------------------------------------
+
+def _object_modify(mods, model):
+    from diagram_handlers.types.object_diagram_handler import ObjectDiagramHandler
+    from schemas.object_diagram import ObjectModificationResponse
+
+    parsed = ObjectModificationResponse.model_validate({"modifications": mods})
+    with patch.object(ObjectDiagramHandler, "predict_structured", return_value=parsed):
+        spec = ObjectDiagramHandler(None).generate_modification("rename it", current_model=model)
+    return spec.get("modifications") or [spec.get("modification")]
+
+
+def _library_objects(book_name="book1"):
+    return {"type": "ObjectDiagram", "relationships": {}, "elements": {
+        "o-book": {"id": "o-book", "type": "ObjectName", "name": book_name, "owner": None,
+                   "classId": "c-book" if ":" not in book_name else None, "attributes": []},
+        "o-patron": {"id": "o-patron", "type": "ObjectName", "name": "patron1", "owner": None,
+                     "classId": "c-patron", "attributes": []},
+    }}
+
+
+class TestObjectRename:
+    def test_rename_is_also_in_changes_name(self):
+        [mod] = _object_modify([{"action": "modify_object", "target": {"objectName": "book1"},
+                                 "changes": {"objectName": "dune"}}], _library_objects())
+        assert mod["changes"]["name"] == "dune"
+        assert mod["changes"]["objectName"] == "dune"
+
+    def test_a_class_suffix_in_the_v3_name_is_kept(self):
+        """A v3 object without classId shows its class in the name ("book1: Book")."""
+        [mod] = _object_modify([{"action": "modify_object", "target": {"objectName": "book1: Book"},
+                                 "changes": {"objectName": "dune"}}], _library_objects("book1: Book"))
+        assert mod["changes"]["name"] == "dune: Book"
+
+    def test_other_actions_get_no_name(self):
+        mods = _object_modify([
+            {"action": "add_object", "target": {"objectName": "bob"},
+             "changes": {"objectName": "bob", "className": "Patron"}},
+            {"action": "modify_attribute_value", "target": {"objectName": "book1", "attributeName": "title"},
+             "changes": {"value": "Dune"}},
+        ], _library_objects())
+        assert [(m.get("changes") or {}).get("name") for m in mods] == [None, None]

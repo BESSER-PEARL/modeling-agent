@@ -286,7 +286,9 @@ editors already handle. What changed in the specs, and how each editor reads it:
   name, and a ``modify_relationship`` with real changes is kept next to the
   rename.
 * **Object diagram**: an object's attributes include inherited ones, whose
-  ``attributeId`` is the declaring superclass's attribute.
+  ``attributeId`` is the declaring superclass's attribute. A ``modify_object``
+  rename sends the new name in ``changes.name``, which both editors read, as
+  well as ``changes.objectName``.
 
 Supported Diagram Types
 ~~~~~~~~~~~~~~~~~~~~~~~~
