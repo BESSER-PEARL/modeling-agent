@@ -125,6 +125,13 @@ class TestBPMNContract:
         assert set(_props(defs["BPMNPoolSpec"])) == set(self.bpmn["poolFields"])
         assert set(_props(defs["BPMNFlowSpec"])) == set(self.bpmn["flowFields"])
 
+    def test_data_object_fields(self):
+        _schema, defs = _defs(SystemBPMNSpec)
+        assert set(_props(defs["BPMNDataObjectSpec"])) == set(self.bpmn["dataObjectFields"])
+        association = _props(defs["BPMNDataAssociationSpec"])
+        assert set(association) == set(self.bpmn["dataAssociationFields"])
+        assert _enum(association["direction"]) == self.bpmn["dataAssociationDirections"]
+
     def test_modification_vocabulary(self):
         _schema, defs = _defs(BPMNModificationResponse)
         changes = _props(defs["BPMNModificationChanges"])

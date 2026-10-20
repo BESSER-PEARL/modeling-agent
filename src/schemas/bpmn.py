@@ -2,7 +2,8 @@
 
 Field descriptions are used by OpenAI Structured Outputs to guide generation.
 Base BPMN plus collaboration diagrams — start/end events, tasks, gateways,
-sequence flows, and optional pools/lanes for multi-participant processes —
+sequence flows, data objects with their input/output associations, and
+optional pools/lanes for multi-participant processes —
 plus the editor's Agentic BPMN attributes (agentic lanes with a role, trust
 score and swarm multiplicity; agentic tasks with a reflection mode; agentic
 parallel/inclusive gateways with a diverging/merging role and a Governance
@@ -245,6 +246,30 @@ class BPMNFlowSpec(BaseModel):
     )
 
 
+class BPMNDataObjectSpec(BaseModel):
+    id: str = Field(
+        min_length=1,
+        max_length=40,
+        description=(
+            "Short unique slug identifying this data object (e.g. 'invoice'). "
+            "Referenced by dataAssociations. Must differ from every node id."
+        ),
+    )
+    name: str = Field(
+        default="",
+        max_length=60,
+        description="The data, document or material it represents (e.g. 'Invoice', 'Binder').",
+    )
+
+
+class BPMNDataAssociationSpec(BaseModel):
+    dataObject: str = Field(description="Id of a data object in dataObjects.")
+    node: str = Field(description="Id of the task (or event) in nodes that reads or produces the data object.")
+    direction: Literal["input", "output"] = Field(
+        description="'input' when the node reads or uses the data object, 'output' when it produces it.",
+    )
+
+
 class SystemBPMNSpec(BaseModel):
     """Schema for a complete BPMN process (base or agentic)."""
 
@@ -278,6 +303,21 @@ class SystemBPMNSpec(BaseModel):
             "or explicit roles within one organization. Once pools are declared, "
             "every node's poolId must reference one of these pool ids. Leave empty "
             "for a single-actor flat process (the common case)."
+        ),
+    )
+    dataObjects: List[BPMNDataObjectSpec] = Field(
+        default_factory=list,
+        description=(
+            "Data, documents or materials the request says a step uses or produces "
+            "(e.g. 'inputs: binder, solvent'). One entry per distinct item. Never put "
+            "them in nodes. Leave empty when the request names none."
+        ),
+    )
+    dataAssociations: List[BPMNDataAssociationSpec] = Field(
+        default_factory=list,
+        description=(
+            "Connects each data object to the node that reads it (direction 'input') or "
+            "produces it ('output'). Every data object has at least one. Never put them in flows."
         ),
     )
 
@@ -405,15 +445,15 @@ class BPMNModificationChanges(BaseModel):
     owner: Optional[str] = Field(
         default=None,
         description=(
-            "add_task / add_gateway / add_event: existing lane name or [id] to place the new node in. "
-            "Set it whenever the process has lanes."
+            "add_task / add_gateway / add_event / add_data_object: existing lane name or [id] "
+            "to place the new node in. Set it whenever the process has lanes."
         ),
     )
 
 
 class BPMNModification(BaseModel):
     action: Literal[
-        "add_task", "add_gateway", "add_event",
+        "add_task", "add_gateway", "add_event", "add_data_object",
         "add_flow", "modify_node", "remove_flow", "remove_element",
         "add_pool", "add_swimlane", "modify_swimlane", "remove_swimlane", "remove_pool",
     ] = Field(description="Action to perform.")

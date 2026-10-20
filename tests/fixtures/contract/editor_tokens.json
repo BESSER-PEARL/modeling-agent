@@ -26,7 +26,10 @@
     "gatewayFields": ["isAgentic", "gatewayRole", "trustScore", "governancePolicy"],
     "GovPolicyType": ["MajorityPolicy", "AbsoluteMajorityPolicy", "LeaderDrivenPolicy", "ConsensusPolicy"],
     "poolFields": ["id", "name", "lanes"],
-    "flowFields": ["source", "target", "name"]
+    "flowFields": ["source", "target", "name"],
+    "dataObjectFields": ["id", "name"],
+    "dataAssociationFields": ["dataObject", "node", "direction"],
+    "dataAssociationDirections": ["input", "output"]
   },
   "component": {
     "AGENT_CATEGORY_TOKENS": ["solution", "supervision"],
