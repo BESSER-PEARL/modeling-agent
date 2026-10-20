@@ -4,7 +4,7 @@ Handles generation and modification of BPMN process diagrams, including
 multi-participant collaboration diagrams and Agentic BPMN.
 
 Emits a process (start/end events, tasks, exclusive/parallel/inclusive
-gateways, flows) optionally grouped into pools (participants) and lanes
+gateways, flows, data objects) optionally grouped into pools (participants) and lanes
 (roles within a pool). Agentic mode — selected only on explicit agentic intent
 or an existing agentic lane (``_is_agentic_bpmn_request``) — adds the editor's
 Agentic BPMN attributes (agentic lanes with a role, trust score and swarm
@@ -36,7 +36,7 @@ Each node appears as:  [id] Name (type)   ← named node
 Each flow appears as:  Flow: [src-id] Name -> [tgt-id] Name
 
 MODIFICATION RULES:
-1. Actions available: "add_task", "add_gateway", "add_event", "add_flow", "modify_node", "remove_flow", "remove_element"
+1. Actions available: "add_task", "add_gateway", "add_event", "add_data_object", "add_flow", "modify_node", "remove_flow", "remove_element"
 2. add_task: set target.nodeName to the task name only. Do NOT append UI/type suffixes like "(Task)". Optional changes.taskType (default/user/service/send/receive/manual/business-rule/script).
 3. add_gateway: set target.nodeName to the gateway label/question only. Do NOT append "(Gateway)". Optional changes.gatewayType (exclusive/parallel/inclusive). Default exclusive.
 4. add_event: set target.nodeName and changes.eventKind to "start", "end", or "intermediate". Do NOT append "(Event)".
@@ -47,6 +47,7 @@ MODIFICATION RULES:
 9. remove_flow: set changes.source and changes.target to the node IDs or names of the flow endpoints.
 10. For NAMED nodes you may use the display name. For UNNAMED nodes (no name shown before the type) you MUST use the exact id from [id].
 11. If the user asks for "a second", "another", or "one more" task, add exactly ONE new task unless they explicitly ask for two or more.
+12. add_data_object: a data object is data, a document or a material a task uses or produces (shown as "(DataObject)" in the context). Set target.nodeName to its name, then connect it with add_flow: source = the data object and target = the task for an input, source = the task and target = the data object for an output. Add one data object per item the user names.
 
 When the user asks to remove or modify an element, always verify the element exists in the current context listing before emitting any remove_element or
 modify_node action. If no entry in the listing matches the user's description (by name or id):
@@ -137,6 +138,7 @@ DESIGN RULES:
 6. Keep it focused (typically 4-10 nodes, more if the request genuinely describes more distinct steps/decisions — do not compress described steps just to stay under 10).
 7. Use POOLS only when the request describes two or more distinct participants — separate organizations, companies, or systems interacting (e.g. "customer" and "vendor", "shop" and "supplier", "our system" and "the payment gateway"). Give each participant its own entry in `pools` and set every node it owns to that pool's id via `poolId`. Communication between two pools MUST be a flow from a node in one pool to a node in another — the WME renders these as message flows automatically, you never set a flow type. Use LANES inside a single pool ONLY when the request names distinct roles or departments performing steps within ONE organization (e.g. "clerk", "chef", "delivery driver"); declare them under that pool's `lanes` and set each node's `laneId`. If the request describes a single actor doing everything, leave `pools` empty and every node's `poolId`/`laneId` null — do not invent participants that were not described.
 8. {POSITION_DISCLAIMER}
+9. When the request names data, documents or materials a step uses or produces (e.g. "inputs: binder, solvent"), add one entry per item to `dataObjects` and connect it to that step in `dataAssociations` (direction 'input' if the step uses it, 'output' if it produces it). Data objects never go in `nodes` or `flows`. Do not drop any item the request names.
 
 Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and lane ids follow the same convention ('customer', 'chef')."""
 
@@ -196,7 +198,9 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
             "4. Is any work concurrent (parallel gateways)?\n"
             "5. What are the possible outcomes (end events)? For each negative/exception "
             "outcome a gateway branch leads to (e.g. 'order cannot be completed'), make sure "
-            "that branch's flow actually reaches the matching end event.\n\n"
+            "that branch's flow actually reaches the matching end event.\n"
+            "6. Which data, documents or materials does each step use (input) or produce "
+            "(output)? List every item the request names as a data object.\n\n"
             "Focus on the SEQUENCE FLOWS — they are the most commonly under-specified part. "
             "Before finalizing, re-read the request once more and check you have not silently "
             "dropped or merged any step or decision point it mentioned, and that every node "
@@ -370,10 +374,47 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
         self._connect_orphaned_nodes(nodes, flows)
         self._normalize_pool_refs(spec, nodes)
         self._infer_missing_lane_owners(spec, nodes, flows)
+        self._normalize_data_objects(spec, ids)
 
         spec["nodes"] = nodes
         spec["flows"] = flows
         return spec
+
+    @classmethod
+    def _normalize_data_objects(cls, spec: Dict[str, Any], node_ids: set) -> None:
+        """Keep data objects and their associations consistent (mutates *spec*).
+
+        A data object whose id collides with a node or another data object gets
+        a unique id; associations to an unknown data object or node are dropped,
+        as are duplicates.
+        """
+        taken = set(node_ids)
+        data_ids = set()
+        data_objects = []
+        renamed: Dict[str, str] = {}
+        for obj in spec.get("dataObjects") or []:
+            obj_id = (obj.get("id") or "").strip()
+            if not obj_id:
+                continue
+            unique_id = cls._unique_id(obj_id, taken)
+            if unique_id != obj_id:
+                renamed.setdefault(obj_id, unique_id)
+            taken.add(unique_id)
+            data_ids.add(unique_id)
+            data_objects.append({**obj, "id": unique_id})
+
+        associations = []
+        seen = set()
+        for assoc in spec.get("dataAssociations") or []:
+            data_id = renamed.get(assoc.get("dataObject"), assoc.get("dataObject"))
+            key = (data_id, assoc.get("node"), assoc.get("direction"))
+            if data_id not in data_ids or assoc.get("node") not in node_ids or key in seen:
+                continue
+            seen.add(key)
+            associations.append({**assoc, "dataObject": data_id})
+
+        spec["dataObjects"] = data_objects
+        spec["dataAssociations"] = associations
 
     @staticmethod
     def _normalize_pool_refs(spec: Dict[str, Any], nodes: List[Dict[str, Any]]) -> None:
@@ -608,7 +649,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
                   ``"Record video demo 1 (Task)"``.
                 """
                 alias_to_name: Dict[str, str] = {}
-                node_add_actions = {"add_task", "add_gateway", "add_event"}
+                node_add_actions = {"add_task", "add_gateway", "add_event", "add_data_object"}
 
                 def _clean_added_name(action: str, target: Dict[str, Any], changes: Dict[str, Any]) -> Optional[str]:
                     target_name = (target.get("nodeName") or "").strip()
@@ -618,6 +659,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
                             "add_task": " (Task)",
                             "add_gateway": " (Gateway)",
                             "add_event": " (Event)",
+                            "add_data_object": " (DataObject)",
                         }
                         suffix = typed_suffixes.get(action)
                         if suffix and target_name == f"{change_name}{suffix}":
@@ -836,6 +878,9 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
         if pools:
             pool_names = ", ".join(f"**{p.get('name') or p.get('id')}**" for p in pools)
             msg += f", across {len(pools)} participant(s) ({pool_names})"
+        data_objects = spec.get("dataObjects") or []
+        if data_objects:
+            msg += f", with {len(data_objects)} data object(s)"
         msg += ". Ask me to add steps, rename nodes, or regenerate any time!"
         return msg
 
@@ -864,6 +909,8 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
         "BPMNEndEvent": "End Event",
         "BPMNIntermediateEvent": "Intermediate Event",
         "BPMNCallActivity": "Call Activity",
+        "BPMNDataObject": "Data Object",
+        "BPMNDataStore": "Data Store",
     }
 
     @classmethod
@@ -947,7 +994,10 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
     _REF_NAME_KEY = "nodeName"
     _REF_TARGET_ACTIONS = frozenset({"remove_element", "modify_node"})
     _REF_ENDPOINT_ACTIONS = frozenset({"add_flow", "remove_flow"})
-    _REF_ADD_ACTIONS = {"add_task": "BPMNTask", "add_gateway": "BPMNGateway", "add_event": "BPMNEvent"}
+    _REF_ADD_ACTIONS = {
+        "add_task": "BPMNTask", "add_gateway": "BPMNGateway", "add_event": "BPMNEvent",
+        "add_data_object": "BPMNDataObject",
+    }
     _REF_RENAME_ACTIONS = frozenset({"modify_node"})
     _REF_REMOVE_ACTIONS = frozenset({"remove_element"})
 
