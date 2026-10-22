@@ -624,16 +624,16 @@ IMPORTANT RULES:
         class_name = object_spec.get('className', '')
         class_id = object_spec.get('classId')
 
-        # Build a name -> attribute lookup for the target class as a fallback
-        # when the LLM omitted attributeId.
+        # A class and attribute matched by name win over the ids the LLM
+        # copied: it sometimes omits or mis-copies them.
         target_class = None
-        if class_id and class_id in elements:
+        for el_id, el in elements.items():
+            if isinstance(el, dict) and el.get('type') in ('Class', 'AbstractClass') and el.get('name') == class_name:
+                target_class = el
+                object_spec['classId'] = el_id
+                break
+        if target_class is None and class_id and class_id in elements:
             target_class = elements[class_id]
-        else:
-            for el in elements.values():
-                if isinstance(el, dict) and el.get('type') in ('Class', 'AbstractClass') and el.get('name') == class_name:
-                    target_class = el
-                    break
 
         attr_name_to_type: Dict[str, str] = {}
         attr_name_to_id: Dict[str, str] = {}
@@ -651,13 +651,12 @@ IMPORTANT RULES:
             if not isinstance(attr, dict):
                 continue
             attr_type = None
-            attr_id = attr.get('attributeId')
+            attr_id = attr_name_to_id.get(attr.get('name', '')) or attr.get('attributeId')
             if attr_id and attr_id in elements and isinstance(elements[attr_id], dict):
                 attr_type = elements[attr_id].get('attributeType')
             if not attr_type:
                 attr_type = attr_name_to_type.get(attr.get('name', ''))
-            if not attr.get('attributeId'):
-                attr['attributeId'] = attr_name_to_id.get(attr.get('name', ''))
+            attr['attributeId'] = attr_id
             attr['type'] = attr_type or 'str'
 
     def _format_reference_classes(self, elements: Dict[str, Any]) -> str:
@@ -785,12 +784,12 @@ IMPORTANT RULES:
         logger.info(f"[ObjectDiagram] generate_modification called with: {user_request!r}")
 
         def _resolve_class_references(mod_list: list) -> list:
-            """Fill in classId / attributeId for add_object mods from the reference catalog.
+            """Set classId / attributeId for add_object mods from the reference catalog.
 
-            The LLM routinely forgets these ids even when the prompt demands them.
-            Since we already loaded the reference catalog above, resolve them
-            deterministically so the frontend can link the new object to its
-            class definition without needing a round-trip.
+            The LLM routinely forgets these ids, or mis-copies them, even when
+            the prompt demands them. A name match in the catalog is
+            authoritative, so the frontend links the object to its class
+            definition without needing a round-trip.
             """
             if not reference_classes:
                 return mod_list
@@ -808,8 +807,7 @@ IMPORTANT RULES:
 
                 # Canonicalise the class name to the exact casing from the reference
                 changes["className"] = class_info["name"]
-                if not changes.get("classId"):
-                    changes["classId"] = class_info["id"]
+                changes["classId"] = class_info["id"]
 
                 # Resolve attributeId per attribute by matching name (case-insensitive).
                 attr_by_name = {
@@ -821,8 +819,7 @@ IMPORTANT RULES:
                     ref_attr = attr_by_name.get((attr.get("name") or "").strip().lower())
                     if not ref_attr:
                         continue
-                    if not attr.get("attributeId"):
-                        attr["attributeId"] = ref_attr["id"]
+                    attr["attributeId"] = ref_attr["id"]
                     if not attr.get("type"):
                         attr["type"] = ref_attr.get("type", "str")
 
