@@ -621,43 +621,29 @@ IMPORTANT RULES:
         if not isinstance(elements, dict):
             return
 
-        class_name = object_spec.get('className', '')
-        class_id = object_spec.get('classId')
-
-        # A class and attribute matched by name win over the ids the LLM
-        # copied: it sometimes omits or mis-copies them.
-        target_class = None
-        for el_id, el in elements.items():
-            if isinstance(el, dict) and el.get('type') in ('Class', 'AbstractClass') and el.get('name') == class_name:
-                target_class = el
-                object_spec['classId'] = el_id
-                break
-        if target_class is None and class_id and class_id in elements:
-            target_class = elements[class_id]
-
-        attr_name_to_type: Dict[str, str] = {}
-        attr_name_to_id: Dict[str, str] = {}
-        if target_class:
-            for attr_id in target_class.get('attributes', []):
-                attr_el = elements.get(attr_id)
-                if isinstance(attr_el, dict):
-                    raw_name = (attr_el.get('name') or '').replace('+ ', '').replace('- ', '').replace('# ', '').split(':')[0].strip()
-                    attr_type = attr_el.get('attributeType', 'str')
-                    if raw_name:
-                        attr_name_to_type[raw_name] = attr_type
-                        attr_name_to_id[raw_name] = attr_id
+        # Same catalog and name matching as add_object modifications: a class
+        # or attribute matched by name wins over the id the LLM copied, which
+        # it sometimes omits or mis-copies.
+        classes, _ = self._extract_reference_catalog(reference_diagram)
+        class_info = classes.get((object_spec.get('className') or '').strip().lower())
+        if class_info:
+            object_spec['className'] = class_info['name']
+            object_spec['classId'] = class_info['id']
+        else:
+            class_id = object_spec.get('classId')
+            class_info = next((c for c in classes.values() if class_id and c['id'] == class_id), None)
+        attrs_by_name = {a['name'].lower(): a for a in (class_info or {}).get('attributes', [])}
 
         for attr in object_spec.get('attributes', []) or []:
             if not isinstance(attr, dict):
                 continue
-            attr_type = None
-            attr_id = attr_name_to_id.get(attr.get('name', '')) or attr.get('attributeId')
-            if attr_id and attr_id in elements and isinstance(elements[attr_id], dict):
-                attr_type = elements[attr_id].get('attributeType')
-            if not attr_type:
-                attr_type = attr_name_to_type.get(attr.get('name', ''))
-            attr['attributeId'] = attr_id
-            attr['type'] = attr_type or 'str'
+            ref_attr = attrs_by_name.get((attr.get('name') or '').strip().lower())
+            if ref_attr:
+                attr['attributeId'] = ref_attr['id']
+                attr['type'] = ref_attr['type']
+                continue
+            attr_el = elements.get(attr.get('attributeId'))
+            attr['type'] = (attr_el.get('attributeType') if isinstance(attr_el, dict) else None) or 'str'
 
     def _format_reference_classes(self, elements: Dict[str, Any]) -> str:
         """Format reference diagram classes for LLM context"""

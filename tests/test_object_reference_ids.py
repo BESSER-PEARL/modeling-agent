@@ -5,6 +5,8 @@ or mis-copy them. A class or attribute matched by name in the reference
 diagram must win over whatever id the LLM returned.
 """
 
+import copy
+
 from diagram_handlers.types.object_diagram_handler import ObjectDiagramHandler
 from schemas.object_diagram import ObjectModificationResponse, SingleObjectSpec
 
@@ -89,3 +91,42 @@ def test_unknown_class_keeps_the_ids_the_llm_sent(monkeypatch):
 
     assert element["classId"] == "cls-ghost"
     assert element["attributes"][0]["attributeId"] == "att-label"
+
+
+def test_single_object_matches_class_and_attribute_names_case_insensitively(monkeypatch):
+    spec = SingleObjectSpec.model_validate({
+        "objectName": "dune",
+        "className": "book",
+        "classId": "cls-author",
+        "attributes": [{"name": "Title", "value": "Dune", "attributeId": "att-name"}],
+    })
+    monkeypatch.setattr(ObjectDiagramHandler, "predict_structured", lambda self, *a, **k: spec)
+
+    element = ObjectDiagramHandler(None).generate_single_element(
+        "add a book dune", existing_model=None, reference_diagram=REFERENCE,
+    )["element"]
+
+    assert (element["className"], element["classId"]) == ("Book", "cls-book")
+    assert element["attributes"][0]["attributeId"] == "att-title"
+
+
+def test_both_paths_resolve_a_duplicated_class_name_to_the_same_id(monkeypatch):
+    reference = copy.deepcopy(REFERENCE)
+    reference["elements"]["cls-book2"] = {"id": "cls-book2", "type": "Class", "name": "Book", "attributes": [], "methods": []}
+    single = SingleObjectSpec.model_validate({"objectName": "b", "className": "Book", "classId": "cls-book", "attributes": []})
+    added = ObjectModificationResponse.model_validate({
+        "modifications": [{
+            "action": "add_object",
+            "target": {"objectName": "b"},
+            "changes": {"className": "Book", "classId": "cls-book", "attributes": []},
+        }],
+    })
+    handler = ObjectDiagramHandler(None)
+
+    monkeypatch.setattr(ObjectDiagramHandler, "predict_structured", lambda self, *a, **k: single)
+    single_id = handler.generate_single_element("add b", existing_model=None, reference_diagram=reference)["element"]["classId"]
+    monkeypatch.setattr(ObjectDiagramHandler, "predict_structured", lambda self, *a, **k: added)
+    result = handler.generate_modification("add b", current_model=None, reference_diagram=reference)
+    mods = result.get("modifications") or [result["modification"]]
+
+    assert single_id == mods[0]["changes"]["classId"]
