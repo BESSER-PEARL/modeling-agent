@@ -5,6 +5,7 @@ import inspect
 import json
 import os
 import time
+import traceback
 from datetime import datetime
 from urllib.parse import parse_qs, urlsplit
 
@@ -17,7 +18,9 @@ from pandas import DataFrame
 from websockets.exceptions import ConnectionClosedError
 from websockets.sync.server import ServerConnection, WebSocketServer, serve
 
-from baf.library.transition.events.base_events import ReceiveMessageEvent, ReceiveFileEvent
+from baf.core.gui.agent_gui import AgentGUI
+from baf.core.gui.gui_serializer import gui_to_json
+from baf.library.transition.events.base_events import ReceiveMessageEvent, ReceiveFileEvent, GUIEvent
 from baf.core.message import Message, MessageType
 from baf.core.session import Session
 from baf.exceptions.exceptions import PlatformMismatchError, StreamlitDatabaseException
@@ -83,29 +86,6 @@ def _reset_request_byok(token) -> None:
         logger.warning(f"BYOK: could not reset per-request key: {exc}")
 
 
-def _extract_user_id_from_request(request) -> str | None:
-    if not request:
-        return None
-    for attr in ("path", "raw_path", "uri"):
-        value = getattr(request, attr, None)
-        if not value:
-            continue
-        if isinstance(value, bytes):
-            # Prefer UTF-8 for URL paths; fall back to latin-1 to remain robust to non-UTF-8 bytes.
-            try:
-                value = value.decode("utf-8")
-            except UnicodeDecodeError:
-                value = value.decode("latin-1", errors="replace")
-        query = urlsplit(value).query
-        if not query:
-            continue
-        params = parse_qs(query)
-        user_values = params.get("user_id")
-        if user_values:
-            return user_values[0]
-    return None
-
-
 def _tab_id_of(payload_str) -> str | None:
     """The sending tab's id: the editor puts its per-tab session id in the raw
     payload's ``user_id``, which ``Payload.decode`` drops."""
@@ -136,6 +116,29 @@ try:
 except ImportError:
     logger.warning("librosa dependencies in WebSocketPlatform could not be imported. You can install them from "
                    "the requirements/requirements-extras.txt file")
+
+
+def _extract_parameter_from_request(parameter, request) -> str | None:
+    if not request:
+        return None
+    for attr in ("path", "raw_path", "uri"):
+        value = getattr(request, attr, None)
+        if not value:
+            continue
+        if isinstance(value, bytes):
+            # Prefer UTF-8 for URL paths; fall back to latin-1 to remain robust to non-UTF-8 bytes.
+            try:
+                value = value.decode("utf-8")
+            except UnicodeDecodeError:
+                value = value.decode("latin-1", errors="replace")
+        query = urlsplit(value).query
+        if not query:
+            continue
+        params = parse_qs(query)
+        user_values = params.get(parameter)
+        if user_values:
+            return user_values[0]
+    return None
 
 
 class WebSocketPlatform(Platform):
@@ -205,14 +208,20 @@ class WebSocketPlatform(Platform):
             request = getattr(conn, "request", None)
             headers = getattr(request, "headers", {}) if request else {}
             header_user = headers.get("X-User-ID") if hasattr(headers, "get") else None
-            query_user = _extract_user_id_from_request(request)
-            session_key = header_user or query_user or str(conn.id)
+            header_session = headers.get("X-Session-ID") if hasattr(headers, "get") else None
+            query_user = _extract_parameter_from_request('user_id', request)
+            query_session = _extract_parameter_from_request('session_id', request)
+            query_session_name = _extract_parameter_from_request('session_name', request)
+            username = header_user or query_user
+            # The editor sends only the stable ?user_id=, so it keys the session;
+            # stock BAF falls back to conn.id, a new session on every reconnect.
+            session_key = header_session or query_session or username or str(conn.id)
             # Take only an empty slot: a new socket does not yet know its tab, and
             # another tab may have a reply in flight. Its first heartbeat (sent on
             # connect) claims the slot when it is this tab's.
             if str(session_key) not in self._connections:
                 self._claim_slot(str(session_key), conn, None, sender=True)
-            session = self._agent.get_or_create_session(session_key, self)
+            session = self._agent.get_or_create_session(session_key, self, username, query_session_name)
             try:
 
                 for payload_str in conn:
@@ -224,18 +233,39 @@ class WebSocketPlatform(Platform):
                     if payload.action == PayloadAction.FETCH_USER_MESSAGES.value:
                         try:
                             chat_history = session.get_chat_history(until_timestamp=current_time)
+                            reasoning_events = session.get_reasoning_events(until_timestamp=current_time)
+
+                            # Merge both streams in chronological order so the
+                            # UI's existing aggregation (reasoning_started /
+                            # reasoning_finished brackets, task panel updates)
+                            # rebuilds the trace exactly as it was streamed.
+                            timeline: list[tuple[datetime, str, object]] = []
                             for message in chat_history:
-                                history_payload = None
-                                if message.is_user:
-                                    history_payload = Payload(action=PayloadAction.USER_MESSAGE,
-                                                              message=message.content,
-                                                              history=True
-                                                              )
+                                action = message.get_action()
+                                if action is None:
+                                    # Defensive: skip rows whose MessageType
+                                    # has no PayloadAction mapping (would
+                                    # crash on .value below).
+                                    continue
+                                timeline.append((message.timestamp, 'chat',
+                                                 (action, message.content, message.timestamp)))
+                            for ev in reasoning_events:
+                                if ev['kind'] == 'reasoning_step':
+                                    action = PayloadAction.AGENT_REPLY_REASONING_STEP
+                                elif ev['kind'] == 'task_list_update':
+                                    action = PayloadAction.AGENT_REPLY_TASK_LIST_UPDATE
                                 else:
-                                    history_payload = Payload(action=PayloadAction.AGENT_REPLY_STR,
-                                                              message=message.content,
-                                                              history=True
-                                                              )
+                                    continue
+                                timeline.append((ev['timestamp'], 'reasoning',
+                                                 (action, ev['payload'], ev['timestamp'])))
+
+                            timeline.sort(key=lambda t: t[0])
+                            for _, _, item in timeline:
+                                action, message_content, ts = item
+                                history_payload = Payload(action=action,
+                                                          message=message_content,
+                                                          history=True,
+                                                          timestamp=ts)
                                 self._send(session.id, history_payload)
                         except Exception as e:
                             logger.error(f"Error fetching chat history: {e}")
@@ -268,7 +298,7 @@ class WebSocketPlatform(Platform):
                         message = self._agent.nlp_engine.speech2text(session, audio_bytes)
 
                         # Send transcribed message back to the client
-                        payload = Payload(action=PayloadAction.USER_MESSAGE, message=message)
+                        payload = Payload(action=PayloadAction.USER_MESSAGE, message=message, history=True, timestamp=datetime.now())
                         self._send(session.id, payload)
 
                         event: ReceiveMessageEvent = ReceiveMessageEvent.create_event_from(
@@ -320,10 +350,25 @@ class WebSocketPlatform(Platform):
                                 else value
                             )
                             logger.info(f"Session variable {key} set to {safe_value}.")
+                    elif payload.action == PayloadAction.USER_GUI_EVENT.value:
+                        event_data = payload.message
+                        if isinstance(event_data, str):
+                            try:
+                                event_data = json.loads(event_data)
+                            except Exception:
+                                event_data = {'raw': event_data}
+                        if not isinstance(event_data, dict):
+                            event_data = {}
+                        event: GUIEvent = GUIEvent(
+                            event_data=event_data,
+                            session_id=session.id,
+                            message_id=event_data.get('messageId'))
+                        self._agent.receive_event(event)
             except ConnectionClosedError:
                 logger.info('Client connection closed unexpectedly')
             except Exception as e:
                 logger.error(f"Server Error: {e}")
+                traceback.print_exc()
             finally:
                 # Only remove the slot if this conn still owns it
                 if session:
@@ -536,10 +581,11 @@ class WebSocketPlatform(Platform):
     def reply(self, session: Session, message: str) -> None:
         if session.platform is not self:
             raise PlatformMismatchError(self, session)
-        session.save_message(Message(t=MessageType.STR, content=message, is_user=False, timestamp=datetime.now()))
+        message_obj: Message = Message(t=MessageType.STR, content=message, is_user=False, timestamp=datetime.now())
+        session.save_message(message_obj)
         payload = Payload(action=PayloadAction.AGENT_REPLY_STR,
                           message=message,
-                          )
+                          timestamp=message_obj.timestamp)
         payload.message = self._agent.process(session=session, message=payload.message, is_user_message=False)
         self._send(session.id, payload)
 
@@ -552,9 +598,11 @@ class WebSocketPlatform(Platform):
         """
         if session.platform is not self:
             raise PlatformMismatchError(self, session)
-        session.save_message(Message(t=MessageType.MARKDOWN, content=message, is_user=False, timestamp=datetime.now()))
+        message_obj: Message = Message(t=MessageType.MARKDOWN, content=message, is_user=False, timestamp=datetime.now())
+        session.save_message(message_obj)
         payload = Payload(action=PayloadAction.AGENT_REPLY_MARKDOWN,
-                          message=message)
+                          message=message,
+                          timestamp=message_obj.timestamp)
         payload.message = self._agent.process(session=session, message=payload.message, is_user_message=False)
         self._send(session.id, payload)
 
@@ -567,9 +615,11 @@ class WebSocketPlatform(Platform):
         """
         if session.platform is not self:
             raise PlatformMismatchError(self, session)
-        session.save_message(Message(t=MessageType.HTML, content=message, is_user=False, timestamp=datetime.now()))
+        message_obj: Message = Message(t=MessageType.HTML, content=message, is_user=False, timestamp=datetime.now())
+        session.save_message(message_obj)
         payload = Payload(action=PayloadAction.AGENT_REPLY_HTML,
-                          message=message)
+                          message=message,
+                          timestamp=message_obj.timestamp)
         payload.message = self._agent.process(session=session, message=payload.message, is_user_message=False)
         self._send(session.id, payload)
         
@@ -582,9 +632,11 @@ class WebSocketPlatform(Platform):
         """
         if session.platform is not self:
             raise PlatformMismatchError(self, session)
-        session.save_message(Message(t=MessageType.FILE, content=file.get_json_string(), is_user=False, timestamp=datetime.now()))
+        message_obj: Message = Message(t=MessageType.FILE, content=file.get_json_string(), is_user=False, timestamp=datetime.now())
+        session.save_message(message_obj)
         payload = Payload(action=PayloadAction.AGENT_REPLY_FILE,
-                          message=file.to_dict())
+                          message=file.to_dict(),
+                          timestamp=message_obj.timestamp)
         payload.message = self._agent.process(session=session, message=payload.message, is_user_message=False)
         self._send(session.id, payload)
 
@@ -602,9 +654,11 @@ class WebSocketPlatform(Platform):
             raise PlatformMismatchError(self, session)
         retval, buffer = cv2.imencode('.jpg', img)  # Encode as JPEG
         base64_img = base64.b64encode(buffer).decode('utf-8')
-        session.save_message(Message(t=MessageType.FILE, content=base64_img, is_user=False, timestamp=datetime.now()))
+        message_obj: Message = Message(t=MessageType.IMAGE, content=base64_img, is_user=False, timestamp=datetime.now())
+        session.save_message(message_obj)
         payload = Payload(action=PayloadAction.AGENT_REPLY_IMAGE,
-                          message=base64_img)
+                          message=base64_img,
+                          timestamp=message_obj.timestamp)
         payload.message = self._agent.process(session=session, message=payload.message, is_user_message=False)
         self._send(session.id, payload)
 
@@ -619,9 +673,11 @@ class WebSocketPlatform(Platform):
             raise PlatformMismatchError(self, session)
         message = df.to_json() 
         #TODO processor will check for JSON instead of Dataframe, so the processor needs to convert to DF
-        session.save_message(Message(t=MessageType.DATAFRAME, content=message, is_user=False, timestamp=datetime.now()))
+        message_obj: Message = Message(t=MessageType.DATAFRAME, content=message, is_user=False, timestamp=datetime.now())
+        session.save_message(message_obj)
         payload = Payload(action=PayloadAction.AGENT_REPLY_DF,
-                          message=message)
+                          message=message,
+                          timestamp=message_obj.timestamp)
         payload.message = self._agent.process(session=session, message=payload.message, is_user_message=False)
         self._send(session.id, payload)
 
@@ -639,9 +695,11 @@ class WebSocketPlatform(Platform):
             d[i] = button
         #TODO processor should also process the individual strings in the list of strings
         message = json.dumps(d)
-        session.save_message(Message(t=MessageType.OPTIONS, content=message, is_user=False, timestamp=datetime.now()))
+        message_obj: Message = Message(t=MessageType.OPTIONS, content=message, is_user=False, timestamp=datetime.now())
+        session.save_message(message_obj)
         payload = Payload(action=PayloadAction.AGENT_REPLY_OPTIONS,
-                          message=message)
+                          message=message,
+                          timestamp=message_obj.timestamp)
         payload.message = self._agent.process(session=session, message=payload.message, is_user_message=False)
         self._send(session.id, payload)
 
@@ -655,9 +713,11 @@ class WebSocketPlatform(Platform):
         if session.platform is not self:
             raise PlatformMismatchError(self, session)
         message = plotly.io.to_json(plot)
-        session.save_message(Message(t=MessageType.PLOTLY, content=message, is_user=False, timestamp=datetime.now()))
+        message_obj: Message = Message(t=MessageType.PLOTLY, content=message, is_user=False, timestamp=datetime.now())
+        session.save_message(message_obj)
         payload = Payload(action=PayloadAction.AGENT_REPLY_PLOTLY,
-                          message=message)
+                          message=message,
+                          timestamp=message_obj.timestamp)
         payload.message = self._agent.process(session=session, message=payload.message, is_user_message=False)
         self._send(session.id, payload)
 
@@ -672,10 +732,77 @@ class WebSocketPlatform(Platform):
         if session.platform is not self:
             raise PlatformMismatchError(self, session)
         location_dict = {'latitude': latitude, 'longitude': longitude}
-        session.save_message(Message(t=MessageType.LOCATION, content=location_dict, is_user=False, timestamp=datetime.now()))
+        message_obj: Message = Message(t=MessageType.LOCATION, content=location_dict, is_user=False, timestamp=datetime.now())
+        session.save_message(message_obj)
         payload = Payload(action=PayloadAction.AGENT_REPLY_LOCATION,
-                          message=location_dict)
+                          message=location_dict,
+                          timestamp=message_obj.timestamp)
         payload.message = self._agent.process(session=session, message=payload.message, is_user_message=False)
+        self._send(session.id, payload)
+
+    def reply_task_list_update(self, session: Session, tasks: list) -> None:
+        """Send a snapshot of the reasoning state's task list to a specific user.
+
+        Emitted alongside (not in place of) the existing
+        ``task_added`` / ``task_completed`` / ``task_skipped`` reasoning step
+        events, so a client can render a live "task panel" without having to
+        reconstruct the list from the step stream. The
+        ``reasoning_started`` / ``reasoning_finished`` reasoning steps bracket
+        the lifetime of this panel.
+
+        Persisted in the dedicated ``reasoning_step`` table (kind=
+        ``task_list_update``) — not in the chat table — so it does not
+        pollute chat history retrieval.
+
+        Args:
+            session (Session): the user session.
+            tasks (list): the current task list as a list of dicts with shape
+                ``{"id": int, "description": str, "status": str, "result": str}``.
+                Each call carries the *full* current snapshot — the client
+                replaces its state rather than applying a diff.
+        """
+        if session.platform is not self:
+            raise PlatformMismatchError(self, session)
+        timestamp = datetime.now()
+        session.save_reasoning_event('task_list_update', tasks)
+        payload = Payload(action=PayloadAction.AGENT_REPLY_TASK_LIST_UPDATE,
+                          message=tasks,
+                          timestamp=timestamp)
+        self._send(session.id, payload)
+
+    def reply_reasoning_step(self, session: Session, step: dict) -> None:
+        """Send an intermediate reasoning-state step to a specific user.
+
+        A *reasoning step* is any observable event the predefined reasoning
+        state body produces while it is working: the LLM emitting tool calls
+        or text, a tool returning a result, the task list being mutated
+        (planned / completed / skipped), the orchestrator pushing back a
+        premature final answer, or the step budget being exhausted. Sending
+        these to the client lets the UI show a live "thinking" trace before
+        the final reply arrives.
+
+        Persisted in the dedicated ``reasoning_step`` table (kind=
+        ``reasoning_step``) — not in the chat table — so it does not pollute
+        chat history retrieval.
+
+        Args:
+            session (Session): the user session.
+            step (dict): the step payload with the shape
+                ``{"kind": str, "step": int, "summary": str, "details": dict}``.
+                ``kind`` is one of ``llm_text``, ``llm_tool_calls``,
+                ``tool_result``, ``task_added``, ``task_completed``,
+                ``task_skipped``, ``pushback`` or ``max_steps``. ``summary``
+                is a short human-readable description suitable for direct
+                rendering; ``details`` is a kind-specific structured object
+                for richer client-side rendering.
+        """
+        if session.platform is not self:
+            raise PlatformMismatchError(self, session)
+        timestamp = datetime.now()
+        session.save_reasoning_event('reasoning_step', step)
+        payload = Payload(action=PayloadAction.AGENT_REPLY_REASONING_STEP,
+                          message=step,
+                          timestamp=timestamp)
         self._send(session.id, payload)
 
     def reply_rag(self, session: Session, rag_message: RAGMessage) -> None:
@@ -688,9 +815,11 @@ class WebSocketPlatform(Platform):
         if session.platform is not self:
             raise PlatformMismatchError(self, session)
         rag_message_dict = rag_message.to_dict()
-        session.save_message(Message(t=MessageType.RAG_ANSWER, content=rag_message_dict, is_user=False, timestamp=datetime.now()))
+        message_obj: Message = Message(t=MessageType.RAG_ANSWER, content=rag_message_dict, is_user=False, timestamp=datetime.now())
+        session.save_message(message_obj)
         payload = Payload(action=PayloadAction.AGENT_REPLY_RAG,
-                          message=rag_message_dict)
+                          message=rag_message_dict,
+                          timestamp=message_obj.timestamp)
         payload.message = self._agent.process(session=session, message=payload.message, is_user_message=False)
         self._send(session.id, payload)
 
@@ -757,7 +886,57 @@ class WebSocketPlatform(Platform):
             }
         }
 
-        session.save_message(Message(t=MessageType.AUDIO, content=message, is_user=False, timestamp=datetime.now()))
-        payload = Payload(action=PayloadAction.AGENT_REPLY_AUDIO, message=message)
+        message_obj: Message = Message(t=MessageType.AUDIO, content=message, is_user=False, timestamp=datetime.now())
+        session.save_message(message_obj)
+        payload = Payload(action=PayloadAction.AGENT_REPLY_AUDIO, message=message, timestamp=message_obj.timestamp)
         payload.message = self._agent.process(session=session, message=payload.message, is_user_message=False)
+        self._send(session.id, payload)
+
+    def reply_gui(self, session: Session, gui: 'AgentGUI') -> None:
+        """Send a GUI model reply to a specific user.
+
+        The GUI model is serialized to JSON before being sent. It can be used to dynamically
+        render a user interface on the client side.
+
+        If ``gui.persist`` is ``True``, an entry keyed by ``gui.id`` is created in the session's
+        ``gui_inputs`` dictionary so that subsequent GUI events from this component will have their
+        input values persisted automatically and remain accessible via ``session.gui_inputs``.
+
+        Args:
+            session (Session): the user session
+            gui (AgentGUI): the GUI model to send to the user
+        """
+        if session.platform is not self:
+            raise PlatformMismatchError(self, session)
+        if gui.persist:
+            session.gui_inputs[gui.id] = {}
+        ui_json = gui_to_json(gui)
+        message_obj: Message = Message(t=MessageType.GUI, content=ui_json, is_user=False, timestamp=datetime.now())
+        session.save_message(message_obj)
+        payload = Payload(action=PayloadAction.AGENT_REPLY_GUI,
+                          message=ui_json,
+                          timestamp=message_obj.timestamp,
+                          message_id=gui.id)
+        payload.message = self._agent.process(session=session, message=payload.message, is_user_message=False)
+        self._send(session.id, payload)
+
+    def reply_gui_update(self, session: Session, gui: 'AgentGUI') -> None:
+        """Push an updated GUI model to the client.
+
+        Used when the session's GUI model changes during interaction (e.g. via
+        :meth:`~baf.core.session.Session.set_gui`). Clients should replace their current GUI
+        state with the received model.
+
+        Unlike :meth:`reply_gui`, this method does **not** persist the message to the chat history.
+
+        Args:
+            session (Session): the user session
+            gui (AgentGUI): the updated GUI model to send to the user
+        """
+        if session.platform is not self:
+            raise PlatformMismatchError(self, session)
+        ui_json = gui_to_json(gui)
+        payload = Payload(action=PayloadAction.AGENT_REPLY_GUI_UPDATE,
+                          message=ui_json,
+                          timestamp=datetime.now())
         self._send(session.id, payload)
