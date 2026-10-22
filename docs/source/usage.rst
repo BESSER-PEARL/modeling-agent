@@ -322,7 +322,8 @@ Attachments are converted into diagram specifications:
      - Converted via the vision model
    * - Images
      - ``.png``, ``.jpg``, ``.jpeg``, ``.gif``, ``.webp``, ``.bmp``, ``.svg``
-     - Converted via the vision model
+     - Converted via the vision model; a UI screenshot or mockup becomes a
+       GUINoCodeDiagram (see below)
    * - Generic text
      - any other
      - ClassDiagram (via LLM interpretation)
@@ -333,6 +334,28 @@ Conversion can target any of ``ClassDiagram``, ``StateMachineDiagram``,
 (``CONVERTIBLE_DIAGRAM_TYPES``); the target is auto-detected when you do not
 name one. If the resulting diagram would overwrite something already on the
 canvas, the agent asks whether to replace, keep, or use a new tab first.
+
+From a screenshot or mockup to a GUI
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Attach a screenshot, mockup, wireframe or sketch of a page and the agent
+builds it as a GUI (``GUINoCodeDiagram``). It is treated as a mockup when your
+message asks for a GUI ("build this page", "turn this mockup into screens"),
+or, with no message, when the vision model reads the image as a user
+interface rather than a diagram. Several screenshots in one message become one
+app with a page per image.
+
+The image goes to the same model calls as a typed GUI request, with
+instructions to reproduce it: the same sections and layout, every visible text
+copied exactly, the mockup's colours, fonts and spacing in the page's
+stylesheet, and pictures redrawn as inline SVG. When a class diagram exists,
+tables and charts shown in the mockup are bound to its classes, so the
+"Basic CRUD pages" / "Experimental AI design" question is skipped. An existing
+GUI gets the usual replace / keep / new-tab question.
+
+Reading images needs a model with vision: the server's OpenAI models, or your
+own OpenAI or Anthropic key. Pixel values are read by eye, so expect to adjust
+spacing and colours in the editor.
 
 Voice Input
 -----------
