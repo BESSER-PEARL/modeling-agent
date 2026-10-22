@@ -609,7 +609,9 @@ def execute_model_operation(
             and len(_resolved_class_diagram["elements"]) > 0
         )
 
-        if _has_class_diagram and not _skip_gui_choice:
+        # A mockup (operation["images"]) is reproduced by the AI design path;
+        # Basic CRUD pages would ignore it, so there is nothing to choose.
+        if _has_class_diagram and not _skip_gui_choice and not operation.get("images"):
             session.set(PENDING_GUI_CHOICE, {
                 'operation_request': operation_request,
                 'operation': operation,
@@ -761,6 +763,11 @@ def execute_model_operation(
         {"agent_diagram_refs": resolve_agent_diagram_refs(request)}
         if target_diagram_type == "BPMN" else {}
     )
+    # Screenshots / mockups the GUI reproduces (see execution/file_handling.py).
+    mockup_kwargs: Dict[str, Any] = (
+        {"images": operation["images"]}
+        if target_diagram_type == "GUINoCodeDiagram" and operation.get("images") else {}
+    )
 
     try:
         if operation_mode == "modify_model":
@@ -836,6 +843,7 @@ def execute_model_operation(
                     class_metadata=gui_class_metadata,
                     raw_request=spec_to_stash or operation_request,
                     **bpmn_kwargs,
+                    **mockup_kwargs,
                 )
     except Exception as exc:
         logger.error(f"❌ [ModelOp] Handler exception: {exc}", exc_info=True)

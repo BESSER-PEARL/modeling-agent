@@ -8,7 +8,9 @@ Supported file types:
   - PlantUML (.puml, .plantuml, .pu, .txt containing @startuml)
   - XMI / UML interchange (.xmi, .uml, .ecore — standard UML/EMF exchange formats)
   - Knowledge Graph (.ttl, .rdf, .owl, .json with KG structure)
-  - Images (.png, .jpg, .jpeg, .gif, .webp — UML diagram photos/screenshots)
+  - Images (.png, .jpg, .jpeg, .gif, .webp — UML diagram photos/screenshots;
+    a UI screenshot or mockup is reported back as GUI_MOCKUP_ACTION so the
+    caller builds a GUI from it)
   - PDF (.pdf — text-based or scanned/diagram PDFs)
   - Generic text files — analyzed by the LLM to extract any diagram
 
@@ -71,6 +73,11 @@ CONVERTIBLE_DIAGRAM_TYPES = {
     "AgentDiagram",
     "BPMN",
 }
+
+# Internal result (never sent to the frontend): the image is a UI screenshot
+# or mockup, not a diagram; the caller builds a GUI from it (#643).
+GUI_MOCKUP_ACTION = "gui_mockup"
+_GUI_DIAGRAM_TYPE = "GUINoCodeDiagram"
 
 # ── Per-diagram-type JSON schemas ──────────────────────────────────────────────
 
@@ -314,7 +321,7 @@ def detect_plantuml_diagram_type(content: str) -> str:
     return "ClassDiagram"
 
 
-def _get_mime_type(filename: str) -> str:
+def image_mime_type(filename: str) -> str:
     """Get MIME type for an image file."""
     ext = ""
     if filename:
@@ -375,8 +382,14 @@ def _build_auto_detect_prompt(source_label: str) -> str:
     )
 
 
-def _build_image_prompt(target_diagram_type: Optional[str] = None) -> str:
-    """Build Vision API prompt for image-based conversion."""
+def _build_image_prompt(
+    target_diagram_type: Optional[str] = None, detect_mockup: bool = False,
+) -> str:
+    """Build Vision API prompt for image-based conversion.
+
+    ``detect_mockup`` lets the auto-detect prompt answer that the image is a
+    user interface rather than a diagram (see ``GUI_MOCKUP_ACTION``).
+    """
     if target_diagram_type and target_diagram_type in CONVERTIBLE_DIAGRAM_TYPES:
         schema = _get_schema_for_type(target_diagram_type)
         type_label = _get_type_label(target_diagram_type)
@@ -390,8 +403,16 @@ def _build_image_prompt(target_diagram_type: Optional[str] = None) -> str:
         )
 
     # Auto-detect from image
+    mockup_rule = (
+        "If the image is not a diagram but a user interface (a screenshot, mockup, "
+        "wireframe or sketch of a web page or app screen), return exactly "
+        f"{{\"diagramType\": \"{_GUI_DIAGRAM_TYPE}\"}} and nothing else.\n\n"
+        if detect_mockup else ""
+    )
+    subject = "this image" if detect_mockup else "this image of a UML diagram"
     return (
-        "You are a UML/modeling expert. Analyze this image of a UML diagram.\n\n"
+        f"You are a UML/modeling expert. Analyze {subject}.\n\n"
+        f"{mockup_rule}"
         "First, determine what TYPE of diagram it is, then extract its contents "
         "into the matching JSON format.\n\n"
         f"Supported formats:\n{ALL_SCHEMAS}\n\n"
@@ -433,6 +454,7 @@ def convert_file_to_diagram_spec(
     llm_predict: callable,
     llm_vision_predict: Optional[callable] = None,
     openai_api_key: Optional[str] = None,
+    target_diagram_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Convert an uploaded file to the best-fit diagram specification.
 
@@ -445,10 +467,13 @@ def convert_file_to_diagram_spec(
         llm_predict: LLM predict function for text-based conversions.
         llm_vision_predict: Optional vision-capable LLM predict for images.
         openai_api_key: OpenAI API key for direct vision API calls (fallback).
+        target_diagram_type: The diagram type the user's message asked for,
+            if any; an image is then read as that type instead of detected.
 
     Returns:
         A dict with action='inject_complete_system' and the system spec,
-        or action='agent_error' on failure.
+        action=GUI_MOCKUP_ACTION for a UI image, or action='agent_error'
+        on failure.
     """
     try:
         raw_bytes = base64.b64decode(file_content_b64)
@@ -471,7 +496,9 @@ def convert_file_to_diagram_spec(
     elif file_type == "knowledge_graph":
         return _convert_knowledge_graph(content_text, filename, llm_predict)
     elif file_type == "image":
-        return _convert_image(file_content_b64, filename, llm_predict, openai_api_key)
+        return _convert_image(
+            file_content_b64, filename, llm_predict, openai_api_key, target_diagram_type,
+        )
     elif file_type == "pdf":
         return _convert_pdf(raw_bytes, filename, llm_predict, openai_api_key)
     elif file_type == "xmi":
@@ -673,16 +700,21 @@ def _convert_image(
     filename: str,
     llm_predict: callable,
     openai_api_key: Optional[str] = None,
+    target_diagram_type: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Convert an image of a UML diagram to the best-fit diagram spec."""
+    """Convert an image of a UML diagram to the best-fit diagram spec.
+
+    Without a target type the image's type is detected, and a UI screenshot
+    or mockup returns ``GUI_MOCKUP_ACTION``.
+    """
     if not openai_api_key:
         return _error_response(
             "Image conversion requires an OpenAI API key with vision capabilities. "
             "Please configure the API key in the agent settings."
         )
 
-    mime_type = _get_mime_type(filename)
-    vision_prompt = _build_image_prompt()  # auto-detect from image
+    mime_type = image_mime_type(filename)
+    vision_prompt = _build_image_prompt(target_diagram_type, detect_mockup=True)
 
     import requests as http_requests
 
@@ -765,7 +797,9 @@ def _convert_image(
             "want and I'll model it from your description."
         )
 
-    return _parse_llm_response(raw_text, filename, "image", expected_type=None)
+    return _parse_llm_response(
+        raw_text, filename, "image", expected_type=target_diagram_type, allow_mockup=True,
+    )
 
 
 def _run_llm_conversion(
@@ -794,8 +828,13 @@ def _parse_llm_response(
     filename: str,
     source_label: str,
     expected_type: Optional[str] = None,
+    allow_mockup: bool = False,
 ) -> Dict[str, Any]:
-    """Parse the LLM response, detect diagram type, and validate the spec."""
+    """Parse the LLM response, detect diagram type, and validate the spec.
+
+    With ``allow_mockup``, a ``GUINoCodeDiagram`` verdict (a UI image) returns
+    ``GUI_MOCKUP_ACTION``.
+    """
     # A vision/LLM call can return None (empty content, a refusal, or a truncated
     # response) — guard BEFORE .strip() so an intermittent empty reply becomes a
     # clean, retryable message instead of an AttributeError crash.
@@ -829,6 +868,10 @@ def _parse_llm_response(
 
     if not isinstance(spec, dict):
         return _error_response(f"Unexpected response format from {source_label} conversion.")
+
+    if allow_mockup and spec.get("diagramType") == _GUI_DIAGRAM_TYPE:
+        logger.info(f"[FileConversion] {filename} is a UI screenshot or mockup")
+        return {"action": GUI_MOCKUP_ACTION}
 
     # Determine the diagram type from the spec or the expected type
     diagram_type = _resolve_diagram_type(spec, expected_type)
