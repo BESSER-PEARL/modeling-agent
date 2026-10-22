@@ -39,8 +39,9 @@ def _model():
             "m1": {"id": "m1", "name": "+ redeem(points: int): bool", "type": "ClassMethod",
                    "owner": "c-client"},
             "c-order": {"id": "c-order", "name": "Order", "type": "Class", "owner": None,
-                        "attributes": ["o1"], "methods": []},
+                        "attributes": ["o1", "o2"], "methods": []},
             "o1": _attr("o1", "c-order", "total", "float"),
+            "o2": _attr("o2", "c-order", "status"),
         },
         "relationships": {
             "r1": {"id": "r1", "type": "ClassBidirectional", "name": "places",
@@ -178,3 +179,60 @@ def test_incomplete_refactor_is_not_applied_with_a_placeholder(llm_output):
     spec = handler.generate_modification("refactor", _model())
     assert "modifications" not in spec and "modification" not in spec
     assert spec["action"] == "assistant_message"
+
+
+# split_class / add_enum had the same defect (``sourceClass`` / ``newClasses``
+# / ``enumName`` / ``values``). gpt-6-luna emits split_class as one op per new
+# class, shaped like extract_class (live, 2026-10-22). It never chose add_enum
+# in five live enum requests (it uses add_class + isEnumeration), so ENUM is
+# the schema-valid shape matching that add_class form.
+
+SPLIT = {"modifications": [
+    {"action": "split_class", "target": {"className": "Customer"},
+     "changes": {"className": "ContactInfo", "attributes": [
+         {"name": "name", "type": "String"}, {"name": "phone", "type": "String"}]}},
+    {"action": "split_class", "target": {"className": "Customer"},
+     "changes": {"className": "PostalAddress", "attributes": [
+         {"name": "street", "type": "String"}, {"name": "city", "type": "String"},
+         {"name": "zip", "type": "String"}]}},
+]}
+
+ENUM = {"modifications": [{
+    "action": "add_enum",
+    "target": {"className": "Order", "attributeName": "status"},
+    "changes": {"className": "OrderStatus", "attributes": [
+        {"name": "PENDING"}, {"name": "PAID"}, {"name": "SHIPPED"}]},
+}]}
+
+
+def test_split_class_moves_each_part_out_of_the_source():
+    mods = _run(SPLIT)
+    added = {m["changes"]["className"]: [a["name"] for a in m["changes"]["attributes"]]
+             for m in _of(mods, "add_class")}
+    assert added == {"ContactInfo": ["name", "phone"],
+                     "PostalAddress": ["street", "city", "zip"]}
+    removed = {m["target"]["attributeName"] for m in _of(mods, "remove_element")}
+    assert removed == {"name", "phone", "street", "city", "zip"}
+    assert sorted(map(sorted, _pairs(mods))) == [
+        ["ContactInfo", "Customer"], ["Customer", "PostalAddress"]]
+
+
+def test_split_class_into_subclasses_points_inheritance_at_the_source():
+    split = {"modifications": [dict(SPLIT["modifications"][0])]}
+    split["modifications"][0]["changes"] = dict(
+        split["modifications"][0]["changes"], relationshipType="Inheritance")
+    mods = _run(split)
+    [rel] = _of(mods, "add_relationship")
+    assert (rel["target"]["sourceClass"], rel["target"]["targetClass"]) == ("ContactInfo", "Customer")
+
+
+def test_add_enum_creates_the_literals_and_retypes_the_attribute():
+    mods = _run(ENUM)
+    [add] = _of(mods, "add_class")
+    assert add["changes"]["className"] == "OrderStatus"
+    assert add["changes"]["isEnumeration"] is True
+    assert [a["name"] for a in add["changes"]["attributes"]] == ["PENDING", "PAID", "SHIPPED"]
+    [retype] = _of(mods, "modify_attribute")
+    assert retype["target"] == {"className": "Order", "attributeName": "status"}
+    assert retype["changes"]["type"] == "OrderStatus"
+    assert "NewEnum" not in repr(mods)

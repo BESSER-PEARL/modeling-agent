@@ -62,8 +62,10 @@ _CLASS_ACTIONS_BLOCK = """COMMON ACTIONS:
 ADVANCED ACTIONS (for structural refactoring):
 - extract_class, split_class, merge_classes, promote_attribute, add_enum
 - extract_class: target.className = the source class; changes.className = the new class; changes.attributes = the attributes to move (by name). The relationship is added for you.
+- split_class: one split_class per new class, with the same fields as extract_class (changes.relationshipType="Inheritance" makes the new classes subclasses of the source).
 - merge_classes: target.className = the class merged away (removed); changes.name = the class that remains (existing or new). One merge_classes per class merged away.
-- promote_attribute: target.className + target.attributeName = the attribute to turn into a class; changes.className = the new class; optional changes.attributes = its fields. The relationship is added for you."""
+- promote_attribute: target.className + target.attributeName = the attribute to turn into a class; changes.className = the new class; optional changes.attributes = its fields. The relationship is added for you.
+- add_enum: same fields as add_class with isEnumeration (changes.className, changes.attributes = the values); optional target.className + target.attributeName = an attribute to retype to the enum."""
 
 _CLASS_KEY_RULES_BLOCK = f"""KEY RULES:
 1. {EXACT_NAMES_RULE}
@@ -3515,10 +3517,9 @@ Examples:
 
         for mod in raw_mods:
             action = mod.get("action", "")
-            if action == "extract_class":
+            if action in ("extract_class", "split_class"):
+                # split_class arrives as one op per new class, shaped like extract_class.
                 sub_mods, msg = self._expand_extract_class(mod, current_model, linked)
-            elif action == "split_class":
-                sub_mods, msg = self._expand_split_class(mod, current_model)
             elif action == "merge_classes":
                 sub_mods, msg = self._expand_merge_classes(mod, current_model, created)
             elif action == "promote_attribute":
@@ -3554,12 +3555,18 @@ Examples:
     def _refactor_relationship(
         source: str, target: str, changes: Dict[str, Any], default_type: str,
     ) -> Dict[str, Any]:
-        """The link a refactor adds from the source class to the class it created."""
+        """The link a refactor adds from the source class to the class it created.
+
+        Inheritance runs the other way: the created class is the subclass.
+        """
+        rel_type = changes.get("relationshipType") or default_type
+        if rel_type == "Inheritance":
+            source, target = target, source
         return {
             "action": "add_relationship",
             "target": {"sourceClass": source, "targetClass": target},
             "changes": {
-                "relationshipType": changes.get("relationshipType") or default_type,
+                "relationshipType": rel_type,
                 "sourceMultiplicity": changes.get("sourceMultiplicity") or "1",
                 "targetMultiplicity": changes.get("targetMultiplicity") or "1",
                 "name": changes.get("roleName") or f"has{target}",
@@ -3570,13 +3577,14 @@ Examples:
         self, mod: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,
         linked: frozenset = frozenset(),
     ) -> tuple:
-        """Expand extract_class into primitive modifications.
+        """Expand extract_class (or one part of a split_class) into primitive modifications.
 
         Reads target.className (source class), changes.className (new class)
         and changes.attributes (the attributes to move; target.attributeName
         as a comma list also works). Produces an add_class carrying the moved
         attributes with their current types, a remove_element per moved
-        attribute, and a Composition from the source to the new class.
+        attribute, and a Composition (or changes.relationshipType) linking the
+        source and the new class.
         """
         target = mod.get("target") or {}
         changes = mod.get("changes") or {}
@@ -3587,7 +3595,8 @@ Examples:
             names = [n.strip() for n in target["attributeName"].split(",") if n.strip()]
         if not (source_class and new_class and names):
             return self._incomplete_refactor(
-                "extract_class", "the source class, the new class name and the attributes to move")
+                mod.get("action", "extract_class"),
+                "the source class, the new class name and the attributes to move")
 
         current = {a["name"]: a for a in self._class_members(source_class, current_model)[0]}
         moved = [current.get(n) or {"name": n, "type": "str", "visibility": "public"} for n in names]
@@ -3606,63 +3615,10 @@ Examples:
             primitives.append(self._refactor_relationship(
                 source_class, new_class, changes, "Composition"))
 
+        verb = "Split" if mod.get("action") == "split_class" else "Extracted"
         msg = (
-            f"Extracted **{new_class}** from **{source_class}** with "
+            f"{verb} **{new_class}** out of **{source_class}** with "
             f"attributes: {', '.join(f'`{n}`' for n in names)}."
-        )
-        return primitives, msg
-
-    def _expand_split_class(
-        self, mod: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,
-    ) -> tuple:
-        """Expand a split_class action into primitive modifications.
-
-        Produces:
-        1. An add_class for each new class (with its subset of attributes)
-        2. Optionally, add_relationship (Inheritance) from each new class to the source
-        """
-        source_class = mod.get("sourceClass", "")
-        new_classes = mod.get("newClasses", [])
-        inherit_from = mod.get("inheritFrom", "")
-
-        primitives: List[Dict[str, Any]] = []
-        class_names: List[str] = []
-
-        for cls_spec in new_classes:
-            cls_name = cls_spec.get("className", "NewClass")
-            class_names.append(cls_name)
-            attr_names = cls_spec.get("attributes", [])
-
-            # Resolve full attribute definitions from the current model
-            resolved_attrs = self._resolve_attributes(source_class, attr_names, current_model)
-
-            primitives.append({
-                "action": "add_class",
-                "target": {"className": cls_name},
-                "changes": {
-                    "className": cls_name,
-                    "attributes": resolved_attrs,
-                    "methods": [],
-                },
-            })
-
-            # If inheritance is requested, each new class inherits from source
-            if inherit_from:
-                primitives.append({
-                    "action": "add_relationship",
-                    "target": {
-                        "sourceClass": cls_name,
-                        "targetClass": inherit_from,
-                    },
-                    "changes": {
-                        "relationshipType": "Inheritance",
-                        "name": f"{cls_name}_extends_{inherit_from}",
-                    },
-                })
-
-        msg = (
-            f"Split **{source_class}** into {', '.join(f'**{n}**' for n in class_names)}"
-            + (f" (inheriting from **{inherit_from}**)." if inherit_from else ".")
         )
         return primitives, msg
 
@@ -3807,88 +3763,43 @@ Examples:
     def _expand_add_enum(
         self, mod: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,
     ) -> tuple:
-        """Expand an add_enum action into primitive modifications.
+        """Expand add_enum into primitive modifications.
 
-        Produces:
-        1. An add_class for the enumeration (with values as attributes)
-        2. A modify_attribute for each class/attribute pair that should use the enum type
+        Reads the same fields as add_class with isEnumeration: changes.className
+        (the enumeration) and changes.attributes (its literals). An optional
+        target.className + target.attributeName is retyped to the enumeration.
         """
-        enum_name = mod.get("enumName", "NewEnum")
-        values = mod.get("values", [])
-        used_by = mod.get("usedBy", [])
+        target = mod.get("target") or {}
+        changes = mod.get("changes") or {}
+        enum_name = changes.get("className") or changes.get("name")
+        values = [a["name"] for a in changes.get("attributes") or [] if a.get("name")]
+        if not (enum_name and values):
+            return self._incomplete_refactor("add_enum", "the enumeration name and its values")
 
-        primitives: List[Dict[str, Any]] = []
-
-        # 1. Create the enum as a real enumeration. The frontend keys off
-        #    changes.isEnumeration; without it we got a plain Class. Enum
-        #    literals must NOT be typed by the enum name (that produced
-        #    "Low: Status") — leave them type-less.
-        enum_attrs = [
-            {"name": v, "visibility": "public"}
-            for v in values if isinstance(v, str)
-        ]
-        primitives.append({
+        # Literals stay untyped: typing them by the enum name rendered "Low: Status".
+        primitives: List[Dict[str, Any]] = [{
             "action": "add_class",
             "target": {"className": enum_name},
             "changes": {
                 "className": enum_name,
                 "isEnumeration": True,
-                "stereotype": "enumeration",
-                "attributes": enum_attrs,
+                "attributes": [{"name": v, "visibility": "public"} for v in values],
                 "methods": [],
             },
-        })
-
-        # 2. Update each referencing attribute to use the enum type
-        for usage in used_by:
-            if not isinstance(usage, dict):
-                continue
-            cls_name = usage.get("className", "")
-            attr_name = usage.get("attributeName", "")
-            if cls_name and attr_name:
-                primitives.append({
-                    "action": "modify_attribute",
-                    "target": {
-                        "className": cls_name,
-                        "attributeName": attr_name,
-                    },
-                    "changes": {
-                        "type": enum_name,
-                    },
-                })
-
-        msg = (
-            f"Created enumeration **{enum_name}** with values: "
-            f"{', '.join(f'`{v}`' for v in values)}"
-        )
-        if used_by:
-            refs = ", ".join(
-                f"**{u.get('className', '?')}**.`{u.get('attributeName', '?')}`"
-                for u in used_by if isinstance(u, dict)
-            )
-            msg += f" (used by {refs})"
-        msg += "."
-        return primitives, msg
+        }]
+        msg = f"Created enumeration **{enum_name}** with values: {', '.join(f'`{v}`' for v in values)}"
+        if target.get("className") and target.get("attributeName"):
+            primitives.append({
+                "action": "modify_attribute",
+                "target": {"className": target["className"], "attributeName": target["attributeName"]},
+                "changes": {"type": enum_name},
+            })
+            msg += f" (used by **{target['className']}**.`{target['attributeName']}`)"
+        return primitives, msg + "."
 
     # ------------------------------------------------------------------
     # Attribute Resolution Helpers
     # ------------------------------------------------------------------
-
-    def _resolve_attributes(
-        self,
-        class_name: str,
-        attr_names: List[str],
-        current_model: Optional[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """Resolve attribute names to attribute specs from the current model.
-
-        An attribute missing from the model gets type str, visibility public.
-        """
-        current = {a["name"]: a for a in self._class_members(class_name, current_model)[0]}
-        return [
-            current.get(name) or {"name": name, "type": "str", "visibility": "public"}
-            for name in attr_names
-        ]
 
     _VISIBILITY_SYMBOLS = {"+": "public", "-": "private", "#": "protected", "~": "package"}
 
