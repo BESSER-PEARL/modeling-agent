@@ -465,6 +465,8 @@ class BaseDiagramHandler(ABC):
         # Handler-specific spec-level transformation (e.g. refactoring expansion)
         if spec_processor is not None:
             modification_spec = spec_processor(self, modification_spec)
+            if modification_spec.get("action") == "assistant_message":
+                return modification_spec  # nothing left to apply
 
         self.validate_modification_spec(modification_spec)
 
