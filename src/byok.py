@@ -342,7 +342,7 @@ class BYOKClient:
         temp = LLM_TEMPERATURE if temperature is None else temperature
         cap = max_tokens or LLM_MAX_TOKENS_LARGE
         if self.provider == "anthropic":
-            return self._anthropic_call(prompt, target, json_mode, temp, cap, system)
+            return self._anthropic_call(prompt, target, json_mode, cap, system)
         if system:
             prompt = f"{system}\n{prompt}"
         return self._openai_call(prompt, target, json_mode, temp, reasoning_effort, cap)
@@ -396,7 +396,6 @@ class BYOKClient:
         prompt: str,
         model: str,
         json_mode: bool,
-        temperature: float,
         max_tokens: int = LLM_MAX_TOKENS_LARGE,
         system: Optional[str] = None,
     ) -> str:
@@ -416,10 +415,9 @@ class BYOKClient:
             kwargs["system"] = [
                 {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}},
             ]
-        if supports_custom_temperature(model):
-            # Anthropic accepts temperature in [0, 1]; the agent uses 0.2/0.4.
-            kwargs["temperature"] = max(0.0, min(1.0, temperature))
-        elif anthropic_effort(model):
+        # No sampling params on any model: the SDK dropped them in 1.0, and API
+        # version 2026-10-21 (sent by SDK 2.x) answers them with a 400.
+        if anthropic_effort(model):
             # Sonnet 5 & co. reject sampling params; cap adaptive thinking instead.
             kwargs["extra_body"] = {"output_config": {"effort": anthropic_effort(model)}}
         message = self._client.messages.create(**kwargs)
