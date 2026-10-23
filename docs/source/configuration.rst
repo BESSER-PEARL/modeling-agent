@@ -191,7 +191,9 @@ sites must therefore omit the parameter for those models and pass
 (``max_tokens`` is a 400). Claude generation 5 and later (Opus 5.5,
 Opus 5, Sonnet 5, Fable 5 / 5.1), Opus 4.7 / 4.8 and Mythos reject
 ``temperature`` / ``top_p`` / ``top_k`` as well; a user's Anthropic key sends
-them an ``output_config.effort`` instead.
+them an ``output_config.effort`` instead. A user's Anthropic key sends no
+sampling parameters to any Claude model: the ``anthropic`` SDK removed them
+in 1.0, and API version 2026-10-21 rejects them on every model.
 ``model_config`` exposes two helpers that every call site uses:
 
 .. code-block:: python
