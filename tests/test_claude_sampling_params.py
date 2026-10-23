@@ -4,13 +4,19 @@ Sonnet 5 (and Opus 4.7+, Fable, Mythos) answer any temperature/top_p/top_k
 with a 400. The Anthropic key path sent temperature on every call, so a user
 with their own claude-sonnet-5 key got no modeling at all; PIA runs went
 through the OpenAI-compatible path and never showed it.
+
+The anthropic SDK removed sampling params from messages.create in 1.0, and
+API version 2026-10-21 rejects them on every model, so the key path sends
+none: a claude-haiku-4-5 key failed with a TypeError before any request.
 """
 
+import inspect
 import os
 import sys
 from types import SimpleNamespace
 
 import pytest
+from anthropic.resources.messages import Messages as _SdkMessages
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -57,6 +63,8 @@ class _Messages:
         self.calls = []
 
     def create(self, **kwargs):
+        # Bind to the installed SDK's signature: a removed parameter fails here as it does live.
+        inspect.signature(_SdkMessages.create).bind(None, **kwargs)
         self.calls.append(kwargs)
         return SimpleNamespace(content=[SimpleNamespace(type="text", text='{"ok": true}')], usage=None)
 
@@ -78,11 +86,12 @@ def test_a_sonnet_5_key_sends_effort_instead_of_temperature(monkeypatch):
     assert sent["extra_body"] == {"output_config": {"effort": "low"}}
 
 
-def test_an_older_claude_key_keeps_its_temperature():
-    client = _anthropic_client("claude-haiku-4-5-20251001")
-    client.predict_raw("make a model", json_mode=True)
+@pytest.mark.parametrize("model", ["claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-sonnet-4-6"])
+def test_an_older_claude_key_sends_no_sampling_params(model):
+    client = _anthropic_client(model)
+    client.predict_raw("make a model", json_mode=True, temperature=0.2)
     sent = client._client.messages.calls[0]
-    assert 0.0 <= sent["temperature"] <= 1.0
+    assert "temperature" not in sent and "top_p" not in sent and "top_k" not in sent
     assert "extra_body" not in sent
 
 
