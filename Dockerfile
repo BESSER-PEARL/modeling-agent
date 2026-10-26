@@ -30,11 +30,13 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Apply vendored BAF fix on top of the pip-installed framework.
-# Stock besser-agentic-framework 4.3.2 deletes the _connections slot
+# Stock besser-agentic-framework 4.5.3 deletes the _connections slot
 # unconditionally when a websocket closes; two connections sharing one session
 # key (a stable ?user_id=) then evict each other and replies are silently
-# dropped. The vendored file adds an ownership-guarded delete + reply routing
-# to the sender. Remove once upstreamed; re-vendor if the BAF version bumps.
+# dropped. It also keys a session by the connection id when no ?session_id= is
+# sent, which the editor never does. The vendored file keys by ?user_id= and
+# adds an ownership-guarded delete + reply routing to the sender. Remove once
+# upstreamed; re-vendor if the BAF version bumps.
 COPY patches/websocket_platform.py \
     /usr/local/lib/python3.11/site-packages/baf/platforms/websocket/websocket_platform.py
 
