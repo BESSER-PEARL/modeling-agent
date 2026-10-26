@@ -2226,16 +2226,17 @@ def _normalize_html_section(
     return section
 
 
-def _ds_card_section(title: str, widget_node: Dict[str, Any]) -> Dict[str, Any]:
-    """Wrap a bare widget in a themed ``.ds-section > .ds-card`` with a heading."""
-    card_children: List[Dict[str, Any]] = [
-        {
+def _ds_card_section(
+    title: str, widget_node: Dict[str, Any], heading: bool = True
+) -> Dict[str, Any]:
+    """Wrap a bare widget in a themed ``.ds-section > .ds-card``, with a heading unless *heading* is False."""
+    card_children: List[Dict[str, Any]] = [widget_node]
+    if heading:
+        card_children.insert(0, {
             "tagName": "h3",
             "attributes": {"class": "ds-heading"},
             "content": _clean_text(title, fallback="Section"),
-        },
-        widget_node,
-    ]
+        })
     return {
         "tagName": "section",
         "attributes": {"class": "ds-section"},
@@ -2262,6 +2263,20 @@ def _first_heading_text(nodes: Any) -> str:
         if found:
             return found
     return ""
+
+
+def _remove_heading(nodes: Any, text: str) -> bool:
+    """Remove the first h1-h4 whose text is *text* (case-insensitive); True if one was removed."""
+    wanted = text.casefold()
+    for i, node in enumerate(nodes if isinstance(nodes, list) else []):
+        if not isinstance(node, dict):
+            continue
+        if node.get("tagName") in ("h1", "h2", "h3", "h4") and _node_text(node).casefold() == wanted:
+            del nodes[i]
+            return True
+        if _remove_heading(node.get("components"), text):
+            return True
+    return False
 
 
 def _node_text(node: Any) -> str:
@@ -2373,8 +2388,14 @@ def _build_bound_section(
         or _clean_text(widget_attrs.get("chart-title") or widget_attrs.get("metric-title"))
         or _bind_default_title(bind)
     )
+    # Tables, charts and metric cards draw their own title, in the editor and
+    # in the generated app, so the section must not repeat it.
+    widget_title = _clean_text(widget_attrs.get("chart-title") or widget_attrs.get("metric-title"))
 
     if _clean_text(chrome):
+        if widget_title:
+            _remove_heading(nodes, widget_title)
+            title = ""
         nodes, placed = splice_widget(nodes, widget_node)
         if not placed:
             # Chrome without a marker: keep the authored skin AND append the
@@ -2387,7 +2408,7 @@ def _build_bound_section(
             return section
 
     # No chrome (or empty conversion): wrap the widget in a themed card section.
-    return _ds_card_section(title, widget_node)
+    return _ds_card_section(title, widget_node, heading=not widget_title)
 
 
 def _build_section_component(
