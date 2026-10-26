@@ -242,7 +242,8 @@ _QUICK_RESPONSES = {
         "**Other:**\n"
         "- *\"Describe my diagram\"* — I'll analyze what you've built\n"
         "- *\"What is an association class?\"* — I can explain UML concepts\n"
-        "- Attach a **PlantUML file** or **diagram image** and I'll convert it\n\n"
+        "- Attach a **PlantUML file** or **diagram image** and I'll convert it\n"
+        "- Attach a **screenshot or mockup** of a page and I'll build it as a GUI\n\n"
         "What would you like to do?"
     ),
     "help": (
@@ -377,7 +378,7 @@ def greetings_body(session: Session):
         "- *\"a dashboard for my Product class\"*\n\n"
         "I can also modify your diagrams, generate code (SQL, Django, FastAPI, "
         "SQLAlchemy…), describe a model, design a quantum circuit, or import a "
-        "PlantUML / diagram image.\n\n"
+        "PlantUML / diagram image, or build a GUI from a screenshot or mockup.\n\n"
         "What would you like to create today?"
     )
 

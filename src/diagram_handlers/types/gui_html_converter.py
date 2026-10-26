@@ -319,6 +319,12 @@ class _ComponentTreeBuilder(HTMLParser):
 
         if tag in SAFE_TAGS:
             node = self._build_node(tag, attrs)
+            # GrapesJS builds untyped nodes as HTML elements, which draw nothing
+            # inside an <svg>; its svg types create them in the SVG namespace.
+            if tag == "svg":
+                node["type"] = "svg"
+            elif any(frame.tag == "svg" for frame in self._stack):
+                node["type"] = "svg-in"
             parent.children.append(node)
             if not self_closing and tag not in VOID_TAGS:
                 self._stack.append(_Frame(tag, node, []))

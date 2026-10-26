@@ -284,6 +284,22 @@ def test_inline_svg_icon_preserved_with_viewbox_case_restored():
     assert node["components"][0]["attributes"]["d"] == "M4 4h16"
 
 
+def test_inline_svg_nodes_get_grapesjs_svg_types():
+    # Untyped, the editor canvas created these as HTML elements and the
+    # mockup illustrations rendered as empty boxes.
+    div = _first(html_to_components(
+        '<div><svg viewBox="0 0 10 10"><g><rect width="10" height="10"></rect>'
+        '<text x="1" y="5">Hi</text></g></svg><p>after</p></div>'
+    ))
+    svg, p = div["components"]
+    assert div.get("type") is None and p.get("type") is None
+    assert svg["type"] == "svg"
+    g = svg["components"][0]
+    assert g["type"] == "svg-in"
+    assert [c["type"] for c in g["components"]] == ["svg-in", "svg-in"]
+    assert g["components"][1]["content"] == "Hi"
+
+
 # ---------------------------------------------------------------------------
 # Widget slots
 # ---------------------------------------------------------------------------

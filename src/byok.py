@@ -48,7 +48,7 @@ from __future__ import annotations
 import contextvars
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Sequence
 
 from agent_config import (
     LLM_MAX_TOKENS_LARGE,
@@ -67,6 +67,7 @@ from model_config import (
     reasoning_effort_for,
     supports_custom_temperature,
 )
+from utilities.image_inputs import anthropic_content, openai_content
 
 logger = logging.getLogger(__name__)
 
@@ -328,6 +329,7 @@ class BYOKClient:
         reasoning_effort: Optional[str] = None,
         max_tokens: Optional[int] = None,
         system: Optional[str] = None,
+        images: Sequence[str] = (),
     ) -> str:
         """Single free-text chat-completion call, returning the text.
 
@@ -336,16 +338,17 @@ class BYOKClient:
         ``max_tokens`` overrides the default completion cap (used by the GUI
         complete-system path to keep large multi-page JSON from truncating).
         ``system`` is a static instruction prefix: a cached system block on
-        Anthropic, prepended to the prompt elsewhere.
+        Anthropic, prepended to the prompt elsewhere. ``images`` are data
+        URLs sent with the prompt (see ``utilities.image_inputs``).
         """
         target = resolve_model(self.provider, model, self._user_model)
         temp = LLM_TEMPERATURE if temperature is None else temperature
         cap = max_tokens or LLM_MAX_TOKENS_LARGE
         if self.provider == "anthropic":
-            return self._anthropic_call(prompt, target, json_mode, cap, system)
+            return self._anthropic_call(prompt, target, json_mode, cap, system, images)
         if system:
             prompt = f"{system}\n{prompt}"
-        return self._openai_call(prompt, target, json_mode, temp, reasoning_effort, cap)
+        return self._openai_call(prompt, target, json_mode, temp, reasoning_effort, cap, images)
 
     def predict_text(self, prompt: str) -> str:
         """Simple free-text path (cheap/small tier, conversational temp)."""
@@ -363,10 +366,11 @@ class BYOKClient:
         temperature: float,
         reasoning_effort: Optional[str],
         max_tokens: int = LLM_MAX_TOKENS_LARGE,
+        images: Sequence[str] = (),
     ) -> str:
         kwargs = {
             "model": model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": openai_content(prompt, images)}],
         }
         # Mistral and Nebius use ``max_tokens``; OpenAI uses ``max_completion_tokens``.
         if self.provider in ("mistral", "nebius"):
@@ -398,6 +402,7 @@ class BYOKClient:
         json_mode: bool,
         max_tokens: int = LLM_MAX_TOKENS_LARGE,
         system: Optional[str] = None,
+        images: Sequence[str] = (),
     ) -> str:
         content = prompt
         if json_mode:
@@ -408,7 +413,7 @@ class BYOKClient:
         kwargs = {
             "model": model,
             "max_tokens": max_tokens,
-            "messages": [{"role": "user", "content": content}],
+            "messages": [{"role": "user", "content": anthropic_content(content, images)}],
         }
         if system:
             # Static prefix first, cached: later calls bill it at the cache-read rate.
