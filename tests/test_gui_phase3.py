@@ -83,6 +83,21 @@ def _class_of(node) -> str:
     return attrs.get("class", "") if isinstance(attrs, dict) else ""
 
 
+def _visible_titles(node) -> list:
+    """Section headings plus the titles widgets draw themselves (chart-title, metric-title)."""
+    titles = []
+    if isinstance(node, dict):
+        attrs = node.get("attributes") or {}
+        widget_title = attrs.get("chart-title") or attrs.get("metric-title")
+        if widget_title:
+            titles.append(widget_title)
+        if node.get("tagName") in ("h1", "h2", "h3", "h4"):
+            titles.append(node.get("content") or _blob(node.get("components")))
+        for child in node.get("components") or []:
+            titles.extend(_visible_titles(child))
+    return titles
+
+
 # ---------------------------------------------------------------------------
 # 1. HTML section → editable def-tree with ds classes + stable class + heading
 # ---------------------------------------------------------------------------
@@ -204,11 +219,11 @@ def test_bind_without_chrome_card_wraps_widget():
     section = {"title": "KPIs", "bind": {"kind": "table", "className": "Book"}}
     comp = _build_section_component(section, BOOK_METADATA)
     blob = _blob(comp)
-    # No chrome -> themed ds-card section wrapping the widget, with a heading.
+    # No chrome -> themed ds-card section wrapping the widget; the table draws the title.
     assert _class_of(comp) == "ds-section"
     assert "ds-card" in blob
     assert '"type": "table"' in blob
-    assert _section_has_heading(comp)
+    assert _visible_titles(comp) == ["KPIs"]
 
 
 def test_bind_chrome_without_slot_still_renders_widget():
@@ -221,7 +236,35 @@ def test_bind_chrome_without_slot_still_renders_widget():
     comp = _build_section_component(section, BOOK_METADATA)
     blob = _blob(comp)
     assert '"type": "table"' in blob  # not silently dropped
-    assert _section_has_heading(comp)
+    assert _visible_titles(comp) == ["Apps"]
+
+
+def test_bind_widget_title_is_not_repeated_by_the_chrome_heading():
+    # A mockup's "Recent loans" card: the table draws its own title, so the
+    # chrome heading above it showed the same text twice in the editor.
+    section = {
+        "title": "Recent loans",
+        "bind": {"kind": "table", "className": "Book"},
+        "html": (
+            "<section class='app-loans'><h2>Recent loans</h2>"
+            "<div class='app-table-slot'><!--WIDGET:table--></div></section>"
+        ),
+    }
+    comp = _build_section_component(section, BOOK_METADATA)
+    assert _visible_titles(comp) == ["Recent loans"]
+    assert "app-table-slot" in _blob(comp)
+
+
+def test_html_table_without_a_class_keeps_its_heading():
+    # Without a class the table is plain HTML with no title of its own.
+    section = {
+        "title": "Opening hours",
+        "bind": {"kind": "table", "fields": ["Day", "Hours"]},
+        "html": "<section class='ds-section'><h3>Opening hours</h3><!--WIDGET:table--></section>",
+    }
+    comp = _build_section_component(section, None)
+    assert "chart-title" not in _blob(comp)
+    assert _visible_titles(comp) == ["Opening hours"]
 
 
 # ---------------------------------------------------------------------------

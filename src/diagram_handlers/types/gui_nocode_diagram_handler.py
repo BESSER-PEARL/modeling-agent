@@ -2226,16 +2226,17 @@ def _normalize_html_section(
     return section
 
 
-def _ds_card_section(title: str, widget_node: Dict[str, Any]) -> Dict[str, Any]:
-    """Wrap a bare widget in a themed ``.ds-section > .ds-card`` with a heading."""
-    card_children: List[Dict[str, Any]] = [
-        {
+def _ds_card_section(
+    title: str, widget_node: Dict[str, Any], heading: bool = True
+) -> Dict[str, Any]:
+    """Wrap a bare widget in a themed ``.ds-section > .ds-card``, with a heading unless *heading* is False."""
+    card_children: List[Dict[str, Any]] = [widget_node]
+    if heading:
+        card_children.insert(0, {
             "tagName": "h3",
             "attributes": {"class": "ds-heading"},
             "content": _clean_text(title, fallback="Section"),
-        },
-        widget_node,
-    ]
+        })
     return {
         "tagName": "section",
         "attributes": {"class": "ds-section"},
@@ -2262,6 +2263,20 @@ def _first_heading_text(nodes: Any) -> str:
         if found:
             return found
     return ""
+
+
+def _remove_heading(nodes: Any, text: str) -> bool:
+    """Remove the first h1-h4 whose text is *text* (case-insensitive); True if one was removed."""
+    wanted = text.casefold()
+    for i, node in enumerate(nodes if isinstance(nodes, list) else []):
+        if not isinstance(node, dict):
+            continue
+        if node.get("tagName") in ("h1", "h2", "h3", "h4") and _node_text(node).casefold() == wanted:
+            del nodes[i]
+            return True
+        if _remove_heading(node.get("components"), text):
+            return True
+    return False
 
 
 def _node_text(node: Any) -> str:
@@ -2373,8 +2388,14 @@ def _build_bound_section(
         or _clean_text(widget_attrs.get("chart-title") or widget_attrs.get("metric-title"))
         or _bind_default_title(bind)
     )
+    # Tables, charts and metric cards draw their own title, in the editor and
+    # in the generated app, so the section must not repeat it.
+    widget_title = _clean_text(widget_attrs.get("chart-title") or widget_attrs.get("metric-title"))
 
     if _clean_text(chrome):
+        if widget_title:
+            _remove_heading(nodes, widget_title)
+            title = ""
         nodes, placed = splice_widget(nodes, widget_node)
         if not placed:
             # Chrome without a marker: keep the authored skin AND append the
@@ -2387,7 +2408,7 @@ def _build_bound_section(
             return section
 
     # No chrome (or empty conversion): wrap the widget in a themed card section.
-    return _ds_card_section(title, widget_node)
+    return _ds_card_section(title, widget_node, heading=not widget_title)
 
 
 def _build_section_component(
@@ -3002,6 +3023,39 @@ def _interactions_block(has_classes: bool) -> str:
     )
 
 
+def _mockup_block(image_count: int) -> str:
+    """Authoring rules when the user attached screenshots or mockups (#643)."""
+    screens = "the attached image" if image_count == 1 else f"the {image_count} attached images"
+    return (
+        f"REFERENCE MOCKUP — the user attached {screens} of the screen(s) to build. The "
+        "mockup is the authority: where it conflicts with any design guidance above, "
+        "follow the mockup.\n"
+        "- One page per image, in the order given, named after what the screen shows. Do "
+        "not add pages or sections the mockup does not show; build every section it does "
+        "show, top to bottom, in the same order and layout (columns, card grids, "
+        "sidebars, alignment).\n"
+        "- Copy every visible text exactly: headings, paragraphs, labels, buttons, menu "
+        "items, table cells, footer lines. Keep bold and italic words. Never rewrite, "
+        "shorten or translate the copy.\n"
+        "- Match the look in your \"css\": colours as hex values read from the image, "
+        "font sizes and weights, letter-spacing, uppercase labels, spacing, border radius, "
+        "borders and shadows. Serif text gets font-family 'Fraunces', Georgia, serif; sans "
+        "text 'Inter', sans-serif. Emit a \"theme\" with the mockup's own colours.\n"
+        "- A band that spans the full page width (top bar, full-bleed hero, footer) "
+        "carries ds-nav, ds-hero or ds-footer on its root element, restyled in your css "
+        "to match the mockup; any other section is placed in a centred 1200px column. "
+        "ds-nav is already a flex row with space-between: put the bar's items directly "
+        "inside it, with no inner wrapper div.\n"
+        "- Photos, illustrations and logos become an inline <svg> that approximates the "
+        "picture's shapes and colours; keep any caption drawn over it.\n"
+        "- A table or chart of records in the mockup is a DATA section: reproduce its "
+        "columns and visible rows as the widget's columns/rows or sampleData, and bind "
+        "it to the matching class when a class diagram is given.\n"
+        "- A menu entry for a screen you are not building stays visible as drawn, as a "
+        "styled span."
+    )
+
+
 def _wire_model_actions(
     model: Dict[str, Any],
     class_metadata: Optional[List[Dict[str, Any]]],
@@ -3596,6 +3650,9 @@ Rules:
         class_block = ""
         if class_metadata:
             class_block = "\n\n" + format_class_metadata_for_prompt(class_metadata)
+        # Screenshots / mockups to reproduce, as data URLs (#643).
+        images = kwargs.get("images") or ()
+        mockup_block = f"\n\n{_mockup_block(len(images))}" if images else ""
 
         # Pick the design domain up front (deterministic keyword heuristic). It
         # drives BOTH the exemplars injected into the authoring prompt below and
@@ -3696,7 +3753,7 @@ Design judgment — build what THIS request actually needs; do not pad or force 
 6. VISUAL HIERARCHY: open every page with a page-header moment (title + one-line subtitle + the page's primary action). Vary the rhythm — full-width bands, grids, cards, accent moments — generous whitespace; NEVER a monotone stack of identical white cards. Commit ONE signature visual moment per page (a gradient band, an oversized stat, a colored panel) — safe-but-flat everywhere is a failure.
 7. SAMPLE DATA REALISM: figures must be plausible and VARIED — a chart where every value is 1 (or several series with identical data) is a FAILURE. Write numbers a real business would show; one meaningful series unless comparing series is the point. A section whose heading promises a chart / distribution / trend / breakdown MUST be a DATA section with a chart bind carrying that varied sampleData — never a table and never plain html. Headings are never generic labels like 'Table' or 'Section'.
 8. Keep an entity's field names IDENTICAL across every section it appears in.
-9. Return JSON only.{class_block}"""
+9. Return JSON only.{class_block}{mockup_block}"""
 
         logger.info(f"[GUINoCode] generate_complete_system called with: {user_request[:120]!r}")
 
@@ -3754,6 +3811,14 @@ Design judgment — build what THIS request actually needs; do not pad or force 
                 "clean typography, generous spacing, purposeful color, and data that "
                 "stays coherent across every page."
             )
+            if images:
+                reasoning_prompt += (
+                    "\n\nThe attached image(s) are mockups of the screens to build and "
+                    "override the steps above: first list every section of each screen, "
+                    "top to bottom, with its exact text, layout and colours (hex), then "
+                    "plan the pages and bindings that reproduce them. No extra pages or "
+                    "sections."
+                )
 
             # Complete-system generation → LARGE tier; reasoning pass on
             # the REASONING tier (see model_config).
@@ -3764,6 +3829,7 @@ Design judgment — build what THIS request actually needs; do not pad or force 
                 response_schema=AuthoredSystemGUISpec,
                 model=MODEL_GENERATION_GUI,
                 reasoning_model=MODEL_REASONING,
+                images=images,
             )
             spec = parsed.model_dump()
             # Schema enforcement replaces the old clean/parse/salvage chain.
@@ -3858,6 +3924,13 @@ Design judgment — build what THIS request actually needs; do not pad or force 
             }
         except LLMPredictionError:
             logger.error("[GUINoCode] generate_complete_system LLM FAILED", exc_info=True)
+            if images:
+                return self._error_response(
+                    "I couldn't build a GUI from that image. Reading images needs a "
+                    "model with vision (OpenAI or Anthropic); with your own key, check "
+                    "that its model accepts images. Please try again, or describe the "
+                    "page instead."
+                )
             return self._error_response("I couldn't generate that GUI. Please try again or rephrase your request.")
         except Exception:
             logger.error(

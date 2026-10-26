@@ -15,7 +15,7 @@ import random
 import sys
 import time
 import uuid
-from typing import Callable, Dict, Any, List, Optional, Tuple, Type
+from typing import Callable, Dict, Any, List, Optional, Sequence, Tuple, Type
 from abc import ABC, abstractmethod
 
 from openai import LengthFinishReasonError
@@ -34,6 +34,7 @@ from errors import (
     non_recoverable_cause, raise_if_openai_refusal, _RECOVERY_HINTS,
 )
 
+from utilities.image_inputs import content_text, openai_content
 from utilities.json_repair import loads_tolerant, validate_llm_json
 
 logger = logging.getLogger(__name__)
@@ -680,6 +681,7 @@ class BaseDiagramHandler(ABC):
 
     def _predict_raw(
         self, prompt: str, model: Optional[str] = None, *, max_tokens: Optional[int] = None,
+        images: Sequence[str] = (),
     ) -> str:
         """Single free-text LLM call honoring a per-call model override.
 
@@ -695,6 +697,9 @@ class BaseDiagramHandler(ABC):
         through the user's own per-request client instead of the shared
         server LLM. SDK auth/rate-limit errors propagate so
         ``predict_with_retry`` / ``errors.classify_error`` surface them.
+
+        ``images`` (data URLs) go with the prompt; the BAF path cannot send
+        them, so an image call uses the client with the instance model.
         """
         effective_max_tokens = max_tokens or LLM_MAX_TOKENS_LARGE
 
@@ -707,13 +712,16 @@ class BaseDiagramHandler(ABC):
                 temperature=LLM_TEMPERATURE,
                 reasoning_effort=reasoning_effort_for(model) if model else None,
                 max_tokens=effective_max_tokens,
+                images=images,
             )
 
         client = getattr(self.llm, 'client', None)
+        if images and not model:
+            model = getattr(self.llm, 'name', MODEL_CLASSIFIER)
         if model and client is not None and hasattr(client, 'chat'):
             raw_kwargs: Dict[str, Any] = {
                 "model": model,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [{"role": "user", "content": openai_content(prompt, images)}],
                 "max_completion_tokens": effective_max_tokens,
             }
             # gpt-5* / o-series models 400 on an explicit non-default
@@ -729,6 +737,8 @@ class BaseDiagramHandler(ABC):
                 return ""
             raise_if_openai_refusal(completion.choices[0])
             return completion.choices[0].message.content or ""
+        if images:
+            raise LLMPredictionError("This LLM client cannot send images")
         response = self.llm.predict(prompt)
         try:
             from tracking import get_tracker
@@ -744,7 +754,7 @@ class BaseDiagramHandler(ABC):
     # NOTE: This adds an extra LLM round-trip (2–4s latency).
     def predict_with_retry(
         self, prompt: str, max_retries: int = 1, *, model: Optional[str] = None,
-        max_tokens: Optional[int] = None,
+        max_tokens: Optional[int] = None, images: Sequence[str] = (),
     ) -> str:
         """Call the LLM with automatic retry and jittered exponential backoff.
 
@@ -758,6 +768,7 @@ class BaseDiagramHandler(ABC):
             prompt: Full prompt to send.
             max_retries: Number of additional attempts after the first (default 1).
             model: Optional per-call model override (see ``model_config``).
+            images: Optional image data URLs sent with the prompt.
 
         Returns:
             Non-empty string response.
@@ -789,7 +800,9 @@ class BaseDiagramHandler(ABC):
                     f"(attempt {attempt + 1}/{total_attempts}, "
                     f"prompt_len={len(effective_prompt)})"
                 )
-                response = self._predict_raw(effective_prompt, model=model, max_tokens=max_tokens)
+                response = self._predict_raw(
+                    effective_prompt, model=model, max_tokens=max_tokens, images=images,
+                )
 
                 if response and response.strip():
                     return response
@@ -865,6 +878,7 @@ class BaseDiagramHandler(ABC):
         system_prompt: str = "",
         temperature: float = LLM_TEMPERATURE,
         model: Optional[str] = None,
+        images: Sequence[str] = (),
     ) -> BaseModel:
         """Call the LLM with OpenAI Structured Outputs, returning a validated Pydantic model.
 
@@ -883,6 +897,7 @@ class BaseDiagramHandler(ABC):
             temperature: LLM temperature (default 0.2).
             model: Optional per-call model override (see ``model_config``);
                 defaults to the handler's LLM instance model.
+            images: Optional image data URLs sent with the prompt.
 
         Returns:
             Validated Pydantic model instance.
@@ -903,6 +918,7 @@ class BaseDiagramHandler(ABC):
                 # user's client (predict_with_retry is BYOK-routed).
                 return self._structured_fallback(
                     prompt, response_schema, system_prompt, max_retries, model=model,
+                    images=images,
                 )
             cfg = get_current()
             effective_model = resolve_model("openai", effective_model, cfg.model if cfg else None)
@@ -923,6 +939,7 @@ class BaseDiagramHandler(ABC):
             )
             return self._structured_fallback(
                 prompt, response_schema, system_prompt, max_retries, model=model,
+                images=images,
             )
 
         # --- Structured parse with retry ---
@@ -932,7 +949,7 @@ class BaseDiagramHandler(ABC):
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "user", "content": openai_content(prompt, images)})
 
         last_error: Optional[Exception] = None
         raw_content: Optional[str] = None
@@ -959,7 +976,9 @@ class BaseDiagramHandler(ABC):
                     messages = copy.deepcopy(messages)
                     for msg in reversed(messages):
                         if msg.get("role") == "user":
-                            msg["content"] += (
+                            # With images the content is a part list, text first.
+                            part, key = (msg["content"][0], "text") if images else (msg, "content")
+                            part[key] += (
                                 "\n\nIMPORTANT: Your previous response was too long and was "
                                 "truncated. Be CONCISE. Output ONLY the minimal JSON matching "
                                 "the schema — no extra fields, no elaboration, no unnecessary data."
@@ -979,7 +998,7 @@ class BaseDiagramHandler(ABC):
                 # with LOG_PROMPTS=1) because prompts embed user data.
                 for i, msg in enumerate(messages):
                     role = msg.get("role", "?")
-                    content = msg.get("content", "")
+                    content = content_text(msg.get("content", ""))
                     logger.debug(
                         f"📝 [{self.get_diagram_type()}] Prompt msg[{i}] role={role} "
                         f"len={len(content)} chars"
@@ -1075,6 +1094,7 @@ class BaseDiagramHandler(ABC):
         system_prompt: str,
         max_retries: int,
         model: Optional[str] = None,
+        images: Sequence[str] = (),
     ) -> BaseModel:
         """Fallback path when structured outputs API is unavailable.
 
@@ -1095,7 +1115,9 @@ class BaseDiagramHandler(ABC):
             "No markdown, no explanation."
         )
 
-        response = self.predict_with_retry(full_prompt, max_retries=max_retries, model=model)
+        response = self.predict_with_retry(
+            full_prompt, max_retries=max_retries, model=model, images=images,
+        )
         json_text = self.clean_json_response(response)
 
         try:
@@ -1123,6 +1145,7 @@ class BaseDiagramHandler(ABC):
         raw_request: Optional[str] = None,
         model: Optional[str] = None,
         reasoning_model: Optional[str] = None,
+        images: Sequence[str] = (),
     ) -> BaseModel:
         """Two-pass generation with structured output for pass 2.
 
@@ -1149,6 +1172,7 @@ class BaseDiagramHandler(ABC):
             model: Optional per-call model override for the structured pass.
             reasoning_model: Optional per-call model override for the
                 free-text reasoning pass (see ``model_config``).
+            images: Optional image data URLs sent with both passes.
         """
         # Fast path: simple requests don't need a reasoning pass.
         # Judge "simple" by the raw user message length when the caller
@@ -1166,13 +1190,14 @@ class BaseDiagramHandler(ABC):
                 system_prompt=system_prompt,
                 temperature=temperature,
                 model=model,
+                images=images,
             )
 
         # Pass 1: Design reasoning (free-text)
         logger.info(f"🧠 [{self.get_diagram_type()}] Two-pass structured: reasoning pass")
         try:
             reasoning = self.predict_with_retry(
-                reasoning_prompt, max_retries=1, model=reasoning_model,
+                reasoning_prompt, max_retries=1, model=reasoning_model, images=images,
             )
         except ModelRefusal:
             raise  # the single-pass fallback would only be declined again
@@ -1189,6 +1214,7 @@ class BaseDiagramHandler(ABC):
                 system_prompt=system_prompt,
                 temperature=temperature,
                 model=model,
+                images=images,
             )
 
         if not reasoning or not reasoning.strip():
@@ -1199,6 +1225,7 @@ class BaseDiagramHandler(ABC):
                 system_prompt=system_prompt,
                 temperature=temperature,
                 model=model,
+                images=images,
             )
 
         logger.info(
@@ -1225,6 +1252,7 @@ class BaseDiagramHandler(ABC):
             system_prompt=system_prompt,
             temperature=temperature,
             model=model,
+            images=images,
         )
 
     # ------------------------------------------------------------------
