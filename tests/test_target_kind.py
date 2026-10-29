@@ -310,6 +310,26 @@ class TestPlannerForNonWebTargets:
         assert prompts and "NOT a web app" in prompts[0]
         assert [op.get("diagramType") for op in ops] == ["ClassDiagram"]
 
+    def test_explicit_gui_request_is_kept_for_a_native_target(self):
+        # With a remembered native target, "create the GUI screens" used to be
+        # turned into a ClassDiagram complete_system that rebuilt the model.
+        from orchestrator import plan_assistant_operations
+        message = "create the GUI screens for my model"
+
+        def predict(prompt):
+            return json.dumps({"operations": [
+                {"type": "model", "diagramType": "GUINoCodeDiagram", "mode": "complete_system",
+                 "request": message},
+                {"type": "generation", "generatorType": "web_app"},
+            ]})
+        for planner_reply in (predict, lambda p: "{}"):
+            ops = plan_assistant_operations(
+                _request(message), "complete_system", "create_complete_system_intent",
+                planner_reply, llm_target_type="GUINoCodeDiagram", app_target_kind="other",
+            )
+            assert [(op.get("diagramType"), op.get("mode")) for op in ops] == [
+                ("GUINoCodeDiagram", "complete_system")]
+
     def test_flutter_generator_is_never_offered(self):
         from handlers.generation_handler import GENERATOR_PREREQUISITES
         from suggestions import GENERATOR_ARTIFACT_LABELS

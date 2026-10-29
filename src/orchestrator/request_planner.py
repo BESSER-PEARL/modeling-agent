@@ -710,17 +710,20 @@ User: "the precondition of Account::deposit is amount > 0" → [{"type":"model",
 
 def _without_web_gui_plan(
     operations: List[Dict[str, Any]], request: AssistantRequest, default_mode: str,
+    keep_gui: bool,
 ) -> List[Dict[str, Any]]:
     """Drop the screens + ``web_app`` steps from a plan for a non-web target.
 
     The GUI editor designs web pages, so a native / desktop / CLI app is built
     from the class diagram by the smart generator instead, which the user
-    starts after reviewing the model.
+    starts after reviewing the model. ``keep_gui`` keeps the GUI diagram when
+    it is what the user asked for.
     """
     kept = [
         op for op in operations
         if not (op.get("type") == "generation" and op.get("generatorType") == "web_app")
-        and not (op.get("type") == "model" and op.get("diagramType") == "GUINoCodeDiagram"
+        and not (not keep_gui and op.get("type") == "model"
+                 and op.get("diagramType") == "GUINoCodeDiagram"
                  and op.get("mode") == "complete_system")
     ]
     if len(kept) < len(operations):
@@ -747,13 +750,17 @@ def plan_assistant_operations(
     - {"type":"generation","generatorType":"...","config":{...}}
 
     ``app_target_kind`` is the classifier's target for this project
-    (``web_app`` / ``backend`` / ``other``); ``other`` never plans the web GUI.
+    (``web_app`` / ``backend`` / ``other``); ``other`` never adds the web GUI
+    on its own, but keeps it when the classifier's target is the GUI diagram.
     """
     operations = _plan_operations(
         request, default_mode, matched_intent, llm_predict, llm_target_type, app_target_kind,
     )
     if app_target_kind == "other":
-        return _without_web_gui_plan(operations, request, default_mode)
+        return _without_web_gui_plan(
+            operations, request, default_mode,
+            keep_gui=llm_target_type == "GUINoCodeDiagram",
+        )
     return operations
 
 
@@ -830,7 +837,7 @@ def _plan_operations(
     intent_hint = ""
     if matched_intent:
         intent_hint = f"\nUser intent classified as: {matched_intent}"
-    if app_target_kind == "other":
+    if app_target_kind == "other" and llm_target_type != "GUINoCodeDiagram":
         intent_hint += (
             "\nThe user wants an application that is NOT a web app. Do NOT plan "
             "GUINoCodeDiagram or web_app (the GUI editor designs web pages): plan "

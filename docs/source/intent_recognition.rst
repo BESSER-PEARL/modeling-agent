@@ -257,8 +257,10 @@ next to the original request (``remember_target`` /
 statement wins, and a message that names no target keeps the remembered one.
 The classifier sees it as a ``REMEMBERED TARGET`` line, so
 ``refined_instructions`` always name it. For ``target_kind="other"`` the
-request planner never plans the GUI diagram or ``web_app`` (the GUI editor
-designs web pages), and the smart-generation confirmation names the target
+request planner never plans ``web_app`` and never adds the GUI diagram on its
+own (the GUI editor designs web pages); it keeps the GUI diagram only when the
+user asks for it (``target_diagram_type="GUINoCodeDiagram"``). The
+smart-generation confirmation names the target
 and says the code is AI-written and not compiled on the build server. A
 "no, X instead" in any language is a correction of the pending generation,
 not ``decline_intent``.
