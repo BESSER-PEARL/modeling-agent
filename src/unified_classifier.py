@@ -615,7 +615,9 @@ _SYSTEM_PROMPT = (
     "target_kind / target_description / refined_instructions; with no "
     "model it is create_complete_system_intent. Only a bare refusal with "
     "no new requirement ('no', 'no thanks', 'nada', 'non merci', 'nein "
-    "danke') is decline_intent.\n\n"
+    "danke') is decline_intent. A refusal that only names what it refuses "
+    "('no thanks, I don't want the mobile app anymore') states no new "
+    "target: decline_intent with target_kind NULL.\n\n"
     "out_of_scope_intent: the user asks the assistant to PRODUCE a "
     "NON-SOFTWARE artifact — an actual image/picture ('generate a picture "
     "of a cat', 'draw a sunset', 'make a logo of X'), creative writing "
@@ -1065,7 +1067,11 @@ def classify_message(
         # The generated app keeps its target: a follow-up such as "add a
         # settings screen" edits that app's code, not the web GUI diagram.
         follow_up_kind = (remembered_target or {}).get("kind") if recent_smart_gen else None
-        return _post_validate(result, message, follow_up_target_kind=follow_up_kind)
+        ctx = getattr(request, "context", None)
+        return _post_validate(
+            result, message, follow_up_target_kind=follow_up_kind,
+            has_class_model=ctx is None or bool(_extract_class_names(ctx)),
+        )
     except Exception:
         logger.exception("classify_message failed; falling back to fallback_intent")
         return _safe_fallback("LLM classifier failed")
@@ -1562,6 +1568,7 @@ def _looks_like_unambiguous_deploy(lower_message: str) -> bool:
 def _post_validate(
     result: UnifiedClassification, message: str = "", *,
     follow_up_target_kind: Optional[str] = None,
+    has_class_model: bool = True,
 ) -> UnifiedClassification:
     """Defensive validation of LLM output.
 
@@ -1572,16 +1579,27 @@ def _post_validate(
     (see :func:`_rebuilt`).
     """
     result = _normalize_target_fields(result)
-    # A "no" that states what to build instead ("no, una app nativa, no una
-    # web app") is a correction, never a cancel: the classifier's own
-    # target_kind says the user named a new target.
-    if result.target_kind and (
+    # A "no" that names a non-web app to build instead ("no, una app nativa,
+    # no una web app") is a correction, never a cancel. Live, the classifier
+    # returned decline_intent for exactly that message while setting
+    # target_kind, so its own field is the signal. Web and backend targets
+    # have built-in generators and keep the classifier's verdict.
+    if result.target_kind == "other" and (
         result.intent == "decline_intent" or result.pending_flow_answer == "cancel"
     ):
         logger.warning(
-            "decline_intent that states a target (%s); treating it as a "
-            "corrected generation request", result.target_kind,
+            "decline_intent that names a non-web target; treating it as a "
+            "corrected %s request", "generation" if has_class_model else "create",
         )
+        if not has_class_model:
+            return _rebuilt(
+                result,
+                intent="create_complete_system_intent",
+                target_diagram_type="ClassDiagram",
+                model_disposition="new_from_scratch",
+                pending_flow_action="new_request",
+                reason="Correction with no model yet: build the model for the new target",
+            )
         return _rebuilt(
             result,
             intent="generation_intent",
