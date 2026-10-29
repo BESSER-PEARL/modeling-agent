@@ -11,7 +11,8 @@ from handlers.smart_generation_handler import (
 from protocol.types import AssistantRequest
 from utilities.model_context import is_diagram_nontrivial
 from utilities.original_request import (
-    clear_original_request, original_request_for_project, remember_original_request,
+    clear_original_request, current_target, original_request_for_project,
+    remember_original_request,
 )
 from session_keys import (
     CONFIG_PROMPT_ATTEMPTS,
@@ -120,7 +121,6 @@ _SMART_GEN_STASH_TTL_SECONDS = 30 * 60
 GENERATOR_PREREQUISITES: Dict[str, List[str]] = {
     "web_app": ["ClassDiagram", "GUINoCodeDiagram"],
     "react": ["ClassDiagram", "GUINoCodeDiagram"],
-    "flutter": ["ClassDiagram", "GUINoCodeDiagram"],
     "django": ["ClassDiagram"],
     "backend": ["ClassDiagram"],
     "sql": ["ClassDiagram"],
@@ -509,8 +509,9 @@ def _build_smart_gen_confirmation(
     per ``_looks_like_fix_request``, to projects that have actually produced
     an app before.
     """
-    refined = (instructions or "").strip()
     provider = provider or "anthropic"
+    target = _request_target(session)
+    refined = _instructions_naming_target((instructions or "").strip(), target)
     # Resolve the open project BEFORE stashing: _stash_smart_gen records the
     # armed project too, and the fix decision must never read state this very
     # call wrote.
@@ -539,12 +540,25 @@ def _build_smart_gen_confirmation(
             f"Do you want to continue?"
         )
         confirm_label = "Fix it"
+    elif target.get("kind") == "other" and target.get("description"):
+        message = (
+            f"{prefix}I'll build a **{target['description']}** from your "
+            f"designed specs. BESSER has no built-in generator for it, so the "
+            f"AI writes the code; our build server can't compile it, so it "
+            f"isn't test-run before you get it.{_architecture_note(target)}\n\n"
+            f"BESSER includes a free model by default, so you can generate at "
+            f"no cost. For higher-quality results, you can "
+            f"[set up your own API key](wme:add-key) and use a stronger "
+            f"provider or model.\n\n"
+            f"Do you want to continue?"
+        )
+        confirm_label = "Continue"
     else:
         message = (
             f"{prefix}BESSER will generate your application from the "
             f"designed specs using its built-in generators. If some of your "
             f"requirements are not supported by these generators, BESSER can "
-            f"use an LLM to handle them.\n\n"
+            f"use an LLM to handle them.{_architecture_note(target)}\n\n"
             f"BESSER includes a free model by default, so you can generate at "
             f"no cost. For higher-quality results, you can "
             f"[set up your own API key](wme:add-key) and use a stronger "
@@ -568,6 +582,35 @@ def _build_smart_gen_confirmation(
             },
         ],
     }
+
+
+def _request_target(session: Session) -> Dict[str, Any]:
+    """The target of the request being handled (see ``current_target``)."""
+    from protocol.adapters import parse_assistant_request
+
+    try:
+        return current_target(session, parse_assistant_request(session)) or {}
+    except Exception:  # pragma: no cover — copy must never crash
+        logger.debug("Could not resolve the request target", exc_info=True)
+        return {}
+
+
+def _architecture_note(target: Dict[str, Any]) -> str:
+    architecture = target.get("architecture")
+    return f" It will follow the **{architecture}** architecture you asked for." if architecture else ""
+
+
+def _instructions_naming_target(instructions: str, target: Dict[str, Any]) -> str:
+    """Make sure the run's instructions name a non-web target and a requested
+    architecture, whatever the classifier's summary kept."""
+    lines = []
+    description = target.get("description")
+    if target.get("kind") == "other" and description and description.lower() not in instructions.lower():
+        lines.append(f"Target: {description} (not a web app).")
+    architecture = target.get("architecture")
+    if architecture and architecture.lower() not in instructions.lower():
+        lines.append(f"Architecture: {architecture}.")
+    return "\n".join(lines + [instructions]).strip() if lines else instructions
 
 
 def _build_mismatch_confirmation(

@@ -98,8 +98,6 @@ operations before the generation step.
      - ClassDiagram, GUINoCodeDiagram
    * - ``react``
      - ClassDiagram, GUINoCodeDiagram
-   * - ``flutter``
-     - ClassDiagram, GUINoCodeDiagram
    * - ``django``
      - ClassDiagram
    * - ``backend``
@@ -134,10 +132,9 @@ orders operations correctly.
 
 .. note::
 
-   ``react`` and ``flutter`` appear in ``GENERATOR_PREREQUISITES`` but are not
-   keys of ``GENERATOR_KEYWORDS``, so they are not in ``ALLOWED_GENERATORS``
-   and no route can currently produce them. Treat those two rows as reserved,
-   not reachable.
+   ``react`` appears in ``GENERATOR_PREREQUISITES`` but is not a key of
+   ``GENERATOR_KEYWORDS``, so it is not in ``ALLOWED_GENERATORS`` and no route
+   can currently produce it. Treat that row as reserved, not reachable.
 
 Example
 ~~~~~~~
