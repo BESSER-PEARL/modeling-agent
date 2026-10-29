@@ -616,3 +616,30 @@ class TestProductNamesSurviveTranslation:
                             lambda p: json.dumps({"texts": ["El agente terminó."]}))
         source = "The Spec-Driven Agent finished."
         assert reply_language.translate_texts([source], "es") == [source]
+
+
+class TestCapabilityCopyNamesEveryTarget:
+    """Every place the assistant describes itself said code generation meant a
+    web app (Django, React, FastAPI), so nobody knew to ask for a mobile or
+    desktop app, or that replies come in their own language."""
+
+    @staticmethod
+    def _texts():
+        import state_bodies
+        from reply_copy import META_ANSWER
+        quick = state_bodies._QUICK_RESPONSES
+        return {"what_can_you_do": quick["what_can_you_do"], "help": quick["help"],
+                "what_is_besser": quick["what_is_besser"], "meta": META_ANSWER,
+                "greeting": state_bodies.GREETING_MESSAGE}
+
+    @pytest.mark.parametrize("name", ["what_can_you_do", "help", "what_is_besser", "meta", "greeting"])
+    def test_names_non_web_targets(self, name):
+        text = self._texts()[name].lower()
+        assert "mobile" in text and "desktop" in text, name
+
+    @pytest.mark.parametrize("name", ["what_can_you_do", "meta", "greeting"])
+    def test_says_replies_follow_the_users_language(self, name):
+        assert "language you write in" in self._texts()[name], name
+
+    def test_flutter_is_no_longer_advertised(self):
+        assert "Flutter" not in self._texts()["what_is_besser"]
