@@ -169,6 +169,15 @@ async def _gen_complete(sem, stack, seed="a shop with products, orders and custo
             return (label, f"EXC:{type(exc).__name__}:{exc}"[:50], "EXC")
 
 
+_LIBRARY_MODEL = {
+    "elements": {
+        "c1": {"id": "c1", "name": "Book", "type": "Class"},
+        "c2": {"id": "c2", "name": "Member", "type": "Class"},
+    },
+    "relationships": {},
+}
+
+
 async def _mismatch_resume(sem, trigger):
     label = f"mismatch-resume"
     async with sem:
@@ -179,7 +188,9 @@ async def _mismatch_resume(sem, trigger):
                 r0 = await _turn(ws, TIMEOUT)
                 if r0.get("action") != "inject_complete_system":
                     return (label, f"seed-failed({r0.get('action')})", "SEED_FAILED")
-                await _send(ws, sid, trigger)
+                # The editor sends the built model back; a mismatch is only
+                # judged against WORKSPACE CONTEXT class names.
+                await _send(ws, sid, trigger, model=_LIBRARY_MODEL)
                 r1 = await _turn(ws, TIMEOUT)
                 low = _txt(r1).lower()
                 labels = " ".join((a.get("label") or "") for a in (r1.get("suggestedActions") or [])).lower()

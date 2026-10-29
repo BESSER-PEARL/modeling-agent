@@ -58,6 +58,15 @@ _SHOP_MODEL = {
 }
 
 
+_LIBRARY_MODEL = {
+    "elements": {
+        "c1": {"id": "c1", "name": "Book", "type": "Class"},
+        "c2": {"id": "c2", "name": "Member", "type": "Class"},
+    },
+    "relationships": {},
+}
+
+
 async def _send(ws, sid, text, model=None):
     context = {"activeDiagramType": "ClassDiagram"}
     if model is not None:
@@ -226,7 +235,12 @@ async def c_mismatch():
         await _send(ws, sid, "create a class diagram for a library with books and members")
         if not _built(await _collect(ws)):
             return (False, "seed-failed")
-        await _send(ws, sid, "generate a rust application for a hotel booking system")
+        # The editor sends the built model back on the next turn; the
+        # rulebook only judges a mismatch against WORKSPACE CONTEXT class
+        # names (gpt-6-luna leaves it null without them, gpt-4o-mini guessed
+        # from the history).
+        await _send(ws, sid, "generate a rust application for a hotel booking system",
+                    model=_LIBRARY_MODEL)
         f1 = await _collect(ws)
         if not _is_mismatch(f1):
             return (False, f"no mismatch ({[x[0] for x in f1]})")
