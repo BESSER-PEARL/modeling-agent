@@ -1,9 +1,9 @@
 """Any target, not only web apps.
 
-A prod review (in Spanish): asking for a Windows 11 local app or a mobile app
-got a web app, MVC was ignored, and "no, una app nativa, no una web app" was
-classified ``decline_intent``, which dropped the request. The replies were in
-English. These tests pin the fix: the classifier names the target, it is
+Asking for a Windows 11 local app or a mobile app used to get a web app, a
+requested MVC architecture was ignored, "no, una app nativa, no una web app"
+was classified ``decline_intent`` (which dropped the request), and every reply
+was in English. These tests pin the fix: the classifier names the target, it is
 remembered per project, the planner and the confirmation honour it, a "no, X
 instead" corrects instead of cancelling, and replies come in the user's
 language.
@@ -109,7 +109,7 @@ class TestClassifierCarriesTheTarget:
             _uc(target_kind="mobile")
 
     def test_rulebook_names_the_traps(self):
-        # The reviewer's cases and the look-alikes that are not targets.
+        # Named targets and the look-alikes that are not targets.
         for phrase in ("mobile-friendly", "REST API for my mobile app", "Windows server",
                        "cancellation windows", "native speakers", "una app de Windows 11",
                        "no, una app nativa, no una web app",
@@ -465,7 +465,7 @@ class TestReplyTranslation:
 
 
 # ---------------------------------------------------------------------
-# Review findings (2026-10-29)
+# Translation isolation, link safety and the correction guard
 # ---------------------------------------------------------------------
 
 class _SteerableTranslator:

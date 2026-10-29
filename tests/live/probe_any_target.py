@@ -116,7 +116,7 @@ _TARGET_WIN = ("windows",)
 _TARGET_MOBILE = ("móvil", "movil", "mobile", "android", "ios")
 _TARGET_NATIVE = ("nativ",)
 SCENARIOS = {
-    # The reviewer's three prompts, each driven to the trigger.
+    # Spanish prompts for a Windows 11 app, a mobile app and an MVC app, each driven to the trigger.
     "win": [
         (("say", "quiero una app de windows 11 local para gestionar el inventario de mi tienda"),
          ({"inject_complete_system"}, "es", _TARGET_WIN)),
