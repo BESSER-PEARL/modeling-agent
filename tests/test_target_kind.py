@@ -11,6 +11,7 @@ language.
 
 import itertools
 import json
+import re
 import time
 
 import pytest
@@ -361,6 +362,29 @@ class TestConfirmationNamesTheTarget:
         assert session.get(PENDING_SMART_GEN_INSTRUCTIONS).startswith(
             "Target: Windows 11 desktop app (not a web app).")
         assert payload["suggestedActions"][0]["prompt"] == "generate anyway with my current model"
+
+    def test_target_line_reaches_the_spec_driven_agent_in_its_parsed_format(self, monkeypatch):
+        # Cross-repo contract: BESSER's spec-driven agent reads this line with
+        # TARGET_LINE_RE in besser/spec_driven_agent/planning/target.py.
+        from handlers.smart_generation_handler import (
+            GenerationClassification,
+            build_trigger_smart_generator_payload,
+        )
+        besser_target_line_re = re.compile(
+            r"^Target: (?P<description>.+?) \(not a web app\)\.", re.MULTILINE)
+        session, _ = self._confirm(
+            monkeypatch, target_kind="other", target_description="Windows 11 desktop app")
+        # The payload the confirm gate sends, with the verbatim request appended.
+        payload = build_trigger_smart_generator_payload(
+            GenerationClassification(
+                route="smart", provider="anthropic", reason="confirmed",
+                refined_instructions=session.get(PENDING_SMART_GEN_INSTRUCTIONS)),
+            original_request="quiero una app de Windows 11 para mi tienda",
+        )
+        lines = payload["instructions"].splitlines()
+        assert "Target: Windows 11 desktop app (not a web app)." in lines
+        match = besser_target_line_re.search(payload["instructions"])
+        assert match and match.group("description") == "Windows 11 desktop app"
 
     def test_named_architecture_is_acknowledged(self, monkeypatch):
         session, payload = self._confirm(monkeypatch, architecture="MVC")
