@@ -4,20 +4,27 @@ The classifier reports the language each message is written in
 (``reply_language``, kept in ``REPLY_LANGUAGE``). LLM-authored replies are
 asked to answer in it (:func:`language_instruction`); templated English replies
 are translated at the reply choke point (``session_helpers``) by
-:func:`localize_payload`: one classifier-tier call per reply, cached per
-(text, language). Only the user-facing ``message`` and quick-action
-``label``s are translated. A quick action's ``prompt`` is a machine token
-matched by the confirm gates, and model / canvas payloads are data, so neither
-is ever touched. On any failure the English text is sent.
+:func:`localize_payload`. Each string is translated in its own
+classifier-tier call, so one user's text can never steer how another string
+(a button label everyone sees) is translated; results from the shared server
+model are cached per (text, language), results from a user's own key are not.
+Only the user-facing ``message`` and quick-action ``label``s are translated. A
+quick action's ``prompt`` is a machine token matched by the confirm gates, and
+model / canvas payloads are data, so neither is ever touched. Error replies are
+sent as they are, and after a failure translation pauses briefly, so an LLM
+outage never delays the replies that report it. On any failure the English text
+is sent.
 """
 
 import json
 import logging
 import re
 import threading
+import time
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional
 
+import byok
 from session_keys import REPLY_LANGUAGE
 
 logger = logging.getLogger(__name__)
@@ -34,9 +41,14 @@ _LANGUAGE_NAMES = {
 _CACHE_MAX = 1000
 _cache: "OrderedDict[tuple, str]" = OrderedDict()
 _cache_lock = threading.Lock()
+# After a failed call, send English this long rather than wait on a failing LLM
+# for every reply (the shared client retries for several seconds per call).
+_FAILURE_BACKOFF_SECONDS = 60.0
+_failed_until = 0.0
 
-# Markdown link targets, e.g. "(wme:add-key)", must survive translation as-is.
-_LINK_TARGET_RE = re.compile(r"\]\(([^)\s]+)\)")
+# Everything the markdown renderer can turn into a link (inline and reference
+# links, autolinks, bare URLs) must be the same before and after translation.
+_LINK_TOKEN_RE = re.compile(r"(?:https?://|wme:|mailto:|www\.)[^\s)\]>]+|^\s{0,3}\[[^\]]*\]:|\]\(", re.M)
 
 # Overridable in tests; defaults to the shared classifier-tier JSON call.
 _predict_json: Optional[Callable[[str], str]] = None
@@ -72,6 +84,8 @@ def localize_payload(session: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
     code = session_language(session)
     if not code or not isinstance(payload, dict):
         return payload
+    if payload.get("action") == "agent_error" or payload.get("isError"):
+        return payload
     actions = payload.get("suggestedActions")
     actions = actions if isinstance(actions, list) else []
     texts: List[str] = []
@@ -103,21 +117,35 @@ def translate_text(session: Any, text: str) -> str:
 
 
 def translate_texts(texts: List[str], code: str) -> List[str]:
-    """Translate English *texts* into *code*; English on any failure."""
+    """Translate English *texts* into *code*; English for any that fail."""
+    global _failed_until
+    shared = byok.get_current() is None
     with _cache_lock:
-        missing = [t for t in dict.fromkeys(texts) if (t, code) not in _cache]
-    if missing:
+        known = {t: _cache[(t, code)] for t in texts if shared and (t, code) in _cache}
+    if time.monotonic() < _failed_until:
+        return [known.get(t, t) for t in texts]
+    for text in dict.fromkeys(t for t in texts if t not in known):
         try:
-            for source, target in zip(missing, _translate_uncached(missing, code)):
-                with _cache_lock:
-                    _cache[(source, code)] = target
-                    while len(_cache) > _CACHE_MAX:
-                        _cache.popitem(last=False)
+            known[text] = _translate_uncached([text], code)[0]
         except Exception as exc:
-            logger.warning("Reply translation to %s failed; sending English: %s", code, exc)
-            return list(texts)
+            _failed_until = time.monotonic() + _FAILURE_BACKOFF_SECONDS
+            logger.warning("Reply translation to %s failed; sending English for %.0fs: %s",
+                           code, _FAILURE_BACKOFF_SECONDS, exc)
+            break
+        if shared:
+            with _cache_lock:
+                _cache[(text, code)] = known[text]
+                while len(_cache) > _CACHE_MAX:
+                    _cache.popitem(last=False)
+    return [known.get(t, t) for t in texts]
+
+
+def _reset_state() -> None:
+    """Forget cached translations and any failure pause (tests)."""
+    global _failed_until
     with _cache_lock:
-        return [_cache.get((t, code), t) for t in texts]
+        _cache.clear()
+    _failed_until = 0.0
 
 
 def _translate_uncached(texts: List[str], code: str) -> List[str]:
@@ -146,7 +174,7 @@ def _translate_uncached(texts: List[str], code: str) -> List[str]:
     result = []
     for source, target in zip(texts, out):
         ok = isinstance(target, str) and target.strip() and (
-            _LINK_TARGET_RE.findall(source) == _LINK_TARGET_RE.findall(target)
+            sorted(_LINK_TOKEN_RE.findall(source)) == sorted(_LINK_TOKEN_RE.findall(target))
         ) and source.count("`") == target.count("`")
         if not ok:
             logger.warning("Reply translation dropped markup; keeping English for one string")

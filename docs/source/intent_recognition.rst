@@ -267,9 +267,12 @@ not ``decline_intent``.
 sends the button's English prompt, does not change it). LLM-written replies
 are asked to answer in that language; templated replies are translated at the
 reply choke point in ``src/session_helpers.py`` by ``src/reply_language.py``:
-one classifier-tier call per reply, cached per (text, language). Only the
-``message`` and the quick-action ``label`` are translated, never a ``prompt``
-or a model payload; on failure the English text is sent.
+one classifier-tier call per string, so a user's text never shares a call with
+a label other users see, cached per (text, language) for the shared key only.
+Only the ``message`` and the quick-action ``label`` are translated, never a
+``prompt``, a model payload or an error reply; a translation that adds or
+changes a link is discarded; on failure the English text is sent and
+translation pauses briefly.
 
 
 Stage 3: Post-Validation and the Pending-Flow Gate
