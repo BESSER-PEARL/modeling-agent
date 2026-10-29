@@ -145,7 +145,7 @@ variable name is the tier name prefixed with ``BESSER_AGENT_MODEL_``.
      - Default
      - Used by
    * - ``MODEL_CLASSIFIER``
-     - ``gpt-4o-mini``
+     - ``gpt-6-luna``
      - The unified classifier, the request planner, JSON repair /
        self-correction / name-extraction recovery, the memory summarizer,
        UML RAG, help and fallback streaming, and ``gpt_predict_json``.
@@ -414,8 +414,8 @@ per million tokens from ``_COST_PER_1K`` in ``src/tracking/token_tracker.py``.
      - Input / cached / output
      - Why this tier
    * - ``MODEL_CLASSIFIER``
-     - ``gpt-4o-mini``
-     - 0.15 / 0.075 / 0.60
+     - ``gpt-6-luna``
+     - 0.10 / 0.01 / 0.50
      - Runs on every message with a small, schema-constrained output, so it
        is the cheapest model that routes reliably.
    * - ``MODEL_GENERATION_LARGE``
