@@ -269,8 +269,9 @@ not ``decline_intent``.
 sends the button's English prompt, does not change it). LLM-written replies
 are asked to answer in that language; templated replies are translated at the
 reply choke point in ``src/session_helpers.py`` by ``src/reply_language.py``:
-one classifier-tier call per string, so a user's text never shares a call with
-a label other users see, cached per (text, language) for the shared key only.
+one classifier-tier call per reply for the message and its labels, cached for
+the shared key only and per call input, so a label translated next to one
+user's text is never reused in another user's reply.
 Only the ``message`` and the quick-action ``label`` are translated, never a
 ``prompt``, a model payload or an error reply; a translation that adds or
 changes a link is discarded; on failure the English text is sent and

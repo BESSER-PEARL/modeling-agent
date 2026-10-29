@@ -413,21 +413,37 @@ def _spanish_session():
 
 
 class TestReplyTranslation:
-    def test_payload_message_and_labels_translated_one_string_per_call(self, translator):
+    def test_payload_message_and_labels_translated_in_one_call(self, translator):
+        # A message plus three labels used to cost four sequential calls.
         from session_helpers import reply_payload
         session = _spanish_session()
         model = {"elements": {"c1": {"name": "Book"}}}
-        reply_payload(session, {
-            "action": "inject_complete_system", "message": "Created **Book**.", "model": model,
-            "suggestedActions": [{"label": "Continue", "prompt": "generate anyway with my current model"}],
-        })
+        actions = [{"label": label, "prompt": prompt} for label, prompt in (
+            ("Continue", "generate anyway with my current model"),
+            ("Review the model", "wme:review-spec"),
+            ("Cancel", "cancel"),
+        )]
+        payload = {"action": "inject_complete_system", "message": "Created **Book**.",
+                   "model": model, "suggestedActions": actions}
+        reply_payload(session, payload)
         sent = session.last_reply_json()
         assert sent["message"] == "ES<Created **Book**.>"
-        assert sent["suggestedActions"] == [
-            {"label": "ES<Continue>", "prompt": "generate anyway with my current model"}]
+        assert sent["suggestedActions"] == [{**a, "label": f"ES<{a['label']}>"} for a in actions]
         assert sent["model"] == model
-        # One call per string: a label is never translated next to user text.
-        assert len(translator.calls) == 2
+        assert len(translator.calls) == 1
+        reply_payload(session, payload)
+        assert len(translator.calls) == 1  # the same reply again comes from the cache
+
+    def test_a_users_own_key_translates_a_reply_in_one_call(self, translator):
+        import byok
+        from reply_language import translate_texts
+        token = byok.current_byok.set(byok.BYOKConfig(provider="openai", api_key="sk-test"))
+        try:
+            out = translate_texts(["Do you want to continue?", "Continue", "Cancel"], "es")
+        finally:
+            byok.current_byok.reset(token)
+        assert out == ["ES<Do you want to continue?>", "ES<Continue>", "ES<Cancel>"]
+        assert len(translator.calls) == 1
 
     def test_message_and_progress_translated_and_cached(self, translator):
         from session_helpers import reply_message, reply_progress
