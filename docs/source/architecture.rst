@@ -52,7 +52,7 @@ Technology Stack
        One file is vendored over the pip install — see
        ``patches/websocket_platform.py``.
    * - Routing LLM
-     - ``MODEL_CLASSIFIER`` (default ``gpt-4o-mini``)
+     - ``MODEL_CLASSIFIER`` (default ``gpt-6-luna``)
      - One structured-output call per message (the unified classifier)
    * - Generation LLMs
      - ``MODEL_GENERATION_LARGE`` / ``_GUI`` / ``_SMALL``, ``MODEL_REASONING``

@@ -33,7 +33,7 @@ def test_defaults_without_env(monkeypatch):
     for var in _ALL_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     mod = importlib.reload(model_config)
-    assert mod.MODEL_CLASSIFIER == "gpt-4o-mini"
+    assert mod.MODEL_CLASSIFIER == "gpt-6-luna"
     assert mod.MODEL_GENERATION_LARGE == "gpt-5-mini"
     assert mod.MODEL_GENERATION_GUI == "gpt-6-sol"
     assert mod.MODEL_GENERATION_SMALL == "gpt-6-luna"
@@ -64,7 +64,7 @@ def test_blank_env_value_falls_back_to_default(monkeypatch):
     # An empty/whitespace env var must not silently route to model "".
     monkeypatch.setenv("BESSER_AGENT_MODEL_CLASSIFIER", "   ")
     mod = importlib.reload(model_config)
-    assert mod.MODEL_CLASSIFIER == "gpt-4o-mini"
+    assert mod.MODEL_CLASSIFIER == "gpt-6-luna"
 
 
 def test_routed_models_have_cost_table_entries():
