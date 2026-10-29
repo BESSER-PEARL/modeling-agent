@@ -1081,11 +1081,53 @@ def get_or_classify(
             recent_smart_gen=_recent_smart,
             pending_flow=_pending_flow,
         )
+        result = _generate_button_guard(result, request, session)
         _log_classification(request, result)
     if event_id is not None:
         session.set(UNIFIED_CLASSIFICATION, result)
         session.set(UNIFIED_CLASSIFICATION_EVENT_ID, event_id)
     return result
+
+
+# The "Generate the code" suggestion offered after the agent builds a class
+# diagram (suggestions.py). gpt-6-luna sent it to the generator menu
+# (deterministic, generator_type=None) in 4 of 12 live runs; a rulebook rule
+# scoped to "right after a build" also moved the hand-drawn and no-model
+# readings of the same words, so the scope is checked here instead.
+_GENERATE_BUTTON_PROMPT = "generate the application"
+
+
+def _generate_button_guard(
+    result: UnifiedClassification, request: AssistantRequest, session: Any
+) -> UnifiedClassification:
+    """Route the post-build button prompt to the Spec-Driven confirmation when
+    the agent built this project's class diagram from the user's own request.
+    Any other context keeps the classifier's verdict."""
+    message = re.sub(r"[\s.!]+$", "", (request.message or "").strip().lower())
+    if (
+        message != _GENERATE_BUTTON_PROMPT
+        or result.intent != "generation_intent"
+        or result.generation_route == "smart"
+    ):
+        return result
+    from utilities.original_request import original_request_for_project, request_project_id
+
+    if not original_request_for_project(session, request_project_id(request)):
+        return result
+    logger.warning(
+        "Generate-button guard: %s/%s -> smart (agent-built model in this project)",
+        result.generation_route, result.generator_type,
+    )
+    return result.model_copy(update={
+        "generation_route": "smart",
+        "generator_type": None,
+        "model_disposition": "reuse_for_generation",
+        # The user's original request rides along separately
+        # (generation_handler._original_for_smart_generation).
+        "refined_instructions": (result.refined_instructions or "").strip()
+        or "Build the application from the current class diagram.",
+        "reason": "Generate-button guard: post-build 'generate the application' -> smart",
+    })
 
 
 def _log_classification(

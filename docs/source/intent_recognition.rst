@@ -234,6 +234,14 @@ regex before or after the call:
   (``src/handlers/generation_handler.py``) — "continue from
   github.com/owner/repo" must always produce a ``trigger_github_import``
   action, so it is matched deterministically rather than inferred.
+- ``_generate_button_guard()`` — "generate the application", the prompt of
+  the "Generate the code" suggestion offered after the agent builds a class
+  diagram, goes to the ``smart`` route when the agent built this project's
+  class diagram from the user's request (``original_request_for_project``).
+  gpt-6-luna sent it to the generator menu in 4 of 12 live runs, and a
+  rulebook rule limited to "right after a build" also changed the
+  hand-drawn and empty-workspace readings of the same words. Without that
+  project-scoped build record, the classifier's verdict stands.
 
 
 Stage 3: Post-Validation and the Pending-Flow Gate
