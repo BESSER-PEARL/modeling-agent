@@ -112,7 +112,12 @@ class TestClassifierCarriesTheTarget:
         # The reviewer's cases and the look-alikes that are not targets.
         for phrase in ("mobile-friendly", "REST API for my mobile app", "Windows server",
                        "cancellation windows", "native speakers", "una app de Windows 11",
-                       "no, una app nativa, no una web app"):
+                       "no, una app nativa, no una web app",
+                       # Live findings on gpt-4o-mini: a domain was returned as the
+                       # target, a correction kept the remembered target, and a
+                       # screen added to a generated native app became a web GUI edit.
+                       "never a target", "never the REMEMBERED one",
+                       "'añade una pantalla de ajustes'"):
             assert phrase in _SYSTEM_PROMPT, phrase
         assert "FIRST state the target explicitly" in _SYSTEM_PROMPT
 
