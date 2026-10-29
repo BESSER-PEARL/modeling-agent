@@ -25,6 +25,7 @@ from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional
 
 import byok
+from reply_copy import SPEC_DRIVEN_NAME
 from session_keys import REPLY_LANGUAGE
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,12 @@ _cache_lock = threading.Lock()
 # for every reply (the shared client retries for several seconds per call).
 _FAILURE_BACKOFF_SECONDS = 60.0
 _failed_until = 0.0
+
+# Product names never reach the translator: a prompt rule alone did not stop it
+# translating "Spec-Driven Agent". Each is swapped for a numbered placeholder
+# and put back afterwards.
+_PROTECTED_NAMES = (SPEC_DRIVEN_NAME, "BESSER")
+_PLACEHOLDERS = tuple(f"⟦{i}⟧" for i in range(len(_PROTECTED_NAMES)))
 
 # Everything the markdown renderer can turn into a link (inline and reference
 # links, autolinks, bare URLs) must be the same before and after translation.
@@ -155,28 +162,43 @@ def _translate_uncached(texts: List[str], code: str) -> List[str]:
         predict = ctx.gpt_predict_json
     if predict is None:
         raise RuntimeError("no LLM available")
+    sources = [_protect_names(t) for t in texts]
     prompt = (
         f"Translate each string in \"texts\" from English into {language_name(code)}. "
         "They are messages and button labels of a software-modeling assistant. Rules:\n"
         "- Keep markdown exactly: line breaks, bullets, **bold** and *italic* markers.\n"
         "- Keep unchanged: anything in backticks, link targets in (...) such as "
-        "(wme:add-key), URLs, the product names BESSER and Spec-Driven Agent, and "
+        "(wme:add-key), URLs, placeholders such as ⟦0⟧, and "
         "bold model element names that are identifiers (e.g. **Book**, **LoanItem**). "
         "Bold phrases of ordinary words are translated and stay bold.\n"
         "- Translate naturally; add nothing and drop nothing.\n"
         'Return JSON {"texts": [...]} with the same number of strings in the same order.\n\n'
-        + json.dumps({"texts": texts}, ensure_ascii=False)
+        + json.dumps({"texts": sources}, ensure_ascii=False)
     )
     raw = predict(prompt)
     out = json.loads(raw).get("texts") if raw else None
     if not isinstance(out, list) or len(out) != len(texts):
         raise ValueError("translation returned a different number of strings")
     result = []
-    for source, target in zip(texts, out):
+    for text, source, target in zip(texts, sources, out):
         ok = isinstance(target, str) and target.strip() and (
             sorted(_LINK_TOKEN_RE.findall(source)) == sorted(_LINK_TOKEN_RE.findall(target))
-        ) and source.count("`") == target.count("`")
+        ) and source.count("`") == target.count("`") and all(
+            source.count(mark) == target.count(mark) for mark in _PLACEHOLDERS
+        )
         if not ok:
             logger.warning("Reply translation dropped markup; keeping English for one string")
-        result.append(target if ok else source)
+        result.append(_restore_names(target) if ok else text)
     return result
+
+
+def _protect_names(text: str) -> str:
+    for name, mark in zip(_PROTECTED_NAMES, _PLACEHOLDERS):
+        text = text.replace(name, mark)
+    return text
+
+
+def _restore_names(text: str) -> str:
+    for name, mark in zip(_PROTECTED_NAMES, _PLACEHOLDERS):
+        text = text.replace(mark, name)
+    return text

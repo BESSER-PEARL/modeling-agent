@@ -591,3 +591,28 @@ class TestNonWebFollowUpWiring:
 
     def test_without_a_generated_app_the_web_gui_guard_still_applies(self):
         assert self._classify(recent=False).target_diagram_type == "GUINoCodeDiagram"
+
+
+class TestProductNamesSurviveTranslation:
+    """Live, the translator turned "Spec-Driven Agent" into "Agente Específico"
+    despite the prompt rule; the names are now kept out of its reach."""
+
+    @staticmethod
+    def _translates_names(prompt):
+        texts = json.loads(prompt[prompt.rindex("{\"texts\""):])["texts"]
+        return json.dumps({"texts": [
+            t.replace("Spec-Driven Agent", "Agente Específico").replace("BESSER", "Besser")
+            .replace("The", "El").replace("finished", "terminó") for t in texts]})
+
+    def test_product_names_are_never_translated(self, monkeypatch, clean_translation_state):
+        reply_language = clean_translation_state
+        monkeypatch.setattr(reply_language, "_predict_json", self._translates_names)
+        [out] = reply_language.translate_texts(["The Spec-Driven Agent finished. BESSER is ready."], "es")
+        assert out == "El Spec-Driven Agent terminó. BESSER is ready."
+
+    def test_a_translation_that_drops_a_name_keeps_english(self, monkeypatch, clean_translation_state):
+        reply_language = clean_translation_state
+        monkeypatch.setattr(reply_language, "_predict_json",
+                            lambda p: json.dumps({"texts": ["El agente terminó."]}))
+        source = "The Spec-Driven Agent finished."
+        assert reply_language.translate_texts([source], "es") == [source]
