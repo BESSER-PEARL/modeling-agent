@@ -216,6 +216,18 @@ LLM call:
    * - ``pending_flow_action`` / ``pending_flow_answer``
      - Whether this message ANSWERS the assistant's pending question, and
        which valid answer it maps to
+   * - ``target_kind`` / ``target_description``
+     - What kind of software the user wants built, when the message says so
+       (any intent): ``web_app`` (anything in a browser, including a
+       mobile-friendly web app), ``backend`` (API-only, including "a REST API
+       for my mobile app") or ``other`` (native mobile, desktop, CLI, game,
+       extension, …), plus a short name such as "Windows 11 desktop app".
+       ``None`` when the message names no kind. See *Target and reply
+       language* below
+   * - ``architecture``
+     - A software architecture the user asked for (MVC, MVVM, …)
+   * - ``reply_language``
+     - ISO 639-1 code of the language the message is written in
    * - ``reason``
      - One short sentence, used in logs and surfaced as a hint
 
@@ -234,6 +246,36 @@ regex before or after the call:
   (``src/handlers/generation_handler.py``) — "continue from
   github.com/owner/repo" must always produce a ``trigger_github_import``
   action, so it is matched deterministically rather than inferred.
+
+
+Target and reply language
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``get_or_classify()`` remembers the stated target and architecture per project
+next to the original request (``remember_target`` /
+``target_for_project`` in ``src/utilities/original_request.py``); the latest
+statement wins, and a message that names no target keeps the remembered one.
+The classifier sees it as a ``REMEMBERED TARGET`` line, so
+``refined_instructions`` always name it. For ``target_kind="other"`` the
+request planner never plans ``web_app`` and never adds the GUI diagram on its
+own (the GUI editor designs web pages); it keeps the GUI diagram only when the
+user asks for it (``target_diagram_type="GUINoCodeDiagram"``). The
+smart-generation confirmation names the target
+and says the code is AI-written and not compiled on the build server. A
+"no, X instead" in any language is a correction of the pending generation,
+not ``decline_intent``.
+
+``reply_language`` is kept in ``REPLY_LANGUAGE`` (a quick-action click, which
+sends the button's English prompt, does not change it). LLM-written replies
+are asked to answer in that language; templated replies are translated at the
+reply choke point in ``src/session_helpers.py`` by ``src/reply_language.py``:
+one classifier-tier call per reply for the message and its labels, cached for
+the shared key only and per call input, so a label translated next to one
+user's text is never reused in another user's reply.
+Only the ``message`` and the quick-action ``label`` are translated, never a
+``prompt``, a model payload or an error reply; a translation that adds or
+changes a link is discarded; on failure the English text is sent and
+translation pauses briefly.
 
 
 Stage 3: Post-Validation and the Pending-Flow Gate

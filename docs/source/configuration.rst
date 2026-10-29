@@ -390,6 +390,13 @@ Counts are for the shared server key and a request that succeeds first time.
    * - Long conversation
      - One ``MODEL_CLASSIFIER`` summarizer call each time the verbatim window
        fills (16 messages), not every turn.
+   * - Reply in a language other than English
+     - One ``MODEL_CLASSIFIER`` call per templated reply (the message and its
+       quick-action labels together) and per progress text. Results from the
+       shared key are cached per call input and language, so a repeated reply
+       costs nothing; results from a user's own key are not cached. Error
+       replies are not translated, and after a failed call translation pauses
+       for 60 seconds.
 
 Tiers
 ~~~~~
