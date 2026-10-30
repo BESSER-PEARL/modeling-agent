@@ -197,6 +197,103 @@ Field Reference
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)
 
+Diagram model format (v3 and v4)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Each tab's ``model`` arrives in one of two shapes:
+
+* **v3** (Apollon editor): ``{version: "3.x", elements: {id: …}, relationships: {id: …}}``.
+* **v4** (React Flow editor): ``{version: "4.x", nodes: [...], edges: [...]}``. Class
+  members, state bodies and intent phrases are inline rows on the parent node's
+  ``data``. Child positions are relative to ``parentId``. Association ends are
+  stored as ``edge.data.sourceRole`` / ``sourceMultiplicity`` / ``sourceNavigable``
+  and the matching ``target*`` keys.
+
+Everything downstream of the protocol layer reads **v3 only**. ``parse_v2_payload``
+therefore calls ``_normalize_context_models`` once, at the inbound boundary.
+It uses ``src/protocol/v4_to_v3.py`` (``normalize_project_snapshot`` /
+``normalize_model``) to convert every model in ``projectSnapshot`` whose
+``version`` starts with ``"4."`` or that has a ``nodes`` list. A legacy
+``activeModel`` field is ignored: the current model is always read from the
+snapshot. The conversion is the Python inverse of the frontend migrator
+``packages/library/lib/utils/versionConverter.ts``. The canonical mapping is
+BESSER's ``docs/source/migrations/uml-v4-shape.md``. The conversion rules:
+
+* v3 models, ``GUINoCodeDiagram`` and ``QuantumCircuitDiagram`` pass through
+  untouched. The input is never mutated. If the active tab (``activeDiagramType``
+  at its ``currentDiagramIndices`` entry) fails to convert, the request fails
+  with ``ModelConversionError`` (a readable reply, never an edit against an
+  apparently empty diagram). A background tab that fails keeps its ``id`` and
+  ``title`` with ``model: null``.
+* ``class`` + ``data.stereotype`` (``Abstract`` / ``Interface`` / ``Enumeration``,
+  case-insensitive) become ``AbstractClass`` / ``Interface`` / ``Enumeration``.
+  Inline ``attributes`` / ``methods`` / ``oclConstraints`` rows become owned
+  ``ClassAttribute`` / ``ClassMethod`` / ``ClassOCLConstraint`` elements.
+* State and agent-state ``bodies`` / ``fallbackBodies``, intent
+  ``training_phrases`` / ``entity_slots``, and object / user-profile
+  ``attributes`` become owned child elements. An agent state's ``data.initial``
+  becomes a ``StateInitialNode`` plus an ``AgentStateTransitionInit`` edge.
+* BPMN ``bpmnX`` nodes become ``BPMNX``. ``BPMNSequenceFlow`` and the other flow
+  edges become ``BPMNFlow`` with ``flowType`` set.
+* Component / Deployment nodes ``component`` / ``componentSubsystem`` /
+  ``componentInterface`` / ``deploymentNode`` / ``deploymentComponent`` /
+  ``deploymentArtifact`` / ``deploymentInterface`` become ``Component`` /
+  ``Subsystem`` / ``ComponentInterface`` / ``DeploymentNode`` / … .
+  ``data.isComponentHeaderShown`` (``isComponentSubsystemHeaderShown``) becomes
+  ``displayStereotype``. ``ComponentProvidedInterface``-style interface edges
+  become ``ComponentInterfaceProvided`` (and the Deployment equivalents).
+* Every other ``node.data`` / ``edge.data`` field is copied to the v3 element or
+  relationship under the same name. This carries the agentic metadata the
+  handlers read: component / dependency ``stereotype``, ``realizes``,
+  ``processModelRefs``, ``agentModelRef``, artifact ``manifests``; BPMN lane
+  ``isAgentic`` / ``role`` / ``trustScore`` / ``multiplicity`` /
+  ``agentDiagramRef``, task ``reflectionMode`` / ``reflectionReviewerLaneId``,
+  gateway ``gatewayRole`` / ``governanceDsl``, flow ``isDefault``; and the A2A
+  tags in an agent state's ``description`` and a transition's ``name``.
+* ``edge.data.sourceNavigable`` / ``targetNavigable`` become
+  ``source.navigable`` / ``target.navigable``.
+
+Outbound specs keep the format-independent shape and are applied by the
+frontend's own converters and modifiers, so they must work in both the
+production (v3, Apollon) editor and the React Flow (v4) editor; the agent can
+be deployed before the v4 editor. The top-level actions are unchanged; the
+only new nested action is the state machine's ``remove_transition``, which both
+editors already handle. What changed in the specs, and how each editor reads it:
+
+* **State machine**: a transition removal is ``remove_transition`` with
+  ``target.transitionId`` (resolved from the current model) instead of
+  ``remove_element`` naming the endpoints, which the v3 editor mis-matched to
+  the unnamed initial pseudostate. ``add_transition`` repeats its endpoints in
+  ``changes.source`` / ``changes.target`` and the trigger in ``changes.label``
+  for v3; a pseudostate endpoint is ``""`` there and ``initial`` / ``final`` in
+  ``target``. ``modify_transition`` is applied by the v4 editor only; the v3
+  editor skips it in a batch.
+* **BPMN**: a merging agentic gateway's policy is a ``governancePolicy``
+  keyword, and ``governanceDsl`` carries the Governance DSL document the v4
+  editor generates from that keyword (``utilities/governance_dsl.py`` ports its
+  ``generateGovernanceDsl``). The v3 editor stores ``governanceDsl`` as is and
+  BESSER parses it for swarm generation, so it is never the bare keyword; the
+  v4 editor regenerates the document from ``governancePolicy``. A ``reflectionReviewerLaneId`` may name a lane an earlier
+  ``add_swimlane`` of the same batch creates, and ``add_flow`` may name a node
+  added earlier in the batch (both editors apply a batch in order and resolve
+  names).
+  In a process with pools every flow node carries a ``poolId``, and a ``laneId``
+  when its pool has lanes; a node outside the pools lands in another BPMN
+  process and every sequence flow to it fails validation. In a process with
+  lanes, ``add_task`` / ``add_gateway`` / ``add_event`` name their lane id in
+  ``changes.owner``, which both editors resolve.
+  Both editors turn a flow between pools into a message flow, so a flow that
+  cannot be one (a gateway end, a start event sending, an end event
+  receiving) is kept inside one pool: its stray end moves, or the two pools
+  merge into one with all their lanes.
+* **Class diagram**: steps after a class rename name the class by its new
+  name, and a ``modify_relationship`` with real changes is kept next to the
+  rename.
+* **Object diagram**: an object's attributes include inherited ones, whose
+  ``attributeId`` is the declaring superclass's attribute. A ``modify_object``
+  rename sends the new name in ``changes.name``, which both editors read, as
+  well as ``changes.objectName``.
+
 Supported Diagram Types
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -494,7 +591,8 @@ Structured Outputs rejects the response and the call retries.
        ``promote_attribute``, ``add_enum``, ``add_ocl_constraint``
    * - ``StateMachineDiagram``
      - ``add_state``, ``modify_state``, ``add_transition``,
-       ``modify_transition``, ``add_code_block``, ``remove_element``
+       ``modify_transition``, ``remove_transition``, ``add_code_block``,
+       ``remove_element``
    * - ``ObjectDiagram``, ``UserDiagram``
      - ``add_object``, ``modify_object``, ``modify_attribute_value``,
        ``add_link``, ``remove_element``
@@ -517,6 +615,28 @@ Structured Outputs rejects the response and the call retries.
        ``remove_dependency``
    * - Any (generic)
      - ``modify_element`` — the base handler's fallback shape
+
+**State machine transitions** are addressed by their endpoint state *names*
+on ``target.sourceState`` / ``target.targetState`` (not the agent diagram's
+``sourceStateName`` / ``targetStateName``); the event goes on
+``changes.trigger``, with optional ``changes.guard`` and ``changes.effect``.
+``add_transition`` and ``modify_transition`` share this shape; ``add_transition``
+also repeats the endpoints and trigger in ``changes.source`` /
+``changes.target`` / ``changes.label``, where the v3 editor reads them. The LLM
+removes a transition with ``remove_element`` naming the two endpoints; the
+handler turns that into one ``remove_transition`` per matching transition,
+keyed by ``target.transitionId``:
+
+.. code-block:: json
+
+   {"action": "add_transition",
+    "target": {"sourceState": "Delivered", "targetState": "Returned"},
+    "changes": {"trigger": "return", "source": "Delivered", "target": "Returned", "label": "return"}}
+   {"action": "modify_transition",
+    "target": {"sourceState": "Created", "targetState": "Paid"},
+    "changes": {"trigger": "payOrder", "guard": "amount > 0"}}
+   {"action": "remove_transition",
+    "target": {"sourceState": "Paid", "targetState": "Created", "transitionId": "t-42"}}
 
 assistant_message
 ~~~~~~~~~~~~~~~~~

@@ -269,7 +269,7 @@ Diagram Handlers
 ``src/diagram_handlers/types/bpmn_diagram_handler.py``
   - ``BPMNDiagramHandler(llm)`` — diagram type ``"BPMN"``
   - ``_validate_and_refine`` / ``_connect_orphaned_nodes`` /
-    ``_normalize_pool_refs`` / ``_infer_missing_lane_owners`` — deterministic
+    ``_normalize_pool_refs`` / ``_place_nodes_in_pools`` — deterministic
     post-generation repair
   - ``_validate_mod_refs`` — rejects modifications naming a nonexistent node
 
@@ -332,12 +332,6 @@ Auxiliary Handlers
 
      ``handle_file_attachments(session, request)`` lives in
      ``src/execution/file_handling.py``, not here.
-
-``src/handlers/validation_handler.py``
-  Bridge to the BESSER backend's diagram validator:
-
-  - ``validate_diagram(diagram_json, diagram_type, api_url=None)`` — POSTs to
-    ``{BESSER_BACKEND_URL}/besser_api/validate-diagram``
 
 Utilities
 ---------

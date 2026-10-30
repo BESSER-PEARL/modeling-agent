@@ -34,6 +34,16 @@ def clear_original_request(session):
     session.set(APP_TARGET_PROJECT_ID, None)
 
 
+def snapshot_original_request(session):
+    return {"message": session.get(ORIGINAL_APP_REQUEST) or "",
+            "project_id": session.get(ORIGINAL_APP_REQUEST_PROJECT_ID)}
+
+
+def restore_original_request(session, snapshot):
+    session.set(ORIGINAL_APP_REQUEST, snapshot.get("message") or "")
+    session.set(ORIGINAL_APP_REQUEST_PROJECT_ID, snapshot.get("project_id"))
+
+
 def remember_target(session, project_id, *, kind=None, description=None, architecture=None):
     """Record what the user wants built for this project. A newly stated kind
     replaces the remembered one (latest statement wins); an architecture is

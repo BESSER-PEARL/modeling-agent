@@ -120,6 +120,10 @@ UNIFIED_CLASSIFICATION_EVENT_ID = "_unified_classification_event_id"
 ORIGINAL_APP_REQUEST = "_original_app_request"
 ORIGINAL_APP_REQUEST_PROJECT_ID = "_original_app_request_project_id"
 PENDING_SMART_GEN_ORIGINAL_REQUEST = "_pending_smart_gen_original_request"
+# ORIGINAL_APP_REQUEST as it was before the pending run was armed; restored
+# when that run is abandoned so its request cannot resurface later.
+PENDING_SMART_GEN_PRIOR_ORIGINAL = "_pending_smart_gen_prior_original"
+
 # What the user wants built for this project (``target_kind`` +
 # ``target_description`` from the classifier), remembered next to the
 # original request with the same project scoping. Latest statement wins.

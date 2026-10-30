@@ -40,7 +40,11 @@ the new diagram's own tab never exercises routing or discoverability, because
 2. **Register** in ``src/diagram_handlers/registry/factory.py`` — add your
    handler class to the ``HANDLER_CLASSES`` tuple at module level.
 
-3. **Add type** to ``SUPPORTED_DIAGRAM_TYPES`` in ``src/protocol/types.py``
+3. **Add type** to ``SUPPORTED_DIAGRAM_TYPES`` in ``src/protocol/types.py``.
+   Inbound models arrive in the v4 (React Flow) shape: in
+   ``src/protocol/v4_to_v3.py``, map every v4 node / edge type whose v3 name
+   differs in ``_NODE_TYPE_V4_TO_V3`` / ``_EDGE_TYPE_V4_TO_V3``. An unmapped
+   type keeps its v4 name, so the handler never sees its elements.
 
 4. **Add display metadata** in ``src/diagram_handlers/registry/metadata.py``
 

@@ -9,6 +9,7 @@ import re
 from typing import Dict, Any, List, Optional
 
 from ..core.base_handler import (
+    SKIPPED_PARTS_NOTE,
     BaseDiagramHandler,
     LLMPredictionError,
     ModelRefusal,
@@ -40,7 +41,7 @@ from schemas.compact_class_diagram import (
     CompactSystemClassSpec,
     expand_compact_spec,
 )
-from utilities.model_context import detailed_model_summary
+from utilities.model_context import CLASS_ELEMENT_TYPES, detailed_model_summary
 
 logger = logging.getLogger(__name__)
 
@@ -2359,13 +2360,7 @@ Examples:
             msg += f", with {len(rels)} relationship(s) between them"
         constraints = spec.get("constraints") or []
         if constraints:
-            # Honest message: the business rules are understood but the editor
-            # has no slot to display/store them yet, so don't claim they're
-            # shown on the canvas.
-            msg += (
-                f". I also noted {len(constraints)} rule(s) you mentioned, though "
-                "they aren't shown on the canvas yet"
-            )
+            msg += f", and {len(constraints)} rule(s) you stated"
         msg += "."
         return msg
 
@@ -2509,6 +2504,53 @@ Examples:
             return None
         return None
 
+    @staticmethod
+    def _is_rename_echo_relationship_mod(mod: Dict[str, Any], mod_list: List[Dict[str, Any]]) -> bool:
+        """True for a modify_relationship whose only change restates a class
+        rename made in the same batch (or that changes nothing)."""
+        if not isinstance(mod, dict) or mod.get("action") != "modify_relationship":
+            return False
+        renamed: set = set()
+        for m in mod_list:
+            changes = m.get("changes") if isinstance(m, dict) else None
+            if m.get("action") == "modify_class" and isinstance(changes, dict) and changes.get("name"):
+                old = (m.get("target") or {}).get("className")
+                renamed.add(str(changes["name"]).strip().lower())
+                if isinstance(old, str):
+                    renamed.add(old.strip().lower())
+        if not renamed:
+            return False
+        changes = mod.get("changes") if isinstance(mod.get("changes"), dict) else {}
+        set_fields = {k: v for k, v in changes.items() if v not in (None, "", [], {})}
+        if not set_fields:
+            return True
+        return set(set_fields) <= {"name", "className"} and all(
+            isinstance(v, str) and v.strip().lower() in renamed for v in set_fields.values()
+        )
+
+    @staticmethod
+    def _rewrite_renamed_class_refs(mod_list: List[Dict[str, Any]]) -> None:
+        """Point class references in steps after a rename at the new name.
+
+        The browser applies steps in order, so a later step that still names
+        the old class finds nothing.
+        """
+        renames: Dict[str, str] = {}
+        for mod in mod_list:
+            if not isinstance(mod, dict):
+                continue
+            target = mod.get("target")
+            if isinstance(target, dict) and renames:
+                for key in ("className", "sourceClass", "targetClass"):
+                    value = target.get(key)
+                    if isinstance(value, str) and value.strip().lower() in renames:
+                        target[key] = renames[value.strip().lower()]
+            changes = mod.get("changes")
+            if (mod.get("action") == "modify_class" and isinstance(target, dict)
+                    and isinstance(changes, dict) and isinstance(changes.get("name"), str)
+                    and changes["name"].strip() and isinstance(target.get("className"), str)):
+                renames[target["className"].strip().lower()] = changes["name"].strip()
+
     def _drop_phantom_target_ops(
         self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]],
     ) -> List[str]:
@@ -2535,6 +2577,12 @@ Examples:
             return []
 
         class_names, attr_names, method_names = self._build_model_index(current_model)
+        # A class renamed in this batch may be referenced by its new name.
+        for mod in mods:
+            changes = mod.get("changes") if isinstance(mod, dict) else None
+            if mod.get("action") == "modify_class" and isinstance(changes, dict) \
+                    and isinstance(changes.get("name"), str) and changes["name"].strip():
+                class_names = class_names | {changes["name"].strip().lower()}
 
         kept: List[Any] = []
         notes: List[str] = []
@@ -2561,6 +2609,12 @@ Examples:
             spec["modification"] = kept[0]
         elif kept:
             spec["modifications"] = kept
+        if kept:
+            # The message was built from the pre-drop list; describe only what remains.
+            previous = spec.get("message") or ""
+            marker = SKIPPED_PARTS_NOTE
+            skip_note = previous[previous.find(marker):] if marker in previous else ""
+            spec["message"] = self._default_modification_message(spec) + skip_note
         return notes
 
     # ------------------------------------------------------------------
@@ -3126,20 +3180,21 @@ Examples:
 
         try:
             def _strip_spurious_relationship_mods(mod_list):
-                """Strip modify_relationship entries that accompany a modify_class
-                rename -- relationships are linked by ID and update automatically."""
-                has_class_rename = any(
-                    m.get("action") == "modify_class" and m.get("changes", {}).get("name")
-                    for m in mod_list
-                )
-                if has_class_rename:
-                    before = len(mod_list)
-                    mod_list = [m for m in mod_list if m.get("action") != "modify_relationship"]
-                    if len(mod_list) < before:
-                        logger.info(
-                            f"[ClassDiagram] Stripped {before - len(mod_list)} "
-                            "spurious modify_relationship entries from class rename"
-                        )
+                """Strip modify_relationship entries that only echo a modify_class
+                rename -- relationships are linked by ID and follow the rename.
+                A relationship edit with real changes (multiplicity, role, type,
+                a new label) is kept."""
+                before = len(mod_list)
+                mod_list = [
+                    m for m in mod_list
+                    if not self._is_rename_echo_relationship_mod(m, mod_list)
+                ]
+                if len(mod_list) < before:
+                    logger.info(
+                        f"[ClassDiagram] Stripped {before - len(mod_list)} "
+                        "spurious modify_relationship entries from class rename"
+                    )
+                self._rewrite_renamed_class_refs(mod_list)
 
                 # Normalize remove_element targets — some LLMs misplace the class
                 # name into other fields or leave className null. Promote any
@@ -3891,7 +3946,7 @@ Examples:
         # Build class ID -> name mapping
         class_names: Dict[str, str] = {}
         for eid, el in elements.items():
-            if isinstance(el, dict) and el.get("type") == "Class":
+            if isinstance(el, dict) and el.get("type") in CLASS_ELEMENT_TYPES:
                 name = el.get("name", "")
                 if name:
                     class_names[eid] = name

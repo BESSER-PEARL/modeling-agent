@@ -119,7 +119,8 @@ in manual testing. Walkthrough: `docs/source/contributing/howto_guides.rst`.
    the `_fallback_llm_reply` prompt (shared by `global_fallback_body` and `greetings_body`), optionally a
    `modeling_help_body` branch
 7. `src/protocol/types.py` — `SUPPORTED_DIAGRAM_TYPES`; an `activeDiagramType` outside it is silently normalized
-   to `ClassDiagram`
+   to `ClassDiagram`. In `src/protocol/v4_to_v3.py`, map the type's v4 node / edge types whose v3 name differs in
+   `_NODE_TYPE_V4_TO_V3` / `_EDGE_TYPE_V4_TO_V3`; an unmapped type keeps its v4 name and handlers miss it
 8. `src/diagram_handlers/registry/metadata.py` — `DIAGRAM_TYPE_METADATA`
 9. `src/suggestions.py` — a suggestion list + `_DIAGRAM_SUGGESTION_HANDLERS` entry
 10. Tests — `tests/test_diagram_handlers.py` plus a dedicated `tests/test_<type>.py`
@@ -169,6 +170,16 @@ Full reference: `docs/source/websocket_protocol.rst`. The traps:
   whose inner JSON is `stream_start` / `stream_chunk` / `stream_done`. When probing the agent directly, replicate
   both layers and unwrap them in the order `AssistantClient.ts` does (`extractActionPayload`) — a single-level
   unwrap treats every response as unknown and hangs.
+- **Inbound diagram models may be v4 (React Flow `{nodes, edges}`)**. `parse_v2_payload` converts every
+  v4 model in `projectSnapshot` to the v3 `{elements, relationships}` shape via `protocol/v4_to_v3.py` (a
+  legacy `activeModel` is ignored). If the active tab fails to convert, the request fails with
+  `ModelConversionError`; a failed background tab gets `model: None`. This inverts the frontend's `versionConverter.ts`; the mapping lives in BESSER's
+  `docs/source/migrations/uml-v4-shape.md`. All downstream code reads v3 only; never add a v4 branch downstream.
+  GUI and Quantum models pass through.
+- **Outbound specs must work in both editors**: the production v3 editor and the v4 (React Flow) editor apply
+  them with their own modifiers, and the agent ships first. Changed specs (state-machine `remove_transition` by
+  `transitionId` and `add_transition` endpoints in `changes`, BPMN `governanceDsl` generated from `governancePolicy`,
+  …) are listed in `websocket_protocol.rst`; check a new spec shape against both editors' `modifiers/`.
 - **`user_id` is a URL query param** (`wss://host/agent?user_id=…`), read by `_extract_user_id_from_request` in
   `patches/websocket_platform.py`. It keys the BAF session; conversation memory keys on the inner `sessionId`
   (`memory.memory_session_key`).
@@ -202,9 +213,8 @@ src/
                                   type + gui_design_system.py, gui_html_converter.py), registry/ (factory, metadata)
   schemas/<type>.py               Structured-output schemas
   execution/                      planning.py (multi-op dispatch), model_operations.py, file_handling.py, progress.py
-  handlers/                       generation_handler.py, smart_generation_handler.py, file_conversion_handler.py,
-                                  validation_handler.py (bridge to the BESSER backend validator)
-  protocol/                       types.py, adapters.py
+  handlers/                       generation_handler.py, smart_generation_handler.py, file_conversion_handler.py
+  protocol/                       types.py, adapters.py, v4_to_v3.py (inbound v4 → v3 model normalizer)
   memory/                         Verbatim window + rolling LLM summary per session
   llm/provider.py                 Provider abstraction (structured outputs, streaming)
   tracking/token_tracker.py       Token/cost tracking (_COST_PER_1K)

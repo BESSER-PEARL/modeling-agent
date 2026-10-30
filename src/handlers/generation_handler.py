@@ -12,7 +12,7 @@ from protocol.types import AssistantRequest
 from utilities.model_context import is_diagram_nontrivial
 from utilities.original_request import (
     clear_original_request, current_target, original_request_for_project,
-    remember_original_request,
+    remember_original_request, restore_original_request, snapshot_original_request,
 )
 from session_keys import (
     CONFIG_PROMPT_ATTEMPTS,
@@ -24,6 +24,7 @@ from session_keys import (
     PENDING_GENERATOR_TYPE,
     PENDING_SMART_GEN_ORIGINAL_REQUEST,
     PENDING_SMART_GEN_INSTRUCTIONS,
+    PENDING_SMART_GEN_PRIOR_ORIGINAL,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
     PLAN_GENERATION_CONFIRM_FLAG,
@@ -217,6 +218,8 @@ def _original_for_smart_generation(session, user_message, *, replace=False):
             "This later request takes precedence where it changes earlier requirements.\n\n"
             f"{message}"
         )
+    if not session.get(PENDING_SMART_GEN_INSTRUCTIONS):
+        session.set(PENDING_SMART_GEN_PRIOR_ORIGINAL, snapshot_original_request(session))
     remember_original_request(session, message, project_id)
     return message
 
@@ -1076,12 +1079,16 @@ def _clear_pending_state(session: Session) -> None:
             session.delete(key)
 
 
-def _clear_pending_smart_gen(session: Session) -> None:
+def _clear_pending_smart_gen(session: Session, *, run_fired: bool = False) -> None:
     """Clear stashed smart-gen instructions and the skip-mismatch flag.
 
     Called after the user resolves a mismatch confirmation (via Generate
     Anyway, Cancel, or after a chained mismatch-regen run completes)
     so a stale stash doesn't leak into a future unrelated request.
+
+    Unless the run fired, the remembered original request reverts to its
+    pre-arm value, so a later bare "yes, continue" cannot rebuild the
+    abandoned request (e.g. an injected "push and deploy").
     """
     try:
         session_data = session.get_dictionary()
@@ -1089,7 +1096,12 @@ def _clear_pending_smart_gen(session: Session) -> None:
         logger.debug(f"Session dictionary access failed (best-effort): {exc}")
         session_data = {}
 
+    prior = session_data.get(PENDING_SMART_GEN_PRIOR_ORIGINAL) if isinstance(session_data, dict) else None
+    if isinstance(prior, dict) and not run_fired:
+        restore_original_request(session, prior)
+
     for key in (
+        PENDING_SMART_GEN_PRIOR_ORIGINAL,
         PENDING_SMART_GEN_INSTRUCTIONS,
         PENDING_SMART_GEN_PROVIDER,
         PENDING_SMART_GEN_TIMESTAMP,
@@ -1099,6 +1111,9 @@ def _clear_pending_smart_gen(session: Session) -> None:
     ):
         if isinstance(session_data, dict) and key in session_data:
             session.delete(key)
+
+
+_MODEL_CHANGING_INTENTS = {"create_complete_system_intent", "modify_model_intent"}
 
 
 def handle_pending_smart_gen_confirmation(session: Session) -> bool:
@@ -1132,6 +1147,16 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
         if (getattr(_uc, "pending_flow_action", None) == "answer"
                 and getattr(_uc, "pending_flow_answer", None) == "cancel"):
             decision = "cancel"
+        elif (getattr(_uc, "pending_flow_action", None) == "new_request"
+                and getattr(_uc, "intent", None) in _MODEL_CHANGING_INTENTS
+                and _norm_prompt(request.message) != _norm_prompt(session.get(MISMATCH_REGEN_PENDING) or "")):
+            # The prepared run was built for the model as it was. A create or
+            # modify replaces that context: drop the stash so it can neither
+            # resurface as a one-click "Continue" later nor keep feeding the
+            # classifier a pending "run the generator?" question every turn.
+            logger.info("[SmartGen] Model-changing request abandons the pending run")
+            _clear_pending_smart_gen(session)
+            return False
 
     if decision == "cancel":
         _clear_pending_smart_gen(session)
@@ -1159,7 +1184,7 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
                 "and I'll prepare a fresh run.",
             )
             return True
-        _clear_pending_smart_gen(session)
+        _clear_pending_smart_gen(session, run_fired=bool(stashed_instructions.strip()))
         if stashed_instructions.strip():
             payload = build_trigger_smart_generator_payload(
                 GenerationClassification(
@@ -1754,7 +1779,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                     "and I'll prepare a fresh run."
                 ),
             }
-        _clear_pending_smart_gen(session)
+        _clear_pending_smart_gen(session, run_fired=bool(stashed_instructions.strip()))
         if stashed_instructions.strip():
             return build_trigger_smart_generator_payload(
                 GenerationClassification(

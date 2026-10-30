@@ -286,7 +286,7 @@ class TestDetailedModelSummaryClassDiagram:
 
     def test_includes_multiplicities(self):
         result = detailed_model_summary(CLASS_MODEL_FULL, "ClassDiagram")
-        assert "1..*" in result
+        assert "[User 1, Order *]" in result
 
     def test_includes_relationship_name(self):
         result = detailed_model_summary(CLASS_MODEL_FULL, "ClassDiagram")

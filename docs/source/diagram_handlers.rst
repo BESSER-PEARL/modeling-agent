@@ -531,11 +531,16 @@ Features
 - **Deterministic post-generation repair** (``_validate_and_refine``): pure
   Python fixes for structural invariants the LLM violates despite the system
   prompt — ``_connect_orphaned_nodes`` reattaches nodes with no incoming
-  flow, ``_normalize_pool_refs`` and ``_infer_missing_lane_owners`` fix
-  pool/lane membership, ``_unique_id`` de-duplicates ids.
+  flow, ``_normalize_pool_refs`` and ``_place_nodes_in_pools`` fix
+  pool/lane membership (every node of a pooled process gets a pool, and a
+  lane when its pool has lanes; ``_place_added_nodes`` gives added nodes a
+  lane), ``_keep_sequence_flows_in_one_pool`` keeps a flow that cannot be a
+  message flow inside one pool, ``_unique_id`` de-duplicates ids.
 - **Reference validation on modification** (``_validate_mod_refs``): a
   modification naming a node that does not exist is rejected rather than
-  applied to an arbitrary substitute.
+  applied to an arbitrary substitute. When only some modifications of a batch
+  are dropped, the reply ends with "I skipped N change(s) that referred to
+  elements I couldn't find."
 - **Positions are not generated here.** The editor's injector lays out the
   process (and any pools/lanes) and routes the flows itself. Flow *type*
   (message vs. sequence) is likewise derived on the editor side from pool
@@ -561,11 +566,19 @@ Pizza Store and Car Wash templates are not treated as agent swarms.
 - **Editor vocabulary.** Lane roles are ``solution`` / ``supervision``; lane
   ``multiplicity`` is the integer swarm size; tasks carry ``reflectionMode``
   and, for ``cross`` reflection, ``reflectionReviewerLaneId``; agentic
-  gateways carry ``gatewayRole`` and, when merging, ``governanceDsl``.
+  gateways carry ``gatewayRole`` and, when merging, a ``governancePolicy``
+  keyword (``MajorityPolicy``, ``AbsoluteMajorityPolicy``,
+  ``LeaderDrivenPolicy``, ``ConsensusPolicy``) that the v4 editor expands into
+  the gateway's Governance DSL; the LLM never writes DSL text. For the v3
+  editor, which reads only ``governanceDsl``, the handler also sends the
+  document the v4 editor would generate (``utilities/governance_dsl.py``, a
+  port of the editor's ``generateGovernanceDsl``).
 - **Project-scoped references.** ``agentDiagramRef`` is a project AgentDiagram
-  id in the editor. ``model_operations`` passes the project's AgentDiagram ids
-  (``resolve_agent_diagram_refs``) to the handler, the prompt lists them, and
-  any other value is cleared after generation or modification.
+  id in the editor. ``model_operations`` passes the ids of the project's
+  non-empty AgentDiagrams (``resolve_agent_diagram_refs``) to the handler, the
+  prompt lists them, and any other value is cleared after generation or
+  modification. A ``reflectionReviewerLaneId`` must name an existing lane or a
+  lane an earlier ``add_swimlane`` of the same batch creates.
 
 UserProfileDiagramHandler
 -------------------------
@@ -629,7 +642,8 @@ complete-system / modification / fallback flow and the shared modification
 rules. They also use the base handler's **reference guardrail**
 (``_validate_mod_refs``, shared with BPMN): a modification naming an element
 that is neither in the current model nor added or renamed earlier in the same
-batch is dropped instead of being applied to a substitute. The element map is
+batch is dropped instead of being applied to a substitute, and the reply
+notes how many changes were skipped. The element map is
 passed to it explicitly per request — handlers are singletons shared by every
 session, so no request state is kept on the handler.
 

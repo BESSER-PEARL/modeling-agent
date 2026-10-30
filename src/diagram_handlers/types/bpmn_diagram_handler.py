@@ -23,6 +23,9 @@ from typing import Any, Dict, List, Optional
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
 from ..core.prompt_fragments import EXACT_NAMES_RULE, POSITION_DISCLAIMER, REMOVE_ELEMENT_RULE
 from schemas import SystemBPMNSpec, BPMNModificationResponse
+from utilities.governance_dsl import (
+    GOV_POLICY_TYPES, clamp_trust_score, generate_governance_dsl, graph_from_spec, graph_from_v3_model,
+)
 from utilities.model_context import detailed_model_summary
 
 logger = logging.getLogger(__name__)
@@ -47,7 +50,8 @@ MODIFICATION RULES:
 9. remove_flow: set changes.source and changes.target to the node IDs or names of the flow endpoints.
 10. For NAMED nodes you may use the display name. For UNNAMED nodes (no name shown before the type) you MUST use the exact id from [id].
 11. If the user asks for "a second", "another", or "one more" task, add exactly ONE new task unless they explicitly ask for two or more.
-12. add_data_object: a data object is data, a document or a material a task uses or produces (shown as "(DataObject)" in the context). Set target.nodeName to its name, then connect it with add_flow: source = the data object and target = the task for an input, source = the task and target = the data object for an output. Add one data object per item the user names.
+12. When the process has lanes, every add_task, add_gateway and add_event sets changes.owner to a lane's name or [id], normally the lane of the node it connects to; a node without a lane falls outside its pool.
+13. add_data_object: a data object is data, a document or a material a task uses or produces (shown as "(DataObject)" in the context). Set target.nodeName to its name, then connect it with add_flow: source = the data object and target = the task for an input, source = the task and target = the data object for an output. Add one data object per item the user names.
 
 When the user asks to remove or modify an element, always verify the element exists in the current context listing before emitting any remove_element or
 modify_node action. If no entry in the listing matches the user's description (by name or id):
@@ -75,7 +79,7 @@ A2. add_pool: target.nodeName = the new pool's name. add_swimlane: target.nodeNa
 A3. modify_swimlane / remove_swimlane: target.swimlaneName = the lane's name or [id]. remove_pool: target.poolName = the pool's name or [id].
 A4. Lane role is exactly 'solution' (an agent that does the work) or 'supervision' (an agent that oversees other agents). multiplicity is the swarm size, an integer >= 1.
 A5. To place a NEW node in an existing lane, set changes.owner to the lane's name or [id].
-A6. modify_node on a task may set isAgentic, reflectionMode ('none', 'self', 'cross', 'human'), reflectionReviewerLaneId (the reviewing lane's [id], only with reflectionMode 'cross'), trustScore (0-100) and agentDiagramRef; on a gateway: isAgentic, gatewayRole ('diverging' or 'merging'), trustScore and governanceDsl. An agentic gateway must be parallel or inclusive; governanceDsl belongs only on a merging gateway.
+A6. modify_node on a task may set isAgentic, reflectionMode ('none', 'self', 'cross', 'human'), reflectionReviewerLaneId (the reviewing lane's [id], or the name of a lane an earlier add_swimlane of this response creates; only with reflectionMode 'cross'), trustScore (0-100) and agentDiagramRef; on a gateway: isAgentic, gatewayRole ('diverging' or 'merging'), trustScore and governancePolicy. An agentic gateway must be parallel or inclusive; governancePolicy belongs only on a merging gateway and is one of 'MajorityPolicy', 'AbsoluteMajorityPolicy', 'LeaderDrivenPolicy' or 'ConsensusPolicy' (majority, absolute majority, leader-driven, consensus). The editor writes the Governance DSL from it; never write DSL text.
 A7. {AGENT_DIAGRAM_REF_RULE}
 A8. Flows contain only endpoints and labels — never agentic message-flow notation, collaborationMode, or mergingStrategy."""
 
@@ -84,12 +88,12 @@ A8. Flows contain only endpoints and labels — never agentic message-flow notat
 MODIFY_SYSTEM_PROMPT_AGENTIC_BPMN = f"{MODIFY_SYSTEM_PROMPT_BPMN}\n\n{AGENTIC_MODIFY_RULES}"
 
 AGENTIC_DESIGN_RULES = f"""AGENTIC BPMN RULES (the user asked for an agentic process / agent swarm; they extend the rules above):
-A1. Put the agents in a pool and give each agent role its own lane with isAgentic=true. Use pools[].lanes, never pools[].swimlanes. Human or system participants stay ordinary (isAgentic=false) lanes or pools.
+A1. Put the agents in ONE pool and give each agent role its own lane with isAgentic=true (a flow between two pools is a message flow, which a gateway cannot send or receive). Use pools[].lanes, never pools[].swimlanes. Human or system participants stay ordinary (isAgentic=false) lanes or pools.
 A2. Lane role is exactly 'solution' (an agent that does the work) or 'supervision' (an agent that oversees, approves or reviews other agents).
 A3. multiplicity is the swarm size of an agentic lane (e.g. three reviewer agents → 3); leave it null when the request gives none. Set trustScore (0-100) only when the request states or clearly implies it.
-A4. Every node in a pool sets poolId and every node in a lane sets laneId (owner may repeat laneId). Never use a generated WME/Apollon element id.
+A4. Every node — start/end events and gateways included — sets poolId, and laneId when its pool has lanes (owner may repeat laneId); a node left outside the pools breaks every flow to it. Never use a generated WME/Apollon element id.
 A5. A task performed by an agent sets isAgentic=true and may set reflectionMode: 'self', 'human', or 'cross' with reflectionReviewerLaneId = the id of the reviewing agent lane.
-A6. A gateway that fans work out to agents or merges their results is agentic (isAgentic=true), must be parallel or inclusive, and sets gatewayRole 'diverging' or 'merging'. A merging agentic gateway that decides how the results are accepted carries a non-empty governanceDsl (e.g. 'Policy: MajorityPolicy').
+A6. A gateway that fans work out to agents or merges their results is agentic (isAgentic=true), must be parallel or inclusive, and sets gatewayRole 'diverging' or 'merging'. A merging agentic gateway that decides how the results are accepted sets governancePolicy: 'MajorityPolicy', 'AbsoluteMajorityPolicy', 'LeaderDrivenPolicy' or 'ConsensusPolicy' (the editor writes the Governance DSL from it).
 A7. {AGENT_DIAGRAM_REF_RULE}
 A8. Flows contain only source, target, and name. Never emit flowType, agentic flow fields, collaborationMode, or mergingStrategy."""
 
@@ -118,6 +122,78 @@ def format_agent_diagram_refs(agent_diagram_refs: Optional[Dict[str, str]]) -> s
     return "Agent diagrams in this project (the only valid agentDiagramRef values):\n" + "\n".join(lines)
 
 
+# The production (v3) editor stores only ``governanceDsl`` and BESSER parses it,
+# so a requested governancePolicy also goes out as the DSL document the v4
+# editor generates from it. Like the v4 editor, only an agentic gateway gets one.
+
+def _spec_governance_dsl(spec: Dict[str, Any]) -> None:
+    """Write ``governanceDsl`` on generated agentic gateways that name a policy (mutates *spec*)."""
+    graph = None
+    for node in spec.get("nodes") or []:
+        policy = node.get("governancePolicy")
+        if policy in GOV_POLICY_TYPES and node.get("type") == "gateway" and node.get("isAgentic") is True:
+            graph = graph or graph_from_spec(spec)
+            node["governanceDsl"] = generate_governance_dsl(str(node.get("id")), graph, policy)
+
+
+def _find_gateway(elements: Dict[str, Any], target: Dict[str, Any]) -> Optional[str]:
+    node_id = target.get("nodeId")
+    if node_id in elements and (elements[node_id] or {}).get("type") == "BPMNGateway":
+        return node_id
+    name = target.get("nodeName")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    gateways = [(eid, el) for eid, el in elements.items() if isinstance(el, dict) and el.get("type") == "BPMNGateway"]
+    return next((eid for eid, el in gateways if el.get("name") == name), None) or next(
+        (eid for eid, el in gateways if (el.get("name") or "").strip().lower() == name.strip().lower()), None)
+
+
+def _modification_governance_dsl(mod_list: List[Dict[str, Any]], current_model: Optional[Dict[str, Any]]) -> None:
+    """Write ``governanceDsl`` next to a gateway's requested governancePolicy (mutates the changes).
+
+    The gateway is read as the editor sees it after this step: its name, agentic
+    switch, role and trust score from the same changes.
+    """
+    model = current_model if isinstance(current_model, dict) else {}
+    elements = model.get("elements") if isinstance(model.get("elements"), dict) else {}
+    for mod in mod_list:
+        changes = mod.get("changes") if isinstance(mod, dict) else None
+        if not isinstance(changes, dict) or changes.get("governancePolicy") not in GOV_POLICY_TYPES:
+            continue
+        target = mod.get("target") if isinstance(mod.get("target"), dict) else {}
+        if mod.get("action") == "modify_node":
+            gateway_id = _find_gateway(elements, target)
+            if gateway_id is None:
+                continue
+            current = elements[gateway_id]
+            was_agentic = current.get("isAgentic") is True
+            if not (changes["isAgentic"] if isinstance(changes.get("isAgentic"), bool) else was_agentic):
+                continue
+            graph = graph_from_v3_model(model)
+            data = dict(current, isAgentic=True)
+            if not was_agentic:
+                data.update(gatewayRole="diverging", trustScore=0)
+            if changes.get("name"):
+                data["name"] = changes["name"]
+            if isinstance(changes.get("gatewayRole"), str):
+                data["gatewayRole"] = changes["gatewayRole"]
+            if isinstance(changes.get("trustScore"), (int, float)) and not isinstance(changes["trustScore"], bool):
+                data["trustScore"] = clamp_trust_score(changes["trustScore"])
+            for node in graph["nodes"]:
+                if node["id"] == gateway_id:
+                    node["data"] = data
+        elif mod.get("action") == "add_gateway" and changes.get("isAgentic") is True:
+            gateway_id = target.get("nodeId") or "gateway"
+            graph = {"nodes": [{"id": gateway_id, "type": "bpmnGateway", "parentId": None, "data": {
+                "name": target.get("nodeName") or changes.get("name") or "", "isAgentic": True,
+                "gatewayRole": changes.get("gatewayRole") or "diverging",
+                "trustScore": clamp_trust_score(changes.get("trustScore")),
+            }}], "edges": []}
+        else:
+            continue
+        changes["governanceDsl"] = generate_governance_dsl(gateway_id, graph, changes["governancePolicy"])
+
+
 class BPMNDiagramHandler(BaseDiagramHandler):
     """Handler for base BPMN process generation and modification."""
 
@@ -136,7 +212,7 @@ DESIGN RULES:
 4. Use a parallel gateway to split into CONCURRENT work and another to JOIN it back. A parallel split MUST have ≥2 outgoing flows to DIFFERENT target nodes; a parallel join MUST have ≥2 incoming flows from different sources. NEVER chain parallel tasks linearly — always fan them out from the split gateway and fan them back into the join gateway.
 5. Connect everything with sequence flows. Every node except the start has an incoming flow; every node except end events has an outgoing flow. Every end event must be reachable — if a decision branch leads to a distinct outcome (e.g. "order cannot be completed"), route that branch's flow explicitly to the end event that represents it; never leave an end event with no incoming flow.
 6. Keep it focused (typically 4-10 nodes, more if the request genuinely describes more distinct steps/decisions — do not compress described steps just to stay under 10).
-7. Use POOLS only when the request describes two or more distinct participants — separate organizations, companies, or systems interacting (e.g. "customer" and "vendor", "shop" and "supplier", "our system" and "the payment gateway"). Give each participant its own entry in `pools` and set every node it owns to that pool's id via `poolId`. Communication between two pools MUST be a flow from a node in one pool to a node in another — the WME renders these as message flows automatically, you never set a flow type. Use LANES inside a single pool ONLY when the request names distinct roles or departments performing steps within ONE organization (e.g. "clerk", "chef", "delivery driver"); declare them under that pool's `lanes` and set each node's `laneId`. If the request describes a single actor doing everything, leave `pools` empty and every node's `poolId`/`laneId` null — do not invent participants that were not described.
+7. Use POOLS only when the request describes two or more distinct participants — separate organizations, companies, or systems interacting (e.g. "customer" and "vendor", "shop" and "supplier", "our system" and "the payment gateway"). Give each participant its own entry in `pools` and set every node it owns to that pool's id via `poolId`. Communication between two pools MUST be a flow from a node in one pool to a node in another — the WME renders these as message flows automatically, you never set a flow type. Use LANES inside a single pool ONLY when the request names distinct roles or departments performing steps within ONE organization (e.g. "clerk", "chef", "delivery driver"); declare them under that pool's `lanes` and set each node's `laneId`. Once there are pools, EVERY node — start/end events and gateways included — sets `poolId` (and `laneId` when its pool has lanes): put an event or gateway in the pool/lane of the task it connects to. If the request describes a single actor doing everything, leave `pools` empty and every node's `poolId`/`laneId` null — do not invent participants that were not described.
 8. {POSITION_DISCLAIMER}
 9. When the request names data, documents or materials a step uses or produces (e.g. "inputs: binder, solvent"), add one entry per item to `dataObjects` and connect it to that step in `dataAssociations` (direction 'input' if the step uses it, 'output' if it produces it). Data objects never go in `nodes` or `flows`. Do not drop any item the request names.
 
@@ -294,6 +370,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
           only when it is one of this project's AgentDiagram ids.
         - reflectionReviewerLaneId must name a declared lane, and only on a
           task whose reflectionMode is 'cross'.
+        - An agentic gateway's governancePolicy also gets its governanceDsl.
         """
         valid_refs = set(agent_diagram_refs or {})
         lane_ids = set()
@@ -310,6 +387,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
             reviewer = node.get("reflectionReviewerLaneId")
             if reviewer and (node.get("reflectionMode") != "cross" or reviewer not in lane_ids):
                 node["reflectionReviewerLaneId"] = None
+        _spec_governance_dsl(spec)
 
     def _build_agentic_message(self, spec: Dict[str, Any]) -> str:
         name = spec.get("systemName") or "process"
@@ -373,7 +451,8 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
 
         self._connect_orphaned_nodes(nodes, flows)
         self._normalize_pool_refs(spec, nodes)
-        self._infer_missing_lane_owners(spec, nodes, flows)
+        self._place_nodes_in_pools(spec, nodes, flows)
+        self._keep_sequence_flows_in_one_pool(spec, nodes, flows)
         self._normalize_data_objects(spec, ids)
 
         spec["nodes"] = nodes
@@ -466,83 +545,135 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
             node["owner"] = lane_id if lane_id else None
 
     @staticmethod
-    def _infer_missing_lane_owners(
+    def _place_nodes_in_pools(
         spec: Dict[str, Any], nodes: List[Dict[str, Any]], flows: List[Dict[str, Any]]
     ) -> None:
-        """Backfill laneId/owner for pool-contained nodes when lane membership can
-        be inferred from the validated pool structure and adjacent sequence flows."""
+        """Put every node of a pooled process in a pool, and in a lane when that pool has lanes.
+
+        A node left outside the pools lands in another BPMN process than its
+        neighbours, so each sequence flow to it crosses a process boundary.
+        An unplaced node takes the pool/lane of a placed neighbour (predecessors
+        first), else its pool's (or the first pool's) first lane. Runs after
+        ``_normalize_pool_refs``, so every remaining ref is valid.
+        """
         pools: List[Dict[str, Any]] = spec.get("pools") or []
         if not pools:
             return
-
-        lane_ids_by_pool: Dict[str, set[str]] = {
-            pool["id"]: {
-                lane["id"]
-                for lane in (pool.get("lanes") or [])
-                if lane.get("id")
-            }
-            for pool in pools
-            if pool.get("id")
-        }
-        if not lane_ids_by_pool:
-            return
-
-        nodes_by_id: Dict[str, Dict[str, Any]] = {
-            node["id"]: node
-            for node in nodes
-            if node.get("id")
-        }
-        incoming: Dict[str, List[str]] = {}
-        outgoing: Dict[str, List[str]] = {}
-
+        lanes_of = {pool["id"]: [lane["id"] for lane in pool.get("lanes") or []] for pool in pools}
+        by_id = {node["id"]: node for node in nodes if node.get("id")}
+        neighbours: Dict[str, List[str]] = {}
         for flow in flows:
-            source = flow.get("source")
-            target = flow.get("target")
-            if source and target:
-                outgoing.setdefault(source, []).append(target)
-                incoming.setdefault(target, []).append(source)
+            neighbours.setdefault(flow.get("target"), []).append(flow.get("source"))
+        for flow in flows:
+            neighbours.setdefault(flow.get("source"), []).append(flow.get("target"))
+
+        def placed(node: Dict[str, Any]) -> bool:
+            lanes = lanes_of.get(node.get("poolId"))
+            return lanes is not None and (not lanes or node.get("laneId") in lanes)
+
+        changed = True
+        while changed:
+            changed = False
+            for node in nodes:
+                if placed(node):
+                    continue
+                for neighbour in (by_id.get(nid) for nid in neighbours.get(node.get("id"), [])):
+                    if neighbour is None or not placed(neighbour):
+                        continue
+                    if node.get("poolId") in lanes_of and neighbour["poolId"] != node["poolId"]:
+                        continue
+                    node["poolId"], node["laneId"] = neighbour["poolId"], neighbour.get("laneId")
+                    changed = True
+                    break
 
         for node in nodes:
-            pool_id = node.get("poolId")
-            if not pool_id:
-                node["owner"] = None
+            if not placed(node):
+                pool_id = node.get("poolId") if node.get("poolId") in lanes_of else pools[0]["id"]
+                node["poolId"] = pool_id
+                node["laneId"] = lanes_of[pool_id][0] if lanes_of[pool_id] else None
+                logger.info(f"[BPMN] Validation: placed {node.get('id')!r} in pool {pool_id!r} (no placed neighbour)")
+            node.setdefault("laneId", None)
+            node["owner"] = node["laneId"]
+
+    # Message-flow ends (BPMN 2.0 §9.3): a gateway carries none, a start event
+    # only receives one and an end event only sends one.
+    _MESSAGE_SOURCE_TYPES = frozenset({"task", "endEvent", "intermediateEvent"})
+    _MESSAGE_TARGET_TYPES = frozenset({"task", "startEvent", "intermediateEvent"})
+
+    @classmethod
+    def _keep_sequence_flows_in_one_pool(
+        cls, spec: Dict[str, Any], nodes: List[Dict[str, Any]], flows: List[Dict[str, Any]]
+    ) -> None:
+        """Keep each flow that cannot be a message flow inside one pool (mutates *spec* and *nodes*).
+
+        Both editors turn a flow between two pools into a message flow, and the
+        backend drops one whose end cannot carry it. The offending end moves to
+        the other pool when all its neighbours are there; otherwise the two
+        pools merge, keeping every lane. Task-to-task and end-to-start event
+        flows stay message flows between their pools.
+        """
+        if len(spec.get("pools") or []) < 2:
+            return
+        by_id = {node["id"]: node for node in nodes if node.get("id")}
+        neighbours: Dict[str, List[str]] = {}
+        for flow in flows:
+            neighbours.setdefault(flow.get("source"), []).append(flow.get("target"))
+            neighbours.setdefault(flow.get("target"), []).append(flow.get("source"))
+
+        def ends(flow: Dict[str, Any]):
+            source, target = by_id.get(flow.get("source")), by_id.get(flow.get("target"))
+            if not source or not target or source["poolId"] == target["poolId"]:
+                return None
+            bad = [node for node, ok in ((source, source["type"] in cls._MESSAGE_SOURCE_TYPES),
+                                         (target, target["type"] in cls._MESSAGE_TARGET_TYPES)) if not ok]
+            return (source, target, bad) if bad else None
+
+        for flow in flows:
+            found = ends(flow)
+            if not found:
                 continue
+            source, target, bad = found
+            for node in bad:
+                other = target if node is source else source
+                pool_ids = {by_id[nid]["poolId"] for nid in neighbours.get(node["id"], []) if nid in by_id}
+                if pool_ids == {other["poolId"]}:
+                    node["poolId"], node["laneId"] = other["poolId"], other.get("laneId")
+                    node["owner"] = node["laneId"]
+                    logger.info(f"[BPMN] Validation: moved {node['id']!r} into pool {other['poolId']!r}")
+                    break
 
-            valid_lanes = lane_ids_by_pool.get(pool_id, set())
-            if not valid_lanes:
-                node["owner"] = None
-                continue
+        for flow in flows:
+            found = ends(flow)
+            if found:
+                cls._merge_pools(spec, nodes, found[0]["poolId"], found[1]["poolId"])
 
-            lane_id = node.get("laneId")
-            if lane_id in valid_lanes:
-                node["owner"] = lane_id
-                continue
-            if node.get("type") == "task":
-                node["laneId"] = None
-                node["owner"] = None
-                continue
-
-            inferred_lane_ids: set[str] = set()
-            for neighbor_id in incoming.get(node["id"], []) + outgoing.get(node["id"], []):
-                neighbor = nodes_by_id.get(neighbor_id)
-                if not neighbor or neighbor.get("poolId") != pool_id:
-                    continue
-                neighbor_lane_id = neighbor.get("laneId")
-                if neighbor_lane_id in valid_lanes:
-                    inferred_lane_ids.add(neighbor_lane_id)
-
-            inferred_lane_id = None
-            if len(valid_lanes) == 1:
-                inferred_lane_id = next(iter(valid_lanes))
-            elif len(inferred_lane_ids) == 1:
-                inferred_lane_id = next(iter(inferred_lane_ids))
-
-            if inferred_lane_id:
-                node["laneId"] = inferred_lane_id
-                node["owner"] = inferred_lane_id
-            else:
-                node["laneId"] = None
-                node["owner"] = None
+    @classmethod
+    def _merge_pools(cls, spec: Dict[str, Any], nodes: List[Dict[str, Any]], first: str, second: str) -> None:
+        """Fold the later of two pools into the earlier one as extra lanes (mutates *spec* and *nodes*)."""
+        pools = spec["pools"]
+        keep, gone = sorted((p for p in pools if p["id"] in (first, second)), key=pools.index)
+        members = {pool["id"]: [n for n in nodes if n.get("poolId") == pool["id"]] for pool in (keep, gone)}
+        if keep["lanes"] or gone["lanes"]:
+            for pool in (keep, gone):
+                if not pool["lanes"]:
+                    pool["lanes"] = [{"id": pool["id"], "name": pool.get("name") or "", "isAgentic": False}]
+                    for node in members[pool["id"]]:
+                        node["laneId"] = pool["id"]
+            taken = {lane["id"] for lane in keep["lanes"]}
+            for lane in gone["lanes"]:
+                if lane["id"] in taken:
+                    new_id = cls._unique_id(lane["id"], taken)
+                    for node in members[gone["id"]]:
+                        if node.get("laneId") == lane["id"]:
+                            node["laneId"] = new_id
+                    lane["id"] = new_id
+                taken.add(lane["id"])
+            keep["lanes"] = keep["lanes"] + gone["lanes"]
+        for node in members[keep["id"]] + members[gone["id"]]:
+            node["poolId"] = keep["id"]
+            node["owner"] = node.get("laneId")
+        pools.remove(gone)
+        logger.info(f"[BPMN] Validation: merged pool {gone['id']!r} into {keep['id']!r} (a flow between them cannot be a message flow)")
 
     @staticmethod
     def _connect_orphaned_nodes(nodes: List[Dict[str, Any]], flows: List[Dict[str, Any]]) -> None:
@@ -689,6 +820,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
                 normalized: List[Dict[str, Any]] = []
                 expanded_flows = 0
                 self._sanitize_modification_refs(mod_list, elements, agent_diagram_refs)
+                _modification_governance_dsl(mod_list, current_model)
 
                 for mod in mod_list:
                     if not isinstance(mod, dict):
@@ -714,7 +846,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
 
                         updated_mod = dict(mod)
                         updated_mod["target"] = target
-                        updated_mod["changes"] = changes or None
+                        updated_mod["changes"] = changes
                         normalized.append(updated_mod)
 
                         if embedded_source and embedded_target:
@@ -743,12 +875,14 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
                         normalized.append(updated_mod)
                         continue
 
-                    normalized.append(mod)
+                    # Both editors' modifiers read changes.<field> unguarded.
+                    normalized.append({**mod, "changes": mod.get("changes") or {}})
 
                 if expanded_flows:
                     logger.info(
                         f"[BPMN] Normalized {expanded_flows} embedded node-connection(s) into explicit add_flow action(s)"
                     )
+                self._place_added_nodes(normalized, elements)
                 return normalized
 
             result = self._execute_modification(
@@ -773,6 +907,67 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
                 ),
             }
 
+    @classmethod
+    def _place_added_nodes(cls, mod_list: List[Dict[str, Any]], elements: Dict[str, Any]) -> None:
+        """Give each added task/gateway/event without ``changes.owner`` a lane (mutates *mod_list*).
+
+        Both editors leave a node without an owner outside every lane, i.e. in
+        another process than the laned nodes it connects to. The lane comes from
+        a node it is connected to in this batch; failing that, the first lane,
+        but only when every pool has lanes (a node of a lane-less pool has none).
+        """
+        lanes = [eid for eid, el in elements.items() if isinstance(el, dict) and el.get("type") == "BPMNSwimlane"]
+        if not lanes:
+            return
+        pending = {
+            (mod["target"].get("nodeName") or "").strip().lower(): mod
+            for mod in mod_list
+            if isinstance(mod, dict) and mod.get("action") in ("add_task", "add_gateway", "add_event")
+            and isinstance(mod.get("target"), dict) and (mod["target"].get("nodeName") or "").strip()
+            and not (mod.get("changes") or {}).get("owner")
+        }
+        if not pending:
+            return
+        edges = [
+            ((mod.get("changes") or {}).get("source"), (mod.get("changes") or {}).get("target"))
+            for mod in mod_list if isinstance(mod, dict) and mod.get("action") == "add_flow"
+        ]
+        added: Dict[str, Optional[str]] = {}  # new node name -> lane id, or None when not in a lane
+        unknown = object()
+
+        def lane_of(ref: Any) -> Any:
+            """The lane id of *ref*, None when it is in no lane, ``unknown`` when not (yet) known."""
+            key = ref.strip().lower() if isinstance(ref, str) else ""
+            if key in added:
+                return added[key]
+            element = cls._bpmn_resolve(ref, elements) if key and key not in pending else None
+            if element is None:
+                return unknown
+            return element.get("owner") if element.get("owner") in lanes else None
+
+        changed = True
+        while changed:
+            changed = False
+            for name in [n for n in pending if n not in added]:
+                for source, target in edges:
+                    for end, other in ((source, target), (target, source)):
+                        if isinstance(end, str) and end.strip().lower() == name:
+                            lane = lane_of(other)
+                            if lane is not unknown:
+                                added[name] = lane
+                                changed = True
+                    if name in added:
+                        break
+
+        every_pool_has_lanes = all(
+            any(elements[lane].get("owner") == eid for lane in lanes)
+            for eid, el in elements.items() if isinstance(el, dict) and el.get("type") == "BPMNPool"
+        )
+        for name, mod in pending.items():
+            lane = added.get(name, lanes[0] if every_pool_has_lanes else None)
+            if lane:
+                mod["changes"] = {**(mod.get("changes") or {}), "owner": lane}
+
     @staticmethod
     def _sanitize_modification_refs(
         mod_list: List[Dict[str, Any]], elements: Dict[str, Any], agent_diagram_refs: Dict[str, str],
@@ -781,15 +976,23 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
 
         agentDiagramRef must be one of the project's AgentDiagram ids; a
         reflectionReviewerLaneId must resolve (by [id] or name) to an existing
-        lane and is normalized to that lane's id. Mutates the changes in place.
+        lane and is normalized to that lane's id, or name a lane an earlier
+        add_swimlane of the same batch creates (the editor applies the batch in
+        order and resolves it by name). Mutates the changes in place.
         """
         valid_refs = set(agent_diagram_refs or {})
         lanes = {
             eid: el for eid, el in (elements or {}).items()
             if isinstance(el, dict) and el.get("type") == "BPMNSwimlane"
         }
+        new_lanes: Dict[str, str] = {}
         for mod in mod_list:
-            changes = mod.get("changes") if isinstance(mod, dict) else None
+            if not isinstance(mod, dict):
+                continue
+            new_lane = (mod.get("target") or {}).get("nodeName") if mod.get("action") == "add_swimlane" else None
+            if isinstance(new_lane, str) and new_lane.strip():
+                new_lanes[new_lane.strip().lower()] = new_lane.strip()
+            changes = mod.get("changes")
             if not isinstance(changes, dict):
                 continue
             ref = changes.get("agentDiagramRef")
@@ -803,7 +1006,7 @@ Node ids are short lowercase slugs ('check_stock') referenced by flows. Pool and
                      if (el.get("name") or "").strip().lower() == reviewer.strip().lower()),
                     None,
                 )
-                changes["reflectionReviewerLaneId"] = lane_id
+                changes["reflectionReviewerLaneId"] = lane_id or new_lanes.get(reviewer.strip().lower())
 
     # ------------------------------------------------------------------
     # Single element + fallbacks (required by BaseDiagramHandler)

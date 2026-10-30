@@ -6,7 +6,7 @@
     {"action": "add_task", "target": {"nodeName": "Check Facts"}, "changes": {"taskType": "service", "owner": "Fact Checker"}},
     {"action": "add_flow", "target": {}, "changes": {"source": "Draft Summary", "target": "Check Facts", "label": ""}},
     {"action": "modify_node", "target": {"nodeName": "Draft Summary"}, "changes": {"isAgentic": true, "reflectionMode": "cross", "reflectionReviewerLaneId": "lane-fact-checker", "trustScore": 60}},
-    {"action": "modify_node", "target": {"nodeId": "gw-merge"}, "changes": {"isAgentic": true, "gatewayRole": "merging", "governanceDsl": "Policy: MajorityPolicy"}},
+    {"action": "modify_node", "target": {"nodeId": "gw-merge"}, "changes": {"isAgentic": true, "gatewayRole": "merging", "governancePolicy": "ConsensusPolicy"}},
     {"action": "remove_swimlane", "target": {"swimlaneName": "Old Lane"}},
     {"action": "remove_pool", "target": {"poolName": "Legacy Pool"}}
   ],

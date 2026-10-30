@@ -73,7 +73,8 @@ class TestSameBatchPreview:
         ])
         result = ComponentDiagramHandler(None).generate_modification("remove", current_model=COMPONENT_MODEL)
         assert [m["action"] for m in result["modifications"]] == ["remove_element"]
-        assert result["message"] == "Removed **Planner**."
+        assert result["message"].startswith("Removed **Planner**.")
+        assert "skipped 1" in result["message"]
 
     def test_deployment_artifact_added_earlier_can_be_connected(self, monkeypatch):
         _patch_llm(monkeypatch, DeploymentDiagramHandler, DeploymentModificationResponse, [

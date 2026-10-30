@@ -251,10 +251,8 @@ Environment Variables
      - Per-tier model overrides
    * - ``BESSER_BACKEND_URL``
      - ``http://localhost:3001``
-     - Base URL of the BESSER backend. Used by the diagram-validation
-       bridge (``src/handlers/validation_handler.py``) and the opt-in
-       study telemetry collector (``src/telemetry.py``). Without it, every
-       validation in a container fails with connection-refused.
+     - Base URL of the BESSER backend. Used by the opt-in study telemetry
+       collector (``src/telemetry.py``).
    * - ``BESSER_AGENT_ALLOW_CUSTOM_BASE_URL``
      - unset (off)
      - Whether a BYOK request may specify its own API base URL. Set to
