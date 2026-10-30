@@ -67,6 +67,7 @@ from model_config import (
     reasoning_effort_for,
     supports_custom_temperature,
 )
+from model_catalog import load_model_catalog
 from utilities.image_inputs import anthropic_content, openai_content
 
 logger = logging.getLogger(__name__)
@@ -149,11 +150,12 @@ def resolve_model(
 # ---------------------------------------------------------------------------
 
 def _allow_custom_base_url() -> bool:
-    """Whether a per-request BYOK ``base_url`` (PIA / local providers) is allowed.
+    """Whether a per-request BYOK ``base_url`` (the local provider) is allowed.
 
     OFF by default: having the agent open an arbitrary user-supplied URL is an
-    SSRF surface on a shared host. Local / on-prem / PIA deploys opt in via
-    ``BESSER_AGENT_ALLOW_CUSTOM_BASE_URL``.
+    SSRF surface on a shared host. Local / on-prem deploys opt in via
+    ``BESSER_AGENT_ALLOW_CUSTOM_BASE_URL``. A gateway from the model catalog
+    (e.g. PIA) does not need it: its endpoint is the operator's.
     """
     import os
     return os.getenv("BESSER_AGENT_ALLOW_CUSTOM_BASE_URL", "").strip().lower() in (
@@ -165,8 +167,8 @@ def _allow_custom_base_url() -> bool:
 class BYOKConfig:
     """The user's key/provider for a single request. ``model`` is the user's
     explicitly chosen model (used for every call), if any. ``base_url``
-    is set for the OpenAI-compatible 'PIA'/'local' providers (they arrive as
-    provider='openai' + this URL)."""
+    is set for an OpenAI-compatible endpoint: the 'local' provider's (it
+    arrives as provider='openai' + this URL), or a catalog gateway's."""
 
     provider: str
     api_key: str
@@ -204,12 +206,23 @@ def set_current(
     provider_norm = (provider or "").strip().lower()
     key = (api_key or "").strip()
     base = (base_url or "").strip() or None
+    gateway = load_model_catalog().base_url(provider_norm)
+    if key and gateway:
+        # A gateway of the deployment's model catalog (e.g. 'pia'): the
+        # operator's endpoint, so no SSRF gate and any request URL is ignored.
+        cfg = BYOKConfig(
+            provider="openai", api_key=key,
+            model=(model or "").strip() or None, base_url=gateway,
+        )
+        logger.info("BYOK active for this request (gateway %s): %s",
+                    provider_norm, cfg.redacted())
+        return current_byok.set(cfg)
     if not key or provider_norm not in SUPPORTED_PROVIDERS:
         if key and provider_norm and provider_norm not in SUPPORTED_PROVIDERS:
             logger.warning("BYOK: ignoring unsupported provider %r", provider_norm)
         return current_byok.set(None)
-    # SSRF gate: a custom base_url (PIA / local) is only honoured when the deploy
-    # opts in. Otherwise disable BYOK entirely — a PIA/local key against the real
+    # SSRF gate: a custom base_url (local) is only honoured when the deploy
+    # opts in. Otherwise disable BYOK entirely — a local key against the real
     # OpenAI endpoint would fail anyway, so falling back to the shared LLM is the
     # safe, sensible behaviour on a hosted box.
     if base and not _allow_custom_base_url():
@@ -287,8 +300,8 @@ class BYOKClient:
                 ) from exc
             client_kwargs = {"api_key": api_key, "timeout": _SDK_TIMEOUT_SECONDS}
             if base_url:
-                # 'PIA'/'local' providers arrive as provider='openai' + a custom
-                # OpenAI-compatible endpoint (gateway / localhost).
+                # A catalog gateway (e.g. PIA) or the 'local' provider: a
+                # custom OpenAI-compatible endpoint.
                 client_kwargs["base_url"] = base_url
             elif self.provider == "mistral":
                 client_kwargs["base_url"] = MISTRAL_BASE_URL
