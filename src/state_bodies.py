@@ -219,7 +219,8 @@ _QUICK_RESPONSES = {
         "It lets you:\n"
         "- Design domain models visually (class diagrams, state machines, GUIs, agents, quantum circuits, "
         "BPMN processes, component and deployment diagrams)\n"
-        "- Generate production code automatically (Django, FastAPI, React, Flutter, SQL, and more)\n"
+        "- Generate production code automatically (Django, FastAPI, React, SQL, and more), "
+        "or any other kind of app, such as a mobile or desktop app, written by AI from your model\n"
         "- Deploy full-stack web applications from your models\n\n"
         "Learn more at [besser.readthedocs.io](https://besser.readthedocs.io/) "
         "or try the online editor at [editor.besser-pearl.org](https://editor.besser-pearl.org/)."
@@ -240,12 +241,15 @@ _QUICK_RESPONSES = {
         "**Modify diagrams:**\n"
         "- *\"Add email attribute to User\"*, *\"Rename Order to Purchase\"*, *\"Add a transition from Idle to Active\"*\n\n"
         "**Generate code:**\n"
-        "- *\"Generate Django\"*, *\"Generate React\"*, *\"Generate SQLAlchemy\"*, *\"Generate a web app\"*\n\n"
+        "- *\"Generate Django\"*, *\"Generate React\"*, *\"Generate SQLAlchemy\"*, *\"Generate a web app\"*\n"
+        "- Any other kind of app from your model: *\"Generate a mobile app\"*, "
+        "*\"a Windows desktop app\"*, *\"a Python CLI\"*, a game…\n\n"
         "**Other:**\n"
         "- *\"Describe my diagram\"* — I'll analyze what you've built\n"
         "- *\"What is an association class?\"* — I can explain UML concepts\n"
         "- Attach a **PlantUML file** or **diagram image** and I'll convert it\n"
-        "- Attach a **screenshot or mockup** of a page and I'll build it as a GUI\n\n"
+        "- Attach a **screenshot or mockup** of a page and I'll build it as a GUI\n"
+        "- I reply in the language you write in\n\n"
         "What would you like to do?"
     ),
     "help": (
@@ -255,7 +259,7 @@ _QUICK_RESPONSES = {
         "2. **Refine it** by asking for changes\n"
         "   *Example: \"Add a phone attribute to Member\"* or *\"Add inheritance between DigitalBook and Book\"*\n\n"
         "3. **Generate code** when you're ready\n"
-        "   *Example: \"Generate Django\"* or *\"Generate a web app\"*\n\n"
+        "   *Example: \"Generate a web app\"*, *\"Generate a mobile app\"* or *\"Generate a desktop app\"*\n\n"
         "**Tips:**\n"
         "- Be specific about what you want — more detail = better results\n"
         "- I support 10 diagram types: Class, State Machine, Object, GUI, Agent, "
@@ -330,7 +334,7 @@ def _fallback_llm_reply(session: Session, user_message: str) -> None:
             f"You are a modeling assistant that helps with UML diagrams, quantum circuits, "
             f"GUI design, agent diagrams, BPMN business-process diagrams (including agentic "
             f"BPMN swarms), user profiles, component diagrams, deployment diagrams, "
-            f"and code generation. "
+            f"and code generation for any kind of app (web, mobile, desktop, CLI, ...). "
             f"The user said: '{user_message}'. "
             "If this is related to any kind of modeling (class diagrams, quantum circuits, "
             "state machines, GUI design, BPMN processes, user profiles, component or "
@@ -369,20 +373,24 @@ def global_fallback_body(session: Session):
 # Greetings
 # ------------------------------------------------------------------
 
+GREETING_MESSAGE = (
+    "Hi! I'm your BESSER assistant. Tell me what you want to build in plain "
+    "words and I'll create the model, the screens, and the code for you.\n\n"
+    "Try something like:\n"
+    "- *\"a library app to track books and loans\"*\n"
+    "- *\"a mobile app to track my expenses\"*\n"
+    "- *\"a pizza-ordering chatbot\"*\n"
+    "- *\"a dashboard for my Product class\"*\n\n"
+    "I can also modify your diagrams, generate code (SQL, Django, FastAPI, "
+    "SQLAlchemy…) or a whole web, mobile or desktop app, describe a model, "
+    "design a quantum circuit, import a PlantUML / diagram image, or build a "
+    "GUI from a screenshot or mockup. I reply in the language you write in.\n\n"
+    "What would you like to create today?"
+)
+
+
 def greetings_body(session: Session):
     """Send a greeting message when the user first connects or says hello."""
-    greeting_message = (
-        "Hi! I'm your BESSER assistant. Tell me what you want to build in plain "
-        "words and I'll create the model, the screens, and the code for you.\n\n"
-        "Try something like:\n"
-        "- *\"a library app to track books and loans\"*\n"
-        "- *\"a pizza-ordering chatbot\"*\n"
-        "- *\"a dashboard for my Product class\"*\n\n"
-        "I can also modify your diagrams, generate code (SQL, Django, FastAPI, "
-        "SQLAlchemy…), describe a model, design a quantum circuit, or import a "
-        "PlantUML / diagram image, or build a GUI from a screenshot or mockup.\n\n"
-        "What would you like to create today?"
-    )
 
     if session.event is None:
         return
@@ -403,7 +411,7 @@ def greetings_body(session: Session):
     # BAF's event.predicted_intent, which JSON events routed by the unified
     # classifier never carry, so the message would get no reply at all.
     if not session.get(HAS_GREETED):
-        reply_message(session, greeting_message)
+        reply_message(session, GREETING_MESSAGE)
         session.set(HAS_GREETED, True)
         return
 

@@ -102,7 +102,7 @@ GENERATORS = [
     "generate django", "generate the sql schema", "generate the sqlalchemy models",
     "generate the pydantic models", "generate the python classes",
     "generate the backend", "generate the java classes", "generate a react app",
-    "generate a flutter app", "build me a full web app with a UI and auth",
+    "generate a native mobile app", "build me a full web app with a UI and auth",
     "generate the json export", "generate a supabase backend",
     "generate a BAF agent", "generate a pytorch model", "generate a tensorflow model",
 ]

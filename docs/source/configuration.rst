@@ -145,7 +145,7 @@ variable name is the tier name prefixed with ``BESSER_AGENT_MODEL_``.
      - Default
      - Used by
    * - ``MODEL_CLASSIFIER``
-     - ``gpt-4o-mini``
+     - ``gpt-6-luna``
      - The unified classifier, the request planner, JSON repair /
        self-correction / name-extraction recovery, the memory summarizer,
        UML RAG, help and fallback streaming, and ``gpt_predict_json``.
@@ -257,9 +257,20 @@ Environment Variables
      - unset (off)
      - Whether a BYOK request may specify its own API base URL. Set to
        ``"false"`` on the hosted deployment. Set to ``1`` for a local run that
-       uses PIA, Ollama or another OpenAI-compatible endpoint (they arrive as
+       uses Ollama or another OpenAI-compatible endpoint (it arrives as
        ``provider=openai`` plus ``user_api_base``); when off, such a request
-       silently falls back to the shared server LLM.
+       silently falls back to the shared server LLM. A gateway from the model
+       catalog does not need it.
+   * - ``BESSER_MODEL_CATALOG``
+     - unset
+     - Path to the deployment's model catalog, the JSON file the BESSER
+       backend reads too (mount the same file into both; format in BESSER's
+       ``docs/source/spec_driven_agent/models.rst``). The agent takes from it
+       the endpoint of each gateway provider, so a key sent as
+       ``user_api_provider=pia`` runs against the gateway without the browser
+       knowing its host, and the rates a model bills on a gateway or a vendor
+       API (see :ref:`cost-and-model-routing`). Read once at startup; a
+       malformed file stops the agent.
    * - ``BESSER_AGENT_STT_LANGUAGE``
      - auto-detect
      - Pins speech-to-text to a language (``en``, ``fr``, ``de``, …).
@@ -388,13 +399,22 @@ Counts are for the shared server key and a request that succeeds first time.
    * - Long conversation
      - One ``MODEL_CLASSIFIER`` summarizer call each time the verbatim window
        fills (16 messages), not every turn.
+   * - Reply in a language other than English
+     - One ``MODEL_CLASSIFIER`` call per templated reply (the message and its
+       quick-action labels together) and per progress text. Results from the
+       shared key are cached per call input and language, so a repeated reply
+       costs nothing; results from a user's own key are not cached. Error
+       replies are not translated, and after a failed call translation pauses
+       for 60 seconds.
 
 Tiers
 ~~~~~
 
 Routing is by call site: each call names the tier it needs (see
 :ref:`model routing <model-routing>` above for the overrides). Prices are USD
-per million tokens from ``_COST_PER_1K`` in ``src/tracking/token_tracker.py``.
+per million tokens from ``_COST_PER_1K`` in ``src/tracking/token_tracker.py``,
+unless the model catalog (``BESSER_MODEL_CATALOG``) prices the model on the
+endpoint the call goes to: a gateway bills its own rates.
 
 .. list-table::
    :header-rows: 1
@@ -405,8 +425,8 @@ per million tokens from ``_COST_PER_1K`` in ``src/tracking/token_tracker.py``.
      - Input / cached / output
      - Why this tier
    * - ``MODEL_CLASSIFIER``
-     - ``gpt-4o-mini``
-     - 0.15 / 0.075 / 0.60
+     - ``gpt-6-luna``
+     - 0.10 / 0.01 / 0.50
      - Runs on every message with a small, schema-constrained output, so it
        is the cheapest model that routes reliably.
    * - ``MODEL_GENERATION_LARGE``
@@ -559,8 +579,10 @@ estimates: the provider's billing dashboard is authoritative.
 Keeping ``_COST_PER_1K`` current
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-When a ``MODEL_*`` default changes, or a model joins the BYOK picker, add an
-entry with ``prompt``, ``completion`` and ``cached`` rates per 1K tokens (the
+A gateway's rates, and a vendor model the table does not know yet, belong
+in the deployment's model catalog instead: an edit there and a restart, no
+release. For the vendor list prices in the table: when a ``MODEL_*`` default
+changes, or a model joins the BYOK picker, add an entry with ``prompt``, ``completion`` and ``cached`` rates per 1K tokens (the
 per-million list price divided by 1000), taken from the price file BESSER
 vendors in ``spec_driven_agent/providers/data/model_prices.json``. Dated and
 gateway ids (``claude-haiku-4-5-20251001``, ``us.anthropic.claude-sonnet-5``)

@@ -72,6 +72,19 @@ def _enable_shared_llm_retry(llm_instance: LLMOpenAI, label: str) -> None:
     llm_instance.initialize = _initialize_then_patch_for_retry
 
 
+def _sampling_params(model_name: str, temperature: float) -> Dict[str, Any]:
+    """``temperature`` for models that take one, else ``reasoning_effort``.
+
+    BAF's ``predict()`` sends the constructor ``parameters`` whenever a call
+    passes none (UML RAG, memory summarizer, critique and stream fallbacks),
+    so a reasoning-model classifier tier would 400 on every such call.
+    """
+    if supports_custom_temperature(model_name):
+        return {'temperature': temperature}
+    effort = reasoning_effort_for(model_name)
+    return {'reasoning_effort': effort} if effort else {}
+
+
 def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     """Initialize the LLMs and return ``(gpt, gpt_text, gpt_predict_json)``."""
     # NOTE: Do NOT put response_format in the global parameters dict.
@@ -91,7 +104,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
         agent=agent,
         name=MODEL_CLASSIFIER,
         parameters={
-            'temperature': LLM_TEMPERATURE,
+            **_sampling_params(MODEL_CLASSIFIER, LLM_TEMPERATURE),
             'max_completion_tokens': LLM_MAX_TOKENS_LARGE,
         },
         num_previous_messages=CONVERSATION_HISTORY_DEPTH,
@@ -108,17 +121,11 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
         with a 400 ("Only the default (1) value is supported") — send
         reasoning_effort instead, as base_handler does.
         """
-        params: Dict[str, Any] = {
+        return {
+            **_sampling_params(model_name, LLM_TEMPERATURE),
             'max_completion_tokens': LLM_MAX_TOKENS_LARGE,
             'response_format': {'type': 'json_object'},
         }
-        if supports_custom_temperature(model_name):
-            params['temperature'] = LLM_TEMPERATURE
-        else:
-            effort = reasoning_effort_for(model_name)
-            if effort:
-                params['reasoning_effort'] = effort
-        return params
 
     def gpt_predict_json(prompt: str, model: Optional[str] = None) -> str:
         """Call gpt.predict with JSON-object response_format.
@@ -163,7 +170,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
         agent=agent,
         name=f'{MODEL_CLASSIFIER}-text',
         parameters={
-            'temperature': LLM_TEXT_TEMPERATURE,
+            **_sampling_params(MODEL_CLASSIFIER, LLM_TEXT_TEMPERATURE),
             'max_completion_tokens': LLM_MAX_TOKENS_TEXT,
         },
         num_previous_messages=20,

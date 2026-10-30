@@ -39,6 +39,7 @@ from agent_setup import (
     init_intent_classifier_config,
 )
 from agent_config import GRACE_PERIOD_SECONDS
+from model_catalog import load_model_catalog
 from routing.intents import GENERATION_INTENT_NAME
 from state_bodies import register_all
 from memory.conversation_memory import cleanup_stale_memories
@@ -64,6 +65,8 @@ logger.info(f"Agent properties loaded from config.yaml (name={agent.name})")
 websocket_platform = agent.use_websocket_platform(use_ui=False)
 
 # ── LLMs / RAG / Handlers ───────────────────────────────────────────────
+# A broken BESSER_MODEL_CATALOG stops startup here, not on a user's first call.
+load_model_catalog()
 gpt, gpt_text, gpt_predict_json = init_llm(agent)
 stt = init_stt(agent)
 uml_rag = init_rag(agent)

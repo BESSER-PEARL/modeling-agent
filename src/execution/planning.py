@@ -18,6 +18,7 @@ from orchestrator.workspace_orchestrator import _collect_explicit_targets
 from reply_copy import unsupported_editor_reply
 from handlers.generation_handler import handle_generation_request
 from utilities.request_builders import build_request_for_target, build_generation_request
+from utilities.original_request import current_target
 from suggestions import get_suggested_actions
 from errors import ErrorCode, ModelRefusal, classify_error, build_error_response
 from session_keys import (
@@ -136,12 +137,14 @@ def execute_planned_operations(
         _llm_target = getattr(_uc, "target_diagram_type", None) if _uc is not None else None
     except Exception:
         _llm_target = None
+    _app_target = current_target(session, request) or {}
     operations = plan_assistant_operations(
         request=request,
         default_mode=default_mode,
         matched_intent=matched_intent,
         llm_predict=ctx.gpt_predict_json,
         llm_target_type=_llm_target,
+        app_target_kind=_app_target.get("kind"),
     )
 
     if not operations:

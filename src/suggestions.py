@@ -132,7 +132,6 @@ GENERATOR_ARTIFACT_LABELS: Dict[str, str] = {
     "agent": "BESSER agent",
     "qiskit": "Qiskit circuit",
     "react": "React frontend",
-    "flutter": "Flutter app",
 }
 
 # Maps generator keys to the prompt that reliably routes back into that generator.
@@ -152,7 +151,6 @@ _GENERATOR_PROMPTS: Dict[str, str] = {
     "agent": "generate agent",
     "qiskit": "generate qiskit",
     "react": "generate react",
-    "flutter": "generate flutter",
 }
 
 
@@ -184,14 +182,17 @@ def get_artifact_label(detected_generator: Optional[str]) -> str:
     return GENERATOR_ARTIFACT_LABELS.get(detected_generator, "application") if detected_generator else "application"
 
 
-def get_post_spec_suggestions(detected_generator: Optional[str]) -> List[Dict[str, str]]:
+def get_post_spec_suggestions(
+    detected_generator: Optional[str], label: Optional[str] = None,
+) -> List[Dict[str, str]]:
     """Artifact-aware buttons shown after a complete spec is built.
 
     When the original prompt signals a specific generator (e.g. 'database' → sql),
     the primary button names that artifact. Falls back to 'application' when no
-    generator was detected.
+    generator was detected. ``label`` names a non-web target instead
+    ("native mobile app"); the prompt stays the generic one.
     """
-    label = get_artifact_label(detected_generator)
+    label = label or get_artifact_label(detected_generator)
     prompt = _GENERATOR_PROMPTS.get(detected_generator, "generate the application") if detected_generator else "generate the application"
     return [
         {"label": f"Generate {label}", "prompt": prompt},

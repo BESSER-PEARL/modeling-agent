@@ -467,10 +467,11 @@ Token Tracking
 
   .. note::
 
-     ``_COST_PER_1K`` must carry an entry for every model the agent can run.
-     An unknown model falls back to placeholder pricing and every reported
-     cost silently becomes an estimate — add an entry whenever a
-     ``MODEL_*`` default changes.
+     ``_COST_PER_1K`` must carry an entry for every model the agent can run,
+     unless the model catalog (``BESSER_MODEL_CATALOG``, read by
+     ``src/model_catalog.py``) prices it. An unknown model falls back to
+     placeholder pricing and every reported cost silently becomes an
+     estimate — add an entry whenever a ``MODEL_*`` default changes.
 
 Suggestions
 -----------

@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 from agent_config import LLM_MODEL_DEFAULT
+from model_catalog import load_model_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -97,11 +98,40 @@ _GATEWAY_PREFIX = re.compile(r"^(?:[a-z]{2}\.)?(?:anthropic|openai)[./]")
 _SNAPSHOT_SUFFIX = re.compile(r"^(?:-\d{4}-?\d{2}-?\d{2}|@[\w.-]+)?(?:-v\d+(?::\d+)?)?$")
 
 
+def _current_route() -> Optional[str]:
+    """The endpoint this call goes to: the user's BYOK endpoint, else the
+    shared client's (``OPENAI_BASE_URL``); None for a vendor's own API."""
+    import byok  # lazy, as byok's own imports of tracking are
+
+    cfg = byok.get_current()
+    if cfg is not None:
+        return cfg.base_url
+    return os.getenv("OPENAI_BASE_URL") or None
+
+
+def _catalog_cost_table(model: str) -> Optional[Dict[str, float]]:
+    """The model catalog's rate for *model* on the current route, per 1K."""
+    rates = load_model_catalog().price(model, _current_route())
+    if rates is None:
+        return None
+    return {
+        "prompt": rates["input"] / 1000,
+        "completion": rates["output"] / 1000,
+        "cached": rates["cache_read"] / 1000,
+        "cache_write": rates["cache_write"] / 1000,
+    }
+
+
 def _cost_table_for(model: str) -> Optional[Dict[str, float]]:
-    """Rates for *model*: the exact id, else the longest table key it extends
-    by a gateway prefix and/or a snapshot suffix (claude-haiku-4-5-20251001,
-    us.anthropic.claude-sonnet-5). A different variant (gpt-5.5-pro) stays
-    unknown rather than inheriting its base model's price."""
+    """Rates for *model*: the model catalog's for the current route (a gateway
+    bills its own rates), else the exact id, else the longest table key it
+    extends by a gateway prefix and/or a snapshot suffix
+    (claude-haiku-4-5-20251001, us.anthropic.claude-sonnet-5). A different
+    variant (gpt-5.5-pro) stays unknown rather than inheriting its base
+    model's price."""
+    catalog = _catalog_cost_table(model)
+    if catalog is not None:
+        return catalog
     table = _COST_PER_1K.get(model)
     if table is not None:
         return table
@@ -193,7 +223,8 @@ class TokenTracker:
         cost = (
             (uncached / 1000) * cost_table["prompt"]
             + (cached_prompt_tokens / 1000) * cost_table.get("cached", cost_table["prompt"])
-            + (cache_write_tokens / 1000) * cost_table["prompt"] * _CACHE_WRITE_MULTIPLIER
+            + (cache_write_tokens / 1000) * cost_table.get(
+                "cache_write", cost_table["prompt"] * _CACHE_WRITE_MULTIPLIER)
             + (completion_tokens / 1000) * cost_table["completion"]
         )
 

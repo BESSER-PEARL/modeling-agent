@@ -29,6 +29,7 @@ from agent_config import (
 from model_config import MODEL_CLASSIFIER
 from memory import get_memory, memory_session_key
 from session_keys import (
+    LAST_SUGGESTED_PROMPTS,
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
     PENDING_GENERATOR_TYPE,
@@ -36,6 +37,7 @@ from session_keys import (
     TELEMETRY_EMITTED_EVENT_ID,
     UNIFIED_CLASSIFICATION,
 )
+from reply_language import language_instruction, localize_payload, translate_text
 from telemetry import emit_prompt_event
 from unified_classifier import _pending_flow_context
 
@@ -301,13 +303,14 @@ def reply_message(session: Session, message: str, *, telemetry_exempt: bool = Fa
     """Send assistant message, wrapped for v2 protocol clients."""
     try:
         request = parse_assistant_request(session)
+        shown = translate_text(session, message)
         if request.is_v2:
             sent = _send_to_session(session, {
                 "action": "assistant_message",
-                "message": message,
+                "message": shown,
             })
         else:
-            session.reply(message)
+            session.reply(shown)
     except Exception as exc:
         logger.error(f"❌ [Reply] Failed to send message: {exc}", exc_info=True)
         return
@@ -338,8 +341,9 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
         f"message={str(payload.get('message', ''))[:100]!r}"
     )
     logger.debug(f"[Reply] Full payload keys: {list(payload.keys())}")
+    _remember_suggested_prompts(session, payload)
     try:
-        sent = _send_to_session(session, payload)
+        sent = _send_to_session(session, localize_payload(session, payload))
     except Exception as exc:
         logger.error(f"❌ [Reply] Failed to send payload: {exc}", exc_info=True)
         return
@@ -357,6 +361,21 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
     action = payload.get('action')
     if isinstance(action, str) and action != 'progress':
         _emit_prompt_telemetry(session, action)
+
+
+def _remember_suggested_prompts(session: Session, payload: Dict[str, Any]) -> None:
+    """Remember this reply's quick-action prompts: a click sends one back as
+    the user's message (see ``LAST_SUGGESTED_PROMPTS``)."""
+    actions = payload.get("suggestedActions")
+    if not isinstance(actions, list) or not actions:
+        return
+    try:
+        session.set(LAST_SUGGESTED_PROMPTS, [
+            a["prompt"].strip() for a in actions
+            if isinstance(a, dict) and isinstance(a.get("prompt"), str) and a["prompt"].strip()
+        ])
+    except Exception as exc:
+        logger.debug(f"Remembering quick-action prompts failed (best-effort): {exc}")
 
 
 def emit_webapp_generate_prompt(session: Session) -> None:
@@ -444,7 +463,7 @@ def reply_progress(session: Session, message: str, step: int = 0, total: int = 0
     """Send a progress indicator to the frontend."""
     payload = {
         "action": "progress",
-        "message": message,
+        "message": translate_text(session, message),
         "step": step,
         "total": total,
     }
@@ -471,6 +490,9 @@ def stream_llm_response(
     Returns:
         The full completed text.
     """
+    instruction = language_instruction(session)
+    if instruction:
+        system_prompt = f"{system_prompt}\n\n{instruction}" if system_prompt else instruction
     stream_id = reply_stream_start(session)
     full_text = ""
 

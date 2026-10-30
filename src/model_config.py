@@ -36,7 +36,7 @@ def _env(name: str, default: str) -> str:
     return value or default
 
 
-MODEL_CLASSIFIER = _env("CLASSIFIER", "gpt-4o-mini")
+MODEL_CLASSIFIER = _env("CLASSIFIER", "gpt-6-luna")
 # Default routing is env-overridable. GPT-5 and later models use
 # reasoning_effort="low" and omit custom temperature parameters.
 MODEL_GENERATION_LARGE = _env("GENERATION_LARGE", "gpt-5-mini")

@@ -75,3 +75,46 @@ def test_agent_setup_uses_the_guard():
     assert "'temperature': LLM_TEMPERATURE,\n        'max_completion_tokens'" not in source, (
         "the unconditional temperature dict is back"
     )
+
+
+class _RecordingLLM:
+    """Stands in for BAF's LLMOpenAI and keeps the constructor parameters."""
+
+    def __init__(self, agent, name, parameters, num_previous_messages=1):
+        self.name = name
+        self.parameters = parameters
+        self.initialize = lambda: None
+
+
+@pytest.mark.parametrize("classifier", ["gpt-6-luna", "gpt-5.6-terra"])
+def test_shared_llm_defaults_carry_no_temperature_for_reasoning_models(monkeypatch, classifier):
+    """BAF's ``predict()`` sends the constructor ``parameters`` whenever a call
+    passes none: UML RAG, the memory summarizer (``gpt_text.predict``), the
+    class-diagram critique and the non-client stream fallbacks. With the
+    classifier tier on gpt-6-luna those defaults carried temperature 0.2 / 0.4,
+    so every one of those calls would 400.
+    """
+    import agent_setup
+
+    monkeypatch.setattr(agent_setup, "LLMOpenAI", _RecordingLLM)
+    monkeypatch.setattr(agent_setup, "MODEL_CLASSIFIER", classifier)
+    monkeypatch.setattr("llm.get_provider", lambda *a, **k: None, raising=False)
+    gpt, gpt_text, _ = agent_setup.init_llm(agent=None)
+
+    for llm in (gpt, gpt_text):
+        assert "temperature" not in llm.parameters
+        assert llm.parameters["reasoning_effort"] == reasoning_effort_for(classifier)
+        assert llm.parameters["max_completion_tokens"]
+
+
+def test_shared_llm_defaults_keep_temperature_for_standard_models(monkeypatch):
+    import agent_setup
+
+    monkeypatch.setattr(agent_setup, "LLMOpenAI", _RecordingLLM)
+    monkeypatch.setattr(agent_setup, "MODEL_CLASSIFIER", "gpt-4o")
+    monkeypatch.setattr("llm.get_provider", lambda *a, **k: None, raising=False)
+    gpt, gpt_text, _ = agent_setup.init_llm(agent=None)
+
+    assert gpt.parameters["temperature"] == 0.2
+    assert gpt_text.parameters["temperature"] == 0.4
+    assert "reasoning_effort" not in gpt.parameters

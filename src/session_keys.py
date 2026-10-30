@@ -123,3 +123,17 @@ PENDING_SMART_GEN_ORIGINAL_REQUEST = "_pending_smart_gen_original_request"
 # ORIGINAL_APP_REQUEST as it was before the pending run was armed; restored
 # when that run is abandoned so its request cannot resurface later.
 PENDING_SMART_GEN_PRIOR_ORIGINAL = "_pending_smart_gen_prior_original"
+
+# What the user wants built for this project (``target_kind`` +
+# ``target_description`` from the classifier), remembered next to the
+# original request with the same project scoping. Latest statement wins.
+APP_TARGET = "_app_target"
+APP_TARGET_PROJECT_ID = "_app_target_project_id"
+
+# ISO 639-1 language the user writes in (classifier ``reply_language``);
+# templated replies are translated into it at the reply choke point.
+REPLY_LANGUAGE = "_reply_language"
+# Prompts of the quick actions in the last reply. A click sends the prompt
+# (English machine text) as the message, which says nothing about the user's
+# language, so it must not reset REPLY_LANGUAGE.
+LAST_SUGGESTED_PROMPTS = "_last_suggested_prompts"

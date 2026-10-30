@@ -28,7 +28,7 @@ from utilities.workspace_context import build_workspace_context_block, record_se
 from utilities.class_metadata import extract_class_metadata
 from utilities.model_context import is_diagram_nontrivial
 from utilities.original_request import (
-    original_request_for_project, remember_original_request, request_project_id,
+    current_target, original_request_for_project, remember_original_request, request_project_id,
 )
 from suggestions import get_suggested_actions, get_artifact_label, get_post_spec_suggestions
 from session_keys import (
@@ -45,6 +45,14 @@ from session_keys import (
 )
 
 logger = logging.getLogger(__name__)
+
+def _non_web_target_label(session, request):
+    """The non-web app the user asked for ("native mobile app"), or None."""
+    target = current_target(session, request) or {}
+    if target.get("kind") == "other" and target.get("description"):
+        return target["description"]
+    return None
+
 
 def original_request_to_stash(request, operation_mode, target_diagram_type):
     """The user's verbatim app description, or None.
@@ -1005,12 +1013,14 @@ def execute_model_operation(
         from handlers.generation_handler import detect_generator_type  # lazy to avoid circular import
         _detected_gen = detect_generator_type(request.message)
         if _detected_gen != "web_app":
-            _artifact = get_artifact_label(_detected_gen)
+            _artifact = _non_web_target_label(session, request) or get_artifact_label(_detected_gen)
             result["message"] += (
                 f"\n\nYou can now review or refine your model, or continue "
                 f"with generating your {_artifact}. What would you like to do?"
             )
-            result["suggestedActions"] = get_post_spec_suggestions(_detected_gen)
+            result["suggestedActions"] = get_post_spec_suggestions(
+                _detected_gen, label=_non_web_target_label(session, request),
+            )
 
     # After a MODIFY, keep the conversation flowing toward generation instead of
     # showing the generic "Generate Python code / Describe my diagram" buttons:
@@ -1020,12 +1030,14 @@ def execute_model_operation(
         from handlers.generation_handler import detect_generator_type  # lazy import
         _detected_gen = detect_generator_type(request.message)
         if _detected_gen != "web_app":
-            _artifact = get_artifact_label(_detected_gen)
+            _artifact = _non_web_target_label(session, request) or get_artifact_label(_detected_gen)
             result["message"] += (
                 f"\n\nWant to keep refining, or continue with generating your "
                 f"{_artifact}?"
             )
-            result["suggestedActions"] = get_post_spec_suggestions(_detected_gen)
+            result["suggestedActions"] = get_post_spec_suggestions(
+                _detected_gen, label=_non_web_target_label(session, request),
+            )
 
     # ── Destructive modify-model guard ───────────────────────────────────
     # Block a modify_model plan whose net effect would delete most/all of
