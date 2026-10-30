@@ -41,13 +41,16 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 from protocol.types import AssistantRequest
+from utilities.original_request import remember_target, request_project_id, target_for_project
 from session_keys import (
+    LAST_SUGGESTED_PROMPTS,
     PENDING_COMPLETE_SYSTEM,
     PENDING_GENERATOR_CONFIG,
     PENDING_GENERATOR_TYPE,
     PENDING_GUI_CHOICE,
     PENDING_SMART_GEN_INSTRUCTIONS,
     PLAN_GENERATION_CONFIRM_FLAG,
+    REPLY_LANGUAGE,
     UNIFIED_CLASSIFICATION,
     UNIFIED_CLASSIFICATION_EVENT_ID,
 )
@@ -236,6 +239,49 @@ class UnifiedClassification(BaseModel):
         description=(
             "Suggested LLM provider when generation_route='smart'. Ignored "
             "for other routes. The frontend's BYOK dropdown can override."
+        ),
+    )
+
+    # --- Target fields (any intent; see TARGET in the system prompt) ---
+
+    target_kind: Optional[Literal["web_app", "backend", "other"]] = Field(
+        default=None,
+        description=(
+            "What KIND of software the user wants built, when the USER MESSAGE "
+            "states it (any intent): 'web_app' = anything with a browser UI "
+            "(incl. mobile-friendly/responsive web app, PWA, website, "
+            "dashboard); 'backend' = API-only / headless service (incl. 'a REST "
+            "API for my mobile app'); 'other' = a NAMED non-browser platform "
+            "or form factor (native mobile, desktop/Windows/Mac, CLI, game, "
+            "browser extension, embedded, library/SDK, bot). NULL unless the "
+            "message names a platform or form factor: a bare 'app' / "
+            "'application' plus a domain ('an app to manage a library') is NULL."
+        ),
+    )
+    target_description: Optional[str] = Field(
+        default=None,
+        description=(
+            "When target_kind is set: a SHORT English noun phrase naming what "
+            "will be built, e.g. 'native Android/iOS app', 'Windows 11 desktop "
+            "app', 'Rust CLI', 'Chrome extension', 'web app'. Max 60 chars. "
+            "NULL otherwise."
+        ),
+    )
+    architecture: Optional[str] = Field(
+        default=None,
+        description=(
+            "A software architecture / pattern the USER MESSAGE explicitly "
+            "asks for ('MVC', 'MVVM', 'hexagonal', 'clean architecture', "
+            "'microservices'), as a short name. Any intent. NULL otherwise."
+        ),
+    )
+    reply_language: Optional[str] = Field(
+        default=None,
+        description=(
+            "ISO 639-1 code (e.g. 'en', 'es', 'fr', 'de', 'it') of the "
+            "language the USER MESSAGE is written in. For a message too short "
+            "or language-neutral to tell ('ok', '1', a class name) use the "
+            "CONVERSATION LANGUAGE line when present, else NULL."
         ),
     )
 
@@ -434,7 +480,12 @@ _SYSTEM_PROMPT = (
     "is a model edit, NOT the deploy action. GUI PAGES:'add a Reports "
     "page', 'remove the Settings screen', 'rename the Home page' edit "
     "the GUI DIAGRAM — modify_model_intent with "
-    "target_diagram_type='GUINoCodeDiagram', NEVER generation_intent. EXCEPTION: adding an "
+    "target_diagram_type='GUINoCodeDiagram', NEVER generation_intent. That "
+    "GUI diagram is for web apps only: with a REMEMBERED TARGET of "
+    "target_kind='other' (native, desktop, CLI, ...) and a RECENT SMART "
+    "GENERATION, adding / changing a page or screen ('añade una pantalla "
+    "de ajustes', 'add a settings screen') changes the generated app — "
+    "the SMART-GEN FOLLOW-UP below. EXCEPTION: adding an "
     "agent / chatbot / conversational assistant / bot is NOT this "
     "intent — see the AGENT / CHATBOT rule above (it means a new "
     "AgentDiagram). But a class that merely HAS the word 'agent' in "
@@ -553,7 +604,20 @@ _SYSTEM_PROMPT = (
     "now', \"that's all\". A polite no-op: acknowledge; do NOT create, "
     "modify, generate, or re-ask. A message that merely CONTAINS such a "
     "word alongside a real request ('nothing fancy, a todo app') is NOT "
-    "decline_intent.\n\n"
+    "decline_intent. CORRECTION, in ANY language: 'no' / 'not that' / "
+    "'actually' FOLLOWED BY what the user wants instead ('no, a native "
+    "app, not a web app', 'no, una app nativa, no una web app', 'non, une "
+    "appli de bureau', 'actually make it a desktop app') is NEVER "
+    "decline_intent — it changes the request. Classify the replacement "
+    "request: with a usable model in WORKSPACE CONTEXT it is "
+    "generation_intent, generation_route='smart', "
+    "model_disposition='reuse_for_generation', with the NEW target in "
+    "target_kind / target_description / refined_instructions; with no "
+    "model it is create_complete_system_intent. Only a bare refusal with "
+    "no new requirement ('no', 'no thanks', 'nada', 'non merci', 'nein "
+    "danke') is decline_intent. A refusal that only names what it refuses "
+    "('no thanks, I don't want the mobile app anymore') states no new "
+    "target: decline_intent with target_kind NULL.\n\n"
     "out_of_scope_intent: the user asks the assistant to PRODUCE a "
     "NON-SOFTWARE artifact — an actual image/picture ('generate a picture "
     "of a cat', 'draw a sunset', 'make a logo of X'), creative writing "
@@ -597,7 +661,11 @@ _SYSTEM_PROMPT = (
     "When in doubt between answer and new_request, prefer 'answer' only "
     "when the message plausibly maps to a VALID ANSWER; a message that "
     "names classes/attributes/generators or gives a build instruction "
-    "is a new_request.\n\n"
+    "is a new_request. A CORRECTION of what to build ('no, a native app "
+    "instead', 'no, una app nativa, no una web app', 'make it a desktop "
+    "app') at a generation confirmation is 'new_request' (classified as "
+    "the corrected generation request, see the CORRECTION rule under "
+    "decline_intent) — NEVER answer='cancel'.\n\n"
     "=== GENERATION SUB-ROUTING (populate when intent='generation_intent') ===\n\n"
     "CRITICAL BACKGROUND: BESSER has two generation paths.\n"
     "  * 'deterministic' = pure scaffolding from a template. No auth, "
@@ -774,7 +842,14 @@ _SYSTEM_PROMPT = (
     "classes — never merely because it names a stack or framework.\n\n"
     "=== refined_instructions (populate when generation_route='smart') ===\n"
     "A polished, implementation-focused prompt for the smart generator:\n"
-    "  * name the stack explicitly (Rails, PostgreSQL, ...)\n"
+    "  * FIRST state the target explicitly — what will be built "
+    "    (target_description, or the REMEMBERED TARGET when this message "
+    "    names none), e.g. 'Build a native Android/iOS mobile app ...', "
+    "    'Build a Windows 11 desktop application ...'. Keep a named "
+    "    architecture (MVC, MVVM, ...)\n"
+    "  * name the stack explicitly (Rails, PostgreSQL, ...) when the user "
+    "    named one; for a target with no named stack, name none\n"
+    "  * write it in English, whatever language the user wrote in\n"
     "  * include non-functional requirements the user mentioned\n"
     "  * max 2000 chars\n"
     "  * do NOT describe the class diagram in detail (the generator "
@@ -840,6 +915,63 @@ _SYSTEM_PROMPT = (
     "clarifying_question. Do NOT ask when a reasonable default exists, for "
     "plain 'yes'/'no' confirmations, or merely because a request is broad — "
     "bias strongly toward acting; only ask when genuinely stuck.\n\n"
+    "=== TARGET: target_kind / target_description (ANY intent) ===\n"
+    "Set these whenever the USER MESSAGE says what KIND of software it "
+    "wants, in any language and at any point (first prompt, a later "
+    "'generate' request, a correction). Judge the MEANING, not keywords. "
+    "FIRST ask: does the message name a PLATFORM or FORM FACTOR (mobile, "
+    "Android, iOS, Windows, desktop, Mac, native, CLI / terminal, game, "
+    "browser extension, web, website, API, ...)? If not, target_kind is "
+    "NULL — the DOMAIN ('library management', 'inventory', 'expenses') is "
+    "never a target, and 'app' / 'aplicación' / 'application' / 'system' "
+    "alone name no platform.\n"
+    "  * 'web_app' — anything used in a browser: web app, website, "
+    "dashboard, PWA, 'a mobile-friendly / responsive web app', an online "
+    "shop.\n"
+    "  * 'backend' — API-only or headless: 'a REST API', 'a backend "
+    "service', 'a REST API for my mobile app' (the API is what gets "
+    "built, the mobile app is only its client).\n"
+    "  * 'other' — a named non-browser platform: native mobile app ('una app móvil', "
+    "'an Android app', 'iOS app'), desktop app ('una app de Windows 11 "
+    "local', 'a Mac app', Electron, Tauri), CLI tool, game, browser or "
+    "VS Code extension, Discord bot, embedded / Arduino firmware, a "
+    "library or SDK.\n"
+    "  * NULL — the message names no kind of software: a bare 'app' / "
+    "'application' / 'system' ('generate the application', 'a library "
+    "system'), a domain only, or words that merely contain a platform "
+    "name. Traps that are NOT targets: 'deploy it on a Windows server', "
+    "'cancellation windows', 'native speakers', 'mobile phone number' as "
+    "an attribute. A named architecture alone ('con arquitectura MVC') "
+    "is not a kind of software: leave target_kind NULL and set "
+    "architecture='MVC'.\n"
+    "target_description: a short English noun phrase for what will be "
+    "built ('native mobile app', 'Windows 11 desktop app', 'Python CLI', "
+    "'Chrome extension'). It names the PLATFORM, never the domain: 'library "
+    "management application' is wrong. A correction names the NEW target: "
+    "'no, una app nativa' → target_kind='other', "
+    "target_description='native app' — never the REMEMBERED one.\n"
+    "architecture: an architecture / pattern the user explicitly asks "
+    "for (MVC, MVVM, hexagonal, clean architecture, microservices), with "
+    "or without a target. Keep it in refined_instructions too.\n"
+    "REMEMBERED TARGET: when the user block carries this line, the user "
+    "already said what to build for this project. A message that names "
+    "no new kind ('generate the application', 'add a settings screen' "
+    "to the generated app, 'for gym tracking') keeps it — leave "
+    "target_kind and architecture NULL and carry the remembered target "
+    "and architecture into refined_instructions. A message that names a different kind "
+    "replaces it (the latest statement wins). Never re-decide the target "
+    "from words like 'screen', 'page' or 'view': every kind of app has "
+    "those.\n"
+    "Routing for target 'other' (stated now or REMEMBERED): BESSER's "
+    "built-in generators (web_app, django, backend, ...) do not produce "
+    "it, so a code request is generation_route='smart' with "
+    "generator_type=null, and a new-app request builds the ClassDiagram, "
+    "never the GUINoCodeDiagram (the GUI editor designs web pages).\n\n"
+    "=== reply_language ===\n"
+    "The ISO 639-1 code of the language the USER MESSAGE is written in "
+    "('quiero una app' → 'es', 'je veux' → 'fr'). For a short or "
+    "language-neutral message ('ok', '1', 'Book'), return the "
+    "CONVERSATION LANGUAGE line's code when present.\n\n"
     "=== OUTPUT ===\n"
     "Return the structured classification. Always include 'reason' "
     "(≤160 chars) explaining your choice. The state machine acts on "
@@ -867,6 +999,8 @@ def classify_message(
     history: Optional[list] = None,
     recent_smart_gen: bool = False,
     pending_flow: Optional[dict] = None,
+    remembered_target: Optional[dict] = None,
+    conversation_language: Optional[str] = None,
 ) -> UnifiedClassification:
     """Classify a user message into a state-level intent + sub-routing fields.
 
@@ -903,7 +1037,10 @@ def classify_message(
     try:
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": _build_user_block(request, history, recent_smart_gen, pending_flow)},
+            {"role": "user", "content": _build_user_block(
+                request, history, recent_smart_gen, pending_flow,
+                remembered_target, conversation_language,
+            )},
         ]
         # Reasoning models (gpt-5* / o-series) burn hidden reasoning tokens
         # from the SAME completion budget. With only 800 tokens the visible
@@ -927,7 +1064,14 @@ def classify_message(
         )
         if result is None:
             return _safe_fallback("LLM returned no result")
-        return _post_validate(result, message)
+        # The generated app keeps its target: a follow-up such as "add a
+        # settings screen" edits that app's code, not the web GUI diagram.
+        follow_up_kind = (remembered_target or {}).get("kind") if recent_smart_gen else None
+        ctx = getattr(request, "context", None)
+        return _post_validate(
+            result, message, follow_up_target_kind=follow_up_kind,
+            has_class_model=ctx is None or bool(_extract_class_names(ctx)),
+        )
     except Exception:
         logger.exception("classify_message failed; falling back to fallback_intent")
         return _safe_fallback("LLM classifier failed")
@@ -1076,16 +1220,41 @@ def get_or_classify(
         from handlers.generation_handler import recent_smart_gen_for_project
 
         _recent_smart = recent_smart_gen_for_project(session, 15 * 60)
+        _project_id = request_project_id(request)
         result = classify_message(
             request, llm_provider, _recent_history(session, request),
             recent_smart_gen=_recent_smart,
             pending_flow=_pending_flow,
+            remembered_target=target_for_project(session, _project_id),
+            conversation_language=session.get(REPLY_LANGUAGE),
         )
+        result = _generate_button_guard(result, request, session)
         _log_classification(request, result)
+        _remember_stated_target_and_language(session, request, result, _project_id)
     if event_id is not None:
         session.set(UNIFIED_CLASSIFICATION, result)
         session.set(UNIFIED_CLASSIFICATION_EVENT_ID, event_id)
     return result
+
+
+def _remember_stated_target_and_language(
+    session: Any, request: AssistantRequest, result: UnifiedClassification,
+    project_id: Optional[str],
+) -> None:
+    """Keep the target the user stated for this project and the language they
+    write in. Never raises."""
+    try:
+        remember_target(
+            session, project_id, kind=result.target_kind,
+            description=result.target_description, architecture=result.architecture,
+        )
+        # A quick-action click sends the button's English prompt: it says
+        # nothing about the language the user writes in.
+        clicked = (request.message or "").strip() in (session.get(LAST_SUGGESTED_PROMPTS) or ())
+        if result.reply_language and not clicked:
+            session.set(REPLY_LANGUAGE, result.reply_language)
+    except Exception:  # pragma: no cover - best effort
+        logger.debug("Remembering target/language failed", exc_info=True)
 
 
 def _log_classification(
@@ -1110,9 +1279,56 @@ def _log_classification(
             bits.append("domain_mismatch=True")
         if result.needs_clarification:
             bits.append("clarify=True")
+        if result.target_kind:
+            bits.append(f"app_target={result.target_kind}:{result.target_description!r}")
+        if result.architecture:
+            bits.append(f"arch={result.architecture!r}")
+        if result.reply_language:
+            bits.append(f"lang={result.reply_language}")
         logger.info("[classify] %s | %s", " ".join(bits), msg)
     except Exception:  # pragma: no cover - logging must never break routing
         pass
+
+
+# The "Generate the code" suggestion offered after the agent builds a class
+# diagram (suggestions.py). gpt-6-luna sent it to the generator menu
+# (deterministic, generator_type=None) in 4 of 12 live runs; a rulebook rule
+# scoped to "right after a build" also moved the hand-drawn and no-model
+# readings of the same words, so the scope is checked here instead.
+_GENERATE_BUTTON_PROMPT = "generate the application"
+
+
+def _generate_button_guard(
+    result: UnifiedClassification, request: AssistantRequest, session: Any
+) -> UnifiedClassification:
+    """Route the post-build button prompt to the Spec-Driven confirmation when
+    the agent built this project's class diagram from the user's own request.
+    Any other context keeps the classifier's verdict."""
+    message = re.sub(r"[\s.!]+$", "", (request.message or "").strip().lower())
+    if (
+        message != _GENERATE_BUTTON_PROMPT
+        or result.intent != "generation_intent"
+        or result.generation_route == "smart"
+    ):
+        return result
+    from utilities.original_request import original_request_for_project, request_project_id
+
+    if not original_request_for_project(session, request_project_id(request)):
+        return result
+    logger.warning(
+        "Generate-button guard: %s/%s -> smart (agent-built model in this project)",
+        result.generation_route, result.generator_type,
+    )
+    return result.model_copy(update={
+        "generation_route": "smart",
+        "generator_type": None,
+        "model_disposition": "reuse_for_generation",
+        # The user's original request rides along separately
+        # (generation_handler._original_for_smart_generation).
+        "refined_instructions": (result.refined_instructions or "").strip()
+        or "Build the application from the current class diagram.",
+        "reason": "Generate-button guard: post-build 'generate the application' -> smart",
+    })
 
 
 # ---------------------------------------------------------------------
@@ -1167,9 +1383,29 @@ def _build_user_block(
     request: AssistantRequest, history: Optional[list] = None,
     recent_smart_gen: bool = False,
     pending_flow: Optional[dict] = None,
+    remembered_target: Optional[dict] = None,
+    conversation_language: Optional[str] = None,
 ) -> str:
     """Compose the user message + recent conversation + workspace context."""
     lines = ["USER MESSAGE:", request.message or ""]
+
+    if remembered_target:
+        # See REMEMBERED TARGET in the system prompt.
+        parts = []
+        if remembered_target.get("kind"):
+            parts.append(
+                f"target_kind={remembered_target['kind']}, "
+                f"target_description={remembered_target.get('description') or ''!r}"
+            )
+        if remembered_target.get("architecture"):
+            parts.append(f"architecture={remembered_target['architecture']!r}")
+        lines.append("")
+        lines.append(
+            "REMEMBERED TARGET (stated earlier for this project): " + "; ".join(parts)
+        )
+    if conversation_language:
+        lines.append("")
+        lines.append(f"CONVERSATION LANGUAGE: {conversation_language}")
 
     if pending_flow:
         # The assistant is awaiting a reply — see PENDING QUESTION HANDLING
@@ -1371,14 +1607,50 @@ def _looks_like_unambiguous_deploy(lower_message: str) -> bool:
     )
 
 
-def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedClassification:
+def _post_validate(
+    result: UnifiedClassification, message: str = "", *,
+    follow_up_target_kind: Optional[str] = None,
+    has_class_model: bool = True,
+) -> UnifiedClassification:
     """Defensive validation of LLM output.
 
     Catches the classic "LLM returned route='smart' but forgot to write
     instructions" and "intent='generation' but no generation_route"
     bugs. Repairs them in place rather than collapsing a valid intent to a
-    worse one.
+    worse one. Every rebuilt verdict keeps the target / language fields
+    (see :func:`_rebuilt`).
     """
+    result = _normalize_target_fields(result)
+    # A "no" that names a non-web app to build instead ("no, una app nativa,
+    # no una web app") is a correction, never a cancel. Live, the classifier
+    # returned decline_intent for exactly that message while setting
+    # target_kind, so its own field is the signal. Web and backend targets
+    # have built-in generators and keep the classifier's verdict.
+    if result.target_kind == "other" and (
+        result.intent == "decline_intent" or result.pending_flow_answer == "cancel"
+    ):
+        logger.warning(
+            "decline_intent that names a non-web target; treating it as a "
+            "corrected %s request", "generation" if has_class_model else "create",
+        )
+        if not has_class_model:
+            return _rebuilt(
+                result,
+                intent="create_complete_system_intent",
+                target_diagram_type="ClassDiagram",
+                model_disposition="new_from_scratch",
+                pending_flow_action="new_request",
+                reason="Correction with no model yet: build the model for the new target",
+            )
+        return _rebuilt(
+            result,
+            intent="generation_intent",
+            generation_route="smart",
+            model_disposition="reuse_for_generation",
+            refined_instructions=(result.refined_instructions or message or "").strip(),
+            pending_flow_action="new_request",
+            reason="Correction: 'no' followed by a new target updates the request",
+        )
     # Continue-from-GitHub guard (chat path for "continue from a repo"):
     # "continue from github.com/x/y" carries no modeling vocabulary, so the
     # LLM parks it in fallback ("none fit") or reads "continue" as a modify
@@ -1404,7 +1676,8 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
                 "Continue-from-GitHub message classified as %s; rerouting to "
                 "generation_intent for the github-import guard", result.intent,
             )
-            return UnifiedClassification(
+            return _rebuilt(
+                result,
                 intent="generation_intent",
                 generation_route="other",
                 pending_flow_action="new_request",
@@ -1435,7 +1708,8 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
             "GUINoCodeDiagram -> ClassDiagram (build the data model/specs first, "
             "not screens)"
         )
-        return UnifiedClassification(
+        return _rebuilt(
+            result,
             intent="create_complete_system_intent",
             target_diagram_type="ClassDiagram",
             model_disposition=result.model_disposition,
@@ -1451,8 +1725,12 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
         # gui/screens/ui WITHOUT naming an app/code artifact is a modeling
         # request, deterministically.
         _low = (message or "").lower()
+        # Both GUI-diagram guards below assume a web app: the GUI editor
+        # designs web pages. A non-web app keeps its follow-ups in its code.
+        _web_gui_guards = follow_up_target_kind != "other"
         if (
-            re.search(r"\b(gui|screens?|user interface|\bui\b)\b", _low)
+            _web_gui_guards
+            and re.search(r"\b(gui|screens?|user interface|\bui\b)\b", _low)
             and re.search(r"\b(generate|create|build|make|design)\b", _low)
             and not re.search(
                 r"\b(web ?app|application|app\b|code|backend|frontend|"
@@ -1462,7 +1740,8 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
                 "Request asks for the GUI diagram, not code; rerouting "
                 "generation_intent -> create_complete_system_intent (GUI)"
             )
-            return UnifiedClassification(
+            return _rebuilt(
+                result,
                 intent="create_complete_system_intent",
                 target_diagram_type="GUINoCodeDiagram",
                 model_disposition=result.model_disposition,
@@ -1474,7 +1753,8 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
         # removing/renaming a page or screen edits the GUI DIAGRAM — it is
         # never a code-generation request.
         if (
-            re.search(r"\b(pages?|screens?)\b", _low)
+            _web_gui_guards
+            and re.search(r"\b(pages?|screens?)\b", _low)
             and re.search(r"\b(add|insert|remove|delete|rename)\b", _low)
             and not re.search(
                 r"\b(web ?app|application|code|backend|frontend|"
@@ -1484,7 +1764,8 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
                 "Request edits GUI pages, not code; rerouting "
                 "generation_intent -> modify_model_intent (GUI)"
             )
-            return UnifiedClassification(
+            return _rebuilt(
+                result,
                 intent="modify_model_intent",
                 target_diagram_type="GUINoCodeDiagram",
                 model_disposition="extend_existing",
@@ -1520,7 +1801,8 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
                 "LLM returned generation_intent with no generation_route; "
                 "demoting to fallback_intent"
             )
-            return UnifiedClassification(
+            return _rebuilt(
+                result,
                 intent="fallback_intent",
                 reason="classifier missed generation sub-routing",
             )
@@ -1593,6 +1875,33 @@ def _post_validate(result: UnifiedClassification, message: str = "") -> UnifiedC
                 result.generation_route = "deterministic"
                 result.generator_type = "deploy"
     return result
+
+
+# ISO 639-1, optionally with a region ("es", "pt-BR").
+_LANGUAGE_CODE_RE = re.compile(r"^([a-z]{2})(?:[-_][a-z]{2})?$")
+
+
+def _normalize_target_fields(result: UnifiedClassification) -> UnifiedClassification:
+    """Drop malformed target / language values (shape checks only)."""
+    match = _LANGUAGE_CODE_RE.match((result.reply_language or "").strip().lower())
+    result.reply_language = match.group(1) if match else None
+    desc = (result.target_description or "").strip()
+    result.target_description = desc[:120] if result.target_kind and desc else None
+    arch = (result.architecture or "").strip()
+    result.architecture = arch[:60] or None
+    return result
+
+
+def _rebuilt(result: UnifiedClassification, **fields: Any) -> UnifiedClassification:
+    """A guard's replacement verdict, keeping what the user said about the
+    target and the language they write in."""
+    return UnifiedClassification(
+        target_kind=result.target_kind,
+        target_description=result.target_description,
+        architecture=result.architecture,
+        reply_language=result.reply_language,
+        **fields,
+    )
 
 
 def _safe_fallback(reason: str) -> UnifiedClassification:

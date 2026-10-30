@@ -708,12 +708,39 @@ User: "the precondition of Account::deposit is amount > 0" → [{"type":"model",
 """.strip()
 
 
+def _without_web_gui_plan(
+    operations: List[Dict[str, Any]], request: AssistantRequest, default_mode: str,
+    keep_gui: bool,
+) -> List[Dict[str, Any]]:
+    """Drop the screens + ``web_app`` steps from a plan for a non-web target.
+
+    The GUI editor designs web pages, so a native / desktop / CLI app is built
+    from the class diagram by the smart generator instead, which the user
+    starts after reviewing the model. ``keep_gui`` keeps the GUI diagram when
+    it is what the user asked for.
+    """
+    kept = [
+        op for op in operations
+        if not (op.get("type") == "generation" and op.get("generatorType") == "web_app")
+        and not (not keep_gui and op.get("type") == "model"
+                 and op.get("diagramType") == "GUINoCodeDiagram"
+                 and op.get("mode") == "complete_system")
+    ]
+    if len(kept) < len(operations):
+        logger.info("Non-web target: removed the GUI diagram / web_app steps from the plan")
+    if kept or not operations:
+        return kept
+    return [{"type": "model", "diagramType": "ClassDiagram", "mode": default_mode,
+             "request": request.message}]
+
+
 def plan_assistant_operations(
     request: AssistantRequest,
     default_mode: str,
     matched_intent: Optional[str],
     llm_predict: Callable[[str], str],
     llm_target_type: Optional[str] = None,
+    app_target_kind: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Build an ordered operation plan for the assistant.
@@ -721,7 +748,30 @@ def plan_assistant_operations(
     Returns operations shaped as:
     - {"type":"model","diagramType":"...","mode":"complete_system|modify_model","request":"..."}
     - {"type":"generation","generatorType":"...","config":{...}}
+
+    ``app_target_kind`` is the classifier's target for this project
+    (``web_app`` / ``backend`` / ``other``); ``other`` never adds the web GUI
+    on its own, but keeps it when the classifier's target is the GUI diagram.
     """
+    operations = _plan_operations(
+        request, default_mode, matched_intent, llm_predict, llm_target_type, app_target_kind,
+    )
+    if app_target_kind == "other":
+        return _without_web_gui_plan(
+            operations, request, default_mode,
+            keep_gui=llm_target_type == "GUINoCodeDiagram",
+        )
+    return operations
+
+
+def _plan_operations(
+    request: AssistantRequest,
+    default_mode: str,
+    matched_intent: Optional[str],
+    llm_predict: Callable[[str], str],
+    llm_target_type: Optional[str],
+    app_target_kind: Optional[str],
+) -> List[Dict[str, Any]]:
 
     # ----- Phase 0: fast heuristic pre-decomposition -----
     heuristic_result = _try_heuristic_decomposition(request.message, request, default_mode)
@@ -739,6 +789,7 @@ def plan_assistant_operations(
     # model).
     if (
         matched_intent == "create_complete_system_intent"
+        and app_target_kind != "other"
         and EXPLICIT_SCREEN_VOCAB_RE.search(request.message or "")
         and not {"ClassDiagram", "GUINoCodeDiagram"} & _get_workspace_diagram_types(request)
     ):
@@ -786,6 +837,12 @@ def plan_assistant_operations(
     intent_hint = ""
     if matched_intent:
         intent_hint = f"\nUser intent classified as: {matched_intent}"
+    if app_target_kind == "other" and llm_target_type != "GUINoCodeDiagram":
+        intent_hint += (
+            "\nThe user wants an application that is NOT a web app. Do NOT plan "
+            "GUINoCodeDiagram or web_app (the GUI editor designs web pages): plan "
+            "the ClassDiagram; the code is generated afterwards from it."
+        )
 
     planner_prompt = f"""You are an assistant operation planner for BESSER modeling.
 
