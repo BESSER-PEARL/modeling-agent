@@ -107,7 +107,7 @@ How to Add a New Generator
 --------------------------
 
 1. **Add keywords** to ``GENERATOR_KEYWORDS`` in
-   ``src/handlers/generation_handler.py``:
+   ``src/routing/generation_signals.py``:
 
    .. code-block:: python
 
@@ -121,7 +121,8 @@ How to Add a New Generator
       Dict ordering matters. If your keyword is a substring of another
       (e.g. ``"sql"`` vs ``"sqlalchemy"``), place the longer keyword first.
 
-2. **Add required fields** (if any) to ``GENERATOR_REQUIRED_FIELDS``:
+2. **Add required fields** (if any) to ``GENERATOR_REQUIRED_FIELDS`` in
+   ``src/handlers/generation_handler.py``:
 
    .. code-block:: python
 
@@ -130,7 +131,7 @@ How to Add a New Generator
 3. **Add inline config parsing** in ``parse_inline_generator_config()``
 
 4. **Add prerequisites** to ``GENERATOR_PREREQUISITES`` in
-   ``src/handlers/generation_handler.py`` (``request_planner.py`` imports it
+   ``src/routing/generation_signals.py`` (``request_planner.py`` imports it
    from there and injects it into the Tier-2 planner prompt):
 
    .. code-block:: python
@@ -260,7 +261,7 @@ and the decision must never be guessed. Existing examples:
   has no generator for. Added because the classifier mapped "c classes" to
   ``java`` and "c++ classes" to ``python``.
 - ``_GITHUB_URL_RE`` + ``_GITHUB_CONTINUE_VERB_RE`` in
-  ``src/handlers/generation_handler.py`` — a continue-from-GitHub request must
+  ``src/routing/generation_signals.py`` — a continue-from-GitHub request must
   never be invented, missed, or swallowed.
 
 Both run in ``_post_validate()`` or at the handler boundary and *override* the
@@ -269,7 +270,7 @@ LLM verdict, so keep them precision-first.
 Adding a Generator Keyword
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Add to ``GENERATOR_KEYWORDS`` in ``src/handlers/generation_handler.py``.
+Add to ``GENERATOR_KEYWORDS`` in ``src/routing/generation_signals.py``.
 
 If the keyword is short or ambiguous (≤6 chars), add it to
 ``_BOUNDARY_KEYWORDS`` for word-boundary matching to avoid substring collisions:

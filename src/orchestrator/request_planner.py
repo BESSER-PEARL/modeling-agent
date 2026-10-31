@@ -3,12 +3,12 @@ import logging
 import re
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from handlers.generation_handler import (
+from protocol.types import AssistantRequest, SUPPORTED_DIAGRAM_TYPES
+from routing.generation_signals import (
     GENERATOR_KEYWORDS,
     GENERATOR_PREREQUISITES,
     detect_generator_type,
 )
-from protocol.types import AssistantRequest, SUPPORTED_DIAGRAM_TYPES
 from unified_classifier import EXPLICIT_SCREEN_VOCAB_RE
 
 from .workspace_orchestrator import KEYWORD_TARGETS, determine_target_diagram_types

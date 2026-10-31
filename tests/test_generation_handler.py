@@ -4,7 +4,6 @@ import types
 
 import pytest
 from handlers.generation_handler import (
-    detect_generator_type,
     parse_inline_generator_config,
     _required_missing,
     _normalize_defaults,
@@ -12,10 +11,10 @@ from handlers.generation_handler import (
     _looks_like_mixed_modeling_and_generation,
     handle_generation_request,
     should_route_to_generation,
-    GENERATOR_KEYWORDS,
 )
 from handlers.smart_generation_handler import GenerationClassification
 from protocol.types import AssistantRequest, WorkspaceContext
+from routing.generation_signals import GENERATOR_KEYWORDS, detect_generator_type
 
 from tests.conftest import FakeSession
 

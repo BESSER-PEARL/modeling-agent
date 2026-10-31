@@ -14,6 +14,7 @@ from pydantic import BaseModel
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import byok  # noqa: E402
+import byok_config  # noqa: E402
 from diagram_handlers.types.agent_diagram_handler import AgentDiagramHandler  # noqa: E402
 
 
@@ -215,7 +216,7 @@ def test_a_nebius_key_is_accepted_and_calls_the_nebius_endpoint(monkeypatch):
     monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
     token = byok.set_current("nebius", "neb-key", None)
     try:
-        assert byok.get_current() is not None, "nebius must not fall back to the server key"
+        assert byok_config.get_current() is not None, "nebius must not fall back to the server key"
         client = byok.get_active_client()
         assert client.openai_client is None  # structured calls use JSON mode
         assert client.predict_raw("hi", json_mode=True) == '{"ok": true}'

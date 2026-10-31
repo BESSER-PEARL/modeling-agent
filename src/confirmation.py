@@ -111,7 +111,7 @@ def _build_auto_gui_message(request: Any, detected_gen: Optional[str] = None) ->
     Falls back to a generic completion message if the class diagram can't be
     resolved (the frontend still generates the GUI; we just can't name pages).
     """
-    from handlers.generation_handler import detect_generator_type
+    from routing.generation_signals import detect_generator_type
     from suggestions import get_artifact_label
 
     if detected_gen is None:
@@ -240,7 +240,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
         return False  # Let normal state body handle the new request
 
     if wants_auto:
-        from handlers.generation_handler import detect_generator_type
+        from routing.generation_signals import detect_generator_type
         from suggestions import get_post_spec_suggestions
 
         remaining_ops = pending.get('remaining_operations')
@@ -648,7 +648,7 @@ def _resume_remaining_ops(
     pending: dict,
 ) -> None:
     """Execute remaining operations that were queued behind a pending confirmation."""
-    from utilities.request_builders import build_request_for_target
+    from orchestrator.request_builders import build_request_for_target
 
     # Rebuild the working request so subsequent operations see the
     # just-created diagram in context.
@@ -708,7 +708,7 @@ def _resume_remaining_ops(
                 )
         elif op_type == 'generation':
             from handlers.generation_handler import handle_generation_request
-            from utilities.request_builders import build_generation_request
+            from orchestrator.request_builders import build_generation_request
             from session_helpers import reply_payload
 
             # Defensive net: a web-app plan's generation is normally STRIPPED at
