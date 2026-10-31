@@ -9,8 +9,6 @@ objects so the entrypoint can populate :mod:`agent_context`.
 
 import logging
 import os
-import threading
-from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from baf import nlp
@@ -34,12 +32,6 @@ from model_config import (
 )
 
 logger = logging.getLogger(__name__)
-
-UML_SPECS_DIR = Path(__file__).resolve().parent.parent / "uml_specs"
-UML_VECTOR_STORE_DIR = "uml_vector_store"
-# Written once the specification is fully embedded, so an interrupted run is
-# redone rather than leaving a partial index that looks loaded.
-_UML_INDEX_DONE = Path(UML_VECTOR_STORE_DIR) / ".indexed"
 
 
 def _enable_shared_llm_retry(llm_instance: LLMOpenAI, label: str) -> None:
@@ -225,7 +217,7 @@ def init_rag(agent: Agent):
                 openai_api_key=agent.get_property(nlp.OPENAI_API_KEY),
                 model=MODEL_EMBEDDINGS,
             ),
-            'persist_directory': UML_VECTOR_STORE_DIR,
+            'persist_directory': 'uml_vector_store',
         }
         if ChromaSettings is not None:
             chroma_kwargs['client_settings'] = ChromaSettings(anonymized_telemetry=False)
@@ -256,55 +248,10 @@ def init_rag(agent: Agent):
         )
 
         logger.info("UML RAG initialized successfully")
-        _index_uml_specs_in_background(uml_rag)
         return uml_rag
     except Exception as exc:
         logger.warning(f"Failed to initialize UML RAG: {exc}. RAG features will be disabled.")
         return None
-
-
-def _read_uml_specs() -> list:
-    """One document per PDF page. PyMuPDF, not BAF's pypdf loader: same text,
-    4.5 s instead of 4 minutes of GIL-holding parsing for the 796-page spec."""
-    import fitz  # PyMuPDF
-    from langchain_core.documents import Document
-
-    pages = []
-    for pdf in sorted(UML_SPECS_DIR.glob("*.pdf")):
-        with fitz.open(pdf) as doc:
-            pages.extend(
-                Document(page_content=page.get_text(), metadata={"source": pdf.name, "page": number})
-                for number, page in enumerate(doc)
-            )
-    return pages
-
-
-def _index_uml_specs_in_background(uml_rag) -> Optional[threading.Thread]:
-    """Embed ``uml_specs/`` into the vector store unless a full index exists.
-
-    Runs off the boot path; until it finishes, UML questions are answered
-    from whatever the store holds (nothing on a first start).
-    """
-    if _UML_INDEX_DONE.exists():
-        return None
-
-    def _index():
-        try:
-            store = uml_rag.vector_store
-            partial = store.get()["ids"]  # from an interrupted run
-            if partial:
-                store.delete(partial)
-            chunks = uml_rag.splitter.split_documents(_read_uml_specs())
-            store.add_documents(chunks)
-            _UML_INDEX_DONE.parent.mkdir(parents=True, exist_ok=True)
-            _UML_INDEX_DONE.touch()
-            logger.info("UML RAG: indexed %d chunks from %s", len(chunks), UML_SPECS_DIR)
-        except Exception as exc:
-            logger.warning("UML RAG: indexing %s failed: %s", UML_SPECS_DIR, exc)
-
-    thread = threading.Thread(target=_index, name="uml-rag-index", daemon=True)
-    thread.start()
-    return thread
 
 
 def init_stt(agent: Agent) -> OpenAISpeech2Text:
