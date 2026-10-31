@@ -47,7 +47,7 @@ Technology Stack
      - Technology
      - Notes
    * - Agent Framework
-     - ``besser-agentic-framework[extras,llms,tensorflow] == 4.5.3``
+     - ``besser-agentic-framework[tensorflow] == 4.5.3``
      - State machine, WebSocket platform, local intent classification.
        One file is vendored over the pip install — see
        ``patches/websocket_platform.py``.

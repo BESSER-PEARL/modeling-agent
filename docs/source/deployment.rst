@@ -13,9 +13,13 @@ Requirements
 
 - Python 3.11 (3.10 minimum)
 - An OpenAI API key
-- ``besser-agentic-framework[extras,llms,tensorflow] == 4.5.3`` — the version
+- ``besser-agentic-framework[tensorflow] == 4.5.3`` — the version
   is pinned because ``patches/websocket_platform.py`` is vendored over it
-  (see `Vendored BAF patch`_)
+  (see `Vendored BAF patch`_). Only the ``tensorflow`` extra: what the agent
+  uses from BAF's ``llms`` and ``extras`` sets (the OpenAI and Anthropic SDKs,
+  LangChain, ChromaDB) is listed in ``requirements.txt`` with the same bounds,
+  and the rest of those sets (transformers, spaCy, OpenCV, librosa,
+  scikit-learn, ...) is never imported.
 
 Local Development
 -----------------
