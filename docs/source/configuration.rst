@@ -636,7 +636,12 @@ RAG Configuration
 **Location:** ``agent_setup.init_rag()``
 
 - **Vector store:** ChromaDB, persisted in ``uml_vector_store/`` (auto-created)
-- **Source documents:** ``uml_specs/formal-17-12-05.pdf`` (OMG UML 2.5.1)
+- **Source documents:** ``uml_specs/formal-17-12-05.pdf`` (OMG UML 2.5.1),
+  indexed in a background thread on the first start: about 2,270 chunks, one
+  embedding pass (~460k tokens). ``uml_vector_store/.indexed`` marks a complete
+  index; without it the store is cleared and rebuilt, so an interrupted run
+  never leaves a partial index. A new container rebuilds it unless
+  ``/app/uml_vector_store`` is a volume.
 - **Embedding model:** ``MODEL_EMBEDDINGS`` (``text-embedding-3-small``)
 - **Chunking:** ``RecursiveCharacterTextSplitter``, chunk size 1000, overlap 100
 - **Retrieval:** ``k=4``, with 6 previous messages of context
@@ -644,7 +649,8 @@ RAG Configuration
 
 If RAG initialization fails (missing store, missing key, import error), the
 agent logs a warning and continues **without** RAG — UML spec queries fall
-back to LLM-only responses.
+back to LLM-only responses. Until the first index finishes, the store is empty
+and answers carry no retrieved context.
 
 
 Research Study Mode
