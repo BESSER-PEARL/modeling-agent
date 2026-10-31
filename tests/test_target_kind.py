@@ -88,8 +88,8 @@ class _EventSession(FakeSession):
 
 
 def _classify(session, decision, monkeypatch):
-    import handlers.generation_handler as generation
-    monkeypatch.setattr(generation, "recent_smart_gen_for_project", lambda s, w: False)
+    import unified_classifier
+    monkeypatch.setattr(unified_classifier, "recent_smart_gen_for_project", lambda s, w: False)
     provider = _Provider(decision)
     result = get_or_classify(session, session.request, provider)
     return result, provider
@@ -332,7 +332,7 @@ class TestPlannerForNonWebTargets:
                 ("GUINoCodeDiagram", "complete_system")]
 
     def test_flutter_generator_is_never_offered(self):
-        from handlers.generation_handler import GENERATOR_PREREQUISITES
+        from routing.generation_signals import GENERATOR_PREREQUISITES
         from suggestions import GENERATOR_ARTIFACT_LABELS
         assert "flutter" not in GENERATOR_PREREQUISITES
         assert "flutter" not in GENERATOR_ARTIFACT_LABELS
@@ -459,13 +459,13 @@ class TestReplyTranslation:
         assert len(translator.calls) == 1  # the same reply again comes from the cache
 
     def test_a_users_own_key_translates_a_reply_in_one_call(self, translator):
-        import byok
+        import byok_config
         from reply_language import translate_texts
-        token = byok.current_byok.set(byok.BYOKConfig(provider="openai", api_key="sk-test"))
+        token = byok_config.current_byok.set(byok_config.BYOKConfig(provider="openai", api_key="sk-test"))
         try:
             out = translate_texts(["Do you want to continue?", "Continue", "Cancel"], "es")
         finally:
-            byok.current_byok.reset(token)
+            byok_config.current_byok.reset(token)
         assert out == ["ES<Do you want to continue?>", "ES<Continue>", "ES<Cancel>"]
         assert len(translator.calls) == 1
 
@@ -571,15 +571,15 @@ class TestTranslationIsolation:
         assert other_user["suggestedActions"][0]["label"] == "ES<Continue>"
 
     def test_a_users_own_key_never_fills_the_shared_cache(self, monkeypatch, clean_translation_state):
-        import byok
+        import byok_config
         reply_language = clean_translation_state
         fake = _SteerableTranslator()
         monkeypatch.setattr(reply_language, "_predict_json", fake)
-        token = byok.current_byok.set(byok.BYOKConfig(provider="openai", api_key="sk-test"))
+        token = byok_config.current_byok.set(byok_config.BYOKConfig(provider="openai", api_key="sk-test"))
         try:
             reply_language.translate_texts(["Continue"], "es")
         finally:
-            byok.current_byok.reset(token)
+            byok_config.current_byok.reset(token)
         reply_language.translate_texts(["Continue"], "es")
         assert len(fake.calls) == 2  # the shared call did not reuse the user's output
 

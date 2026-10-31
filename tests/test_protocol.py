@@ -167,7 +167,7 @@ def test_full_spec_limit_is_preserved_or_explicitly_rejected_for_both_transports
     from types import SimpleNamespace
     from agent_config import MAX_USER_MESSAGE_CHARS
     from protocol.adapters import parse_assistant_request
-    from utilities.message_limits import UserMessageTooLong
+    from protocol.message_limits import UserMessageTooLong
     from tests.conftest import FakeSession
     import state_bodies
 

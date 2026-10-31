@@ -66,14 +66,14 @@ Two decisions override the LLM verdict and cannot be changed by prompting:
 .. code-block:: python
 
    from unified_classifier import _names_unsupported_stack
-   from handlers.generation_handler import detect_generator_type
+   from routing.generation_signals import detect_generator_type
 
    msg = "your test message here"
    print(f"Generator keyword:  {detect_generator_type(msg)}")
    print(f"Unsupported stack:  {_names_unsupported_stack(msg)}")
 
 ``_names_unsupported_stack()`` forces the smart generation route; the
-GitHub-continue regexes in ``generation_handler`` force an import.
+GitHub-continue regexes in ``routing.generation_signals`` force an import.
 
 Step 6: Check Keyword Detection
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 from agent_config import LLM_MODEL_DEFAULT
+from byok_config import get_current
 from model_catalog import load_model_catalog
 
 logger = logging.getLogger(__name__)
@@ -101,9 +102,7 @@ _SNAPSHOT_SUFFIX = re.compile(r"^(?:-\d{4}-?\d{2}-?\d{2}|@[\w.-]+)?(?:-v\d+(?::\
 def _current_route() -> Optional[str]:
     """The endpoint this call goes to: the user's BYOK endpoint, else the
     shared client's (``OPENAI_BASE_URL``); None for a vendor's own API."""
-    import byok  # lazy, as byok's own imports of tracking are
-
-    cfg = byok.get_current()
+    cfg = get_current()
     if cfg is not None:
         return cfg.base_url
     return os.getenv("OPENAI_BASE_URL") or None

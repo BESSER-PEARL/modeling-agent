@@ -48,7 +48,7 @@ capabilities, and agentic dependency kinds).
 
 ## Supported Generators
 
-Deterministic BESSER generators (`GENERATOR_KEYWORDS` in `src/handlers/generation_handler.py`):
+Deterministic BESSER generators (`GENERATOR_KEYWORDS` in `src/routing/generation_signals.py`):
 
 `django`, `backend`, `web_app`, `sql`, `sqlalchemy`, `python`, `java`, `pydantic`,
 `jsonschema`, `smartdata`, `agent`, `qiskit`, `rest_api`, `rdf`, plus the `export` and

@@ -8,7 +8,7 @@ from baf.library.transition.events.base_events import ReceiveJSONEvent
 
 from .types import AssistantRequest, FileAttachment, WorkspaceContext, SUPPORTED_DIAGRAM_TYPES
 from session_keys import PARSED_ASSISTANT_REQUEST, PARSED_REQUEST_EVENT_ID, VOICE_CONTEXT
-from utilities.message_limits import validate_message_length
+from .message_limits import validate_message_length
 
 
 def _cap_user_message(msg: str) -> str:

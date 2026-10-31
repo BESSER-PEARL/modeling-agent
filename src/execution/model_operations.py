@@ -17,6 +17,7 @@ from session_helpers import reply_message, reply_payload, reply_progress
 from model_utils import model_has_elements
 from diagram_handlers.registry.metadata import get_diagram_type_info
 from orchestrator import determine_target_diagram_type, resolve_diagram_id
+from routing.generation_signals import detect_generator_type
 from utilities.model_resolution import (
     resolve_target_model,
     resolve_object_reference_diagram,
@@ -979,7 +980,6 @@ def execute_model_operation(
     # Skip for web_app: the GUI-choice flow runs next and emit_webapp_generate_prompt
     # shows its own artifact-aware follow-up after the screens are built.
     if operation_mode == "complete_system" and isinstance(result.get("message"), str):
-        from handlers.generation_handler import detect_generator_type  # lazy to avoid circular import
         _detected_gen = detect_generator_type(request.message)
         if _detected_gen != "web_app":
             _artifact = _non_web_target_label(session, request) or get_artifact_label(_detected_gen)
@@ -996,7 +996,6 @@ def execute_model_operation(
     # acknowledge the change and offer to continue generating, mirroring the
     # create flow above. (web_app is left to the GUI-choice flow's own prompt.)
     if operation_mode == "modify_model" and isinstance(result.get("message"), str):
-        from handlers.generation_handler import detect_generator_type  # lazy import
         _detected_gen = detect_generator_type(request.message)
         if _detected_gen != "web_app":
             _artifact = _non_web_target_label(session, request) or get_artifact_label(_detected_gen)

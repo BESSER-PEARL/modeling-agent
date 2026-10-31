@@ -43,6 +43,8 @@ python -m pytest tests/test_bpmn.py                 # one diagram type
 ```
 CI (`.github/workflows/tests.yml`) runs this suite and ruff on every PR and push.
 
+**Intended import layering** (a layer imports only those below it): `state_bodies` / `agent_setup` → `confirmation` → `execution` → `handlers` / `orchestrator` → `session_helpers` → `unified_classifier` → `memory` / `reply_language` / `routing` → `diagram_handlers` → `llm` → `byok` → `tracking` → `byok_config` → `utilities` → `protocol` → leaf modules (`agent_config`, `session_keys`, `errors`, …); the import-linter contract arrives with the packaging work (A13).
+
 - Handler tests instantiate handlers directly, e.g. `BPMNDiagramHandler(None)` (the LLM arg is only needed by
   methods that call the model), and test deterministic repair such as `_validate_and_refine` as a pure function
   on hand-built dicts. See `tests/test_bpmn.py`.
@@ -81,7 +83,7 @@ WebSocket message
 - **`_SYSTEM_PROMPT` in `unified_classifier.py` is the single authoritative rulebook.** Routing changes go there,
   or — for decisions the LLM is measurably unreliable at — in an explicit deterministic guard
   (`_names_unsupported_stack()` in `unified_classifier.py`; `_GITHUB_URL_RE` / `_GITHUB_CONTINUE_VERB_RE` in
-  `handlers/generation_handler.py`). There is no keyword pre-filter layer to add special cases to.
+  `routing/generation_signals.py`). There is no keyword pre-filter layer to add special cases to.
 - **Intent `description=` strings in `modeling_agent.py` stay one-liners.** They only feed BAF's local fallback
   classifier and do not drive routing.
 - **BAF's own classifier is a local, non-LLM fallback** (`SimpleIntentClassifierConfiguration(framework='tensorflow')`
@@ -196,14 +198,17 @@ src/
   state_bodies.py                 State bodies, transitions, global fallback, quick responses
   session_helpers.py / session_keys.py   Reply/stream helpers; every session-state key (import, don't use literals)
   confirmation.py                 Pending replace/keep and GUI-mode choice flows
-  byok.py                         Per-request bring-your-own-key routing (contextvar)
-  orchestrator/                   workspace_orchestrator.py (layer 2), request_planner.py (multi-op planning)
+  byok.py                         Per-request bring-your-own-key routing
+  byok_config.py                  BYOKConfig and its per-request contextvar (read by byok and tracking)
+  routing/                        generation_signals.py: generator vocabulary + signals shared below handlers
+  orchestrator/                   workspace_orchestrator.py (layer 2), request_planner.py (multi-op planning),
+                                  request_builders.py (re-targeted requests)
   diagram_handlers/               core/ (base_handler, layout_engine, prompt_fragments), types/ (one handler per
                                   type + gui_design_system.py, gui_html_converter.py), registry/ (factory, metadata)
   schemas/<type>.py               Structured-output schemas
   execution/                      planning.py (multi-op dispatch), model_operations.py, file_handling.py, progress.py
   handlers/                       generation_handler.py, smart_generation_handler.py, file_conversion_handler.py
-  protocol/                       types.py, adapters.py
+  protocol/                       types.py, adapters.py, message_limits.py
   memory/                         Verbatim window + rolling LLM summary per session
   llm/provider.py                 Provider abstraction (structured outputs, streaming)
   tracking/token_tracker.py       Token/cost tracking (_COST_PER_1K)

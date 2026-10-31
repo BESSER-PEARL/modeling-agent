@@ -15,7 +15,7 @@ from protocol.types import AssistantRequest
 from session_helpers import reply_message, reply_payload, emit_webapp_generate_prompt
 from orchestrator import plan_assistant_operations
 from handlers.generation_handler import handle_generation_request
-from utilities.request_builders import build_request_for_target, build_generation_request
+from orchestrator.request_builders import build_request_for_target, build_generation_request
 from utilities.original_request import current_target
 from suggestions import get_suggested_actions
 from errors import ErrorCode, ModelRefusal, classify_error, build_error_response
