@@ -67,12 +67,21 @@ Core Runtime Modules
   - ``SUPPORTED_PROVIDERS`` — ``openai``, ``anthropic``, ``mistral``, ``nebius``
   - ``predict_json(prompt, model)`` / ``user_openai_key()`` — the attachment paths
 
+``src/byok_config.py``
+  The per-request BYOK state, below both ``byok`` and ``tracking``:
+
+  - ``BYOKConfig`` — the user's provider, key, model and base URL
+  - ``current_byok`` — the context variable holding it
+  - ``get_current()`` — the active ``BYOKConfig``, or ``None``
+
 ``src/state_bodies.py``
   All state body functions and transition wiring:
 
   - ``register_all(*, agent, states, intents)`` — Wires state bodies and
     transitions (keyword-only)
   - ``add_unified_transitions(state, intents_map, fallback_state, generation_state)``
+  - ``route_to_generation(session)`` — priority-2 condition; frontend events
+    and pending generator flows only, no LLM call
   - ``greetings_body(session)`` — Welcome message handler
   - ``create_complete_system_body(session)``
   - ``modify_modeling_body(session)``
@@ -122,8 +131,6 @@ Core Runtime Modules
   - ``json_intent_matches(session, params)`` — the priority-1 transition
     condition; reads the unified classifier's verdict
   - ``json_no_intent_matched(session)`` — the fallback condition
-  - ``route_to_generation(session)`` — priority-2 condition; frontend events
-    and pending generator flows only, no LLM call
   - ``replay_last_reply(session, request)`` — re-sends the buffered terminal
     reply after a reconnect
   - ``get_user_message`` / ``get_diagram_type`` / ``get_current_model``
@@ -159,6 +166,10 @@ Protocol Layer
   - ``WorkspaceContext`` — Editor state snapshot
   - ``FileAttachment`` — Uploaded file metadata
   - ``SUPPORTED_DIAGRAM_TYPES`` — Set of valid diagram type strings
+
+``src/protocol/message_limits.py``
+  ``validate_message_length(message)`` and ``UserMessageTooLong``: a request
+  over ``MAX_USER_MESSAGE_CHARS`` is rejected, never truncated.
 
 ``src/protocol/adapters.py``
   Payload extraction and normalization:
@@ -299,12 +310,8 @@ Auxiliary Handlers
     gate (frontend events and pending flows only)
   - ``handle_pending_smart_gen_confirmation(session)``
   - ``handle_pending_plan_generation_confirmation(session)``
-  - ``detect_generator_type(message)`` — pure keyword/regex detection
   - ``parse_inline_generator_config(...)``
-  - ``recent_smart_gen_for_project(session, window_seconds)``
-  - ``GENERATOR_KEYWORDS`` — Keyword-to-generator mappings
   - ``GENERATOR_REQUIRED_FIELDS`` — Required configuration fields per generator
-  - ``GENERATOR_PREREQUISITES`` — Diagrams each generator consumes
   - ``EXPORT_FORMATS`` / ``DIALECT_VALUES`` / ``MODE_VALUES`` / ``QISKIT_BACKENDS``
 
 ``src/handlers/smart_generation_handler.py``
@@ -381,7 +388,7 @@ Utilities
   - ``build_workspace_context_block(request, ...)``
   - ``record_session_action(session, action_summary)``
 
-``src/utilities/request_builders.py``
+``src/orchestrator/request_builders.py``
   Derived request factories:
 
   - ``build_request_for_target(request, target_type, ...)``
@@ -394,6 +401,17 @@ Routing
   Intent name constants:
 
   - ``GENERATION_INTENT_NAME`` — The string name for the generation intent
+
+``src/routing/generation_signals.py``
+  Generation vocabulary and session signals shared by the classifier, the
+  planner and the generation handler:
+
+  - ``detect_generator_type(message)`` — pure keyword/regex detection
+  - ``GENERATOR_KEYWORDS`` — Keyword-to-generator mappings
+  - ``GENERATOR_PREREQUISITES`` — Diagrams each generator consumes
+  - ``recent_smart_gen_for_project(session, window_seconds)``
+  - ``_extract_github_reference(message)`` with ``_GITHUB_URL_RE`` /
+    ``_GITHUB_CONTINUE_VERB_RE`` — the continue-from-GitHub guard
 
 LLM Provider
 ------------

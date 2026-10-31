@@ -8,9 +8,10 @@ cross-diagram orchestration and code-generation workflows.
 from typing import Any, Dict, List, Optional
 
 from protocol.types import AssistantRequest, WorkspaceContext
-from handlers.generation_handler import detect_generator_type
-from orchestrator import resolve_diagram_id
-from .model_resolution import resolve_target_model
+from routing.generation_signals import detect_generator_type
+from utilities.model_resolution import resolve_target_model
+
+from .workspace_orchestrator import resolve_diagram_id
 
 
 def build_request_for_target(

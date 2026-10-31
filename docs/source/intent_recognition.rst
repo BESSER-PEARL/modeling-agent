@@ -251,7 +251,7 @@ regex before or after the call:
   hand-drawn and empty-workspace readings of the same words. Without that
   project-scoped build record, the classifier's verdict stands.
 - ``_GITHUB_URL_RE`` + ``_GITHUB_CONTINUE_VERB_RE``
-  (``src/handlers/generation_handler.py``) — "continue from
+  (``src/routing/generation_signals.py``) — "continue from
   github.com/owner/repo" must always produce a ``trigger_github_import``
   action, so it is matched deterministically rather than inferred.
 
@@ -423,7 +423,7 @@ When routing goes wrong, check in this order:
 
    # Quick diagnostic snippet (no agent runtime needed):
    from unified_classifier import _names_unsupported_stack
-   from handlers.generation_handler import detect_generator_type
+   from routing.generation_signals import detect_generator_type
 
    msg = "your test message here"
    print(f"Generator keyword:  {detect_generator_type(msg)}")

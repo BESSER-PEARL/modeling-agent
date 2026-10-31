@@ -62,7 +62,7 @@ LAST_SMART_GEN_AT = "_last_smart_gen_at"
 # for the project you are looking at" (a new project would otherwise get the
 # fix/modify copy for a run from a previous one). Every consumer of
 # LAST_SMART_GEN_AT must pair it with this id (see
-# generation_handler.recent_smart_gen_for_project).
+# routing.generation_signals.recent_smart_gen_for_project).
 LAST_SMART_GEN_PROJECT_ID = "_last_smart_gen_project_id"
 # Project id observed when a Spec-Driven Agent run was ARMED (stash created).
 # Promoted to LAST_SMART_GEN_PROJECT_ID when the run reports success. Arm time

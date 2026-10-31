@@ -117,10 +117,12 @@ Key Module Responsibilities
        intent plus all sub-routing fields; ``_SYSTEM_PROMPT`` is the
        authoritative rulebook.
    * - ``src/handlers/generation_handler.py``
-     - Code generation routing. Contains ``detect_generator_type()``,
-       ``GENERATOR_KEYWORDS`` / ``GENERATOR_REQUIRED_FIELDS`` /
-       ``GENERATOR_PREREQUISITES``, the config-prompt flows, and the
-       deterministic GitHub-continue guard.
+     - Code generation routing. Contains ``GENERATOR_REQUIRED_FIELDS``, the
+       config-prompt flows, and the deterministic GitHub-continue guard.
+   * - ``src/routing/generation_signals.py``
+     - Generation vocabulary shared below the handlers: ``detect_generator_type()``,
+       ``GENERATOR_KEYWORDS`` / ``GENERATOR_PREREQUISITES``, the GitHub-continue
+       regexes and the recent-smart-gen signal the classifier reads.
    * - ``src/orchestrator/``
      - Multi-step planning (``request_planner.py``) and diagram type resolution
        (``workspace_orchestrator.py``). Converts a user message into an ordered
