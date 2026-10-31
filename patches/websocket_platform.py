@@ -472,7 +472,7 @@ class WebSocketPlatform(Platform):
                 ])
 
             thread = threading.Thread(target=run_streamlit)
-            logger.info(f'Running Streamlit UI in another thread')
+            logger.info('Running Streamlit UI in another thread')
             thread.start()
             # To avoid re-running the streamlit process, set self._use_ui to False
             self._use_ui = False

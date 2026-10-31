@@ -96,7 +96,7 @@ modeling-agent/
   docs/
 ```
 
-> `patches/websocket_platform.py` is copied over the pip-installed BAF 4.3.2 file at image
+> `patches/websocket_platform.py` is copied over the pip-installed BAF 4.5.3 file at image
 > build time. Stock BAF evicts the `_connections` slot unconditionally on close; with the
 > stable `?user_id=` param the two sockets a browser tab opens share one session key, so a
 > closing socket would drop the live one's replies. Re-vendor if the BAF version bumps.

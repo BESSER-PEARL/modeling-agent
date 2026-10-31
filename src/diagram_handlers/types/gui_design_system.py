@@ -634,7 +634,7 @@ def stylesheet_rules_from_tokens(t: Dict) -> List[Dict]:
         "align-items": "center",
         "justify-content": "center",
         "gap": sp["xs"],
-        "padding": f"0.625rem 1.25rem",
+        "padding": "0.625rem 1.25rem",
         "border": f"1px solid {p['border']}",
         "border-radius": radius,
         "background-color": p["surface"],

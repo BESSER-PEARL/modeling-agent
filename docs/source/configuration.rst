@@ -80,7 +80,7 @@ WebSocket Platform
      - Port for the WebSocket server
    * - ``platforms.websocket.origins``
      - production hosts + localhost
-     - CORS whitelist of browser origins. BAF 4.3.2 passes this to
+     - CORS whitelist of browser origins. BAF passes this to
        ``websockets.serve(origins=...)``. When the key is **absent**, any
        origin is accepted. The Docker entrypoint writes it, so containers
        are restricted by default; override the two production entries with
@@ -251,10 +251,8 @@ Environment Variables
      - Per-tier model overrides
    * - ``BESSER_BACKEND_URL``
      - ``http://localhost:3001``
-     - Base URL of the BESSER backend. Used by the diagram-validation
-       bridge (``src/handlers/validation_handler.py``) and the opt-in
-       study telemetry collector (``src/telemetry.py``). Without it, every
-       validation in a container fails with connection-refused.
+     - Base URL of the BESSER backend, used by the opt-in study telemetry
+       collector (``src/telemetry.py``).
    * - ``BESSER_AGENT_ALLOW_CUSTOM_BASE_URL``
      - unset (off)
      - Whether a BYOK request may specify its own API base URL. Set to

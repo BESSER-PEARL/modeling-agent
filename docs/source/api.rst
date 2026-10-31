@@ -333,12 +333,6 @@ Auxiliary Handlers
      ``handle_file_attachments(session, request)`` lives in
      ``src/execution/file_handling.py``, not here.
 
-``src/handlers/validation_handler.py``
-  Bridge to the BESSER backend's diagram validator:
-
-  - ``validate_diagram(diagram_json, diagram_type, api_url=None)`` — POSTs to
-    ``{BESSER_BACKEND_URL}/besser_api/validate-diagram``
-
 Utilities
 ---------
 
@@ -392,30 +386,6 @@ Utilities
 
   - ``build_request_for_target(request, target_type, ...)``
   - ``build_generation_request(request, generator_type, config, message_override)``
-
-Knowledge Libraries
--------------------
-
-.. note::
-
-   Both pattern libraries are defined but **not currently injected** into any
-   LLM prompt. See :doc:`diagram_handlers` for why, and how to re-enable them.
-
-``src/domain_patterns.py``
-  10 expert domain patterns for ClassDiagram generation:
-
-  - ``DOMAIN_PATTERNS`` — Dictionary of domain definitions
-  - ``detect_domain_pattern(user_message)`` — Match message to domain
-  - ``format_pattern_for_prompt(pattern)`` — Format for LLM injection
-  - ``get_pattern_hint(user_message)`` — Convenience wrapper
-
-``src/state_patterns.py``
-  8 behavioral lifecycle patterns for StateMachine generation:
-
-  - ``STATE_MACHINE_PATTERNS`` — Dictionary of pattern definitions
-  - ``detect_state_pattern(user_request)`` — Match request to a pattern key
-  - ``format_state_pattern_for_prompt(pattern_key)`` — Format for LLM injection
-  - ``get_state_pattern_hint(user_request)`` — Convenience wrapper
 
 Routing
 -------

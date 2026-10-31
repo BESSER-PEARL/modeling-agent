@@ -1585,7 +1585,7 @@ def _stats_grid_component(
                     "tagName": "h2",
                     "content": title,
                     "style": {
-                        "grid-column": f"1 / -1",
+                        "grid-column": "1 / -1",
                         "font-size": "1.25rem",
                         "font-weight": "700",
                         "color": "#0f172a",
@@ -3255,7 +3255,7 @@ def _add_new_pages_to_navs(
         if entry["id"] not in new_ids or _navs(wrapper):
             continue
         header = copy.deepcopy(header_src)
-        links = {l["attributes"]["href"]: l for _, _, l in _nav_entries(header, routes)}
+        links = {link["attributes"]["href"]: link for _, _, link in _nav_entries(header, routes)}
         if sibling_page["route"] in links and entry["route"] in links:
             _swap_look(links[sibling_page["route"]], links[entry["route"]])
         wrapper["components"].insert(0, header)
