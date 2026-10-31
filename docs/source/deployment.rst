@@ -13,7 +13,7 @@ Requirements
 
 - Python 3.11 (3.10 minimum)
 - An OpenAI API key
-- ``besser-agentic-framework[extras,llms,tensorflow] == 4.3.2`` — the version
+- ``besser-agentic-framework[extras,llms,tensorflow] == 4.5.3`` — the version
   is pinned because ``patches/websocket_platform.py`` is vendored over it
   (see `Vendored BAF patch`_)
 
@@ -83,7 +83,7 @@ pip-installed framework file:
    COPY patches/websocket_platform.py \
        /usr/local/lib/python3.11/site-packages/baf/platforms/websocket/websocket_platform.py
 
-Stock BAF 4.3.2 deletes the ``_connections`` slot unconditionally when a
+Stock BAF (checked up to 4.5.3) deletes the ``_connections`` slot unconditionally when a
 WebSocket closes. Because the frontend appends a stable ``?user_id=``
 parameter (so conversation memory survives reconnects), the two sockets a
 browser tab opens — the assistant widget and the workspace drawer — share one

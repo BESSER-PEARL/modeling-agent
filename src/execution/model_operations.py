@@ -662,7 +662,7 @@ def execute_model_operation(
     if operation_mode == "complete_system":
         reply_progress(session, f"Thinking about your {diagram_label} design...")
     elif operation_mode == "modify_model":
-        reply_progress(session, f"Analyzing changes...")
+        reply_progress(session, "Analyzing changes...")
 
     target_model = resolve_target_model(request, target_diagram_type)
 

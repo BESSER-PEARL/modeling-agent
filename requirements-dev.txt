@@ -1,0 +1,4 @@
+# Test and lint tools (CI and local development); runtime deps are in requirements.txt.
+-r requirements.txt
+pytest==7.4.0
+ruff==0.16.6

@@ -32,7 +32,7 @@ Python 3.11+.
 ```bash
 python -m venv venv
 source venv/bin/activate                 # Windows: .\venv\Scripts\Activate.ps1
-pip install -r requirements.txt          # pins besser-agentic-framework == 4.3.2
+pip install -r requirements.txt          # pins besser-agentic-framework == 4.5.3
 cp config_example.yaml config.yaml       # config.yaml is gitignored; never commit real keys (same for .env)
 python modeling_agent.py                 # WebSocket on :8765
 
@@ -41,7 +41,7 @@ python -m pytest tests/test_unified_classifier.py   # routing verdicts
 python -m pytest tests/test_diagram_handlers.py     # cross-handler contract tests
 python -m pytest tests/test_bpmn.py                 # one diagram type
 ```
-There is no CI workflow in this repo; run the suite locally.
+CI (`.github/workflows/tests.yml`) runs this suite and ruff on every PR and push.
 
 - Handler tests instantiate handlers directly, e.g. `BPMNDiagramHandler(None)` (the LLM arg is only needed by
   methods that call the model), and test deterministic repair such as `_validate_and_refine` as a pure function
@@ -187,7 +187,7 @@ Full reference: `docs/source/websocket_protocol.rst`. The traps:
 modeling_agent.py                 Entrypoint: BAF agent, 10 states/intents, wiring
 config_example.yaml               Template for the gitignored config.yaml
 Dockerfile                        Entrypoint writes config.yaml from env
-patches/websocket_platform.py     Vendored over pip-installed BAF 4.3.2 (see below)
+patches/websocket_platform.py     Vendored over pip-installed BAF 4.5.3 (see below)
 src/
   agent_setup.py / agent_context.py   LLM/RAG/STT/factory bootstrapping; shared module-level context
   agent_config.py                 Tunable constants (MAX_TABS, temperatures, token budgets, …)
@@ -202,14 +202,12 @@ src/
                                   type + gui_design_system.py, gui_html_converter.py), registry/ (factory, metadata)
   schemas/<type>.py               Structured-output schemas
   execution/                      planning.py (multi-op dispatch), model_operations.py, file_handling.py, progress.py
-  handlers/                       generation_handler.py, smart_generation_handler.py, file_conversion_handler.py,
-                                  validation_handler.py (bridge to the BESSER backend validator)
+  handlers/                       generation_handler.py, smart_generation_handler.py, file_conversion_handler.py
   protocol/                       types.py, adapters.py
   memory/                         Verbatim window + rolling LLM summary per session
   llm/provider.py                 Provider abstraction (structured outputs, streaming)
   tracking/token_tracker.py       Token/cost tracking (_COST_PER_1K)
   suggestions.py                  "What's next?" suggestions
-  domain_patterns.py, state_patterns.py   Defined but NOT injected into prompts
 ```
 
 **`patches/websocket_platform.py`** is copied over BAF's file at image build. Stock BAF evicts the `_connections`

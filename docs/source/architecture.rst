@@ -47,7 +47,7 @@ Technology Stack
      - Technology
      - Notes
    * - Agent Framework
-     - ``besser-agentic-framework[extras,llms,tensorflow] == 4.3.2``
+     - ``besser-agentic-framework[extras,llms,tensorflow] == 4.5.3``
      - State machine, WebSocket platform, local intent classification.
        One file is vendored over the pip install — see
        ``patches/websocket_platform.py``.
@@ -106,32 +106,28 @@ The system is organized into these layers, processed in order for each request:
 7. **Utility Layer** (``src/utilities/``): Model resolution, context building,
    metadata extraction, and layout helpers.
 
-8. **Knowledge Layer** (``src/domain_patterns.py``, ``src/state_patterns.py``):
-   Expert domain patterns. Defined but **not currently injected** into LLM
-   prompts — see :doc:`diagram_handlers`.
-
-9. **LLM Abstraction** (``src/llm/``): Provider abstraction over
+8. **LLM Abstraction** (``src/llm/``): Provider abstraction over
    OpenAI, encapsulating model selection and call conventions (structured
    outputs via ``parse()``, streaming via ``stream()``).
 
-10. **BYOK Routing** (``src/byok.py``): Per-request routing of generation,
-    structured-output, classification and conversational calls through a
-    user-supplied API key, driven by a context var set at the WebSocket
-    request boundary.
+9. **BYOK Routing** (``src/byok.py``): Per-request routing of generation,
+   structured-output, classification and conversational calls through a
+   user-supplied API key, driven by a context var set at the WebSocket
+   request boundary.
 
-11. **Conversation Memory** (``src/memory/``): Per-session conversation
+10. **Conversation Memory** (``src/memory/``): Per-session conversation
     history with a rolling LLM summary of everything older than the verbatim
     window.
 
-12. **Schemas** (``src/schemas/``): Pydantic models for each diagram type,
+11. **Schemas** (``src/schemas/``): Pydantic models for each diagram type,
     used by the structured-output pass of diagram handlers.
 
-13. **Token Tracking** (``src/tracking/``): Process-wide token usage and
+12. **Token Tracking** (``src/tracking/``): Process-wide token usage and
     estimated cost, logged periodically at INFO. Per-session buckets exist
     but no call site passes a session id, so only the global totals are
     populated — see :ref:`cost-and-model-routing`.
 
-14. **Suggestion Engine** (``src/suggestions.py``): Contextual next-step
+13. **Suggestion Engine** (``src/suggestions.py``): Contextual next-step
     action suggestions returned to the frontend after each operation.
 
 Entry Point
@@ -365,7 +361,7 @@ which would silently drop all conversation context.
 The frontend keeps that continuity by appending a persisted ``?user_id=``
 query parameter to the WebSocket URL. Because the two sockets a browser tab
 opens (the assistant widget and the workspace drawer) then share one session
-key, stock BAF 4.3.2 would evict the live connection when either closed;
+key, stock BAF (still in 4.5.3) would evict the live connection when either closed;
 ``patches/websocket_platform.py`` vendors an ownership-guarded delete plus
 reply-route-to-sender to fix this.
 
