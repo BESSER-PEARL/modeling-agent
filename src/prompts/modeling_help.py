@@ -3,12 +3,24 @@
 from typing import Any, Dict
 
 
-def bpmn_help_prompt(message: str) -> str:
+def _expert_help_prompt(message: str, expert: str, editor: str, knowledge: str, advice: str) -> str:
+    """The frame shared by the per-editor help prompts: who answers, for which editor, what it knows."""
     return (
-        f'You are an expert business-process modeling assistant. '
+        f'You are an expert {expert}. '
         f'The user asked: "{message}"\n\n'
-        f'They are working with the BPMN process diagram editor.\n\n'
+        f'They are working with the {editor} editor.\n\n'
         "You have deep knowledge of:\n"
+        f"{knowledge}\n\n"
+        f"{advice}\n\n"
+        "Keep your response conversational, encouraging, and technically accurate."
+    )
+
+
+def bpmn_help_prompt(message: str) -> str:
+    return _expert_help_prompt(
+        message,
+        "business-process modeling assistant",
+        "BPMN process diagram",
         "- BPMN elements: start/end events, tasks (user, service, send, receive, manual, script), "
         "gateways (exclusive, parallel, inclusive), sequence flows\n"
         "- Process design patterns: sequential flows, exclusive decisions, parallel work, loops\n"
@@ -16,21 +28,19 @@ def bpmn_help_prompt(message: str) -> str:
         "trust scores, multiplicity, reflection modes, and AgentDiagram references\n"
         "- Governance: Agentic parallel/inclusive gateways, diverging/merging roles, and Governance DSL "
         "on governed merging gateways\n"
-        "- Best practices: clear verb-phrase task names, gateway labeling, start/end event placement\n\n"
+        "- Best practices: clear verb-phrase task names, gateway labeling, start/end event placement",
         "Provide clear, practical advice about BPMN modeling. "
         "If they ask about a process pattern, explain the key elements and how to express it in BPMN. "
         "If they want to build something, tell them they can ask you to create it "
-        "(e.g., 'Create a BPMN process for order fulfillment').\n\n"
-        "Keep your response conversational, encouraging, and technically accurate."
+        "(e.g., 'Create a BPMN process for order fulfillment').",
     )
 
 
 def component_help_prompt(message: str) -> str:
-    return (
-        f'You are an expert software architecture assistant. '
-        f'The user asked: "{message}"\n\n'
-        f'They are working with the UML Component Diagram editor.\n\n'
-        "You have deep knowledge of:\n"
+    return _expert_help_prompt(
+        message,
+        "software architecture assistant",
+        "UML Component Diagram",
         "- Component diagram elements: Subsystems (containers grouping related components), "
         "Components (services, agents, models, databases, tools), and ComponentDependencies\n"
         "- Agent stereotypes: «solution» (an agent that does the work), «supervision» (an agent "
@@ -40,21 +50,19 @@ def component_help_prompt(message: str) -> str:
         "- Dependency stereotypes: agent→agent delegates (task handoff), supervises "
         "(supervision→solution), revises (feedback loop), collaborates (peer exchange); "
         "agent→capability has, uses, granted; capability implements\n"
-        "- Architecture patterns: layered systems, microservices, agent pipelines, AI-assisted workflows\n\n"
+        "- Architecture patterns: layered systems, microservices, agent pipelines, AI-assisted workflows",
         "Provide clear, practical advice about component architecture modeling. "
         "If they ask about an architecture pattern, explain the key components and how to express it. "
         "If they want to build something, tell them they can ask you to create it "
-        "(e.g., 'Create a component diagram for a RAG-based question-answering system').\n\n"
-        "Keep your response conversational, encouraging, and technically accurate."
+        "(e.g., 'Create a component diagram for a RAG-based question-answering system').",
     )
 
 
 def deployment_help_prompt(message: str) -> str:
-    return (
-        f'You are an expert deployment architecture assistant. '
-        f'The user asked: "{message}"\n\n'
-        f'They are working with the UML Deployment Diagram editor.\n\n'
-        "You have deep knowledge of:\n"
+    return _expert_help_prompt(
+        message,
+        "deployment architecture assistant",
+        "UML Deployment Diagram",
         "- Deployment diagram elements: DeploymentNodes (servers, VMs, Docker hosts, cloud services), "
         "DeploymentArtifacts (physical deployments inside nodes), "
         "DeploymentComponents (logical software units), and DeploymentDependencies\n"
@@ -62,30 +70,27 @@ def deployment_help_prompt(message: str) -> str:
         "- Typical patterns: 3-tier architectures, microservice deployments, "
         "containerized workloads, cloud-native topologies\n"
         "- Artifact-to-component correspondence: artifacts represent physical packages; "
-        "components represent the logical system they implement (linked via manifestedBy)\n\n"
+        "components represent the logical system they implement (linked via manifestedBy)",
         "Provide clear, practical advice about deployment topology modeling. "
         "If they ask about an infrastructure pattern, explain the nodes, artifacts, and communication paths. "
         "If they want to build something, tell them they can ask you to create it "
-        "(e.g., 'Create a deployment diagram for a containerized microservices setup').\n\n"
-        "Keep your response conversational, encouraging, and technically accurate."
+        "(e.g., 'Create a deployment diagram for a containerized microservices setup').",
     )
 
 
 def quantum_help_prompt(message: str) -> str:
-    return (
-        f'You are an expert quantum computing and quantum circuit modeling assistant. '
-        f'The user asked: "{message}"\n\n'
-        f'They are working with the Quantum Circuit Diagram editor.\n\n'
-        "You have deep knowledge of:\n"
+    return _expert_help_prompt(
+        message,
+        "quantum computing and quantum circuit modeling assistant",
+        "Quantum Circuit Diagram",
         "- Quantum gates (Hadamard, Pauli-X/Y/Z, CNOT, CZ, SWAP, S, T, QFT, etc.)\n"
         "- Quantum algorithms (Grover's search, Shor's factoring, QFT, Deutsch-Jozsa, "
         "Bernstein-Vazirani, quantum teleportation, superdense coding, phase estimation, VQE)\n"
         "- Quantum concepts (superposition, entanglement, interference, measurement, decoherence)\n"
-        "- Circuit design principles (oracle construction, amplitude amplification, error correction)\n\n"
+        "- Circuit design principles (oracle construction, amplitude amplification, error correction)",
         "Provide clear, educational explanations. If they ask about a quantum algorithm, "
         "explain the key steps and intuition behind it. If they want to build something, "
-        "tell them they can ask you to create it (e.g., 'Create a Grover\\'s search circuit').\n\n"
-        "Keep your response conversational, encouraging, and technically accurate."
+        "tell them they can ask you to create it (e.g., 'Create a Grover\\'s search circuit').",
     )
 
 

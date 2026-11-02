@@ -5,7 +5,9 @@ commit (the failure prints the new one). What this catches is the unmeant
 change: an edit that slips into a prompt while moving or refactoring code, or a
 system prompt that stops being byte-identical (the provider's prompt cache
 keys on an exact prefix). Constants are hashed as they are; functions are
-rendered with the fixed sample values below.
+rendered with the fixed sample values below, then once per other value in
+VARIANTS for each parameter they take, so every branch a parameter selects is
+pinned too.
 """
 import ast
 import hashlib
@@ -16,6 +18,7 @@ import pkgutil
 from pathlib import Path
 
 import prompts
+from ingestion.file_conversion_handler import CONVERTIBLE_DIAGRAM_TYPES
 
 SAMPLES = {
     "user_request": "a library with books, members and loans",
@@ -63,6 +66,20 @@ SAMPLES = {
     "transcript": "user: hi\nassistant: hello",
 }
 
+# The other values a parameter takes in a branch: the flags off, one image,
+# no relationships or classes, and every diagram type the converter accepts
+# plus one it does not.
+_DIAGRAM_TYPES = sorted(CONVERTIBLE_DIAGRAM_TYPES) + ["UnknownDiagram"]
+VARIANTS = {
+    "has_classes": [False],
+    "detect_mockup": [False],
+    "image_count": [1],
+    "rel_summary": [[]],
+    "class_metadata": [[]],
+    "diagram_type": _DIAGRAM_TYPES,
+    "target_diagram_type": _DIAGRAM_TYPES,
+}
+
 EXPECTED = {
     "agent_diagram.AGENT_ACTIONS_BLOCK": "9576bf17624f1f60",
     "agent_diagram.AGENT_RULES_BLOCK": "29d8bb395a6eb76b",
@@ -86,6 +103,7 @@ EXPECTED = {
     "class_diagram.SYSTEM_GENERATION_PROMPT": "75f201e43539a305",
     "class_diagram.SYSTEM_PROMPT": "70b5da254f7d69b1",
     "class_diagram.critique_prompt": "01686971a0e7ffbd",
+    "class_diagram.critique_prompt[rel_summary=[]]": "7697a1ab1aff8d71",
     "class_diagram.enumeration_recovery_prompt": "448eb48877bbbbc8",
     "class_diagram.reasoning_prompt": "42f90fd9f5bb24be",
     "classifier.SYSTEM_PROMPT": "2e8c2a4188644e78",
@@ -108,10 +126,26 @@ EXPECTED = {
     "file_conversion.STATE_MACHINE_SCHEMA": "61a2534edf726b0a",
     "file_conversion.XMI_NOTE": "fda1d38660b4e15c",
     "file_conversion.auto_detect_image_prompt": "521fbab6b0ad6fe8",
+    "file_conversion.auto_detect_image_prompt[detect_mockup=False]": "14f0ded946424c74",
     "file_conversion.auto_detect_prompt": "f4c9f1703dc981e4",
     "file_conversion.conversion_prompt": "505fc7660c096fe4",
+    "file_conversion.conversion_prompt[target_diagram_type='AgentDiagram']": "1a3640e4212e1fd7",
+    "file_conversion.conversion_prompt[target_diagram_type='ClassDiagram']": "5565fabe362bab8f",
+    "file_conversion.conversion_prompt[target_diagram_type='ObjectDiagram']": "2f0da03105f3ebee",
+    "file_conversion.conversion_prompt[target_diagram_type='StateMachineDiagram']": "2a12a0a76055c4f7",
+    "file_conversion.conversion_prompt[target_diagram_type='UnknownDiagram']": "244ae7065867861c",
     "file_conversion.diagram_type_label": "8d6aa53cd2c610c1",
+    "file_conversion.diagram_type_label[diagram_type='BPMN']": "80db2063cec80600",
+    "file_conversion.diagram_type_label[diagram_type='ClassDiagram']": "ae250bacc4711880",
+    "file_conversion.diagram_type_label[diagram_type='ObjectDiagram']": "a0be3ffa20f38f0e",
+    "file_conversion.diagram_type_label[diagram_type='StateMachineDiagram']": "dc918b27628b31ac",
+    "file_conversion.diagram_type_label[diagram_type='UnknownDiagram']": "53b4636667ac9215",
     "file_conversion.image_prompt": "6bd3f1f4fc25ffa3",
+    "file_conversion.image_prompt[target_diagram_type='AgentDiagram']": "3057878408cd6782",
+    "file_conversion.image_prompt[target_diagram_type='ClassDiagram']": "e9dda812a9174a7b",
+    "file_conversion.image_prompt[target_diagram_type='ObjectDiagram']": "e207b8cb24a8e296",
+    "file_conversion.image_prompt[target_diagram_type='StateMachineDiagram']": "956c19833e7c3801",
+    "file_conversion.image_prompt[target_diagram_type='UnknownDiagram']": "3f64a8e112c89c5a",
     "fragments.ARCHITECTURE_MODIFY_SHARED_RULES": "86834cf1d9ba317c",
     "fragments.CHANGES_FIELD_RULE": "1eb461fcf1feea0f",
     "fragments.DELETE_CLASS_CASCADE_RULE": "12d5b78ad5cc3271",
@@ -133,8 +167,11 @@ EXPECTED = {
     "gui.complete_system_prompt": "45a7f77797f57a04",
     "gui.data_model_step_for_classes": "0133afd5b613e683",
     "gui.interactions_block": "42710b03fa350131",
+    "gui.interactions_block[has_classes=False]": "42c93b6ba660efb1",
     "gui.mockup_block": "f4152cebd1b87112",
+    "gui.mockup_block[image_count=1]": "85c7b09e5ed65311",
     "gui.modification_prompt": "b7ade2f3c1936de6",
+    "gui.modification_prompt[class_metadata=[]]": "5a86fb5008002576",
     "gui.reasoning_prompt": "9209345b96765cc7",
     "gui.system_prompt": "973ddb6fc8296eff",
     "model_operations.spec_block": "85d83868c96c8225",
@@ -188,12 +225,21 @@ def _rendered() -> dict:
         module = importlib.import_module(f"prompts.{info.name}")
         for name in _defined_names(module):
             value = getattr(module, name)
-            if callable(value):
-                params = inspect.signature(value).parameters
-                value = value(**{p: SAMPLES[p] for p in params})
-            text = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
-            out[f"{info.name}.{name}"] = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+            if not callable(value):
+                out[f"{info.name}.{name}"] = _hash(value)
+                continue
+            sample = {p: SAMPLES[p] for p in inspect.signature(value).parameters}
+            out[f"{info.name}.{name}"] = _hash(value(**sample))
+            for param in sample:
+                for variant in VARIANTS.get(param, []):
+                    if variant != SAMPLES[param]:
+                        out[f"{info.name}.{name}[{param}={variant!r}]"] = _hash(value(**{**sample, param: variant}))
     return out
+
+
+def _hash(value) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def test_every_prompt_matches_its_pinned_hash():

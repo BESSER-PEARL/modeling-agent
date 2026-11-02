@@ -2,12 +2,7 @@
 
 
 def fallback_prompt(question: str) -> str:
-    return (
-        f"You are a UML specification expert. Answer the following question about UML:\n\n"
-        f"{question}\n\n"
-        "Provide accurate information based on UML 2.x specifications. "
-        "Be precise and reference specific UML concepts when applicable."
-    )
+    return error_fallback_prompt(question) + " Be precise and reference specific UML concepts when applicable."
 
 
 def error_fallback_prompt(question: str) -> str:
