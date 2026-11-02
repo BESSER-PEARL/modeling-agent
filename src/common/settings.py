@@ -38,7 +38,7 @@ class AgentSettings(BaseSettings):
     # Defaults are final values, not raw text, so they are not parsed again.
     # No protected namespace: the model tiers are named ``model_*``.
     model_config = SettingsConfigDict(
-        case_sensitive=True, populate_by_name=True, extra="ignore", validate_default=False,
+        case_sensitive=True, extra="ignore", validate_default=False,
         protected_namespaces=())
 
     # -- Container config.yaml (rendered by app.container_config) ---------------
