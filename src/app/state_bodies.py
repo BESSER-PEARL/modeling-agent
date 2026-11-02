@@ -8,6 +8,7 @@ Call :func:`register_all` from ``modeling_agent.py`` after states
 and intents have been created.
 """
 
+import functools
 import json
 import logging
 import re
@@ -17,6 +18,7 @@ from baf.core.session import Session
 from baf.library.transition.events.base_events import ReceiveJSONEvent
 from baf.nlp.rag.rag import RAGMessage
 
+from common.agent_config import LLM_MAX_TOKENS_TEXT, LLM_TEXT_TEMPERATURE
 from conversation import agent_context as ctx
 from llm.model_config import MODEL_GENERATION_SMALL
 from llm.provider import LLMProvider
@@ -72,6 +74,14 @@ except ImportError:  # pragma: no cover — test env without BAF stack
     _get_llm_provider = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+
+def _text_reply(llm: Any, prompt: str) -> str:
+    """One free-text call on the text LLM *llm*, on the user's key when one
+    is active (the token cap and temperature mirror ``gpt_text``'s own)."""
+    return LLMProvider(llm).complete(
+        prompt, temperature=LLM_TEXT_TEMPERATURE, max_tokens=LLM_MAX_TOKENS_TEXT,
+    )
 
 
 # ------------------------------------------------------------------
@@ -152,7 +162,7 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
         try:
             session_id = memory_session_key(session, request)
             summarizer = getattr(ctx, 'gpt_text', None)
-            summarize_fn = LLMProvider(summarizer).predict if summarizer else None
+            summarize_fn = functools.partial(_text_reply, summarizer) if summarizer else None
             mem = get_memory(session_id, summarizer=summarize_fn)
             mem.add_user(request.message)
         except Exception as exc:
@@ -846,7 +856,7 @@ def uml_rag_body(session: Session):
 
     if ctx.uml_rag is None:
         logger.info("[UML_RAG] RAG unavailable — falling back to standard LLM")
-        fallback_response = LLMProvider(ctx.gpt_text).predict(uml_prompts.fallback_prompt(user_message))
+        fallback_response = _text_reply(ctx.gpt_text, uml_prompts.fallback_prompt(user_message))
         reply_message(
             session,
             "*Note: UML knowledge base unavailable — answering from general knowledge.*\n\n"
@@ -858,7 +868,7 @@ def uml_rag_body(session: Session):
             reply_message(session, rag_message.answer)
         except Exception as e:
             logger.error(f"❌ Error in uml_rag_body: {e}")
-            fallback_response = LLMProvider(ctx.gpt_text).predict(uml_prompts.error_fallback_prompt(user_message))
+            fallback_response = _text_reply(ctx.gpt_text, uml_prompts.error_fallback_prompt(user_message))
             reply_message(session, fallback_response)
 
 

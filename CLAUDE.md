@@ -288,7 +288,7 @@ reply-route-to-sender, and sets/resets the per-request BYOK contextvar. **Re-ven
 ## LLM Pitfalls
 
 - **One door to the SDKs**: every LLM call goes through `llm.provider.LLMProvider` (`complete`, `parse`, `stream`,
-  `vision`, `predict`), which routes the request's BYOK key, records usage with the model actually called, applies
+  `vision`), which routes the request's BYOK key, records usage with the model actually called, applies
   the sampling rules and raises `ModelRefusal`. Only `llm/` may import `openai` / `anthropic` (import-linter);
   never post to a model API with `requests`/`httpx`.
 - **Two shared LLM instances**: `gpt` is the structured/JSON path, `gpt_text` is free text (help, greetings, RAG,

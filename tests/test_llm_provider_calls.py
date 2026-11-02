@@ -16,7 +16,7 @@ import pytest
 from openai.types import CompletionUsage
 from pydantic import BaseModel
 
-from common.errors import ModelRefusal
+from common.errors import ImagesNotSupported, ModelRefusal
 from conversation import session_helpers
 from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 from ingestion import file_conversion_handler as fc
@@ -209,7 +209,7 @@ def test_a_vision_refusal_raises_model_refusal(no_byok):
 def test_a_users_openai_key_gets_the_same_vision_request(monkeypatch):
     user_client, server = _Client(), _ServerLLM()
     monkeypatch.setattr(byok, "get_active_client", lambda: SimpleNamespace(
-        provider="openai", openai_client=user_client,
+        provider="openai", openai_client=user_client, vision_model=provider_module.MODEL_VISION,
     ))
 
     LLMProvider(server).vision("read it", ["data:image/png;base64,AAAA"], timeout=60)
@@ -221,7 +221,9 @@ def test_a_users_openai_key_gets_the_same_vision_request(monkeypatch):
 
 
 def test_an_anthropic_key_now_reads_images_on_the_users_key(monkeypatch):
-    """Before, a non-OpenAI key fell back to the server key for vision."""
+    """Before, a non-OpenAI key fell back to the server key for vision. The
+    user's chosen model is not used (it may not read images), and the call's
+    timeout reaches the SDK."""
     import anthropic
 
     sent = {}
@@ -239,7 +241,7 @@ def test_an_anthropic_key_now_reads_images_on_the_users_key(monkeypatch):
 
     monkeypatch.setattr(anthropic, "Anthropic", _FakeAnthropic)
     server = _ServerLLM()
-    token = byok.set_current("anthropic", "sk-ant-user", "claude-sonnet-5")
+    token = byok.set_current("anthropic", "sk-ant-user", "claude-opus-5")
     try:
         text = LLMProvider(server).vision("read it", ["data:image/png;base64,AAAA"], timeout=60)
     finally:
@@ -248,39 +250,101 @@ def test_an_anthropic_key_now_reads_images_on_the_users_key(monkeypatch):
     assert text == '{"ok": true}'
     assert server.client.calls == []
     assert sent["model"] == "claude-sonnet-5"
+    assert sent["timeout"] == 60
     image, prompt = sent["messages"][0]["content"]
     assert image["source"] == {"type": "base64", "media_type": "image/png", "data": "AAAA"}
     assert prompt["text"].startswith("read it")
 
 
-def test_a_gateway_key_sends_vision_to_the_gateway(monkeypatch):
-    """Before, vision always posted to api.openai.com, whatever the endpoint."""
+@pytest.fixture
+def user_openai_sdk(monkeypatch):
+    """Records the OpenAI-SDK clients a BYOK key builds and the calls they make."""
     import openai
 
-    created = {}
+    record = {"clients": [], "calls": []}
 
     class _FakeOpenAI:
         def __init__(self, **kwargs):
-            created["client"] = kwargs
+            record["clients"].append(kwargs)
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
         def _create(self, **kwargs):
-            created["call"] = kwargs
+            record["calls"].append(kwargs)
             return _completion()
 
     monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
-    monkeypatch.setenv("BESSER_AGENT_ALLOW_CUSTOM_BASE_URL", "true")
+    return record
+
+
+def _vision_on(provider, key, model=None, base_url=None):
     server = _ServerLLM()
-    token = byok.set_current("openai", "gw-key", "gpt-4o", "https://gateway.example/v1")
+    token = byok.set_current(provider, key, model, base_url)
     try:
-        LLMProvider(server).vision("read it", ["data:image/png;base64,AAAA"], timeout=60)
+        LLMProvider(server).vision("read it", [f"data:image/png;base64,{PNG}"], timeout=60)
     finally:
         byok.reset_current(token)
+    return server
+
+
+@pytest.mark.parametrize("provider, key, base_url", [
+    # Nebius's tier model, Qwen3-30B-A3B-Instruct-2507, is text-only.
+    ("nebius", "nb-user", None),
+    ("openai", "gw-key", "https://gateway.example/v1"),
+])
+def test_a_key_without_an_image_model_reads_images_on_the_server_key(
+    monkeypatch, user_openai_sdk, provider, key, base_url,
+):
+    """Before the vision fallback, a Nebius key sent the images to a text-only
+    model and the user was told to send a clearer diagram."""
+    monkeypatch.setenv("BESSER_AGENT_ALLOW_CUSTOM_BASE_URL", "true")
+
+    server = _vision_on(provider, key, base_url=base_url)
+
+    assert user_openai_sdk["calls"] == []
+    assert server.client.calls == [
+        {**_old_image_payload(provider_module.MODEL_VISION, "read it", "image/png", PNG), "timeout": 60},
+    ]
+
+
+def test_a_mistral_key_reads_images_on_its_image_model(user_openai_sdk):
+    server = _vision_on("mistral", "ms-user", "codestral-latest")
 
     assert server.client.calls == []
-    assert created["client"]["base_url"] == "https://gateway.example/v1"
-    assert created["call"]["messages"][0]["content"][1]["image_url"]["url"] == "data:image/png;base64,AAAA"
-    assert created["call"]["response_format"] == {"type": "json_object"}
+    assert user_openai_sdk["clients"][0]["base_url"] == byok.MISTRAL_BASE_URL
+    sent = user_openai_sdk["calls"][0]
+    assert sent["model"] == "mistral-large-latest"
+    assert sent["timeout"] == 60
+    assert sent["messages"][0]["content"][1]["image_url"]["url"] == f"data:image/png;base64,{PNG}"
+    assert sent["response_format"] == {"type": "json_object"}
+
+
+def _bad_request():
+    import httpx
+    import openai
+
+    request = httpx.Request("POST", "https://api.example/v1/chat/completions")
+    return openai.BadRequestError(
+        "Invalid content type. image_url is only supported by certain models.",
+        response=httpx.Response(400, request=request), body=None,
+    )
+
+
+def test_a_400_on_images_says_the_model_cannot_read_them(no_byok):
+    def _reject(**kw):
+        raise _bad_request()
+
+    server = _ServerLLM(client=_Client(_reject))
+
+    with pytest.raises(ImagesNotSupported) as raised:
+        LLMProvider(server).vision("read it", ["data:image/png;base64,AAAA"], timeout=60)
+    result = fc.convert_file_to_diagram_spec(
+        file_content_b64=PNG, filename="diagram.png",
+        llm_predict=lambda p: "{}", llm_vision_predict=LLMProvider(server).vision,
+    )
+
+    assert isinstance(raised.value.__cause__, Exception)
+    assert "can't read this image" in result["message"]
+    assert provider_module.MODEL_VISION in result["message"]
 
 
 # -- the other migrated call sites --------------------------------------------

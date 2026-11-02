@@ -99,3 +99,14 @@ def test_the_baf_patch_imports_byok_from_its_package():
         if isinstance(node, ast.ImportFrom) and not node.level and node.module.split(".")[0] in packages:
             imported += [importlib.import_module(f"{node.module}.{alias.name}") for alias in node.names]
     assert imported and all(hasattr(m, "set_current") and hasattr(m, "reset_current") for m in imported)
+
+
+def test_every_package_but_llm_is_kept_off_the_model_sdks():
+    """A package missing from the SDK contract's hand-kept list could import
+    openai / anthropic and bypass llm.provider unnoticed."""
+    on_disk = {p.parent.name for p in SRC.glob("*/__init__.py")}
+    contract = next(
+        c for c in _importlinter_config()["contracts"]
+        if c["name"] == "Only llm talks to the model SDKs"
+    )
+    assert set(contract["source_modules"]) == on_disk - {"llm"}

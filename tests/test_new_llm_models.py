@@ -68,11 +68,10 @@ def test_an_openai_key_on_gpt6_sends_only_params_gpt6_accepts(model, monkeypatch
 
 
 @pytest.mark.parametrize("model", GPT6)
-def test_gpt6_vision_uses_max_completion_tokens(model, monkeypatch):
+def test_gpt6_vision_uses_max_completion_tokens(model):
     from llm import provider
 
-    monkeypatch.setattr(provider, "MODEL_VISION", model)
-    params = provider._vision_params()
+    params = provider._vision_params(model)
     assert "max_tokens" not in params and "temperature" not in params
     assert params["max_completion_tokens"] > 0
 

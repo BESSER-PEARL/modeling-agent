@@ -257,7 +257,7 @@ Diagram Handlers
   - ``generate_complete_system`` / ``generate_single_element`` /
     ``generate_modification`` — template methods over the ``_build_system`` /
     ``_build_single_element`` / ``_build_modification`` hooks
-  - ``validate_and_refine(...)`` / ``self_correct(...)`` / ``parse_validate_or_correct(...)``
+  - ``self_correct(...)`` / ``parse_validate_or_correct(...)``
   - ``repair_json_response(malformed_json, schema_hint)`` /
     ``parse_and_validate_with_repair(...)``
   - ``apply_single_layout(...)`` / ``apply_system_layout(...)``
@@ -360,8 +360,8 @@ LLM (``src/llm/``)
   raises ``ModelRefusal`` on a refusal:
 
   - ``complete(prompt, *, model, json_mode, temperature, max_tokens, images)``
-    — free text or JSON mode; without a ``model`` (and images) it is BAF's
-    ``predict``
+    — free text or JSON mode; on the server key without a ``model`` (and
+    images) it is BAF's ``predict`` with an estimated usage
   - ``parse(messages, schema, *, temperature, max_tokens, model)`` — one
     structured-output attempt (OpenAI Structured Outputs, else JSON mode);
     raises ``OutputTruncated`` when the reply hits ``max_tokens``.
@@ -369,8 +369,9 @@ LLM (``src/llm/``)
   - ``stream(prompt, *, system_prompt, model, temperature, max_tokens)`` — the
     reply as text chunks (one chunk on a BYOK key)
   - ``vision(prompt, images, *, timeout)`` — the file-conversion vision call
-    (``MODEL_VISION``, JSON mode)
-  - ``predict(prompt, **kwargs)`` — BAF's ``predict`` with an estimated usage
+    (JSON mode) on the BYOK provider's image model, or on the server key and
+    ``MODEL_VISION`` when the provider has none; raises ``ImagesNotSupported``
+    when the provider rejects the image request
   - ``get_provider(llm, model_name)`` — the process-wide provider over ``gpt``
 
 ``src/llm/byok.py``
@@ -378,6 +379,8 @@ LLM (``src/llm/``)
 
   - ``set_current(provider, api_key, model, base_url)`` / ``reset_current(token)``
   - ``get_active_client()`` — the per-request client, or ``None``
+  - ``active_vision_model()`` — the active key's image model, or ``None``
+    when vision runs on the server key
   - ``resolve_model(provider, requested_model, user_model)``
   - ``SUPPORTED_PROVIDERS`` — ``openai``, ``anthropic``, ``mistral``, ``nebius``
 

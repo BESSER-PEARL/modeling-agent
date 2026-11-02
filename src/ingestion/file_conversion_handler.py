@@ -28,7 +28,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from common.errors import ModelRefusal
+from common.errors import ImagesNotSupported, ModelRefusal
 from llm.model_config import MODEL_VISION
 from prompts import file_conversion as file_prompts
 from utilities.image_inputs import data_url
@@ -378,7 +378,8 @@ def _convert_pdf(
     if not llm_vision_predict:
         return _error_response(
             f"The PDF '{filename}' appears to contain diagrams/images rather than text. "
-            "Image-based PDF conversion requires an OpenAI API key with vision capabilities."
+            "Image-based PDF conversion needs a model that can read images, and none is "
+            "available: add an OpenAI, Anthropic or Mistral API key in the assistant settings."
         )
 
     if not images_b64:
@@ -393,7 +394,7 @@ def _convert_pdf(
             [data_url("image/png", img_b64) for img_b64 in images_b64],
             timeout=90,
         )
-    except ModelRefusal as e:
+    except (ModelRefusal, ImagesNotSupported) as e:
         logger.warning(f"[FileConversion] Model declined the PDF images: {e}")
         return _error_response(e.user_message())
     except Exception as e:
@@ -419,8 +420,8 @@ def _convert_image(
     """
     if not llm_vision_predict:
         return _error_response(
-            "Image conversion requires an OpenAI API key with vision capabilities. "
-            "Please configure the API key in the agent settings."
+            "Image conversion needs a model that can read images, and none is "
+            "available: add an OpenAI, Anthropic or Mistral API key in the assistant settings."
         )
 
     vision_prompt = _build_image_prompt(target_diagram_type, detect_mockup=True)
@@ -438,6 +439,9 @@ def _convert_image(
         except ModelRefusal as e:
             refusal = e  # a declined image is declined again on retry
             break
+        except ImagesNotSupported as e:
+            logger.warning(f"[FileConversion] Vision rejected the image: {e}")
+            return _error_response(e.user_message())
         except Exception as e:
             logger.error(f"[FileConversion] Vision API call failed: {e}")
             return _error_response(

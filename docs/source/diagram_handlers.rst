@@ -126,8 +126,6 @@ Shared Concrete Methods
        ``_TWO_PASS_MIN_LENGTH`` (250 chars).
    * - ``predict_two_pass()``
      - Older free-text two-pass variant (reasoning then JSON)
-   * - ``validate_and_refine()``
-     - LLM self-critique loop for output validation
    * - ``self_correct()`` / ``parse_validate_or_correct()``
      - Re-prompt the model with the validation error and re-parse
    * - ``repair_json_response()`` / ``parse_and_validate_with_repair()``

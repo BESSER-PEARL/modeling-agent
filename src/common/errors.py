@@ -42,6 +42,22 @@ class ModelRefusal(LLMPredictionError):
         )
 
 
+class ImagesNotSupported(LLMPredictionError):
+    """The provider rejected an image request (HTTP 400), most often because
+    the model cannot read images."""
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+        super().__init__(f"{model} rejected the image request")
+
+    def user_message(self) -> str:
+        return (
+            f"The AI model ({self.model}) can't read this image: the provider "
+            "rejected the image input. Try a smaller PNG or JPEG, or describe "
+            "the diagram in text."
+        )
+
+
 def _field(obj: Any, name: str) -> Any:
     if isinstance(obj, dict):
         return obj.get(name)

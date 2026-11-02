@@ -97,8 +97,8 @@ class _RecordingLLM:
 @pytest.mark.parametrize("classifier", ["gpt-6-luna", "gpt-5.6-terra"])
 def test_shared_llm_defaults_carry_no_temperature_for_reasoning_models(monkeypatch, classifier):
     """BAF's ``predict()`` sends the constructor ``parameters`` whenever a call
-    passes none: UML RAG, the memory summarizer (``gpt_text.predict``), the
-    class-diagram critique and the non-client stream fallbacks. With the
+    passes none: UML RAG, the memory summarizer and the no-RAG UML answer on
+    the server key, and the non-client stream fallbacks. With the
     classifier tier on gpt-6-luna those defaults carried temperature 0.2 / 0.4,
     so every one of those calls would 400.
     """

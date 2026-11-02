@@ -7,13 +7,12 @@ RAG / intent classification goes through :class:`LLMProvider`:
 * ``complete`` — free text or JSON mode, optionally with images,
 * ``parse`` — one structured-output attempt into a Pydantic model,
 * ``stream`` — a reply as text chunks,
-* ``vision`` — the file-conversion image / PDF call,
-* ``predict`` — BAF's ``predict`` on the wrapped instance (its own model and
-  constructor parameters).
+* ``vision`` — the file-conversion image / PDF call.
 
-Every method but ``predict`` resolves the request's BYOK key first
+Every method resolves the request's BYOK key first
 (``byok.get_active_client``) and otherwise uses the wrapped BAF ``LLMOpenAI``
-instance's shared client, whose network calls ``app.agent_setup`` patches
+instance (its shared client, or BAF's ``predict`` with the instance's model
+and constructor parameters), whose network calls ``app.agent_setup`` patches
 with ``llm.retry`` (BYOK clients use the SDK's own retries). Sampling
 parameters come from ``model_config``, usage goes to the token tracker with
 the model actually called, and refusals raise ``ModelRefusal``.
@@ -41,7 +40,7 @@ from common.agent_config import (
     LLM_TEMPERATURE,
     LLM_TEXT_TEMPERATURE,
 )
-from common.errors import LLMPredictionError, raise_if_openai_refusal
+from common.errors import ImagesNotSupported, LLMPredictionError, raise_if_openai_refusal
 from llm import byok, tracking
 from llm.byok_config import get_current
 from llm.model_config import (
@@ -75,16 +74,11 @@ def _json_params(model: str) -> Dict[str, Any]:
     }
 
 
-def _vision_params() -> Dict[str, Any]:
-    """Token/sampling params for ``MODEL_VISION``: older models (gpt-4o,
-    gpt-4.1) take ``max_tokens`` and a temperature, reasoning models
-    ``max_completion_tokens`` and ``reasoning_effort``."""
-    if supports_custom_temperature(MODEL_VISION):
-        return {"max_tokens": _VISION_MAX_TOKENS, "temperature": _VISION_TEMPERATURE}
-    kwargs: Dict[str, Any] = {"max_completion_tokens": _VISION_MAX_TOKENS}
-    if reasoning_effort_for(MODEL_VISION):
-        kwargs["reasoning_effort"] = reasoning_effort_for(MODEL_VISION)
-    return kwargs
+def _vision_params(model: str) -> Dict[str, Any]:
+    """Token cap and sampling for a vision *model*: older models (gpt-4o,
+    gpt-4.1) take ``max_tokens``, reasoning models ``max_completion_tokens``."""
+    cap = "max_tokens" if supports_custom_temperature(model) else "max_completion_tokens"
+    return {cap: _VISION_MAX_TOKENS, **sampling_params(model, _VISION_TEMPERATURE)}
 
 
 class LLMProvider:
@@ -127,9 +121,10 @@ class LLMProvider:
     # Text and JSON
     # ------------------------------------------------------------------
 
-    def predict(self, prompt: str, **kwargs) -> str:
+    def _predict(self, prompt: str, **kwargs) -> str:
         """BAF's ``predict`` (the instance's model and constructor
-        parameters); BAF exposes no usage, so the tokens are estimated."""
+        parameters, never a BYOK key); BAF exposes no usage, so the tokens
+        are estimated. Callers go through :meth:`complete`."""
         response = self._llm.predict(prompt, **kwargs)
         self.tracker.record(
             prompt_tokens=len(prompt) // 4,
@@ -151,8 +146,8 @@ class LLMProvider:
         """One free-text (or JSON-mode) call, returning the text.
 
         ``model`` is a ``model_config`` tier; without one (and without
-        images) the call goes through BAF's ``predict`` on the instance.
-        ``images`` are data URLs sent with the prompt.
+        images) the server call goes through BAF's ``predict`` on the
+        instance. ``images`` are data URLs sent with the prompt.
         """
         byok_client = byok.get_active_client()
         if byok_client is not None:
@@ -181,36 +176,49 @@ class LLMProvider:
         if images:
             raise LLMPredictionError("This LLM client cannot send images")
         if json_mode:
-            return self.predict(prompt, parameters=_json_params(self._model))
-        return self.predict(prompt)
+            return self._predict(prompt, parameters=_json_params(self._model))
+        return self._predict(prompt)
 
     def vision(self, prompt: str, images: Sequence[str], *, timeout: float) -> str:
-        """The file-conversion vision call (``MODEL_VISION``, JSON mode).
+        """The file-conversion vision call (JSON mode).
 
-        The official OpenAI endpoint (server key or a user's OpenAI key) gets
-        the vision request as is; any other BYOK provider or gateway gets it
-        through its own client with the BYOK model mapping.
+        A user's key runs it on its provider's image model
+        (``BYOKClient.vision_model``): the official OpenAI endpoint gets the
+        request as is, other providers go through their own client. A key
+        whose provider has none (Nebius, a gateway, a custom endpoint) leaves
+        the call to the server key and ``MODEL_VISION``.
+
+        Raises:
+            ImagesNotSupported: the provider rejected the request (HTTP 400).
         """
         byok_client = byok.get_active_client()
-        if byok_client is not None and byok_client.openai_client is None:
-            return byok_client.predict_raw(
-                prompt,
-                model=MODEL_VISION,
-                json_mode=True,
-                temperature=_VISION_TEMPERATURE,
-                max_tokens=_VISION_MAX_TOKENS,
-                images=images,
+        if byok_client is not None and byok_client.vision_model is None:
+            logger.info(
+                "Vision: no image-capable %s model for the user's key; using the server key",
+                byok_client.provider,
             )
-        client = byok_client.openai_client if byok_client is not None else self.client
-        if client is None:
-            raise LLMPredictionError("No LLM client is available for vision")
-        return self._create(client, {
-            "model": MODEL_VISION,
-            "messages": [{"role": "user", "content": openai_content(prompt, images)}],
-            "response_format": {"type": "json_object"},
-            **_vision_params(),
-            "timeout": timeout,
-        })
+            byok_client = None
+        model = byok_client.vision_model if byok_client is not None else MODEL_VISION
+        try:
+            if byok_client is not None and byok_client.openai_client is None:
+                return byok_client.vision(
+                    prompt, images, temperature=_VISION_TEMPERATURE,
+                    max_tokens=_VISION_MAX_TOKENS, timeout=timeout,
+                )
+            client = byok_client.openai_client if byok_client is not None else self.client
+            if client is None:
+                raise LLMPredictionError("No LLM client is available for vision")
+            return self._create(client, {
+                "model": model,
+                "messages": [{"role": "user", "content": openai_content(prompt, images)}],
+                "response_format": {"type": "json_object"},
+                **_vision_params(model),
+                "timeout": timeout,
+            })
+        except Exception as exc:
+            if getattr(exc, "status_code", None) == 400:
+                raise ImagesNotSupported(model) from exc
+            raise
 
     # ------------------------------------------------------------------
     # Structured outputs
@@ -223,6 +231,14 @@ class LLMProvider:
             return byok_client.openai_client is not None
         client = self.client
         return client is not None and hasattr(client, 'beta') and hasattr(client.beta, 'chat')
+
+    def structured_model(self, model: Optional[str] = None) -> str:
+        """The model a Structured Outputs :meth:`parse` calls for *model*: a
+        user's OpenAI key maps it to their chosen model or BYOK tier."""
+        cfg = get_current()
+        if cfg is None:
+            return model or self._model
+        return byok.resolve_model("openai", model or self._model, cfg.model)
 
     def parse(
         self,
@@ -269,13 +285,12 @@ class LLMProvider:
                     temperature=temperature, max_tokens=max_tokens, system=system,
                 )
                 return validate_llm_json(schema, byok._strip_code_fences(raw))
-            cfg = get_current()
-            effective_model = byok.resolve_model("openai", effective_model, cfg.model if cfg else None)
+            effective_model = self.structured_model(model)
         else:
             client = self.client
         if client is None or not hasattr(client, 'beta'):
             prompt = "\n".join(m["content"] for m in messages)
-            return validate_llm_json(schema, self.predict(prompt))
+            return validate_llm_json(schema, self._predict(prompt))
 
         parse_kwargs: Dict[str, Any] = {
             "model": effective_model,
@@ -296,10 +311,10 @@ class LLMProvider:
         usage = getattr(completion, 'usage', None)
         self._record(usage, effective_model)
         if usage is not None:
-            logger.debug(
-                "Structured call usage: model=%s prompt=%s completion=%s finish_reason=%s",
+            logger.info(
+                "Structured call usage: model=%s prompt=%s completion=%s total=%s finish_reason=%s",
                 effective_model, getattr(usage, "prompt_tokens", None),
-                getattr(usage, "completion_tokens", None),
+                getattr(usage, "completion_tokens", None), getattr(usage, "total_tokens", None),
                 completion.choices[0].finish_reason if completion.choices else None,
             )
 
@@ -344,7 +359,7 @@ class LLMProvider:
             return iter([text] if text else [])
         client = self.client
         if client is None or not hasattr(client, 'chat'):
-            response = self.predict(prompt)
+            response = self._predict(prompt)
             return iter([response if isinstance(response, str) else str(response)])
 
         effective_model = model or self._model

@@ -88,6 +88,23 @@ def test_an_openai_key_runs_the_structured_call_on_the_users_client(monkeypatch,
     assert len(user_client.calls) == 1
 
 
+def test_the_structured_call_logs_the_model_it_calls(monkeypatch, caplog, handler):
+    """On a user's key the log names their model, not the server tier."""
+    user_client = _ParseClient(answer="user")
+    stub = SimpleNamespace(provider="openai", openai_client=user_client)
+    monkeypatch.setattr(byok, "get_active_client", lambda: stub)
+    token = byok.set_current("openai", "sk-user", "gpt-4.1")
+    try:
+        with caplog.at_level("INFO"):
+            handler.predict_structured("make it", _Answer, max_retries=0, model="gpt-5.5")
+    finally:
+        byok.reset_current(token)
+
+    started = [r.getMessage() for r in caplog.records if "Structured LLM call started" in r.getMessage()]
+    assert user_client.calls[0]["model"] == "gpt-4.1"
+    assert started and "model=gpt-4.1" in started[0]
+
+
 @pytest.mark.parametrize("provider", ["anthropic", "mistral"])
 def test_other_providers_use_the_users_key_through_json_mode(monkeypatch, handler, server, provider):
     seen = []

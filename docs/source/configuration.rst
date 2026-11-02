@@ -341,14 +341,17 @@ and the shared server LLM is never mutated.
        (generation, ``gpt_predict_json``), structured output
        (``base_handler.predict_structured`` and the intent classifier;
        ``.parse()`` on a user's OpenAI key, JSON mode + schema validation for
-       the other providers), streaming replies (one chunk) and image/PDF
-       vision (the vision request as is on an OpenAI key, the BYOK model
-       mapping with the images for the other providers and gateways)
+       the other providers), streaming replies (one chunk), the memory
+       summarizer, the no-RAG UML answer and image/PDF vision on the
+       provider's image model (see the ``vision`` column below)
+   * - Vision without an image model
+     - Nebius, a catalog gateway and a custom endpoint have no known
+       image-capable model, so image/PDF conversion runs on the server key
+       (logged at INFO). A provider that rejects the image request (HTTP 400)
+       gets a "can't read this image" reply.
    * - Not routed
      - The local BAF fallback classifier (no LLM), BAF's own RAG and
-       intent-classifier calls, ``LLMProvider.predict`` (BAF's ``predict`` on
-       the shared key: the memory summarizer, the class-diagram critique and
-       the no-RAG UML answer), RAG embeddings and speech-to-text
+       intent-classifier calls, RAG embeddings and speech-to-text
    * - Per-request timeout
      - 300 s (without it the SDKs default to several minutes, letting one
        hung call stall a whole turn; 120 s cut long-spec reasoning passes short)
@@ -554,27 +557,34 @@ BYOK cost behaviour
 ~~~~~~~~~~~~~~~~~~~
 
 With a user's key the user pays for every routed call. Without a chosen model
-the tiers map as follows; a chosen model is used for every call.
+the tiers map as follows; a chosen model is used for every call except
+file-conversion vision, which always uses the ``vision`` model (a chosen model
+may not read images).
 
 .. list-table::
    :header-rows: 1
-   :widths: 22 39 39
+   :widths: 16 30 30 24
 
    * - Provider
      - ``large``: GENERATION_LARGE, GENERATION_GUI, REASONING, VISION
      - ``small``: GENERATION_SMALL, CLASSIFIER
+     - ``vision``: file conversion
    * - ``openai``
      - ``gpt-5.5``
      - ``gpt-4o-mini``
+     - ``MODEL_VISION``
    * - ``anthropic``
      - ``claude-sonnet-5``
      - ``claude-haiku-4-5``
+     - ``claude-sonnet-5``
    * - ``mistral``
      - ``mistral-large-latest``
      - ``mistral-small-latest``
+     - ``mistral-large-latest``
    * - ``nebius``
      - ``Qwen/Qwen3-30B-A3B-Instruct-2507``
      - same model
+     - none (server key)
 
 The tier is read from the model the call site requests, not from whether
 that model is a reasoning model. A small edit on an OpenAI key therefore runs

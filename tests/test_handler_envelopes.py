@@ -262,6 +262,9 @@ class FakeProvider:
     def supports_structured_outputs(self) -> bool:
         return True
 
+    def structured_model(self, model=None) -> str:
+        return model or self.model_name
+
     def parse(self, messages, schema, **kwargs):
         if self.mode == "llm_error":
             raise LLMPredictionError("fake failure")

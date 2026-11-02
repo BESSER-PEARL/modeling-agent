@@ -2,7 +2,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from llm.provider import LLMProvider
+from llm.provider import LLMProvider, _json_params
 from llm.model_config import MODEL_CLASSIFIER
 
 
@@ -50,28 +50,30 @@ class TestConstructor:
 
 
 # ---------------------------------------------------------------------------
-# 2. predict() – happy path
+# 2. complete() without a model – BAF's predict on the server key
 # ---------------------------------------------------------------------------
 
 class TestPredict:
-    """predict() delegates to the underlying LLM's predict method."""
+    """complete() without a model delegates to the underlying LLM's predict method."""
 
     def test_returns_llm_response(self):
         mock_llm = _make_mock_llm()
         mock_llm.predict.return_value = "hello"
         provider = LLMProvider(mock_llm)
 
-        result = provider.predict("test")
+        result = provider.complete("test")
         assert result == "hello"
         mock_llm.predict.assert_called_once_with("test")
 
-    def test_passes_kwargs_through(self):
+    def test_json_mode_passes_the_json_parameters(self):
         mock_llm = _make_mock_llm()
         mock_llm.predict.return_value = "ok"
         provider = LLMProvider(mock_llm)
 
-        provider.predict("prompt", temperature=0.5)
-        mock_llm.predict.assert_called_once_with("prompt", temperature=0.5)
+        provider.complete("prompt", json_mode=True)
+        mock_llm.predict.assert_called_once_with(
+            "prompt", parameters=_json_params(MODEL_CLASSIFIER),
+        )
 
     def test_records_token_usage(self):
         mock_llm = _make_mock_llm()
@@ -79,17 +81,17 @@ class TestPredict:
         provider = LLMProvider(mock_llm)
 
         initial_count = provider.tracker.summary()["call_count"]
-        provider.predict("some prompt text here")
+        provider.complete("some prompt text here")
         after_count = provider.tracker.summary()["call_count"]
         assert after_count > initial_count
 
 
 # ---------------------------------------------------------------------------
-# 3. predict() – error handling
+# 3. complete() without a model – error handling
 # ---------------------------------------------------------------------------
 
 class TestPredictErrors:
-    """Exceptions from the underlying LLM propagate through predict()."""
+    """Exceptions from the underlying LLM propagate through complete()."""
 
     def test_exception_propagates(self):
         mock_llm = _make_mock_llm()
@@ -97,7 +99,7 @@ class TestPredictErrors:
         provider = LLMProvider(mock_llm)
 
         with pytest.raises(RuntimeError, match="API is down"):
-            provider.predict("test")
+            provider.complete("test")
 
     def test_connection_error_propagates(self):
         mock_llm = _make_mock_llm()
@@ -105,7 +107,7 @@ class TestPredictErrors:
         provider = LLMProvider(mock_llm)
 
         with pytest.raises(ConnectionError, match="timeout"):
-            provider.predict("test")
+            provider.complete("test")
 
 
 # ---------------------------------------------------------------------------

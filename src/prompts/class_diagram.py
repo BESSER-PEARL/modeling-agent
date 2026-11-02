@@ -1,7 +1,5 @@
 """Class diagram prompts: design rules, complete-system generation, modification, reasoning and repair."""
 
-from typing import List
-
 from .fragments import (
     CHANGES_FIELD_RULE,
     DELETE_CLASS_CASCADE_RULE,
@@ -198,39 +196,3 @@ ENUMERATION_RECOVERY_SYSTEM_PROMPT = (
     "specification. You never invent a value the "
     "specification does not state."
 )
-
-
-def critique_prompt(class_summary: List[str], rel_summary: List[str], user_request: str) -> str:
-    return f"""Review this UML class diagram for quality issues.
-
-Classes:
-{chr(10).join('- ' + s for s in class_summary)}
-
-Relationships:
-{chr(10).join('- ' + r for r in rel_summary) if rel_summary else '(none)'}
-
-User's original request: "{user_request}"
-
-Check for these issues:
-1. MISSING RELATIONSHIPS: Are there classes that should clearly be connected but aren't? (e.g., Order and Customer without a relationship)
-2. WRONG MULTIPLICITIES: Are any multiplicities incorrect? (e.g., Order-Product should typically be many-to-many via OrderItem, not one-to-one)
-3. MISSING KEY ATTRIBUTES: Are any classes missing obviously essential attributes? (e.g., User without email, Order without date)
-4. REDUNDANT ATTRIBUTES: Are any attributes duplicated across classes unnecessarily?
-
-If you find issues, return a JSON object with fixes:
-{{
-  "has_issues": true,
-  "add_relationships": [
-    {{"type": "Association", "source": "Class1", "target": "Class2", "sourceMultiplicity": "1", "targetMultiplicity": "*", "name": "relName"}}
-  ],
-  "fix_multiplicities": [
-    {{"source": "Class1", "target": "Class2", "sourceMultiplicity": "1", "targetMultiplicity": "*"}}
-  ],
-  "add_attributes": [
-    {{"className": "ClassName", "attributes": [{{"name": "attr", "type": "String", "visibility": "public"}}]}}
-  ]
-}}
-
-If the diagram looks good, return: {{"has_issues": false}}
-
-Return ONLY the JSON, no explanations."""

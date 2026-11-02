@@ -60,10 +60,10 @@ def _image_data_url(attachment: FileAttachment) -> str:
 
 def _vision_predict():
     """The vision call for this request, or None when no key can serve it:
-    the user's key (any provider) when one is active, else the server's."""
+    the user's key when its provider has an image model, else the server's."""
     from llm.provider import get_provider
     provider = get_provider()
-    if provider is None or not (byok.is_active() or ctx.openai_api_key):
+    if provider is None or not (byok.active_vision_model() or ctx.openai_api_key):
         return None
     return provider.vision
 

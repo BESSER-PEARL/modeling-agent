@@ -24,7 +24,6 @@ from common.settings import AgentSettings
 from llm.model_config import MODEL_CLASSIFIER, MODEL_GENERATION_SMALL
 from llm.provider import LLMProvider, OutputTruncated
 from .layout_engine import apply_layout
-from prompts import class_diagram as class_prompts
 from common.errors import (
     ErrorCode, LLMPredictionError, ModelRefusal, build_error_response, classify_error,
     non_recoverable_cause, _RECOVERY_HINTS,
@@ -935,7 +934,7 @@ class BaseDiagramHandler(ABC):
                 prompt, response_schema, system_prompt, max_retries, model=model,
                 images=images,
             )
-        effective_model = model or provider.model_name
+        effective_model = provider.structured_model(model)
 
         messages = []
         if system_prompt:
@@ -1412,125 +1411,6 @@ class BaseDiagramHandler(ABC):
         )
 
         return self.predict_with_retry(structured_prompt, model=model, max_tokens=max_tokens)
-
-    # ------------------------------------------------------------------
-    # Validation-feedback loop (critique → fix)
-    # ------------------------------------------------------------------
-    def validate_and_refine(
-        self,
-        spec: Dict[str, Any],
-        user_request: str,
-        diagram_type: str,
-    ) -> Dict[str, Any]:
-        """Validate a generated spec and refine it if quality issues are found.
-
-        Sends the spec to the LLM for self-critique, asking it to check for:
-        - Missing obvious attributes
-        - Missing relationships between clearly related classes
-        - Wrong multiplicities
-        - Redundant or misplaced attributes
-        - Naming convention issues
-
-        Returns the refined spec (or the original if no issues found or
-        refinement fails).
-        """
-        if diagram_type not in ("ClassDiagram",):
-            # StateMachine validation is handled in StateMachineHandler._validate_and_refine_state_machine
-            return spec
-
-        classes = spec.get("classes", [])
-        relationships = spec.get("relationships", [])
-
-        # Skip validation for very small diagrams (1-3 classes) where the
-        # extra LLM round-trip rarely finds issues.  4+ classes benefit from
-        # relationship and attribute completeness checks.
-        if len(classes) <= 20:
-            return spec
-
-        # Build a compact representation for the critique prompt
-        class_summary = []
-        for cls in classes:
-            attrs = [a.get("name", "?") for a in cls.get("attributes", [])]
-            class_summary.append(f"{cls.get('className', '?')}: {', '.join(attrs)}")
-        rel_summary = []
-        for rel in relationships:
-            rel_summary.append(
-                f"{rel.get('source', '?')} -> {rel.get('target', '?')} "
-                f"({rel.get('type', '?')}, {rel.get('sourceMultiplicity', '?')}..{rel.get('targetMultiplicity', '?')})"
-            )
-
-        critique_prompt = class_prompts.critique_prompt(class_summary, rel_summary, user_request)
-
-        try:
-            response = self.llm_provider.predict(critique_prompt)
-
-            if not response or not response.strip():
-                return spec
-
-            json_text = self.clean_json_response(response)
-            critique = self.parse_json_safely(json_text)
-            if not critique or not critique.get("has_issues"):
-                logger.info(f"[{self.get_diagram_type()}] Validation: no issues found")
-                return spec
-
-            logger.info(f"[{self.get_diagram_type()}] Validation: applying refinements")
-
-            # Apply relationship additions
-            for new_rel in critique.get("add_relationships", []):
-                if isinstance(new_rel, dict) and new_rel.get("source") and new_rel.get("target"):
-                    # Check it doesn't already exist
-                    exists = any(
-                        r.get("source") == new_rel["source"] and r.get("target") == new_rel["target"]
-                        for r in relationships
-                    )
-                    if not exists:
-                        relationships.append(new_rel)
-                        logger.info(
-                            f"[{self.get_diagram_type()}] Added missing relationship: "
-                            f"{new_rel['source']} -> {new_rel['target']}"
-                        )
-
-            # Apply multiplicity fixes
-            for fix in critique.get("fix_multiplicities", []):
-                if not isinstance(fix, dict):
-                    continue
-                for rel in relationships:
-                    if rel.get("source") == fix.get("source") and rel.get("target") == fix.get("target"):
-                        if "sourceMultiplicity" in fix:
-                            rel["sourceMultiplicity"] = fix["sourceMultiplicity"]
-                        if "targetMultiplicity" in fix:
-                            rel["targetMultiplicity"] = fix["targetMultiplicity"]
-                        logger.info(
-                            f"[{self.get_diagram_type()}] Fixed multiplicity: "
-                            f"{fix.get('source')} -> {fix.get('target')}"
-                        )
-
-            # Apply missing attributes
-            for attr_fix in critique.get("add_attributes", []):
-                if not isinstance(attr_fix, dict):
-                    continue
-                target_class = attr_fix.get("className")
-                new_attrs = attr_fix.get("attributes", [])
-                for cls in classes:
-                    if cls.get("className") == target_class:
-                        existing_names = {a.get("name") for a in cls.get("attributes", [])}
-                        for attr in new_attrs:
-                            if isinstance(attr, dict) and attr.get("name") not in existing_names:
-                                cls.setdefault("attributes", []).append(attr)
-                                logger.info(
-                                    f"[{self.get_diagram_type()}] Added missing attribute: "
-                                    f"{target_class}.{attr.get('name')}"
-                                )
-
-            spec["relationships"] = relationships
-            return spec
-
-        except Exception as exc:
-            logger.warning(
-                f"[{self.get_diagram_type()}] Validation-feedback failed ({exc}), "
-                "returning original spec"
-            )
-            return spec
 
     # ------------------------------------------------------------------
     # Error recovery: JSON repair

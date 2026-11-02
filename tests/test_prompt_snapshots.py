@@ -102,8 +102,6 @@ EXPECTED = {
     "class_diagram.MODIFY_SYSTEM_PROMPT_CLASS": "4bd736670637974f",
     "class_diagram.SYSTEM_GENERATION_PROMPT": "75f201e43539a305",
     "class_diagram.SYSTEM_PROMPT": "70b5da254f7d69b1",
-    "class_diagram.critique_prompt": "01686971a0e7ffbd",
-    "class_diagram.critique_prompt[rel_summary=[]]": "7697a1ab1aff8d71",
     "class_diagram.enumeration_recovery_prompt": "448eb48877bbbbc8",
     "class_diagram.reasoning_prompt": "42f90fd9f5bb24be",
     "classifier.SYSTEM_PROMPT": "2e8c2a4188644e78",

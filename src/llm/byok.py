@@ -21,11 +21,12 @@ LLM/client.
 
 Scope
 -----
-``llm.provider.LLMProvider`` asks :func:`get_active_client` on every call but
-``predict`` (BAF's own path), so these run on the user's key when one is
-active: free text and JSON mode, structured output (``.parse()`` on the
-user's OpenAI client, JSON mode for the other providers), streaming (one
-chunk) and the file-conversion vision call.
+``llm.provider.LLMProvider`` asks :func:`get_active_client` on every call,
+so these run on the user's key when one is active: free text and JSON mode,
+structured output (``.parse()`` on the user's OpenAI client, JSON mode for the
+other providers) and streaming (one chunk). The file-conversion vision call
+uses the user's key only when the provider has a known image-capable model
+(``BYOKClient.vision_model``); otherwise it runs on the server key.
 
 Errors
 ------
@@ -96,14 +97,31 @@ class BYOKError(RuntimeError):
 # A model the user explicitly chose (``user_api_model``) is used for every call,
 # both tiers. Without one, ``small`` uses the provider's cheap sibling to keep
 # small edits and routing / repair calls inexpensive on the user's key.
+#
+# ``vision`` is the file-conversion image model, used whatever the user picked
+# (their pick may be text-only). Only providers whose docs list an image-capable
+# model have one; vision on the others runs on the server key.
+# mistral-large-latest is Mistral Large 3 or 4, both multimodal per Mistral's
+# docs; Nebius has no stable image model (Qwen3-30B-A3B is text-only).
 _PROVIDER_TIER_MODELS = {
-    "openai":    {"large": "gpt-5.5",              "small": "gpt-4o-mini"},
-    "anthropic": {"large": "claude-sonnet-5",      "small": "claude-haiku-4-5"},
-    "mistral":   {"large": "mistral-large-latest", "small": "mistral-small-latest"},
+    "openai":    {"large": "gpt-5.5",              "small": "gpt-4o-mini",
+                  "vision": MODEL_VISION},
+    "anthropic": {"large": "claude-sonnet-5",      "small": "claude-haiku-4-5",
+                  "vision": "claude-sonnet-5"},
+    "mistral":   {"large": "mistral-large-latest", "small": "mistral-small-latest",
+                  "vision": "mistral-large-latest"},
     # One small-activation MoE serves both tiers (BESSER's Nebius default).
     "nebius":    {"large": "Qwen/Qwen3-30B-A3B-Instruct-2507",
                   "small": "Qwen/Qwen3-30B-A3B-Instruct-2507"},
 }
+
+
+def _vision_model(provider: str, base_url: Optional[str]) -> Optional[str]:
+    """*provider*'s image-capable model, or ``None`` when none is known
+    (Nebius, a catalog gateway or a custom endpoint)."""
+    if base_url:
+        return None
+    return _PROVIDER_TIER_MODELS.get(provider, {}).get("vision")
 
 
 def _tier_of(requested_model: Optional[str]) -> str:
@@ -212,6 +230,13 @@ def reset_current(token: "contextvars.Token") -> None:
         pass
 
 
+def active_vision_model() -> Optional[str]:
+    """The image-capable model of the active key's provider, or ``None`` (no
+    key, or a provider without one: vision then runs on the server key)."""
+    cfg = current_byok.get()
+    return None if cfg is None else _vision_model(cfg.provider, cfg.base_url)
+
+
 def is_active() -> bool:
     """True when a BYOK key is active for the current request/context.
 
@@ -313,13 +338,50 @@ class BYOKClient:
         URLs sent with the prompt (see ``utilities.image_inputs``).
         """
         target = resolve_model(self.provider, model, self._user_model)
+        return self._call(
+            prompt, target, json_mode, temperature, reasoning_effort, max_tokens, system, images,
+        )
+
+    @property
+    def vision_model(self) -> Optional[str]:
+        """The provider's image-capable model (see :func:`_vision_model`)."""
+        return _vision_model(self.provider, self._base_url)
+
+    def vision(
+        self,
+        prompt: str,
+        images: Sequence[str],
+        *,
+        temperature: float,
+        max_tokens: int,
+        timeout: float,
+    ) -> str:
+        """One JSON-mode image call on :attr:`vision_model` (callers check it is set)."""
+        return self._call(
+            prompt, self.vision_model, True, temperature, None, max_tokens, None, images, timeout,
+        )
+
+    def _call(
+        self,
+        prompt: str,
+        target: str,
+        json_mode: bool,
+        temperature: Optional[float],
+        reasoning_effort: Optional[str],
+        max_tokens: Optional[int],
+        system: Optional[str],
+        images: Sequence[str],
+        timeout: Optional[float] = None,
+    ) -> str:
         temp = LLM_TEMPERATURE if temperature is None else temperature
         cap = max_tokens or LLM_MAX_TOKENS_LARGE
         if self.provider == "anthropic":
-            return self._anthropic_call(prompt, target, json_mode, cap, system, images)
+            return self._anthropic_call(prompt, target, json_mode, cap, system, images, timeout)
         if system:
             prompt = f"{system}\n{prompt}"
-        return self._openai_call(prompt, target, json_mode, temp, reasoning_effort, cap, images)
+        return self._openai_call(
+            prompt, target, json_mode, temp, reasoning_effort, cap, images, timeout,
+        )
 
     def predict_text(self, prompt: str) -> str:
         """Simple free-text path (cheap/small tier, conversational temp)."""
@@ -338,11 +400,14 @@ class BYOKClient:
         reasoning_effort: Optional[str],
         max_tokens: int = LLM_MAX_TOKENS_LARGE,
         images: Sequence[str] = (),
+        timeout: Optional[float] = None,
     ) -> str:
         kwargs = {
             "model": model,
             "messages": [{"role": "user", "content": openai_content(prompt, images)}],
         }
+        if timeout is not None:
+            kwargs["timeout"] = timeout
         # Mistral and Nebius use ``max_tokens``; OpenAI uses ``max_completion_tokens``.
         if self.provider in ("mistral", "nebius"):
             kwargs["max_tokens"] = max_tokens
@@ -374,6 +439,7 @@ class BYOKClient:
         max_tokens: int = LLM_MAX_TOKENS_LARGE,
         system: Optional[str] = None,
         images: Sequence[str] = (),
+        timeout: Optional[float] = None,
     ) -> str:
         content = prompt
         if json_mode:
@@ -386,6 +452,8 @@ class BYOKClient:
             "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": anthropic_content(content, images)}],
         }
+        if timeout is not None:
+            kwargs["timeout"] = timeout
         if system:
             # Static prefix first, cached: later calls bill it at the cache-read rate.
             kwargs["system"] = [
