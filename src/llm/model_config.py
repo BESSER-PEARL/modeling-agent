@@ -24,33 +24,28 @@ Embeddings are pinned separately (``MODEL_EMBEDDINGS``) so a silent
 OpenAI default change can never alter RAG behavior.
 """
 
-import os
 import re
 
-_ENV_PREFIX = "BESSER_AGENT_MODEL_"
+from common.settings import AgentSettings
 
+# BESSER_AGENT_MODEL_<tier>, read at import (defaults in common.settings).
+_settings = AgentSettings()
 
-def _env(name: str, default: str) -> str:
-    """Read ``BESSER_AGENT_MODEL_<name>``, falling back to *default*."""
-    value = os.getenv(_ENV_PREFIX + name, "").strip()
-    return value or default
-
-
-MODEL_CLASSIFIER = _env("CLASSIFIER", "gpt-6-luna")
+MODEL_CLASSIFIER = _settings.model_classifier
 # Default routing is env-overridable. GPT-5 and later models use
 # reasoning_effort="low" and omit custom temperature parameters.
-MODEL_GENERATION_LARGE = _env("GENERATION_LARGE", "gpt-5-mini")
+MODEL_GENERATION_LARGE = _settings.model_generation_large
 # GUI complete-system generation gets its own knob: design quality tracks the
 # model's taste far more than diagram generation does, so it runs a stronger
 # model without slowing down class-diagram creates.
-MODEL_GENERATION_GUI = _env("GENERATION_GUI", "gpt-6-sol")
-MODEL_GENERATION_SMALL = _env("GENERATION_SMALL", "gpt-6-luna")
-MODEL_REASONING = _env("REASONING", "gpt-5-mini")
-MODEL_VISION = _env("VISION", "gpt-4o")
+MODEL_GENERATION_GUI = _settings.model_generation_gui
+MODEL_GENERATION_SMALL = _settings.model_generation_small
+MODEL_REASONING = _settings.model_reasoning
+MODEL_VISION = _settings.model_vision
 
 # Pinned explicitly so a langchain/OpenAI default bump never silently
 # changes the RAG vector space (existing vectors would stop matching).
-MODEL_EMBEDDINGS = _env("EMBEDDINGS", "text-embedding-3-small")
+MODEL_EMBEDDINGS = _settings.model_embeddings
 
 
 # OpenAI reasoning models reject an explicit ``temperature`` other than the
@@ -89,7 +84,7 @@ def is_openai_reasoning_model(model: str) -> bool:
 # 26s) with no measurable quality loss — structured diagram specs don't
 # need deep chain-of-thought. NOTE: "minimal" is rejected by gpt-5.5 and
 # gpt-6, "none" by gpt-6-astra; "low" works on every one of them.
-MODEL_REASONING_EFFORT = _env("REASONING_EFFORT", "low")
+MODEL_REASONING_EFFORT = _settings.model_reasoning_effort
 
 
 def reasoning_effort_for(model: str) -> "str | None":

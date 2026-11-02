@@ -29,7 +29,7 @@ from common.agent_config import GRACE_PERIOD_SECONDS
 from llm.model_catalog import load_model_catalog
 from routing.intents import GENERATION_INTENT_NAME
 from app.state_bodies import register_all
-from memory.conversation_memory import cleanup_stale_memories
+from common.session_store import sessions
 
 # ── Logging ──────────────────────────────────────────────────────────────
 logger.setLevel(logging.INFO)
@@ -325,8 +325,8 @@ def _start_cleanup_timer():
                 logger.warning(f"[Reaper] Session cleanup error: {exc}")
 
             try:
-                # --- Reap stale conversation memories ---
-                cleanup_stale_memories(max_age_seconds=3600)
+                # --- Expire per-session stores (stale conversation memories) ---
+                sessions.expire(3600)
             except Exception:
                 pass
 

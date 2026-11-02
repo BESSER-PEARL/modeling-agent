@@ -4,7 +4,6 @@ Handles generation of UML Class Diagrams
 """
 
 import logging
-import os
 import re
 from typing import Dict, Any, List, Optional
 
@@ -18,6 +17,7 @@ from ..core.base_handler import (
     SYSTEM_CLASS_OPTIONAL,
 )
 from common.errors import non_recoverable_cause
+from common.settings import AgentSettings
 from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
 from prompts import class_diagram as class_prompts
 from schemas import SingleClassSpec, SystemClassSpec, ClassModificationResponse
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # Compact structured output for complete-system generation: same model, same
 # modeling rules, ~2.4x faster (see schemas/compact_class_diagram.py). Kill switch for rollback without a code
 # change: BESSER_AGENT_COMPACT_SPEC=0.
-COMPACT_SPEC_ENABLED = os.environ.get("BESSER_AGENT_COMPACT_SPEC", "1") != "0"
+COMPACT_SPEC_ENABLED = AgentSettings().compact_spec
 
 
 # ---------------------------------------------------------------------------

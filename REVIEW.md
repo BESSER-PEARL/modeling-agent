@@ -55,8 +55,11 @@ are Nit at most.
   `tests/test_diagram_handlers.py`.
 - **Docs**: routing, protocol, and handler changes update the matching page in `docs/source/`
   (`intent_recognition.rst`, `websocket_protocol.rst`, `diagram_handlers.rst`, `configuration.rst`).
-- **Config**: a new required setting is added to `config_example.yaml` and the Docker entrypoint; real keys never
-  appear in `config.yaml` or `.env` in the diff.
+- **Config**: a new required setting is added to `config_example.yaml` and the Docker entrypoint
+  (`src/app/container_config.py`); real keys never appear in `config.yaml` or `.env` in the diff. A new environment
+  variable is a field on `AgentSettings` (`src/common/settings.py`), never an `os.getenv` call.
+- **Per-session state**: a new module-level store keyed by a session registers with `common.session_store.sessions`
+  (discard, keys, optional expiry), so `sessions.close(key)` reaches it.
 
 ## Do not report
 

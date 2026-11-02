@@ -47,6 +47,7 @@ from common.agent_config import (
     LLM_TEMPERATURE,
     LLM_TEXT_TEMPERATURE,
 )
+from common.settings import AgentSettings
 from llm.model_config import (
     MODEL_CLASSIFIER,
     MODEL_GENERATION_GUI,
@@ -150,10 +151,7 @@ def _allow_custom_base_url() -> bool:
     ``BESSER_AGENT_ALLOW_CUSTOM_BASE_URL``. A gateway from the model catalog
     (e.g. PIA) does not need it: its endpoint is the operator's.
     """
-    import os
-    return os.getenv("BESSER_AGENT_ALLOW_CUSTOM_BASE_URL", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    )
+    return AgentSettings().allow_custom_base_url
 
 
 def set_current(

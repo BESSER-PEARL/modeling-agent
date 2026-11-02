@@ -212,12 +212,13 @@ Full reference: `docs/source/websocket_protocol.rst`. The traps:
 modeling_agent.py                 Entrypoint: BAF agent, 10 states/intents, wiring
 pyproject.toml                    Package (src/ as import root, editable install), version, import-linter contracts
 config_example.yaml               Template for the gitignored config.yaml
-Dockerfile                        Entrypoint writes config.yaml from env
+Dockerfile                        Image; its entrypoint is app.container_config (config.yaml from env)
 patches/websocket_platform.py     Vendored over pip-installed BAF 4.5.3 (see below)
 src/
   app/                            The top layer: agent_setup.py (LLM/RAG/STT/factory bootstrapping), state_bodies.py
                                   (state bodies, transitions, global fallback, quick responses), confirmation.py
-                                  (pending replace/keep and GUI-mode choice flows)
+                                  (pending replace/keep and GUI-mode choice flows), container_config.py (Docker
+                                  entrypoint: config.yaml from AgentSettings)
   ingestion/                      file_handling.py (the attachment step of a turn), file_conversion_handler.py
                                   (file → diagram spec)
   execution/                      planning.py (multi-op dispatch), model_operations.py, progress.py
@@ -242,8 +243,10 @@ src/
                                   tracking/ (token/cost tracking; prices: resources/model_prices.json)
   utilities/                      Model summaries/resolution, JSON repair, model_utils.py
   protocol/                       types.py, adapters.py, message_limits.py
-  common/                         agent_config.py (tunable constants), session_keys.py (every session-state key:
-                                  import, don't use literals), errors.py
+  common/                         agent_config.py (tunable constants), settings.py (AgentSettings: every env var,
+                                  read nowhere else), session_store.py (registry of per-session stores, one
+                                  close(key)), session_keys.py (every session-state key: import, don't use
+                                  literals), errors.py
   resources/                      Price file and the bundled User Profile metamodel
 ```
 
@@ -268,6 +271,6 @@ reply-route-to-sender, and sets/resets the per-request BYOK contextvar. **Re-ven
 - **A new `MODEL_*` default needs a price**: the model catalog or `resources/model_prices.json` (a copy of BESSER's
   vendored price file; refresh both together) — an unknown model
   falls back to placeholder pricing and every reported cost silently becomes an estimate.
-- The Docker entrypoint generates `config.yaml` from the environment, redacts the `api_key` line from its own log
-  output, and emits `platforms.websocket.origins` from `BESSER_AGENT_WS_ORIGIN` / `BESSER_AGENT_WS_ORIGIN_ALT`
+- The Docker entrypoint (`python -m app.container_config`) generates `config.yaml` from `AgentSettings`, redacts
+  the `api_key` line from its own log output, and emits `platforms.websocket.origins` from `BESSER_AGENT_WS_ORIGIN` / `BESSER_AGENT_WS_ORIGIN_ALT`
   plus localhost dev origins.

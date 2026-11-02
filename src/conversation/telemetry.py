@@ -18,9 +18,10 @@ telemetry hiccup can NEVER delay or break a reply.
 """
 
 import logging
-import os
 import threading
 from typing import Optional
+
+from common.settings import AgentSettings
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ _POST_TIMEOUT_SECONDS = 5
 
 def _telemetry_url() -> str:
     """Collector endpoint, from the same env var the validation bridge uses."""
-    base = os.environ.get("BESSER_BACKEND_URL", "http://localhost:3001")
+    base = AgentSettings().backend_url
     return f"{base.rstrip('/')}/besser_api/telemetry/event"
 
 

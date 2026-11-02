@@ -10,7 +10,6 @@ pixel coordinates.
 import copy
 import json
 import logging
-import os
 import random
 import sys
 import time
@@ -21,6 +20,7 @@ from abc import ABC, abstractmethod
 from pydantic import BaseModel
 
 from common.agent_config import LLM_MAX_TOKENS_SMALL, LLM_MAX_TOKENS_LARGE, LLM_TEMPERATURE
+from common.settings import AgentSettings
 from llm.model_config import MODEL_CLASSIFIER, MODEL_GENERATION_SMALL
 from llm.provider import LLMProvider, OutputTruncated
 from .layout_engine import apply_layout
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # conversation history and the user's model summaries, which must not land
 # in plaintext INFO logs (compliance + log volume). Set LOG_PROMPTS=1 to
 # restore INFO-level content logging for a debugging session.
-_LOG_PROMPTS = os.getenv("LOG_PROMPTS", "").strip().lower() in {"1", "true", "yes"}
+_LOG_PROMPTS = AgentSettings().log_prompts
 _log_content = logger.info if _LOG_PROMPTS else logger.debug
 
 

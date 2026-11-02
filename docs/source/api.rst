@@ -58,6 +58,14 @@ Application (``src/app/``)
   - ``handle_pending_gui_choice(session) -> bool`` — deterministic vs.
     AI-generated GUI
 
+``src/app/container_config.py``
+  The Docker entrypoint (``python -m app.container_config``): writes
+  ``/app/config.yaml`` from ``AgentSettings``, logs it with the ``api_key``
+  line redacted, then execs ``python modeling_agent.py``.
+
+  - ``render(settings)`` — the config text
+  - ``redact(text)`` — the log copy
+
 Ingestion (``src/ingestion/``)
 ------------------------------
 
@@ -219,7 +227,8 @@ Conversation Memory
   - ``memory_session_key(session, request)`` — prefers the v2 ``sessionId``,
     which survives reconnects
   - ``get_memory(session_id, ...)`` / ``remove_memory(session_id)``
-  - ``cleanup_stale_memories(max_age_seconds)`` — called by the reaper
+  - ``cleanup_stale_memories(max_age_seconds)`` — the reaper runs it through
+    ``common.session_store.sessions.expire``
   - ``ConversationMemory``
 
 Diagram Handlers
@@ -482,6 +491,22 @@ Common (``src/common/``)
 ``src/common/agent_config.py``
   Tunable constants: tab and message limits, session grace period, streaming
   buffer, LLM temperatures and token budgets, conversation history depth.
+
+``src/common/settings.py``
+  ``AgentSettings`` (pydantic-settings): every environment variable the agent
+  reads, declared once with its default and parsing. Module constants build it
+  at import, per-call reads at each use. See :doc:`configuration`.
+
+``src/common/session_store.py``
+  ``sessions``, the registry of every in-process store keyed by a session key
+  (conversation memory, the two reply-replay buffers, per-session token usage):
+
+  - ``sessions.close(key)`` — drops the key from every registered store
+  - ``sessions.expire(max_age_seconds)`` — each store's own expiry (the reaper)
+  - ``sessions.holding(key)`` — the stores that still hold a key
+
+  BAF's session variables (every key in ``session_keys``) belong to BAF and
+  are freed by ``Agent.close_session``.
 
 ``src/common/session_keys.py``
   Every session-state key the agent writes, in one place — the pending-flow

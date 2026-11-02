@@ -58,51 +58,6 @@ EXPOSE 8765
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 
-# Create entrypoint script that generates config.yaml from environment variables
-RUN echo '#!/bin/bash\n\
-set -e\n\
-\n\
-# Generate config.yaml from environment variables\n\
-cat > /app/config.yaml << EOF\n\
-agent:\n\
-  check_transitions_delay: 5\n\
-\n\
-nlp:\n\
-  language: en\n\
-  region: US\n\
-  timezone: Europe/Madrid\n\
-  pre_processing: True\n\
-  intent_threshold: 0.55\n\
-  openai:\n\
-    api_key: ${OPENAI_API_KEY:-}\n\
-\n\
-platforms:\n\
-  websocket:\n\
-    host: 0.0.0.0\n\
-    port: 8765\n\
-    # CORS. BAF passes this to websockets.serve(origins=...); when the key is\n\
-    # ABSENT every origin is accepted. Override the two host entries per\n\
-    # deployment; the localhost entries are for local development.\n\
-    origins:\n\
-      - "${BESSER_AGENT_WS_ORIGIN:-https://editor.besser-pearl.org}"\n\
-      - "${BESSER_AGENT_WS_ORIGIN_ALT:-https://experimental.besser-pearl.org}"\n\
-      - "http://localhost:8080"\n\
-      - "http://localhost:5173"\n\
-      - "http://localhost:3000"\n\
-    streamlit:\n\
-      host: localhost\n\
-      port: 5000\n\
-EOF\n\
-\n\
-echo "✅ config.yaml created successfully"\n\
-# Print the config for debugging but NEVER the API key: redact the\n\
-# api_key line so the OpenAI key does not land in the container logs.\n\
-sed "s/\\(api_key:\\).*/\\1 [REDACTED]/" /app/config.yaml\n\
-\n\
-# Run the modeling agent\n\
-exec python modeling_agent.py\n\
-' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
-
 # Health check
 # start-period must cover the FULL boot, not just process start: BAF trains a
 # NER model plus one intent classifier per state (~20s each, 10 states) and
@@ -110,5 +65,6 @@ exec python modeling_agent.py\n\
 HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
     CMD python -c "import socket; s=socket.socket(); s.connect(('localhost', 8765)); s.close()" || exit 1
 
-# Run the entrypoint script
-ENTRYPOINT ["/app/entrypoint.sh"]
+# Write config.yaml from the environment (src/app/container_config.py), then
+# exec the agent.
+ENTRYPOINT ["python", "-m", "app.container_config"]

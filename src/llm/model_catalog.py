@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Dict, Optional
 from urllib.parse import urlparse
+
+from common.settings import AgentSettings
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ def load_model_catalog() -> ModelCatalog:
     Raises ``ValueError`` for an unreadable or malformed file, so a broken
     deployment catalog stops the agent at startup.
     """
-    path = os.getenv(CATALOG_ENV_VAR, "").strip()
+    path = AgentSettings().model_catalog
     if not path:
         return ModelCatalog()
     try:

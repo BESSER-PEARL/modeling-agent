@@ -8,7 +8,6 @@ objects so the entrypoint can populate :mod:`agent_context`.
 """
 
 import logging
-import os
 import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -26,6 +25,7 @@ from common.agent_config import (
     LLM_MAX_TOKENS_TEXT,
     CONVERSATION_HISTORY_DEPTH,
 )
+from common.settings import AgentSettings
 from llm.model_config import MODEL_CLASSIFIER, MODEL_EMBEDDINGS, sampling_params
 from llm.provider import LLMProvider
 from prompts import uml_rag as uml_prompts
@@ -251,7 +251,7 @@ def init_stt(agent: Agent) -> OpenAISpeech2Text:
     mis-transcribes non-English voice). Set ``BESSER_AGENT_STT_LANGUAGE`` (e.g. ``en``, ``fr``, ``de``) to
     pin a specific language.
     """
-    language = os.getenv("BESSER_AGENT_STT_LANGUAGE", "").strip() or None
+    language = AgentSettings().stt_language
     stt = OpenAISpeech2Text(
         agent=agent,
         model_name='whisper-1',

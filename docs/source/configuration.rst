@@ -8,7 +8,8 @@ The Modeling Agent reads two kinds of configuration:
   Copy ``config_example.yaml`` to ``config.yaml`` and edit the values.
 - **Environment variables** — everything the agent itself added on top:
   the per-call-site model routing table, the backend URL, and a handful of
-  behavioral switches.
+  behavioral switches. Each one is declared once on ``AgentSettings`` in
+  ``src/common/settings.py``; read the environment only through it.
 
 .. contents:: On this page
    :local:
@@ -232,6 +233,10 @@ BAF constructor parameters. Call sites never pass either parameter themselves.
 Environment Variables
 ---------------------
 
+**Location:** ``src/common/settings.py`` (``AgentSettings``). Variables
+marked *at import* are read once when their module loads; the others at each
+use.
+
 .. list-table::
    :header-rows: 1
    :widths: 38 14 48
@@ -243,9 +248,19 @@ Environment Variables
      - —
      - Server OpenAI key. The Docker entrypoint writes it into the
        generated ``config.yaml`` as ``nlp.openai.api_key``.
+   * - ``BESSER_AGENT_WS_ORIGIN`` / ``BESSER_AGENT_WS_ORIGIN_ALT``
+     - ``https://editor.besser-pearl.org`` /
+       ``https://experimental.besser-pearl.org``
+     - The two host entries of ``platforms.websocket.origins`` in the
+       container's ``config.yaml``; blank means the default.
+   * - ``OPENAI_BASE_URL``
+     - unset
+     - Endpoint of the shared OpenAI client (read by the SDK). The agent
+       reads it to price calls on that route (see
+       :ref:`cost-and-model-routing`).
    * - ``BESSER_AGENT_MODEL_*``
      - see above
-     - Per-tier model overrides
+     - Per-tier model overrides (at import; blank means the default)
    * - ``BESSER_BACKEND_URL``
      - ``http://localhost:3001``
      - Base URL of the BESSER backend, used by the opt-in study telemetry
@@ -275,14 +290,17 @@ Environment Variables
        mis-transcribed non-English voice.
    * - ``BESSER_AGENT_COMPACT_SPEC``
      - ``1`` (on)
-     - Use the compact class-diagram spec schema for generation.
+     - Use the compact class-diagram spec schema for generation (at
+       import); only ``0`` turns it off.
    * - ``BESSER_AGENT_COST_LOG_INTERVAL``
      - ``600``
      - Seconds between the INFO log lines with the token and cost totals
-       (see :ref:`cost-and-model-routing`). ``0`` turns them off.
+       (see :ref:`cost-and-model-routing`). ``0`` turns them off. At
+       import; a value that is not a number stops the agent.
    * - ``LOG_PROMPTS``
      - unset (off)
-     - Log full LLM prompts. Leave off outside local debugging.
+     - Log full LLM prompts (``1``, ``true`` or ``yes``; at import). Leave
+       off outside local debugging.
    * - ``ANONYMIZED_TELEMETRY`` / ``CHROMA_TELEMETRY_ENABLED``
      - ``False``
      - Set defensively at startup by ``modeling_agent.py`` to disable
@@ -705,8 +723,9 @@ Security Notes
 - **Never** commit real API keys to the repository.
 - Use ``config_example.yaml`` and ``.env.example`` as templates.
 - ``config.yaml`` is listed in ``.gitignore``.
-- The Docker entrypoint prints the generated config for debugging but
-  **redacts** the ``api_key`` line, so the key never lands in container logs.
+- The Docker entrypoint (``src/app/container_config.py``) prints the
+  generated config for debugging but **redacts** the ``api_key`` line, so the
+  key never lands in container logs.
 - A user's BYOK key lives only in the per-request context var and the BAF
   session; it is never logged or persisted.
 - In production, use environment variables or secrets management.

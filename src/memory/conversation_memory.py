@@ -25,6 +25,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
+from common.session_store import sessions
+
 logger = logging.getLogger(__name__)
 
 # Defaults
@@ -291,3 +293,13 @@ def cleanup_stale_memories(max_age_seconds: int = 86400) -> int:
     if stale_ids:
         logger.info(f"[Memory] Cleaned up {len(stale_ids)} stale session(s)")
     return len(stale_ids)
+
+
+def _memory_keys() -> List[str]:
+    with _memories_lock:
+        return list(_memories)
+
+
+sessions.register(
+    "conversation_memory", discard=remove_memory, keys=_memory_keys, expire=cleanup_stale_memories,
+)

@@ -17,7 +17,6 @@ Usage::
 
 import json
 import logging
-import os
 import re
 import threading
 import time
@@ -26,6 +25,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Optional
 
+from common.session_store import sessions
+from common.settings import AgentSettings
 from llm.byok_config import get_current
 from llm.model_catalog import load_model_catalog
 
@@ -136,7 +137,7 @@ def _current_route() -> Optional[str]:
     cfg = get_current()
     if cfg is not None:
         return cfg.base_url
-    return os.getenv("OPENAI_BASE_URL") or None
+    return AgentSettings().openai_base_url
 
 
 def _catalog_cost_table(model: str) -> Optional[Dict[str, float]]:
@@ -155,7 +156,7 @@ def _cost_table_for(model: str) -> Optional[Dict[str, float]]:
 
 
 # Seconds between INFO lines with the global totals (0 disables them).
-_SUMMARY_INTERVAL_SECONDS = float(os.getenv("BESSER_AGENT_COST_LOG_INTERVAL", "600") or 0)
+_SUMMARY_INTERVAL_SECONDS = float(AgentSettings().cost_log_interval or 0)
 
 # Fallback for unknown models — placeholder pricing, not any real model's rate.
 _DEFAULT_COST = {"prompt": 0.001, "completion": 0.004}
@@ -345,6 +346,11 @@ class TokenTracker:
         with self._lock:
             self._sessions.pop(session_id, None)
 
+    def session_ids(self) -> list:
+        """The sessions with usage recorded."""
+        with self._lock:
+            return list(self._sessions)
+
     def reset_all(self) -> None:
         """Clear all usage data."""
         with self._lock:
@@ -368,3 +374,15 @@ def get_tracker() -> TokenTracker:
             if _tracker is None:
                 _tracker = TokenTracker()
     return _tracker
+
+
+def _discard_usage(session_id: str) -> None:
+    if _tracker is not None:
+        _tracker.reset_session(session_id)
+
+
+sessions.register(
+    "token_usage",
+    discard=_discard_usage,
+    keys=lambda: [] if _tracker is None else _tracker.session_ids(),
+)
