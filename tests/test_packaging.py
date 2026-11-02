@@ -75,6 +75,17 @@ def test_the_price_file_ships_with_its_package():
     assert any(relative.match(pattern) for pattern in patterns)
 
 
+def test_the_user_metamodel_files_ship_with_their_package():
+    """Same for the bundled user-profile metamodel and its semantics."""
+    from utilities import user_metamodel
+
+    patterns = _pyproject()["tool"]["setuptools"]["package-data"]["utilities"]
+    for path in (user_metamodel._METAMODEL_PATH, user_metamodel._SEMANTICS_PATH):
+        relative = path.relative_to(Path(user_metamodel.__file__).parent)
+        assert path.is_file()
+        assert any(relative.match(pattern) for pattern in patterns)
+
+
 def test_nothing_imports_through_a_src_prefix():
     offenders = []
     files = [*SRC.rglob("*.py"), *(ROOT / "tests").rglob("*.py"), *(ROOT / "patches").glob("*.py"), ROOT / "modeling_agent.py"]

@@ -21,7 +21,7 @@ dependencies = { file = ["requirements.txt"] }
 # src/ is the import root: its packages are top-level names (``import protocol``,
 # ``from common.session_keys import ...``). Every module lives in a package; the
 # entrypoint modeling_agent.py stays at the repo root. Install editable
-# (``pip install -e .``): the code reads src/resources/ and uml_specs/ next to it.
+# (``pip install -e .``): the code reads uml_specs/ next to it.
 [tool.setuptools]
 package-dir = { "" = "src" }
 
@@ -29,9 +29,11 @@ package-dir = { "" = "src" }
 where = ["src"]
 namespaces = false
 
-# The vendor price file, read from llm/tracking/data/ next to its module.
+# Data files read from a data/ directory next to their module: the vendor
+# price file and the bundled user-profile metamodel.
 [tool.setuptools.package-data]
 "llm.tracking" = ["data/*.json"]
+"utilities" = ["data/*.json"]
 
 # Import layering (CLAUDE.md, "Import layering"): each top-level package
 # is one layer and imports only the layers below it. tests/test_packaging.py

@@ -18,23 +18,18 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from collections import deque
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-_METAMODEL_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "resources", "user_metamodel.json"
-)
+# Package data (pyproject.toml), next to this module.
+_METAMODEL_PATH = Path(__file__).with_name("data") / "user_metamodel.json"
 
 # Human-readable descriptions of the metamodel elements (the bundled metamodel
 # itself carries no prose). Distilled from the User-Modeling-Language READMEs.
-_SEMANTICS_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)),
-    "resources",
-    "user_metamodel_semantics.json",
-)
+_SEMANTICS_PATH = Path(__file__).with_name("data") / "user_metamodel_semantics.json"
 
 _ROOT_CLASS = "User"
 

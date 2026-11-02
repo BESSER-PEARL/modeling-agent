@@ -272,14 +272,14 @@ src/
                                   (its contextvar), model_config.py (per-call-site model tiers, all
                                   BESSER_AGENT_MODEL_* overridable), model_catalog.py,
                                   tracking/ (token/cost tracking; prices: tracking/data/model_prices.json)
-  utilities/                      Model summaries/resolution, JSON repair, model_utils.py
+  utilities/                      Model summaries/resolution, JSON repair, model_utils.py,
+                                  user_metamodel.py (the bundled User Profile metamodel: data/)
   protocol/                       actions.py (wire action names + envelope builders), types.py, adapters.py,
                                   message_limits.py
   common/                         agent_config.py (tunable constants), settings.py (AgentSettings: every env var,
                                   read nowhere else), session_store.py (the per-session store expiries the
                                   reaper runs), session_keys.py (every session-state key: import, don't use
                                   literals), pending_dialogs.py (pending dialogs: slots, precedence), errors.py
-  resources/                      The bundled User Profile metamodel
 ```
 
 **`patches/websocket_platform.py`** is copied over BAF's file at image build. Stock BAF evicts the `_connections`

@@ -81,11 +81,10 @@ modeling-agent/
       registry/                    # Factory + metadata registry
     prompts/                       # Prompt text, one module per diagram type or state
     llm/                           # LLM provider, retry, bring-your-own-key, model tiers, token/cost tracking
-    utilities/                     # Shared context/model/request helpers
+    utilities/                     # Shared context/model/request helpers, bundled User Profile metamodel (data/)
     protocol/                      # Wire actions, request parsing and protocol types
     common/                        # Settings, tunable constants, session-state keys, pending dialogs, error taxonomy
     schemas/                       # Pydantic schemas for structured LLM output
-    resources/                     # Bundled User Profile metamodel
   tests/
   docs/
 ```

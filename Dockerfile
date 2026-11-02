@@ -41,7 +41,7 @@ COPY patches/websocket_platform.py \
     /usr/local/lib/python3.11/site-packages/baf/platforms/websocket/websocket_platform.py
 
 # Copy the modeling agent code and install it in place (editable: the code
-# reads src/resources/ and uml_specs/ next to it). No index access: the
+# reads uml_specs/ next to it). No index access: the
 # dependencies are installed above and the base image ships setuptools.
 COPY . .
 RUN pip install --no-cache-dir --no-deps --no-build-isolation -e .
