@@ -17,6 +17,7 @@ from codegen.smart_generation_handler import (
 )
 from prompts.classifier import SYSTEM_PROMPT
 from routing.unified_classifier import UnifiedClassification
+from common import pending_dialogs
 
 SUMMARY = "Build a hotel booking web app. FastAPI, SQLite, React."
 
@@ -161,7 +162,7 @@ def test_missing_message_attribute_is_tolerated():
 
 def test_original_context_is_project_scoped_and_direct_requests_are_frozen(monkeypatch):
     from codegen import generation_handler as generation
-    from common.session_keys import PENDING_SMART_GEN_ORIGINAL_REQUEST
+    from common.pending_dialogs import PENDING_SMART_GEN_ORIGINAL_REQUEST
     from utilities.original_request import remember_original_request, original_request_for_project
 
     class Session:
@@ -182,21 +183,21 @@ def test_original_context_is_project_scoped_and_direct_requests_are_frozen(monke
     assert original_request_for_project(session, None) == ""
     assert original_request_for_project(session, "other") == ""
     generation._build_smart_gen_confirmation(session, SUMMARY, "openai", user_message="generate application")
-    assert session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST) == FULL_SPEC
+    assert pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) == FULL_SPEC
 
     # A new/imported project cannot inherit the previous project's authority.
     session.project_id = "imported-library"
     generation._build_smart_gen_confirmation(session, "Generate this library", "openai", user_message="generate application")
-    assert session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST) == ""
+    assert pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) == ""
     direct = "Generate this imported library. Anonymous users can read, but only owners can edit."
     generation._build_smart_gen_confirmation(session, "Make a library app", "openai", user_message=direct)
-    assert session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST) == direct
+    assert pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) == direct
     assert original_request_for_project(session, "imported-library") == direct
-    assert FULL_SPEC not in session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST)
+    assert FULL_SPEC not in pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST)
 
     # A later global update must not mutate the already-confirmable request.
     remember_original_request(session, "An unrelated new request", "imported-library")
-    assert session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST) == direct
+    assert pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) == direct
     assert generation._pending_smart_gen_project_changed(session) is False
     session.project_id = "another-project"
     assert generation._pending_smart_gen_project_changed(session) is True
@@ -204,7 +205,7 @@ def test_original_context_is_project_scoped_and_direct_requests_are_frozen(monke
 
 def test_same_project_create_gui_confirm_keeps_raw_spec_and_followups(monkeypatch):
     from codegen import generation_handler as generation
-    from common.session_keys import PENDING_SMART_GEN_ORIGINAL_REQUEST
+    from common.pending_dialogs import PENDING_SMART_GEN_ORIGINAL_REQUEST
     from utilities.original_request import remember_original_request, original_request_for_project
 
     class Session:
@@ -222,7 +223,7 @@ def test_same_project_create_gui_confirm_keeps_raw_spec_and_followups(monkeypatc
     remember_original_request(session, FULL_SPEC, "hotel")
     assert original_request_to_stash(_Req("Generate GUI screens"), "complete_system", "GUINoCodeDiagram") is None
     generation._build_smart_gen_confirmation(session, SUMMARY, "openai", reason_prefix="Model rebuilt and ready.")
-    assert session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST) == FULL_SPEC
+    assert pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) == FULL_SPEC
     change = "Use SQLite, FastAPI and React."
     combined = generation._original_for_smart_generation(session, change)
     assert FULL_SPEC in combined and change in combined
@@ -243,7 +244,7 @@ def test_same_project_create_gui_confirm_keeps_raw_spec_and_followups(monkeypatc
     from unittest.mock import MagicMock
     import execution.model_operations as modeling
     from protocol.types import AssistantRequest, WorkspaceContext
-    from common.session_keys import MISMATCH_REGEN_PENDING
+    from common.pending_dialogs import MISMATCH_REGEN_PENDING
     from tests.conftest import FakeSession
     handler = MagicMock()
     handler.generate_complete_system.return_value = {"action": "assistant_message", "message": "captured"}
@@ -263,7 +264,7 @@ def test_same_project_create_gui_confirm_keeps_raw_spec_and_followups(monkeypatc
         resumed = FakeSession()
         remember_original_request(resumed, FULL_SPEC, "hotel")
         if not confirming:
-            resumed.set(MISMATCH_REGEN_PENDING, PLANNER_REWRITE)
+            pending_dialogs.put(resumed, MISMATCH_REGEN_PENDING, PLANNER_REWRITE)
         request = AssistantRequest(
             message=PLANNER_REWRITE if project_id == "hotel" else "replace",
             context=WorkspaceContext(project_snapshot={"id": project_id, "diagrams": {}}),

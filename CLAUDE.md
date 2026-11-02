@@ -114,6 +114,14 @@ WebSocket message
 - **A pending flow suppresses intent matching by design**: while the assistant awaits an answer,
   `json_intent_matches()` returns False for every intent unless the classifier set
   `pending_flow_action="new_request"`. A message that looks "stuck" is usually this, not a routing bug.
+- **Pending dialogs are one session variable** (`PENDING_DIALOGS`), read and written only through
+  `common/pending_dialogs.py` (`get` / `put` / `clear`; a slot name is not a session key). Several can be
+  open at once (the mismatch "Update model + generate" chain, a paused "design X and generate Y" plan), so
+  `PRECEDENCE` fixes the order: `resume_pending()` in `_common_preamble` tries the open dialogs' handlers
+  (`app/confirmation.RESUME_HANDLERS`) in it, and the classifier is shown the first open one. Generator
+  menu and settings answers reach `handle_generation_request` through routing. A new dialog adds a slot, a
+  kind in `PRECEDENCE`, a resume handler and a question in `_pending_flow_context`
+  (`docs/source/orchestration.rst`, "Pending Dialogs").
 - **Layer 2 is keyword/regex, not LLM.** Look there only if a message that reached a modeling state resolves to
   the *wrong diagram type*.
 
@@ -236,7 +244,7 @@ patches/websocket_platform.py     Vendored over pip-installed BAF 4.5.3 (see bel
 src/
   app/                            The top layer: agent_setup.py (LLM/RAG/STT/factory bootstrapping), state_bodies.py
                                   (state bodies, transitions, global fallback, quick responses), confirmation.py
-                                  (pending replace/keep and GUI-mode choice flows), container_config.py (Docker
+                                  (resume_pending, replace/keep and GUI-mode choice flows), container_config.py (Docker
                                   entrypoint: config.yaml from AgentSettings)
   ingestion/                      file_handling.py (the attachment step of a turn), file_conversion_handler.py
                                   (file → diagram spec)
@@ -266,7 +274,7 @@ src/
   common/                         agent_config.py (tunable constants), settings.py (AgentSettings: every env var,
                                   read nowhere else), session_store.py (registry of per-session stores, one
                                   close(key)), session_keys.py (every session-state key: import, don't use
-                                  literals), errors.py
+                                  literals), pending_dialogs.py (pending dialogs: slots, precedence), errors.py
   resources/                      Price file and the bundled User Profile metamodel
 ```
 

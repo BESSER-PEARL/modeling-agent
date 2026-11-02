@@ -14,6 +14,8 @@ rare auto-generation slip through).
 from unittest.mock import MagicMock, patch
 
 import execution.planning as planning
+from common import pending_dialogs
+from common.pending_dialogs import PENDING_GUI_CHOICE, PENDING_WEBAPP_GENERATE
 
 
 class _FakeSession:
@@ -63,15 +65,15 @@ def test_webapp_plan_strips_generation_and_shows_prompt():
     # and the user is shown the "generate the web app?" prompt
     assert prompt.called
     # the web-app pause keeps its own mechanism — no generic stash armed
-    from common.session_keys import PENDING_GENERATOR_TYPE
-    assert session.get(PENDING_GENERATOR_TYPE) is None
+    from common.pending_dialogs import PENDING_GENERATOR_TYPE
+    assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) is None
 
 
 def test_explicit_non_gui_mixed_plan_pauses_generation():
     # A class-diagram plan with an explicit generation op (no GUI) now pauses
     # exactly like the web-app flow: the model is built, the generation op is
     # stashed, and the user decides via the injection message's question.
-    from common.session_keys import (
+    from common.pending_dialogs import (
         PENDING_GENERATOR_CONFIG,
         PENDING_GENERATOR_TYPE,
         PLAN_GENERATION_CONFIRM_FLAG,
@@ -84,22 +86,22 @@ def test_explicit_non_gui_mixed_plan_pauses_generation():
     gen, prompt, session = _run(plan)
     assert not gen.called      # django generation must NOT auto-run
     assert not prompt.called   # and the web-app prompt stays web-app-only
-    assert session.get(PENDING_GENERATOR_TYPE) == "django"
-    stash = session.get(PENDING_GENERATOR_CONFIG)
+    assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) == "django"
+    stash = pending_dialogs.get(session, PENDING_GENERATOR_CONFIG)
     assert isinstance(stash, dict) and stash.get(PLAN_GENERATION_CONFIRM_FLAG) is True
 
 
 def test_direct_generation_only_plan_still_runs():
     # A DIRECT generation request (no modeling step in the plan) keeps its
     # current behavior: the generator runs immediately, nothing is stashed.
-    from common.session_keys import PENDING_GENERATOR_TYPE
+    from common.pending_dialogs import PENDING_GENERATOR_TYPE
     plan = [
         {"type": "generation", "generatorType": "django", "config": {}},
     ]
     gen, prompt, session = _run(plan)
     assert gen.called
     assert not prompt.called
-    assert session.get(PENDING_GENERATOR_TYPE) is None
+    assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) is None
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +115,6 @@ def test_direct_generation_only_plan_still_runs():
 # ---------------------------------------------------------------------------
 
 from app import confirmation  # noqa: E402
-from common.session_keys import PENDING_GUI_CHOICE, PENDING_WEBAPP_GENERATE  # noqa: E402
 
 
 def _run_gui_choice(answer):
@@ -124,8 +125,8 @@ def _run_gui_choice(answer):
     is set. Returns the emit_webapp_generate_prompt mock and the session.
     """
     session = _FakeSession()
-    session.set(PENDING_GUI_CHOICE, {"remaining_operations": [], "operation_request": "create a web app"})
-    session.set(PENDING_WEBAPP_GENERATE, True)
+    pending_dialogs.put(session, PENDING_GUI_CHOICE, {"remaining_operations": [], "operation_request": "create a web app"})
+    pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, True)
     req = MagicMock()
     req.message = answer
     emit = MagicMock()

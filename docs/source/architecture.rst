@@ -321,8 +321,11 @@ Confirmation Flows
 ~~~~~~~~~~~~~~~~~~
 
 Several confirmation flows pause execution and resume on the next user
-message. Each stores pending state in the session; the modeling ones resume
-via ``_common_preamble()``, the generation ones via the generation state body.
+message. Their state lives in one session variable (``common.pending_dialogs``);
+``resume_pending()`` in ``_common_preamble()`` hands the next message to the
+open dialogs in a fixed precedence (GUI choice, replace/keep or destructive
+confirmation, Spec-Driven confirmation, generator), and a generator menu or
+settings answer reaches the generation state body through routing.
 
 .. list-table::
    :header-rows: 1

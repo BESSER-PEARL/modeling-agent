@@ -33,15 +33,13 @@ from conversation.session_helpers import (
     json_intent_matches,
     json_no_intent_matched,
 )
-from app.confirmation import handle_pending_system_confirmation, handle_pending_gui_choice
+from app.confirmation import resume_pending
 from execution import execute_planned_operations
 from ingestion.file_handling import handle_file_attachments
 from conversation.suggestions import get_suggested_actions, format_suggestions_as_text
 from diagram_handlers.registry.metadata import get_diagram_type_info
 from codegen.generation_handler import (
     handle_generation_request,
-    handle_pending_plan_generation_confirmation,
-    handle_pending_smart_gen_confirmation,
     should_route_to_generation,
 )
 from orchestrator import determine_target_diagram_type
@@ -57,11 +55,9 @@ from common.session_keys import (
     HAS_GREETED,
     LAST_EXECUTED_DIAGRAM_TYPE,
     LAST_MATCHED_INTENT,
-    PENDING_COMPLETE_SYSTEM,
-    PENDING_GUI_CHOICE,
-    PENDING_GENERATOR_TYPE,
     UNIFIED_CLASSIFICATION,
 )
+from common import pending_dialogs
 from conversation.reply_copy import (
     DECLINE_ACK as _DECLINE_ACK,
     META_ANSWER as _META_ANSWER,
@@ -139,18 +135,10 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
         replay_last_reply(session, _replay_req)
         return None
 
-    if handle_pending_gui_choice(session):
-        return None
-    if handle_pending_system_confirmation(session):
-        return None
-    if handle_pending_smart_gen_confirmation(session):
-        return None
-    # Plan-paused generation: an EXACT yes/ok/generate/no typed at the
-    # "review or continue with generating?" question is consumed here so it
-    # fires (or cancels) the stashed generator no matter which state the
-    # intent classifier routed the message to — the classifier stamps short
-    # answers like a bare "ok" as decline_intent.
-    if handle_pending_plan_generation_confirmation(session):
+    # The answer to an open question (replace/keep, GUI mode, a run
+    # confirmation, the plan-pause go-ahead) is consumed here, whichever state
+    # the classifier routed it to.
+    if resume_pending(session):
         return None
 
     request = parse_assistant_request(session)
@@ -890,7 +878,7 @@ def decline_body(session: Session):
     # "regular" to the JSON-schema mode prompt), the intent classifier may
     # misread the short answer as a decline. Route to the generation handler
     # so the pending flow can consume the answer instead of abandoning it.
-    if session.get(PENDING_GENERATOR_TYPE):
+    if pending_dialogs.is_open(session, pending_dialogs.GENERATOR):
         generation_body(session)
         return
     session.set(LAST_MATCHED_INTENT, 'decline_intent')

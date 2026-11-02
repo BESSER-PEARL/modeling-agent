@@ -1,14 +1,14 @@
 """
 Confirmation Flow
 -----------------
-Pending complete-system confirmation logic.
+Resuming pending dialogs (``common.pending_dialogs``).
 
 When the user asks to create a new complete system but a non-trivial model
 already exists for that diagram type, we store the pending creation and ask
-whether to replace or keep the existing one.  The confirmation answer may be
-routed to ANY state by the intent classifier ("yes", "replace", "keep" …),
-so :func:`handle_pending_system_confirmation` is checked at the top of every
-state body.
+whether to replace or keep the existing one; a GUI build first asks for the
+generation mode. The answer may be routed to ANY state by the intent
+classifier ("yes", "replace", "keep" …), so :func:`resume_pending` runs at the
+top of every state body and hands the message to the open dialog's handler.
 """
 
 import logging
@@ -21,15 +21,20 @@ from baf.core.session import Session
 from protocol.adapters import parse_assistant_request
 from conversation.session_helpers import reply_message, reply_payload, emit_webapp_generate_prompt
 from utilities.model_utils import model_has_elements  # noqa: F401  (re-export for backward compat)
-from common.session_keys import (
+from common.session_keys import UNIFIED_CLASSIFICATION
+from common import pending_dialogs
+from common.pending_dialogs import (
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
     PENDING_SMART_GEN_INSTRUCTIONS,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_WEBAPP_GENERATE,
-    UNIFIED_CLASSIFICATION,
 )
 from execution import execute_model_operation
+from codegen.generation_handler import (
+    handle_pending_plan_generation_confirmation,
+    handle_pending_smart_gen_confirmation,
+)
 from protocol.actions import Action
 
 logger = logging.getLogger(__name__)
@@ -162,8 +167,8 @@ def _maybe_emit_webapp_prompt(session: Session) -> None:
     the prompt. Idempotent: the flag is cleared on the first emit, so calling this
     from both the resume tail and the GUI-choice tail is safe.
     """
-    if session.get(PENDING_WEBAPP_GENERATE):
-        session.set(PENDING_WEBAPP_GENERATE, None)
+    if pending_dialogs.get(session, PENDING_WEBAPP_GENERATE):
+        pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, None)
         emit_webapp_generate_prompt(session)
 
 
@@ -191,7 +196,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
     Returns ``True`` when a pending choice was found **and** handled
     (caller should ``return``).  Returns ``False`` otherwise.
     """
-    pending = session.get(PENDING_GUI_CHOICE)
+    pending = pending_dialogs.get(session, PENDING_GUI_CHOICE)
     if not pending:
         return False
 
@@ -214,7 +219,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
     else:
         wants_cancel = any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
     if wants_cancel:
-        session.set(PENDING_GUI_CHOICE, None)
+        pending_dialogs.put(session, PENDING_GUI_CHOICE, None)
         reply_message(session, "Cancelled. No GUI was generated.")
         return True
 
@@ -233,11 +238,11 @@ def handle_pending_gui_choice(session: Session) -> bool:
             "[GUIChoice] Message doesn't match auto/llm/cancel — "
             "treating as new request, clearing pending state"
         )
-        session.set(PENDING_GUI_CHOICE, None)
+        pending_dialogs.put(session, PENDING_GUI_CHOICE, None)
         # Also drop the web-app pause flag: the user broke out of the GUI flow
         # (e.g. a modify), so the next execute_planned_operations must NOT fire
         # the "Your screens are ready" prompt — the screens were never generated.
-        session.set(PENDING_WEBAPP_GENERATE, None)
+        pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, None)
         return False  # Let normal state body handle the new request
 
     if wants_auto:
@@ -245,7 +250,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
         from conversation.suggestions import get_post_spec_suggestions
 
         remaining_ops = pending.get('remaining_operations')
-        session.set(PENDING_GUI_CHOICE, None)
+        pending_dialogs.put(session, PENDING_GUI_CHOICE, None)
         logger.info("🔄 [GUIChoice] User chose AUTO-GENERATE (deterministic)")
         # Use the original request text (not the GUI-choice reply "1"/"auto") so
         # detect_generator_type can see keywords like "web application" or "database".
@@ -295,14 +300,14 @@ def handle_pending_gui_choice(session: Session) -> bool:
             _replace_existing=stored_replace,
             _skip_gui_choice=True,
         )
-        session.set(PENDING_GUI_CHOICE, None)  # Clear only on success
+        pending_dialogs.put(session, PENDING_GUI_CHOICE, None)  # Clear only on success
     except Exception as exc:
         logger.error(f"❌ [GUIChoice] Error executing LLM GUI generation: {exc}", exc_info=True)
         reply_message(
             session,
             "Something went wrong. You can try again by saying **auto** or **llm**, or **cancel** to abort.",
         )
-        session.set(PENDING_GUI_CHOICE, None)
+        pending_dialogs.put(session, PENDING_GUI_CHOICE, None)
         return True
 
     # Resume any remaining operations from the original plan
@@ -332,7 +337,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
     (the caller should ``return`` immediately).  Returns ``False`` otherwise
     so the normal body logic can proceed.
     """
-    pending = session.get(PENDING_COMPLETE_SYSTEM)
+    pending = pending_dialogs.get(session, PENDING_COMPLETE_SYSTEM)
     if not pending:
         return False
 
@@ -349,7 +354,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
         logger.info(
             "[PendingConfirm] Classifier: message is a NEW REQUEST — "
             "abandoning the confirmation")
-        session.set(PENDING_COMPLETE_SYSTEM, None)
+        pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, None)
         return False  # Let normal routing handle the new request
 
     # PIVOT GUARD: an edit instruction typed at the replace/keep prompt
@@ -370,7 +375,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
         logger.info(
             "[PendingConfirm] Modify-intent verdict at the replace/keep "
             "prompt — treating as a PIVOT, abandoning the confirmation")
-        session.set(PENDING_COMPLETE_SYSTEM, None)
+        pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, None)
         return False
     _verdict_usable = _flow_action == "answer" and _flow_answer in (
         "replace", "keep", "new_tab", "confirm", "cancel")
@@ -380,7 +385,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
     else:
         wants_cancel = any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
     if wants_cancel:
-        session.set(PENDING_COMPLETE_SYSTEM, None)
+        pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, None)
         reply_message(session, "Cancelled. Your existing model is unchanged.")
         return True
 
@@ -415,7 +420,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
             "[PendingConfirm] Message doesn't match replace/keep/new-tab/cancel — "
             "treating as new request, clearing pending state"
         )
-        session.set(PENDING_COMPLETE_SYSTEM, None)
+        pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, None)
         return False  # Let normal state body handle the new request
 
     # ── Destructive modify-model guard ────────────────────────────────
@@ -440,7 +445,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
                     "Something went wrong — the pending change is no longer available. "
                     "Please try again.",
                 )
-            session.set(PENDING_COMPLETE_SYSTEM, None)
+            pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, None)
 
             # If this destructive op was one step of a larger multi-op plan
             # (see execution/planning.py, which stashes 'remaining_operations'
@@ -465,7 +470,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
                 "[PendingConfirm] User declined destructive modify_model — discarding plan"
             )
             reply_message(session, "Cancelled — no changes were made. Your model is unchanged.")
-            session.set(PENDING_COMPLETE_SYSTEM, None)
+            pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, None)
         return True
 
     # --- User answered: execute the stored creation -----------------------
@@ -492,7 +497,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
             precomputed["replaceExisting"] = False
 
         reply_payload(session, precomputed)
-        session.set(PENDING_COMPLETE_SYSTEM, None)
+        pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, None)
         return True
 
     # Re-execute the stored operation with the original parameters.
@@ -519,11 +524,11 @@ def handle_pending_system_confirmation(session: Session) -> bool:
                 _replace_existing=True,  # New tab is empty, replace is fine
                 _create_new_tab=True,
             )
-            session.set(PENDING_COMPLETE_SYSTEM, None)
+            pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, None)
         except Exception as exc:
             logger.error(f"❌ [PendingConfirm] Error after new tab creation: {exc}", exc_info=True)
             reply_message(session, "Something went wrong creating the new tab. Please try again.")
-            session.set(PENDING_COMPLETE_SYSTEM, None)
+            pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, None)
             return True
 
         # Resume remaining operations same as replace/keep path
@@ -561,14 +566,14 @@ def handle_pending_system_confirmation(session: Session) -> bool:
             _skip_existing_check=True,
             _replace_existing=replace_existing,
         )
-        session.set(PENDING_COMPLETE_SYSTEM, None)  # Clear only on success
+        pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, None)  # Clear only on success
     except Exception as exc:
         logger.error(f"❌ [PendingConfirm] Error executing stored operation: {exc}", exc_info=True)
         reply_message(
             session,
             "Something went wrong. You can try again by saying **replace**, **keep**, or **new tab**, or **cancel** to abort.",
         )
-        session.set(PENDING_COMPLETE_SYSTEM, None)
+        pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, None)
         return True
 
     # ── Resume remaining operations from the original plan ───────────
@@ -606,11 +611,11 @@ def _resume_smart_gen_after_replace(session: Session) -> None:
     actual trigger is emitted by the confirm handler in
     ``handle_generation_request``.
     """
-    stashed_instructions = session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+    stashed_instructions = pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
     if not isinstance(stashed_instructions, str) or not stashed_instructions.strip():
         return
 
-    stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic"
+    stashed_provider = pending_dialogs.get(session, PENDING_SMART_GEN_PROVIDER) or "anthropic"
 
     try:
         from codegen.generation_handler import (
@@ -681,13 +686,13 @@ def _resume_remaining_ops(
                         # Check both pending types — the operation may have
                         # stored either a system confirmation or a GUI choice.
                         for key in (PENDING_COMPLETE_SYSTEM, PENDING_GUI_CHOICE):
-                            new_pending = session.get(key)
+                            new_pending = pending_dialogs.get(session, key)
                             if isinstance(new_pending, dict):
                                 new_pending['remaining_operations'] = leftover
                                 new_pending['original_message'] = (
                                     pending.get('original_message', stored_message)
                                 )
-                                session.set(key, new_pending)
+                                pending_dialogs.put(session, key, new_pending)
                                 logger.info(
                                     f"[PendingConfirm] Nested pending stored in {key} with "
                                     f"{len(leftover)} remaining op(s)"
@@ -718,7 +723,7 @@ def _resume_remaining_ops(
             # it — never auto-run generation right after a GUI build.
             if stored_diagram_type == 'GUINoCodeDiagram':
                 logger.info("[GUIChoice] Deferring web-app generation — asking the user to generate")
-                session.set(PENDING_WEBAPP_GENERATE, None)
+                pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, None)
                 emit_webapp_generate_prompt(session)
                 break  # Stop here; the user drives generation explicitly.
 
@@ -748,3 +753,38 @@ def _resume_remaining_ops(
     # was stripped at the plan source, so show the "generate the web app?" prompt
     # here. Non-web-app resumes leave the flag unset and skip this.
     _maybe_emit_webapp_prompt(session)
+
+
+# ------------------------------------------------------------------
+# Resume handlers
+# ------------------------------------------------------------------
+
+# One handler per pending dialog, tried in pending_dialogs.PRECEDENCE order.
+# A handler returns True when it consumed the message (the turn ends there) and
+# False when the message is not an answer to it; it has then either left its
+# dialog open or abandoned it, and the next open dialog is tried.
+#
+# The generator dialog's handler takes only an EXACT yes/ok/generate/no to the
+# plan-pause question, so it fires (or cancels) the stashed generator whichever
+# state the classifier routed it to (a bare "ok" is often stamped
+# decline_intent). Menu and settings answers, and every other reply while a
+# generator or Spec-Driven run is pending, reach handle_generation_request
+# through routing instead: the pending gate in json_intent_matches,
+# should_route_to_generation and decline_body's handoff.
+RESUME_HANDLERS = {
+    pending_dialogs.GUI_CHOICE: handle_pending_gui_choice,
+    pending_dialogs.SYSTEM_CONFIRMATION: handle_pending_system_confirmation,
+    pending_dialogs.SMART_GEN: handle_pending_smart_gen_confirmation,
+    pending_dialogs.GENERATOR: handle_pending_plan_generation_confirmation,
+}
+
+
+def resume_pending(session: Session) -> bool:
+    """Hand the message to the open dialogs in precedence order.
+
+    Returns ``True`` when one consumed it (the caller should ``return``).
+    """
+    for kind in pending_dialogs.PRECEDENCE:
+        if pending_dialogs.is_open(session, kind) and RESUME_HANDLERS[kind](session):
+            return True
+    return False

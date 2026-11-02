@@ -28,14 +28,17 @@ from app.confirmation import handle_pending_system_confirmation
 from conversation.session_helpers import json_intent_matches
 from common.session_keys import (
     LAST_SMART_GEN_AT,
+    UNIFIED_CLASSIFICATION,
+)
+from common.pending_dialogs import (
     PENDING_COMPLETE_SYSTEM,
     PENDING_GENERATOR_TYPE,
-    UNIFIED_CLASSIFICATION,
 )
 from routing.unified_classifier import UnifiedClassification, _build_user_block
 from protocol.types import AssistantRequest, WorkspaceContext
 
 from tests.conftest import FakeSession
+from common import pending_dialogs
 
 
 def _uc(intent, flow_action=None, flow_answer=None):
@@ -67,7 +70,7 @@ _PENDING = {
 class TestConfirmationPivots:
     def _run(self, message):
         session = FakeSession()
-        session.set(PENDING_COMPLETE_SYSTEM, dict(_PENDING))
+        pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, dict(_PENDING))
         executed = {}
         with patch.object(confirmation, "parse_assistant_request",
                           return_value=_req(message)), \
@@ -83,7 +86,7 @@ class TestConfirmationPivots:
             "no, just add an email attribute to Customer")
         assert handled is False              # falls through to normal routing
         assert executed == {}                # stored create NOT executed
-        assert not session.get(PENDING_COMPLETE_SYSTEM)  # pending cleared
+        assert not pending_dialogs.get(session, PENDING_COMPLETE_SYSTEM)  # pending cleared
 
     def test_short_no_still_answers_keep(self):
         handled, executed, session = self._run("no")
@@ -99,7 +102,7 @@ class TestConfirmationPivots:
 
     def _run_with_verdict(self, message, uc):
         session = FakeSession()
-        session.set(PENDING_COMPLETE_SYSTEM, dict(_PENDING))
+        pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, dict(_PENDING))
         session.set(UNIFIED_CLASSIFICATION, uc)
         executed = {}
         with patch.object(confirmation, "parse_assistant_request",
@@ -119,7 +122,7 @@ class TestConfirmationPivots:
                 msg, _uc("modify_model_intent", "answer", "keep"))
             assert handled is False, msg     # falls through to modify routing
             assert executed == {}, msg       # stored create NOT executed
-            assert not session.get(PENDING_COMPLETE_SYSTEM), msg
+            assert not pending_dialogs.get(session, PENDING_COMPLETE_SYSTEM), msg
 
     def test_plain_keep_answer_still_honored(self):
         handled, executed, session = self._run_with_verdict(
@@ -147,7 +150,7 @@ class TestPendingFlowGate:
     def _session(self, pending, uc):
         session = FakeSession()
         if pending is not None:
-            session.set(PENDING_GENERATOR_TYPE, pending)
+            pending_dialogs.put(session, PENDING_GENERATOR_TYPE, pending)
         if uc is not None:
             session.set(UNIFIED_CLASSIFICATION, uc)
         return session
@@ -175,7 +178,7 @@ class TestPendingFlowGate:
         """The 'add Death to PetStatus' class of bug: a modify typed at the
         replace/keep prompt routes to modify_model_state — never trapped."""
         session = FakeSession()
-        session.set(PENDING_COMPLETE_SYSTEM, {"operation_request": "create x"})
+        pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, {"operation_request": "create x"})
         session.set(UNIFIED_CLASSIFICATION,
                     _uc("modify_model_intent", "new_request"))
         assert json_intent_matches(
@@ -183,7 +186,7 @@ class TestPendingFlowGate:
 
     def test_answer_at_replace_confirmation_stays(self):
         session = FakeSession()
-        session.set(PENDING_COMPLETE_SYSTEM, {"operation_request": "create x"})
+        pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, {"operation_request": "create x"})
         session.set(UNIFIED_CLASSIFICATION,
                     _uc("fallback_intent", "answer", "replace"))
         assert json_intent_matches(
@@ -208,24 +211,25 @@ class TestPendingFlowContext:
 
     def test_kinds_and_precedence(self):
         from routing.unified_classifier import _pending_flow_context
-        from common.session_keys import (
-            PENDING_GUI_CHOICE, PENDING_SMART_GEN_INSTRUCTIONS,
+        from common.pending_dialogs import (
+            PENDING_GUI_CHOICE,
+            PENDING_SMART_GEN_INSTRUCTIONS,
         )
         s = FakeSession()
         assert _pending_flow_context(s) is None
-        s.set(PENDING_GENERATOR_TYPE, "django")
+        pending_dialogs.put(s, PENDING_GENERATOR_TYPE, "django")
         assert _pending_flow_context(s)["kind"] == "generator_config"
-        s.set(PENDING_GENERATOR_TYPE, "_awaiting_selection")
+        pending_dialogs.put(s, PENDING_GENERATOR_TYPE, "_awaiting_selection")
         assert _pending_flow_context(s)["kind"] == "generator_menu"
-        s.set(PENDING_SMART_GEN_INSTRUCTIONS, "build x")
+        pending_dialogs.put(s, PENDING_SMART_GEN_INSTRUCTIONS, "build x")
         assert _pending_flow_context(s)["kind"] == "smart_confirm"
-        s.set(PENDING_COMPLETE_SYSTEM, {"can_add_tab": True})
+        pending_dialogs.put(s, PENDING_COMPLETE_SYSTEM, {"can_add_tab": True})
         flow = _pending_flow_context(s)
         assert flow["kind"] == "replace_confirm"
         assert "new_tab" in flow["valid_answers"]
-        s.set(PENDING_COMPLETE_SYSTEM, {"destructive_modify": True})
+        pending_dialogs.put(s, PENDING_COMPLETE_SYSTEM, {"destructive_modify": True})
         assert _pending_flow_context(s)["kind"] == "destructive_confirm"
-        s.set(PENDING_GUI_CHOICE, {"remaining_operations": []})
+        pending_dialogs.put(s, PENDING_GUI_CHOICE, {"remaining_operations": []})
         assert _pending_flow_context(s)["kind"] == "gui_choice"  # highest
 
     def test_user_block_renders_pending_question(self):
@@ -245,7 +249,7 @@ class TestVerdictPrimaryConfirmation:
 
     def _run(self, message, uc):
         session = FakeSession()
-        session.set(PENDING_COMPLETE_SYSTEM, dict(_PENDING))
+        pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, dict(_PENDING))
         if uc is not None:
             session.set(UNIFIED_CLASSIFICATION, uc)
         executed = {}
@@ -264,7 +268,7 @@ class TestVerdictPrimaryConfirmation:
             _uc("modify_model_intent", "new_request"))
         assert handled is False
         assert executed == {}
-        assert not session.get(PENDING_COMPLETE_SYSTEM)
+        assert not pending_dialogs.get(session, PENDING_COMPLETE_SYSTEM)
 
     def test_verdict_keep_wins_over_keyword_noise(self):
         # Long negated phrasing the keyword path needed guards for — the
@@ -413,10 +417,10 @@ class TestConfigFlowCancel:
 
     def _run(self, message, cached_intent=None):
         from codegen.generation_handler import handle_generation_request
-        from common.session_keys import CONFIG_PROMPT_ATTEMPTS
+        from common.pending_dialogs import CONFIG_PROMPT_ATTEMPTS
         session = FakeSession()
-        session.set(PENDING_GENERATOR_TYPE, "django")
-        session.set(CONFIG_PROMPT_ATTEMPTS, 2)
+        pending_dialogs.put(session, PENDING_GENERATOR_TYPE, "django")
+        pending_dialogs.put(session, CONFIG_PROMPT_ATTEMPTS, 2)
         if cached_intent:
             session.set(UNIFIED_CLASSIFICATION, _uc(cached_intent))
         result = handle_generation_request(session, _req(message))
@@ -425,19 +429,19 @@ class TestConfigFlowCancel:
     def test_explicit_cancel_exits_the_flow(self):
         result, session = self._run("cancel")
         assert "cancelled" in result["message"].lower()
-        assert not session.get(PENDING_GENERATOR_TYPE)
+        assert not pending_dialogs.get(session, PENDING_GENERATOR_TYPE)
 
     def test_decline_verdict_exits_the_flow(self):
         result, session = self._run("nah forget this whole thing",
                                     cached_intent="decline_intent")
         assert "cancelled" in result["message"].lower()
-        assert not session.get(PENDING_GENERATOR_TYPE)
+        assert not pending_dialogs.get(session, PENDING_GENERATOR_TYPE)
 
     def test_config_answer_continues_the_flow(self):
         # A real config answer must NOT be treated as a cancel. (Needs a class
         # model in context or the prerequisite check ends the flow first.)
         from codegen.generation_handler import handle_generation_request
-        from common.session_keys import CONFIG_PROMPT_ATTEMPTS
+        from common.pending_dialogs import CONFIG_PROMPT_ATTEMPTS
         model = {"elements": {"c1": {"type": "Class", "name": "Book"}},
                  "relationships": {}}
         request = AssistantRequest(
@@ -449,12 +453,12 @@ class TestConfigFlowCancel:
             ),
         )
         session = FakeSession()
-        session.set(PENDING_GENERATOR_TYPE, "django")
-        session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+        pending_dialogs.put(session, PENDING_GENERATOR_TYPE, "django")
+        pending_dialogs.put(session, CONFIG_PROMPT_ATTEMPTS, 0)
         result = handle_generation_request(session, request)
         # Continues the flow: either re-prompts for the missing fields
         # (pending kept) or, once satisfied, triggers the generator.
-        assert session.get(PENDING_GENERATOR_TYPE) or (
+        assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) or (
             result.get("action") == "trigger_generator")
         assert "cancelled" not in (result.get("message") or "").lower()
 
@@ -465,26 +469,26 @@ class TestPendingStashInterjections:
 
     def _session_with_stash(self, cached_intent):
         import time as _t
-        from common.session_keys import (
+        from common.pending_dialogs import (
             PENDING_SMART_GEN_INSTRUCTIONS,
             PENDING_SMART_GEN_PROVIDER,
             PENDING_SMART_GEN_TIMESTAMP,
         )
         session = FakeSession()
-        session.set(PENDING_SMART_GEN_INSTRUCTIONS, "build a shop app")
-        session.set(PENDING_SMART_GEN_PROVIDER, "anthropic")
-        session.set(PENDING_SMART_GEN_TIMESTAMP, _t.time())
+        pending_dialogs.put(session, PENDING_SMART_GEN_INSTRUCTIONS, "build a shop app")
+        pending_dialogs.put(session, PENDING_SMART_GEN_PROVIDER, "anthropic")
+        pending_dialogs.put(session, PENDING_SMART_GEN_TIMESTAMP, _t.time())
         session.set(UNIFIED_CLASSIFICATION, _uc(cached_intent))
         return session
 
     def test_out_of_scope_interjection_answers_and_keeps_stash(self):
         from codegen.generation_handler import handle_generation_request
         from conversation.reply_copy import OUT_OF_SCOPE_REDIRECT
-        from common.session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+        from common.pending_dialogs import PENDING_SMART_GEN_INSTRUCTIONS
         session = self._session_with_stash("out_of_scope_intent")
         result = handle_generation_request(session, _req("draw me a cat"))
         assert result["message"] == OUT_OF_SCOPE_REDIRECT
-        assert session.get(PENDING_SMART_GEN_INSTRUCTIONS)  # stash survives
+        assert pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)  # stash survives
 
     def test_verdict_confirm_never_fires_the_spend(self):
         """The Spec-Driven Agent SPENDS a run, so an LLM verdict of
@@ -503,22 +507,22 @@ class TestPendingStashInterjections:
 
     def test_verdict_cancel_still_cancels(self):
         from codegen.generation_handler import handle_generation_request
-        from common.session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+        from common.pending_dialogs import PENDING_SMART_GEN_INSTRUCTIONS
         session = self._session_with_stash("generation_intent")
         session.set(UNIFIED_CLASSIFICATION, UnifiedClassification(
             intent="generation_intent", reason="stub",
             pending_flow_action="answer", pending_flow_answer="cancel"))
         result = handle_generation_request(session, _req("hmm rather not actually"))
         assert "cancelled" in (result.get("message") or "").lower()
-        assert not session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+        assert not pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
 
     def test_decline_at_confirmation_cancels_cleanly(self):
         from codegen.generation_handler import handle_generation_request
-        from common.session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+        from common.pending_dialogs import PENDING_SMART_GEN_INSTRUCTIONS
         session = self._session_with_stash("decline_intent")
         result = handle_generation_request(session, _req("nah, I am good"))
         assert "cancelled" in result["message"].lower()
-        assert not session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+        assert not pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
 
 
 class TestErrorFallbackMarker:
@@ -567,19 +571,19 @@ class TestMismatchRegenFixes:
 
     def test_regen_prompt_matcher(self):
         from execution.model_operations import _matches_regen_prompt
-        from common.session_keys import MISMATCH_REGEN_PENDING
+        from common.pending_dialogs import MISMATCH_REGEN_PENDING
         session = FakeSession()
         req = _req("Create a class diagram   for a SHOE store")
         assert _matches_regen_prompt(session, req) is False  # nothing stashed
-        session.set(MISMATCH_REGEN_PENDING, "create a class diagram for a shoe store")
+        pending_dialogs.put(session, MISMATCH_REGEN_PENDING, "create a class diagram for a shoe store")
         assert _matches_regen_prompt(session, req) is True   # case/space-insensitive
         assert _matches_regen_prompt(session, _req("create a class diagram for a hat store")) is False
 
     def test_typed_label_dispatches_stashed_rebuild(self):
         import codegen.generation_handler as gh
-        from common.session_keys import MISMATCH_REGEN_PENDING
+        from common.pending_dialogs import MISMATCH_REGEN_PENDING
         session = FakeSession()
-        session.set(MISMATCH_REGEN_PENDING, "create a class diagram for a shoe store")
+        pending_dialogs.put(session, MISMATCH_REGEN_PENDING, "create a class diagram for a shoe store")
         req = _req("Update model + generate")
         dispatched = {}
         import execution
@@ -611,7 +615,7 @@ class TestBareAnswerTokensNeverPivot:
 
     def _run_with_verdict(self, message, uc):
         session = FakeSession()
-        session.set(PENDING_COMPLETE_SYSTEM, dict(_PENDING))
+        pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, dict(_PENDING))
         session.set(UNIFIED_CLASSIFICATION, uc)
         executed = {}
         with patch.object(confirmation, "parse_assistant_request",
@@ -647,4 +651,4 @@ class TestBareAnswerTokensNeverPivot:
             "add a Member class", _uc("modify_model_intent", "answer", "keep"))
         assert handled is False
         assert executed == {}
-        assert not session.get(PENDING_COMPLETE_SYSTEM)
+        assert not pending_dialogs.get(session, PENDING_COMPLETE_SYSTEM)

@@ -19,12 +19,14 @@ import pytest
 from protocol.types import AssistantRequest, WorkspaceContext
 from common.session_keys import (
     APP_TARGET,
+    REPLY_LANGUAGE,
+    UNIFIED_CLASSIFICATION,
+)
+from common.pending_dialogs import (
     PENDING_SMART_GEN_INSTRUCTIONS,
     PENDING_SMART_GEN_ORIGINAL_REQUEST,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
-    REPLY_LANGUAGE,
-    UNIFIED_CLASSIFICATION,
 )
 from prompts.classifier import SYSTEM_PROMPT
 from routing.unified_classifier import (
@@ -35,6 +37,7 @@ from routing.unified_classifier import (
 )
 
 from tests.conftest import FakeSession, make_session
+from common import pending_dialogs
 
 _MODEL = {"elements": {"c1": {"type": "Class", "name": "Product", "owner": None}},
           "relationships": {}}
@@ -184,9 +187,9 @@ class TestNoInsteadIsACorrection:
                                active_model=_MODEL, project_snapshot=_SNAPSHOT)
         monkeypatch.setattr(generation, "_active_project_id", lambda s: "shop-1")
         generation.remember_original_request(session, "quiero una app para mi tienda", "shop-1")
-        session.set(PENDING_SMART_GEN_INSTRUCTIONS, "Build a web app for the shop")
-        session.set(PENDING_SMART_GEN_PROVIDER, "anthropic")
-        session.set(PENDING_SMART_GEN_TIMESTAMP, time.time())
+        pending_dialogs.put(session, PENDING_SMART_GEN_INSTRUCTIONS, "Build a web app for the shop")
+        pending_dialogs.put(session, PENDING_SMART_GEN_PROVIDER, "anthropic")
+        pending_dialogs.put(session, PENDING_SMART_GEN_TIMESTAMP, time.time())
         verdict = _post_validate(UnifiedClassification(
             intent="decline_intent", target_kind="other", target_description="native mobile app",
             reason="stub"), "no, una app nativa, no una web app")
@@ -199,8 +202,8 @@ class TestNoInsteadIsACorrection:
 
         assert "cancelled" not in result["message"].lower()
         assert "**native mobile app**" in result["message"]
-        assert "Target: native mobile app" in session.get(PENDING_SMART_GEN_INSTRUCTIONS)
-        original = session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST)
+        assert "Target: native mobile app" in pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
+        original = pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST)
         assert "quiero una app para mi tienda" in original
         assert "no, una app nativa, no una web app" in original
 
@@ -359,7 +362,7 @@ class TestConfirmationNamesTheTarget:
         assert "**Windows 11 desktop app**" in payload["message"]
         assert "no built-in generator" in payload["message"]
         assert "can't compile" in payload["message"]
-        assert session.get(PENDING_SMART_GEN_INSTRUCTIONS).startswith(
+        assert pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS).startswith(
             "Target: Windows 11 desktop app (not a web app).")
         assert payload["suggestedActions"][0]["prompt"] == "generate anyway with my current model"
 
@@ -378,7 +381,7 @@ class TestConfirmationNamesTheTarget:
         payload = build_trigger_smart_generator_payload(
             GenerationClassification(
                 route="smart", provider="anthropic", reason="confirmed",
-                refined_instructions=session.get(PENDING_SMART_GEN_INSTRUCTIONS)),
+                refined_instructions=pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)),
             original_request="quiero una app de Windows 11 para mi tienda",
         )
         lines = payload["instructions"].splitlines()
@@ -389,13 +392,13 @@ class TestConfirmationNamesTheTarget:
     def test_named_architecture_is_acknowledged(self, monkeypatch):
         session, payload = self._confirm(monkeypatch, architecture="MVC")
         assert "**MVC** architecture" in payload["message"]
-        assert "Architecture: MVC." in session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+        assert "Architecture: MVC." in pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
 
     @pytest.mark.parametrize("target", [{}, {"target_kind": "web_app", "target_description": "web app"}])
     def test_web_wording_is_unchanged(self, monkeypatch, target):
         session, payload = self._confirm(monkeypatch, **target)
         assert payload["message"].startswith(_WEB_CONFIRMATION_START)
-        assert session.get(PENDING_SMART_GEN_INSTRUCTIONS) == "Build the inventory application."
+        assert pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS) == "Build the inventory application."
 
     def test_post_spec_button_names_the_target(self):
         from conversation.suggestions import get_post_spec_suggestions

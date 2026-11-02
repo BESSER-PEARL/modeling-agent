@@ -63,6 +63,11 @@ are Nit at most.
   variable is a field on `AgentSettings` (`src/common/settings.py`), never an `os.getenv` call.
 - **Per-session state**: a new module-level store keyed by a session registers with `common.session_store.sessions`
   (discard, keys, optional expiry), so `sessions.close(key)` reaches it.
+- **Pending dialogs**: a question the next message may answer stores its state as a slot in
+  `common/pending_dialogs.py` (`get` / `put` / `clear`), never as its own session key or with
+  `session.get` on a slot name. A new dialog adds its kind to `PRECEDENCE`, a handler to
+  `app/confirmation.RESUME_HANDLERS` and its question to `_pending_flow_context`, never another check chained
+  into `_common_preamble`; a test in `tests/test_pending_dialogs.py` pins where it sits in the order.
 
 ## Do not report
 

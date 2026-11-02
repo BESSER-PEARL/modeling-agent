@@ -17,12 +17,13 @@ from app import confirmation
 from common.session_keys import (
     LAST_SMART_GEN_AT,
     LAST_SMART_GEN_PROJECT_ID,
-    PENDING_GUI_CHOICE,
     SMART_GEN_ARMED_PROJECT_ID,
     UNIFIED_CLASSIFICATION,
 )
+from common.pending_dialogs import PENDING_GUI_CHOICE
 from codegen.generation_handler import _build_smart_gen_confirmation
 from tests.conftest import FakeSession, make_session
+from common import pending_dialogs
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +92,7 @@ def _route_gui_choice(answer: str, verdict=None):
     if verdict is not None:
         session.set(UNIFIED_CLASSIFICATION, MagicMock(
             pending_flow_action="answer", pending_flow_answer=verdict))
-    session.set(PENDING_GUI_CHOICE, {
+    pending_dialogs.put(session, PENDING_GUI_CHOICE, {
         "operation_request": "create a web app",
         "operation": {"diagramType": "GUINoCodeDiagram"},
         "default_mode": "complete_system",
@@ -503,7 +504,10 @@ def test_a_recorded_project_id_that_mismatches_still_fails_closed():
     """The allowance must NOT weaken the actual fix: once a project id exists,
     a different project gets no app."""
     from codegen.generation_handler import _smart_gen_project_has_app
-    from common.session_keys import LAST_SMART_GEN_AT, LAST_SMART_GEN_PROJECT_ID
+    from common.session_keys import (
+        LAST_SMART_GEN_AT,
+        LAST_SMART_GEN_PROJECT_ID,
+    )
     import time as _t
 
     session = make_session("fix my app", project_snapshot={"id": "proj-B"})
@@ -542,5 +546,5 @@ def test_gui_choice_is_asked_even_when_the_request_mentions_a_dashboard():
         )
 
     assert result is None, "no GUI may be generated before the user chose how"
-    assert session.get(PENDING_GUI_CHOICE), "the choice must be pending"
+    assert pending_dialogs.get(session, PENDING_GUI_CHOICE), "the choice must be pending"
     assert "How would you like me to create your screens" in captured[0]["message"]

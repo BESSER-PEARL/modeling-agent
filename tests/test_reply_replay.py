@@ -122,10 +122,8 @@ def test_common_preamble_intercepts_replay_and_never_runs_generation():
     session = _FakeSession()
     with patch.object(sb, "parse_assistant_request", return_value=_Req()), \
          patch.object(sb, "replay_last_reply") as mock_replay, \
-         patch.object(sb, "handle_pending_gui_choice") as mock_gui, \
-         patch.object(sb, "handle_pending_system_confirmation") as mock_conf:
+         patch.object(sb, "resume_pending") as mock_resume:
         result = sb._common_preamble(session)
     assert result is None                 # short-circuits — state body does nothing
     assert mock_replay.called             # the buffered reply is re-sent
-    assert not mock_gui.called            # pending flows are never consumed
-    assert not mock_conf.called
+    assert not mock_resume.called         # pending flows are never consumed

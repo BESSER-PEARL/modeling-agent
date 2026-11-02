@@ -38,7 +38,7 @@ Step 3: Check the pending-flow gate
 
 If the assistant had a question outstanding, look at ``pending_flow_action``.
 An ``"answer"`` verdict deliberately keeps the message in the current state so
-``_common_preamble()`` can hand it to the flow handler; only
+``_common_preamble()`` can hand it to the flow handler (``resume_pending``); only
 ``"new_request"`` lets it route away. A message that seems "stuck" in a state
 is usually this working as designed.
 
@@ -107,14 +107,15 @@ Request Not Reaching the Right Handler
    - **Priority 3**: Text-event intent match (backward compatibility)
    - **Priority 4**: Fallback (``json_no_intent_matched``)
 
-2. Check if ``pending_generator_type`` or ``pending_complete_system`` is set on
-   the session — these **suppress** intent matching:
+2. Check whether a dialog is pending — an open dialog **suppresses** intent
+   matching unless the classifier said ``new_request``:
 
    .. code-block:: python
 
-      session.get("pending_generator_type")   # "_awaiting_selection" suppresses
-      session.get("pending_complete_system")   # Any truthy value suppresses
-      session.get("pending_gui_choice")        # Any truthy value suppresses
+      from common import pending_dialogs
+
+      pending_dialogs.current(session)   # first open dialog, or None
+      session.get("_pending_dialogs")    # every slot, as one dict
 
 
 Common Pitfalls

@@ -356,22 +356,14 @@ Every state body starts with ``_common_preamble()``
 1. **Reconnect replay** — a ``replay_last_response`` action re-sends the
    buffered terminal reply and stops. It never re-runs generation or consumes
    a pending flow.
-2. **Pending GUI choice** — ``handle_pending_gui_choice()``
-3. **Pending system confirmation** — ``handle_pending_system_confirmation()``
-   (replace / keep / new tab)
-4. **Pending smart-generation confirmation** —
-   ``handle_pending_smart_gen_confirmation()``
-5. **Plan-paused generation** —
-   ``handle_pending_plan_generation_confirmation()``. An exact
-   yes/ok/generate/no typed at the "review or continue with generating?"
-   question is consumed here regardless of which state the classifier routed
-   it to, because the classifier has been observed stamping a bare "ok" as
-   ``decline_intent``.
-6. **Parse** the request into an ``AssistantRequest``
-7. **File attachments** — ``handle_file_attachments()``
-8. **Record** the user message in conversation memory, keyed on the stable
+2. **Pending dialogs** — ``resume_pending()`` (``src/app/confirmation.py``)
+   hands the message to each open dialog in ``pending_dialogs.PRECEDENCE``
+   order until one consumes it (see `Pending Dialogs`_).
+3. **Parse** the request into an ``AssistantRequest``
+4. **File attachments** — ``handle_file_attachments()``
+5. **Record** the user message in conversation memory, keyed on the stable
    payload ``sessionId`` so it survives reconnects
-9. **Ask instead of guess** — if the cached classification set
+6. **Ask instead of guess** — if the cached classification set
    ``needs_clarification``, the preamble streams ``clarifying_question`` and
    stops rather than guessing a destructive mutation. It reads the cached
    verdict, so this costs no extra LLM call, and it never fires on a
@@ -380,3 +372,46 @@ Every state body starts with ``_common_preamble()``
 It returns the parsed ``AssistantRequest`` when the message should be handled
 normally, or ``None`` when a pending flow, an attachment, or a clarifying
 question already consumed it — in which case the state body short-circuits.
+
+Pending Dialogs
+~~~~~~~~~~~~~~~
+
+A turn that ends on a question stores what the answer needs in one session
+variable, ``PENDING_DIALOGS``, through ``src/common/pending_dialogs.py``
+(``get`` / ``put`` / ``clear``; never ``session.get`` on a slot name). Several
+dialogs can be open at once — the domain-mismatch "Update model + generate"
+chain keeps its Spec-Driven stash while the rebuild asks replace-or-keep, and a
+"design X and generate Y" plan keeps its paused generator while its model step
+asks the same — so the order is fixed in ``PRECEDENCE``:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 40 38
+
+   * - Dialog
+     - Question
+     - Resume handler (``RESUME_HANDLERS``)
+   * - ``GUI_CHOICE``
+     - Basic CRUD pages or experimental AI design?
+     - ``handle_pending_gui_choice``
+   * - ``SYSTEM_CONFIRMATION``
+     - Replace, keep or new tab; or confirm a destructive modify
+     - ``handle_pending_system_confirmation``
+   * - ``SMART_GEN``
+     - Run the Spec-Driven Agent? (exact phrases confirm; the classifier may
+       only cancel)
+     - ``handle_pending_smart_gen_confirmation``
+   * - ``GENERATOR``
+     - Continue with the paused generator? (exact yes/ok/generate/no only,
+       because the classifier has stamped a bare "ok" as ``decline_intent``)
+     - ``handle_pending_plan_generation_confirmation``
+
+A handler returns ``True`` when it consumed the message and ``False`` when the
+message is not its answer, after either leaving its dialog open or abandoning
+it; the next open dialog is then tried. The classifier is shown the same first
+open dialog (``_pending_flow_context``). Answers no handler consumes — the
+generator menu, generator settings, a non-exact reply to a Spec-Driven or
+plan-pause question — reach ``handle_generation_request`` through routing: the
+pending gate in ``json_intent_matches`` keeps them out of intent routing,
+``should_route_to_generation`` sends them to the generation state, and
+``decline_body`` hands a decline to it while a generator dialog is open.

@@ -50,9 +50,11 @@ Application (``src/app/``)
   - ``global_fallback_body(session)``
 
 ``src/app/confirmation.py``
-  Pending confirmation flow handlers. Each reads its own pending state off the
-  session and returns ``True`` when it consumed the message:
+  Resuming pending dialogs (``common.pending_dialogs``). Each handler returns
+  ``True`` when it consumed the message:
 
+  - ``resume_pending(session) -> bool`` — hands the message to the open
+    dialogs in ``PRECEDENCE`` order, through ``RESUME_HANDLERS``
   - ``handle_pending_system_confirmation(session) -> bool`` — replace / keep /
     new tab
   - ``handle_pending_gui_choice(session) -> bool`` — deterministic vs.
@@ -529,13 +531,25 @@ Common (``src/common/``)
   are freed by ``Agent.close_session``.
 
 ``src/common/session_keys.py``
-  Every session-state key the agent writes, in one place — the pending-flow
-  keys (``PENDING_COMPLETE_SYSTEM``, ``PENDING_GUI_CHOICE``,
-  ``PENDING_GENERATOR_TYPE`` / ``_CONFIG``, ``PENDING_SMART_GEN_INSTRUCTIONS``,
-  ``PENDING_WEBAPP_GENERATE``, ``PLAN_GENERATION_CONFIRM_FLAG``), the
-  classification cache keys (``UNIFIED_CLASSIFICATION`` /
-  ``UNIFIED_CLASSIFICATION_EVENT_ID``), the parsed-request cache keys, and
-  ``VOICE_CONTEXT``. Import the constant, never the literal string.
+  Every session-state key the agent writes, in one place — ``PENDING_DIALOGS``
+  (all pending dialogs), the classification cache keys
+  (``UNIFIED_CLASSIFICATION`` / ``UNIFIED_CLASSIFICATION_EVENT_ID``), the
+  parsed-request cache keys, and ``VOICE_CONTEXT``. Import the constant, never
+  the literal string.
+
+``src/common/pending_dialogs.py``
+  The questions the assistant is waiting on and their stashes, as slots of the
+  one ``PENDING_DIALOGS`` session variable (``PENDING_COMPLETE_SYSTEM``,
+  ``PENDING_GUI_CHOICE``, ``PENDING_GENERATOR_TYPE`` / ``_CONFIG``,
+  ``PENDING_SMART_GEN_*``, ``PENDING_WEBAPP_GENERATE``,
+  ``MISMATCH_REGEN_PENDING``, …):
+
+  - ``get(session, slot)`` / ``put(session, slot, value)`` /
+    ``clear(session, *slots)`` — the only way to read or write a slot
+  - ``PRECEDENCE`` — ``GUI_CHOICE``, ``SYSTEM_CONFIRMATION``, ``SMART_GEN``,
+    ``GENERATOR``: which open dialog a message is checked against first
+  - ``is_open(session, kind)`` / ``current(session)`` → ``PendingDialog(kind,
+    payload)`` or ``None``
 
 ``src/common/errors.py``
   Unified error taxonomy:

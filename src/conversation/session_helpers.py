@@ -24,10 +24,6 @@ from memory import get_memory, memory_session_key
 from common.session_store import sessions
 from common.session_keys import (
     LAST_SUGGESTED_PROMPTS,
-    PENDING_COMPLETE_SYSTEM,
-    PENDING_GUI_CHOICE,
-    PENDING_GENERATOR_TYPE,
-    PENDING_SMART_GEN_INSTRUCTIONS,
     TELEMETRY_EMITTED_EVENT_ID,
     UNIFIED_CLASSIFICATION,
 )

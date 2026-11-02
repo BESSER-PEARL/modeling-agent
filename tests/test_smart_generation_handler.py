@@ -23,9 +23,10 @@ from codegen.smart_generation_handler import (
 )
 from routing.unified_classifier import UnifiedClassification
 from protocol.types import AssistantRequest, WorkspaceContext
-from common.session_keys import PENDING_GENERATOR_TYPE
+from common.pending_dialogs import PENDING_GENERATOR_TYPE
 
 from tests.conftest import FakeSession
+from common import pending_dialogs
 
 
 _CLASS_MODEL = {
@@ -201,8 +202,8 @@ class TestHandleGenerationRequest:
         # Cancel button removed (product decision) — only Run is offered;
         # the user can still cancel by typing.
         assert "cancel the generation" not in prompts
-        from common.session_keys import PENDING_SMART_GEN_INSTRUCTIONS
-        assert "Rails" in session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+        from common.pending_dialogs import PENDING_SMART_GEN_INSTRUCTIONS
+        assert "Rails" in pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
 
         # Confirm: now (and only now) the trigger payload is emitted.
         confirm = handle_generation_request(
@@ -274,7 +275,7 @@ class TestHandleGenerationRequest:
             reason="smart",
         ))
         session = FakeSession()
-        session.set(PENDING_GENERATOR_TYPE, "django")
+        pending_dialogs.put(session, PENDING_GENERATOR_TYPE, "django")
         request = _make_request("my_project")  # user is answering "what project name?"
         result = handle_generation_request(session, request)
         assert result["action"] != "trigger_smart_generator"
@@ -298,7 +299,7 @@ class TestShouldRouteToGeneration:
 
     def test_pending_generator_routes(self):
         session = FakeSession()
-        session.set(PENDING_GENERATOR_TYPE, "django")
+        pending_dialogs.put(session, PENDING_GENERATOR_TYPE, "django")
         request = _make_request("my_project")
         assert should_route_to_generation(session, request) is True
 

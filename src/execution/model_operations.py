@@ -36,6 +36,9 @@ from conversation.suggestions import get_suggested_actions, get_artifact_label, 
 from common.session_keys import (
     LAST_EXECUTED_DIAGRAM_TYPE,
     LAST_MATCHED_INTENT,
+)
+from common import pending_dialogs
+from common.pending_dialogs import (
     MISMATCH_REGEN_PENDING,
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
@@ -224,7 +227,7 @@ def _record_created_model_in_snapshot(
 
 def _matches_regen_prompt(session: Session, request: AssistantRequest) -> bool:
     """True when this message IS the stashed mismatch rebuild prompt."""
-    _regen_prompt = session.get(MISMATCH_REGEN_PENDING)
+    _regen_prompt = pending_dialogs.get(session, MISMATCH_REGEN_PENDING)
     if not isinstance(_regen_prompt, str) or not _regen_prompt.strip():
         return False
     msg = " ".join((getattr(request, "message", "") or "").strip().lower().split())
@@ -262,7 +265,7 @@ def _build_existing_model_confirmation(
 
     # Store pending state
     pending_data['can_add_tab'] = can_add_tab
-    session.set(PENDING_COMPLETE_SYSTEM, pending_data)
+    pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, pending_data)
 
     # Build message
     if can_add_tab:
@@ -428,7 +431,7 @@ def _build_destructive_modify_confirmation(
         "diagram_type": target_diagram_type,
         "precomputed_payload": result,
     }
-    session.set(PENDING_COMPLETE_SYSTEM, pending_data)
+    pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, pending_data)
 
     if existing_count > 0:
         detail = f"remove {removed_count} of your {existing_count} existing element(s)"
@@ -618,7 +621,7 @@ def execute_model_operation(
         # A mockup (operation["images"]) is reproduced by the AI design path;
         # Basic CRUD pages would ignore it, so there is nothing to choose.
         if _has_class_diagram and not _skip_gui_choice and not operation.get("images"):
-            session.set(PENDING_GUI_CHOICE, {
+            pending_dialogs.put(session, PENDING_GUI_CHOICE, {
                 'operation_request': operation_request,
                 'operation': operation,
                 'default_mode': default_mode,
@@ -1046,7 +1049,7 @@ def execute_model_operation(
     # over-promises). Gated on the incoming message EQUALLING the exact rebuild
     # prompt stashed in MISMATCH_REGEN_PENDING, so a different create typed
     # after a mismatch never triggers this. Skipped on an explicit "keep".
-    _regen_prompt = session.get(MISMATCH_REGEN_PENDING)
+    _regen_prompt = pending_dialogs.get(session, MISMATCH_REGEN_PENDING)
     _regen_msg = " ".join((getattr(request, "message", "") or "").strip().lower().split())
     _regen_expect = (
         " ".join(_regen_prompt.strip().lower().split())
@@ -1059,21 +1062,21 @@ def execute_model_operation(
         and _regen_expect is not None
         and _regen_msg == _regen_expect
     ):
-        session.delete(MISMATCH_REGEN_PENDING)  # consume once
+        pending_dialogs.clear(session, MISMATCH_REGEN_PENDING)  # consume once
         try:
             from codegen.generation_handler import (
                 _build_smart_gen_confirmation,
                 _smart_gen_stash_is_fresh,
             )
 
-            _stash = session.get(PENDING_SMART_GEN_INSTRUCTIONS)
-            _fresh = _smart_gen_stash_is_fresh(session.get(PENDING_SMART_GEN_TIMESTAMP))
+            _stash = pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
+            _fresh = _smart_gen_stash_is_fresh(pending_dialogs.get(session, PENDING_SMART_GEN_TIMESTAMP))
             if isinstance(_stash, str) and _stash.strip() and _fresh:
                 logger.info("[ModelOp] Resuming stashed smart-gen after mismatch rebuild")
                 _payload = _build_smart_gen_confirmation(
                     session,
                     _stash,
-                    session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic",
+                    pending_dialogs.get(session, PENDING_SMART_GEN_PROVIDER) or "anthropic",
                     reason_prefix="Model rebuilt and ready.",
                 )
                 if isinstance(_payload, dict):

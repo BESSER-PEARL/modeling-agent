@@ -52,16 +52,12 @@ from routing.generation_signals import (
 from utilities.original_request import remember_target, request_project_id, target_for_project
 from common.session_keys import (
     LAST_SUGGESTED_PROMPTS,
-    PENDING_COMPLETE_SYSTEM,
-    PENDING_GENERATOR_CONFIG,
-    PENDING_GENERATOR_TYPE,
-    PENDING_GUI_CHOICE,
-    PENDING_SMART_GEN_INSTRUCTIONS,
-    PLAN_GENERATION_CONFIRM_FLAG,
     REPLY_LANGUAGE,
     UNIFIED_CLASSIFICATION,
     UNIFIED_CLASSIFICATION_EVENT_ID,
 )
+from common import pending_dialogs
+from common.pending_dialogs import PENDING_GENERATOR_CONFIG, PLAN_GENERATION_CONFIRM_FLAG
 
 logger = logging.getLogger(__name__)
 
@@ -509,13 +505,15 @@ def classify_message(
 
 def _pending_flow_context(session: Any) -> Optional[dict]:
     """Describe the question the assistant is currently awaiting an answer
-    to, derived from the existing pending-flow session keys (no storage
-    migration). Returns ``{kind, question, valid_answers}`` or ``None``.
-
-    Order mirrors _common_preamble's handling order (GUI choice first).
+    to: the first open dialog in ``pending_dialogs.PRECEDENCE``, the same
+    order ``resume_pending`` hands it the message in. Returns
+    ``{kind, question, valid_answers}`` or ``None``.
     """
     try:
-        if session.get(PENDING_GUI_CHOICE):
+        dialog = pending_dialogs.current(session)
+        if dialog is None:
+            return None
+        if dialog.kind == pending_dialogs.GUI_CHOICE:
             return {
                 "kind": "gui_choice",
                 "question": (
@@ -527,8 +525,8 @@ def _pending_flow_context(session: Any) -> Optional[dict]:
                 ),
                 "valid_answers": ["auto", "llm", "cancel"],
             }
-        pending_cs = session.get(PENDING_COMPLETE_SYSTEM)
-        if pending_cs:
+        if dialog.kind == pending_dialogs.SYSTEM_CONFIRMATION:
+            pending_cs = dialog.payload
             if isinstance(pending_cs, dict) and pending_cs.get("destructive_modify"):
                 return {
                     "kind": "destructive_confirm",
@@ -554,7 +552,7 @@ def _pending_flow_context(session: Any) -> Optional[dict]:
                     else ["replace", "keep", "cancel"]
                 ),
             }
-        if session.get(PENDING_SMART_GEN_INSTRUCTIONS):
+        if dialog.kind == pending_dialogs.SMART_GEN:
             return {
                 "kind": "smart_confirm",
                 "question": (
@@ -563,7 +561,7 @@ def _pending_flow_context(session: Any) -> Optional[dict]:
                 ),
                 "valid_answers": ["confirm", "cancel"],
             }
-        pending_gen = session.get(PENDING_GENERATOR_TYPE)
+        pending_gen = dialog.payload
         if pending_gen == "_awaiting_selection":
             return {
                 "kind": "generator_menu",
@@ -573,33 +571,31 @@ def _pending_flow_context(session: Any) -> Optional[dict]:
                 ),
                 "valid_answers": ["other_answer", "cancel"],
             }
-        if pending_gen:
-            _gen_cfg = session.get(PENDING_GENERATOR_CONFIG)
-            if isinstance(_gen_cfg, dict) and _gen_cfg.get(PLAN_GENERATION_CONFIRM_FLAG):
-                # Mixed-plan pause: the model was just built and the user was
-                # asked whether to review/refine it or continue with the
-                # planned code generation (see execution/planning.py).
-                return {
-                    "kind": "generate_confirm",
-                    "question": (
-                        f"The model is ready — I asked whether to continue "
-                        f"with {pending_gen} code generation or keep refining "
-                        "the model. A bare acknowledgment ('ok', 'sure', "
-                        "'go ahead') means continue with generation."
-                    ),
-                    "valid_answers": ["confirm", "cancel"],
-                }
+        _gen_cfg = pending_dialogs.get(session, PENDING_GENERATOR_CONFIG)
+        if isinstance(_gen_cfg, dict) and _gen_cfg.get(PLAN_GENERATION_CONFIRM_FLAG):
+            # Mixed-plan pause: the model was just built and the user was
+            # asked whether to review/refine it or continue with the
+            # planned code generation (see execution/planning.py).
             return {
-                "kind": "generator_config",
+                "kind": "generate_confirm",
                 "question": (
-                    f"I asked for the {pending_gen} generator's remaining "
-                    "configuration (e.g. project name / dialect / options)."
+                    f"The model is ready — I asked whether to continue "
+                    f"with {pending_gen} code generation or keep refining "
+                    "the model. A bare acknowledgment ('ok', 'sure', "
+                    "'go ahead') means continue with generation."
                 ),
-                "valid_answers": ["other_answer", "cancel"],
+                "valid_answers": ["confirm", "cancel"],
             }
+        return {
+            "kind": "generator_config",
+            "question": (
+                f"I asked for the {pending_gen} generator's remaining "
+                "configuration (e.g. project name / dialect / options)."
+            ),
+            "valid_answers": ["other_answer", "cancel"],
+        }
     except Exception:  # pragma: no cover — a session stub without .get
         return None
-    return None
 
 
 def get_or_classify(

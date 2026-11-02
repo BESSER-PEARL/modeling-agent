@@ -142,6 +142,7 @@ has **no** skip/xfail markers.
 | --- | --- | --- |
 | `test_generation_handler.py` | 59 (param) | `generation_handler` — `detect_generator_type`, config parse/prompt, `should_route_to_generation` gatekeeper, dispatch, Django→SQL pivot-mid-config fix. |
 | `test_smart_generation_handler.py` | 17 (param) | Generation sub-routing via the unified classifier (fallback safety, dispatch) and `build_trigger_smart_generator_payload`. |
+| `test_pending_dialogs.py` | 10 | `common.pending_dialogs`: every slot under one session key, `PRECEDENCE` shared by `resume_pending` and the classifier's pending question, resume fall-through, thread-safe puts, and no slot read as a session key in `src/`. |
 | `test_routing_cleanup.py` | ~ | Behavioral pins for the routing cleanup: confirmation pivots, config-flow suppression + cancel, structured smart-gen recency, generator-registry sync. |
 | `test_smart_generation_handler_gate.py` | 10 (param) | The "confirm-before-smart" gate — never fires on first contact; stashes with a 30-min TTL; explicit/natural confirm fires, cancel/mixed never do. |
 | `test_smart_generator_result_event.py` | 6 | `generator_result` frontend event with `metadata.smart=True` — hides cost/internal name, records outcome to memory, maps error codes to tone. |

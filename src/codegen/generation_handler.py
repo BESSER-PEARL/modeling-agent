@@ -15,21 +15,24 @@ from utilities.original_request import (
     remember_original_request,
 )
 from common.session_keys import (
-    CONFIG_PROMPT_ATTEMPTS,
     LAST_SMART_GEN_AT,
     LAST_SMART_GEN_PROJECT_ID,
     LAST_SMART_GEN_SUMMARY,
+    SMART_GEN_ARMED_PROJECT_ID,
+    UNIFIED_CLASSIFICATION,
+)
+from common import pending_dialogs
+from common.pending_dialogs import (
+    CONFIG_PROMPT_ATTEMPTS,
     MISMATCH_REGEN_PENDING,
     PENDING_GENERATOR_CONFIG,
     PENDING_GENERATOR_TYPE,
-    PENDING_SMART_GEN_ORIGINAL_REQUEST,
     PENDING_SMART_GEN_INSTRUCTIONS,
+    PENDING_SMART_GEN_ORIGINAL_REQUEST,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
     PLAN_GENERATION_CONFIRM_FLAG,
     SKIP_MISMATCH_CHECK_ONCE,
-    SMART_GEN_ARMED_PROJECT_ID,
-    UNIFIED_CLASSIFICATION,
 )
 from conversation.reply_copy import OUT_OF_SCOPE_REDIRECT, SPEC_DRIVEN_NAME
 from routing.generation_signals import (
@@ -112,10 +115,10 @@ def _stash_smart_gen(
     context-free ``frontend_event`` and promotes this id once the run
     succeeds.
     """
-    session.set(PENDING_SMART_GEN_INSTRUCTIONS, instructions)
-    session.set(PENDING_SMART_GEN_PROVIDER, provider)
-    session.set(PENDING_SMART_GEN_TIMESTAMP, time.time())
-    session.set(PENDING_SMART_GEN_ORIGINAL_REQUEST, original_request)
+    pending_dialogs.put(session, PENDING_SMART_GEN_INSTRUCTIONS, instructions)
+    pending_dialogs.put(session, PENDING_SMART_GEN_PROVIDER, provider)
+    pending_dialogs.put(session, PENDING_SMART_GEN_TIMESTAMP, time.time())
+    pending_dialogs.put(session, PENDING_SMART_GEN_ORIGINAL_REQUEST, original_request)
     session.set(SMART_GEN_ARMED_PROJECT_ID, _active_project_id(session))
 
 
@@ -507,7 +510,7 @@ def _build_mismatch_confirmation(
     # / fire the resume when the incoming message equals this prompt — so a
     # DIFFERENT create typed right after a mismatch abandons normally instead
     # of spuriously resuming the old domain's smart-gen.
-    session.set(MISMATCH_REGEN_PENDING, rebuild_prompt)
+    pending_dialogs.put(session, MISMATCH_REGEN_PENDING, rebuild_prompt)
 
     return {
         "action": Action.ASSISTANT_MESSAGE,
@@ -828,27 +831,19 @@ def _build_config_prompt(
 
 
 def _get_pending_state(session: Session) -> Tuple[Optional[str], Dict[str, Any]]:
-    pending_generator = session.get(PENDING_GENERATOR_TYPE)
-    pending_config = session.get(PENDING_GENERATOR_CONFIG) or {}
+    pending_generator = pending_dialogs.get(session, PENDING_GENERATOR_TYPE)
+    pending_config = pending_dialogs.get(session, PENDING_GENERATOR_CONFIG) or {}
     return pending_generator, pending_config if isinstance(pending_config, dict) else {}
 
 
 def _set_pending_state(session: Session, generator_type: str, config: Dict[str, Any]) -> None:
-    session.set(PENDING_GENERATOR_TYPE, generator_type)
-    session.set(PENDING_GENERATOR_CONFIG, config)
+    pending_dialogs.put(session, PENDING_GENERATOR_TYPE, generator_type)
+    pending_dialogs.put(session, PENDING_GENERATOR_CONFIG, config)
 
 
 def _clear_pending_state(session: Session) -> None:
-    """Clear pending generation state without triggering noisy missing-key errors."""
-    try:
-        session_data = session.get_dictionary()
-    except Exception as exc:
-        logger.debug(f"Session dictionary access failed (best-effort): {exc}")
-        session_data = {}
-
-    for key in (PENDING_GENERATOR_TYPE, PENDING_GENERATOR_CONFIG):
-        if isinstance(session_data, dict) and key in session_data:
-            session.delete(key)
+    """Clear pending generation state."""
+    pending_dialogs.clear(session, PENDING_GENERATOR_TYPE, PENDING_GENERATOR_CONFIG)
 
 
 def _clear_pending_smart_gen(session: Session) -> None:
@@ -858,22 +853,15 @@ def _clear_pending_smart_gen(session: Session) -> None:
     Anyway, Cancel, or after a chained mismatch-regen run completes)
     so a stale stash doesn't leak into a future unrelated request.
     """
-    try:
-        session_data = session.get_dictionary()
-    except Exception as exc:
-        logger.debug(f"Session dictionary access failed (best-effort): {exc}")
-        session_data = {}
-
-    for key in (
+    pending_dialogs.clear(
+        session,
         PENDING_SMART_GEN_INSTRUCTIONS,
         PENDING_SMART_GEN_PROVIDER,
         PENDING_SMART_GEN_TIMESTAMP,
         PENDING_SMART_GEN_ORIGINAL_REQUEST,
         SKIP_MISMATCH_CHECK_ONCE,
         MISMATCH_REGEN_PENDING,
-    ):
-        if isinstance(session_data, dict) and key in session_data:
-            session.delete(key)
+    )
 
 
 def handle_pending_smart_gen_confirmation(session: Session) -> bool:
@@ -887,7 +875,7 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
     Returns False when no pending confirmation exists or the message is not an
     unambiguous answer (the normal routing pipeline should handle it).
     """
-    if not session.get(PENDING_SMART_GEN_INSTRUCTIONS):
+    if not pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS):
         return False
 
     from protocol.adapters import parse_assistant_request
@@ -915,10 +903,10 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
 
     if decision == "confirm":
         from codegen.smart_generation_handler import GenerationClassification
-        stashed_instructions = session.get(PENDING_SMART_GEN_INSTRUCTIONS) or ""
-        stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic"
-        stashed_ts = session.get(PENDING_SMART_GEN_TIMESTAMP)
-        stashed_original = session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST) or ""
+        stashed_instructions = pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS) or ""
+        stashed_provider = pending_dialogs.get(session, PENDING_SMART_GEN_PROVIDER) or "anthropic"
+        stashed_ts = pending_dialogs.get(session, PENDING_SMART_GEN_TIMESTAMP)
+        stashed_original = pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) or ""
         if _pending_smart_gen_project_changed(session):
             _clear_pending_smart_gen(session)
             _clear_pending_state(session)
@@ -1026,9 +1014,9 @@ def should_route_to_generation(session: Session, request: AssistantRequest) -> b
     """
     if request.action == Action.FRONTEND_EVENT:
         return True
-    pending_generator, _ = _get_pending_state(session)
-    return bool(
-        pending_generator or session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+    return (
+        pending_dialogs.is_open(session, pending_dialogs.GENERATOR)
+        or pending_dialogs.is_open(session, pending_dialogs.SMART_GEN)
     )
 
 
@@ -1323,7 +1311,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     # for an unambiguous whole yes/no/cancel reply. Qualified or mixed replies
     # are deliberately not treated as approval to spend the user's API key.
     msg_lower = (request.message or "").strip().lower()
-    has_pending_smart_gen = bool(session.get(PENDING_SMART_GEN_INSTRUCTIONS))
+    has_pending_smart_gen = bool(pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS))
     smart_gen_decision = (
         _smart_gen_confirmation_decision(msg_lower) if has_pending_smart_gen else None
     )
@@ -1354,10 +1342,10 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         # other path stashes + asks first (the run spends the
         # user's own API key).
         from codegen.smart_generation_handler import GenerationClassification
-        stashed_instructions = session.get(PENDING_SMART_GEN_INSTRUCTIONS) or ""
-        stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic"
-        stashed_ts = session.get(PENDING_SMART_GEN_TIMESTAMP)
-        stashed_original = session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST) or ""
+        stashed_instructions = pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS) or ""
+        stashed_provider = pending_dialogs.get(session, PENDING_SMART_GEN_PROVIDER) or "anthropic"
+        stashed_ts = pending_dialogs.get(session, PENDING_SMART_GEN_TIMESTAMP)
+        stashed_original = pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) or ""
         if _pending_smart_gen_project_changed(session):
             _clear_pending_smart_gen(session)
             _clear_pending_state(session)
@@ -1398,7 +1386,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     # label alias as the button press: dispatch the stashed rebuild prompt to
     # the modeling path — the create choke point
     # then resumes the stashed smart-gen exactly like the real button.
-    _regen_stash_alias = session.get(MISMATCH_REGEN_PENDING)
+    _regen_stash_alias = pending_dialogs.get(session, MISMATCH_REGEN_PENDING)
     if (
         isinstance(_regen_stash_alias, str) and _regen_stash_alias.strip()
         and _norm_prompt(request.message) in _MISMATCH_LABEL_ALIASES
@@ -1420,7 +1408,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         except Exception:
             logger.exception("[Generation] mismatch label dispatch failed")
 
-    _regen_prompt = session.get(MISMATCH_REGEN_PENDING)
+    _regen_prompt = pending_dialogs.get(session, MISMATCH_REGEN_PENDING)
     _is_regen_rebuild = (
         isinstance(_regen_prompt, str)
         and _norm_prompt(request.message) == _norm_prompt(_regen_prompt)
@@ -1498,7 +1486,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
 
         if _decision == "cancel":
             _clear_pending_state(session)
-            session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+            pending_dialogs.put(session, CONFIG_PROMPT_ATTEMPTS, 0)
             return {
                 "action": Action.ASSISTANT_MESSAGE,
                 "message": (
@@ -1524,7 +1512,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 "is not a confirmation", pending_generator,
             )
             _clear_pending_state(session)
-            session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+            pending_dialogs.put(session, CONFIG_PROMPT_ATTEMPTS, 0)
             _use_pending = False
 
     # When a config-collection flow is pending (e.g. we asked for the Django
@@ -1561,7 +1549,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 pending_generator,
             )
             _clear_pending_state(session)
-            session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+            pending_dialogs.put(session, CONFIG_PROMPT_ATTEMPTS, 0)
             return {
                 "action": Action.ASSISTANT_MESSAGE,
                 "message": "Cancelled — no code was generated. Your model is unchanged.",
@@ -1590,7 +1578,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                     pending_generator, _fresh.route, _fresh.generator_type,
                 )
                 _clear_pending_state(session)
-                session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+                pending_dialogs.put(session, CONFIG_PROMPT_ATTEMPTS, 0)
                 _use_pending = False
                 classification = _fresh  # reuse below; avoids a second lookup
 
@@ -1616,7 +1604,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
 
         if classification.route == "smart":
             _clear_pending_state(session)
-            session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+            pending_dialogs.put(session, CONFIG_PROMPT_ATTEMPTS, 0)
 
             # Domain-mismatch guard: when the user's request describes a
             # different domain than their existing class diagram, refuse
@@ -1624,9 +1612,9 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             # model. Surface the choice to the user via quick actions.
             # Honors a one-shot ``SKIP_MISMATCH_CHECK_ONCE`` flag so the
             # "Generate anyway" path doesn't loop on this question.
-            skip_mismatch = bool(session.get(SKIP_MISMATCH_CHECK_ONCE))
+            skip_mismatch = bool(pending_dialogs.get(session, SKIP_MISMATCH_CHECK_ONCE))
             if skip_mismatch:
-                session.set(SKIP_MISMATCH_CHECK_ONCE, False)
+                pending_dialogs.put(session, SKIP_MISMATCH_CHECK_ONCE, False)
             else:
                 is_mismatch, suggested = _read_unified_mismatch_info(session)
                 if is_mismatch and suggested:
@@ -1784,13 +1772,13 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     missing_fields = _required_missing(generator_type, config)
     if missing_fields:
         # Track how many times we've prompted for config to avoid infinite loops
-        config_attempts = (session.get(CONFIG_PROMPT_ATTEMPTS) or 0) + 1
-        session.set(CONFIG_PROMPT_ATTEMPTS, config_attempts)
+        config_attempts = (pending_dialogs.get(session, CONFIG_PROMPT_ATTEMPTS) or 0) + 1
+        pending_dialogs.put(session, CONFIG_PROMPT_ATTEMPTS, config_attempts)
 
         if config_attempts >= 3:
             # After 2 failed attempts, auto-fill with defaults and proceed
             config = _normalize_defaults(generator_type, request, config)
-            session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+            pending_dialogs.put(session, CONFIG_PROMPT_ATTEMPTS, 0)
         else:
             _set_pending_state(session, generator_type, config)
             prompt = _build_config_prompt(generator_type, missing_fields, request=request)
@@ -1806,7 +1794,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     config = _normalize_defaults(generator_type, request, config)
 
     _clear_pending_state(session)
-    session.set(CONFIG_PROMPT_ATTEMPTS, 0)
+    pending_dialogs.put(session, CONFIG_PROMPT_ATTEMPTS, 0)
     # ------------------------------------------------------------------
     # Special actions: export & deploy
     # ------------------------------------------------------------------
