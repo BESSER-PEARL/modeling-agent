@@ -5,6 +5,7 @@ dispatches model and generation operations, and handles error reporting.
 """
 
 import concurrent.futures
+import contextvars
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -235,8 +236,10 @@ def execute_planned_operations(
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=min(len(model_groups), 4),
         ) as executor:
+            # Each group runs in a copy of this context: worker threads start
+            # with an empty one and would lose the request's BYOK key.
             futures = {
-                executor.submit(_run_model_group, group): group
+                executor.submit(contextvars.copy_context().run, _run_model_group, group): group
                 for group in model_groups
             }
             for future in concurrent.futures.as_completed(futures):
