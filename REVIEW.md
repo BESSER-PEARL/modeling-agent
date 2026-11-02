@@ -28,8 +28,9 @@ generic best-practice rubric.
 Important is for findings that break behavior, the wire protocol, or a security rule:
 
 - incorrect logic, crashes, a reply that never reaches the client, a session or memory leak
-- a wire-protocol change (action names, envelope shape, double encoding) without the matching frontend change in
-  BESSER-WEB-MODELING-EDITOR (`features/assistant/services/`); say which file there must change
+- a wire-protocol change (action names in `src/protocol/actions.py`, envelope shape, double encoding) without the
+  matching frontend change in BESSER-WEB-MODELING-EDITOR (`features/assistant/services/`); say which file there
+  must change
 - a side-effect action (`trigger_smart_generator`, `trigger_deploy`, `trigger_export`, ...) that can be triggered
   from model prose instead of a structured, classified intent
 - an API key or BYOK value logged, persisted, or leaked across sessions (`byok.py` scopes it per request)

@@ -15,6 +15,7 @@ from typing import Any, Dict
 from ..core.architecture_handler import ArchitectureDiagramHandler
 from prompts import component_diagram as component_prompts
 from schemas import ComponentModificationResponse, SystemComponentSpec
+from protocol.actions import inject_complete_system
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class ComponentDiagramHandler(ArchitectureDiagramHandler):
     """Handler for UML Component Diagram generation and modification."""
 
     _LABEL = "component diagram"
+    _SYSTEM_FAILURE_MESSAGE = "I couldn't generate that component diagram. Please try again or rephrase your request."
     _SYSTEM_SCHEMA = SystemComponentSpec
     _MODIFICATION_SCHEMA = ComponentModificationResponse
     _MODIFY_SYSTEM_PROMPT = component_prompts.MODIFY_SYSTEM_PROMPT_COMPONENT
@@ -43,21 +45,20 @@ class ComponentDiagramHandler(ArchitectureDiagramHandler):
     # Single element + fallbacks
     # ------------------------------------------------------------------
 
-    def generate_single_element(
+    def _build_single_element(
         self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs,
     ) -> Dict[str, Any]:
         name = self.extract_name_from_request(user_request, "Component")
-        return {
-            "action": "inject_complete_system",
-            "systemSpec": {
+        return inject_complete_system(
+            {
                 "systemName": name,
                 "subsystems": [],
                 "components": [{"id": "comp1", "name": name, "owner": None, "stereotype": "solution"}],
                 "dependencies": [],
             },
-            "diagramType": self.get_diagram_type(),
-            "message": f"Created a starter **{name}** component. Describe the full architecture and I'll build it out!",
-        }
+            self.get_diagram_type(),
+            f"Created a starter **{name}** component. Describe the full architecture and I'll build it out!",
+        )
 
     def generate_fallback_system(self) -> Dict[str, Any]:
         fallback = {
@@ -74,16 +75,15 @@ class ComponentDiagramHandler(ArchitectureDiagramHandler):
                 {"source": "ui", "target": "api", "stereotype": "uses"},
             ],
         }
-        return {
-            "action": "inject_complete_system",
-            "systemSpec": fallback,
-            "diagramType": self.get_diagram_type(),
-            "message": (
+        return inject_complete_system(
+            fallback,
+            self.get_diagram_type(),
+            (
                 "I created a starter component diagram. Describe your architecture "
                 "(e.g. *'a microservices system with user service, order service, and a database'*) "
                 "and I'll build a richer model!"
             ),
-        }
+        )
 
     def _build_system_message(self, spec: Dict[str, Any]) -> str:
         name = spec.get("systemName") or "architecture"

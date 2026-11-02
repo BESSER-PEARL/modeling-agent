@@ -13,7 +13,6 @@ import logging
 from typing import Dict, Any, List, Optional
 from ..core.base_handler import (
     BaseDiagramHandler,
-    LLMPredictionError,
     SINGLE_STATE_REQUIRED,
     SINGLE_STATE_OPTIONAL,
     SYSTEM_STATE_REQUIRED,
@@ -23,6 +22,7 @@ from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MOD
 from prompts import state_machine as state_machine_prompts
 from schemas import SingleStateSpec as SingleStateSchema, SystemStateMachineSpec, StateMachineModificationResponse
 from utilities.model_context import detailed_model_summary
+from protocol.actions import Action, inject_complete_system, inject_element
 
 
 logger = logging.getLogger(__name__)
@@ -31,54 +31,46 @@ logger = logging.getLogger(__name__)
 class StateMachineHandler(BaseDiagramHandler):
     """Handler for State Machine Diagram generation"""
 
+    _SYSTEM_FAILURE_MESSAGE = "I couldn't generate that state machine. Please try again or rephrase your request."
+    _SINGLE_FAILURE_MESSAGE = "I couldn't generate that state. Please try again or rephrase your request."
+    _LLM_FAILURE_CODE = "llm_failure"
+
     def get_diagram_type(self) -> str:
         return "StateMachineDiagram"
 
     def get_system_prompt(self) -> str:
         return state_machine_prompts.SYSTEM_PROMPT
 
-    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a single state with structured outputs and deterministic positioning."""
 
         system_prompt = self.get_system_prompt()
         user_prompt = f"Create a state specification for: {user_request}"
 
-        try:
-            # Single element → SMALL generation tier (latency-sensitive).
-            parsed = self.predict_structured(
-                user_prompt,
-                SingleStateSchema,
-                system_prompt=system_prompt,
-                model=MODEL_GENERATION_SMALL,
-            )
-            state_spec = parsed.model_dump()
+        # Single element → SMALL generation tier (latency-sensitive).
+        parsed = self.predict_structured(
+            user_prompt,
+            SingleStateSchema,
+            system_prompt=system_prompt,
+            model=MODEL_GENERATION_SMALL,
+        )
+        state_spec = parsed.model_dump()
 
-            # Remove any hallucinated position and apply deterministic layout
-            state_spec.pop("position", None)
-            self.apply_single_layout(state_spec, existing_model)
+        # Remove any hallucinated position and apply deterministic layout
+        state_spec.pop("position", None)
+        self.apply_single_layout(state_spec, existing_model)
 
-            return {
-                "action": "inject_element",
-                "element": state_spec,
-                "diagramType": "StateMachineDiagram",
-                "message": self._build_single_state_message(state_spec)
-            }
-
-        except LLMPredictionError as e:
-            logger.error(f"[StateMachine] generate_single_element LLM FAILED: {e}")
-            return self._error_response(
-                "I couldn't generate that state. Please try again or rephrase your request.",
-                code="llm_failure",
-            )
-        except Exception as e:
-            logger.error(f"[StateMachine] generate_single_element FAILED: {e}", exc_info=True)
-            return self.generate_fallback_element(user_request)
+        return inject_element(
+            state_spec,
+            "StateMachineDiagram",
+            self._build_single_state_message(state_spec),
+        )
 
     def _get_system_generation_prompt(self) -> str:
         """Return the enhanced system prompt for complete state machine generation."""
         return state_machine_prompts.SYSTEM_GENERATION_PROMPT
 
-    def generate_complete_system(
+    def _build_system(
         self,
         user_request: str,
         existing_model: Dict[str, Any] = None,
@@ -96,53 +88,38 @@ class StateMachineHandler(BaseDiagramHandler):
 
         system_prompt = self._get_system_generation_prompt()
 
+        # --- Two-pass structured: reason about behavior first, then produce validated model ---
+        # The reasoning prompt uses the raw request only; the enriched
+        # context (history + workspace block) reaches the structured pass
+        # via ``user_request`` exactly once.
+        reasoning_prompt = state_machine_prompts.reasoning_prompt(raw_request or user_request)
 
-        logger.info(f"[StateMachine] generate_complete_system called with: {user_request!r}")
+        # Complete-system generation → LARGE tier; reasoning pass on
+        # the REASONING tier (see model_config).
+        parsed = self.predict_two_pass_structured(
+            user_request=user_request,
+            system_prompt=system_prompt,
+            reasoning_prompt=reasoning_prompt,
+            response_schema=SystemStateMachineSpec,
+            raw_request=raw_request,
+            model=MODEL_GENERATION_LARGE,
+            reasoning_model=MODEL_REASONING,
+        )
+        system_spec = parsed.model_dump()
 
-        try:
-            # --- Two-pass structured: reason about behavior first, then produce validated model ---
-            # The reasoning prompt uses the raw request only; the enriched
-            # context (history + workspace block) reaches the structured pass
-            # via ``user_request`` exactly once.
-            reasoning_prompt = state_machine_prompts.reasoning_prompt(raw_request or user_request)
+        # --- Validation-feedback loop for state machine quality ---
+        system_spec = self._validate_and_refine_state_machine(system_spec, user_request)
 
-            # Complete-system generation → LARGE tier; reasoning pass on
-            # the REASONING tier (see model_config).
-            parsed = self.predict_two_pass_structured(
-                user_request=user_request,
-                system_prompt=system_prompt,
-                reasoning_prompt=reasoning_prompt,
-                response_schema=SystemStateMachineSpec,
-                raw_request=raw_request,
-                model=MODEL_GENERATION_LARGE,
-                reasoning_model=MODEL_REASONING,
-            )
-            system_spec = parsed.model_dump()
+        # Strip any hallucinated positions and apply deterministic layout
+        for s in system_spec.get("states", []):
+            s.pop("position", None)
+        self.apply_system_layout(system_spec, existing_model)
 
-            # --- Validation-feedback loop for state machine quality ---
-            system_spec = self._validate_and_refine_state_machine(system_spec, user_request)
-
-            # Strip any hallucinated positions and apply deterministic layout
-            for s in system_spec.get("states", []):
-                s.pop("position", None)
-            self.apply_system_layout(system_spec, existing_model)
-
-            return {
-                "action": "inject_complete_system",
-                "systemSpec": system_spec,
-                "diagramType": "StateMachineDiagram",
-                "message": self._build_system_message(system_spec)
-            }
-
-        except LLMPredictionError as e:
-            logger.error(f"[StateMachine] generate_complete_system LLM FAILED: {e}")
-            return self._error_response(
-                "I couldn't generate that state machine. Please try again or rephrase your request.",
-                code="llm_failure",
-            )
-        except Exception as e:
-            logger.error(f"[StateMachine] generate_complete_system FAILED: {e}", exc_info=True)
-            return self.generate_fallback_system()
+        return inject_complete_system(
+            system_spec,
+            "StateMachineDiagram",
+            self._build_system_message(system_spec),
+        )
 
     # ------------------------------------------------------------------
     # State Machine Validation & Refinement
@@ -301,12 +278,11 @@ class StateMachineHandler(BaseDiagramHandler):
         # Apply deterministic layout so the fallback doesn't render at 0,0
         self.apply_single_layout(fallback_spec)
         
-        return {
-            "action": "inject_element",
-            "element": fallback_spec,
-            "diagramType": "StateMachineDiagram",
-            "message": f"I created a starter **{state_name}** state. Describe the state machine flow in more detail and I'll add transitions and guards!"
-        }
+        return inject_element(
+            fallback_spec,
+            "StateMachineDiagram",
+            f"I created a starter **{state_name}** state. Describe the state machine flow in more detail and I'll add transitions and guards!",
+        )
     
     def generate_fallback_system(self) -> Dict[str, Any]:
         """Generate a fallback state machine"""
@@ -356,12 +332,11 @@ class StateMachineHandler(BaseDiagramHandler):
         # Apply deterministic layout so the fallback doesn't render at 0,0
         self.apply_system_layout(fallback_system)
 
-        return {
-            "action": "inject_complete_system",
-            "systemSpec": fallback_system,
-            "diagramType": "StateMachineDiagram",
-            "message": "I created a starter state machine with a basic state. Describe your workflow (e.g. *'Create an order processing flow with states: pending, confirmed, shipped, delivered'*) and I'll build a richer model!"
-        }
+        return inject_complete_system(
+            fallback_system,
+            "StateMachineDiagram",
+            "I created a starter state machine with a basic state. Describe your workflow (e.g. *'Create an order processing flow with states: pending, confirmed, shipped, delivered'*) and I'll build a richer model!",
+        )
 
     # ------------------------------------------------------------------
     # Message Builders
@@ -398,7 +373,7 @@ class StateMachineHandler(BaseDiagramHandler):
     # Modification Support
     # ------------------------------------------------------------------
 
-    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _build_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate modifications for existing state machine elements."""
 
         system_prompt = state_machine_prompts.MODIFY_SYSTEM_PROMPT_STATE_MACHINE
@@ -412,25 +387,18 @@ class StateMachineHandler(BaseDiagramHandler):
 
         user_prompt = f"Modify the state machine: {user_request}{context_block}"
 
-        logger.info(f"[StateMachine] generate_modification called with: {user_request!r}")
+        return self._execute_modification(
+            user_prompt, system_prompt, StateMachineModificationResponse,
+        )
 
-        try:
-            return self._execute_modification(
-                user_prompt, system_prompt, StateMachineModificationResponse,
-            )
-
-        except LLMPredictionError as exc:
-            logger.error(f"[StateMachine] generate_modification LLM FAILED: {exc}")
-            return self._error_response("I couldn't process that modification. Please try again or rephrase your request.")
-        except Exception as exc:
-            logger.error(f"[StateMachine] generate_modification FAILED: {exc}", exc_info=True)
-            return {
-                "action": "modify_model",
-                "modification": {
-                    "action": "modify_state",
-                    "target": {"stateName": "Unknown"},
-                    "changes": {"name": "ModifiedState"}
-                },
-                "diagramType": self.get_diagram_type(),
-                "message": "I couldn't apply that modification automatically. Could you rephrase it? For example: *'Add a transition from idle to active'* or *'Rename state X to Y'*."
-            }
+    def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
+        return {
+            "action": Action.MODIFY_MODEL,
+            "modification": {
+                "action": "modify_state",
+                "target": {"stateName": "Unknown"},
+                "changes": {"name": "ModifiedState"}
+            },
+            "diagramType": self.get_diagram_type(),
+            "message": "I couldn't apply that modification automatically. Could you rephrase it? For example: *'Add a transition from idle to active'* or *'Rename state X to Y'*."
+        }

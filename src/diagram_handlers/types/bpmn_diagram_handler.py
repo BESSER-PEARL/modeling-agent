@@ -20,10 +20,11 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
+from ..core.base_handler import BaseDiagramHandler
 from prompts import bpmn as bpmn_prompts
 from schemas import SystemBPMNSpec, BPMNModificationResponse
 from utilities.model_context import detailed_model_summary
+from protocol.actions import assistant_message, inject_complete_system
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,9 @@ def format_agent_diagram_refs(agent_diagram_refs: Optional[Dict[str, str]]) -> s
 class BPMNDiagramHandler(BaseDiagramHandler):
     """Handler for base BPMN process generation and modification."""
 
+    _SYSTEM_FAILURE_MESSAGE = "I couldn't generate that process. Please try again or rephrase your request."
+    _LLM_FAILURE_CODE = "llm_failure"
+
     def get_diagram_type(self) -> str:
         # The WME storage-bucket token (NOT the Apollon model.type
         # "BPMNDiagram"); the WME converter sets model.type itself.
@@ -85,50 +89,45 @@ class BPMNDiagramHandler(BaseDiagramHandler):
             )
         return False
 
-    def generate_complete_system(
+    def _build_system(
         self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs,
     ) -> Dict[str, Any]:
-        logger.info(f"[BPMN] generate_complete_system called with: {user_request!r}")
         agent_diagram_refs = kwargs.get("agent_diagram_refs") or {}
 
         # Detect on the user's own words: the enriched request also carries
         # conversation history and workspace context.
         if self._is_agentic_bpmn_request(kwargs.get("raw_request") or user_request, existing_model):
-            return self._generate_agentic_complete_system(user_request, agent_diagram_refs)
+            return self._build_agentic_system(user_request, agent_diagram_refs)
 
         system_prompt = self.get_system_prompt()
 
         reasoning_prompt = bpmn_prompts.reasoning_prompt(user_request)
 
-        try:
-            parsed = self.predict_two_pass_structured(
-                user_request=user_request,
-                system_prompt=system_prompt,
-                reasoning_prompt=reasoning_prompt,
-                response_schema=SystemBPMNSpec,
-            )
-            system_spec = parsed.model_dump()
-            system_spec = self._validate_and_refine(system_spec)
-            self._sanitize_agentic_refs(system_spec, agent_diagram_refs)
+        parsed = self.predict_two_pass_structured(
+            user_request=user_request,
+            system_prompt=system_prompt,
+            reasoning_prompt=reasoning_prompt,
+            response_schema=SystemBPMNSpec,
+        )
+        system_spec = parsed.model_dump()
+        system_spec = self._validate_and_refine(system_spec)
+        self._sanitize_agentic_refs(system_spec, agent_diagram_refs)
 
-            return {
-                "action": "inject_complete_system",
-                "systemSpec": system_spec,
-                "diagramType": self.get_diagram_type(),
-                "message": self._build_system_message(system_spec),
-            }
+        return inject_complete_system(
+            system_spec,
+            self.get_diagram_type(),
+            self._build_system_message(system_spec),
+        )
 
-        except LLMPredictionError as exc:
-            logger.error(f"[BPMN] generate_complete_system LLM FAILED: {exc}")
+    def _system_failure_reply(self, exc, user_request, existing_model, **kwargs) -> Dict[str, Any]:
+        if self._is_agentic_bpmn_request(kwargs.get("raw_request") or user_request, existing_model):
             return self._error_response(
-                "I couldn't generate that process. Please try again or rephrase your request.",
-                code="llm_failure",
+                "I couldn't generate that agentic process. Please try again or rephrase your request.",
+                code=self._LLM_FAILURE_CODE,
             )
-        except Exception as exc:
-            logger.error(f"[BPMN] generate_complete_system FAILED: {exc}", exc_info=True)
-            return self.generate_fallback_system()
+        return super()._system_failure_reply(exc, user_request, existing_model, **kwargs)
 
-    def _generate_agentic_complete_system(
+    def _build_agentic_system(
         self, user_request: str, agent_diagram_refs: Dict[str, str],
     ) -> Dict[str, Any]:
         """Generate an Agentic BPMN process: the base rules plus the agentic ones,
@@ -138,31 +137,20 @@ class BPMNDiagramHandler(BaseDiagramHandler):
 
         reasoning_prompt = bpmn_prompts.agentic_reasoning_prompt(user_request)
 
-        try:
-            parsed = self.predict_two_pass_structured(
-                user_request=f"{user_request}\n\n{refs_block}",
-                system_prompt=system_prompt,
-                reasoning_prompt=reasoning_prompt,
-                response_schema=SystemBPMNSpec,
-            )
-            system_spec = parsed.model_dump()
-            system_spec = self._validate_and_refine(system_spec)
-            self._sanitize_agentic_refs(system_spec, agent_diagram_refs)
-            return {
-                "action": "inject_complete_system",
-                "systemSpec": system_spec,
-                "diagramType": self.get_diagram_type(),
-                "message": self._build_agentic_message(system_spec),
-            }
-        except LLMPredictionError as exc:
-            logger.error(f"[BPMN] _generate_agentic_complete_system LLM FAILED: {exc}")
-            return self._error_response(
-                "I couldn't generate that agentic process. Please try again or rephrase your request.",
-                code="llm_failure",
-            )
-        except Exception as exc:
-            logger.error(f"[BPMN] _generate_agentic_complete_system FAILED: {exc}", exc_info=True)
-            return self.generate_fallback_system()
+        parsed = self.predict_two_pass_structured(
+            user_request=f"{user_request}\n\n{refs_block}",
+            system_prompt=system_prompt,
+            reasoning_prompt=reasoning_prompt,
+            response_schema=SystemBPMNSpec,
+        )
+        system_spec = parsed.model_dump()
+        system_spec = self._validate_and_refine(system_spec)
+        self._sanitize_agentic_refs(system_spec, agent_diagram_refs)
+        return inject_complete_system(
+            system_spec,
+            self.get_diagram_type(),
+            self._build_agentic_message(system_spec),
+        )
 
     @staticmethod
     def _sanitize_agentic_refs(spec: Dict[str, Any], agent_diagram_refs: Dict[str, str]) -> None:
@@ -487,7 +475,7 @@ class BPMNDiagramHandler(BaseDiagramHandler):
     # Modification
     # ------------------------------------------------------------------
 
-    def generate_modification(
+    def _build_modification(
         self, user_request: str, current_model: Dict[str, Any] = None, **kwargs,
     ) -> Dict[str, Any]:
         agentic = self._is_agentic_bpmn_request(kwargs.get("raw_request") or user_request, current_model)
@@ -513,143 +501,133 @@ class BPMNDiagramHandler(BaseDiagramHandler):
             context_block += f"\n\n{format_agent_diagram_refs(agent_diagram_refs)}"
 
         user_prompt = f"Modify the BPMN process: {user_request}{context_block}"
-        logger.info(f"[BPMN] generate_modification called with: {user_request!r}")
 
-        try:
-            def _normalize_bpmn_mods(mod_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-                """Normalize common malformed BPMN batches from the LLM.
+        def _normalize_bpmn_mods(mod_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            """Normalize common malformed BPMN batches from the LLM.
 
-                - Convert synthetic ids for newly-added nodes into stable names for
-                  same-batch flow references.
-                - Expand add_task/add_gateway/add_event entries that incorrectly
-                  embed source/target refs into explicit add_flow actions.
-                - Prefer clean node labels over leaked UI/type suffixes such as
-                  ``"Record video demo 1 (Task)"``.
-                """
-                alias_to_name: Dict[str, str] = {}
-                node_add_actions = {"add_task", "add_gateway", "add_event", "add_data_object"}
+            - Convert synthetic ids for newly-added nodes into stable names for
+              same-batch flow references.
+            - Expand add_task/add_gateway/add_event entries that incorrectly
+              embed source/target refs into explicit add_flow actions.
+            - Prefer clean node labels over leaked UI/type suffixes such as
+              ``"Record video demo 1 (Task)"``.
+            """
+            alias_to_name: Dict[str, str] = {}
+            node_add_actions = {"add_task", "add_gateway", "add_event", "add_data_object"}
 
-                def _clean_added_name(action: str, target: Dict[str, Any], changes: Dict[str, Any]) -> Optional[str]:
-                    target_name = (target.get("nodeName") or "").strip()
-                    change_name = (changes.get("name") or "").strip()
-                    if change_name:
-                        typed_suffixes = {
-                            "add_task": " (Task)",
-                            "add_gateway": " (Gateway)",
-                            "add_event": " (Event)",
-                            "add_data_object": " (DataObject)",
-                        }
-                        suffix = typed_suffixes.get(action)
-                        if suffix and target_name == f"{change_name}{suffix}":
-                            return change_name
-                    return target_name or change_name or None
+            def _clean_added_name(action: str, target: Dict[str, Any], changes: Dict[str, Any]) -> Optional[str]:
+                target_name = (target.get("nodeName") or "").strip()
+                change_name = (changes.get("name") or "").strip()
+                if change_name:
+                    typed_suffixes = {
+                        "add_task": " (Task)",
+                        "add_gateway": " (Gateway)",
+                        "add_event": " (Event)",
+                        "add_data_object": " (DataObject)",
+                    }
+                    suffix = typed_suffixes.get(action)
+                    if suffix and target_name == f"{change_name}{suffix}":
+                        return change_name
+                return target_name or change_name or None
 
-                def _register_alias(name: Optional[str], alias: Optional[str]) -> None:
-                    if alias and name:
-                        alias_to_name[alias] = name
+            def _register_alias(name: Optional[str], alias: Optional[str]) -> None:
+                if alias and name:
+                    alias_to_name[alias] = name
 
-                for mod in mod_list:
-                    if not isinstance(mod, dict):
-                        continue
-                    action = mod.get("action", "")
-                    if action not in node_add_actions:
-                        continue
-                    target = mod.get("target") or {}
-                    changes = mod.get("changes") or {}
-                    clean_name = _clean_added_name(action, target, changes)
-                    if not clean_name:
-                        continue
-                    _register_alias(clean_name, clean_name)
-                    _register_alias(clean_name, target.get("nodeId"))
-                    _register_alias(clean_name, target.get("nodeName"))
-                    _register_alias(clean_name, changes.get("name"))
+            for mod in mod_list:
+                if not isinstance(mod, dict):
+                    continue
+                action = mod.get("action", "")
+                if action not in node_add_actions:
+                    continue
+                target = mod.get("target") or {}
+                changes = mod.get("changes") or {}
+                clean_name = _clean_added_name(action, target, changes)
+                if not clean_name:
+                    continue
+                _register_alias(clean_name, clean_name)
+                _register_alias(clean_name, target.get("nodeId"))
+                _register_alias(clean_name, target.get("nodeName"))
+                _register_alias(clean_name, changes.get("name"))
 
-                normalized: List[Dict[str, Any]] = []
-                expanded_flows = 0
-                self._sanitize_modification_refs(mod_list, elements, agent_diagram_refs)
+            normalized: List[Dict[str, Any]] = []
+            expanded_flows = 0
+            self._sanitize_modification_refs(mod_list, elements, agent_diagram_refs)
 
-                for mod in mod_list:
-                    if not isinstance(mod, dict):
-                        normalized.append(mod)
-                        continue
-
-                    action = mod.get("action", "")
-                    target = dict(mod.get("target") or {})
-                    changes = dict(mod.get("changes") or {})
-
-                    if action in node_add_actions:
-                        clean_name = _clean_added_name(action, target, changes)
-                        if clean_name:
-                            target["nodeName"] = clean_name
-                            if changes.get("name") is not None:
-                                changes["name"] = clean_name
-
-                        raw_embedded_source = changes.pop("source", None)
-                        raw_embedded_target = changes.pop("target", None)
-                        embedded_source = alias_to_name.get(raw_embedded_source, raw_embedded_source)
-                        embedded_target = alias_to_name.get(raw_embedded_target, raw_embedded_target)
-                        embedded_label = changes.pop("label", None)
-
-                        updated_mod = dict(mod)
-                        updated_mod["target"] = target
-                        updated_mod["changes"] = changes or None
-                        normalized.append(updated_mod)
-
-                        if embedded_source and embedded_target:
-                            normalized.append(
-                                {
-                                    "action": "add_flow",
-                                    "target": {},
-                                    "changes": {
-                                        "source": embedded_source,
-                                        "target": embedded_target,
-                                        "label": embedded_label,
-                                    },
-                                }
-                            )
-                            expanded_flows += 1
-                        continue
-
-                    if action in ("add_flow", "remove_flow"):
-                        if changes.get("source") in alias_to_name:
-                            changes["source"] = alias_to_name[changes["source"]]
-                        if changes.get("target") in alias_to_name:
-                            changes["target"] = alias_to_name[changes["target"]]
-                        updated_mod = dict(mod)
-                        updated_mod["target"] = target
-                        updated_mod["changes"] = changes
-                        normalized.append(updated_mod)
-                        continue
-
+            for mod in mod_list:
+                if not isinstance(mod, dict):
                     normalized.append(mod)
+                    continue
 
-                if expanded_flows:
-                    logger.info(
-                        f"[BPMN] Normalized {expanded_flows} embedded node-connection(s) into explicit add_flow action(s)"
-                    )
-                return normalized
+                action = mod.get("action", "")
+                target = dict(mod.get("target") or {})
+                changes = dict(mod.get("changes") or {})
 
-            result = self._execute_modification(
-                user_prompt, system_prompt, BPMNModificationResponse,
-                post_processor=_normalize_bpmn_mods,
-                elements=elements,
-            )
-            return self._validate_mod_refs(result, elements)
-        except LLMPredictionError as exc:
-            logger.error(f"[BPMN] generate_modification LLM FAILED: {exc}")
-            return self._error_response(
-                "I couldn't process that modification. Please try again or rephrase your request.",
-            )
-        except Exception as exc:
-            logger.error(f"[BPMN] generate_modification FAILED: {exc}", exc_info=True)
-            return {
-                "action": "assistant_message",
-                "message": (
-                    "I couldn't apply that modification automatically. Could you rephrase it? "
-                    "For example: *'add a Send Invoice task after Ship Order'* or "
-                    "*'rename Check Inventory to Verify Stock'*."
-                ),
-            }
+                if action in node_add_actions:
+                    clean_name = _clean_added_name(action, target, changes)
+                    if clean_name:
+                        target["nodeName"] = clean_name
+                        if changes.get("name") is not None:
+                            changes["name"] = clean_name
+
+                    raw_embedded_source = changes.pop("source", None)
+                    raw_embedded_target = changes.pop("target", None)
+                    embedded_source = alias_to_name.get(raw_embedded_source, raw_embedded_source)
+                    embedded_target = alias_to_name.get(raw_embedded_target, raw_embedded_target)
+                    embedded_label = changes.pop("label", None)
+
+                    updated_mod = dict(mod)
+                    updated_mod["target"] = target
+                    updated_mod["changes"] = changes or None
+                    normalized.append(updated_mod)
+
+                    if embedded_source and embedded_target:
+                        normalized.append(
+                            {
+                                "action": "add_flow",
+                                "target": {},
+                                "changes": {
+                                    "source": embedded_source,
+                                    "target": embedded_target,
+                                    "label": embedded_label,
+                                },
+                            }
+                        )
+                        expanded_flows += 1
+                    continue
+
+                if action in ("add_flow", "remove_flow"):
+                    if changes.get("source") in alias_to_name:
+                        changes["source"] = alias_to_name[changes["source"]]
+                    if changes.get("target") in alias_to_name:
+                        changes["target"] = alias_to_name[changes["target"]]
+                    updated_mod = dict(mod)
+                    updated_mod["target"] = target
+                    updated_mod["changes"] = changes
+                    normalized.append(updated_mod)
+                    continue
+
+                normalized.append(mod)
+
+            if expanded_flows:
+                logger.info(
+                    f"[BPMN] Normalized {expanded_flows} embedded node-connection(s) into explicit add_flow action(s)"
+                )
+            return normalized
+
+        result = self._execute_modification(
+            user_prompt, system_prompt, BPMNModificationResponse,
+            post_processor=_normalize_bpmn_mods,
+            elements=elements,
+        )
+        return self._validate_mod_refs(result, elements)
+
+    def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
+        return assistant_message(
+            "I couldn't apply that modification automatically. Could you rephrase it? "
+            "For example: *'add a Send Invoice task after Ship Order'* or "
+            "*'rename Check Inventory to Verify Stock'*.",
+        )
 
     @staticmethod
     def _sanitize_modification_refs(
@@ -687,15 +665,14 @@ class BPMNDiagramHandler(BaseDiagramHandler):
     # Single element + fallbacks (required by BaseDiagramHandler)
     # ------------------------------------------------------------------
 
-    def generate_single_element(
+    def _build_single_element(
         self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs,
     ) -> Dict[str, Any]:
         """v1 has no append-one-node BPMN path on the WME side — funnel single-
         element requests into a one-task starter process so the contract holds."""
         name = self.extract_name_from_request(user_request, "Task")
-        return {
-            "action": "inject_complete_system",
-            "systemSpec": {
+        return inject_complete_system(
+            {
                 "systemName": name,
                 "nodes": [
                     {"id": "start", "name": "Start", "type": "startEvent"},
@@ -707,9 +684,9 @@ class BPMNDiagramHandler(BaseDiagramHandler):
                     {"source": "task1", "target": "end", "name": ""},
                 ],
             },
-            "diagramType": self.get_diagram_type(),
-            "message": f"I created a starter process with a **{name}** task. Describe the full flow and I'll build it out!",
-        }
+            self.get_diagram_type(),
+            f"I created a starter process with a **{name}** task. Describe the full flow and I'll build it out!",
+        )
 
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
         return self.generate_single_element(request)
@@ -727,16 +704,15 @@ class BPMNDiagramHandler(BaseDiagramHandler):
                 {"source": "task1", "target": "end", "name": ""},
             ],
         }
-        return {
-            "action": "inject_complete_system",
-            "systemSpec": fallback,
-            "diagramType": self.get_diagram_type(),
-            "message": (
+        return inject_complete_system(
+            fallback,
+            self.get_diagram_type(),
+            (
                 "I created a starter process. Describe your workflow "
                 "(e.g. *'an order process: receive order, check stock, then ship "
                 "or back-order'*) and I'll build a richer model!"
             ),
-        }
+        )
 
     # ------------------------------------------------------------------
     # Message builder

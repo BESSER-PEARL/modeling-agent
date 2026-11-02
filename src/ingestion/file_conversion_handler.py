@@ -32,6 +32,7 @@ from common.errors import ModelRefusal
 from llm.model_config import MODEL_VISION
 from prompts import file_conversion as file_prompts
 from utilities.image_inputs import data_url
+from protocol.actions import Action, inject_complete_system
 
 logger = logging.getLogger(__name__)
 
@@ -976,18 +977,13 @@ def _success_response(
     message = f"Converted {source_label} file '{filename}' into a {type_label} with {summary}."
     logger.info(f"[FileConversion] {message}")
 
-    return {
-        "action": "inject_complete_system",
-        "systemSpec": system_spec,
-        "diagramType": diagram_type,
-        "message": message,
-    }
+    return inject_complete_system(system_spec, diagram_type, message)
 
 
 def _error_response(message: str) -> Dict[str, Any]:
     """Build a standardized error response."""
     return {
-        "action": "agent_error",
+        "action": Action.AGENT_ERROR,
         "code": "file_conversion_error",
         "message": message,
         "retryable": True,

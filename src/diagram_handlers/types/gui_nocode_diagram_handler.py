@@ -42,6 +42,7 @@ from schemas import (
     SingleGUIElementSpec,
 )
 from utilities.class_metadata import format_class_metadata_for_prompt
+from protocol.actions import Action, model_reply
 
 logger = logging.getLogger(__name__)
 
@@ -3341,6 +3342,9 @@ def _salvage_truncated_system(text: str) -> Optional[Dict[str, Any]]:
 class GUINoCodeDiagramHandler(BaseDiagramHandler):
     """Handler for GUI no-code diagram generation."""
 
+    _SYSTEM_FAILURE_MESSAGE = "I couldn't generate that GUI. Please try again or rephrase your request."
+    _SINGLE_FAILURE_MESSAGE = "I couldn't generate that GUI element. Please try again or rephrase your request."
+
     def get_diagram_type(self) -> str:
         return "GUINoCodeDiagram"
 
@@ -3476,41 +3480,35 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
         msg += ". Want me to add more screens or change the layout?"
         return msg
 
-    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         class_metadata: Optional[List[Dict[str, Any]]] = kwargs.get("class_metadata")
         class_info = ""
         if class_metadata:
             class_info = format_class_metadata_for_prompt(class_metadata)
         prompt = self.get_system_prompt(class_info=class_info)
 
-        try:
-            # Single element → SMALL generation tier (latency-sensitive).
-            parsed = self.predict_structured(
-                f"User Request: {user_request}",
-                SingleGUIElementSpec,
-                system_prompt=prompt,
-                model=MODEL_GENERATION_SMALL,
-            )
-            spec = parsed.model_dump()
+        # Single element → SMALL generation tier (latency-sensitive).
+        parsed = self.predict_structured(
+            f"User Request: {user_request}",
+            SingleGUIElementSpec,
+            system_prompt=prompt,
+            model=MODEL_GENERATION_SMALL,
+        )
+        spec = parsed.model_dump()
 
-            page_name = _sanitize_page_name(spec.get("pageName"), fallback="Home")
-            section_spec = spec.get("section") if isinstance(spec.get("section"), dict) else {}
-            section_component = _build_section_component(section_spec, class_metadata)
+        page_name = _sanitize_page_name(spec.get("pageName"), fallback="Home")
+        section_spec = spec.get("section") if isinstance(spec.get("section"), dict) else {}
+        section_component = _build_section_component(section_spec, class_metadata)
 
-            model = _default_gui_model()
-            model = self._append_section(model, page_name, section_component)
-            self._wire_model_safely(model, class_metadata)
-            return {
-                "action": "inject_element",
-                "diagramType": self.get_diagram_type(),
-                "model": model,
-                "message": f"Added a new UI section to the **{page_name}** page.",
-            }
-        except LLMPredictionError:
-            logger.error("[GUINoCode] generate_single_element LLM FAILED", exc_info=True)
-            return self._error_response("I couldn't generate that GUI element. Please try again or rephrase your request.")
-        except Exception:
-            return self.generate_fallback_element(user_request)
+        model = _default_gui_model()
+        model = self._append_section(model, page_name, section_component)
+        self._wire_model_safely(model, class_metadata)
+        return model_reply(
+            Action.INJECT_ELEMENT,
+            self.get_diagram_type(),
+            model,
+            f"Added a new UI section to the **{page_name}** page.",
+        )
 
     def _structured_max_tokens(self, response_schema) -> int:
         # Multi-page authored GUIs (and batches carrying authored HTML) need
@@ -3520,7 +3518,7 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
             return GUI_COMPLETE_SYSTEM_MAX_TOKENS
         return super()._structured_max_tokens(response_schema)
 
-    def generate_complete_system(
+    def _build_system(
         self,
         user_request: str,
         existing_model: Dict[str, Any] = None,
@@ -3548,140 +3546,135 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
 
         system_prompt = gui_prompts.complete_system_prompt(domain, exemplars_block, interactions_block, class_block, mockup_block)
 
-        logger.info(f"[GUINoCode] generate_complete_system called with: {user_request[:120]!r}")
+        # --- Two-pass generation for richer UI design ---
+        if class_metadata:
+            data_model_step = gui_prompts.data_model_step_for_classes(format_class_metadata_for_prompt(class_metadata))
+            chart_rule = gui_prompts.CHART_RULE_FOR_CLASSES
+        else:
+            data_model_step = gui_prompts.DATA_MODEL_STEP
+            chart_rule = gui_prompts.CHART_RULE
+        reasoning_prompt = gui_prompts.reasoning_prompt(user_request, data_model_step, chart_rule, domain)
+        if images:
+            reasoning_prompt += gui_prompts.MOCKUP_REASONING_ADDENDUM
 
+        # Complete-system generation → LARGE tier; reasoning pass on
+        # the REASONING tier (see model_config).
+        parsed = self.predict_two_pass_structured(
+            user_request=user_request,
+            system_prompt=system_prompt,
+            reasoning_prompt=reasoning_prompt,
+            response_schema=AuthoredSystemGUISpec,
+            model=MODEL_GENERATION_GUI,
+            reasoning_model=MODEL_REASONING,
+            images=images,
+        )
+        spec = parsed.model_dump()
+        # Schema enforcement replaces the old clean/parse/salvage chain.
+        # Drop any section carrying neither authored html nor a binding.
+        for page in spec.get("pages", []):
+            page["sections"] = [
+                sc for sc in page.get("sections", [])
+                if isinstance(sc, dict)
+                and (
+                    _clean_text(sc.get("html"))
+                    or (
+                        isinstance(sc.get("bind"), dict)
+                        and _clean_text((sc.get("bind") or {}).get("kind"))
+                    )
+                )
+            ]
+
+        pages_spec = spec.get("pages") if isinstance(spec.get("pages"), list) else []
+        project_name = spec.get("projectName", "App")
+        pages_spec = [p for p in pages_spec if isinstance(p, dict)]
+        all_page_names = [
+            _sanitize_page_name(p.get("name"), fallback=f"Page{i}")
+            for i, p in enumerate(pages_spec, 1)
+        ]
+        page_index = _build_page_index(all_page_names)
+        class_pages = _class_host_pages(pages_spec, page_index, class_metadata)
+
+        # Resolve the theme FIRST — the nav header and page wrapper are
+        # assembled from these tokens, so the whole page (not just the
+        # ds-* sections) wears the app's actual identity.
+        spec_domain = _clean_text(spec.get("domain")) or domain
+        theme_overrides = spec.get("theme") if isinstance(spec.get("theme"), dict) else None
         try:
-            # --- Two-pass generation for richer UI design ---
-            if class_metadata:
-                data_model_step = gui_prompts.data_model_step_for_classes(format_class_metadata_for_prompt(class_metadata))
-                chart_rule = gui_prompts.CHART_RULE_FOR_CLASSES
+            if theme_overrides and any(theme_overrides.values()):
+                tokens = merge_theme_overrides(spec_domain, theme_overrides)
             else:
-                data_model_step = gui_prompts.DATA_MODEL_STEP
-                chart_rule = gui_prompts.CHART_RULE
-            reasoning_prompt = gui_prompts.reasoning_prompt(user_request, data_model_step, chart_rule, domain)
-            if images:
-                reasoning_prompt += gui_prompts.MOCKUP_REASONING_ADDENDUM
-
-            # Complete-system generation → LARGE tier; reasoning pass on
-            # the REASONING tier (see model_config).
-            parsed = self.predict_two_pass_structured(
-                user_request=user_request,
-                system_prompt=system_prompt,
-                reasoning_prompt=reasoning_prompt,
-                response_schema=AuthoredSystemGUISpec,
-                model=MODEL_GENERATION_GUI,
-                reasoning_model=MODEL_REASONING,
-                images=images,
-            )
-            spec = parsed.model_dump()
-            # Schema enforcement replaces the old clean/parse/salvage chain.
-            # Drop any section carrying neither authored html nor a binding.
-            for page in spec.get("pages", []):
-                page["sections"] = [
-                    sc for sc in page.get("sections", [])
-                    if isinstance(sc, dict)
-                    and (
-                        _clean_text(sc.get("html"))
-                        or (
-                            isinstance(sc.get("bind"), dict)
-                            and _clean_text((sc.get("bind") or {}).get("kind"))
-                        )
-                    )
-                ]
-
-            pages_spec = spec.get("pages") if isinstance(spec.get("pages"), list) else []
-            project_name = spec.get("projectName", "App")
-            pages_spec = [p for p in pages_spec if isinstance(p, dict)]
-            all_page_names = [
-                _sanitize_page_name(p.get("name"), fallback=f"Page{i}")
-                for i, p in enumerate(pages_spec, 1)
-            ]
-            page_index = _build_page_index(all_page_names)
-            class_pages = _class_host_pages(pages_spec, page_index, class_metadata)
-
-            # Resolve the theme FIRST — the nav header and page wrapper are
-            # assembled from these tokens, so the whole page (not just the
-            # ds-* sections) wears the app's actual identity.
-            spec_domain = _clean_text(spec.get("domain")) or domain
-            theme_overrides = spec.get("theme") if isinstance(spec.get("theme"), dict) else None
-            try:
-                if theme_overrides and any(theme_overrides.values()):
-                    tokens = merge_theme_overrides(spec_domain, theme_overrides)
-                else:
-                    tokens = theme_tokens(spec_domain)
-                styles = stylesheet_rules_from_tokens(tokens)
-            except Exception:
-                logger.warning(
-                    "[GUINoCode] stylesheet_rules failed; falling back to empty styles",
-                    exc_info=True,
-                )
-                tokens = None
-                styles = []
-
-            # The LLM's own stylesheet (custom app-* classes) layers on top of
-            # the design-system baseline — its creative freedom beyond the kit.
-            try:
-                llm_rules = _parse_llm_css(spec.get("css"))
-                if llm_rules:
-                    styles = styles + llm_rules
-                    logger.info(
-                        "[GUINoCode] LLM stylesheet accepted (%d rules)", len(llm_rules)
-                    )
-            except Exception:
-                logger.warning("[GUINoCode] LLM stylesheet parse failed", exc_info=True)
-
-            pages = [
-                self._parse_page_spec(
-                    page,
-                    class_metadata,
-                    all_page_names=all_page_names,
-                    project_name=project_name,
-                    tokens=tokens,
-                    page_index=page_index,
-                    page_entry=entry,
-                    class_pages=class_pages,
-                )
-                for page, entry in zip(pages_spec, page_index)
-            ]
-            if not pages:
-                return self._error_response(
-                    "I couldn't produce any pages for that request — your "
-                    "current screens are untouched. Try describing the app "
-                    "again with a bit more detail."
-                )
-
-            model = {
-                "pages": pages,
-                "styles": styles,
-                "assets": _collect_data_uri_assets(pages),
-                "symbols": [],
-                "version": DEFAULT_GUI_VERSION,
-            }
-
-            return {
-                "action": "inject_complete_system",
-                "diagramType": self.get_diagram_type(),
-                "model": model,
-                "message": self._build_gui_system_message(pages),
-            }
-        except LLMPredictionError:
-            logger.error("[GUINoCode] generate_complete_system LLM FAILED", exc_info=True)
-            if images:
-                return self._error_response(
-                    "I couldn't build a GUI from that image. Reading images needs a "
-                    "model with vision (OpenAI or Anthropic); with your own key, check "
-                    "that its model accepts images. Please try again, or describe the "
-                    "page instead."
-                )
-            return self._error_response("I couldn't generate that GUI. Please try again or rephrase your request.")
+                tokens = theme_tokens(spec_domain)
+            styles = stylesheet_rules_from_tokens(tokens)
         except Exception:
-            logger.error(
-                "[GUINoCode] generate_complete_system assembly FAILED", exc_info=True
+            logger.warning(
+                "[GUINoCode] stylesheet_rules failed; falling back to empty styles",
+                exc_info=True,
             )
+            tokens = None
+            styles = []
+
+        # The LLM's own stylesheet (custom app-* classes) layers on top of
+        # the design-system baseline — its creative freedom beyond the kit.
+        try:
+            llm_rules = _parse_llm_css(spec.get("css"))
+            if llm_rules:
+                styles = styles + llm_rules
+                logger.info(
+                    "[GUINoCode] LLM stylesheet accepted (%d rules)", len(llm_rules)
+                )
+        except Exception:
+            logger.warning("[GUINoCode] LLM stylesheet parse failed", exc_info=True)
+
+        pages = [
+            self._parse_page_spec(
+                page,
+                class_metadata,
+                all_page_names=all_page_names,
+                project_name=project_name,
+                tokens=tokens,
+                page_index=page_index,
+                page_entry=entry,
+                class_pages=class_pages,
+            )
+            for page, entry in zip(pages_spec, page_index)
+        ]
+        if not pages:
             return self._error_response(
-                "Something went wrong while assembling that GUI — your current "
-                "screens are untouched. Please try again."
+                "I couldn't produce any pages for that request — your "
+                "current screens are untouched. Try describing the app "
+                "again with a bit more detail."
             )
+
+        model = {
+            "pages": pages,
+            "styles": styles,
+            "assets": _collect_data_uri_assets(pages),
+            "symbols": [],
+            "version": DEFAULT_GUI_VERSION,
+        }
+
+        return model_reply(
+            Action.INJECT_COMPLETE_SYSTEM,
+            self.get_diagram_type(),
+            model,
+            self._build_gui_system_message(pages),
+        )
+
+    def _system_failure_reply(self, exc, user_request, existing_model, **kwargs) -> Dict[str, Any]:
+        if kwargs.get("images"):
+            return self._error_response(
+                "I couldn't build a GUI from that image. Reading images needs a "
+                "model with vision (OpenAI or Anthropic); with your own key, check "
+                "that its model accepts images. Please try again, or describe the "
+                "page instead."
+            )
+        return super()._system_failure_reply(exc, user_request, existing_model, **kwargs)
+
+    def _system_crash_reply(self, exc, user_request, existing_model, **kwargs) -> Dict[str, Any]:
+        return self._error_response(
+            "Something went wrong while assembling that GUI — your current "
+            "screens are untouched. Please try again."
+        )
 
     def generate_modification(
         self,
@@ -3716,12 +3709,7 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
             if fast is not None:
                 applied_model, message = fast
                 self._wire_model_safely(applied_model, class_metadata)
-                return {
-                    "action": "modify_model",
-                    "diagramType": self.get_diagram_type(),
-                    "model": applied_model,
-                    "message": message,
-                }
+                return model_reply(Action.MODIFY_MODEL, self.get_diagram_type(), applied_model, message)
         except Exception:
             logger.warning("[GUINoCode] deterministic modify fast-path failed", exc_info=True)
 
@@ -3760,48 +3748,38 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
                 else "\n".join(f"- {m}" for m in messages)
             )
             self._wire_model_safely(model, class_metadata)
-            return {
-                "action": "modify_model",
-                "diagramType": self.get_diagram_type(),
-                "model": model,
-                "message": combined,
-            }
+            return model_reply(Action.MODIFY_MODEL, self.get_diagram_type(), model, combined)
         except ModelRefusal as exc:
             logger.warning("[GUINoCode] generate_modification declined: %s", exc)
-            return {
-                "action": "modify_model",
-                "diagramType": self.get_diagram_type(),
-                "model": model,
-                "message": exc.user_message(),
-            }
+            return model_reply(Action.MODIFY_MODEL, self.get_diagram_type(), model, exc.user_message())
         except LLMPredictionError:
             logger.error("[GUINoCode] generate_modification LLM FAILED", exc_info=True)
             # SAFETY: never destroy the existing GUI on failure. Return the
             # original model unchanged with a clarification asking the user to
             # be specific, rather than an empty/error payload.
-            return {
-                "action": "modify_model",
-                "diagramType": self.get_diagram_type(),
-                "model": model,
-                "message": (
+            return model_reply(
+                Action.MODIFY_MODEL,
+                self.get_diagram_type(),
+                model,
+                (
                     "I couldn't apply that change automatically, and I've left your GUI "
                     "unchanged. Could you be more specific? For example: *'rename the "
                     f"{(page_names[0] if page_names else 'Home')} page to Overview'*, "
                     "*'change the hero section color to red'*, or *'move the Recent edits "
                     "card to the top'*."
                 ),
-            }
+            )
         except Exception:
             logger.warning("[GUINoCode] generate_modification apply failed", exc_info=True)
-            return {
-                "action": "modify_model",
-                "diagramType": self.get_diagram_type(),
-                "model": model,
-                "message": (
+            return model_reply(
+                Action.MODIFY_MODEL,
+                self.get_diagram_type(),
+                model,
+                (
                     "I couldn't parse that GUI modification, but your existing model is "
                     "safe and unchanged. Could you rephrase what you'd like to change?"
                 ),
-            }
+            )
 
     # ------------------------------------------------------------------
     # Modification helpers
@@ -4180,12 +4158,12 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
             "Home",
             _content_component("New Section", "Describe your content and I will refine it."),
         )
-        return {
-            "action": "inject_element",
-            "diagramType": self.get_diagram_type(),
-            "model": model,
-            "message": "I created a basic GUI section as a starting point. Describe what you'd like (e.g. *'Create a dashboard for shoes with a bar chart and a table'*) and I'll build it!",
-        }
+        return model_reply(
+            Action.INJECT_ELEMENT,
+            self.get_diagram_type(),
+            model,
+            "I created a basic GUI section as a starting point. Describe what you'd like (e.g. *'Create a dashboard for shoes with a bar chart and a table'*) and I'll build it!",
+        )
 
     def generate_fallback_system(self) -> Dict[str, Any]:
         model = _default_gui_model()
@@ -4194,9 +4172,9 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
             "Home",
             _hero_component("Welcome", "Start building your interface here.", "Get Started"),
         )
-        return {
-            "action": "inject_complete_system",
-            "diagramType": self.get_diagram_type(),
-            "model": model,
-            "message": "I created a basic GUI with a welcome page. Describe your app's pages and features for a richer result!",
-        }
+        return model_reply(
+            Action.INJECT_COMPLETE_SYSTEM,
+            self.get_diagram_type(),
+            model,
+            "I created a basic GUI with a welcome page. Describe your app's pages and features for a richer result!",
+        )

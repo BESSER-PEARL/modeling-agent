@@ -23,10 +23,10 @@ class _TestHandler(BaseDiagramHandler):
     def get_system_prompt(self):
         return "Test prompt"
 
-    def generate_single_element(self, *a, **kw):
+    def _build_single_element(self, *a, **kw):
         return {}
 
-    def generate_complete_system(self, *a, **kw):
+    def _build_system(self, *a, **kw):
         return {}
 
     def generate_fallback_element(self, *a):

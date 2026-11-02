@@ -34,6 +34,7 @@ from common.session_keys import (
 from conversation.reply_language import language_instruction, localize_payload, translate_text
 from conversation.telemetry import emit_prompt_event
 from routing.unified_classifier import _pending_flow_context
+from protocol.actions import Action, assistant_message
 
 logger = logging.getLogger(__name__)
 
@@ -145,8 +146,8 @@ def json_no_intent_matched(session: Session) -> bool:
 # unacknowledged terminal replies are re-sent — never the previous turn's reply,
 # never one the reconnect's outbox flush already delivered.
 _TERMINAL_REPLY_ACTIONS = frozenset({
-    "inject_complete_system", "modify_model", "auto_generate_gui",
-    "trigger_generator", "trigger_github_import", "assistant_message",
+    Action.INJECT_COMPLETE_SYSTEM, Action.MODIFY_MODEL, Action.AUTO_GENERATE_GUI,
+    Action.TRIGGER_GENERATOR, Action.TRIGGER_GITHUB_IMPORT, Action.ASSISTANT_MESSAGE,
 })
 # Replayed only within a turn, where the client applies each (turnId, replySeq)
 # at most once: a missed trigger is recovered, an applied one is never re-sent.
@@ -154,8 +155,8 @@ _TERMINAL_REPLY_ACTIONS = frozenset({
 # start twice). create_diagram_tab precedes an injection with replaceExisting,
 # so it must replay with it; stream_done carries the assembled streamed text.
 _TURN_REPLY_ACTIONS = _TERMINAL_REPLY_ACTIONS | frozenset({
-    "inject_element", "trigger_smart_generator", "agent_error",
-    "trigger_export", "trigger_deploy", "create_diagram_tab", "stream_done",
+    Action.INJECT_ELEMENT, Action.TRIGGER_SMART_GENERATOR, Action.AGENT_ERROR,
+    Action.TRIGGER_EXPORT, Action.TRIGGER_DEPLOY, Action.CREATE_DIAGRAM_TAB, Action.STREAM_DONE,
 })
 _REPLY_BUFFER_MAX = 200
 _last_reply_buffer: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
@@ -319,10 +320,7 @@ def reply_message(session: Session, message: str, *, telemetry_exempt: bool = Fa
         request = parse_assistant_request(session)
         shown = translate_text(session, message)
         if request.is_v2:
-            sent = _send_to_session(session, {
-                "action": "assistant_message",
-                "message": shown,
-            })
+            sent = _send_to_session(session, assistant_message(shown))
         else:
             session.reply(shown)
     except Exception as exc:
@@ -343,7 +341,7 @@ def reply_message(session: Session, message: str, *, telemetry_exempt: bool = Fa
     # ``telemetry_exempt`` marks the rare mid-turn notice (e.g. the long-
     # message truncation warning) that must not claim the turn's one event.
     if not telemetry_exempt:
-        _emit_prompt_telemetry(session, "assistant_message")
+        _emit_prompt_telemetry(session, Action.ASSISTANT_MESSAGE)
 
 
 def reply_payload(session: Session, payload: Dict[str, Any]):
@@ -373,7 +371,7 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
     # Telemetry: record the reply's action as what the agent did with
     # the user's message (progress keep-alives are not the reply).
     action = payload.get('action')
-    if isinstance(action, str) and action != 'progress':
+    if isinstance(action, str) and action != Action.PROGRESS:
         _emit_prompt_telemetry(session, action)
 
 
@@ -399,13 +397,10 @@ def emit_webapp_generate_prompt(session: Session) -> None:
     completes)."""
     from conversation.suggestions import get_post_spec_suggestions
     from conversation.reply_copy import continue_generating_prompt
-    reply_payload(session, {
-        "action": "assistant_message",
-        "message": (
-            "Your screens are ready. " + continue_generating_prompt("web app")
-        ),
-        "suggestedActions": get_post_spec_suggestions("web_app"),
-    })
+    reply_payload(session, assistant_message(
+        "Your screens are ready. " + continue_generating_prompt("web app"),
+        suggestedActions=get_post_spec_suggestions("web_app"),
+    ))
 
 
 def _send_to_session(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -440,7 +435,7 @@ def reply_stream_start(session: Session, stream_id: str = None) -> str:
     if stream_id is None:
         stream_id = str(uuid.uuid4())[:8]
     payload = {
-        "action": "stream_start",
+        "action": Action.STREAM_START,
         "streamId": stream_id,
     }
     _send_to_session(session, payload)
@@ -450,7 +445,7 @@ def reply_stream_start(session: Session, stream_id: str = None) -> str:
 def reply_stream_chunk(session: Session, chunk: str, stream_id: str):
     """Send a streaming text chunk to the frontend."""
     payload = {
-        "action": "stream_chunk",
+        "action": Action.STREAM_CHUNK,
         "streamId": stream_id,
         "chunk": chunk,
         "done": False,
@@ -461,7 +456,7 @@ def reply_stream_chunk(session: Session, chunk: str, stream_id: str):
 def reply_stream_done(session: Session, stream_id: str, full_text: str = ""):
     """Signal the end of a streaming response."""
     payload = {
-        "action": "stream_done",
+        "action": Action.STREAM_DONE,
         "streamId": stream_id,
         "fullText": full_text,
         "done": True,
@@ -470,13 +465,13 @@ def reply_stream_done(session: Session, stream_id: str, full_text: str = ""):
 
     # Telemetry: a completed stream is a conversational reply — the
     # frontend renders it as an assistant message, so record it as one.
-    _emit_prompt_telemetry(session, "assistant_message")
+    _emit_prompt_telemetry(session, Action.ASSISTANT_MESSAGE)
 
 
 def reply_progress(session: Session, message: str, step: int = 0, total: int = 0):
     """Send a progress indicator to the frontend."""
     payload = {
-        "action": "progress",
+        "action": Action.PROGRESS,
         "message": translate_text(session, message),
         "step": step,
         "total": total,

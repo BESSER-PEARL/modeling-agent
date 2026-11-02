@@ -1,11 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-
-# Streaming actions
-ACTION_STREAM_CHUNK = "stream_chunk"
-ACTION_STREAM_DONE = "stream_done"
-ACTION_PROGRESS = "progress"
+from .actions import Action
 
 
 SUPPORTED_DIAGRAM_TYPES = {
@@ -95,7 +91,7 @@ class FileAttachment:
 class AssistantRequest:
     """Canonical request object consumed by assistant states."""
 
-    action: str = "user_message"
+    action: str = Action.USER_MESSAGE
     protocol_version: str = "2.0"
     client_mode: str = "widget"
     session_id: Optional[str] = None

@@ -68,6 +68,7 @@ from conversation.reply_copy import (
     OUT_OF_SCOPE_REDIRECT as _OUT_OF_SCOPE_REDIRECT,
 )
 from routing.unified_classifier import get_or_classify
+from protocol.actions import Action
 
 try:
     from llm.provider import get_provider as _get_llm_provider
@@ -132,9 +133,9 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     except UserMessageTooLong as error:
         # reply_message parses the request again; use the wire envelope here
         # so rejection itself cannot recurse into the same parsing error.
-        session.reply(json.dumps({"action": "assistant_message", "message": str(error), "isError": True}))
+        session.reply(json.dumps({"action": Action.ASSISTANT_MESSAGE, "message": str(error), "isError": True}))
         return None
-    if getattr(_replay_req, "action", None) == "replay_last_response":
+    if getattr(_replay_req, "action", None) == Action.REPLAY_LAST_RESPONSE:
         replay_last_reply(session, _replay_req)
         return None
 
@@ -176,7 +177,7 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     # classifier is told to bias toward acting. Cached classification, so no
     # extra LLM call. Never fires on frontend_event callbacks; pending flows
     # were already handled above.
-    if request.message and getattr(request, "action", None) != "frontend_event":
+    if request.message and getattr(request, "action", None) != Action.FRONTEND_EVENT:
         try:
             _uc = get_or_classify(
                 session, request,
@@ -794,11 +795,11 @@ def generation_body(session: Session):
     try:
         response_payload = handle_generation_request(session, request)
     except UserMessageTooLong as error:
-        response_payload = {"action": "assistant_message", "message": str(error), "isError": True}
+        response_payload = {"action": Action.ASSISTANT_MESSAGE, "message": str(error), "isError": True}
     except Exception as error:
         logger.error(f"❌ Error in generation_body: {error}")
         response_payload = {
-            "action": "agent_error",
+            "action": Action.AGENT_ERROR,
             "code": "generation_handler_error",
             "message": "Failed to process generation request.",
             "retryable": True,

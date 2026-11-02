@@ -32,6 +32,7 @@ from common.errors import (
 
 from utilities.image_inputs import content_text, openai_content
 from utilities.json_repair import loads_tolerant, validate_llm_json
+from protocol.actions import Action, assistant_message
 
 logger = logging.getLogger(__name__)
 
@@ -140,19 +141,83 @@ class BaseDiagramHandler(ABC):
         pass
 
     @abstractmethod
-    def generate_single_element(self, user_request: str, existing_model: Optional[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
-        """Generate a single element for this diagram type."""
-        pass
-
-    @abstractmethod
-    def generate_complete_system(self, user_request: str, existing_model: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Generate a complete system/diagram with multiple elements."""
-        pass
-
-    @abstractmethod
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
         """Generate a fallback element when AI generation fails"""
         pass
+
+    # ------------------------------------------------------------------
+    # Generation template: the public entry points own the failure
+    # handling; subclasses implement ``_build_*`` and set the reply texts.
+    # ------------------------------------------------------------------
+
+    #: Reply when the LLM call of ``generate_complete_system`` fails.
+    _SYSTEM_FAILURE_MESSAGE: str = "I couldn't generate that diagram. Please try again or rephrase your request."
+    #: Reply when the LLM call of ``generate_single_element`` fails.
+    _SINGLE_FAILURE_MESSAGE: str = "I couldn't generate that element. Please try again or rephrase your request."
+    #: ``errorCode`` of those replies; None keeps ``_error_response``'s default.
+    _LLM_FAILURE_CODE: Optional[str] = None
+
+    def generate_complete_system(
+        self, user_request: str, existing_model: Optional[Dict[str, Any]] = None, **kwargs,
+    ) -> Dict[str, Any]:
+        """Generate a complete diagram (template method around ``_build_system``).
+
+        An LLM failure (``LLMPredictionError``, refusals included) becomes
+        ``_system_failure_reply``; any other exception ``_system_crash_reply``.
+        """
+        tag = self.get_diagram_type()
+        logger.info(f"[{tag}] generate_complete_system called with: {user_request[:120]!r}")
+        try:
+            return self._build_system(user_request, existing_model, **kwargs)
+        except LLMPredictionError as exc:
+            logger.error(f"[{tag}] generate_complete_system LLM FAILED: {exc}")
+            return self._system_failure_reply(exc, user_request, existing_model, **kwargs)
+        except Exception as exc:
+            logger.error(f"[{tag}] generate_complete_system FAILED: {exc}", exc_info=True)
+            return self._system_crash_reply(exc, user_request, existing_model, **kwargs)
+
+    @abstractmethod
+    def _build_system(
+        self, user_request: str, existing_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Dict[str, Any]:
+        """Prompt → LLM → repair → layout → reply envelope for a complete diagram."""
+
+    def _system_failure_reply(
+        self, exc: Exception, user_request: str, existing_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Dict[str, Any]:
+        return self._error_response(self._SYSTEM_FAILURE_MESSAGE, code=self._LLM_FAILURE_CODE)
+
+    def _system_crash_reply(
+        self, exc: Exception, user_request: str, existing_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Dict[str, Any]:
+        return self.generate_fallback_system()
+
+    def generate_fallback_system(self) -> Dict[str, Any]:
+        """Starter diagram returned when complete-system generation crashes."""
+        raise NotImplementedError
+
+    def generate_single_element(
+        self, user_request: str, existing_model: Optional[Dict[str, Any]] = None, **kwargs,
+    ) -> Dict[str, Any]:
+        """Generate one element (template method around ``_build_single_element``)."""
+        tag = self.get_diagram_type()
+        try:
+            return self._build_single_element(user_request, existing_model, **kwargs)
+        except LLMPredictionError as exc:
+            logger.error(f"[{tag}] generate_single_element LLM FAILED: {exc}")
+            return self._error_response(self._SINGLE_FAILURE_MESSAGE, code=self._LLM_FAILURE_CODE)
+        except Exception as exc:
+            logger.error(f"[{tag}] generate_single_element FAILED: {exc}", exc_info=True)
+            return self._single_crash_reply(exc, user_request)
+
+    @abstractmethod
+    def _build_single_element(
+        self, user_request: str, existing_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Dict[str, Any]:
+        """Prompt → LLM → repair → layout → reply envelope for one element."""
+
+    def _single_crash_reply(self, exc: Exception, user_request: str) -> Dict[str, Any]:
+        return self.generate_fallback_element(user_request)
 
     def _error_response(
         self,
@@ -366,14 +431,46 @@ class BaseDiagramHandler(ABC):
             return parts[0]
         return f"Applied {len(parts)} changes:\n" + "\n".join(f"- {p}" for p in parts)
 
-    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    #: Reply when the LLM call of ``generate_modification`` fails, and its ``errorCode``.
+    _MODIFY_FAILURE_MESSAGE: str = "I couldn't process that modification. Please try again or rephrase your request."
+    _MODIFY_FAILURE_CODE: Optional[str] = None
+
+    def generate_modification(
+        self, user_request: str, current_model: Optional[Dict[str, Any]] = None, **kwargs,
+    ) -> Dict[str, Any]:
+        """Modify the current diagram (template method around ``_build_modification``).
+
+        An LLM failure becomes ``_modification_failure_reply``; any other
+        exception ``_modification_crash_reply``.
         """
-        Generate modifications for existing diagram elements.
-        Override this method in subclasses to provide diagram-specific modification logic.
-        Default implementation returns a basic modification structure.
-        """
+        tag = self.get_diagram_type()
+        logger.info(f"[{tag}] generate_modification called with: {user_request[:120]!r}")
+        try:
+            return self._build_modification(user_request, current_model, **kwargs)
+        except LLMPredictionError as exc:
+            logger.error(f"[{tag}] generate_modification LLM FAILED: {exc}")
+            return self._modification_failure_reply(exc, user_request)
+        except Exception as exc:
+            logger.error(f"[{tag}] generate_modification FAILED: {exc}", exc_info=True)
+            return self._modification_crash_reply(exc, user_request)
+
+    def _modification_failure_reply(self, exc: Exception, user_request: str) -> Dict[str, Any]:
+        return self._error_response(self._MODIFY_FAILURE_MESSAGE, code=self._MODIFY_FAILURE_CODE)
+
+    def _modification_crash_reply(self, exc: Exception, user_request: str) -> Dict[str, Any]:
+        return self.generate_fallback_modification(user_request)
+
+    def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
+        """Reply when modification crashes."""
+        raise NotImplementedError
+
+    def _build_modification(
+        self, user_request: str, current_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Dict[str, Any]:
+        """Prompt → LLM → validate → ``modify_model`` envelope. The default is a
+        placeholder for diagram types without modification support."""
         return {
-            "action": "modify_model",
+            "action": Action.MODIFY_MODEL,
             "modification": {
                 "action": "modify_element",
                 "target": {"elementName": "unknown"},
@@ -433,10 +530,7 @@ class BaseDiagramHandler(ABC):
         # When the LLM signals the target element doesn't exist, surface its
         # explanation as a plain text reply rather than attempting an empty update.
         if not getattr(parsed, 'elementFound', True):
-            return {
-                "action": "assistant_message",
-                "message": getattr(parsed, 'message', 'The requested element was not found.'),
-            }
+            return assistant_message(getattr(parsed, 'message', 'The requested element was not found.'))
 
         mod_list = parsed.model_dump()["modifications"]
 
@@ -446,22 +540,22 @@ class BaseDiagramHandler(ABC):
 
         if len(mod_list) == 1:
             modification_spec: Dict[str, Any] = {
-                "action": "modify_model", "modification": mod_list[0],
+                "action": Action.MODIFY_MODEL, "modification": mod_list[0],
             }
         else:
             modification_spec = {
-                "action": "modify_model", "modifications": mod_list,
+                "action": Action.MODIFY_MODEL, "modifications": mod_list,
             }
 
         # Handler-specific spec-level transformation (e.g. refactoring expansion)
         if spec_processor is not None:
             modification_spec = spec_processor(self, modification_spec)
-            if modification_spec.get("action") == "assistant_message":
+            if modification_spec.get("action") == Action.ASSISTANT_MESSAGE:
                 return modification_spec  # nothing left to apply
 
         self.validate_modification_spec(modification_spec)
 
-        modification_spec.setdefault('action', 'modify_model')
+        modification_spec.setdefault('action', Action.MODIFY_MODEL)
         modification_spec.setdefault('diagramType', self.get_diagram_type())
 
         if 'message' not in modification_spec:
@@ -607,7 +701,7 @@ class BaseDiagramHandler(ABC):
         becomes an ``assistant_message`` so the user gets an explanation
         instead of a silent no-op.
         """
-        if not elements or result.get("action") != "modify_model":
+        if not elements or result.get("action") != Action.MODIFY_MODEL:
             return result
         tag = self.get_diagram_type()
 
@@ -623,13 +717,10 @@ class BaseDiagramHandler(ABC):
             if dropped:
                 logger.info(f"[{tag}] Dropped {dropped} modification(s) with unresolved element ref(s)")
             if not valid:
-                return {
-                    "action": "assistant_message",
-                    "message": (
-                        "I couldn't find the element(s) you described in the current diagram. "
-                        "Please check the names and try again."
-                    ),
-                }
+                return assistant_message(
+                    "I couldn't find the element(s) you described in the current diagram. "
+                    "Please check the names and try again.",
+                )
             result = dict(result)
             result["modifications"] = valid
             if dropped:
@@ -638,13 +729,10 @@ class BaseDiagramHandler(ABC):
 
         if "modification" in result and not self._ref_exists(result["modification"], elements):
             logger.info(f"[{tag}] Dropped modification with unresolved element ref")
-            return {
-                "action": "assistant_message",
-                "message": (
-                    "I couldn't find that element in the current diagram. "
-                    "Please check the name and try again."
-                ),
-            }
+            return assistant_message(
+                "I couldn't find that element in the current diagram. "
+                "Please check the name and try again.",
+            )
         return result
 
     # ------------------------------------------------------------------

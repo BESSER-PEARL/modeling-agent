@@ -14,6 +14,7 @@ from typing import Any, Dict
 from ..core.architecture_handler import ArchitectureDiagramHandler
 from prompts import deployment_diagram as deployment_prompts
 from schemas import DeploymentModificationResponse, SystemDeploymentSpec
+from protocol.actions import inject_complete_system
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ class DeploymentDiagramHandler(ArchitectureDiagramHandler):
     """Handler for UML Deployment Diagram generation and modification."""
 
     _LABEL = "deployment diagram"
+    _SYSTEM_FAILURE_MESSAGE = "I couldn't generate that deployment diagram. Please try again or rephrase your request."
     _SYSTEM_SCHEMA = SystemDeploymentSpec
     _MODIFICATION_SCHEMA = DeploymentModificationResponse
     _MODIFY_SYSTEM_PROMPT = deployment_prompts.MODIFY_SYSTEM_PROMPT_DEPLOYMENT
@@ -46,22 +48,21 @@ class DeploymentDiagramHandler(ArchitectureDiagramHandler):
     # Single element + fallbacks
     # ------------------------------------------------------------------
 
-    def generate_single_element(
+    def _build_single_element(
         self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs,
     ) -> Dict[str, Any]:
         name = self.extract_name_from_request(user_request, "Server")
-        return {
-            "action": "inject_complete_system",
-            "systemSpec": {
+        return inject_complete_system(
+            {
                 "systemName": name,
                 "nodes": [{"id": "node1", "name": name, "stereotype": "node"}],
                 "artifacts": [],
                 "deployComponents": [],
                 "dependencies": [],
             },
-            "diagramType": self.get_diagram_type(),
-            "message": f"Created a starter **{name}** node. Describe the full deployment topology and I'll build it out!",
-        }
+            self.get_diagram_type(),
+            f"Created a starter **{name}** node. Describe the full deployment topology and I'll build it out!",
+        )
 
     def generate_fallback_system(self) -> Dict[str, Any]:
         fallback = {
@@ -82,16 +83,15 @@ class DeploymentDiagramHandler(ArchitectureDiagramHandler):
                 {"source": "webapp_artifact", "target": "db_artifact", "name": "JDBC"},
             ],
         }
-        return {
-            "action": "inject_complete_system",
-            "systemSpec": fallback,
-            "diagramType": self.get_diagram_type(),
-            "message": (
+        return inject_complete_system(
+            fallback,
+            self.get_diagram_type(),
+            (
                 "I created a starter deployment diagram. Describe your infrastructure "
                 "(e.g. *'a three-tier deployment with load balancer, app servers, and database cluster'*) "
                 "and I'll build a richer model!"
             ),
-        }
+        )
 
     def _build_system_message(self, spec: Dict[str, Any]) -> str:
         name = spec.get("systemName") or "deployment"

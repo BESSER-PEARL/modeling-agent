@@ -25,6 +25,7 @@ import re
 from typing import Any, Dict, Optional, Tuple
 
 from routing.generation_signals import detect_generator_type
+from protocol.actions import Action
 
 # ---------------------------------------------------------------------------
 # Before the classifier
@@ -41,16 +42,16 @@ def skips_classification(request: Any) -> bool:
     control message, and blank text that is not a frontend_event (callbacks
     may carry an empty message but still route to the generation handler)."""
     action = getattr(request, "action", None)
-    if action == "replay_last_response":
+    if action == Action.REPLAY_LAST_RESPONSE:
         return True
-    return action != "frontend_event" and not (request.message or "").strip()
+    return action != Action.FRONTEND_EVENT and not (request.message or "").strip()
 
 
 def frontend_event_verdict(request: Any) -> Optional[Dict[str, Any]]:
     """Verdict fields for a ``frontend_event`` callback (``generator_result``
     etc.). These are protocol events, not prose: classifying their text sent a
     generation-completion echo to greetings."""
-    if getattr(request, "action", None) != "frontend_event":
+    if getattr(request, "action", None) != Action.FRONTEND_EVENT:
         return None
     return {
         "intent": "generation_intent",

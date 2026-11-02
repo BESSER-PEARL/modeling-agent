@@ -8,7 +8,6 @@ import re
 from typing import Dict, Any, List, Optional, Tuple
 from ..core.base_handler import (
     BaseDiagramHandler,
-    LLMPredictionError,
     SINGLE_OBJECT_REQUIRED,
     SINGLE_OBJECT_OPTIONAL,
     SYSTEM_OBJECT_REQUIRED,
@@ -18,12 +17,16 @@ from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
 from prompts import object_diagram as object_prompts
 from schemas import SingleObjectSpec, SystemObjectSpec, ObjectModificationResponse
 from utilities.model_context import detailed_model_summary
+from protocol.actions import Action, inject_complete_system, inject_element
 
 logger = logging.getLogger(__name__)
 
 
 class ObjectDiagramHandler(BaseDiagramHandler):
     """Handler for Object Diagram generation"""
+    _SYSTEM_FAILURE_MESSAGE = "I couldn't generate that object diagram. Please try again or rephrase your request."
+    _SINGLE_FAILURE_MESSAGE = "I couldn't generate that object. Please try again or rephrase your request."
+
     
     def get_diagram_type(self) -> str:
         return "ObjectDiagram"
@@ -408,7 +411,7 @@ class ObjectDiagramHandler(BaseDiagramHandler):
     def get_system_prompt(self) -> str:
         return object_prompts.SYSTEM_PROMPT
     
-    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
+    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
                                 reference_diagram: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a single object instance with deterministic positioning."""
         
@@ -421,45 +424,36 @@ class ObjectDiagramHandler(BaseDiagramHandler):
             user_prompt += "\n\nREFERENCE CLASS DIAGRAM (use these exact class and attribute definitions):\n"
             user_prompt += self._format_reference_classes(reference_diagram['elements'])
         
-        try:
-            # Single element → SMALL generation tier (latency-sensitive).
-            parsed = self.predict_structured(
-                user_prompt, SingleObjectSpec, system_prompt=system_prompt,
-                model=MODEL_GENERATION_SMALL,
-            )
-            object_spec = parsed.model_dump()
+        # Single element → SMALL generation tier (latency-sensitive).
+        parsed = self.predict_structured(
+            user_prompt, SingleObjectSpec, system_prompt=system_prompt,
+            model=MODEL_GENERATION_SMALL,
+        )
+        object_spec = parsed.model_dump()
 
-            # Sanitize objectName: strip any ": ClassName" suffix the LLM may have included
-            raw_name = object_spec.get("objectName", "")
-            class_name = object_spec.get("className", "")
-            if class_name and ":" in raw_name:
-                raw_name = raw_name.split(":")[0].strip()
-            object_spec["objectName"] = self._sanitize_object_name(raw_name, default_name=f"{class_name[0].lower()}{class_name[1:]}1" if class_name else "object1")
+        # Sanitize objectName: strip any ": ClassName" suffix the LLM may have included
+        raw_name = object_spec.get("objectName", "")
+        class_name = object_spec.get("className", "")
+        if class_name and ":" in raw_name:
+            raw_name = raw_name.split(":")[0].strip()
+        object_spec["objectName"] = self._sanitize_object_name(raw_name, default_name=f"{class_name[0].lower()}{class_name[1:]}1" if class_name else "object1")
 
-            # Enrich each attribute with its type from the reference class diagram so the
-            # frontend ObjectAttribute element can carry the correct attributeType
-            # (otherwise it defaults to 'str' and breaks enum/int/date/float typing).
-            self._enrich_attribute_types(object_spec, reference_diagram)
+        # Enrich each attribute with its type from the reference class diagram so the
+        # frontend ObjectAttribute element can carry the correct attributeType
+        # (otherwise it defaults to 'str' and breaks enum/int/date/float typing).
+        self._enrich_attribute_types(object_spec, reference_diagram)
 
-            # Remove any hallucinated position and apply deterministic layout
-            object_spec.pop("position", None)
-            self.apply_single_layout(object_spec, existing_model)
+        # Remove any hallucinated position and apply deterministic layout
+        object_spec.pop("position", None)
+        self.apply_single_layout(object_spec, existing_model)
             
-            return {
-                "action": "inject_element",
-                "element": object_spec,
-                "diagramType": "ObjectDiagram",
-                "message": self._build_single_object_message(object_spec)
-            }
-            
-        except LLMPredictionError:
-            logger.error("[ObjectDiagram] generate_single_element LLM FAILED", exc_info=True)
-            return self._error_response("I couldn't generate that object. Please try again or rephrase your request.")
-        except Exception:
-            logger.error("[ObjectDiagram] generate_single_element FAILED", exc_info=True)
-            return self.generate_fallback_element(user_request)
+        return inject_element(
+            object_spec,
+            "ObjectDiagram",
+            self._build_single_object_message(object_spec),
+        )
     
-    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None,
+    def _build_system(self, user_request: str, existing_model: Dict[str, Any] = None,
                                 reference_diagram: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a complete object diagram with deterministic positioning."""
 
@@ -473,38 +467,29 @@ class ObjectDiagramHandler(BaseDiagramHandler):
             user_prompt += "\n\nREFERENCE CLASS RELATIONSHIPS:\n"
             user_prompt += self._format_reference_relationships(class_relationships)
 
-        try:
-            # Complete-system generation → LARGE tier (see model_config).
-            parsed = self.predict_structured(
-                user_prompt, SystemObjectSpec, system_prompt=system_prompt,
-                model=MODEL_GENERATION_LARGE,
-            )
-            system_spec = parsed.model_dump()
+        # Complete-system generation → LARGE tier (see model_config).
+        parsed = self.predict_structured(
+            user_prompt, SystemObjectSpec, system_prompt=system_prompt,
+            model=MODEL_GENERATION_LARGE,
+        )
+        system_spec = parsed.model_dump()
 
-            if classes:
-                system_spec = self._normalize_system_from_reference(
-                    system_spec, classes, class_relationships
-                )
+        if classes:
+            system_spec = self._normalize_system_from_reference(
+                system_spec, classes, class_relationships
+            )
             
-            # Strip any hallucinated positions and apply deterministic layout
-            for obj in system_spec.get("objects", []):
-                obj.pop("position", None)
-            self.apply_system_layout(system_spec, existing_model)
+        # Strip any hallucinated positions and apply deterministic layout
+        for obj in system_spec.get("objects", []):
+            obj.pop("position", None)
+        self.apply_system_layout(system_spec, existing_model)
             
-            mode_note = " from structural model" if classes else ""
-            return {
-                "action": "inject_complete_system",
-                "systemSpec": system_spec,
-                "diagramType": "ObjectDiagram",
-                "message": self._build_object_system_message(system_spec, mode_note)
-            }
-            
-        except LLMPredictionError:
-            logger.error("[ObjectDiagram] generate_complete_system LLM FAILED", exc_info=True)
-            return self._error_response("I couldn't generate that object diagram. Please try again or rephrase your request.")
-        except Exception:
-            logger.error("[ObjectDiagram] generate_complete_system FAILED", exc_info=True)
-            return self.generate_fallback_system()
+        mode_note = " from structural model" if classes else ""
+        return inject_complete_system(
+            system_spec,
+            "ObjectDiagram",
+            self._build_object_system_message(system_spec, mode_note),
+        )
     
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
         """Generate a fallback object when AI generation fails"""
@@ -523,12 +508,11 @@ class ObjectDiagramHandler(BaseDiagramHandler):
         # Apply deterministic layout so the fallback doesn't render at 0,0
         self.apply_single_layout(fallback_spec)
         
-        return {
-            "action": "inject_element",
-            "element": fallback_spec,
-            "diagramType": "ObjectDiagram",
-            "message": f"I created a starter **{object_name}** object (instance of {class_name}). Describe the scenario in more detail (e.g. which class it represents and its attribute values) for a more accurate result!"
-        }
+        return inject_element(
+            fallback_spec,
+            "ObjectDiagram",
+            f"I created a starter **{object_name}** object (instance of {class_name}). Describe the scenario in more detail (e.g. which class it represents and its attribute values) for a more accurate result!",
+        )
     
     def generate_fallback_system(self) -> Dict[str, Any]:
         """Generate a fallback object diagram"""
@@ -549,12 +533,11 @@ class ObjectDiagramHandler(BaseDiagramHandler):
         # Apply deterministic layout so the fallback doesn't render at 0,0
         self.apply_system_layout(fallback_system)
 
-        return {
-            "action": "inject_complete_system",
-            "systemSpec": fallback_system,
-            "diagramType": "ObjectDiagram",
-            "message": "I created a starter object diagram. Describe your scenario in more detail (e.g. *'Create objects for a library with 2 books and 1 author'*) and I'll build a richer diagram!"
-        }
+        return inject_complete_system(
+            fallback_system,
+            "ObjectDiagram",
+            "I created a starter object diagram. Describe your scenario in more detail (e.g. *'Create objects for a library with 2 books and 1 author'*) and I'll build a richer diagram!",
+        )
     
     def _enrich_attribute_types(self, object_spec: Dict[str, Any], reference_diagram: Optional[Dict[str, Any]]) -> None:
         """Populate each attribute's 'type' field from the reference class diagram.
@@ -684,7 +667,7 @@ class ObjectDiagramHandler(BaseDiagramHandler):
     # Modification Support
     # ------------------------------------------------------------------
 
-    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _build_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate modifications for existing object diagram elements."""
 
         # If a reference class diagram is available, include it for context
@@ -714,8 +697,6 @@ class ObjectDiagramHandler(BaseDiagramHandler):
                 context_block = f"\n\n{summary}"
 
         user_prompt = f"Modify the object diagram: {user_request}{context_block}{reference_context}"
-
-        logger.info(f"[ObjectDiagram] generate_modification called with: {user_request!r}")
 
         def _resolve_class_references(mod_list: list) -> list:
             """Set classId / attributeId for add_object mods from the reference catalog.
@@ -760,24 +741,19 @@ class ObjectDiagramHandler(BaseDiagramHandler):
                 mod["changes"] = changes
             return mod_list
 
-        try:
-            return self._execute_modification(
-                user_prompt, system_prompt, ObjectModificationResponse,
-                post_processor=_resolve_class_references,
-            )
+        return self._execute_modification(
+            user_prompt, system_prompt, ObjectModificationResponse,
+            post_processor=_resolve_class_references,
+        )
 
-        except LLMPredictionError as exc:
-            logger.error(f"[ObjectDiagram] generate_modification LLM FAILED: {exc}")
-            return self._error_response("I couldn't process that modification. Please try again or rephrase your request.")
-        except Exception as exc:
-            logger.error(f"[ObjectDiagram] generate_modification FAILED: {exc}", exc_info=True)
-            return {
-                "action": "modify_model",
-                "modification": {
-                    "action": "modify_object",
-                    "target": {"objectName": "Unknown"},
-                    "changes": {"objectName": "ModifiedObject"}
-                },
-                "diagramType": self.get_diagram_type(),
-                "message": "I couldn't apply that modification automatically. Could you rephrase it? For example: *'Change the name of object X to Y'* or *'Add a link between obj1 and obj2'*."
-            }
+    def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
+        return {
+            "action": Action.MODIFY_MODEL,
+            "modification": {
+                "action": "modify_object",
+                "target": {"objectName": "Unknown"},
+                "changes": {"objectName": "ModifiedObject"}
+            },
+            "diagramType": self.get_diagram_type(),
+            "message": "I couldn't apply that modification automatically. Could you rephrase it? For example: *'Change the name of object X to Y'* or *'Add a link between obj1 and obj2'*."
+        }

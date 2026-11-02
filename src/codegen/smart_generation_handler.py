@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 from common.agent_config import MAX_USER_MESSAGE_CHARS
 from prompts import spec_driven as spec_prompts
 from protocol.message_limits import validate_message_length
+from protocol.actions import Action
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +195,7 @@ def build_trigger_smart_generator_payload(
     # run (see ``_build_smart_gen_confirmation``), so this mid-run line stays
     # minimal instead of repeating the API-key explanation.
     return {
-        "action": "trigger_smart_generator",
+        "action": Action.TRIGGER_SMART_GENERATOR,
         "instructions": instructions,
         "provider": provider,
         "llmModel": llm_model,

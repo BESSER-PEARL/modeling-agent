@@ -30,6 +30,7 @@ from common.session_keys import (
     UNIFIED_CLASSIFICATION,
 )
 from execution import execute_model_operation
+from protocol.actions import Action
 
 logger = logging.getLogger(__name__)
 
@@ -251,7 +252,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
         _original_msg = pending.get('operation_request', '') or getattr(request, "message", "") or ""
         _detected_gen = detect_generator_type(_original_msg)
         reply_payload(session, {
-            "action": "auto_generate_gui",
+            "action": Action.AUTO_GENERATE_GUI,
             "diagramType": "GUINoCodeDiagram",
             # Frontend builds one page per class via autoGenerateGUIFromClassDiagram.
             # The message CONFIRMS completion naming the pages that were created.
@@ -479,7 +480,7 @@ def handle_pending_system_confirmation(session: Session) -> bool:
         if wants_new_tab:
             logger.info(f"🔄 [PendingConfirm] File upload: user chose NEW TAB for {stored_diagram_type}")
             reply_payload(session, {
-                "action": "create_diagram_tab",
+                "action": Action.CREATE_DIAGRAM_TAB,
                 "diagramType": stored_diagram_type,
             })
             precomputed["replaceExisting"] = True

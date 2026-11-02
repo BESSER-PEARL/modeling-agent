@@ -44,6 +44,7 @@ from routing.unified_classifier import (
     UnifiedClassification,
     classify_message as _unified_classify_message,
 )
+from protocol.actions import Action
 
 try:
     from llm.provider import get_provider as _get_llm_provider
@@ -434,7 +435,7 @@ def _build_smart_gen_confirmation(
         confirm_label = "Continue"
 
     return {
-        "action": "assistant_message",
+        "action": Action.ASSISTANT_MESSAGE,
         "message": message,
         # No Cancel action — the proposition offers
         # only Run; the user can simply not click it (or type another request)
@@ -509,7 +510,7 @@ def _build_mismatch_confirmation(
     session.set(MISMATCH_REGEN_PENDING, rebuild_prompt)
 
     return {
-        "action": "assistant_message",
+        "action": Action.ASSISTANT_MESSAGE,
         "message": (
             f"Your existing class diagram doesn't match **{suggested}**. "
             f"Pick one:\n\n"
@@ -977,7 +978,7 @@ def handle_pending_plan_generation_confirmation(session: Session) -> bool:
     from protocol.adapters import parse_assistant_request
 
     request = parse_assistant_request(session)
-    if getattr(request, "action", None) == "frontend_event":
+    if getattr(request, "action", None) == Action.FRONTEND_EVENT:
         return False
     if _plan_pause_exact_decision((request.message or "").strip().lower()) is None:
         return False
@@ -1023,7 +1024,7 @@ def should_route_to_generation(session: Session, request: AssistantRequest) -> b
     to cover non-BESSER stacks (rails, rust, kotlin, …) so it routes
     correctly on its own.
     """
-    if request.action == "frontend_event":
+    if request.action == Action.FRONTEND_EVENT:
         return True
     pending_generator, _ = _get_pending_state(session)
     return bool(
@@ -1097,9 +1098,9 @@ def _handle_frontend_event(request: AssistantRequest, session=None) -> Dict[str,
             )
         else:
             result_message = message if isinstance(message, str) and message.strip() else "Generation failed."
-        return {"action": "assistant_message", "message": result_message}
+        return {"action": Action.ASSISTANT_MESSAGE, "message": result_message}
     return {
-        "action": "assistant_message",
+        "action": Action.ASSISTANT_MESSAGE,
         "message": "Received frontend event update.",
     }
 
@@ -1212,7 +1213,7 @@ def _handle_smart_generator_result(
         except Exception:  # pragma: no cover - defensive
             logger.debug("Could not record smart-gen outcome in memory", exc_info=True)
 
-    payload: Dict[str, Any] = {"action": "assistant_message", "message": result_message}
+    payload: Dict[str, Any] = {"action": Action.ASSISTANT_MESSAGE, "message": result_message}
     if suggestions:
         payload["suggestedActions"] = suggestions
     return payload
@@ -1230,7 +1231,7 @@ def _build_github_import_payload(
     """
     branch_part = f" on branch {branch}" if branch else ""
     return {
-        "action": "trigger_github_import",
+        "action": Action.TRIGGER_GITHUB_IMPORT,
         "owner": owner,
         "repo": repo,
         "branch": branch,
@@ -1268,7 +1269,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     refined_instructions) comes from the unified classifier's cached
     per-message classification — one rulebook, zero extra LLM calls.
     """
-    if request.action == "frontend_event":
+    if request.action == Action.FRONTEND_EVENT:
         return _handle_frontend_event(request, session)
 
     # Past-generation QUESTION guard: after a run finished, "What we
@@ -1287,7 +1288,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 "(no new run armed): %r", _msg[:80],
             )
             return {
-                "action": "assistant_message",
+                "action": Action.ASSISTANT_MESSAGE,
                 "message": (
                     f"{_summary} Use the **Download** button on the run card "
                     "to save the files, or tell me what to change and I'll "
@@ -1342,7 +1343,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         _clear_pending_smart_gen(session)
         _clear_pending_state(session)
         return {
-            "action": "assistant_message",
+            "action": Action.ASSISTANT_MESSAGE,
             "message": "Cancelled. Your model is unchanged.",
         }
 
@@ -1361,7 +1362,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             _clear_pending_smart_gen(session)
             _clear_pending_state(session)
             return {
-                "action": "assistant_message",
+                "action": Action.ASSISTANT_MESSAGE,
                 "message": "The open project changed. Please prepare generation for this project again.",
             }
         if not _smart_gen_stash_is_fresh(stashed_ts):
@@ -1370,7 +1371,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             _clear_pending_smart_gen(session)
             _clear_pending_state(session)
             return {
-                "action": "assistant_message",
+                "action": Action.ASSISTANT_MESSAGE,
                 "message": (
                     "That generation request expired — please ask again "
                     "and I'll prepare a fresh run."
@@ -1432,13 +1433,13 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             # answer it and KEEP the prepared run so "Continue" still works.
             # (out_of_scope_state is unreachable here — the pending stash
             # suppresses intent routing.)
-            return {"action": "assistant_message",
+            return {"action": Action.ASSISTANT_MESSAGE,
                     "message": OUT_OF_SCOPE_REDIRECT}
         if _stash_intent == "decline_intent":
             # A decline at the confirmation IS the answer: cancel cleanly.
             _clear_pending_smart_gen(session)
             _clear_pending_state(session)
-            return {"action": "assistant_message",
+            return {"action": Action.ASSISTANT_MESSAGE,
                     "message": "Cancelled. Your model is unchanged."}
         # A different request abandons this confirmation. Clearing the stash
         # prevents a later generic "yes" from spending against an old run.
@@ -1499,7 +1500,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             _clear_pending_state(session)
             session.set(CONFIG_PROMPT_ATTEMPTS, 0)
             return {
-                "action": "assistant_message",
+                "action": Action.ASSISTANT_MESSAGE,
                 "message": (
                     "Understood — I won't run code generation. Your model is "
                     "ready whenever you'd like to continue."
@@ -1562,7 +1563,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             _clear_pending_state(session)
             session.set(CONFIG_PROMPT_ATTEMPTS, 0)
             return {
-                "action": "assistant_message",
+                "action": Action.ASSISTANT_MESSAGE,
                 "message": "Cancelled — no code was generated. Your model is unchanged.",
             }
         _cached = session.get(UNIFIED_CLASSIFICATION)
@@ -1673,7 +1674,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             except Exception as exc:
                 logger.error(f"[GenRedirect] modeling build failed: {exc}", exc_info=True)
                 return {
-                    "action": "assistant_message",
+                    "action": Action.ASSISTANT_MESSAGE,
                     "message": (
                         "It looks like you want to design a system. Try "
                         '**"create a class diagram for a library"**.'
@@ -1683,7 +1684,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         if classification.route == "other":
             _clear_pending_state(session)
             return {
-                "action": "assistant_message",
+                "action": Action.ASSISTANT_MESSAGE,
                 "message": (
                     "I didn't catch a clear code-generation request. If you want code, "
                     'try something like **"generate django"** for a built-in generator '
@@ -1717,7 +1718,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         if any(token in _lower_msg for token in _non_gui_diagram_tokens):
             _clear_pending_state(session)
             return {
-                "action": "assistant_message",
+                "action": Action.ASSISTANT_MESSAGE,
                 "message": (
                     "It sounds like you want to **create a diagram**, not "
                     "generate source code. Try rephrasing as: "
@@ -1734,7 +1735,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         if any(hint in _lower_msg for hint in _gui_hints):
             _clear_pending_state(session)
             return {
-                "action": "assistant_message",
+                "action": Action.ASSISTANT_MESSAGE,
                 "message": (
                     "It sounds like you want to create a GUI diagram rather "
                     "than generate source code. Try saying something like: "
@@ -1744,7 +1745,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             }
         _set_pending_state(session, _AWAITING_SELECTION, {})
         return {
-            "action": "assistant_message",
+            "action": Action.ASSISTANT_MESSAGE,
             "message": (
                 "What would you like me to generate? Here are the available options:\n\n"
                 "**Web & Backend**: `django`, `backend`, `web_app`\n"
@@ -1771,7 +1772,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     if config_errors:
         _set_pending_state(session, generator_type, {})
         return {
-            "action": "assistant_message",
+            "action": Action.ASSISTANT_MESSAGE,
             "message": "\n".join(config_errors) + "\n\nPlease provide a valid value.",
         }
 
@@ -1796,7 +1797,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             if config_attempts >= 2:
                 prompt += "\n\n*Or just say **use defaults** to proceed with suggested values.*"
             return {
-                "action": "assistant_message",
+                "action": Action.ASSISTANT_MESSAGE,
                 "message": prompt,
             }
 
@@ -1812,14 +1813,14 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     if generator_type == "export":
         fmt = config.get("format", "json")
         return {
-            "action": "trigger_export",
+            "action": Action.TRIGGER_EXPORT,
             "format": fmt,
             "message": f"Exporting your project as **{fmt.upper()}** \u2014 the download should start shortly.",
         }
 
     if generator_type == "deploy":
         return {
-            "action": "trigger_deploy",
+            "action": Action.TRIGGER_DEPLOY,
             "platform": "render",
             "config": {},
             "message": (
@@ -1850,7 +1851,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         else:
             lead = f"Your workspace is missing a usable {missing_text}"
         return {
-            "action": "assistant_message",
+            "action": Action.ASSISTANT_MESSAGE,
             "message": (
                 f"{lead} — **{generator_type}** generation requires {missing_text}. "
                 f"Describe what you want first "
@@ -1860,7 +1861,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         }
 
     return {
-        "action": "trigger_generator",
+        "action": Action.TRIGGER_GENERATOR,
         "generatorType": generator_type,
         "config": config,
         "message": f"Starting **{generator_type}** code generation — this may take a moment.",

@@ -20,7 +20,7 @@ import re
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
+from ..core.base_handler import BaseDiagramHandler
 from prompts import user_profile as user_profile_prompts
 from schemas import (
     SystemUserProfileSpec,
@@ -28,6 +28,7 @@ from schemas import (
 )
 from utilities.model_context import detailed_model_summary
 from utilities.user_metamodel import load_user_metamodel
+from protocol.actions import Action, inject_complete_system
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,9 @@ _OPERATORS = ("<", "<=", "==", ">=", ">")
 
 class UserProfileDiagramHandler(BaseDiagramHandler):
     """Handler for User Profile (UserDiagram) generation."""
+
+    _SYSTEM_FAILURE_MESSAGE = "I couldn't generate that user profile. Please try again or rephrase."
+    _MODIFY_FAILURE_MESSAGE = "I couldn't process that modification. Please try again or rephrase."
 
     def get_diagram_type(self) -> str:
         return DIAGRAM_TYPE
@@ -642,14 +646,14 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
     # Generation
     # ------------------------------------------------------------------
 
-    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
+    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
                                 **kwargs) -> Dict[str, Any]:
         # A user profile is only meaningful when rooted at User with the right
         # metamodel links, so even a "single" request produces a complete,
         # structured profile rather than an isolated box.
         return self.generate_complete_system(user_request, existing_model, **kwargs)
 
-    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None,
+    def _build_system(self, user_request: str, existing_model: Dict[str, Any] = None,
                                  **kwargs) -> Dict[str, Any]:
         reference = self._reference()
         elements = reference.get("elements", {})
@@ -664,27 +668,15 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
             f"{self._format_reference_relationships(class_relationships)}"
         )
 
-        try:
-            parsed = self.predict_structured(user_prompt, SystemUserProfileSpec, system_prompt=system_prompt)
-            spec = parsed.model_dump()
-            system_spec = self._normalize_system(spec, classes, elements, class_relationships)
+        parsed = self.predict_structured(user_prompt, SystemUserProfileSpec, system_prompt=system_prompt)
+        spec = parsed.model_dump()
+        system_spec = self._normalize_system(spec, classes, elements, class_relationships)
 
-            for profile in system_spec.get("profiles", []):
-                profile.pop("position", None)
-            self.apply_system_layout(system_spec, existing_model)
+        for profile in system_spec.get("profiles", []):
+            profile.pop("position", None)
+        self.apply_system_layout(system_spec, existing_model)
 
-            return {
-                "action": "inject_complete_system",
-                "systemSpec": system_spec,
-                "diagramType": DIAGRAM_TYPE,
-                "message": self._build_system_message(system_spec),
-            }
-        except LLMPredictionError:
-            logger.error("[UserDiagram] generate_complete_system LLM FAILED", exc_info=True)
-            return self._error_response("I couldn't generate that user profile. Please try again or rephrase.")
-        except Exception:
-            logger.error("[UserDiagram] generate_complete_system FAILED", exc_info=True)
-            return self.generate_fallback_system()
+        return inject_complete_system(system_spec, DIAGRAM_TYPE, self._build_system_message(system_spec))
 
     def _normalize_system(self, spec: Dict[str, Any], classes: Dict[str, Dict[str, Any]],
                           elements: Dict[str, Any], relationships: List[Dict[str, str]]) -> Dict[str, Any]:
@@ -736,16 +728,15 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
     def generate_fallback_system(self) -> Dict[str, Any]:
         spec = self._fallback_system_spec()
         self.apply_system_layout(spec)
-        return {
-            "action": "inject_complete_system",
-            "systemSpec": spec,
-            "diagramType": DIAGRAM_TYPE,
-            "message": (
+        return inject_complete_system(
+            spec,
+            DIAGRAM_TYPE,
+            (
                 "I created a starter user profile. Describe your target user in more detail "
                 "(e.g. *'a teenager who speaks Spanish at B2 and is studying engineering'*) "
                 "and I'll build a richer profile!"
             ),
-        }
+        )
 
     # ------------------------------------------------------------------
     # Message builders
@@ -788,7 +779,7 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
     # Modification
     # ------------------------------------------------------------------
 
-    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None,
+    def _build_modification(self, user_request: str, current_model: Dict[str, Any] = None,
                               **kwargs) -> Dict[str, Any]:
         reference = self._reference()
         elements = reference.get("elements", {})
@@ -802,8 +793,6 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
 
         reference_context = "\n\nMETAMODEL (use these classes and attributes):\n" + self._format_reference_classes(elements)
         user_prompt = f"Modify the user-profile model: {user_request}{context_block}{reference_context}"
-
-        logger.info(f"[UserDiagram] generate_modification called with: {user_request!r}")
 
         existing_by_class, existing_links = self._model_class_index(current_model)
 
@@ -826,29 +815,25 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
                     out.append(mod)
             return out
 
-        try:
-            return self._execute_modification(
-                user_prompt, user_profile_prompts.MODIFY_SYSTEM_PROMPT_USER, UserProfileModificationResponse,
-                post_processor=_resolve_class_references,
-            )
-        except LLMPredictionError as exc:
-            logger.error(f"[UserDiagram] generate_modification LLM FAILED: {exc}")
-            return self._error_response("I couldn't process that modification. Please try again or rephrase.")
-        except Exception as exc:
-            logger.error(f"[UserDiagram] generate_modification FAILED: {exc}", exc_info=True)
-            return {
-                "action": "modify_model",
-                "modification": {
-                    "action": "modify_object",
-                    "target": {"profileName": "Unknown"},
-                    "changes": {"profileName": "ModifiedProfile"},
-                },
-                "diagramType": DIAGRAM_TYPE,
-                "message": (
-                    "I couldn't apply that modification automatically. Could you rephrase it? "
-                    "For example: *'set the age criterion to >= 21'* or *'add a Language box for French at C1'*."
-                ),
-            }
+        return self._execute_modification(
+            user_prompt, user_profile_prompts.MODIFY_SYSTEM_PROMPT_USER, UserProfileModificationResponse,
+            post_processor=_resolve_class_references,
+        )
+
+    def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
+        return {
+            "action": Action.MODIFY_MODEL,
+            "modification": {
+                "action": "modify_object",
+                "target": {"profileName": "Unknown"},
+                "changes": {"profileName": "ModifiedProfile"},
+            },
+            "diagramType": DIAGRAM_TYPE,
+            "message": (
+                "I couldn't apply that modification automatically. Could you rephrase it? "
+                "For example: *'set the age criterion to >= 21'* or *'add a Language box for French at C1'*."
+            ),
+        }
 
     def _build_mod_target_name(
         self, action: str, target: dict, mod: dict = None, elements: Optional[Dict[str, Any]] = None,

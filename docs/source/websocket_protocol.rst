@@ -223,6 +223,15 @@ Outbound Messages (Backend → Frontend)
 All responses are JSON objects with an ``action`` field that determines the
 message type.
 
+Every action name, inbound and outbound, is a member of ``Action`` in
+``src/protocol/actions.py`` (a ``StrEnum``, so ``json.dumps`` writes the bare
+string). Code uses the members, never the string literals
+(``tests/test_protocol_actions.py`` checks), and builds the repeated envelopes
+with its builders: ``assistant_message``, ``inject_element``,
+``inject_complete_system`` and ``model_reply``. A builder keeps the key order of
+the literal it replaced, so the JSON is byte-identical
+(``tests/test_handler_envelopes.py`` pins every handler's envelopes).
+
 Action index
 ~~~~~~~~~~~~
 

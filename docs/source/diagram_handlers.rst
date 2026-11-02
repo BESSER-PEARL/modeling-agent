@@ -58,12 +58,48 @@ Abstract Methods (must override)
      - Return the diagram type string (e.g., ``"ClassDiagram"``)
    * - ``get_system_prompt() -> str``
      - Return the LLM system prompt for this handler
-   * - ``generate_single_element(request, model, **kw) -> dict``
-     - Generate a single diagram element
-   * - ``generate_complete_system(request, model) -> dict``
-     - Generate a complete diagram (no ``**kwargs`` on the base signature)
+   * - ``_build_single_element(request, model, **kw) -> dict``
+     - Prompt, LLM call, repair, layout and reply envelope for one element
+   * - ``_build_system(request, model, **kw) -> dict``
+     - The same for a complete diagram
    * - ``generate_fallback_element(request) -> dict``
      - Return a minimal valid element when all else fails
+
+Template Methods
+~~~~~~~~~~~~~~~~
+
+The public entry points are template methods on the base class: they log the
+call, run the handler's ``_build_*`` hook, and turn its failures into replies,
+so a handler only writes the part that differs.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 20 50
+
+   * - Entry point
+     - Hook
+     - Failure replies (overridable)
+   * - ``generate_complete_system(request, model, **kw)``
+     - ``_build_system``
+     - LLM failure: ``_system_failure_reply`` (``_SYSTEM_FAILURE_MESSAGE``,
+       ``_LLM_FAILURE_CODE``); other exception: ``_system_crash_reply``
+       (``generate_fallback_system()``)
+   * - ``generate_single_element(request, model, **kw)``
+     - ``_build_single_element``
+     - LLM failure: ``_SINGLE_FAILURE_MESSAGE``; other exception:
+       ``_single_crash_reply`` (``generate_fallback_element(request)``)
+   * - ``generate_modification(request, model, **kw)``
+     - ``_build_modification``
+     - LLM failure: ``_modification_failure_reply`` (``_MODIFY_FAILURE_MESSAGE``,
+       ``_MODIFY_FAILURE_CODE``); other exception: ``_modification_crash_reply``
+       (``generate_fallback_modification(request)``)
+
+An LLM failure is any ``LLMPredictionError``, model refusals included
+(``_error_response`` turns a refusal into the ``model_refusal`` reply). The
+Quantum Circuit and GUI handlers override ``generate_modification`` itself:
+every one of their replies, failures included, carries the model being edited.
+Reply envelopes are built with ``protocol.actions`` (see
+:doc:`websocket_protocol`).
 
 Shared Concrete Methods
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -74,8 +110,9 @@ Shared Concrete Methods
 
    * - Method
      - Description
-   * - ``generate_modification()``
-     - Default modification handler using LLM
+   * - ``_execute_modification()``
+     - Structured modification call, ``modify_model`` envelope and friendly
+       message, shared by every ``_build_modification``
    * - ``predict_with_retry()``
      - Free-text LLM call with jittered exponential backoff. Routed through
        the user's BYOK client when one is active for this request.
@@ -714,10 +751,13 @@ discoverability.
    ``src/schemas/__init__.py``.
 2. **Handler** — add ``src/diagram_handlers/types/<type>_diagram_handler.py``
    extending ``BaseDiagramHandler`` and implementing the 5 abstract methods:
-   ``get_diagram_type``, ``get_system_prompt``, ``generate_single_element``,
-   ``generate_complete_system``, ``generate_fallback_element``. Override
-   ``generate_modification`` if the default LLM path is not enough. Its
-   prompt text goes in ``src/prompts/<type>.py``, not in the handler.
+   ``get_diagram_type``, ``get_system_prompt``, ``_build_single_element``,
+   ``_build_system``, ``generate_fallback_element``, plus
+   ``generate_fallback_system``. Implement ``_build_modification`` and
+   ``generate_fallback_modification`` for edits, and set the failure texts
+   (``_SYSTEM_FAILURE_MESSAGE`` …, see `Template Methods`_). Build replies with
+   ``protocol.actions``, never action string literals. Its prompt text goes in
+   ``src/prompts/<type>.py``, not in the handler.
 3. **Factory** — add the class to ``HANDLER_CLASSES`` in
    ``src/diagram_handlers/registry/factory.py``.
 4. **Protocol** — add the token to ``SUPPORTED_DIAGRAM_TYPES`` in

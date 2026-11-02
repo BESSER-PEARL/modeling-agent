@@ -29,6 +29,7 @@ from llm import byok_config
 from conversation.reply_copy import SPEC_DRIVEN_NAME
 from prompts import reply_language as reply_prompts
 from common.session_keys import REPLY_LANGUAGE
+from protocol.actions import Action
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ def localize_payload(session: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
     code = session_language(session)
     if not code or not isinstance(payload, dict):
         return payload
-    if payload.get("action") == "agent_error" or payload.get("isError"):
+    if payload.get("action") == Action.AGENT_ERROR or payload.get("isError"):
         return payload
     actions = payload.get("suggestedActions")
     actions = actions if isinstance(actions, list) else []

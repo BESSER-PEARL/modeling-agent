@@ -125,7 +125,8 @@ in manual testing. Walkthrough: `docs/source/contributing/howto_guides.rst`.
 1. `src/schemas/<type>.py` — Pydantic schemas for structured output (single element, complete system,
    modification actions with `Literal` names); re-export from `src/schemas/__init__.py`
 2. `src/diagram_handlers/types/<type>_diagram_handler.py` — the handler (see below), with its prompt text in
-   `src/prompts/<type>.py`
+   `src/prompts/<type>.py`; replies built with `protocol.actions`. Add its cases to
+   `tests/test_handler_envelopes.py` and regenerate the fixture
 3. `src/diagram_handlers/registry/factory.py` — add to `HANDLER_CLASSES` (keyed on the handler's own
    `get_diagram_type()`)
 4. `src/routing/unified_classifier.py` — token in `_TARGET_DIAGRAM_TYPES` **and** vocabulary in `SYSTEM_PROMPT` (`src/prompts/classifier.py`). This is
@@ -160,9 +161,14 @@ phrasing that doesn't literally name the type.
 
 Handlers extend `BaseDiagramHandler` (`src/diagram_handlers/core/base_handler.py`) and implement five abstract
 methods: `get_diagram_type()` (the WME storage-bucket token), `get_system_prompt()` (design rules),
-`generate_single_element`, `generate_complete_system` (primary path) and `generate_fallback_element` (error-path
-stub). `generate_modification` is concrete on the base class; override only when needed. Layout, retry,
-structured output and two-pass generation are inherited. Details: `docs/source/diagram_handlers.rst`.
+`_build_single_element`, `_build_system` (primary path) and `generate_fallback_element` (error-path stub), plus
+`generate_fallback_system` and, for edits, `_build_modification` / `generate_fallback_modification`. The public
+`generate_complete_system` / `generate_single_element` / `generate_modification` are **template methods** on the
+base class: they call the `_build_*` hook and turn an `LLMPredictionError` into the handler's
+`_SYSTEM_FAILURE_MESSAGE` / `_SINGLE_FAILURE_MESSAGE` / `_MODIFY_FAILURE_MESSAGE` reply (with `_LLM_FAILURE_CODE`
+/ `_MODIFY_FAILURE_CODE`) and any other exception into the fallback; override the `_*_failure_reply` /
+`_*_crash_reply` hooks only when a handler answers differently. Layout, retry, structured output and two-pass
+generation are inherited. Details: `docs/source/diagram_handlers.rst`.
 
 - **Two-pass generation** (`predict_two_pass_structured`): a free-text reasoning pass, then a structured pass into
   the Pydantic schema. Skipped below `_TWO_PASS_MIN_LENGTH = 250` characters of the **raw** user message (not the
@@ -214,6 +220,10 @@ Full reference: `docs/source/websocket_protocol.rst`. The traps:
   `agent_error`, `create_diagram_tab`, `trigger_generator`, `trigger_smart_generator`, `trigger_github_import`,
   `trigger_export`, `trigger_deploy`, `auto_generate_gui`; non-terminal: `progress`, `stream_start`,
   `stream_chunk`, `stream_done`. There is **no `switch_diagram` action**.
+- **Every action name is `protocol.actions.Action`** (a `StrEnum`: equal to its string, serialized as it): never
+  write an action literal (`tests/test_protocol_actions.py` fails on one outside `protocol/`). Build the repeated
+  envelopes with its builders (`assistant_message`, `inject_element`, `inject_complete_system`, `model_reply`);
+  they keep the key order, and `tests/test_handler_envelopes.py` pins every handler's JSON byte for byte.
 
 ## Where Things Live
 
@@ -251,7 +261,8 @@ src/
                                   BESSER_AGENT_MODEL_* overridable), model_catalog.py,
                                   tracking/ (token/cost tracking; prices: resources/model_prices.json)
   utilities/                      Model summaries/resolution, JSON repair, model_utils.py
-  protocol/                       types.py, adapters.py, message_limits.py
+  protocol/                       actions.py (wire action names + envelope builders), types.py, adapters.py,
+                                  message_limits.py
   common/                         agent_config.py (tunable constants), settings.py (AgentSettings: every env var,
                                   read nowhere else), session_store.py (registry of per-session stores, one
                                   close(key)), session_keys.py (every session-state key: import, don't use

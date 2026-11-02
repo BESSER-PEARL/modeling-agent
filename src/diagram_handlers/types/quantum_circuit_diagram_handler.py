@@ -14,6 +14,7 @@ from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
 from prompts import quantum_circuit as quantum_prompts
 from schemas import SingleQuantumGateSpec, SystemQuantumCircuitSpec, QuantumModificationSpec
 from utilities.model_context import detailed_model_summary
+from protocol.actions import Action, model_reply
 
 logger = logging.getLogger(__name__)
 
@@ -349,6 +350,9 @@ def _operation_to_placements(operation: Dict[str, Any]) -> Tuple[Optional[int], 
 class QuantumCircuitDiagramHandler(BaseDiagramHandler):
     """Handler for Quantum circuit diagram generation."""
 
+    _SYSTEM_FAILURE_MESSAGE = "I couldn't generate that quantum circuit. Please try again or rephrase your request."
+    _SINGLE_FAILURE_MESSAGE = "I couldn't generate that quantum gate. Please try again or rephrase your request."
+
     def get_diagram_type(self) -> str:
         return "QuantumCircuitDiagram"
 
@@ -412,43 +416,35 @@ class QuantumCircuitDiagramHandler(BaseDiagramHandler):
         normalized["gateMetadata"] = gate_metadata
         return normalized
 
-    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         prompt = self.get_system_prompt()
 
-        try:
-            # Single element → SMALL generation tier (latency-sensitive).
-            parsed = self.predict_structured(
-                user_request, SingleQuantumGateSpec, system_prompt=prompt,
-                model=MODEL_GENERATION_SMALL,
-            )
-            spec = parsed.model_dump()
+        # Single element → SMALL generation tier (latency-sensitive).
+        parsed = self.predict_structured(
+            user_request, SingleQuantumGateSpec, system_prompt=prompt,
+            model=MODEL_GENERATION_SMALL,
+        )
+        spec = parsed.model_dump()
 
-            operation = spec.get("operation")
-            model = self._apply_operations(_default_quantum_model(), [operation], append=False)
+        operation = spec.get("operation")
+        model = self._apply_operations(_default_quantum_model(), [operation], append=False)
 
-            gate_name = _normalize_gate_name(operation.get("gate", "H"))
-            row = operation.get("row", 0)
-            gate_desc = gate_name
-            if gate_name in {"CNOT", "CZ", "CY"}:
-                ctrl = operation.get("controlRow", 0)
-                tgt = operation.get("targetRow", 1)
-                gate_desc = f"{gate_name} (control=q{ctrl}, target=q{tgt})"
-            else:
-                gate_desc = f"{gate_name} on q{row}"
+        gate_name = _normalize_gate_name(operation.get("gate", "H"))
+        row = operation.get("row", 0)
+        gate_desc = gate_name
+        if gate_name in {"CNOT", "CZ", "CY"}:
+            ctrl = operation.get("controlRow", 0)
+            tgt = operation.get("targetRow", 1)
+            gate_desc = f"{gate_name} (control=q{ctrl}, target=q{tgt})"
+        else:
+            gate_desc = f"{gate_name} on q{row}"
 
-            return {
-                "action": "inject_element",
-                "diagramType": self.get_diagram_type(),
-                "model": model,
-                "message": f"Added **{gate_desc}** to the circuit. Ask me to add more gates or build a complete algorithm!",
-            }
-        except LLMPredictionError:
-            logger.error("[QuantumCircuit] generate_single_element LLM FAILED", exc_info=True)
-            return self._error_response("I couldn't generate that quantum gate. Please try again or rephrase your request.")
-        except Exception:
-            logger.error("[QuantumCircuit] generate_single_element FAILED", exc_info=True)
-            return self.generate_fallback_element(user_request)
-
+        return model_reply(
+            Action.INJECT_ELEMENT,
+            self.get_diagram_type(),
+            model,
+            f"Added **{gate_desc}** to the circuit. Ask me to add more gates or build a complete algorithm!",
+        )
 
     _ALGORITHM_KEYWORDS = {
         "bell": ["bell state", "bell pair", "entangle two", "entangled pair"],
@@ -486,7 +482,7 @@ class QuantumCircuitDiagramHandler(BaseDiagramHandler):
         header = quantum_prompts.ALGORITHM_TEMPLATES_HEADER
         return header + "\n\n".join(templates)
 
-    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _build_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         algorithm_section = self._select_algorithm_templates(user_request)
 
         prompt = quantum_prompts.complete_system_prompt(algorithm_section)
@@ -494,47 +490,40 @@ class QuantumCircuitDiagramHandler(BaseDiagramHandler):
         system_prompt = prompt
         user_prompt = f"User Request: {user_request}"
 
-        try:
-            # Complete-system generation → LARGE tier (see model_config).
-            parsed = self.predict_structured(
-                user_prompt, SystemQuantumCircuitSpec, system_prompt=system_prompt,
-                model=MODEL_GENERATION_LARGE,
-            )
-            spec = parsed.model_dump()
+        # Complete-system generation → LARGE tier (see model_config).
+        parsed = self.predict_structured(
+            user_prompt, SystemQuantumCircuitSpec, system_prompt=system_prompt,
+            model=MODEL_GENERATION_LARGE,
+        )
+        spec = parsed.model_dump()
 
-            operations = spec.get("operations") if isinstance(spec.get("operations"), list) else []
-            typed_operations = [op for op in operations if isinstance(op, dict)]
-            if not typed_operations:
-                raise ValueError("No operations generated")
+        operations = spec.get("operations") if isinstance(spec.get("operations"), list) else []
+        typed_operations = [op for op in operations if isinstance(op, dict)]
+        if not typed_operations:
+            raise ValueError("No operations generated")
 
-            algorithm_name = spec.get("algorithmName", "")
+        algorithm_name = spec.get("algorithmName", "")
 
-            model = self._apply_operations(
-                _default_quantum_model(),
-                typed_operations,
-                append=False,
-                qubit_count_hint=spec.get("qubitCount"),
-            )
+        model = self._apply_operations(
+            _default_quantum_model(),
+            typed_operations,
+            append=False,
+            qubit_count_hint=spec.get("qubitCount"),
+        )
 
-            step_count = len(model.get('cols', []))
-            qubit_count = model.get('qubitCount', '?')
-            algo_label = f" ({algorithm_name})" if algorithm_name else ""
-            return {
-                "action": "inject_complete_system",
-                "diagramType": self.get_diagram_type(),
-                "model": model,
-                "message": (
-                    f"Built a quantum circuit{algo_label} with "
-                    f"**{step_count} column(s)** across **{qubit_count} qubit(s)**. "
-                    f"You can ask me to modify it, add more gates, or explain how it works!"
-                ),
-            }
-        except LLMPredictionError:
-            logger.error("[QuantumCircuit] generate_complete_system LLM FAILED", exc_info=True)
-            return self._error_response("I couldn't generate that quantum circuit. Please try again or rephrase your request.")
-        except Exception:
-            logger.error("[QuantumCircuit] generate_complete_system FAILED", exc_info=True)
-            return self.generate_fallback_system()
+        step_count = len(model.get('cols', []))
+        qubit_count = model.get('qubitCount', '?')
+        algo_label = f" ({algorithm_name})" if algorithm_name else ""
+        return model_reply(
+            Action.INJECT_COMPLETE_SYSTEM,
+            self.get_diagram_type(),
+            model,
+            (
+                f"Built a quantum circuit{algo_label} with "
+                f"**{step_count} column(s)** across **{qubit_count} qubit(s)**. "
+                f"You can ask me to modify it, add more gates, or explain how it works!"
+            ),
+        )
 
     def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         base_model = _normalize_quantum_model(current_model)
@@ -571,22 +560,22 @@ class QuantumCircuitDiagramHandler(BaseDiagramHandler):
                 qubit_count_hint=spec.get("qubitCount"),
             )
             action_label = "updated" if append else "replaced"
-            return {
-                "action": "modify_model",
-                "diagramType": self.get_diagram_type(),
-                "model": model,
-                "message": f"Quantum circuit **{action_label}** with {len(typed_operations)} operation(s). You can add more gates or change the circuit layout!",
-            }
+            return model_reply(
+                Action.MODIFY_MODEL,
+                self.get_diagram_type(),
+                model,
+                f"Quantum circuit **{action_label}** with {len(typed_operations)} operation(s). You can add more gates or change the circuit layout!",
+            )
         except LLMPredictionError:
             logger.error("[QuantumCircuit] generate_modification LLM FAILED", exc_info=True)
             return self._error_response("I couldn't process that circuit modification. Please try again or rephrase your request.")
         except Exception:
-            return {
-                "action": "modify_model",
-                "diagramType": self.get_diagram_type(),
-                "model": base_model,
-                "message": "I couldn't parse the requested modification, so the current circuit is unchanged. Try rephrasing, e.g. *'Add an X gate to qubit 1'*.",
-            }
+            return model_reply(
+                Action.MODIFY_MODEL,
+                self.get_diagram_type(),
+                base_model,
+                "I couldn't parse the requested modification, so the current circuit is unchanged. Try rephrasing, e.g. *'Add an X gate to qubit 1'*.",
+            )
 
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
         model = self._apply_operations(
@@ -594,12 +583,12 @@ class QuantumCircuitDiagramHandler(BaseDiagramHandler):
             [{"column": 0, "row": 0, "gate": "H"}],
             append=False,
         )
-        return {
-            "action": "inject_element",
-            "diagramType": self.get_diagram_type(),
-            "model": model,
-            "message": "I created a basic Hadamard gate as a starting point. Describe your circuit (e.g. *'Create a Bell state circuit'* or *'Apply H to qubit 0 then CNOT on qubits 0,1'*) for a more complex result!",
-        }
+        return model_reply(
+            Action.INJECT_ELEMENT,
+            self.get_diagram_type(),
+            model,
+            "I created a basic Hadamard gate as a starting point. Describe your circuit (e.g. *'Create a Bell state circuit'* or *'Apply H to qubit 0 then CNOT on qubits 0,1'*) for a more complex result!",
+        )
 
     def generate_fallback_system(self) -> Dict[str, Any]:
         model = self._apply_operations(
@@ -612,9 +601,9 @@ class QuantumCircuitDiagramHandler(BaseDiagramHandler):
             ],
             append=False,
         )
-        return {
-            "action": "inject_complete_system",
-            "diagramType": self.get_diagram_type(),
-            "model": model,
-            "message": "I created a basic Bell-state circuit as a starting point. Describe your quantum algorithm in more detail for a custom circuit!",
-        }
+        return model_reply(
+            Action.INJECT_COMPLETE_SYSTEM,
+            self.get_diagram_type(),
+            model,
+            "I created a basic Bell-state circuit as a starting point. Describe your quantum algorithm in more detail for a custom circuit!",
+        )

@@ -7,11 +7,12 @@ from typing import Dict, Any, List, Optional, Set
 import logging
 import re
 
-from ..core.base_handler import BaseDiagramHandler, LLMPredictionError, ModelRefusal
+from ..core.base_handler import BaseDiagramHandler, ModelRefusal
 from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
 from schemas import AgentSingleElementSpec, SystemAgentSpec, AgentModificationResponse
 from prompts import agent_diagram as agent_prompts
 from utilities.model_context import agent_model_elements, detailed_model_summary
+from protocol.actions import Action, assistant_message, inject_complete_system, inject_element
 
 # Get logger
 logger = logging.getLogger(__name__)
@@ -61,49 +62,39 @@ class _EmptyModificationError(Exception):
 class AgentDiagramHandler(BaseDiagramHandler):
     """Handler for Agent Diagram generation"""
 
+    _SYSTEM_FAILURE_MESSAGE = "I couldn't generate that agent system. Please try again or rephrase your request."
+    _SINGLE_FAILURE_MESSAGE = "I couldn't generate that agent element. Please try again or rephrase your request."
+
     def get_diagram_type(self) -> str:
         return "AgentDiagram"
 
     def get_system_prompt(self) -> str:
         return agent_prompts.SYSTEM_PROMPT
 
-    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a single agent diagram element with deterministic positioning."""
 
         system_prompt = self.get_system_prompt()
         user_prompt = f"Create an agent diagram element specification for: {user_request}"
 
-        try:
-            # Single element → SMALL generation tier (latency-sensitive).
-            parsed = self.predict_structured(
-                user_prompt, AgentSingleElementSpec, system_prompt=system_prompt,
-                model=MODEL_GENERATION_SMALL,
-            )
-            agent_spec = parsed.model_dump()
+        # Single element → SMALL generation tier (latency-sensitive).
+        parsed = self.predict_structured(
+            user_prompt, AgentSingleElementSpec, system_prompt=system_prompt,
+            model=MODEL_GENERATION_SMALL,
+        )
+        agent_spec = parsed.model_dump()
 
-            normalized_spec = self._normalize_single_element_spec(agent_spec, user_request)
+        normalized_spec = self._normalize_single_element_spec(agent_spec, user_request)
 
-            # Remove any hallucinated position and apply deterministic layout
-            normalized_spec.pop("position", None)
-            self.apply_single_layout(normalized_spec, existing_model)
+        # Remove any hallucinated position and apply deterministic layout
+        normalized_spec.pop("position", None)
+        self.apply_single_layout(normalized_spec, existing_model)
 
-            message = self._build_single_element_message(normalized_spec)
+        message = self._build_single_element_message(normalized_spec)
 
-            return {
-                "action": "inject_element",
-                "element": normalized_spec,
-                "diagramType": self.get_diagram_type(),
-                "message": message
-            }
+        return inject_element(normalized_spec, self.get_diagram_type(), message)
 
-        except LLMPredictionError:
-            logger.error("[AgentDiagram] generate_single_element LLM FAILED", exc_info=True)
-            return self._error_response("I couldn't generate that agent element. Please try again or rephrase your request.")
-        except Exception:
-            logger.error("[AgentDiagram] generate_single_element FAILED", exc_info=True)
-            return self.generate_fallback_element(user_request)
-
-    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _build_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a complete agent conversation flow with deterministic positioning."""
 
         # Multi-agent guard: the editor models ONE agent per Agent diagram, so
@@ -118,81 +109,68 @@ class AgentDiagramHandler(BaseDiagramHandler):
             r"|\bagents?\s+that\s+(?:delegate|coordinate|communicate|hand\s*off|talk)\b",
             _raw, _re.IGNORECASE,
         ):
-            return {
-                "action": "assistant_message",
-                "message": (
-                    "BESSER's editor models **one agent per Agent diagram**, so I can't build "
-                    "a true multi-agent system (agents delegating to each other) inside a single "
-                    "diagram yet. I can either:\n\n"
-                    "1. Build **one agent** that handles all those responsibilities as separate "
-                    "conversation flows, or\n"
-                    "2. Create **separate Agent diagrams** (one per agent) in their own tabs.\n\n"
-                    "Which would you prefer? (For real agent-to-agent orchestration you'd wire "
-                    "them together in Python with the BESSER Agentic Framework.)"
-                ),
-            }
+            return assistant_message(
+                "BESSER's editor models **one agent per Agent diagram**, so I can't build "
+                "a true multi-agent system (agents delegating to each other) inside a single "
+                "diagram yet. I can either:\n\n"
+                "1. Build **one agent** that handles all those responsibilities as separate "
+                "conversation flows, or\n"
+                "2. Create **separate Agent diagrams** (one per agent) in their own tabs.\n\n"
+                "Which would you prefer? (For real agent-to-agent orchestration you'd wire "
+                "them together in Python with the BESSER Agentic Framework.)",
+            )
 
         system_prompt = agent_prompts.COMPLETE_SYSTEM_PROMPT
 
         user_request_prompt = f"{user_request}"
 
-        try:
-            # Complete-system generation → LARGE tier (see model_config).
-            parsed = self.predict_structured(
-                user_request_prompt, SystemAgentSpec, system_prompt=system_prompt,
-                model=MODEL_GENERATION_LARGE,
-            )
-            system_spec = parsed.model_dump()
+        # Complete-system generation → LARGE tier (see model_config).
+        parsed = self.predict_structured(
+            user_request_prompt, SystemAgentSpec, system_prompt=system_prompt,
+            model=MODEL_GENERATION_LARGE,
+        )
+        system_spec = parsed.model_dump()
 
-            normalized_system = self._normalize_system_spec(system_spec, user_request)
+        normalized_system = self._normalize_system_spec(system_spec, user_request)
 
-            # Strip any hallucinated positions and apply deterministic layout
-            for s in normalized_system.get("states", []):
-                s.pop("position", None)
-            for i in normalized_system.get("intents", []):
-                i.pop("position", None)
-            for n in normalized_system.get("initialNodes", []):
-                if isinstance(n, dict):
-                    n.pop("position", None)
-            initial_node = normalized_system.get("initialNode")
-            if isinstance(initial_node, dict):
-                initial_node.pop("position", None)
-            self.apply_system_layout(normalized_system, existing_model)
+        # Strip any hallucinated positions and apply deterministic layout
+        for s in normalized_system.get("states", []):
+            s.pop("position", None)
+        for i in normalized_system.get("intents", []):
+            i.pop("position", None)
+        for n in normalized_system.get("initialNodes", []):
+            if isinstance(n, dict):
+                n.pop("position", None)
+        initial_node = normalized_system.get("initialNode")
+        if isinstance(initial_node, dict):
+            initial_node.pop("position", None)
+        self.apply_system_layout(normalized_system, existing_model)
 
-            states = normalized_system.get('states', [])
-            intents = normalized_system.get('intents', [])
-            sys_name = normalized_system.get('systemName', 'AgentSystem')
-            state_names = [s.get('stateName', '?') for s in states[:5]]
-            intent_names = [i.get('intentName', '?') for i in intents[:5]]
-            parts = [f"Built the **{sys_name}** agent system"]
-            if state_names:
-                parts.append(f" with states: {', '.join(f'**{n}**' for n in state_names)}")
-            if intent_names:
-                parts.append(f" and intents: {', '.join(f'**{n}**' for n in intent_names)}")
-            component_counts = []
-            for key, label in [("llms", "LLM"), ("ragElements", "RAG DB"), ("tools", "tool"),
-                                ("skills", "skill"), ("workspaces", "workspace"), ("guis", "GUI")]:
-                n = len(normalized_system.get(key, []))
-                if n:
-                    component_counts.append(f"{n} {label}{'s' if n > 1 else ''}")
-            if component_counts:
-                parts.append(f", components: {', '.join(component_counts)}")
-            parts.append(". Feel free to ask me to add more conversation flows or modify existing ones!")
-            message = "".join(parts)
+        states = normalized_system.get('states', [])
+        intents = normalized_system.get('intents', [])
+        sys_name = normalized_system.get('systemName', 'AgentSystem')
+        state_names = [s.get('stateName', '?') for s in states[:5]]
+        intent_names = [i.get('intentName', '?') for i in intents[:5]]
+        parts = [f"Built the **{sys_name}** agent system"]
+        if state_names:
+            parts.append(f" with states: {', '.join(f'**{n}**' for n in state_names)}")
+        if intent_names:
+            parts.append(f" and intents: {', '.join(f'**{n}**' for n in intent_names)}")
+        component_counts = []
+        for key, label in [("llms", "LLM"), ("ragElements", "RAG DB"), ("tools", "tool"),
+                            ("skills", "skill"), ("workspaces", "workspace"), ("guis", "GUI")]:
+            n = len(normalized_system.get(key, []))
+            if n:
+                component_counts.append(f"{n} {label}{'s' if n > 1 else ''}")
+        if component_counts:
+            parts.append(f", components: {', '.join(component_counts)}")
+        parts.append(". Feel free to ask me to add more conversation flows or modify existing ones!")
+        message = "".join(parts)
 
-            return {
-                "action": "inject_complete_system",
-                "systemSpec": normalized_system,
-                "diagramType": self.get_diagram_type(),
-                "message": message
-            }
+        return inject_complete_system(normalized_system, self.get_diagram_type(), message)
 
-        except LLMPredictionError:
-            logger.error("[AgentDiagram] generate_complete_system LLM FAILED", exc_info=True)
-            return self._error_response("I couldn't generate that agent system. Please try again or rephrase your request.")
-        except Exception:
-            logger.error("[AgentDiagram] generate_complete_system FAILED", exc_info=True)
-            return self.generate_fallback_system(user_request)
+    def _system_crash_reply(self, exc, user_request, existing_model, **kwargs) -> Dict[str, Any]:
+        return self.generate_fallback_system(user_request)
 
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
         """Generate a fallback agent element when AI generation fails"""
@@ -212,12 +190,11 @@ class AgentDiagramHandler(BaseDiagramHandler):
         # Apply deterministic positioning so the element doesn't render at 0,0
         self.apply_single_layout(fallback_spec, None)
 
-        return {
-            "action": "inject_element",
-            "element": fallback_spec,
-            "diagramType": self.get_diagram_type(),
-            "message": f"I created a starter **{fallback_spec['stateName']}** agent state. Describe the conversation flow in more detail and I'll add intents, replies, and transitions!"
-        }
+        return inject_element(
+            fallback_spec,
+            self.get_diagram_type(),
+            f"I created a starter **{fallback_spec['stateName']}** agent state. Describe the conversation flow in more detail and I'll add intents, replies, and transitions!",
+        )
 
     def generate_fallback_system(self, request: str = "Agent") -> Dict[str, Any]:
         """Generate a fallback agent system"""
@@ -289,12 +266,11 @@ class AgentDiagramHandler(BaseDiagramHandler):
         # Apply deterministic positioning so elements don't render at 0,0
         self.apply_system_layout(system_spec, None)
 
-        return {
-            "action": "inject_complete_system",
-            "systemSpec": system_spec,
-            "diagramType": self.get_diagram_type(),
-            "message": "I created a starter chatbot agent with greeting and support flows. Describe your conversation scenarios in more detail (e.g. *'Create a pizza ordering bot with menu browsing and checkout'*) and I'll build a richer system!"
-        }
+        return inject_complete_system(
+            system_spec,
+            self.get_diagram_type(),
+            "I created a starter chatbot agent with greeting and support flows. Describe your conversation scenarios in more detail (e.g. *'Create a pizza ordering bot with menu browsing and checkout'*) and I'll build a richer system!",
+        )
 
     # ------------------------------------------------------------------
     # Normalization helpers
@@ -978,12 +954,12 @@ class AgentDiagramHandler(BaseDiagramHandler):
         diagram is left completely untouched (data-loss guard).
         """
         return {
-            "action": "assistant_message",
+            "action": Action.ASSISTANT_MESSAGE,
             "diagramType": self.get_diagram_type(),
             "message": message,
         }
 
-    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _build_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate modifications for existing agent diagram elements.
 
         Safety contract (never violate): a modify request must NEVER delete or
@@ -1050,40 +1026,34 @@ class AgentDiagramHandler(BaseDiagramHandler):
         self._last_skipped = []
         self._last_orphan_states = []
 
-        try:
-            spec = self._execute_modification(
-                user_prompt, system_prompt, AgentModificationResponse,
-                post_processor=_post_processor,
-            )
-            # Surface orphaned new states so a modify never silently leaves a
-            # disconnected node with a misleading "Applied N changes" message.
-            orphans = getattr(self, "_last_orphan_states", []) or []
-            if orphans and isinstance(spec, dict) and spec.get("action") == "modify_model":
-                existing = spec.get("message") or ""
-                spec["message"] = (existing + self._orphan_states_note(orphans)).strip()
-            return spec
+        spec = self._execute_modification(
+            user_prompt, system_prompt, AgentModificationResponse,
+            post_processor=_post_processor,
+        )
+        # Surface orphaned new states so a modify never silently leaves a
+        # disconnected node with a misleading "Applied N changes" message.
+        orphans = getattr(self, "_last_orphan_states", []) or []
+        if orphans and isinstance(spec, dict) and spec.get("action") == Action.MODIFY_MODEL:
+            existing = spec.get("message") or ""
+            spec["message"] = (existing + self._orphan_states_note(orphans)).strip()
+        return spec
 
-        except _EmptyModificationError:
-            # No safe, applicable change survived validation. Leave the diagram
-            # untouched and ask the user to clarify.
-            logger.info(
-                "[AgentDiagram] No applicable modification after validation — "
-                "returning clarification (diagram left unchanged)."
-            )
+    def _modification_failure_reply(self, exc: Exception, user_request: str) -> Dict[str, Any]:
+        if isinstance(exc, ModelRefusal):
+            return self._error_response(exc.user_message(), code="model_refusal", retryable=False)
+        return self._clarify_response(
+            "I couldn't process that modification. Please rephrase your request — "
+            "for example: *'Add a new intent called OrderPizza'* or "
+            "*'Add a transition from greeting to support'*. Your diagram is unchanged."
+        )
+
+    def _modification_crash_reply(self, exc: Exception, user_request: str) -> Dict[str, Any]:
+        if isinstance(exc, _EmptyModificationError):
+            # No safe, applicable change survived validation: leave the
+            # diagram untouched and ask the user to clarify.
             return self._clarify_response(self._build_clarification_message(user_request))
-        except ModelRefusal as e:
-            logger.warning(f"[AgentDiagram] generate_modification declined: {e}")
-            return self._error_response(e.user_message(), code="model_refusal", retryable=False)
-        except LLMPredictionError as e:
-            logger.error(f"[AgentDiagram] generate_modification LLM FAILED: {e}")
-            return self._clarify_response(
-                "I couldn't process that modification. Please rephrase your request — "
-                "for example: *'Add a new intent called OrderPizza'* or "
-                "*'Add a transition from greeting to support'*. Your diagram is unchanged."
-            )
-        except Exception as e:
-            logger.error(f"Error generating agent diagram modification: {e}", exc_info=True)
-            return self.generate_fallback_modification(user_request)
+        return self.generate_fallback_modification(user_request)
+
     def _build_clarification_message(self, user_request: str) -> str:
         """Build an honest clarification message from the last skip metadata."""
         skipped = getattr(self, "_last_skipped", []) or []

@@ -9,7 +9,6 @@ from typing import Dict, Any, List, Optional
 
 from ..core.base_handler import (
     BaseDiagramHandler,
-    LLMPredictionError,
     ModelRefusal,
     SINGLE_CLASS_REQUIRED,
     SINGLE_CLASS_OPTIONAL,
@@ -28,6 +27,7 @@ from schemas.compact_class_diagram import (
     expand_compact_spec,
 )
 from utilities.model_context import detailed_model_summary
+from protocol.actions import Action, assistant_message, inject_complete_system, inject_element
 
 logger = logging.getLogger(__name__)
 
@@ -81,61 +81,44 @@ _VALID_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 class ClassDiagramHandler(BaseDiagramHandler):
     """Handler for Class Diagram generation"""
 
+    _SINGLE_FAILURE_MESSAGE = "I couldn't generate that class. Please try again or rephrase your request."
+    _LLM_FAILURE_CODE = "llm_failure"
+    _MODIFY_FAILURE_CODE = "llm_failure"
+
     def get_diagram_type(self) -> str:
         return "ClassDiagram"
 
     def get_system_prompt(self) -> str:
         return class_prompts.SYSTEM_PROMPT
 
-    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate a single class element with structured outputs and deterministic positioning."""
 
         system_prompt = self.get_system_prompt()
         user_prompt = f"Create a class specification for: {user_request}"
 
-        logger.info(f"[ClassDiagram] generate_single_element called with: {user_request!r}")
+        # Single element → SMALL generation tier (latency-sensitive).
+        parsed = self.predict_structured(
+            user_prompt,
+            SingleClassSpec,
+            system_prompt=system_prompt,
+            model=MODEL_GENERATION_SMALL,
+        )
+        simple_spec = parsed.model_dump()
 
-        try:
-            # Single element → SMALL generation tier (latency-sensitive).
-            parsed = self.predict_structured(
-                user_prompt,
-                SingleClassSpec,
-                system_prompt=system_prompt,
-                model=MODEL_GENERATION_SMALL,
-            )
-            simple_spec = parsed.model_dump()
+        # Remove any position the LLM might have hallucinated, then apply layout engine
+        simple_spec.pop("position", None)
+        self.apply_single_layout(simple_spec, existing_model)
 
-            # Remove any position the LLM might have hallucinated, then apply layout engine
-            simple_spec.pop("position", None)
-            self.apply_single_layout(simple_spec, existing_model)
+        message = self._build_single_element_message(simple_spec)
 
-            message = self._build_single_element_message(simple_spec)
-
-            return {
-                "action": "inject_element",
-                "element": simple_spec,
-                "diagramType": self.get_diagram_type(),
-                "message": message
-            }
-
-        except LLMPredictionError as exc:
-            logger.error(f"❌ [ClassDiagram] generate_single_element LLM FAILED: {exc}")
-            return self._error_response(
-                "I couldn't generate that class. Please try again or rephrase your request.",
-                code="llm_failure",
-            )
-        except Exception as exc:
-            logger.error(f"❌ [ClassDiagram] generate_single_element FAILED: {exc}", exc_info=True)
-            return self._error_response(
-                "I had trouble generating that class. Could you try rephrasing?",
-                code="generation_error",
-            )
+        return inject_element(simple_spec, self.get_diagram_type(), message)
 
     def _get_system_generation_prompt(self) -> str:
         """Return the system prompt for complete class diagram generation."""
         return class_prompts.SYSTEM_GENERATION_PROMPT
 
-    def generate_complete_system(
+    def _build_system(
         self,
         user_request: str,
         existing_model: Dict[str, Any] = None,
@@ -153,199 +136,196 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         system_prompt = self._get_system_generation_prompt()
 
-        logger.info(f"[ClassDiagram] generate_complete_system called with: {user_request!r}")
+        # --- Two-pass structured: reason first, then produce validated Pydantic model ---
+        # The reasoning prompt uses the raw request only; the enriched
+        # context (history + workspace block) reaches the structured pass
+        # via ``user_request`` exactly once.
+        reasoning_prompt = class_prompts.reasoning_prompt(raw_request or user_request)
 
-        try:
-            # --- Two-pass structured: reason first, then produce validated Pydantic model ---
-            # The reasoning prompt uses the raw request only; the enriched
-            # context (history + workspace block) reaches the structured pass
-            # via ``user_request`` exactly once.
-            reasoning_prompt = class_prompts.reasoning_prompt(raw_request or user_request)
-
-            # Complete-system generation is where diagram quality is the
-            # product → LARGE tier; reasoning pass on the REASONING tier.
-            if COMPACT_SPEC_ENABLED:
-                parsed = self.predict_two_pass_structured(
-                    user_request=user_request,
-                    system_prompt=system_prompt + COMPACT_ENCODING_RULES,
-                    reasoning_prompt=reasoning_prompt,
-                    response_schema=CompactSystemClassSpec,
-                    raw_request=raw_request,
-                    model=MODEL_GENERATION_LARGE,
-                    reasoning_model=MODEL_REASONING,
-                )
-                # Deterministic expansion back to the canonical spec — guards,
-                # layout, and the frontend payload below are untouched.
-                parsed = expand_compact_spec(parsed)
-            else:
-                parsed = self.predict_two_pass_structured(
-                    user_request=user_request,
-                    system_prompt=system_prompt,
-                    reasoning_prompt=reasoning_prompt,
-                    response_schema=SystemClassSpec,
-                    raw_request=raw_request,
-                    model=MODEL_GENERATION_LARGE,
-                    reasoning_model=MODEL_REASONING,
-                )
-            system_spec = parsed.model_dump()
-
-            # Guard (runs first): rewrite any class/enum/member name that isn't a
-            # valid identifier (hyphens, spaces, …). An invalid CLASS name fails
-            # metamodel validation and sends the editor's auto-fix loop into an
-            # unrecoverable spin (it can't rename a class that was never accepted).
-            # Fixing names here — and every reference to them — keeps the rest of
-            # the pipeline and the injected model clean.
-            self._sanitize_identifier_names(system_spec)
-
-            # Guard: never ship a relationship whose endpoint is an enumeration.
-            # Rewrite any such relationship into an enum-typed attribute on the
-            # non-enum side (or drop it). Enums are attribute types, not related.
-            self._rewrite_enum_relationships(system_spec)
-
-            # Guard: an attribute may reference an enumeration the model
-            # forgot to declare. Declare it from the user's own words, BEFORE
-            # the guard below, which would otherwise read the reference as a
-            # hallucinated type and coerce it to String — losing the closed
-            # value set.
-            self._declare_referenced_enumerations(
-                system_spec, raw_request or user_request)
-
-            # Guard: never ship an attribute whose TYPE names another class.
-            # The deterministic code generators only handle primitive + enum
-            # attribute types; a class-typed attribute crashes them and forces
-            # the expensive LLM-from-scratch fallback. Rewrite it into an
-            # association (or coerce an unknown type to String).
-            self._rewrite_class_typed_attributes(system_spec)
-
-            # Guard: a label naming BOTH ends ("contact / bookingsAsContact")
-            # becomes a name plus a sourceRole. A name with a space fails the
-            # editor's class-diagram quality check and blocks GUI generation.
-            # Must run before the merge, which uses the recovered source role
-            # to spot one fact stated from both sides.
-            self._split_dual_role_names(system_spec)
-
-            # Guard: an association class is attached to ONE association; it
-            # must not ALSO be joined to that association's endpoints by
-            # ordinary associations. SQLAlchemyGenerator derives the link
-            # table's FK columns from the ATTACHED association's end names
-            # ("bookings" -> bookings_id) and the ordinary association's
-            # relationship() from its OWN end name ("booking" -> booking_id),
-            # so the two disagree and the generated sql_alchemy.py raises
-            # AttributeError on import - the app is dead before the agent
-            # writes a line. The system prompt already forbids these extra
-            # links; this makes it deterministic.
-            self._drop_redundant_association_class_links(system_spec)
-
-            # Guard: one fact stated twice becomes one relationship. A request
-            # phrased from both sides ("a booking produces a bill" / "a bill is
-            # raised against a booking") makes the LLM emit two links for the
-            # same association, which lands as two foreign keys to the same
-            # partner and a create schema demanding two ids for one link.
-            # Must run before the naming/orientation guards below, which would
-            # otherwise paper over the duplicate with a "_1" suffix.
-            self._merge_redundant_parallel_associations(system_spec)
-
-            # Guard: no two associations may share the same name. The LLM
-            # sometimes names multiple relationships identically (e.g. two links
-            # both called "task" in a task-management model) — ambiguous on the
-            # canvas and a hard collision when the domain model is built (BUML
-            # association names must be unique). Rename duplicates deterministically.
-            self._dedupe_relationship_names(system_spec)
-
-            # Guard: no class may end up with two association ends of the same
-            # name once this spec is injected (the recurring "cannot have two
-            # association ends with the same name" validation error on rich
-            # models). Reorients/renames colliding relationships using the
-            # exact end-name derivation the validator applies.
-            self._ensure_unique_association_ends(system_spec)
-
-            # Guard: an abstract base declared as the CHILD of its own
-            # subclasses. Must run before the shadow-strip below, which walks
-            # this graph and would otherwise strip from the wrong end.
-            self._fix_inverted_inheritance(system_spec)
-
-            # Guard: isAbstract on a LEAF rather than the base. An abstract leaf
-            # cannot be instantiated, so the app cannot create that entity at all.
-            self._fix_misplaced_abstract(system_spec)
-
-            # Guard: a subclass must not redefine an attribute an ancestor
-            # already declares (BUML validates attribute shadowing; the LLM
-            # loves stamping id/createdAt/updatedAt on EVERY class, including
-            # subclasses of a base that already has them). Strip the shadowed
-            # copies deterministically. Method OVERRIDES are left alone —
-            # overriding is legitimate OO.
-            self._strip_shadowed_attributes(system_spec)
-
-            # Guard: BUML rejects decorated type tokens the LLM sometimes
-            # emits ('str?', 'int?'). Normalize them: on an attribute the '?'
-            # means optional (strip it, set isOptional); on a parameter or
-            # return type it is stripped outright — the metamodel has no
-            # optional parameters.
-            self._sanitize_member_types(system_spec)
-
-            # Guard: no set of classes may each need the other to exist first.
-            # An "at least one" bound facing a link's mandatory back-reference
-            # (Booking 1..* BookedRoom, BookedRoom 1 Booking) makes both create
-            # schemas demand the other's id, so the generated API can construct
-            # neither. Relax one end per cycle and keep the rule as an OCL
-            # invariant. Runs after the orientation/naming guards so the
-            # invariant navigates the end by its final name.
-            self._break_mandatory_cycles(system_spec)
-
-            # Drop any OCL constraint whose context isn't a real class in the
-            # spec (the LLM occasionally references a class it didn't create).
-            self._validate_constraints(system_spec)
-
-            logger.info(
-                f"[ClassDiagram] Structured system spec: "
-                f"{len(system_spec.get('classes', []))} classes, "
-                f"{len(system_spec.get('relationships', []))} relationships"
+        # Complete-system generation is where diagram quality is the
+        # product → LARGE tier; reasoning pass on the REASONING tier.
+        if COMPACT_SPEC_ENABLED:
+            parsed = self.predict_two_pass_structured(
+                user_request=user_request,
+                system_prompt=system_prompt + COMPACT_ENCODING_RULES,
+                reasoning_prompt=reasoning_prompt,
+                response_schema=CompactSystemClassSpec,
+                raw_request=raw_request,
+                model=MODEL_GENERATION_LARGE,
+                reasoning_model=MODEL_REASONING,
             )
+            # Deterministic expansion back to the canonical spec — guards,
+            # layout, and the frontend payload below are untouched.
+            parsed = expand_compact_spec(parsed)
+        else:
+            parsed = self.predict_two_pass_structured(
+                user_request=user_request,
+                system_prompt=system_prompt,
+                reasoning_prompt=reasoning_prompt,
+                response_schema=SystemClassSpec,
+                raw_request=raw_request,
+                model=MODEL_GENERATION_LARGE,
+                reasoning_model=MODEL_REASONING,
+            )
+        system_spec = parsed.model_dump()
 
-            # TODO: Disabled for now — the extra LLM round-trip adds 2-4s latency
-            # and the structured output schema already enforces correctness.
-            # Re-enable once we have a faster validation strategy (e.g. rule-based
-            # checks instead of an LLM call).
-            # system_spec = self.validate_and_refine(
-            #     system_spec,
-            #     user_request=user_request,
-            #     diagram_type="ClassDiagram",
-            # )
+        # Guard (runs first): rewrite any class/enum/member name that isn't a
+        # valid identifier (hyphens, spaces, …). An invalid CLASS name fails
+        # metamodel validation and sends the editor's auto-fix loop into an
+        # unrecoverable spin (it can't rename a class that was never accepted).
+        # Fixing names here — and every reference to them — keeps the rest of
+        # the pipeline and the injected model clean.
+        self._sanitize_identifier_names(system_spec)
 
-            # Strip any LLM-hallucinated positions, then apply deterministic layout
-            for cls in system_spec.get("classes", []):
-                cls.pop("position", None)
-            self.apply_system_layout(system_spec, existing_model)
+        # Guard: never ship a relationship whose endpoint is an enumeration.
+        # Rewrite any such relationship into an enum-typed attribute on the
+        # non-enum side (or drop it). Enums are attribute types, not related.
+        self._rewrite_enum_relationships(system_spec)
 
-            message = self._build_system_message(system_spec)
+        # Guard: an attribute may reference an enumeration the model
+        # forgot to declare. Declare it from the user's own words, BEFORE
+        # the guard below, which would otherwise read the reference as a
+        # hallucinated type and coerce it to String — losing the closed
+        # value set.
+        self._declare_referenced_enumerations(
+            system_spec, raw_request or user_request)
 
-            # The matching frontend converter persists constraints as OCL
-            # boxes/links and associationClass attachments as ClassLinkRel.
-            # Keep this wire contract aligned with websocket_protocol.rst.
-            return {
-                "action": "inject_complete_system",
-                "systemSpec": system_spec,
-                "diagramType": self.get_diagram_type(),
-                "message": message
-            }
+        # Guard: never ship an attribute whose TYPE names another class.
+        # The deterministic code generators only handle primitive + enum
+        # attribute types; a class-typed attribute crashes them and forces
+        # the expensive LLM-from-scratch fallback. Rewrite it into an
+        # association (or coerce an unknown type to String).
+        self._rewrite_class_typed_attributes(system_spec)
 
-        except ModelRefusal as exc:
+        # Guard: a label naming BOTH ends ("contact / bookingsAsContact")
+        # becomes a name plus a sourceRole. A name with a space fails the
+        # editor's class-diagram quality check and blocks GUI generation.
+        # Must run before the merge, which uses the recovered source role
+        # to spot one fact stated from both sides.
+        self._split_dual_role_names(system_spec)
+
+        # Guard: an association class is attached to ONE association; it
+        # must not ALSO be joined to that association's endpoints by
+        # ordinary associations. SQLAlchemyGenerator derives the link
+        # table's FK columns from the ATTACHED association's end names
+        # ("bookings" -> bookings_id) and the ordinary association's
+        # relationship() from its OWN end name ("booking" -> booking_id),
+        # so the two disagree and the generated sql_alchemy.py raises
+        # AttributeError on import - the app is dead before the agent
+        # writes a line. The system prompt already forbids these extra
+        # links; this makes it deterministic.
+        self._drop_redundant_association_class_links(system_spec)
+
+        # Guard: one fact stated twice becomes one relationship. A request
+        # phrased from both sides ("a booking produces a bill" / "a bill is
+        # raised against a booking") makes the LLM emit two links for the
+        # same association, which lands as two foreign keys to the same
+        # partner and a create schema demanding two ids for one link.
+        # Must run before the naming/orientation guards below, which would
+        # otherwise paper over the duplicate with a "_1" suffix.
+        self._merge_redundant_parallel_associations(system_spec)
+
+        # Guard: no two associations may share the same name. The LLM
+        # sometimes names multiple relationships identically (e.g. two links
+        # both called "task" in a task-management model) — ambiguous on the
+        # canvas and a hard collision when the domain model is built (BUML
+        # association names must be unique). Rename duplicates deterministically.
+        self._dedupe_relationship_names(system_spec)
+
+        # Guard: no class may end up with two association ends of the same
+        # name once this spec is injected (the recurring "cannot have two
+        # association ends with the same name" validation error on rich
+        # models). Reorients/renames colliding relationships using the
+        # exact end-name derivation the validator applies.
+        self._ensure_unique_association_ends(system_spec)
+
+        # Guard: an abstract base declared as the CHILD of its own
+        # subclasses. Must run before the shadow-strip below, which walks
+        # this graph and would otherwise strip from the wrong end.
+        self._fix_inverted_inheritance(system_spec)
+
+        # Guard: isAbstract on a LEAF rather than the base. An abstract leaf
+        # cannot be instantiated, so the app cannot create that entity at all.
+        self._fix_misplaced_abstract(system_spec)
+
+        # Guard: a subclass must not redefine an attribute an ancestor
+        # already declares (BUML validates attribute shadowing; the LLM
+        # loves stamping id/createdAt/updatedAt on EVERY class, including
+        # subclasses of a base that already has them). Strip the shadowed
+        # copies deterministically. Method OVERRIDES are left alone —
+        # overriding is legitimate OO.
+        self._strip_shadowed_attributes(system_spec)
+
+        # Guard: BUML rejects decorated type tokens the LLM sometimes
+        # emits ('str?', 'int?'). Normalize them: on an attribute the '?'
+        # means optional (strip it, set isOptional); on a parameter or
+        # return type it is stripped outright — the metamodel has no
+        # optional parameters.
+        self._sanitize_member_types(system_spec)
+
+        # Guard: no set of classes may each need the other to exist first.
+        # An "at least one" bound facing a link's mandatory back-reference
+        # (Booking 1..* BookedRoom, BookedRoom 1 Booking) makes both create
+        # schemas demand the other's id, so the generated API can construct
+        # neither. Relax one end per cycle and keep the rule as an OCL
+        # invariant. Runs after the orientation/naming guards so the
+        # invariant navigates the end by its final name.
+        self._break_mandatory_cycles(system_spec)
+
+        # Drop any OCL constraint whose context isn't a real class in the
+        # spec (the LLM occasionally references a class it didn't create).
+        self._validate_constraints(system_spec)
+
+        logger.info(
+            f"[ClassDiagram] Structured system spec: "
+            f"{len(system_spec.get('classes', []))} classes, "
+            f"{len(system_spec.get('relationships', []))} relationships"
+        )
+
+        # TODO: Disabled for now — the extra LLM round-trip adds 2-4s latency
+        # and the structured output schema already enforces correctness.
+        # Re-enable once we have a faster validation strategy (e.g. rule-based
+        # checks instead of an LLM call).
+        # system_spec = self.validate_and_refine(
+        #     system_spec,
+        #     user_request=user_request,
+        #     diagram_type="ClassDiagram",
+        # )
+
+        # Strip any LLM-hallucinated positions, then apply deterministic layout
+        for cls in system_spec.get("classes", []):
+            cls.pop("position", None)
+        self.apply_system_layout(system_spec, existing_model)
+
+        message = self._build_system_message(system_spec)
+
+        # The matching frontend converter persists constraints as OCL
+        # boxes/links and associationClass attachments as ClassLinkRel.
+        # Keep this wire contract aligned with websocket_protocol.rst.
+        return inject_complete_system(system_spec, self.get_diagram_type(), message)
+
+    def _system_failure_reply(self, exc, user_request, existing_model, **kwargs) -> Dict[str, Any]:
+        if isinstance(exc, ModelRefusal):
             # The incremental fallback would re-send the same request.
-            logger.warning(f"[ClassDiagram] generate_complete_system declined: {exc}")
             return self._error_response(exc.user_message(), code="model_refusal", retryable=False)
-        except Exception as exc:
-            # Rate-limit / auth / bad-request / truncation: the per-class
-            # fallback would repeat the failing call up to 11 times and hide
-            # the error the caller turns into the "add your API key" prompt.
-            provider_error = non_recoverable_cause(exc)
-            if provider_error is not None:
-                logger.error(f"❌ [ClassDiagram] generate_complete_system failed, not retrying: {exc}")
-                raise provider_error from None
-            if isinstance(exc, LLMPredictionError):
-                logger.error(f"❌ [ClassDiagram] generate_complete_system LLM FAILED: {exc}")
-            else:
-                logger.error(f"❌ [ClassDiagram] generate_complete_system FAILED: {exc}", exc_info=True)
-            return self._incremental_system_fallback(user_request, existing_model, raw_request=raw_request)
+        return self._system_crash_reply(exc, user_request, existing_model, **kwargs)
+
+    def _system_crash_reply(self, exc, user_request, existing_model, **kwargs) -> Dict[str, Any]:
+        # Rate-limit / auth / bad-request / truncation: the per-class
+        # fallback would repeat the failing call up to 11 times and hide
+        # the error the caller turns into the "add your API key" prompt.
+        provider_error = non_recoverable_cause(exc)
+        if provider_error is not None:
+            raise provider_error from None
+        return self._incremental_system_fallback(
+            user_request, existing_model, raw_request=kwargs.get("raw_request"),
+        )
+
+    def _single_crash_reply(self, exc: Exception, user_request: str) -> Dict[str, Any]:
+        return self._error_response(
+            "I had trouble generating that class. Could you try rephrasing?",
+            code="generation_error",
+        )
 
     # ------------------------------------------------------------------
     # Enum-relationship guard
@@ -2087,16 +2067,15 @@ class ClassDiagramHandler(BaseDiagramHandler):
         self.apply_system_layout(system_spec, existing_model)
 
         class_names_str = ", ".join(f"**{c.get('className', '?')}**" for c in classes)
-        return {
-            "action": "inject_complete_system",
-            "systemSpec": system_spec,
-            "diagramType": self.get_diagram_type(),
-            "message": (
+        return inject_complete_system(
+            system_spec,
+            self.get_diagram_type(),
+            (
                 f"I had a bit of trouble building everything at once, but I set up "
                 f"{len(classes)} item(s): {class_names_str}. "
                 "Want me to connect them together?"
             ),
-        }
+        )
 
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
         """Generate a fallback class when AI generation fails"""
@@ -2114,12 +2093,11 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # Apply deterministic layout so the fallback doesn't render at 0,0
         self.apply_single_layout(fallback_spec)
 
-        return {
-            "action": "inject_element",
-            "element": fallback_spec,
-            "diagramType": self.get_diagram_type(),
-            "message": f"I created a starter **{class_name}** class with some default attributes. Feel free to describe it in more detail and I'll refine it!"
-        }
+        return inject_element(
+            fallback_spec,
+            self.get_diagram_type(),
+            f"I created a starter **{class_name}** class with some default attributes. Feel free to describe it in more detail and I'll refine it!",
+        )
 
     def generate_fallback_system(self) -> Dict[str, Any]:
         """Generate a fallback system"""
@@ -2140,12 +2118,11 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # Apply deterministic layout so the fallback doesn't render at 0,0
         self.apply_system_layout(fallback_system)
 
-        return {
-            "action": "inject_complete_system",
-            "systemSpec": fallback_system,
-            "diagramType": self.get_diagram_type(),
-            "message": "I created a starter diagram with a basic **Entity** class. Describe your system in more detail (e.g. *'Create a library with books, authors, and members'*) and I'll build a richer model!"
-        }
+        return inject_complete_system(
+            fallback_system,
+            self.get_diagram_type(),
+            "I created a starter diagram with a basic **Entity** class. Describe your system in more detail (e.g. *'Create a library with books, authors, and members'*) and I'll build a richer model!",
+        )
     
     # ------------------------------------------------------------------
     # Message Builders
@@ -2345,7 +2322,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         survived. When every op is dropped the spec is left with no ops (the
         caller surfaces the notes as a plain message instead).
         """
-        if not isinstance(spec, dict) or spec.get("action") != "modify_model":
+        if not isinstance(spec, dict) or spec.get("action") != Action.MODIFY_MODEL:
             return []
         elements = current_model.get("elements") if isinstance(current_model, dict) else None
         if not isinstance(elements, dict) or not elements:
@@ -2652,14 +2629,13 @@ class ClassDiagramHandler(BaseDiagramHandler):
             current_model, dup_errors,
         )
         if not mods:
-            return {
-                "action": "assistant_message",
-                "message": " ".join(
-                    ["I couldn't apply this fix automatically."] + unfixable_notes
-                ).strip(),
-            }
+            return assistant_message(
+                " ".join(
+                        ["I couldn't apply this fix automatically."] + unfixable_notes
+                    ).strip(),
+            )
         spec: Dict[str, Any] = {
-            "action": "modify_model",
+            "action": Action.MODIFY_MODEL,
             "diagramType": self.get_diagram_type(),
             "message": " ".join(rename_notes + unfixable_notes),
         }
@@ -2686,7 +2662,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         would fight the deterministic rename) and appends the deterministic
         role renames, updating the user-facing message honestly.
         """
-        if not isinstance(spec, dict) or spec.get("action") != "modify_model":
+        if not isinstance(spec, dict) or spec.get("action") != Action.MODIFY_MODEL:
             return spec
         mods, rename_notes, unfixable_notes, dup_pairs = self._build_duplicate_end_fixes(
             current_model, dup_errors,
@@ -2753,7 +2729,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         Mutates *spec* in place; silent no-op when nothing would collide.
         """
-        if not isinstance(spec, dict) or spec.get("action") != "modify_model":
+        if not isinstance(spec, dict) or spec.get("action") != Action.MODIFY_MODEL:
             return
         mods = spec.get("modifications")
         single = None
@@ -2912,7 +2888,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             spec.pop("modification", None)
             spec["modifications"] = all_mods
 
-    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _build_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Generate modifications for existing class diagram elements.
 
         Enhanced with impact analysis: when renaming or removing a class,
@@ -2946,211 +2922,196 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         user_prompt = f"Modify the class diagram: {user_request}{context_block}"
 
-        logger.info(f"[ClassDiagram] generate_modification called with: {user_request!r}")
         logger.debug(f"[ClassDiagram] Modification context block length: {len(context_block)} chars")
 
-        try:
-            def _strip_spurious_relationship_mods(mod_list):
-                """Strip modify_relationship entries that accompany a modify_class
-                rename -- relationships are linked by ID and update automatically."""
-                has_class_rename = any(
-                    m.get("action") == "modify_class" and m.get("changes", {}).get("name")
-                    for m in mod_list
-                )
-                if has_class_rename:
-                    before = len(mod_list)
-                    mod_list = [m for m in mod_list if m.get("action") != "modify_relationship"]
-                    if len(mod_list) < before:
-                        logger.info(
-                            f"[ClassDiagram] Stripped {before - len(mod_list)} "
-                            "spurious modify_relationship entries from class rename"
-                        )
-
-                # Normalize remove_element targets — some LLMs misplace the class
-                # name into other fields or leave className null. Promote any
-                # non-null string in target/changes to className when we're
-                # clearly removing a class (no relationship/attribute/method hint).
-                for mod in mod_list:
-                    if mod.get("action") != "remove_element":
-                        continue
-                    target = mod.get("target") or {}
-                    if not isinstance(target, dict):
-                        continue
-                    # Skip if already has a specific identifier. sourceClass/
-                    # targetClass identify a relationship by its endpoints — WITHOUT
-                    # them here, "remove the relationship between Order and Customer"
-                    # fell through and promoted "Order" to className, deleting the
-                    # whole Order class.
-                    if any(target.get(k) for k in ("className", "classId",
-                                                    "relationshipId", "relationshipName",
-                                                    "sourceClass", "targetClass",
-                                                    "attributeId", "attributeName",
-                                                    "methodId", "methodName")):
-                        continue
-                    # Try to find a class name in any target or changes string field
-                    changes = mod.get("changes") or {}
-                    for source in (target, changes if isinstance(changes, dict) else {}):
-                        for value in source.values():
-                            if isinstance(value, str) and value.strip():
-                                target["className"] = value.strip()
-                                logger.info(
-                                    f"[ClassDiagram] Normalized remove_element target: "
-                                    f"promoted '{value}' to className"
-                                )
-                                break
-                        if target.get("className"):
-                            break
-                    mod["target"] = target
-
-                # Deduplicate remove_element entries that target the same class.
-                # Some LLMs emit multiple removals for the same class name (once
-                # for the class itself, once for each relationship it participates
-                # in, all with className only). The frontend applies them in
-                # sequence — the second one can't find the already-removed class
-                # and used to throw. Keep only the first occurrence.
-                seen_class_removes: set[str] = set()
-                deduped: list = []
-                for mod in mod_list:
-                    if mod.get("action") == "remove_element":
-                        target = mod.get("target") or {}
-                        cn = (target.get("className") or "").strip().lower()
-                        # Only dedupe class-level removals (no attribute/method/relationship)
-                        is_class_only = (
-                            cn
-                            and not target.get("attributeName") and not target.get("attributeId")
-                            and not target.get("methodName") and not target.get("methodId")
-                            and not target.get("relationshipName") and not target.get("relationshipId")
-                        )
-                        if is_class_only:
-                            if cn in seen_class_removes:
-                                logger.info(
-                                    f"[ClassDiagram] Dropped duplicate remove_element for class '{cn}'"
-                                )
-                                continue
-                            seen_class_removes.add(cn)
-                    deduped.append(mod)
-                return deduped
-
-            def _expand_refactoring(handler, spec):
-                """Expand refactoring actions into primitives, then guard against
-                any relationship whose endpoint is an enumeration."""
-                if handler._is_refactoring_action(spec):
-                    logger.info("[ClassDiagram] Detected refactoring action, expanding into primitives")
-                    spec = handler._expand_refactoring_actions(spec, current_model)
-                handler._rewrite_enum_relationship_mods(spec, current_model)
-                # Runs after the expansion, so ops synthesised by a
-                # refactoring are canonicalised too.
-                handler._normalise_modification_types(spec)
-                return spec
-
-            # Up to TWO samples: when EVERY op targets something absent from
-            # the model, the parse was almost certainly a sampling glitch
-            # (e.g. a remove target that came back as a garbled token; the
-            # identical retry succeeds).
-            # A fresh sample is cheap on the SMALL tier and turns that class
-            # of flake into a non-event; a second total whiff reports
-            # honestly as before.
-            not_found_notes: List[str] = []
-            prior_notes: List[str] = []
-            modification_spec: Dict[str, Any] = {}
-            for attempt in (1, 2):
-                modification_spec = self._execute_modification(
-                    user_prompt, system_prompt, ClassModificationResponse,
-                    post_processor=_strip_spurious_relationship_mods,
-                    spec_processor=_expand_refactoring,
-                )
-                if modification_spec.get("action") != "modify_model":
-                    break  # element-not-found short-circuit etc. — not a whiff
-
-                # Deterministic missing-target validation: drop any removal/
-                # edit op whose named target doesn't exist in the model, and
-                # tell the user what couldn't be found. Previously these were
-                # silently dropped — e.g. "remove priority" on a model with no
-                # priority field applied the add half and quietly discarded
-                # the remove with zero feedback.
-                not_found_notes = self._drop_phantom_target_ops(modification_spec, current_model)
-                remaining = (
-                    modification_spec.get("modification")
-                    or modification_spec.get("modifications")
-                )
-                if remaining or not not_found_notes:
-                    # A retry that came back with nothing at all keeps the
-                    # first attempt's diagnosis instead of shipping an empty
-                    # modification with no explanation.
-                    if not remaining and not not_found_notes and prior_notes:
-                        not_found_notes = prior_notes
-                    break
-                prior_notes = not_found_notes
-                if attempt == 1:
-                    logger.warning(
-                        "[ClassDiagram] Every modification op had a phantom "
-                        "target (%s) — retrying once with a fresh sample",
-                        " / ".join(not_found_notes)[:200],
+        def _strip_spurious_relationship_mods(mod_list):
+            """Strip modify_relationship entries that accompany a modify_class
+            rename -- relationships are linked by ID and update automatically."""
+            has_class_rename = any(
+                m.get("action") == "modify_class" and m.get("changes", {}).get("name")
+                for m in mod_list
+            )
+            if has_class_rename:
+                before = len(mod_list)
+                mod_list = [m for m in mod_list if m.get("action") != "modify_relationship"]
+                if len(mod_list) < before:
+                    logger.info(
+                        f"[ClassDiagram] Stripped {before - len(mod_list)} "
+                        "spurious modify_relationship entries from class rename"
                     )
 
-            # If every op was a phantom-target removal/edit, nothing remains to
-            # apply — surface the not-found note(s) as a plain message rather
-            # than shipping an empty modification.
-            if not_found_notes and not (
+            # Normalize remove_element targets — some LLMs misplace the class
+            # name into other fields or leave className null. Promote any
+            # non-null string in target/changes to className when we're
+            # clearly removing a class (no relationship/attribute/method hint).
+            for mod in mod_list:
+                if mod.get("action") != "remove_element":
+                    continue
+                target = mod.get("target") or {}
+                if not isinstance(target, dict):
+                    continue
+                # Skip if already has a specific identifier. sourceClass/
+                # targetClass identify a relationship by its endpoints — WITHOUT
+                # them here, "remove the relationship between Order and Customer"
+                # fell through and promoted "Order" to className, deleting the
+                # whole Order class.
+                if any(target.get(k) for k in ("className", "classId",
+                                                "relationshipId", "relationshipName",
+                                                "sourceClass", "targetClass",
+                                                "attributeId", "attributeName",
+                                                "methodId", "methodName")):
+                    continue
+                # Try to find a class name in any target or changes string field
+                changes = mod.get("changes") or {}
+                for source in (target, changes if isinstance(changes, dict) else {}):
+                    for value in source.values():
+                        if isinstance(value, str) and value.strip():
+                            target["className"] = value.strip()
+                            logger.info(
+                                f"[ClassDiagram] Normalized remove_element target: "
+                                f"promoted '{value}' to className"
+                            )
+                            break
+                    if target.get("className"):
+                        break
+                mod["target"] = target
+
+            # Deduplicate remove_element entries that target the same class.
+            # Some LLMs emit multiple removals for the same class name (once
+            # for the class itself, once for each relationship it participates
+            # in, all with className only). The frontend applies them in
+            # sequence — the second one can't find the already-removed class
+            # and used to throw. Keep only the first occurrence.
+            seen_class_removes: set[str] = set()
+            deduped: list = []
+            for mod in mod_list:
+                if mod.get("action") == "remove_element":
+                    target = mod.get("target") or {}
+                    cn = (target.get("className") or "").strip().lower()
+                    # Only dedupe class-level removals (no attribute/method/relationship)
+                    is_class_only = (
+                        cn
+                        and not target.get("attributeName") and not target.get("attributeId")
+                        and not target.get("methodName") and not target.get("methodId")
+                        and not target.get("relationshipName") and not target.get("relationshipId")
+                    )
+                    if is_class_only:
+                        if cn in seen_class_removes:
+                            logger.info(
+                                f"[ClassDiagram] Dropped duplicate remove_element for class '{cn}'"
+                            )
+                            continue
+                        seen_class_removes.add(cn)
+                deduped.append(mod)
+            return deduped
+
+        def _expand_refactoring(handler, spec):
+            """Expand refactoring actions into primitives, then guard against
+            any relationship whose endpoint is an enumeration."""
+            if handler._is_refactoring_action(spec):
+                logger.info("[ClassDiagram] Detected refactoring action, expanding into primitives")
+                spec = handler._expand_refactoring_actions(spec, current_model)
+            handler._rewrite_enum_relationship_mods(spec, current_model)
+            # Runs after the expansion, so ops synthesised by a
+            # refactoring are canonicalised too.
+            handler._normalise_modification_types(spec)
+            return spec
+
+        # Up to TWO samples: when EVERY op targets something absent from
+        # the model, the parse was almost certainly a sampling glitch
+        # (e.g. a remove target that came back as a garbled token; the
+        # identical retry succeeds).
+        # A fresh sample is cheap on the SMALL tier and turns that class
+        # of flake into a non-event; a second total whiff reports
+        # honestly as before.
+        not_found_notes: List[str] = []
+        prior_notes: List[str] = []
+        modification_spec: Dict[str, Any] = {}
+        for attempt in (1, 2):
+            modification_spec = self._execute_modification(
+                user_prompt, system_prompt, ClassModificationResponse,
+                post_processor=_strip_spurious_relationship_mods,
+                spec_processor=_expand_refactoring,
+            )
+            if modification_spec.get("action") != Action.MODIFY_MODEL:
+                break  # element-not-found short-circuit etc. — not a whiff
+
+            # Deterministic missing-target validation: drop any removal/
+            # edit op whose named target doesn't exist in the model, and
+            # tell the user what couldn't be found. Previously these were
+            # silently dropped — e.g. "remove priority" on a model with no
+            # priority field applied the add half and quietly discarded
+            # the remove with zero feedback.
+            not_found_notes = self._drop_phantom_target_ops(modification_spec, current_model)
+            remaining = (
                 modification_spec.get("modification")
                 or modification_spec.get("modifications")
-            ):
-                return {
-                    "action": "assistant_message",
-                    "message": " ".join(not_found_notes),
-                }
-
-            # Replace the generic/default message with a clean, descriptive one
-            # for add_class (the name lives in changes.className, not the now-
-            # cleared target.className) and for association/linking-class requests.
-            self._apply_clean_modification_message(modification_spec, user_request)
-
-            # Append the not-found note(s) so the dropped removal/edit isn't
-            # silent even when a legitimate add in the same request succeeded.
-            if not_found_notes:
-                existing = modification_spec.get("message") or ""
-                joined = " ".join(not_found_notes)
-                modification_spec["message"] = (
-                    f"{existing}\n\n{joined}".strip() if existing else joined
+            )
+            if remaining or not not_found_notes:
+                # A retry that came back with nothing at all keeps the
+                # first attempt's diagnosis instead of shipping an empty
+                # modification with no explanation.
+                if not remaining and not not_found_notes and prior_notes:
+                    not_found_notes = prior_notes
+                break
+            prior_notes = not_found_notes
+            if attempt == 1:
+                logger.warning(
+                    "[ClassDiagram] Every modification op had a phantom "
+                    "target (%s) — retrying once with a fresh sample",
+                    " / ".join(not_found_notes)[:200],
                 )
 
-            # Mixed repair request (duplicate-end error alongside other
-            # validation errors): the LLM handled the rest — enforce end-name
-            # uniqueness deterministically on top of its output.
-            if _dup_errors:
-                modification_spec = self._apply_duplicate_end_post_guard(
-                    modification_spec, _dup_errors, current_model,
-                )
+        # If every op was a phantom-target removal/edit, nothing remains to
+        # apply — surface the not-found note(s) as a plain message rather
+        # than shipping an empty modification.
+        if not_found_notes and not (
+            modification_spec.get("modification")
+            or modification_spec.get("modifications")
+        ):
+            return assistant_message(" ".join(not_found_notes))
 
-            # Prevention: a NEW add_relationship must not introduce a
-            # duplicate association end (same derivation as the creation
-            # guard; reuses the repair helpers for the current model's ends).
-            self._ensure_unique_ends_for_added_relationships(
-                modification_spec, current_model,
+        # Replace the generic/default message with a clean, descriptive one
+        # for add_class (the name lives in changes.className, not the now-
+        # cleared target.className) and for association/linking-class requests.
+        self._apply_clean_modification_message(modification_spec, user_request)
+
+        # Append the not-found note(s) so the dropped removal/edit isn't
+        # silent even when a legitimate add in the same request succeeded.
+        if not_found_notes:
+            existing = modification_spec.get("message") or ""
+            joined = " ".join(not_found_notes)
+            modification_spec["message"] = (
+                f"{existing}\n\n{joined}".strip() if existing else joined
             )
 
-            logger.info(
-                f"[ClassDiagram] Modification spec: "
-                f"batch={'modifications' in modification_spec}, "
-                f"keys={list(modification_spec.keys())}"
+        # Mixed repair request (duplicate-end error alongside other
+        # validation errors): the LLM handled the rest — enforce end-name
+        # uniqueness deterministically on top of its output.
+        if _dup_errors:
+            modification_spec = self._apply_duplicate_end_post_guard(
+                modification_spec, _dup_errors, current_model,
             )
 
-            return modification_spec
+        # Prevention: a NEW add_relationship must not introduce a
+        # duplicate association end (same derivation as the creation
+        # guard; reuses the repair helpers for the current model's ends).
+        self._ensure_unique_ends_for_added_relationships(
+            modification_spec, current_model,
+        )
 
-        except LLMPredictionError as exc:
-            logger.error(f"❌ [ClassDiagram] generate_modification LLM FAILED: {exc}")
-            return self._error_response(
-                "I couldn't process that modification. Please try again or rephrase your request.",
-                code="llm_failure",
-            )
-        except Exception as exc:
-            logger.error(f"❌ [ClassDiagram] generate_modification FAILED: {exc}", exc_info=True)
-            return self.generate_fallback_modification(user_request)
+        logger.info(
+            f"[ClassDiagram] Modification spec: "
+            f"batch={'modifications' in modification_spec}, "
+            f"keys={list(modification_spec.keys())}"
+        )
+
+        return modification_spec
     
     def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
         """Generate a fallback modification when AI generation fails"""
         return {
-            "action": "modify_model",
+            "action": Action.MODIFY_MODEL,
             "modification": {
                 "action": "modify_class",
                 "target": {"className": "Unknown"},
@@ -3360,7 +3321,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         if not expanded:
             # Every refactor lacked a name it needs: say so, apply nothing.
-            return {"action": "assistant_message", "message": " ".join(messages)}
+            return assistant_message(" ".join(messages))
 
         result = dict(spec)
         # Always use batch format for expanded results

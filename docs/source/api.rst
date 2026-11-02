@@ -252,7 +252,9 @@ Diagram Handlers
   - ``predict_structured(prompt, response_schema, *, system_prompt, temperature, model)``
   - ``predict_two_pass_structured(user_request, system_prompt, reasoning_prompt, response_schema, ...)``
   - ``predict_two_pass(...)``
-  - ``generate_modification(user_request, current_model, **kwargs)``
+  - ``generate_complete_system`` / ``generate_single_element`` /
+    ``generate_modification`` — template methods over the ``_build_system`` /
+    ``_build_single_element`` / ``_build_modification`` hooks
   - ``validate_and_refine(...)`` / ``self_correct(...)`` / ``parse_validate_or_correct(...)``
   - ``repair_json_response(malformed_json, schema_hint)`` /
     ``parse_and_validate_with_repair(...)``
@@ -482,6 +484,13 @@ Protocol Layer
   - ``WorkspaceContext`` — Editor state snapshot
   - ``FileAttachment`` — Uploaded file metadata
   - ``SUPPORTED_DIAGRAM_TYPES`` — Set of valid diagram type strings
+
+``src/protocol/actions.py``
+  The wire action names and the repeated envelopes:
+
+  - ``Action`` — ``StrEnum`` of every inbound and outbound ``action``
+  - ``assistant_message(message, **fields)``, ``inject_element(...)``,
+    ``inject_complete_system(...)``, ``model_reply(action, ...)``
 
 ``src/protocol/message_limits.py``
   ``validate_message_length(message)`` and ``UserMessageTooLong``: a request

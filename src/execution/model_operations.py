@@ -43,6 +43,7 @@ from common.session_keys import (
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
 )
+from protocol.actions import Action, assistant_message
 
 logger = logging.getLogger(__name__)
 
@@ -276,11 +277,7 @@ def _build_existing_model_confirmation(
         + (f", or create it in a **new diagram tab**? {tab_info}" if can_add_tab else f"? {tab_info}")
     )
 
-    reply_payload(session, {
-        "action": "assistant_message",
-        "message": confirmation_msg,
-        "suggestedActions": confirmation_actions,
-    })
+    reply_payload(session, assistant_message(confirmation_msg, suggestedActions=confirmation_actions))
 
 
 # ------------------------------------------------------------------
@@ -444,14 +441,13 @@ def _build_destructive_modify_confirmation(
         "confirm before applying such a large change. **Confirm** to go "
         "ahead, or **cancel** to keep your model as is."
     )
-    reply_payload(session, {
-        "action": "assistant_message",
-        "message": message,
-        "suggestedActions": [
+    reply_payload(session, assistant_message(
+        message,
+        suggestedActions=[
             {"label": "Confirm — apply the change", "prompt": "confirm"},
             {"label": "Cancel — keep my model", "prompt": "cancel"},
         ],
-    })
+    ))
 
 
 # ------------------------------------------------------------------
@@ -630,7 +626,7 @@ def execute_model_operation(
                 '_replace_existing': _replace_existing,
             })
             reply_payload(session, {
-                "action": "assistant_message",
+                "action": Action.ASSISTANT_MESSAGE,
                 "message": (
                     "How would you like me to create your screens?\n\n"
                     "1️⃣ **Basic CRUD pages** — one page per class to list, "
@@ -867,7 +863,7 @@ def execute_model_operation(
         # inline "Add your API key" button (it keys on rate_limit/auth_error).
         if _byok_active and _code in (ErrorCode.RATE_LIMIT, ErrorCode.AUTH_ERROR):
             reply_payload(session, {
-                "action": "agent_error",
+                "action": Action.AGENT_ERROR,
                 "errorCode": "auth_error",
                 "message": (
                     "Your API key was rejected or hit its rate limit. Check the "
@@ -878,7 +874,7 @@ def execute_model_operation(
             })
         elif _code == ErrorCode.RATE_LIMIT:
             reply_payload(session, {
-                "action": "agent_error",
+                "action": Action.AGENT_ERROR,
                 "errorCode": "rate_limit",
                 "message": (
                     "We've hit the shared free usage limit for the AI service. "
@@ -891,7 +887,7 @@ def execute_model_operation(
             })
         elif _code == ErrorCode.MODEL_REFUSAL:
             reply_payload(session, {
-                "action": "agent_error",
+                "action": Action.AGENT_ERROR,
                 "errorCode": "model_refusal",
                 "message": exc.user_message(),
                 "retryable": False,
@@ -899,7 +895,7 @@ def execute_model_operation(
             })
         elif _code == ErrorCode.AUTH_ERROR:
             reply_payload(session, {
-                "action": "agent_error",
+                "action": Action.AGENT_ERROR,
                 "errorCode": "auth_error",
                 "message": (
                     "The AI service is temporarily unavailable. Please try again "
@@ -930,7 +926,7 @@ def execute_model_operation(
         reply_message(session, f"I could not create a valid {target_diagram_type} response.")
         return None
 
-    if result.get("action") == "assistant_message":
+    if result.get("action") == Action.ASSISTANT_MESSAGE:
         reply_message(session, result.get("message", "Something went wrong. Please try again."))
         return None
 
@@ -1035,7 +1031,7 @@ def execute_model_operation(
     # (empty) snapshot and wrongly refuse with "your workspace looks empty".
     # Only genuine creations (not modify_model, which implies a pre-existing
     # model) update the snapshot here.
-    if result.get("action") in ("inject_complete_system", "inject_element"):
+    if result.get("action") in (Action.INJECT_COMPLETE_SYSTEM, Action.INJECT_ELEMENT):
         _record_created_model_in_snapshot(
             getattr(request, "context", None), target_diagram_type, result,
         )
@@ -1058,7 +1054,7 @@ def execute_model_operation(
     )
     if (
         operation_mode == "complete_system"
-        and result.get("action") == "inject_complete_system"
+        and result.get("action") == Action.INJECT_COMPLETE_SYSTEM
         and _replace_existing is not False
         and _regen_expect is not None
         and _regen_msg == _regen_expect

@@ -27,6 +27,7 @@ from ingestion.file_conversion_handler import (
 )
 
 from execution.model_operations import _build_existing_model_confirmation, execute_model_operation
+from protocol.actions import Action, assistant_message
 
 logger = logging.getLogger(__name__)
 
@@ -89,13 +90,10 @@ def handle_file_attachments(session: Session, request: AssistantRequest) -> bool
             "[FileConversion] %d attachments — processing first %d only",
             len(attachments), MAX_ATTACHMENTS,
         )
-        reply_payload(session, {
-            "action": "assistant_message",
-            "message": (
-                f"You attached {len(attachments)} files — I'll process the first "
-                f"{MAX_ATTACHMENTS} to stay responsive. Send the rest in a follow-up."
-            ),
-        })
+        reply_payload(session, assistant_message(
+            f"You attached {len(attachments)} files — I'll process the first "
+            f"{MAX_ATTACHMENTS} to stay responsive. Send the rest in a follow-up.",
+        ))
         attachments = attachments[:MAX_ATTACHMENTS]
 
     requested_type = _requested_diagram_type(session, request)
@@ -108,10 +106,9 @@ def handle_file_attachments(session: Session, request: AssistantRequest) -> bool
                 "[FileConversion] Skipping oversized attachment %s (%d b64 chars)",
                 attachment.filename, len(attachment.content_b64 or ""),
             )
-            reply_payload(session, {
-                "action": "assistant_message",
-                "message": f"Skipped **{attachment.filename}** — it's too large to process.",
-            })
+            reply_payload(session, assistant_message(
+                f"Skipped **{attachment.filename}** — it's too large to process.",
+            ))
             continue
         logger.info(
             f"[FileConversion] Processing attachment: {attachment.filename} "
@@ -136,7 +133,7 @@ def handle_file_attachments(session: Session, request: AssistantRequest) -> bool
             continue
 
         # Errors are sent directly
-        if result.get("action") != "inject_complete_system":
+        if result.get("action") != Action.INJECT_COMPLETE_SYSTEM:
             reply_payload(session, result)
             continue
 
@@ -168,13 +165,10 @@ def handle_file_attachments(session: Session, request: AssistantRequest) -> bool
     if mockups:
         if awaiting_answer:
             # One pending question at a time: the GUI would ask its own.
-            reply_payload(session, {
-                "action": "assistant_message",
-                "message": (
-                    "Once you've answered, send the screenshot again and I'll "
-                    "build the GUI from it."
-                ),
-            })
+            reply_payload(session, assistant_message(
+                "Once you've answered, send the screenshot again and I'll "
+                "build the GUI from it.",
+            ))
         else:
             # The normal GUI creation path: same replace/keep question, class
             # diagram binding and progress as a typed request.
