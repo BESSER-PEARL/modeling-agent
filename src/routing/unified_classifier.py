@@ -43,6 +43,7 @@ from pydantic import BaseModel, Field
 from llm.byok_config import get_current
 from prompts.classifier import SYSTEM_PROMPT
 from protocol.types import AssistantRequest
+from routing.guards import AUTO_FIX_PREFIX, auto_fix_verdict, frontend_event_verdict  # noqa: F401  (AUTO_FIX_PREFIX re-exported)
 from routing.generation_signals import (
     _GITHUB_CONTINUE_VERB_RE,
     _extract_github_reference,
@@ -426,13 +427,6 @@ class UnifiedClassification(BaseModel):
 # ---------------------------------------------------------------------
 
 
-# Protocol marker stamped by the editor's post-injection validation loop
-# (frontend useAssistantLogic): after an agent model lands on the canvas the
-# frontend validates it against the backend and, on errors, sends ONE
-# machine-generated repair request prefixed with this marker. It is not
-# natural language, so it is routed deterministically — no classifier call,
-# and the repair loop keeps working even during an LLM outage.
-AUTO_FIX_PREFIX = "[auto-fix]"
 
 
 def classify_message(
@@ -466,15 +460,9 @@ def classify_message(
     if not message:
         return _safe_fallback("empty message")
 
-    if message.startswith(AUTO_FIX_PREFIX):
-        return UnifiedClassification(
-            intent="modify_model_intent",
-            model_disposition="extend_existing",
-            # Never interpret a machine repair request as an answer to a
-            # pending question the assistant happened to be asking.
-            pending_flow_action="new_request",
-            reason="Editor validation repair ([auto-fix] marker) — deterministic modify route",
-        )
+    auto_fix = auto_fix_verdict(message)
+    if auto_fix is not None:
+        return UnifiedClassification(**auto_fix)
 
     try:
         messages = [
@@ -639,18 +627,9 @@ def get_or_classify(
     ):
         return cached_classification
 
-    # Frontend callbacks (``generator_result`` etc.) are protocol events,
-    # not user prose — their routing is determined by the ``action``
-    # field, so classifying their text is pure waste AND wrong: a
-    # generation-completion echo can be LLM-classified as ``hello_intent``
-    # and routed to greetings, so the generation handler's
-    # frontend_event branch would never run.
-    if getattr(request, "action", None) == "frontend_event":
-        result = UnifiedClassification(
-            intent="generation_intent",
-            generation_route="other",
-            reason="frontend_event callback — routed deterministically, no LLM call",
-        )
+    frontend_event = frontend_event_verdict(request)
+    if frontend_event is not None:
+        result = UnifiedClassification(**frontend_event)
     else:
         _pending_flow = _pending_flow_context(session)
         # Project-scoped: the SMART-GEN FOLLOW-UP rule is about the app in the
@@ -1345,7 +1324,7 @@ def _safe_fallback(reason: str) -> UnifiedClassification:
     """
     # The "[classifier-error]" tag lets downstream adapters distinguish an
     # ERROR fallback (this function) from the LLM's deliberate
-    # none-of-the-above verdict — see _classification_to_legacy.
+    # none-of-the-above verdict — see routing.guards.generation_route.
     return UnifiedClassification(
         intent="fallback_intent", reason=f"[classifier-error] {reason}")
 

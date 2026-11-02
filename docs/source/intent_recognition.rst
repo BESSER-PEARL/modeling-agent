@@ -48,6 +48,7 @@ answer, …), so no second prompt is ever needed to refine the verdict.
            → State body → Handler
 
 **Location:** ``src/routing/unified_classifier.py`` (classifier),
+``src/routing/guards.py`` (deterministic routing rules),
 ``src/conversation/session_helpers.py`` (transition conditions),
 ``src/app/state_bodies.py`` (transition wiring).
 
@@ -55,9 +56,11 @@ answer, …), so no second prompt is ever needed to refine the verdict.
 Stage 1: Deterministic Short-Circuits
 --------------------------------------
 
-Two message shapes never reach the LLM at all. Both are handled in
-``get_or_classify()`` / ``classify_message()``
-(``src/routing/unified_classifier.py``).
+Two message shapes never reach the LLM at all. The rules are
+``frontend_event_verdict()`` and ``auto_fix_verdict()`` in
+``src/routing/guards.py``; ``get_or_classify()`` applies the first and
+``classify_message()`` the second (after its provider check, so with no LLM
+configured at all an ``[auto-fix]`` message still gets the error fallback).
 
 frontend_event callbacks
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -76,10 +79,11 @@ routed to greetings. They are pinned deterministically:
        reason="frontend_event callback — routed deterministically, no LLM call",
    )
 
-A third shape never reaches the classifier at all: the
-``replay_last_response`` control message, which
-``_ensure_unified_classification`` returns on before classifying. It is pure
-reconnect recovery and must not consume a turn.
+Two more shapes never reach the classifier at all
+(``guards.skips_classification()``, checked by
+``_ensure_unified_classification``): the ``replay_last_response`` control
+message, which is pure reconnect recovery and must not consume a turn, and a
+blank message that is not a ``frontend_event``.
 
 The ``[auto-fix]`` repair marker
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -367,7 +371,10 @@ It is consulted in only two situations:
    ``session.event.predicted_intent``.
 2. **Text events** — voice messages (after speech-to-text) and plain-text
    events arrive without a JSON payload and route via
-   ``when_intent_matched`` (transition priority 3).
+   ``when_intent_matched`` (transition priority 3). The unified hook is
+   registered for JSON events only, so these transitions are the voice
+   path's only route; the state body still reads the unified verdict
+   through ``_common_preamble``.
 
 .. note::
 
@@ -375,6 +382,54 @@ It is consulted in only two situations:
    (plus a NER model), which is why the container takes minutes to open its
    WebSocket. See :doc:`deployment` for the health-check start period that
    accounts for it.
+
+
+Deterministic Guards After Routing
+----------------------------------
+
+A few decisions are settled by text match in the state that received the
+message. The rules live in ``src/routing/guards.py`` as pure functions over
+the message (and the cached verdict where they depend on it); the state body
+or handler only maps the decision to a reply. The tables in
+``tests/test_routing_guards.py`` pin each one.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 26 40
+
+   * - Guard
+     - Where it runs
+     - What it decides
+   * - ``reconcile_intent()``
+     - create / modify states
+     - The classifier's create-vs-modify verdict over the state's default
+       (they differ when a pending flow suppressed intent routing)
+   * - ``modeling_guard()``
+     - create / modify states
+     - First match wins: ``non_modeling`` (prompt injection, persona
+       hijack, shell commands; both states), the classifier-outage net
+       ``outage_decline`` / ``outage_artifact`` (only when the verdict is
+       missing or ``fallback_intent``), then ``self_contradictory`` and
+       ``too_vague`` (create only)
+   * - ``quick_response_key()``
+     - global fallback, greetings, modeling help
+     - A canned capability / help / how-to-run reply, no LLM call
+   * - ``is_mixed_modeling_and_generation()``
+     - generation state
+     - "create a class diagram and generate Django": build the model first,
+       generation waits for the go-ahead
+   * - ``is_past_generation_question()``
+     - generation handler
+     - "what did you generate?" after a run is answered from its outcome
+   * - ``generation_route()``
+     - generation handler
+     - The dispatch route of a verdict: ``generation_route`` on generation
+       verdicts; ``modeling`` for create/modify; the generator menu on a
+       classifier error; ``other`` otherwise
+
+The diagram-type keywords (layer 2) stay in the workspace orchestrator, see
+below. Answers to a pending question (replace/keep, GUI choice, generator
+confirmations) are parsed by the pending-flow handlers, not by these guards.
 
 
 Diagram Type Resolution
@@ -412,7 +467,8 @@ When routing goes wrong, check in this order:
 
 5. **Check the deterministic guards.** ``_names_unsupported_stack()`` forces
    the smart route; the GitHub-continue regexes force an import. Neither
-   can be overridden by the LLM verdict.
+   can be overridden by the LLM verdict. In a create / modify state,
+   ``guards.modeling_guard()`` may answer instead of modeling.
 
 6. **Check diagram type resolution.** Does the classifier's
    ``target_diagram_type`` match what you expect? If it is ``None``, step

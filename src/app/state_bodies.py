@@ -42,7 +42,6 @@ from codegen.generation_handler import (
     handle_generation_request,
     handle_pending_plan_generation_confirmation,
     handle_pending_smart_gen_confirmation,
-    _looks_like_mixed_modeling_and_generation,
     should_route_to_generation,
 )
 from orchestrator import determine_target_diagram_type
@@ -56,6 +55,7 @@ from utilities.user_metamodel import (
     format_user_metamodel_guide,
     is_user_profile_help,
 )
+from routing import guards
 from routing.intents import GENERATION_INTENT_NAME
 from common.session_keys import (
     HAS_GREETED,
@@ -103,14 +103,7 @@ def _ensure_unified_classification(session: Session) -> bool:
     """
     try:
         request = parse_assistant_request(session)
-        # Reconnect-recovery control message — never classify it.
-        if getattr(request, "action", None) == "replay_last_response":
-            return False
-        # frontend_event callbacks may carry an empty message but must
-        # still be classified (deterministically — see get_or_classify)
-        # so the transition routes them to the generation handler.
-        is_frontend_event = getattr(request, "action", None) == "frontend_event"
-        if not is_frontend_event and not (request.message or "").strip():
+        if guards.skips_classification(request):
             return False
         provider = _get_llm_provider() if _get_llm_provider else None
         classification = get_or_classify(session, request, provider)
@@ -288,39 +281,10 @@ _QUICK_RESPONSES = {
     ),
 }
 
-# Patterns that trigger quick responses (checked in order)
-_QUICK_PATTERNS = [
-    # What is BESSER?
-    (["what is besser", "what's besser", "tell me about besser", "explain besser", "about besser"],
-     "what_is_besser"),
-    # What can you do?
-    (["what can you do", "what do you do", "your capabilities", "what are your features",
-      "list your features", "show me what you can do", "what are you capable of",
-      "how can you help", "what do you support", "what diagrams"],
-     "what_can_you_do"),
-    # Help
-    (["help me", "i need help", "how does this work", "how do i use",
-      "getting started", "quick start", "tutorial", "guide me"],
-     "help"),
-    # How do I run the generated/downloaded app?
-    (["how do i run", "how to run", "how do i start", "how do i launch",
-      "run the app", "run the zip", "run the generated", "run the downloaded",
-      "run it on my", "run this on my", "start the backend", "start the generated",
-      "downloaded the zip", "got the zip", "run the code"],
-     "how_to_run"),
-]
-
-
 def _check_quick_response(message: str) -> Optional[str]:
     """Check if the message matches a quick-response pattern. Returns the response or None."""
-    msg_lower = message.lower().strip()
-    # Exact short matches
-    if msg_lower in ("help", "?", "help!", "help?"):
-        return _QUICK_RESPONSES["help"]
-    for patterns, key in _QUICK_PATTERNS:
-        if any(p in msg_lower for p in patterns):
-            return _QUICK_RESPONSES[key]
-    return None
+    key = guards.quick_response_key(message)
+    return _QUICK_RESPONSES[key] if key else None
 
 
 # ------------------------------------------------------------------
@@ -420,107 +384,10 @@ def greetings_body(session: Session):
 # Shared modeling-state body
 # ------------------------------------------------------------------
 
-# Filler words stripped when checking whether a "create …" request actually
-# names a domain to model. If nothing substantive remains, the request is too
-# vague to build from ("create", "make an app") and we ask what to build instead
-# of hallucinating a default model. Intentionally conservative: any real domain
-# noun ("hospital", "task", "library") survives and the request proceeds.
-_CREATE_FILLER = frozenset({
-    "create", "make", "build", "design", "generate", "add", "new", "start",
-    "a", "an", "the", "some", "any", "please", "for", "me", "us", "my", "our",
-    "app", "application", "web", "webapp", "site", "website", "system", "software",
-    "program", "project", "thing", "something", "stuff", "model", "diagram",
-    "can", "you", "could", "would", "will", "i", "we", "want", "need", "like",
-    "to", "of", "with", "and", "it", "this", "that", "help",
-})
-
-
-def _create_request_is_too_vague(message: str) -> bool:
-    """True when a create request has NO domain content after stripping filler."""
-    words = re.findall(r"[a-zA-Z]+", (message or "").lower())
-    core = [w for w in words if w not in _CREATE_FILLER]
-    # Nothing substantive to model (e.g. "create", "make an app", "build a system").
-    return sum(len(w) for w in core) < 3
-
-
-# A create request that negates the very content it asks to create — a
-# degenerate "empty model" ask. Building a token 1-class model reads as the
-# agent ignoring the request, so we clarify instead. Deliberately high-precision:
-# only STRUCTURAL self-negation (classes/elements/nodes/entities/attributes),
-# so real, positive requests like "a shop with no online payments" or "no user
-# accounts, just products" are never caught.
-_SELF_CONTRADICTORY_CREATE_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
-    r"\b(?:with|having|contain(?:s|ing)?)\s+(?:absolutely\s+|exactly\s+)?"
-    r"(?:no|zero|0)\s+(?:class(?:es)?|element(?:s)?|node(?:s)?|entit(?:y|ies)|attribute(?:s)?)\b",
-    r"\bwithout\s+(?:any\s+)?(?:class(?:es)?|element(?:s)?|node(?:s)?|entit(?:y|ies)|attribute(?:s)?)\b",
-    # "don't model anything" / "model nothing at all" — verb-anchored and
-    # requiring "anything"/"nothing at all" so "add nothing fancy" is NOT caught.
-    r"\b(?:don'?t|do\s+not|never)\s+(?:model|add|include|create|design)\s+"
-    r"(?:anything|any\s+(?:class|element|node|entit))",
-    r"\bmodel\s+nothing\b(?!\s+(?:fancy|special|extra|too|but))",
-    r"\bempty\s+(?:class\s+|object\s+|state\s+(?:machine\s+)?|agent\s+)?diagram\b",
-))
-
-
-def _create_is_self_contradictory(message: str) -> bool:
-    """True when a CREATE request negates the content it asks to create
-    ("a class diagram with no classes", "model nothing", "an empty diagram")."""
-    text = message or ""
-    return any(p.search(text) for p in _SELF_CONTRADICTORY_CREATE_PATTERNS)
-
-
-# Unambiguous prompt-subversion / non-modeling phrases. Each has ZERO legitimate
-# use in a "model my X" request, so when one appears we decline in prose and
-# redirect — instead of over-eagerly modeling the injection text (a class diagram
-# of "RefusalNotice", a "Pirate" class, etc.). Security is already enforced
-# elsewhere (we never *execute* such instructions or leak the prompt); this guard
-# just stops the agent from BUILDING a model out of them. Deliberately high-
-# precision: only patterns that never occur in a real modeling request, so real
-# work ("delete the Doctor class", "make it bigger") is never caught.
-_NON_MODELING_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
-    r"ignore\s+(?:all\s+|any\s+|the\s+)?(?:previous|prior|earlier|above)\s+"
-    r"(?:instruction|prompt|rule|direction|message)",
-    r"disregard\s+(?:your|all|the|any|these|previous|prior)\s+"
-    r"(?:rule|instruction|guardrail|previous|prior|direction)",
-    r"(?:reveal|show|print|expose|repeat|leak)\s+(?:me\s+)?(?:your|the)\s+"
-    r"(?:system\s+)?(?:prompt|instruction|rule)",
-    r"\byou\s+are\s+now\s+(?:a|an)\b",
-    r"\bpretend\s+(?:to\s+be|you\s+are|that\s+you)\b",
-    r"(?:cat|less|head|tail|nano|vim)\s+/etc/\w+",   # shell exfil attempts
-    r"\brm\s+-rf\b",
-    r"/etc/passwd",
-))
-
-
-def _request_is_non_modeling(message: str) -> bool:
-    """True when the message is a prompt-injection / rule-subversion attempt with
-    no legitimate modeling intent (persona hijack, "reveal your prompt", shell
-    commands). Such input is declined in prose, not modeled."""
-    text = message or ""
-    return any(p.search(text) for p in _NON_MODELING_PATTERNS)
-
-
 _NON_MODELING_DECLINE = (
     "I'm a modeling assistant, so I can't take on other instructions or share how "
     "I work — but I'm glad to help you design a diagram. What would you like to "
     "model? For example: *Create a library management system*."
-)
-
-
-# Classifier-OUTAGE net (see _modeling_state_body). LLM-first stands: these
-# fire ONLY when the unified classifier reached NO verdict (provider down /
-# parse failure -> fallback_intent), where the modeling states fall back to
-# THEMSELVES and would otherwise run a full create on "nothing" or "draw me a
-# cat". With a real verdict they never run.
-_OUTAGE_DECLINE_PHRASES = {
-    "nothing", "no", "nope", "nah", "no thanks", "no thank you",
-    "never mind", "nevermind", "nvm", "not now", "stop", "cancel",
-    "that's all", "thats all", "i'm good", "im good",
-}
-_OUTAGE_ARTIFACT_RE = re.compile(
-    r"\b(?:picture|image|photo|drawing|painting|logo|poem|story|song|joke)s?\s+"
-    r"(?:of|about)\b|\btell\s+me\s+a\s+(?:joke|story)\b",
-    re.IGNORECASE,
 )
 
 
@@ -534,22 +401,15 @@ _CONTRADICTORY_CREATE_CLARIFY = (
     "Member and Loan classes*."
 )
 
-
-# The unified classifier is the authoritative create-vs-modify router; the state
-# body's own (intent, mode) is the fallback used only when they agree.
-_INTENT_TO_MODE = {
-    "modify_model_intent": ("modify_model_intent", "modify_model"),
-    "create_complete_system_intent": ("create_complete_system_intent", "complete_system"),
+# guards.modeling_guard decision -> (log line, reply); None replies with the
+# state's empty-message prompt.
+_MODELING_GUARD_REPLIES = {
+    "non_modeling": ("Non-modeling/injection input — declining and redirecting", _NON_MODELING_DECLINE),
+    "outage_decline": ("Outage net: decline phrase — acknowledging", _DECLINE_ACK),
+    "outage_artifact": ("Outage net: non-software artifact — redirecting", _OUT_OF_SCOPE_REDIRECT),
+    "self_contradictory": ("Self-contradictory create — asking what to include", _CONTRADICTORY_CREATE_CLARIFY),
+    "too_vague": ("Create request too vague to model — asking for a domain", None),
 }
-
-
-def _reconcile_intent(intent_name: str, default_mode: str, unified_intent):
-    """Return the (intent, mode) to execute with. Honors the unified classifier's
-    create/modify verdict over the state default — they differ only when a pending
-    flow suppressed intent routing and the message landed in the wrong state."""
-    if unified_intent in _INTENT_TO_MODE and unified_intent != intent_name:
-        return _INTENT_TO_MODE[unified_intent]
-    return intent_name, default_mode
 
 
 def _modeling_state_body(session: Session, intent_name: str, default_mode: str, empty_msg: str):
@@ -565,7 +425,7 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
     # rebuild. Reconcile so "add Death to the PetStatus enum" modifies instead of
     # popping the replace/keep prompt.
     _uc = session.get(UNIFIED_CLASSIFICATION)
-    _reconciled_intent, default_mode = _reconcile_intent(
+    _reconciled_intent, default_mode = guards.reconcile_intent(
         intent_name, default_mode, getattr(_uc, "intent", None),
     )
     if _reconciled_intent != intent_name:
@@ -581,49 +441,14 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
         reply_message(session, empty_msg)
         return
 
-    # Injection / non-modeling guard (create AND modify): a prompt-subversion
-    # attempt ("ignore previous instructions", "you are now a pirate", "reveal
-    # your prompt", shell commands) carries no modeling intent — decline in prose
-    # and redirect, rather than over-modeling the injection text. The agent never
-    # executes such instructions; this just stops it from BUILDING a model of them.
-    if _request_is_non_modeling(request.message):
-        logger.info("[Modeling] Non-modeling/injection input — declining and redirecting")
-        reply_message(session, _NON_MODELING_DECLINE)
-        return
-
-    # Classifier-outage net: only when there is NO usable verdict (the
-    # classifier is exactly the component that is down in this mode).
-    _uc_net = session.get(UNIFIED_CLASSIFICATION)
-    if _uc_net is None or getattr(_uc_net, "intent", None) == "fallback_intent":
-        _normalized = " ".join(
-            re.sub(r"[^\w\s']", " ", request.message.lower()).split())
-        if _normalized in _OUTAGE_DECLINE_PHRASES:
-            logger.info("[Modeling] Outage net: decline phrase — acknowledging")
-            reply_message(session, _DECLINE_ACK)
-            return
-        if _OUTAGE_ARTIFACT_RE.search(request.message):
-            logger.info("[Modeling] Outage net: non-software artifact — redirecting")
-            reply_message(session, _OUT_OF_SCOPE_REDIRECT)
-            return
-
-    # Self-contradiction guard (create path only): a request that negates the
-    # content it asks to create ("a class diagram with no classes", "model
-    # nothing", "an empty diagram") can't be satisfied by a real model. Building
-    # a token 1-class model reads as ignoring the user — clarify instead.
-    if (intent_name == 'create_complete_system_intent'
-            and _create_is_self_contradictory(request.message)):
-        logger.info("[Modeling] Self-contradictory create — asking what to include")
-        reply_message(session, _CONTRADICTORY_CREATE_CLARIFY)
-        return
-
-    # Over-eagerness guard (create path only): if the user only typed filler
-    # ("create", "make an app") with no domain, ASK what to build instead of
-    # guessing a default model. Modify requests are unaffected (they operate on
-    # an existing model where terse phrasing is normal).
-    if (intent_name == 'create_complete_system_intent'
-            and _create_request_is_too_vague(request.message)):
-        logger.info("[Modeling] Create request too vague to model — asking for a domain")
-        reply_message(session, empty_msg)
+    # Deterministic guards (routing/guards.py): injection input, the
+    # classifier-outage net, and self-contradictory or contentless creates are
+    # answered in prose instead of being modeled.
+    _guard = guards.modeling_guard(request.message, intent_name, _uc)
+    if _guard is not None:
+        _log, _reply = _MODELING_GUARD_REPLIES[_guard]
+        logger.info("[Modeling] %s", _log)
+        reply_message(session, _reply or empty_msg)
         return
 
     try:
@@ -951,7 +776,7 @@ def generation_body(session: Session):
     # If the request mixes modeling + generation ("create a class diagram and generate Django"),
     # route through the modeling pipeline first — the orchestrator builds the model and then
     # PAUSES for the user's go-ahead before generating (see execution/planning.py).
-    if _looks_like_mixed_modeling_and_generation(request.message or ""):
+    if guards.is_mixed_modeling_and_generation(request.message or ""):
         logger.info("[GenerationBody] Mixed request detected — routing through modeling pipeline")
         reply_message(
             session,

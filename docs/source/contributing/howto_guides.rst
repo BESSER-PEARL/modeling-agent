@@ -268,6 +268,12 @@ and the decision must never be guessed. Existing examples:
 Both run in ``_post_validate()`` or at the handler boundary and *override* the
 LLM verdict, so keep them precision-first.
 
+A text rule that decides something in a state after routing (the injection
+guard, the classifier-outage net, the create-vagueness check, quick replies)
+goes into ``src/routing/guards.py`` as a pure function, with a row in the
+tables of ``tests/test_routing_guards.py``; the state body only maps the
+decision to its reply.
+
 Adding a Generator Keyword
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 

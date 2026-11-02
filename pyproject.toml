@@ -87,10 +87,10 @@ containers = ["conversation"]
 layers = ["session_helpers", "reply_language", "agent_context | reply_copy | suggestions | telemetry"]
 
 [[tool.importlinter.contracts]]
-name = "routing: the classifier above its signals"
+name = "routing: the classifier above its deterministic guards above its signals"
 type = "layers"
 containers = ["routing"]
-layers = ["unified_classifier", "generation_signals | intents"]
+layers = ["unified_classifier", "guards", "generation_signals | intents"]
 
 [[tool.importlinter.contracts]]
 name = "llm: provider above BYOK above tracking above the per-request config"

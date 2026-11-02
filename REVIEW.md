@@ -13,8 +13,9 @@ generic best-practice rubric.
   model tiers in `model_config.py`, the reply and stream helpers in `session_helpers.py`, handlers built on
   `BaseDiagramHandler`, test doubles from `tests/conftest.py` (`FakeSession`, `FakeLLM`, `make_v2_payload()`).
 - **Fix routing in the layer that owns it.** Layer 1 (`unified_classifier.py`) decides the intent and every
-  sub-routing field; layer 2 (`workspace_orchestrator.py`) picks the diagram type. A keyword special case in
-  a state body that overrides the classifier, or a second classification prompt, is a finding.
+  sub-routing field; layer 2 (`workspace_orchestrator.py`) picks the diagram type; every other deterministic text
+  rule lives in `routing/guards.py`. A keyword or regex special case in a state body or handler that overrides
+  the classifier, or a second classification prompt, is a finding.
 - **No papering over.** Flag an empty `except` that swallows an error, a deterministic repair pass added where
   the prompt should be fixed (repair is only for invariants the LLM statistically violates, with an
   evidence-grounded heuristic), a duplicated helper instead of an import, and a test made to pass by
@@ -51,7 +52,8 @@ are Nit at most.
   vocabulary.
 - **Two-pass threshold**: `_TWO_PASS_MIN_LENGTH` is measured on the raw user message, not the enriched prompt.
 - **Tests**: handler logic tested as pure functions on hand-built dicts (see `tests/test_bpmn.py`); routing
-  changes covered in `tests/test_unified_classifier.py`; shared handler behavior in
+  changes covered in `tests/test_unified_classifier.py` (classifier) or `tests/test_routing_guards.py`
+  (deterministic guards); shared handler behavior in
   `tests/test_diagram_handlers.py`.
 - **Docs**: routing, protocol, and handler changes update the matching page in `docs/source/`
   (`intent_recognition.rst`, `websocket_protocol.rst`, `diagram_handlers.rst`, `configuration.rst`).

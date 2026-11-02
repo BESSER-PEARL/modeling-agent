@@ -132,6 +132,10 @@ Key Module Responsibilities
    * - ``src/codegen/generation_handler.py``
      - Code generation routing. Contains ``GENERATOR_REQUIRED_FIELDS``, the
        config-prompt flows, and the deterministic GitHub-continue guard.
+   * - ``src/routing/guards.py``
+     - The deterministic routing rules (classification skips, ``frontend_event``
+       and ``[auto-fix]`` verdicts, the modeling-state guards, quick replies,
+       the generation route). State bodies only map their decisions to replies.
    * - ``src/routing/generation_signals.py``
      - Generation vocabulary shared below the handlers: ``detect_generator_type()``,
        ``GENERATOR_KEYWORDS`` / ``GENERATOR_PREREQUISITES``, the GitHub-continue

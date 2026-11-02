@@ -201,6 +201,16 @@ Routing (``src/routing/``)
   - its system prompt, the authoritative routing rulebook, is ``SYSTEM_PROMPT`` in
     ``src/prompts/classifier.py``
 
+``src/routing/guards.py``
+  The deterministic routing rules, pure functions over the request or message
+  (see :doc:`intent_recognition`):
+
+  - ``skips_classification``, ``frontend_event_verdict``, ``auto_fix_verdict``
+    — before the classifier
+  - ``reconcile_intent``, ``modeling_guard``, ``quick_response_key``,
+    ``is_mixed_modeling_and_generation``, ``is_past_generation_question``,
+    ``generation_route`` — in the state that received the message
+
 ``src/routing/generation_signals.py``
   Generation vocabulary and session signals shared by the classifier, the
   planner and the generation handler:

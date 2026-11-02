@@ -1,10 +1,10 @@
-"""_reconcile_intent: the unified classifier is the authoritative create-vs-modify
+"""reconcile_intent: the unified classifier is the authoritative create-vs-modify
 router. A pending flow (e.g. a GUI-choice prompt) can suppress intent routing so a
 follow-up modify lands in the CREATE state; the reconciliation honors the
 classifier so "add Death to the PetStatus enum" modifies instead of rebuilding.
 """
 
-from app.state_bodies import _reconcile_intent as _rec
+from routing.guards import reconcile_intent as _rec
 
 
 def test_modify_stuck_in_create_is_reconciled():

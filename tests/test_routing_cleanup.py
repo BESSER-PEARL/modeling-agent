@@ -543,11 +543,14 @@ class TestErrorFallbackMarker:
 
 
 class TestOutageNetPins:
-    """The classifier-outage net in _modeling_state_body exists and is scoped
+    """The classifier-outage net (routing.guards.modeling_guard) exists and is scoped
     to bare phrases / explicit artifact asks (never real requests)."""
 
     def test_phrase_set_and_pattern(self):
-        from app.state_bodies import _OUTAGE_DECLINE_PHRASES, _OUTAGE_ARTIFACT_RE
+        from routing.guards import (
+            OUTAGE_ARTIFACT_RE as _OUTAGE_ARTIFACT_RE,
+            OUTAGE_DECLINE_PHRASES as _OUTAGE_DECLINE_PHRASES,
+        )
         assert "nothing" in _OUTAGE_DECLINE_PHRASES
         assert "never mind" in _OUTAGE_DECLINE_PHRASES
         assert _OUTAGE_ARTIFACT_RE.search("generate a picture of a cat")

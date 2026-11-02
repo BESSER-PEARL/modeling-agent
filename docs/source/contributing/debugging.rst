@@ -154,8 +154,9 @@ Common Pitfalls
 
    There is no keyword pre-filter layer to add a special case to. Routing
    behavior changes belong in ``prompts.classifier.SYSTEM_PROMPT``, or — for
-   decisions the LLM is unreliable at — in an explicit deterministic guard
-   like ``_names_unsupported_stack()``.
+   decisions the LLM is unreliable at — in an explicit deterministic guard:
+   inside the classifier (``_names_unsupported_stack()``) or, for every other
+   text rule, in ``src/routing/guards.py``.
 
 7. **Misclassification between non-generation intents**
 

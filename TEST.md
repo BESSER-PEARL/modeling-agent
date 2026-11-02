@@ -91,8 +91,9 @@ has **no** skip/xfail markers.
 
 | File | ~Funcs | What it verifies |
 | --- | --- | --- |
-| `test_non_modeling_guard.py` | 2 (param) | `state_bodies._request_is_non_modeling` — injection / persona-hijack / shell-command text is declined; real (even non-English) modeling requests pass. |
-| `test_create_vagueness_guard.py` | 2 (param) | `state_bodies._create_request_is_too_vague` — pure-filler creates ("create", "make an app") flagged vague; a real domain noun proceeds. |
+| `test_non_modeling_guard.py` | 2 (param) | `routing.guards.is_non_modeling` — injection / persona-hijack / shell-command text is declined; real (even non-English) modeling requests pass. |
+| `test_create_vagueness_guard.py` | 2 (param) | `routing.guards.is_too_vague_create` — pure-filler creates ("create", "make an app") flagged vague; a real domain noun proceeds. |
+| `test_routing_guards.py` | ~ (param) | `routing.guards` tables: classification skips and the `frontend_event` / `[auto-fix]` verdicts, `modeling_guard` precedence (and the reply each decision gets in the modeling state), quick-response keys, mixed and past-generation checks, `generation_route`, and the transition order that keeps BAF's local classifier as the voice route and outage net. |
 | `test_unified_classifier.py` | 19 | `unified_classifier` — `classify_message`, `get_or_classify` event-id caching, schema literals, `prompts.classifier.SYSTEM_PROMPT` content, fallback/demotion, and smart-gen follow-up routing. |
 | `test_orchestrator.py` | 17 | `orchestrator/workspace_orchestrator.py` target resolution — explicit/implicit targets, `determine_target_diagram_type(s)`, `resolve_diagram_id`. |
 | `test_request_planner.py` | 23 | `orchestrator/request_planner.py` — segment splitting, target matching, operation normalization/fallback, `plan_assistant_operations` (no-op fake LLM). |

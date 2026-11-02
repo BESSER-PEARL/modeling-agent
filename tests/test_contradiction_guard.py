@@ -5,7 +5,7 @@ building a token 1-class model. HIGH-PRECISION: real, positive requests that
 merely contain a negation ("a shop with no online payments") must NOT be caught.
 """
 
-from app.state_bodies import _create_is_self_contradictory as _contra
+from routing.guards import is_self_contradictory_create as _contra
 
 
 def test_degenerate_creates_are_caught():

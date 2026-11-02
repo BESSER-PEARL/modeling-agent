@@ -8,13 +8,13 @@ from codegen.generation_handler import (
     _required_missing,
     _normalize_defaults,
     _build_config_prompt,
-    _looks_like_mixed_modeling_and_generation,
     handle_generation_request,
     should_route_to_generation,
 )
 from codegen.smart_generation_handler import GenerationClassification
 from protocol.types import AssistantRequest, WorkspaceContext
 from routing.generation_signals import GENERATOR_KEYWORDS, detect_generator_type
+from routing.guards import is_mixed_modeling_and_generation as _looks_like_mixed_modeling_and_generation
 
 from tests.conftest import FakeSession
 
@@ -242,7 +242,7 @@ class TestBuildConfigPrompt:
 
 
 # ---------------------------------------------------------------------------
-# _looks_like_mixed_modeling_and_generation
+# routing.guards.is_mixed_modeling_and_generation
 # ---------------------------------------------------------------------------
 
 class TestLooksMixedModelingAndGeneration:

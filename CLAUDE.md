@@ -51,7 +51,7 @@ the image alike. Never import through `src.` and never add `sys.path` inserts. E
 (only the entrypoint `modeling_agent.py` sits at the repo root); a new package goes into the import-linter
 layers (`tests/test_packaging.py` checks). Its `version` is the agent's only version.
 
-**Import layering** (each top-level package is one layer and imports only those below it): `app` → `ingestion` → `execution` → `codegen` / `orchestrator` → `conversation` → `routing` → `memory` / `diagram_handlers` → `prompts` → `llm` / `schemas` → `utilities` → `protocol` → `common`. Packages on one level (`/`) do not import each other. Inside a package: `app` is `state_bodies` / `agent_setup` → `confirmation`; `conversation` is `session_helpers` → `reply_language` → the rest; `routing` is `unified_classifier` → `generation_signals` / `intents`; `llm` is `provider` → `byok` → `tracking` → `byok_config` / `model_catalog` / `model_config` / `retry`, and only `llm` imports `openai` / `anthropic`. `lint-imports` enforces all of it (`[tool.importlinter]` in `pyproject.toml`), with the one known cycle (`codegen.generation_handler` → `execution`: a confirmed generation re-runs the planned operations) ignored.
+**Import layering** (each top-level package is one layer and imports only those below it): `app` → `ingestion` → `execution` → `codegen` / `orchestrator` → `conversation` → `routing` → `memory` / `diagram_handlers` → `prompts` → `llm` / `schemas` → `utilities` → `protocol` → `common`. Packages on one level (`/`) do not import each other. Inside a package: `app` is `state_bodies` / `agent_setup` → `confirmation`; `conversation` is `session_helpers` → `reply_language` → the rest; `routing` is `unified_classifier` → `guards` → `generation_signals` / `intents`; `llm` is `provider` → `byok` → `tracking` → `byok_config` / `model_catalog` / `model_config` / `retry`, and only `llm` imports `openai` / `anthropic`. `lint-imports` enforces all of it (`[tool.importlinter]` in `pyproject.toml`), with the one known cycle (`codegen.generation_handler` → `execution`: a confirmed generation re-runs the planned operations) ignored.
 
 - Handler tests instantiate handlers directly, e.g. `BPMNDiagramHandler(None)` (the LLM arg is only needed by
   methods that call the model), and test deterministic repair such as `_validate_and_refine` as a pure function
@@ -92,11 +92,19 @@ WebSocket message
   or — for decisions the LLM is measurably unreliable at — in an explicit deterministic guard
   (`_names_unsupported_stack()` in `unified_classifier.py`; `_GITHUB_URL_RE` / `_GITHUB_CONTINUE_VERB_RE` in
   `routing/generation_signals.py`). There is no keyword pre-filter layer to add special cases to.
+- **Every other deterministic routing rule lives in `routing/guards.py`**, as a pure function over the request or
+  message (and the verdict where it depends on it): before the classifier, `skips_classification`,
+  `frontend_event_verdict` and `auto_fix_verdict`; after routing, in the receiving state, `reconcile_intent`,
+  `modeling_guard` (injection input, the classifier-outage net, self-contradictory and contentless creates, first
+  match wins), `quick_response_key`, `is_mixed_modeling_and_generation`, `is_past_generation_question` and
+  `generation_route`. State bodies and the generation handler only map a guard's decision to a reply. A new
+  text rule goes there, with a row in `tests/test_routing_guards.py`, never inline in a state body.
 - **Intent `description=` strings in `modeling_agent.py` stay one-liners.** They only feed BAF's local fallback
   classifier and do not drive routing.
 - **BAF's own classifier is a local, non-LLM fallback** (`SimpleIntentClassifierConfiguration(framework='tensorflow')`
   in `agent_setup.py`, trained at startup on each intent's `training_sentences`). It routes only when the unified
-  call failed (`fallback_intent`) and for voice / plain-text events. `training_sentences` are therefore
+  call failed (`fallback_intent`) and for voice / plain-text events (a voice transcript is a text event, which the
+  unified hook never sees: `when_intent_matched` is its only route). `training_sentences` are therefore
   **mandatory** on every intent — an intent without them breaks that classifier at startup.
 - `config.yaml`'s `nlp.intent_threshold` (0.55) gates only that local classifier, not the unified one.
 - **Transition priority** (`state_bodies.add_unified_transitions`): 0 `_ensure_unified_classification` (side
@@ -229,8 +237,8 @@ src/
   conversation/                   session_helpers.py (reply/stream helpers), reply_language.py, reply_copy.py,
                                   suggestions.py ("What's next?"), telemetry.py, agent_context.py (runtime handles
                                   the entrypoint fills in)
-  routing/                        unified_classifier.py (layer 1 router), generation_signals.py (generator
-                                  vocabulary + signals), intents.py
+  routing/                        unified_classifier.py (layer 1 router), guards.py (deterministic routing
+                                  rules), generation_signals.py (generator vocabulary + signals), intents.py
   memory/                         Verbatim window + rolling LLM summary per session
   diagram_handlers/               core/ (base_handler, layout_engine), types/ (one handler per
                                   type + gui_design_system.py, gui_html_converter.py), registry/ (factory, metadata)

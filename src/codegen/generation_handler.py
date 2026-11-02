@@ -37,9 +37,9 @@ from routing.generation_signals import (
     _active_project_id,
     _extract_github_reference,
     _smart_gen_project_has_app,
-    detect_generator_type,
 )
 from conversation.session_helpers import reply_message, reply_payload
+from routing.guards import generation_route, is_past_generation_question
 from routing.unified_classifier import (
     UnifiedClassification,
     classify_message as _unified_classify_message,
@@ -57,46 +57,11 @@ def _classification_to_legacy(cls_obj: UnifiedClassification):
     """Adapt a :class:`UnifiedClassification` to the
     :class:`GenerationClassification` shape the dispatch code below
     expects (attributes ``route / generator_type / refined_instructions /
-    provider / reason``).
-
-    Non-generation verdicts can still reach the generation handler
-    (keyword-routed messages, pending flows). Rather than second-guessing
-    the unified classifier with another LLM call, honor its verdict:
-    modeling intents run the modeling pipeline (create OR modify — see the
-    ``route == "modeling"`` branch, which picks the mode from the cached
-    intent), everything else gets the 'other' clarify reply.
+    provider / reason``). The route is :func:`routing.guards.generation_route`.
     """
     from codegen.smart_generation_handler import GenerationClassification
-    # generation_route is only MEANINGFUL on generation verdicts (the schema
-    # says "REQUIRED when intent='generation_intent'") — but the LLM often
-    # fills it as 'other' on non-generation intents too. Trusting that noise
-    # sent a mismatch-rebuild ("create a class diagram for a hotel…",
-    # intent=create, generation_route='other') to the clarify reply instead
-    # of the modeling branch. Ignore the field unless the verdict is a
-    # generation one; derive the route from the intent otherwise.
-    route = (
-        cls_obj.generation_route
-        if cls_obj.intent == "generation_intent" else None
-    )
-    if not route:
-        if cls_obj.intent in (
-            "create_complete_system_intent", "modify_model_intent",
-        ):
-            route = "modeling"
-        elif cls_obj.intent == "generation_intent":
-            route = "deterministic"
-        elif cls_obj.intent == "fallback_intent" and (
-            cls_obj.reason or ""
-        ).startswith("[classifier-error]"):
-            # ERROR fallback (LLM down / parse failure — _safe_fallback tags
-            # these): 'deterministic' with no generator_type shows the
-            # generator MENU, the resilient pre-LLM behavior. A DELIBERATE
-            # none-of-the-above verdict falls through to 'other' instead.
-            route = "deterministic"
-        else:
-            route = "other"
     return GenerationClassification(
-        route=route,
+        route=generation_route(cls_obj),
         generator_type=cls_obj.generator_type,
         refined_instructions=cls_obj.refined_instructions,
         provider=cls_obj.provider,
@@ -1028,32 +993,6 @@ def handle_pending_plan_generation_confirmation(session: Session) -> bool:
     return True
 
 
-def _looks_like_mixed_modeling_and_generation(message: str) -> bool:
-    lower = (message or "").lower()
-    if not detect_generator_type(lower):
-        return False
-
-    modeling_keywords = [
-        "class diagram",
-        "object diagram",
-        "state machine",
-        "state diagram",
-        "agent diagram",
-        "gui diagram",
-        "quantum circuit",
-        "create class",
-        "create an agent",
-        "create state",
-        "create model",
-        "structural model",
-        "model a",
-        "design a",
-    ]
-    has_modeling_language = any(token in lower for token in modeling_keywords)
-    has_multi_step_connector = any(token in lower for token in [" and ", " then ", " also ", " after ", " after that ", ";"])
-    return has_modeling_language and has_multi_step_connector
-
-
 def should_route_to_generation(session: Session, request: AssistantRequest) -> bool:
     """State-transition gatekeeper for ``generation_state``.
 
@@ -1279,22 +1218,6 @@ def _handle_smart_generator_result(
     return payload
 
 
-# A question ABOUT a past generation: interrogative opener + a
-# generated/built/created reference within the same short message, or the
-# bare "what did/have/was ... generate(d)" forms. Precision-first — an
-# imperative like "generate rust classes" never matches (no interrogative
-# opener), and future-directed questions are excluded separately.
-_PAST_GEN_QUESTION_RE = re.compile(
-    r"^(what|which|show|tell|list|describe|explain)\b.{0,60}\b(generat|built|created|produced)",
-    re.IGNORECASE,
-)
-# Future-directed words that turn "what ... generate" into a request for
-# options/capabilities or a NEW run — those keep the normal routing.
-_FUTURE_GEN_WORDS_RE = re.compile(
-    r"\b(should|shall|can|could|would|will|next|now|again|regenerate|new)\b",
-    re.IGNORECASE,
-)
-
 def _build_github_import_payload(
     owner: str, repo: str, branch: Optional[str],
 ) -> Dict[str, Any]:
@@ -1355,7 +1278,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
     # question about the outcome, never a new
     # run. Deterministic, and only fires while a completed run is fresh.
     _msg = (request.message or "").strip()
-    if _PAST_GEN_QUESTION_RE.search(_msg) and not _FUTURE_GEN_WORDS_RE.search(_msg):
+    if is_past_generation_question(_msg):
         _summary = session.get(LAST_SMART_GEN_SUMMARY)
         _at = session.get(LAST_SMART_GEN_AT) or 0
         if _summary and (time.time() - float(_at)) < 1800:
