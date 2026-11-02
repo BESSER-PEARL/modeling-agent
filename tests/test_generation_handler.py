@@ -14,7 +14,7 @@ from codegen.generation_handler import (
 from codegen.smart_generation_handler import GenerationClassification
 from protocol.types import AssistantRequest, WorkspaceContext
 from routing.generation_signals import GENERATOR_KEYWORDS, detect_generator_type
-from routing.guards import is_mixed_modeling_and_generation as _looks_like_mixed_modeling_and_generation
+from routing.guards import is_mixed_modeling_and_generation
 
 from tests.conftest import FakeSession
 from common import pending_dialogs
@@ -249,15 +249,15 @@ class TestBuildConfigPrompt:
 
 class TestLooksMixedModelingAndGeneration:
     def test_pure_generation(self):
-        assert not _looks_like_mixed_modeling_and_generation("generate django code")
+        assert not is_mixed_modeling_and_generation("generate django code")
 
     def test_mixed(self):
-        assert _looks_like_mixed_modeling_and_generation(
+        assert is_mixed_modeling_and_generation(
             "create a class diagram for a library and then generate django code"
         )
 
     def test_pure_modeling(self):
-        assert not _looks_like_mixed_modeling_and_generation("create a class diagram")
+        assert not is_mixed_modeling_and_generation("create a class diagram")
 
 
 # ---------------------------------------------------------------------------

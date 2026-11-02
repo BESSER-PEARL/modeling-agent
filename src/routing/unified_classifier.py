@@ -43,7 +43,7 @@ from pydantic import BaseModel, Field
 from llm.byok_config import get_current
 from prompts.classifier import SYSTEM_PROMPT
 from protocol.types import AssistantRequest
-from routing.guards import AUTO_FIX_PREFIX, auto_fix_verdict, frontend_event_verdict  # noqa: F401  (AUTO_FIX_PREFIX re-exported)
+from routing.guards import auto_fix_verdict, frontend_event_verdict
 from routing.generation_signals import (
     _GITHUB_CONTINUE_VERB_RE,
     _extract_github_reference,

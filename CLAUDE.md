@@ -98,7 +98,9 @@ WebSocket message
   `modeling_guard` (injection input, the classifier-outage net, self-contradictory and contentless creates, first
   match wins), `quick_response_key`, `is_mixed_modeling_and_generation`, `is_past_generation_question` and
   `generation_route`. State bodies and the generation handler only map a guard's decision to a reply. A new
-  text rule goes there, with a row in `tests/test_routing_guards.py`, never inline in a state body.
+  text rule goes there, with a row in `tests/test_routing_guards.py`, never inline in a state body. Answers to a
+  pending question (replace/keep, GUI choice, generator confirmations) are parsed by the pending-flow handlers
+  (`app/confirmation.py`, `codegen/generation_handler.py`), not by these guards.
 - **Intent `description=` strings in `modeling_agent.py` stay one-liners.** They only feed BAF's local fallback
   classifier and do not drive routing.
 - **BAF's own classifier is a local, non-LLM fallback** (`SimpleIntentClassifierConfiguration(framework='tensorflow')`

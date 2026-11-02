@@ -551,16 +551,13 @@ class TestOutageNetPins:
     to bare phrases / explicit artifact asks (never real requests)."""
 
     def test_phrase_set_and_pattern(self):
-        from routing.guards import (
-            OUTAGE_ARTIFACT_RE as _OUTAGE_ARTIFACT_RE,
-            OUTAGE_DECLINE_PHRASES as _OUTAGE_DECLINE_PHRASES,
-        )
-        assert "nothing" in _OUTAGE_DECLINE_PHRASES
-        assert "never mind" in _OUTAGE_DECLINE_PHRASES
-        assert _OUTAGE_ARTIFACT_RE.search("generate a picture of a cat")
-        assert _OUTAGE_ARTIFACT_RE.search("tell me a joke")
-        assert not _OUTAGE_ARTIFACT_RE.search("create a photo-sharing app")
-        assert not _OUTAGE_ARTIFACT_RE.search("a library with books and loans")
+        from routing.guards import OUTAGE_ARTIFACT_RE, OUTAGE_DECLINE_PHRASES
+        assert "nothing" in OUTAGE_DECLINE_PHRASES
+        assert "never mind" in OUTAGE_DECLINE_PHRASES
+        assert OUTAGE_ARTIFACT_RE.search("generate a picture of a cat")
+        assert OUTAGE_ARTIFACT_RE.search("tell me a joke")
+        assert not OUTAGE_ARTIFACT_RE.search("create a photo-sharing app")
+        assert not OUTAGE_ARTIFACT_RE.search("a library with books and loans")
 
 
 class TestMismatchRegenFixes:

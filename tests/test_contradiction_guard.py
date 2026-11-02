@@ -5,7 +5,7 @@ building a token 1-class model. HIGH-PRECISION: real, positive requests that
 merely contain a negation ("a shop with no online payments") must NOT be caught.
 """
 
-from routing.guards import is_self_contradictory_create as _contra
+from routing.guards import is_self_contradictory_create
 
 
 def test_degenerate_creates_are_caught():
@@ -23,7 +23,7 @@ def test_degenerate_creates_are_caught():
         "create an empty state machine diagram",
         "model nothing",
     ]:
-        assert _contra(msg), f"expected self-contradictory: {msg!r}"
+        assert is_self_contradictory_create(msg), f"expected self-contradictory: {msg!r}"
 
 
 def test_real_positive_requests_are_not_caught():
@@ -39,4 +39,4 @@ def test_real_positive_requests_are_not_caught():
         "create a class diagram with a User and an Order class",
         "build a diagram with no more than five classes",
     ]:
-        assert not _contra(msg), f"expected NOT self-contradictory: {msg!r}"
+        assert not is_self_contradictory_create(msg), f"expected NOT self-contradictory: {msg!r}"

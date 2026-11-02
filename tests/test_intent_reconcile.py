@@ -4,32 +4,32 @@ follow-up modify lands in the CREATE state; the reconciliation honors the
 classifier so "add Death to the PetStatus enum" modifies instead of rebuilding.
 """
 
-from routing.guards import reconcile_intent as _rec
+from routing.guards import reconcile_intent
 
 
 def test_modify_stuck_in_create_is_reconciled():
     # The reported bug: classifier says modify, but the message landed in create.
-    assert _rec("create_complete_system_intent", "complete_system",
-                "modify_model_intent") == ("modify_model_intent", "modify_model")
+    assert reconcile_intent("create_complete_system_intent", "complete_system",
+                         "modify_model_intent") == ("modify_model_intent", "modify_model")
 
 
 def test_create_stuck_in_modify_is_reconciled():
-    assert _rec("modify_model_intent", "modify_model",
-                "create_complete_system_intent") == (
+    assert reconcile_intent("modify_model_intent", "modify_model",
+                         "create_complete_system_intent") == (
                     "create_complete_system_intent", "complete_system")
 
 
 def test_agreement_is_left_untouched():
-    assert _rec("create_complete_system_intent", "complete_system",
-                "create_complete_system_intent") == (
+    assert reconcile_intent("create_complete_system_intent", "complete_system",
+                         "create_complete_system_intent") == (
                     "create_complete_system_intent", "complete_system")
-    assert _rec("modify_model_intent", "modify_model",
-                "modify_model_intent") == ("modify_model_intent", "modify_model")
+    assert reconcile_intent("modify_model_intent", "modify_model",
+                         "modify_model_intent") == ("modify_model_intent", "modify_model")
 
 
 def test_no_or_other_classification_keeps_state_default():
     for uc in (None, "generation_intent", "fallback_intent", "hello_intent"):
-        assert _rec("create_complete_system_intent", "complete_system", uc) == (
+        assert reconcile_intent("create_complete_system_intent", "complete_system", uc) == (
             "create_complete_system_intent", "complete_system")
-        assert _rec("modify_model_intent", "modify_model", uc) == (
+        assert reconcile_intent("modify_model_intent", "modify_model", uc) == (
             "modify_model_intent", "modify_model")

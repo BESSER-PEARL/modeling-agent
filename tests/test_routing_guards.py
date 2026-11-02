@@ -13,8 +13,8 @@ from app import state_bodies as sb
 from common.session_keys import UNIFIED_CLASSIFICATION
 from protocol.types import AssistantRequest, WorkspaceContext
 from routing import guards
+from routing.guards import AUTO_FIX_PREFIX
 from routing.unified_classifier import (
-    AUTO_FIX_PREFIX,
     UnifiedClassification,
     classify_message,
     get_or_classify,
@@ -75,7 +75,6 @@ def test_auto_fix_is_a_modify_without_the_llm():
     assert result.intent == MODIFY
     assert result.model_disposition == "extend_existing"
     assert result.pending_flow_action == "new_request"
-    assert AUTO_FIX_PREFIX is guards.AUTO_FIX_PREFIX
 
 
 def test_auto_fix_keeps_the_provider_unavailable_fallback():
