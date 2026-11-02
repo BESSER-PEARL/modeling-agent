@@ -18,22 +18,15 @@ import uuid
 from typing import Callable, Dict, Any, List, Optional, Sequence, Tuple, Type
 from abc import ABC, abstractmethod
 
-from openai import LengthFinishReasonError
 from pydantic import BaseModel
 
-from llm import byok
 from common.agent_config import LLM_MAX_TOKENS_SMALL, LLM_MAX_TOKENS_LARGE, LLM_TEMPERATURE
-from llm.byok_config import get_current
-from llm.model_config import (
-    MODEL_CLASSIFIER,
-    MODEL_GENERATION_SMALL,
-    reasoning_effort_for,
-    supports_custom_temperature,
-)
+from llm.model_config import MODEL_CLASSIFIER, MODEL_GENERATION_SMALL
+from llm.provider import LLMProvider, OutputTruncated
 from .layout_engine import apply_layout
 from common.errors import (
     ErrorCode, LLMPredictionError, ModelRefusal, build_error_response, classify_error,
-    non_recoverable_cause, raise_if_openai_refusal, _RECOVERY_HINTS,
+    non_recoverable_cause, _RECOVERY_HINTS,
 )
 
 from utilities.image_inputs import content_text, openai_content
@@ -47,17 +40,6 @@ logger = logging.getLogger(__name__)
 # restore INFO-level content logging for a debugging session.
 _LOG_PROMPTS = os.getenv("LOG_PROMPTS", "").strip().lower() in {"1", "true", "yes"}
 _log_content = logger.info if _LOG_PROMPTS else logger.debug
-
-
-def _track_usage(usage: Any, model: str) -> None:
-    """Record a completion's real usage (best effort)."""
-    if usage is None:
-        return
-    try:
-        from llm.tracking import get_tracker
-        get_tracker().record_from_usage(usage, model=model)
-    except Exception as exc:
-        logger.debug(f"Token tracking failed (best-effort): {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +122,11 @@ class BaseDiagramHandler(ABC):
     def __init__(self, llm):
         """Initialize handler with LLM instance"""
         self.llm = llm
+
+    @property
+    def llm_provider(self) -> LLMProvider:
+        """Every LLM call of the handler goes through this, over the injected LLM."""
+        return LLMProvider(self.llm)
 
     @abstractmethod
     def get_diagram_type(self) -> str:
@@ -685,72 +672,13 @@ class BaseDiagramHandler(ABC):
         self, prompt: str, model: Optional[str] = None, *, max_tokens: Optional[int] = None,
         images: Sequence[str] = (),
     ) -> str:
-        """Single free-text LLM call honoring a per-call model override.
-
-        BAF's ``LLMOpenAI.predict`` always sends ``self.llm.name`` as the
-        model, so per-call routing (see ``model_config``) must go through
-        the OpenAI client directly when an override is requested. Falls
-        back to the BAF path when no override is given or the client is
-        unavailable. Records the call's usage (a length estimate on the BAF
-        path, which exposes none; BYOK records its own).
-
-        BYOK: when the current request carries a user-supplied key (see
-        ``byok_config.current_byok``), this free-text generation call is routed
-        through the user's own per-request client instead of the shared
-        server LLM. SDK auth/rate-limit errors propagate so
-        ``predict_with_retry`` / ``errors.classify_error`` surface them.
-
-        ``images`` (data URLs) go with the prompt; the BAF path cannot send
-        them, so an image call uses the client with the instance model.
-        """
-        effective_max_tokens = max_tokens or LLM_MAX_TOKENS_LARGE
-
-        byok_client = byok.get_active_client()
-        if byok_client is not None:
-            return byok_client.predict_raw(
-                prompt,
-                model=model,
-                temperature=LLM_TEMPERATURE,
-                reasoning_effort=reasoning_effort_for(model) if model else None,
-                max_tokens=effective_max_tokens,
-                images=images,
-            )
-
-        client = getattr(self.llm, 'client', None)
-        if images and not model:
-            model = getattr(self.llm, 'name', MODEL_CLASSIFIER)
-        if model and client is not None and hasattr(client, 'chat'):
-            raw_kwargs: Dict[str, Any] = {
-                "model": model,
-                "messages": [{"role": "user", "content": openai_content(prompt, images)}],
-                "max_completion_tokens": effective_max_tokens,
-            }
-            # gpt-5* / o-series models 400 on an explicit non-default
-            # temperature — omit the parameter for them; cap their hidden
-            # reasoning instead (quality holds, latency drops ~40%).
-            if supports_custom_temperature(model):
-                raw_kwargs["temperature"] = LLM_TEMPERATURE
-            elif reasoning_effort_for(model):
-                raw_kwargs["reasoning_effort"] = reasoning_effort_for(model)
-            completion = client.chat.completions.create(**raw_kwargs)
-            _track_usage(getattr(completion, "usage", None), model)
-            if not completion.choices:
-                return ""
-            raise_if_openai_refusal(completion.choices[0])
-            return completion.choices[0].message.content or ""
-        if images:
-            raise LLMPredictionError("This LLM client cannot send images")
-        response = self.llm.predict(prompt)
-        try:
-            from llm.tracking import get_tracker
-            get_tracker().record(
-                prompt_tokens=len(prompt) // 4,
-                completion_tokens=len(response) // 4 if response else 0,
-                model=getattr(self.llm, 'name', MODEL_CLASSIFIER),
-            )
-        except Exception as exc:
-            logger.debug(f"Token tracking failed (best-effort): {exc}")
-        return response
+        """Single free-text LLM call honoring a per-call model override
+        (see ``model_config``) on the user's key when one is active.
+        ``images`` (data URLs) go with the prompt."""
+        return self.llm_provider.complete(
+            prompt, model=model, temperature=LLM_TEMPERATURE, max_tokens=max_tokens,
+            images=images,
+        )
 
     # NOTE: This adds an extra LLM round-trip (2–4s latency).
     def predict_with_retry(
@@ -906,33 +834,10 @@ class BaseDiagramHandler(ABC):
         Raises:
             LLMPredictionError: If all attempts fail.
         """
-        effective_model = model or (
-            self.llm.name if hasattr(self.llm, 'name') else MODEL_CLASSIFIER
-        )
-        # BYOK: a user who saved a key pays for their own structured calls.
-        byok_client = byok.get_active_client()
-        if byok_client is not None:
-            client = byok_client.openai_client
-            if client is None:
-                # Anthropic / Mistral / custom endpoint: JSON mode on the
-                # user's client (predict_with_retry is BYOK-routed).
-                return self._structured_fallback(
-                    prompt, response_schema, system_prompt, max_retries, model=model,
-                    images=images,
-                )
-            cfg = get_current()
-            effective_model = byok.resolve_model("openai", effective_model, cfg.model if cfg else None)
-        else:
-            client = getattr(self.llm, 'client', None)
-        # --- Check if client supports .parse() ---
-        has_parse = (
-            client is not None
-            and hasattr(client, 'beta')
-            and hasattr(client.beta, 'chat')
-        )
-
-        if not has_parse:
-            # Fallback: predict_with_retry + manual parse
+        provider = self.llm_provider
+        # Anthropic / Mistral / custom endpoints and clients without
+        # ``.parse()``: JSON on the same provider (BYOK-routed).
+        if not provider.supports_structured_outputs():
             logger.info(
                 f"[{self.get_diagram_type()}] Structured outputs unavailable, "
                 "falling back to predict_with_retry"
@@ -941,10 +846,7 @@ class BaseDiagramHandler(ABC):
                 prompt, response_schema, system_prompt, max_retries, model=model,
                 images=images,
             )
-
-        # --- Structured parse with retry ---
-        from llm.tracking import get_tracker
-        tracker = get_tracker()
+        effective_model = model or provider.model_name
 
         messages = []
         if system_prompt:
@@ -952,7 +854,6 @@ class BaseDiagramHandler(ABC):
         messages.append({"role": "user", "content": openai_content(prompt, images)})
 
         last_error: Optional[Exception] = None
-        raw_content: Optional[str] = None
         total_attempts = 1 + max_retries
         truncated = False
 
@@ -1006,56 +907,20 @@ class BaseDiagramHandler(ABC):
                     _log_content(
                         f"📝 [{self.get_diagram_type()}] Prompt msg[{i}] content:\n{content}"
                     )
-                parse_kwargs: Dict[str, Any] = {
-                    "model": effective_model,
-                    "messages": messages,
-                    "response_format": response_schema,
-                    "max_completion_tokens": max_tokens,
-                }
-                # gpt-5* / o-series models 400 on an explicit non-default
-                # temperature — omit the parameter for them; cap their hidden
-                # reasoning instead (quality holds, latency drops ~40%).
-                if supports_custom_temperature(effective_model):
-                    parse_kwargs["temperature"] = temperature
-                elif reasoning_effort_for(effective_model):
-                    parse_kwargs["reasoning_effort"] = reasoning_effort_for(effective_model)
                 try:
-                    completion = client.beta.chat.completions.parse(**parse_kwargs)
-                except LengthFinishReasonError as exc:
-                    # parse() raises on finish_reason=length; the call is still billed.
-                    if exc.completion.usage:
-                        tracker.record_from_usage(exc.completion.usage, model=effective_model)
+                    parsed = provider.parse(
+                        messages, response_schema, temperature=temperature,
+                        max_tokens=max_tokens, model=model,
+                    )
+                except OutputTruncated as exc:
                     if truncated or attempt + 1 >= total_attempts:
-                        raise LLMPredictionError(
-                            f"Structured output truncated at max_tokens={max_tokens}"
-                        ) from exc
+                        raise LLMPredictionError(str(exc)) from exc
                     logger.warning(
                         f"⚠️ [{self.get_diagram_type()}] Response TRUNCATED "
                         f"(max_tokens={max_tokens}); retrying once with a concise instruction"
                     )
                     truncated = True
                     continue
-
-                # Track tokens
-                finish_reason = completion.choices[0].finish_reason if completion.choices else None
-                usage = completion.usage if hasattr(completion, 'usage') else None
-                raw_content = getattr(completion.choices[0].message, 'content', None) if completion.choices else None
-
-                if usage:
-                    tracker.record_from_usage(usage, model=effective_model)
-                    logger.info(
-                        f"📊 [{self.get_diagram_type()}] Token usage: "
-                        f"prompt={usage.prompt_tokens}, "
-                        f"completion={usage.completion_tokens}, "
-                        f"total={usage.total_tokens}, "
-                        f"finish_reason={finish_reason}"
-                    )
-
-                if completion.choices:
-                    raise_if_openai_refusal(completion.choices[0])
-                parsed = completion.choices[0].message.parsed
-                if parsed is None:
-                    raise LLMPredictionError("LLM returned empty structured output")
 
                 # Response content is DEBUG-only (LOG_PROMPTS=1 restores INFO)
                 # — it contains the user's generated model data.
@@ -1080,9 +945,7 @@ class BaseDiagramHandler(ABC):
                 last_error = LLMPredictionError(f"Structured parse failed: {exc}")
                 logger.warning(
                     f"[{self.get_diagram_type()}] Structured parse attempt "
-                    f"{attempt + 1}/{total_attempts} failed: {exc}\n"
-                    f"  Raw response content (if available): "
-                    f"{raw_content[:2000] if raw_content else 'N/A'}"
+                    f"{attempt + 1}/{total_attempts} failed: {exc}"
                 )
 
         raise last_error or LLMPredictionError("Structured prediction failed after all retries")
@@ -1542,7 +1405,7 @@ If the diagram looks good, return: {{"has_issues": false}}
 Return ONLY the JSON, no explanations."""
 
         try:
-            response = self.llm.predict(critique_prompt)
+            response = self.llm_provider.predict(critique_prompt)
 
             if not response or not response.strip():
                 return spec

@@ -12,17 +12,14 @@ import logging
 import threading
 import uuid
 from collections import OrderedDict
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from baf.core.session import Session
 
 from protocol.adapters import parse_assistant_request
-from common.agent_config import (
-    STREAM_BUFFER_THRESHOLD,
-    LLM_TEXT_TEMPERATURE,
-    LLM_MAX_TOKENS_TEXT,
-)
-from llm.model_config import MODEL_CLASSIFIER
+from common.agent_config import STREAM_BUFFER_THRESHOLD
+from common.errors import ModelRefusal
+from llm.provider import LLMProvider
 from memory import get_memory, memory_session_key
 from common.session_keys import (
     LAST_SUGGESTED_PROMPTS,
@@ -472,12 +469,10 @@ def stream_llm_response(
 ) -> str:
     """Stream an LLM response token-by-token to the frontend.
 
-    Attempts real OpenAI streaming via ``llm_instance.client``.  Falls back
-    to a single-chunk send if the client doesn't support streaming.
-
     Args:
         session: The WebSocket session.
-        llm_instance: The BESSER LLMOpenAI instance (has ``.client``).
+        llm_instance: The BESSER LLMOpenAI instance the call runs on (see
+            ``llm.provider.LLMProvider.stream``).
         prompt: The user prompt.
         system_prompt: Optional system prompt.
         model: Optional per-call model override (see ``model_config``);
@@ -493,44 +488,12 @@ def stream_llm_response(
     full_text = ""
 
     try:
-        # BYOK: when the current request carries a user-supplied key, route
-        # this conversational/help/describe call through the user's own
-        # per-request client. Anthropic/Mistral don't share OpenAI's
-        # streaming chunk shape, so BYOK replies are fetched whole and sent
-        # as a single chunk through the same stream protocol. SDK
-        # auth/rate-limit errors propagate to the handler below.
-        from llm.byok import get_active_client
-        byok_client = get_active_client()
-        if byok_client is not None:
-            # No system/user split in the free-text BYOK shape; fold the
-            # system prompt into the prompt when present.
-            byok_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
-            full_text = byok_client.predict_raw(
-                byok_prompt,
-                model=model,
-                json_mode=False,
-                temperature=LLM_TEXT_TEMPERATURE,
-            )
-            if full_text:
-                reply_stream_chunk(session, full_text, stream_id)
-        else:
-            client = getattr(llm_instance, 'client', None)
-            if client is not None and hasattr(client, 'chat'):
-                # Real streaming via OpenAI SDK
-                full_text = _stream_openai(
-                    session, client, prompt, system_prompt, stream_id,
-                    model=model or getattr(llm_instance, 'name', MODEL_CLASSIFIER),
-                )
-            else:
-                # Fallback: single-chunk non-streaming
-                response = llm_instance.predict(prompt)
-                full_text = response if isinstance(response, str) else str(response)
-                reply_stream_chunk(session, full_text, stream_id)
-
+        chunks = LLMProvider(llm_instance).stream(prompt, system_prompt=system_prompt, model=model)
+        full_text = _send_chunks(session, chunks, stream_id)
     except Exception as e:
         logger.error(f"❌ [Streaming] Error: {e}")
         if not full_text:
-            from common.errors import ModelRefusal, classify_error, get_recovery_hint
+            from common.errors import classify_error, get_recovery_hint
             if isinstance(e, ModelRefusal):
                 full_text = e.user_message()
             else:
@@ -544,98 +507,30 @@ def stream_llm_response(
     return full_text
 
 
-def _stream_openai(
-    session: Session,
-    client: Any,
-    prompt: str,
-    system_prompt: str,
-    stream_id: str,
-    model: str = MODEL_CLASSIFIER,
-) -> str:
-    """Real token-by-token streaming using the OpenAI SDK.
-
-    Sends each delta chunk to the frontend immediately, giving users
-    instant visual feedback instead of waiting for the full response.
-    Tracks token usage via stream_options.
-    """
-    from llm.tracking import get_tracker
-
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
-
+def _send_chunks(session: Session, chunks: Iterable[str], stream_id: str) -> str:
+    """Send text chunks to the frontend as they arrive, buffered to about a
+    sentence, and return the whole text. A mid-stream failure keeps the text
+    sent so far; a refusal propagates."""
     full_text = ""
     chunk_buffer = ""
-    # Buffer threshold — balance between WebSocket flood (too small) and
-    # perceived latency (too large).  ~200 chars ≈ 1-2 sentences, giving
-    # fluid streaming without overwhelming the connection.
-    _BUFFER_THRESHOLD = STREAM_BUFFER_THRESHOLD
-
-    # Reasoning-family models (GPT-5 and later) reject ANY non-default temperature
-    # with a 400 — which surfaced to users as "The generated model had
-    # structural issues" on EVERY describe-my-model call (the streaming
-    # error handler's canned text). Only pass temperature to models that
-    # accept a custom one.
-    from llm.model_config import reasoning_effort_for, supports_custom_temperature
-    stream_kwargs: dict = {
-        "model": model,
-        "messages": messages,
-        "max_completion_tokens": LLM_MAX_TOKENS_TEXT,
-        "stream": True,
-        "stream_options": {"include_usage": True},
-    }
-    if supports_custom_temperature(model):
-        stream_kwargs["temperature"] = LLM_TEXT_TEMPERATURE
-    elif reasoning_effort_for(model):
-        stream_kwargs["reasoning_effort"] = reasoning_effort_for(model)
-
-    stream = client.chat.completions.create(**stream_kwargs)
-
-    usage = None
-    refusal = ""
-    finish_reason = None
     try:
-        for event in stream:
-            # Final chunk with usage stats
-            if hasattr(event, 'usage') and event.usage is not None:
-                usage = event.usage
-
-            if not event.choices:
-                continue
-
-            finish_reason = getattr(event.choices[0], 'finish_reason', None) or finish_reason
-            delta = event.choices[0].delta
-            delta_refusal = getattr(delta, 'refusal', None)
-            if isinstance(delta_refusal, str):
-                refusal += delta_refusal
-            content = getattr(delta, 'content', None)
-            if content:
-                full_text += content
-                chunk_buffer += content
-
-                # Flush buffer when it has enough content or hits a natural break
-                if (
-                    len(chunk_buffer) >= _BUFFER_THRESHOLD
-                    or content.endswith(('\n', '.', '!', '?', ':'))
-                ):
-                    reply_stream_chunk(session, chunk_buffer, stream_id)
-                    chunk_buffer = ""
+        for content in chunks:
+            full_text += content
+            chunk_buffer += content
+            # Flush on a full buffer or a natural break: neither floods the
+            # WebSocket nor holds text back.
+            if (
+                len(chunk_buffer) >= STREAM_BUFFER_THRESHOLD
+                or content.endswith(('\n', '.', '!', '?', ':'))
+            ):
+                reply_stream_chunk(session, chunk_buffer, stream_id)
+                chunk_buffer = ""
+    except ModelRefusal:
+        raise
     except Exception as exc:
         logger.error(f"❌ [Streaming] Mid-stream error: {exc}")
-        # Partial text already captured in full_text; fall through to flush
     finally:
         # Always flush remaining buffer so no text is silently lost
         if chunk_buffer:
             reply_stream_chunk(session, chunk_buffer, stream_id)
-
-    # Track tokens
-    if usage:
-        tracker = get_tracker()
-        tracker.record_from_usage(usage, model=model)
-
-    if not full_text:
-        from common.errors import raise_if_openai_refusal
-        raise_if_openai_refusal({"message": {"refusal": refusal}, "finish_reason": finish_reason})
-
     return full_text

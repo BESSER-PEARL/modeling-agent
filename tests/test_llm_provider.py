@@ -217,8 +217,7 @@ class TestStreamFallback:
         mock_llm.predict.return_value = "streamed response"
         provider = LLMProvider(mock_llm)
 
-        messages = [{"role": "user", "content": "hello"}]
-        chunks = list(provider.stream(messages))
+        chunks = list(provider.stream("hello"))
         assert chunks == ["streamed response"]
 
     def test_fallback_when_client_has_no_chat(self):
@@ -228,20 +227,14 @@ class TestStreamFallback:
         mock_llm.predict.return_value = "fallback stream"
         provider = LLMProvider(mock_llm)
 
-        messages = [{"role": "user", "content": "test"}]
-        chunks = list(provider.stream(messages))
+        chunks = list(provider.stream("test"))
         assert chunks == ["fallback stream"]
 
-    def test_fallback_predict_receives_concatenated_messages(self):
+    def test_fallback_predict_receives_the_prompt(self):
+        """BAF's ``predict`` has its own system context; the prompt alone goes."""
         mock_llm = _make_mock_llm(has_client=False)
         mock_llm.predict.return_value = "ok"
         provider = LLMProvider(mock_llm)
 
-        messages = [
-            {"role": "system", "content": "sys"},
-            {"role": "user", "content": "usr"},
-        ]
-        list(provider.stream(messages))
-        call_args = mock_llm.predict.call_args[0][0]
-        assert "sys" in call_args
-        assert "usr" in call_args
+        list(provider.stream("usr", system_prompt="sys"))
+        mock_llm.predict.assert_called_once_with("usr")

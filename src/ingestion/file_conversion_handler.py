@@ -29,23 +29,8 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from common.errors import ModelRefusal
-from llm.model_config import MODEL_VISION, reasoning_effort_for, supports_custom_temperature
-
-
-def _vision_sampling_params() -> Dict[str, Any]:
-    """Token/temperature params appropriate for the configured vision model.
-
-    gpt-5* / o-series models require ``max_completion_tokens``, reject an
-    explicit non-default ``temperature``, and get their hidden reasoning
-    capped via ``reasoning_effort``; older models (gpt-4o, gpt-4.1) use
-    ``max_tokens`` and accept temperature.
-    """
-    if supports_custom_temperature(MODEL_VISION):
-        return {"max_tokens": 8192, "temperature": 0.1}
-    kwargs = {"max_completion_tokens": 8192}
-    if reasoning_effort_for(MODEL_VISION):
-        kwargs["reasoning_effort"] = reasoning_effort_for(MODEL_VISION)
-    return kwargs
+from llm.model_config import MODEL_VISION
+from utilities.image_inputs import data_url
 
 logger = logging.getLogger(__name__)
 
@@ -453,7 +438,6 @@ def convert_file_to_diagram_spec(
     filename: str,
     llm_predict: callable,
     llm_vision_predict: Optional[callable] = None,
-    openai_api_key: Optional[str] = None,
     target_diagram_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Convert an uploaded file to the best-fit diagram specification.
@@ -465,8 +449,9 @@ def convert_file_to_diagram_spec(
         file_content_b64: Base64-encoded file content.
         filename: Original filename (used for type detection).
         llm_predict: LLM predict function for text-based conversions.
-        llm_vision_predict: Optional vision-capable LLM predict for images.
-        openai_api_key: OpenAI API key for direct vision API calls (fallback).
+        llm_vision_predict: ``(prompt, image_data_urls, timeout=) -> text``
+            for images and scanned PDFs (``LLMProvider.vision``), or None
+            when no key can serve a vision call.
         target_diagram_type: The diagram type the user's message asked for,
             if any; an image is then read as that type instead of detected.
 
@@ -497,10 +482,10 @@ def convert_file_to_diagram_spec(
         return _convert_knowledge_graph(content_text, filename, llm_predict)
     elif file_type == "image":
         return _convert_image(
-            file_content_b64, filename, llm_predict, openai_api_key, target_diagram_type,
+            file_content_b64, filename, llm_vision_predict, target_diagram_type,
         )
     elif file_type == "pdf":
-        return _convert_pdf(raw_bytes, filename, llm_predict, openai_api_key)
+        return _convert_pdf(raw_bytes, filename, llm_predict, llm_vision_predict)
     elif file_type == "xmi":
         return _convert_xmi(content_text, filename, llm_predict)
     else:
@@ -575,7 +560,7 @@ def _convert_pdf(
     pdf_bytes: bytes,
     filename: str,
     llm_predict: callable,
-    openai_api_key: Optional[str] = None,
+    llm_vision_predict: Optional[callable] = None,
 ) -> Dict[str, Any]:
     """Convert a PDF document to the best-fit diagram spec.
 
@@ -622,7 +607,7 @@ def _convert_pdf(
         full_text = "\n\n".join(text_parts)
 
         # If low text, render pages to images for vision analysis
-        if len(full_text) <= 50 and openai_api_key:
+        if len(full_text) <= 50 and llm_vision_predict:
             render_pages = min(page_count, 3)
             for i in range(render_pages):
                 try:
@@ -643,7 +628,7 @@ def _convert_pdf(
         return _run_llm_conversion(prompt, filename, "PDF", None, llm_predict)
 
     # Low text content — PDF likely contains diagrams/images.
-    if not openai_api_key:
+    if not llm_vision_predict:
         return _error_response(
             f"The PDF '{filename}' appears to contain diagrams/images rather than text. "
             "Image-based PDF conversion requires an OpenAI API key with vision capabilities."
@@ -655,36 +640,15 @@ def _convert_pdf(
             "The file may be empty or in an unsupported format."
         )
 
-    # Send page images to the vision API
-    vision_prompt = _build_image_prompt()  # auto-detect from image
-    content_blocks: List[Dict[str, Any]] = [{"type": "text", "text": vision_prompt}]
-    for img_b64 in images_b64:
-        content_blocks.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/png;base64,{img_b64}"},
-        })
-
     try:
-        import requests as http_requests
-
-        response = http_requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {openai_api_key}",
-            },
-            json={
-                # Vision tier — env-overridable (see model_config).
-                "model": MODEL_VISION,
-                "messages": [{"role": "user", "content": content_blocks}],
-                "response_format": {"type": "json_object"},
-                **_vision_sampling_params(),
-            },
+        raw_text = llm_vision_predict(
+            _build_image_prompt(),  # auto-detect from image
+            [data_url("image/png", img_b64) for img_b64 in images_b64],
             timeout=90,
         )
-        response.raise_for_status()
-        data = response.json()
-        raw_text = data["choices"][0]["message"]["content"]
+    except ModelRefusal as e:
+        logger.warning(f"[FileConversion] Model declined the PDF images: {e}")
+        return _error_response(e.user_message())
     except Exception as e:
         logger.error(f"[FileConversion] Vision API call failed for PDF: {e}")
         return _error_response(
@@ -698,8 +662,7 @@ def _convert_pdf(
 def _convert_image(
     image_b64: str,
     filename: str,
-    llm_predict: callable,
-    openai_api_key: Optional[str] = None,
+    llm_vision_predict: Optional[callable] = None,
     target_diagram_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Convert an image of a UML diagram to the best-fit diagram spec.
@@ -707,88 +670,47 @@ def _convert_image(
     Without a target type the image's type is detected, and a UI screenshot
     or mockup returns ``GUI_MOCKUP_ACTION``.
     """
-    if not openai_api_key:
+    if not llm_vision_predict:
         return _error_response(
             "Image conversion requires an OpenAI API key with vision capabilities. "
             "Please configure the API key in the agent settings."
         )
 
-    mime_type = image_mime_type(filename)
     vision_prompt = _build_image_prompt(target_diagram_type, detect_mockup=True)
-
-    import requests as http_requests
-
-    payload = {
-        # Vision tier — env-overridable (see model_config).
-        "model": MODEL_VISION,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": vision_prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mime_type};base64,{image_b64}"},
-                    },
-                ],
-            }
-        ],
-        "response_format": {"type": "json_object"},
-        **_vision_sampling_params(),
-    }
+    image = data_url(image_mime_type(filename), image_b64)
 
     # The vision model intermittently returns null content (a transient empty
-    # completion / safety filter) even for a perfectly readable image — the SAME
-    # image frequently succeeds on a retry. So retry a few times on empty content
-    # before giving up, and log finish_reason/refusal so the cause is diagnosable.
+    # completion) even for a perfectly readable image, and the SAME image
+    # frequently succeeds on a retry, so an empty reply is retried. Transient
+    # API errors are already retried by the client.
     raw_text = None
-    last_refusal = None
-    last_finish_reason = None
+    refusal = None
     for attempt in range(3):
         try:
-            response = http_requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {openai_api_key}",
-                },
-                json=payload,
-                timeout=60,
-            )
-            response.raise_for_status()
-            choice = response.json()["choices"][0]
-            raw_text = choice["message"].get("content")
-            if raw_text:
-                break
-            last_finish_reason = choice.get("finish_reason")
-            refusal = choice["message"].get("refusal")
-            if isinstance(refusal, str) and refusal.strip():
-                last_refusal = refusal.strip()
-            if last_refusal or last_finish_reason == "content_filter":
-                break  # a declined image is declined again on retry
-            logger.warning(
-                "[FileConversion] Vision returned null content "
-                "(attempt %d/3, model=%s, finish=%s, refusal=%s) for %s",
-                attempt + 1, MODEL_VISION, last_finish_reason,
-                last_refusal, filename,
-            )
+            raw_text = llm_vision_predict(vision_prompt, [image], timeout=60)
+        except ModelRefusal as e:
+            refusal = e  # a declined image is declined again on retry
+            break
         except Exception as e:
-            logger.error(
-                f"[FileConversion] Vision API call failed (attempt {attempt + 1}/3): {e}"
+            logger.error(f"[FileConversion] Vision API call failed: {e}")
+            return _error_response(
+                "Failed to process the image. Please make sure the image contains "
+                "a clear UML diagram or UI mockup."
             )
-            if attempt == 2:
-                return _error_response(
-                    "Failed to process the image. Please make sure the image contains "
-                    "a clear UML diagram or UI mockup."
-                )
+        if raw_text:
+            break
+        logger.warning(
+            "[FileConversion] Vision returned null content (attempt %d/3, model=%s) for %s",
+            attempt + 1, MODEL_VISION, filename,
+        )
 
     # A refusal (or a content-filter stop) is NOT the same as an empty reply:
     # the model actively declined, and retrying the identical request won't help.
     # Say so honestly instead of reporting "returned no content".
-    if not raw_text and (last_refusal or last_finish_reason == "content_filter"):
+    if refusal is not None:
         logger.warning(
-            "[FileConversion] Vision declined the image (model=%s, finish=%s) for %s",
-            MODEL_VISION, last_finish_reason, filename,
+            "[FileConversion] Vision declined the image (model=%s, category=%s) for %s",
+            MODEL_VISION, refusal.category, filename,
         )
         return _error_response(
             "The AI model declined to read this image. This can happen with photos "

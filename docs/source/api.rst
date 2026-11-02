@@ -334,15 +334,26 @@ LLM (``src/llm/``)
 ------------------
 
 ``src/llm/provider.py``
-  Provider abstraction over the OpenAI SDK:
+  The one door to the model SDKs (an import-linter contract keeps ``openai`` /
+  ``anthropic`` imports inside ``llm``). ``LLMProvider(llm)`` wraps a BAF
+  ``LLMOpenAI`` instance; every method runs on the request's BYOK key when one
+  is active, else on the instance's shared client, records usage with the
+  model actually called, applies the ``model_config`` sampling rules and
+  raises ``ModelRefusal`` on a refusal:
 
-  - ``LLMProvider`` — ``parse(messages, schema, temperature, max_tokens, model)``
-    for structured outputs, ``stream(...)`` for streaming text, and
-    ``predict(prompt, **kwargs)`` for a plain completion. All omit
-    ``temperature`` and pass ``reasoning_effort`` for gpt-5 / o-series models.
-    ``.client`` and ``.model_name`` expose the underlying SDK client and the
-    tier this provider was built for.
-  - ``get_provider(llm, model_name)`` — process-wide accessor
+  - ``complete(prompt, *, model, json_mode, temperature, max_tokens, images)``
+    — free text or JSON mode; without a ``model`` (and images) it is BAF's
+    ``predict``
+  - ``parse(messages, schema, *, temperature, max_tokens, model)`` — one
+    structured-output attempt (OpenAI Structured Outputs, else JSON mode);
+    raises ``OutputTruncated`` when the reply hits ``max_tokens``.
+    ``supports_structured_outputs()`` tells which one it will use
+  - ``stream(prompt, *, system_prompt, model, temperature, max_tokens)`` — the
+    reply as text chunks (one chunk on a BYOK key)
+  - ``vision(prompt, images, *, timeout)`` — the file-conversion vision call
+    (``MODEL_VISION``, JSON mode)
+  - ``predict(prompt, **kwargs)`` — BAF's ``predict`` with an estimated usage
+  - ``get_provider(llm, model_name)`` — the process-wide provider over ``gpt``
 
 ``src/llm/byok.py``
   Per-request bring-your-own-key routing:
@@ -351,7 +362,6 @@ LLM (``src/llm/``)
   - ``get_active_client()`` — the per-request client, or ``None``
   - ``resolve_model(provider, requested_model, user_model)``
   - ``SUPPORTED_PROVIDERS`` — ``openai``, ``anthropic``, ``mistral``, ``nebius``
-  - ``predict_json(prompt, model)`` / ``user_openai_key()`` — the attachment paths
 
 ``src/llm/byok_config.py``
   The per-request BYOK state, below both ``byok`` and ``tracking``:
@@ -422,7 +432,7 @@ Utilities
   - ``format_user_metamodel_guide()`` / ``build_user_profile_help_prompt(message)``
   - ``is_user_profile_help(message)``
 
-``src/utilities/llm_retry.py``
+``src/llm/retry.py``
   Retry-with-backoff for the *shared* server LLM's raw SDK call:
 
   - ``patch_openai_client_for_retry(client, *, label='llm')`` —

@@ -194,7 +194,7 @@ Opus 5, Sonnet 5, Fable 5 / 5.1), Opus 4.7 / 4.8 and Mythos reject
 them an ``output_config.effort`` instead. A user's Anthropic key sends no
 sampling parameters to any Claude model: the ``anthropic`` SDK removed them
 in 1.0, and API version 2026-10-21 rejects them on every model.
-``model_config`` exposes two helpers that every call site uses:
+``model_config`` holds the rule:
 
 .. code-block:: python
 
@@ -206,15 +206,12 @@ in 1.0, and API version 2026-10-21 rejects them on every model.
        # None for models that accept a temperature (they reject the param);
        # otherwise MODEL_REASONING_EFFORT
 
-The pattern appears in ``diagram_handlers/core/base_handler.py`` and
-``llm/provider.py``:
+   sampling_params(model, temperature) -> dict
+       # {"temperature": t}, {"reasoning_effort": e} or {}
 
-.. code-block:: python
-
-   if supports_custom_temperature(effective_model):
-       parse_kwargs["temperature"] = temperature
-   else:
-       parse_kwargs["reasoning_effort"] = reasoning_effort_for(effective_model)
+``llm/provider.py`` applies it to every shared-client call (the BYOK client in
+``llm/byok.py`` applies it per provider), and ``app/agent_setup.py`` to the
+BAF constructor parameters. Call sites never pass either parameter themselves.
 
 .. list-table::
    :header-rows: 1
@@ -322,15 +319,18 @@ and the shared server LLM is never mutated.
        ``https://api.mistral.ai/v1`` and
        ``https://api.tokenfactory.nebius.com/v1/``)
    * - Routed call shapes
-     - ``base_handler._predict_raw`` / ``predict_with_retry`` (generation),
-       ``session_helpers.stream_llm_response`` (conversational reply, help,
-       describe), ``base_handler.predict_structured`` and the intent
-       classifier's ``LLMProvider.parse`` (``.parse()`` on a user's OpenAI
-       key, JSON mode + schema validation for the other providers), and file
-       attachments (``gpt_predict_json``; image/PDF vision with an OpenAI key)
+     - Every ``llm.provider.LLMProvider`` call: free text and JSON
+       (generation, ``gpt_predict_json``), structured output
+       (``base_handler.predict_structured`` and the intent classifier;
+       ``.parse()`` on a user's OpenAI key, JSON mode + schema validation for
+       the other providers), streaming replies (one chunk) and image/PDF
+       vision (the vision request as is on an OpenAI key, the BYOK model
+       mapping with the images for the other providers and gateways)
    * - Not routed
-     - The local BAF fallback classifier (no LLM), RAG embeddings, and image/PDF
-       vision for non-OpenAI keys (they cannot call the OpenAI vision API)
+     - The local BAF fallback classifier (no LLM), BAF's own RAG and
+       intent-classifier calls, ``LLMProvider.predict`` (BAF's ``predict`` on
+       the shared key: the memory summarizer, the class-diagram critique and
+       the no-RAG UML answer), RAG embeddings and speech-to-text
    * - Per-request timeout
      - 300 s (without it the SDKs default to several minutes, letting one
        hung call stall a whole turn; 120 s cut long-spec reasoning passes short)
@@ -508,7 +508,7 @@ Output caps, reasoning effort and the two-pass gate
 Retries
 ~~~~~~~
 
-- **Shared server clients**: ``src/utilities/llm_retry.py`` is the only
+- **Shared server clients**: ``src/llm/retry.py`` is the only
   transport retry. The SDK's own retries are turned off (``max_retries=0``) so
   they do not nest under it. A 429 or 5xx is tried up to ``MAX_ATTEMPTS`` (4)
   times with 0.6 / 1.2 / 2.4 s backoff (about 5 s of sleep in the worst case,

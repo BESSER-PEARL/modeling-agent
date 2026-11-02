@@ -51,7 +51,7 @@ the image alike. Never import through `src.` and never add `sys.path` inserts. E
 (only the entrypoint `modeling_agent.py` sits at the repo root); a new package goes into the import-linter
 layers (`tests/test_packaging.py` checks). Its `version` is the agent's only version.
 
-**Import layering** (each top-level package is one layer and imports only those below it): `app` → `ingestion` → `execution` → `codegen` / `orchestrator` → `conversation` → `routing` → `memory` / `diagram_handlers` → `llm` / `schemas` → `utilities` → `protocol` → `common`. Packages on one level (`/`) do not import each other. Inside a package: `app` is `state_bodies` / `agent_setup` → `confirmation`; `conversation` is `session_helpers` → `reply_language` → the rest; `routing` is `unified_classifier` → `generation_signals` / `intents`; `llm` is `provider` → `byok` → `tracking` → `byok_config` / `model_catalog` / `model_config`. `lint-imports` enforces all of it (`[tool.importlinter]` in `pyproject.toml`), with the one known cycle (`codegen.generation_handler` → `execution`: a confirmed generation re-runs the planned operations) ignored.
+**Import layering** (each top-level package is one layer and imports only those below it): `app` → `ingestion` → `execution` → `codegen` / `orchestrator` → `conversation` → `routing` → `memory` / `diagram_handlers` → `llm` / `schemas` → `utilities` → `protocol` → `common`. Packages on one level (`/`) do not import each other. Inside a package: `app` is `state_bodies` / `agent_setup` → `confirmation`; `conversation` is `session_helpers` → `reply_language` → the rest; `routing` is `unified_classifier` → `generation_signals` / `intents`; `llm` is `provider` → `byok` → `tracking` → `byok_config` / `model_catalog` / `model_config` / `retry`, and only `llm` imports `openai` / `anthropic`. `lint-imports` enforces all of it (`[tool.importlinter]` in `pyproject.toml`), with the one known cycle (`codegen.generation_handler` → `execution`: a confirmed generation re-runs the planned operations) ignored.
 
 - Handler tests instantiate handlers directly, e.g. `BPMNDiagramHandler(None)` (the LLM arg is only needed by
   methods that call the model), and test deterministic repair such as `_validate_and_refine` as a pure function
@@ -219,11 +219,12 @@ src/
   diagram_handlers/               core/ (base_handler, layout_engine, prompt_fragments), types/ (one handler per
                                   type + gui_design_system.py, gui_html_converter.py), registry/ (factory, metadata)
   schemas/<type>.py               Structured-output schemas
-  llm/                            provider.py (structured outputs, streaming), byok.py (per-request bring-your-own
-                                  key), byok_config.py (its contextvar), model_config.py (per-call-site model
-                                  tiers, all BESSER_AGENT_MODEL_* overridable), model_catalog.py,
+  llm/                            provider.py (the only SDK caller: text, JSON, structured, stream, vision), retry.py
+                                  (shared-client retry), byok.py (per-request bring-your-own key), byok_config.py
+                                  (its contextvar), model_config.py (per-call-site model tiers, all
+                                  BESSER_AGENT_MODEL_* overridable), model_catalog.py,
                                   tracking/ (token/cost tracking; prices: resources/model_prices.json)
-  utilities/                      Model summaries/resolution, JSON repair, LLM retry, model_utils.py
+  utilities/                      Model summaries/resolution, JSON repair, model_utils.py
   protocol/                       types.py, adapters.py, message_limits.py
   common/                         agent_config.py (tunable constants), session_keys.py (every session-state key:
                                   import, don't use literals), errors.py
@@ -237,12 +238,17 @@ reply-route-to-sender, and sets/resets the per-request BYOK contextvar. **Re-ven
 
 ## LLM Pitfalls
 
+- **One door to the SDKs**: every LLM call goes through `llm.provider.LLMProvider` (`complete`, `parse`, `stream`,
+  `vision`, `predict`), which routes the request's BYOK key, records usage with the model actually called, applies
+  the sampling rules and raises `ModelRefusal`. Only `llm/` may import `openai` / `anthropic` (import-linter);
+  never post to a model API with `requests`/`httpx`.
 - **Two shared LLM instances**: `gpt` is the structured/JSON path, `gpt_text` is free text (help, greetings, RAG,
-  streaming). Both default to the `MODEL_CLASSIFIER` tier; generation call sites pass `model=` from
-  `model_config.py`. Passing the wrong one breaks silently or raises a JSON-parse error deep in `predict_structured`.
-- **Reasoning models reject `temperature`** (gpt-5+/gpt-6, o-series, and recent Claude families). Use
-  `model_config.supports_custom_temperature(model)` and `reasoning_effort_for(model)` at every call site; never
-  hardcode either parameter.
+  streaming); code gets one injected (handlers, `stream_llm_response`) and calls it through `LLMProvider(llm)`.
+  Both default to the `MODEL_CLASSIFIER` tier; generation call sites pass `model=` from `model_config.py`. Passing
+  the wrong one breaks silently or raises a JSON-parse error deep in `predict_structured`.
+- **Reasoning models reject `temperature`** (gpt-5+/gpt-6, o-series, and recent Claude families).
+  `model_config.sampling_params(model, temperature)` picks `temperature` or `reasoning_effort`; `LLMProvider`
+  applies it, so call sites never pass either parameter themselves.
 - **A new `MODEL_*` default needs a price**: the model catalog or `resources/model_prices.json` (a copy of BESSER's
   vendored price file; refresh both together) — an unknown model
   falls back to placeholder pricing and every reported cost silently becomes an estimate.

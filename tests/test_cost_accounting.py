@@ -154,7 +154,7 @@ def test_shared_free_text_call_records_real_usage(tracker):
 
 
 def test_truncated_classifier_parse_still_records_usage(tracker):
-    from llm.provider import LLMProvider
+    from llm.provider import LLMProvider, OutputTruncated
 
     class _Out(BaseModel):
         intent: str
@@ -168,8 +168,9 @@ def test_truncated_classifier_parse_still_records_usage(tracker):
     provider = LLMProvider(SimpleNamespace(client=client))
     provider.tracker = tracker
 
-    with pytest.raises(openai.LengthFinishReasonError):
+    with pytest.raises(OutputTruncated) as raised:
         provider.parse([{"role": "user", "content": "hi"}], _Out)
+    assert isinstance(raised.value.__cause__, openai.LengthFinishReasonError)
 
     assert tracker.summary()["completion_tokens"] == 512
 

@@ -26,12 +26,8 @@ from common.agent_config import (
     LLM_MAX_TOKENS_TEXT,
     CONVERSATION_HISTORY_DEPTH,
 )
-from llm.model_config import (
-    MODEL_CLASSIFIER,
-    MODEL_EMBEDDINGS,
-    reasoning_effort_for,
-    supports_custom_temperature,
-)
+from llm.model_config import MODEL_CLASSIFIER, MODEL_EMBEDDINGS, sampling_params
+from llm.provider import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +46,11 @@ def _enable_shared_llm_retry(llm_instance: LLMOpenAI, label: str) -> None:
     this module runs — so we cannot patch the client here directly. Instead
     we wrap ``initialize`` itself: once the real one has created the client,
     we patch its network-call methods in place (see
-    ``utilities.llm_retry.patch_openai_client_for_retry``). Because the
+    ``llm.retry.patch_openai_client_for_retry``). Because the
     client object is created once and reused for the LLM's lifetime, this
     is a single choke point — BAF's ``predict``/``chat``/intent
-    classification, ``llm.provider``'s structured-output ``parse()`` and
-    streaming ``stream()``, and ``gpt_predict_json``'s model-override
-    branch below all end up calling through this same patched client.
+    classification and every ``llm.provider`` call on the shared key end
+    up calling through this same patched client.
 
     Only ever applied to the shared server LLMs constructed in this
     function. BYOK's per-request client (``byok.BYOKClient``) is a
@@ -64,7 +59,7 @@ def _enable_shared_llm_retry(llm_instance: LLMOpenAI, label: str) -> None:
     ``model_operations.py`` still fires once the (now bounded) retries here
     are exhausted.
     """
-    from utilities.llm_retry import patch_openai_client_for_retry
+    from llm.retry import patch_openai_client_for_retry
 
     original_initialize = llm_instance.initialize
 
@@ -78,19 +73,6 @@ def _enable_shared_llm_retry(llm_instance: LLMOpenAI, label: str) -> None:
             patch_openai_client_for_retry(client, label=label)
 
     llm_instance.initialize = _initialize_then_patch_for_retry
-
-
-def _sampling_params(model_name: str, temperature: float) -> Dict[str, Any]:
-    """``temperature`` for models that take one, else ``reasoning_effort``.
-
-    BAF's ``predict()`` sends the constructor ``parameters`` whenever a call
-    passes none (UML RAG, memory summarizer, critique and stream fallbacks),
-    so a reasoning-model classifier tier would 400 on every such call.
-    """
-    if supports_custom_temperature(model_name):
-        return {'temperature': temperature}
-    effort = reasoning_effort_for(model_name)
-    return {'reasoning_effort': effort} if effort else {}
 
 
 def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
@@ -108,11 +90,14 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     # The default LLM is the CLASSIFIER tier (cheap routing/extraction);
     # generation-quality calls override the model per call site via the
     # ``model=`` plumbing in base_handler / llm.provider (see model_config).
+    # BAF's ``predict()`` sends the constructor ``parameters`` whenever a call
+    # passes none (UML RAG, memory summarizer, critique, stream fallback), so
+    # they follow the model's sampling rule too.
     gpt = LLMOpenAI(
         agent=agent,
         name=MODEL_CLASSIFIER,
         parameters={
-            **_sampling_params(MODEL_CLASSIFIER, LLM_TEMPERATURE),
+            **sampling_params(MODEL_CLASSIFIER, LLM_TEMPERATURE),
             'max_completion_tokens': LLM_MAX_TOKENS_LARGE,
         },
         num_previous_messages=CONVERSATION_HISTORY_DEPTH,
@@ -121,52 +106,12 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     # the shared client's network-call layer — see _enable_shared_llm_retry.
     _enable_shared_llm_retry(gpt, label="gpt")
 
-    # Thin wrapper that enforces JSON mode for predict() calls only.
-    def _json_params_for(model_name: str) -> Dict[str, Any]:
-        """JSON-mode call parameters valid for *model_name*.
-
-        gpt-5* / o-series models reject an explicit non-default temperature
-        with a 400 ("Only the default (1) value is supported") — send
-        reasoning_effort instead, as base_handler does.
-        """
-        return {
-            **_sampling_params(model_name, LLM_TEMPERATURE),
-            'max_completion_tokens': LLM_MAX_TOKENS_LARGE,
-            'response_format': {'type': 'json_object'},
-        }
+    json_llm = LLMProvider(gpt, model_name=MODEL_CLASSIFIER)
 
     def gpt_predict_json(prompt: str, model: Optional[str] = None) -> str:
-        """Call gpt.predict with JSON-object response_format.
-
-        ``model`` optionally overrides the default classifier-tier model
-        for call sites that warrant a stronger one (e.g. the file-conversion
-        text path). BAF's ``predict`` cannot vary the model per call, so
-        the override goes through the OpenAI client directly.
-        """
-        from llm.byok import predict_json as byok_predict_json
-        routed = byok_predict_json(prompt, model=model)
-        if routed is not None:
-            return routed
-        client = getattr(gpt, 'client', None)
-        if model and client is not None and hasattr(client, 'chat'):
-            completion = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                **_json_params_for(model),
-            )
-            usage = getattr(completion, 'usage', None)
-            if usage is not None:
-                try:
-                    from llm.tracking import get_tracker
-                    get_tracker().record_from_usage(usage, model=model)
-                except Exception as exc:
-                    logger.debug(f"Token tracking failed (best-effort): {exc}")
-            if not completion.choices:
-                return ""
-            from common.errors import raise_if_openai_refusal
-            raise_if_openai_refusal(completion.choices[0])
-            return completion.choices[0].message.content or ""
-        return gpt.predict(prompt, parameters=_json_params_for(MODEL_CLASSIFIER))
+        """A JSON-mode call; ``model`` optionally overrides the classifier
+        tier (e.g. the file-conversion text path)."""
+        return json_llm.complete(prompt, model=model, json_mode=True)
 
     # Free-text LLM (help, greetings, RAG fallback) — JSON mode would break.
     # IMPORTANT: The BESSER framework registers LLMs by name in a dict, and
@@ -178,7 +123,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
         agent=agent,
         name=f'{MODEL_CLASSIFIER}-text',
         parameters={
-            **_sampling_params(MODEL_CLASSIFIER, LLM_TEXT_TEMPERATURE),
+            **sampling_params(MODEL_CLASSIFIER, LLM_TEXT_TEMPERATURE),
             'max_completion_tokens': LLM_MAX_TOKENS_TEXT,
         },
         num_previous_messages=20,
@@ -190,7 +135,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
     if gpt is None:
         raise RuntimeError("LLM initialization returned None")
 
-    # Initialize the LLM provider abstraction (for structured outputs, streaming)
+    # The shared provider (the intent classifier, file conversion).
     try:
         from llm import get_provider
         get_provider(gpt, model_name=MODEL_CLASSIFIER)

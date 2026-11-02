@@ -94,4 +94,28 @@ layers = ["unified_classifier", "generation_signals | intents"]
 name = "llm: provider above BYOK above tracking above the per-request config"
 type = "layers"
 containers = ["llm"]
-layers = ["provider", "byok", "tracking", "byok_config | model_catalog | model_config"]
+layers = ["provider", "byok", "tracking", "byok_config | model_catalog | model_config | retry"]
+
+# Every LLM call goes through llm.provider (CLAUDE.md, "LLM Pitfalls"), so it
+# gets BYOK, retry, tracking and the sampling rules in one place.
+[[tool.importlinter.contracts]]
+name = "Only llm talks to the model SDKs"
+type = "forbidden"
+source_modules = [
+    "app",
+    "codegen",
+    "common",
+    "conversation",
+    "diagram_handlers",
+    "execution",
+    "ingestion",
+    "memory",
+    "orchestrator",
+    "protocol",
+    "routing",
+    "schemas",
+    "utilities",
+]
+forbidden_modules = ["openai", "anthropic"]
+# Only direct imports: going through llm is the point.
+allow_indirect_imports = true

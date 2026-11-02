@@ -19,20 +19,13 @@ thread for that turn. Every session has its own event loop, so two
 concurrent users can never cross keys. We never mutate the shared global
 LLM/client.
 
-Scope (the agreed "high-value slice")
--------------------------------------
-This routes the **free-text** call shapes the agent uses for generation
-and conversation:
-
-* ``base_handler._predict_raw`` / ``predict_with_retry`` (generation),
-* ``session_helpers.stream_llm_response`` (conversational reply / help /
-  describe).
-
-the structured-output calls (``base_handler.predict_structured`` and the
-intent classifier's ``LLMProvider.parse``: ``.parse()`` on the user's OpenAI
-client, JSON mode for the other providers) and file attachments (JSON text
-path via :func:`predict_json`; the image/PDF vision path via
-:func:`user_openai_key` when the key is an OpenAI one).
+Scope
+-----
+``llm.provider.LLMProvider`` asks :func:`get_active_client` on every call but
+``predict`` (BAF's own path), so these run on the user's key when one is
+active: free text and JSON mode, structured output (``.parse()`` on the
+user's OpenAI client, JSON mode for the other providers), streaming (one
+chunk) and the file-conversion vision call.
 
 Errors
 ------
@@ -462,25 +455,6 @@ def _strip_code_fences(text: str) -> str:
     if t.endswith("```"):
         t = t[:-3]
     return t.strip()
-
-
-def predict_json(prompt: str, model: Optional[str] = None) -> Optional[str]:
-    """JSON-mode call on the user's key, or ``None`` when no key is active
-    (the caller then uses the shared server LLM)."""
-    client = get_active_client()
-    if client is None:
-        return None
-    return client.predict_raw(prompt, model=model, json_mode=True)
-
-
-def user_openai_key() -> Optional[str]:
-    """The user's key when it can call the official OpenAI API directly (the
-    image/PDF vision path), else ``None``. Anthropic/Mistral keys cannot, so
-    those requests keep the server key."""
-    cfg = current_byok.get()
-    if cfg is not None and cfg.provider == "openai" and not cfg.base_url:
-        return cfg.api_key
-    return None
 
 
 def get_active_client() -> Optional[BYOKClient]:

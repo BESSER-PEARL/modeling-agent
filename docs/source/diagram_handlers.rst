@@ -108,7 +108,7 @@ Retry Strategy
 - **Handler retry:** ``predict_with_retry()`` runs ``1 + max_retries``
   attempts (default 1 retry) with jittered exponential backoff.
 - **Shared-client retry:** underneath that, the shared server LLM's SDK client
-  is patched once (``src/utilities/llm_retry.py``) to retry transient upstream
+  is patched once (``src/llm/retry.py``) to retry transient upstream
   failures — 429 and 5xx — up to ``MAX_ATTEMPTS = 4`` with a bounded backoff
   (~5 s worst case). Non-429 4xx responses fail fast.
 - **Fallback:** graceful degradation through multiple levels (primary LLM →

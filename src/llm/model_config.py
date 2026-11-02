@@ -102,6 +102,15 @@ def reasoning_effort_for(model: str) -> "str | None":
     return MODEL_REASONING_EFFORT
 
 
+def sampling_params(model: str, temperature: float) -> dict:
+    """``temperature`` for models that take one, else ``reasoning_effort``
+    (or nothing): the Chat Completions sampling kwargs for *model*."""
+    if supports_custom_temperature(model):
+        return {"temperature": temperature}
+    effort = reasoning_effort_for(model)
+    return {"reasoning_effort": effort} if effort else {}
+
+
 _ANTHROPIC_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 

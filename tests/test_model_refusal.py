@@ -306,7 +306,7 @@ def test_streamed_normal_reply_is_unchanged():
 
 def test_sdk_retry_wrapper_does_not_retry_a_refusal():
     from common.errors import ModelRefusal
-    from utilities.llm_retry import with_retry
+    from llm.retry import with_retry
 
     calls = []
 
@@ -338,29 +338,24 @@ def test_user_message_text():
     )
 
 
-def test_vision_refusal_is_not_retried(monkeypatch):
-    import requests as http_requests
+def test_vision_refusal_is_not_retried():
     from ingestion.file_conversion_handler import convert_file_to_class_spec
+    from llm.provider import LLMProvider
 
     posts = []
 
-    class _Resp:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"choices": [{"finish_reason": "stop",
-                                 "message": {"content": None, "refusal": "I can't help."}}]}
-
-    def _post(*_args, **_kwargs):
+    def create(**_kwargs):
         posts.append(1)
-        return _Resp()
+        message = SimpleNamespace(content=None, refusal="I can't help.")
+        return SimpleNamespace(choices=[SimpleNamespace(finish_reason="stop", message=message)], usage=None)
 
-    monkeypatch.setattr(http_requests, "post", _post)
+    server = SimpleNamespace(name="gpt-4o", client=SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+    ))
     png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
     result = convert_file_to_class_spec(
         file_content_b64=png, filename="mockup.png",
-        llm_predict=lambda _p: "{}", openai_api_key="test-key",
+        llm_predict=lambda _p: "{}", llm_vision_predict=LLMProvider(server).vision,
     )
 
     assert "declined" in result["message"].lower()

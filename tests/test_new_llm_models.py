@@ -69,19 +69,18 @@ def test_an_openai_key_on_gpt6_sends_only_params_gpt6_accepts(model, monkeypatch
 
 @pytest.mark.parametrize("model", GPT6)
 def test_gpt6_vision_uses_max_completion_tokens(model, monkeypatch):
-    from ingestion import file_conversion_handler
+    from llm import provider
 
-    monkeypatch.setattr(file_conversion_handler, "MODEL_VISION", model)
-    params = file_conversion_handler._vision_sampling_params()
+    monkeypatch.setattr(provider, "MODEL_VISION", model)
+    params = provider._vision_params()
     assert "max_tokens" not in params and "temperature" not in params
     assert params["max_completion_tokens"] > 0
 
 
 def test_gpt6_luna_streaming_uses_configured_low_effort(monkeypatch):
-    from conversation import session_helpers
+    from llm.provider import LLMProvider
 
     monkeypatch.setattr(model_config, "MODEL_REASONING_EFFORT", "low")
-    monkeypatch.setattr(session_helpers, "reply_stream_chunk", lambda *_: None)
     completions = _Completions()
 
     def create(**kwargs):
@@ -93,7 +92,8 @@ def test_gpt6_luna_streaming_uses_configured_low_effort(monkeypatch):
 
     completions.create = create
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
-    assert session_helpers._stream_openai(None, client, "describe", "", "stream", "gpt-6-luna") == "OK"
+    provider = LLMProvider(SimpleNamespace(name="gpt-4o-mini", client=client))
+    assert "".join(provider.stream("describe", model="gpt-6-luna")) == "OK"
     sent = completions.calls[0]
     assert sent["reasoning_effort"] == "low"
     assert "temperature" not in sent

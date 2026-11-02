@@ -12,7 +12,7 @@ from typing import Optional
 from baf.core.session import Session
 
 from conversation import agent_context as ctx
-from llm.byok import user_openai_key
+from llm import byok
 from llm.model_config import MODEL_GENERATION_SMALL
 from protocol.types import AssistantRequest, FileAttachment
 from conversation.session_helpers import reply_payload
@@ -57,6 +57,16 @@ def _image_data_url(attachment: FileAttachment) -> str:
     return data_url(mime, attachment.content_b64)
 
 
+def _vision_predict():
+    """The vision call for this request, or None when no key can serve it:
+    the user's key (any provider) when one is active, else the server's."""
+    from llm.provider import get_provider
+    provider = get_provider()
+    if provider is None or not (byok.is_active() or ctx.openai_api_key):
+        return None
+    return provider.vision
+
+
 def handle_file_attachments(session: Session, request: AssistantRequest) -> bool:
     """Process file attachments if present.  Returns True if attachments were handled."""
     if not request.has_attachments:
@@ -65,9 +75,8 @@ def handle_file_attachments(session: Session, request: AssistantRequest) -> bool
     from utilities.model_resolution import resolve_target_model
     from utilities.model_context import compact_model_summary
 
-    # The user's own OpenAI key pays for the vision path when it can; the
-    # text path is BYOK-routed inside gpt_predict_json.
-    openai_key = user_openai_key() or ctx.openai_api_key
+    # Both the vision and the text path (gpt_predict_json) are BYOK-routed.
+    vision_predict = _vision_predict()
 
     # Cap attachment count + per-file size BEFORE decoding — each attachment
     # triggers a sequential vision/LLM call, so an unbounded batch blocks the
@@ -119,7 +128,7 @@ def handle_file_attachments(session: Session, request: AssistantRequest) -> bool
             file_content_b64=attachment.content_b64,
             filename=attachment.filename,
             llm_predict=lambda prompt: _predict_json(prompt, model=MODEL_GENERATION_SMALL),
-            openai_api_key=openai_key,
+            llm_vision_predict=vision_predict,
             target_diagram_type=requested_type,
         )
         if is_image and result.get("action") == GUI_MOCKUP_ACTION:

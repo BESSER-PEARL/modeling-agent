@@ -256,7 +256,7 @@ Scaling Considerations
 ----------------------
 
 - **Rate limiting:** handled by the provider API. The shared LLM client is
-  patched once at its network-call layer (``src/utilities/llm_retry.py``) to
+  patched once at its network-call layer (``src/llm/retry.py``) to
   retry 429 and 5xx with bounded backoff — ``MAX_ATTEMPTS = 4``, ~5 s of
   backoff sleep per call, with the SDK's own retries off so they do not
   multiply. Non-429 4xx responses fail fast rather than

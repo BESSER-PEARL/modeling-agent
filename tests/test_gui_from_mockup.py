@@ -212,7 +212,7 @@ def attach(monkeypatch):
     replies, operations, conversions = [], [], []
     monkeypatch.setattr(llm.provider, "get_provider", lambda: None)
     monkeypatch.setattr(fh, "reply_payload", lambda session, payload: replies.append(payload))
-    monkeypatch.setattr(fh, "user_openai_key", lambda: "sk-test")
+    monkeypatch.setattr(fh, "_vision_predict", lambda: lambda *a, **k: "{}")
     monkeypatch.setattr(fh.ctx, "gpt_predict_json", lambda *a, **k: "{}", raising=False)
     monkeypatch.setattr(
         fh, "execute_model_operation", lambda **kwargs: operations.append(kwargs),

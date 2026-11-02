@@ -156,7 +156,8 @@ has **no** skip/xfail markers.
 | `test_conversation_memory.py` | 14 | — | `ConversationMemory` sliding window, summarizer trigger, `build_context`, the global registry, and thread safety. |
 | `test_memory_session_key.py` | 5 | — | `memory_session_key` derivation chain — `request.session_id` → payload `sessionId` → BAF `session.id` → `id(session)`. |
 | `test_llm_provider.py` | 18 | — | `LLMProvider` — construction, `predict`/`parse`/`stream` delegation, token recording, error propagation, no-client fallbacks. |
-| `test_llm_retry.py` | 8 | — | `llm_retry` — permanent quota/billing/invalid-key errors fail fast (1 call); genuine 429/5xx retry up to `MAX_ATTEMPTS`. |
+| `test_llm_provider_calls.py` | 24 | — | Every migrated call site sends the request it sent before (vision, `gpt_predict_json`, handler free text, stream, structured); vision on OpenAI / Anthropic / gateway keys; one usage record per call; no LLM host outside `llm/`. |
+| `test_llm_retry.py` | 8 | — | `llm.retry` — permanent quota/billing/invalid-key errors fail fast (1 call); genuine 429/5xx retry up to `MAX_ATTEMPTS`. |
 | `test_byok_base_url.py` | 4 | — | BYOK custom `base_url` SSRF gate (`BESSER_AGENT_ALLOW_CUSTOM_BASE_URL`) + `redacted()`. |
 | `test_model_config.py` | 6 | — | Env-driven model routing table + defaults/overrides, cost-table consistency, `supports_custom_temperature` / `reasoning_effort_for`. |
 | `test_token_tracker.py` | 12 | — | `TokenTracker` — record/accumulate, per-session isolation, cost estimation, `summary()`, singleton, thread safety. |

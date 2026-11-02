@@ -14,8 +14,6 @@ configured model moved to a gpt-5 tier, every converted text file failed with
 
 which is what a user saw after pasting a requirements document.
 """
-from pathlib import Path
-
 import pytest
 
 from llm.model_config import reasoning_effort_for, supports_custom_temperature
@@ -60,18 +58,31 @@ def test_a_standard_model_keeps_its_temperature():
     assert _params_for("gpt-4o")["temperature"] == 0.2
 
 
-def test_agent_setup_uses_the_guard():
-    """The real call site must not send temperature unconditionally."""
-    source = (Path(__file__).resolve().parents[1] / "src" / "app" / "agent_setup.py").read_text(
-        encoding="utf-8"
-    )
-    assert "_json_params_for" in source, "the per-model params helper is gone"
-    assert "supports_custom_temperature" in source, (
-        "gpt_predict_json no longer guards temperature -- reasoning models will 400"
-    )
-    assert "'temperature': LLM_TEMPERATURE,\n        'max_completion_tokens'" not in source, (
-        "the unconditional temperature dict is back"
-    )
+@pytest.mark.parametrize("model", ["gpt-5.6-terra", "gpt-4o"])
+def test_gpt_predict_json_sends_only_what_the_model_accepts(monkeypatch, model):
+    """The real call site, not a mirror of it."""
+    from types import SimpleNamespace
+
+    from app import agent_setup
+
+    sent = []
+    message = SimpleNamespace(content="{}", refusal=None)
+    completion = SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")], usage=None)
+
+    class _ClientLLM(_RecordingLLM):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+                create=lambda **kw: sent.append(kw) or completion,
+            )))
+
+    monkeypatch.setattr(agent_setup, "LLMOpenAI", _ClientLLM)
+    monkeypatch.setattr("llm.get_provider", lambda *a, **k: None, raising=False)
+    _, _, gpt_predict_json = agent_setup.init_llm(agent=None)
+    gpt_predict_json("convert this", model=model)
+
+    params = {k: v for k, v in sent[0].items() if k not in ("model", "messages")}
+    assert params == {**_params_for(model), "max_completion_tokens": 8192}
 
 
 class _RecordingLLM:

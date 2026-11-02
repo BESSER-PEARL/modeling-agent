@@ -215,7 +215,7 @@ class TestConvertFileImage:
             file_content_b64=png_b64,
             filename="diagram.png",
             llm_predict=_mock_llm_predict,
-            openai_api_key=None,
+            llm_vision_predict=None,
         )
         assert result["action"] == "agent_error"
         assert "vision" in result["message"].lower() or "api key" in result["message"].lower()
@@ -223,56 +223,43 @@ class TestConvertFileImage:
     _PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
 
     @staticmethod
-    def _fake_post_factory(message: dict, finish_reason: str = "stop"):
-        class _Resp:
-            def raise_for_status(self):
-                return None
+    def _vision(message: dict, finish_reason: str = "stop"):
+        """``LLMProvider.vision`` over a shared client that always answers *message*."""
+        from types import SimpleNamespace
 
-            def json(self):
-                return {"choices": [{"finish_reason": finish_reason, "message": message}]}
+        from llm.provider import LLMProvider
 
-        def _post(*_args, **_kwargs):
-            return _Resp()
+        choice = SimpleNamespace(finish_reason=finish_reason, message=SimpleNamespace(**message))
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+            create=lambda **_kw: SimpleNamespace(choices=[choice], usage=None),
+        )))
+        return LLMProvider(SimpleNamespace(name="gpt-4o", client=client)).vision
 
-        return _post
-
-    def test_image_refusal_returns_declined_message_not_no_content(self, monkeypatch):
+    def test_image_refusal_returns_declined_message_not_no_content(self):
         # The vision model actively REFUSED (finish=stop, refusal set). The old
         # path flattened this into "returned no content" — misleading a user
         # whose benign mockup was refused. We now say it was declined.
-        import requests as http_requests
-        monkeypatch.setattr(
-            http_requests,
-            "post",
-            self._fake_post_factory(
-                {"content": None, "refusal": "I'm sorry, I can't assist with that."}
-            ),
-        )
         result = convert_file_to_class_spec(
             file_content_b64=self._PNG_B64,
             filename="mockup.png",
             llm_predict=_mock_llm_predict,
-            openai_api_key="test-key",
+            llm_vision_predict=self._vision(
+                {"content": None, "refusal": "I'm sorry, I can't assist with that."}
+            ),
         )
         assert result["action"] == "agent_error"
         msg = result["message"].lower()
         assert "declined" in msg
         assert "no content" not in msg
 
-    def test_image_empty_content_keeps_retryable_no_content_message(self, monkeypatch):
+    def test_image_empty_content_keeps_retryable_no_content_message(self):
         # A genuinely empty reply (no refusal) stays the retryable "no content"
         # message — retrying the same image often succeeds.
-        import requests as http_requests
-        monkeypatch.setattr(
-            http_requests,
-            "post",
-            self._fake_post_factory({"content": None, "refusal": None}),
-        )
         result = convert_file_to_class_spec(
             file_content_b64=self._PNG_B64,
             filename="mockup.png",
             llm_predict=_mock_llm_predict,
-            openai_api_key="test-key",
+            llm_vision_predict=self._vision({"content": None, "refusal": None}),
         )
         assert result["action"] == "agent_error"
         msg = result["message"].lower()

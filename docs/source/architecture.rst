@@ -106,9 +106,12 @@ The system is organized into these layers, processed in order for each request:
 7. **Utility Layer** (``src/utilities/``): Model resolution, context building,
    metadata extraction, and layout helpers.
 
-8. **LLM Abstraction** (``src/llm/``): Provider abstraction over
-   OpenAI, encapsulating model selection and call conventions (structured
-   outputs via ``parse()``, streaming via ``stream()``).
+8. **LLM Abstraction** (``src/llm/``): ``llm.provider.LLMProvider`` is the
+   only code that calls the model SDKs: free text and JSON (``complete()``),
+   structured outputs (``parse()``), streaming (``stream()``) and the
+   file-conversion vision call (``vision()``), each with BYOK routing, retry,
+   token tracking and the per-model sampling rules. Handlers and helpers get
+   the shared ``LLMOpenAI`` instance injected and call it through the provider.
 
 9. **BYOK Routing** (``src/llm/byok.py``): Per-request routing of generation,
    structured-output, classification and conversational calls through a
@@ -187,8 +190,8 @@ Shared Runtime Context
        under the key ``<model>-text`` because BAF keys LLMs by name.
    * - ``gpt_predict_json``
      - ``Callable``
-     - Closure enforcing ``response_format={"type": "json_object"}``,
-       with an optional per-call model override
+     - ``LLMProvider(gpt).complete(..., json_mode=True)``, with an
+       optional per-call model override
    * - ``uml_rag``
      - ``RAG | None``
      - ChromaDB-backed RAG, None if unavailable
@@ -387,10 +390,10 @@ Rate Limiting, Retries and Caching
 responses are treated as transient by the retry layer; other 4xx are
 permanent and fail fast.
 
-**Shared-client retry** (``src/utilities/llm_retry.py``): the shared server
+**Shared-client retry** (``src/llm/retry.py``): the shared server
 LLM's raw SDK call is patched once, at the client's network-call layer, so
-every path through it — BAF ``predict``/``chat``, the provider's ``parse()``
-and ``stream()``, and ``gpt_predict_json`` — inherits the same bounded
+every path through it — BAF ``predict``/``chat`` and every ``LLMProvider``
+call on the server key, vision included — inherits the same bounded
 backoff. ``MAX_ATTEMPTS = 4`` (1 try + 3 retries), base delay 0.6 s, per-attempt
 cap 6 s, ±0.3 s jitter — roughly 5 s of backoff sleep per call, on top of the
 failed attempts themselves. The SDK's own retries are disabled on these

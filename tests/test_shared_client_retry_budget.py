@@ -9,7 +9,7 @@ import openai
 import pytest
 
 from app import agent_setup
-from utilities import llm_retry
+from llm import retry as llm_retry
 
 
 class _FakeLLMOpenAI:

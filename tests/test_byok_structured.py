@@ -46,7 +46,7 @@ class _ServerLLM:
         self.client = _ParseClient(answer="server")
         self.predict_calls = 0
 
-    def predict(self, prompt):
+    def predict(self, prompt, parameters=None):
         self.predict_calls += 1
         return '{"name": "server"}'
 
@@ -153,7 +153,9 @@ def test_classifier_parse_uses_json_mode_for_other_providers(monkeypatch, server
 # File / image attachments -> diagram
 # ---------------------------------------------------------------------------
 
-def test_json_prediction_runs_on_the_users_key(monkeypatch):
+def test_json_prediction_runs_on_the_users_key(monkeypatch, server):
+    from llm.provider import LLMProvider
+
     seen = {}
 
     def predict_raw(prompt, **kwargs):
@@ -162,31 +164,19 @@ def test_json_prediction_runs_on_the_users_key(monkeypatch):
 
     token = _with_key(monkeypatch, "mistral", SimpleNamespace(provider="mistral", predict_raw=predict_raw))
     try:
-        assert byok.predict_json("convert this", model="gpt-4o") == '{"ok": true}'
+        result = LLMProvider(server).complete("convert this", model="gpt-4o", json_mode=True)
     finally:
         byok.reset_current(token)
-    assert seen == {"model": "gpt-4o", "json_mode": True}
+    assert result == '{"ok": true}'
+    assert (seen["model"], seen["json_mode"]) == ("gpt-4o", True)
+    assert server.predict_calls == 0
 
 
-def test_json_prediction_without_a_user_key_defers_to_the_server():
-    assert byok.predict_json("convert this") is None
+def test_json_prediction_without_a_user_key_runs_on_the_server(server):
+    from llm.provider import LLMProvider
 
-
-@pytest.mark.parametrize(("provider", "base_url", "expected"), [
-    ("openai", None, "sk-user"),        # official OpenAI: the user's key pays for vision
-    ("anthropic", None, None),          # cannot call OpenAI vision -> server key
-    ("mistral", None, None),
-])
-def test_vision_uses_the_users_openai_key_when_it_can(provider, base_url, expected):
-    token = byok.set_current(provider, "sk-user", None, base_url)
-    try:
-        assert byok.user_openai_key() == expected
-    finally:
-        byok.reset_current(token)
-
-
-def test_vision_without_a_user_key_uses_the_server_key():
-    assert byok.user_openai_key() is None
+    LLMProvider(server).complete("convert this", json_mode=True)
+    assert server.predict_calls == 1
 
 
 # ---------------------------------------------------------------------------

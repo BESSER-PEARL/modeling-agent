@@ -19,6 +19,7 @@ from baf.nlp.rag.rag import RAGMessage
 
 from conversation import agent_context as ctx
 from llm.model_config import MODEL_GENERATION_SMALL
+from llm.provider import LLMProvider
 from protocol.adapters import parse_assistant_request
 from protocol.types import AssistantRequest
 from protocol.message_limits import UserMessageTooLong
@@ -169,7 +170,7 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
         try:
             session_id = memory_session_key(session, request)
             summarizer = getattr(ctx, 'gpt_text', None)
-            summarize_fn = summarizer.predict if summarizer else None
+            summarize_fn = LLMProvider(summarizer).predict if summarizer else None
             mem = get_memory(session_id, summarizer=summarize_fn)
             mem.add_user(request.message)
         except Exception as exc:
@@ -1162,7 +1163,7 @@ def uml_rag_body(session: Session):
 
     if ctx.uml_rag is None:
         logger.info("[UML_RAG] RAG unavailable — falling back to standard LLM")
-        fallback_response = ctx.gpt_text.predict(
+        fallback_response = LLMProvider(ctx.gpt_text).predict(
             f"You are a UML specification expert. Answer the following question about UML:\n\n"
             f"{user_message}\n\n"
             "Provide accurate information based on UML 2.x specifications. "
@@ -1179,7 +1180,7 @@ def uml_rag_body(session: Session):
             reply_message(session, rag_message.answer)
         except Exception as e:
             logger.error(f"❌ Error in uml_rag_body: {e}")
-            fallback_response = ctx.gpt_text.predict(
+            fallback_response = LLMProvider(ctx.gpt_text).predict(
                 f"You are a UML specification expert. Answer the following question about UML:\n\n"
                 f"{user_message}\n\n"
                 "Provide accurate information based on UML 2.x specifications."

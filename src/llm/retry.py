@@ -8,14 +8,12 @@ otherwise surface to the user as "AI service temporarily unavailable". This
 module lets the SDK call retry a transient failure a bounded number of times
 before any handler ever sees it.
 
-Used exclusively by ``agent_setup.py``, which patches the shared OpenAI
-client's ``chat.completions.create`` / ``beta.chat.completions.parse``
-methods with :func:`with_retry` right after BESSER's ``LLM.initialize()``
-creates the client. That is the single choke point every caller
-(BAF's ``.predict``/``.chat``/intent classification, ``llm.provider``'s
-structured-output ``.parse()`` and streaming ``.stream()``, and this
-module's own ``gpt_predict_json`` model-override branch) goes through, so
-none of them need to be touched individually.
+Used by ``app.agent_setup``, which patches the shared OpenAI client's
+``chat.completions.create`` / ``beta.chat.completions.parse`` methods with
+:func:`with_retry` right after BAF's ``LLM.initialize()`` creates the
+client. Every call on the shared client goes through it: BAF's own
+``predict`` / ``chat`` / intent classification and every ``llm.provider``
+call that does not run on a user's key.
 
 Deliberately NOT retried here:
   * Auth errors (401) / bad request (400) / other 4xx — permanent for the
@@ -211,11 +209,10 @@ def patch_openai_client_for_retry(client: Any, *, label: str = "llm") -> None:
     """Patch an OpenAI-SDK-compatible ``client``'s network-call methods
     in place so every caller sharing this client benefits transparently.
 
-    Patches ``client.chat.completions.create`` (used by BAF's
-    ``predict``/``chat``/``intent_classification``, ``llm.provider``'s
-    ``predict``/``stream``, and ``gpt_predict_json``'s model-override
-    branch) and ``client.beta.chat.completions.parse`` (used by
-    ``llm.provider``'s structured-output ``parse``), when present.
+    Patches ``client.chat.completions.create`` (BAF's calls and
+    ``llm.provider``'s ``complete`` / ``stream`` / ``vision``) and
+    ``client.beta.chat.completions.parse`` (``llm.provider``'s ``parse``),
+    when present.
 
     Idempotent: safe to call more than once on the same client (e.g. if
     the framework re-initializes the LLM) — already-wrapped methods are
