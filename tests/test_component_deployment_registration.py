@@ -11,9 +11,9 @@ from diagram_handlers.core.base_handler import BaseDiagramHandler
 from orchestrator.request_planner import _try_heuristic_decomposition
 from protocol.types import AssistantRequest, SUPPORTED_DIAGRAM_TYPES, WorkspaceContext
 from conversation.reply_copy import META_ANSWER, OUT_OF_SCOPE_REDIRECT
+from prompts.classifier import SYSTEM_PROMPT
 from routing.unified_classifier import (
     _RELEVANT_DIAGRAM_TYPES,
-    _SYSTEM_PROMPT,
     _TARGET_DIAGRAM_TYPES,
     UnifiedClassification,
     _workspace_summary_lines,
@@ -32,7 +32,7 @@ def test_classifier_can_name_the_type(diagram_type):
         reason="test",
     )
     assert verdict.target_diagram_type == diagram_type
-    assert f"target_diagram_type='{diagram_type}'" in _SYSTEM_PROMPT
+    assert f"target_diagram_type='{diagram_type}'" in SYSTEM_PROMPT
 
 
 @pytest.mark.parametrize("diagram_type", NEW_TYPES)
@@ -53,7 +53,7 @@ def test_workspace_summary_reports_component_and_deployment_tabs():
 
 
 def test_classifier_prompt_keeps_diagram_requests_out_of_generation():
-    lower = _SYSTEM_PROMPT.lower()
+    lower = SYSTEM_PROMPT.lower()
     assert "generate a deployment diagram for agent services" in lower
     assert "create a component diagram for a rag agent" in lower
     assert "agentic bpmn" in lower
@@ -91,9 +91,9 @@ def test_fallback_and_quick_responses_list_new_types():
     assert "10 diagram types" in help_text and "Component, and Deployment" in help_text
     capabilities = state_bodies._QUICK_RESPONSES["what_can_you_do"]
     assert "**Component Diagrams**" in capabilities and "**Deployment Diagrams**" in capabilities
-    source = Path(state_bodies.__file__).read_text(encoding="utf-8")
-    fallback = source[source.index("def _fallback_llm_reply"):source.index("def global_fallback_body")]
-    assert "component diagrams, deployment diagrams" in fallback
+    from prompts.fallback import fallback_prompt
+
+    assert "component diagrams, deployment diagrams" in fallback_prompt("hi")
 
 
 def test_quick_capability_list_is_one_markdown_list():

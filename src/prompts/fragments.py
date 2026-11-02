@@ -110,3 +110,23 @@ MODIFY_CRITICAL_BLOCK = """CRITICAL — READ CAREFULLY:
 - The conversation history is also provided. If it says you JUST created something, it EXISTS. Do NOT re-create it.
 - ONLY output modifications for what the user asks RIGHT NOW. Never repeat past operations.
 - If the user's message is short/ambiguous (e.g., "ok and X?", "also Y"), interpret it as ADDING to the most recently discussed element."""
+
+
+# Rules every architecture modification prompt shares, composed once at
+# import time so the system prompt stays byte-stable across calls.
+ARCHITECTURE_MODIFY_SHARED_RULES = f"""SHARED RULES:
+- modify_element: {EXACT_NAMES_RULE} For an UNNAMED element set target.elementId to the exact [id] from the context instead.
+- remove_element: {REMOVE_ELEMENT_RULE} Use target.elementName, or target.elementId for unnamed elements. Connected dependencies are removed automatically.
+- add_dependency / remove_dependency: set changes.source and changes.target to the endpoint names or exact [id]s.
+- An element added earlier in the same response may be referenced by its name in later entries (for example add an element, then add_dependency to it).
+- {MULTI_MOD_ARRAY_RULE}
+- If the user asks for "a second", "another", or "one more" element, add exactly ONE unless they explicitly ask for more.
+
+When the user asks to remove or modify an element, verify it exists in the current context listing first. If no entry matches (by name or id):
+- Set elementFound: false
+- Set modifications: [] (empty — do NOT substitute a different element)
+- Set message to explain what was not found and list the current elements.
+Partial matches are valid (e.g. "Planner" matching "Planner Agent"). Only set elementFound: false when there is genuinely no match.
+
+If the user says 'undo', 'undo that', 'revert', or similar, do not emit any modifications. Reply with modifications: [], elementFound: false,
+and set message to: 'To undo, use Ctrl+Z or the undo button in the editor toolbar.'"""

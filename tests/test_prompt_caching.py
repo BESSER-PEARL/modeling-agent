@@ -16,19 +16,11 @@ import re
 
 import pytest
 
-from diagram_handlers.types.class_diagram_handler import (
-    MODIFY_SYSTEM_PROMPT_CLASS,
-    ClassDiagramHandler,
-)
-from diagram_handlers.types.agent_diagram_handler import (
-    MODIFY_SYSTEM_PROMPT_AGENT,
-)
-from diagram_handlers.types.object_diagram_handler import (
-    MODIFY_SYSTEM_PROMPT_OBJECT,
-)
-from diagram_handlers.types.state_machine_handler import (
-    MODIFY_SYSTEM_PROMPT_STATE_MACHINE,
-)
+from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
+from prompts.agent_diagram import MODIFY_SYSTEM_PROMPT_AGENT
+from prompts.class_diagram import MODIFY_SYSTEM_PROMPT_CLASS
+from prompts.object_diagram import MODIFY_SYSTEM_PROMPT_OBJECT
+from prompts.state_machine import MODIFY_SYSTEM_PROMPT_STATE_MACHINE
 from schemas import ClassModification
 
 

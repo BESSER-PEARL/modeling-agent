@@ -55,7 +55,7 @@ flows — it runs no LLM call and no text heuristics.
    The old keyword pre-filters and cross-validation safety nets
    (``_is_modeling_request()``, ``_is_diagram_creation_request()``, the
    ``json_intent_matches`` keyword override) **no longer exist**. Routing
-   rules now live in ``unified_classifier._SYSTEM_PROMPT``, which is the
+   rules now live in ``prompts.classifier.SYSTEM_PROMPT``, which is the
    single place to change routing behavior.
 
 Step 5: Check the deterministic guards
@@ -153,7 +153,7 @@ Common Pitfalls
 6. **Routing rules live in one place now**
 
    There is no keyword pre-filter layer to add a special case to. Routing
-   behavior changes belong in ``unified_classifier._SYSTEM_PROMPT``, or — for
+   behavior changes belong in ``prompts.classifier.SYSTEM_PROMPT``, or — for
    decisions the LLM is unreliable at — in an explicit deterministic guard
    like ``_names_unsupported_stack()``.
 

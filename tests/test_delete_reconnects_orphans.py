@@ -9,8 +9,8 @@ The frontend fix stopped the modifier DESTROYING neighbours. This covers the
 other half: the agent must reconnect what the deletion strands, or at minimum
 name it, instead of reporting success.
 """
-from diagram_handlers.core.prompt_fragments import DELETE_CLASS_CASCADE_RULE
-from diagram_handlers.types.class_diagram_handler import _CLASS_KEY_RULES_BLOCK
+from prompts.class_diagram import CLASS_KEY_RULES_BLOCK
+from prompts.fragments import DELETE_CLASS_CASCADE_RULE
 
 
 def test_rule_still_requires_removing_connected_relationships():
@@ -42,7 +42,7 @@ def test_rule_requires_naming_stranded_classes_when_unclear():
 
 def test_rule_reaches_the_class_diagram_prompt():
     """A rule that never lands in the prompt changes nothing."""
-    prompt = _CLASS_KEY_RULES_BLOCK
+    prompt = CLASS_KEY_RULES_BLOCK
     assert "add_relationship" in prompt
     assert "never remove a neighbouring class" in prompt.lower()
     assert "stranded" in prompt.lower()

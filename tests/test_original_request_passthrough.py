@@ -15,7 +15,8 @@ from codegen.smart_generation_handler import (
     GenerationClassification,
     build_trigger_smart_generator_payload,
 )
-from routing.unified_classifier import _SYSTEM_PROMPT, UnifiedClassification
+from prompts.classifier import SYSTEM_PROMPT
+from routing.unified_classifier import UnifiedClassification
 
 SUMMARY = "Build a hotel booking web app. FastAPI, SQLite, React."
 
@@ -296,8 +297,8 @@ def _refined_instructions_description() -> str:
 
 
 def test_the_routing_rulebook_does_not_use_auth_as_an_example():
-    assert "Devise auth" not in _SYSTEM_PROMPT
-    assert "Add user authentication" not in _SYSTEM_PROMPT
+    assert "Devise auth" not in SYSTEM_PROMPT
+    assert "Add user authentication" not in SYSTEM_PROMPT
 
 
 def test_field_description_no_longer_uses_auth_as_an_example():

@@ -28,6 +28,7 @@ from common.agent_config import (
 )
 from llm.model_config import MODEL_CLASSIFIER, MODEL_EMBEDDINGS, sampling_params
 from llm.provider import LLMProvider
+from prompts import uml_rag as uml_prompts
 
 logger = logging.getLogger(__name__)
 
@@ -189,16 +190,7 @@ def init_rag(agent: Agent):
             num_previous_messages=6,
         )
 
-        uml_rag.llm_prompt = (
-            "You are a UML (Unified Modeling Language) specification expert. "
-            "Based on the context retrieved from the UML specification documents, "
-            "answer the user's question about UML concepts, notation, semantics, or best practices.\n\n"
-            "If the context contains relevant information, use it to provide an accurate and detailed answer.\n"
-            "If you don't find the answer in the context, say that you don't have that specific information "
-            "in the UML specification documents, but you can provide general guidance based on your knowledge.\n\n"
-            "Be precise and reference specific UML concepts when applicable. "
-            "Use clear examples when helpful."
-        )
+        uml_rag.llm_prompt = uml_prompts.RAG_PROMPT
 
         logger.info("UML RAG initialized successfully")
         _index_uml_specs_in_background(uml_rag)

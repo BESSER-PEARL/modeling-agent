@@ -93,7 +93,7 @@ has **no** skip/xfail markers.
 | --- | --- | --- |
 | `test_non_modeling_guard.py` | 2 (param) | `state_bodies._request_is_non_modeling` — injection / persona-hijack / shell-command text is declined; real (even non-English) modeling requests pass. |
 | `test_create_vagueness_guard.py` | 2 (param) | `state_bodies._create_request_is_too_vague` — pure-filler creates ("create", "make an app") flagged vague; a real domain noun proceeds. |
-| `test_unified_classifier.py` | 19 | `unified_classifier` — `classify_message`, `get_or_classify` event-id caching, schema literals, `_SYSTEM_PROMPT` content, fallback/demotion, and smart-gen follow-up routing. |
+| `test_unified_classifier.py` | 19 | `unified_classifier` — `classify_message`, `get_or_classify` event-id caching, schema literals, `prompts.classifier.SYSTEM_PROMPT` content, fallback/demotion, and smart-gen follow-up routing. |
 | `test_orchestrator.py` | 17 | `orchestrator/workspace_orchestrator.py` target resolution — explicit/implicit targets, `determine_target_diagram_type(s)`, `resolve_diagram_id`. |
 | `test_request_planner.py` | 23 | `orchestrator/request_planner.py` — segment splitting, target matching, operation normalization/fallback, `plan_assistant_operations` (no-op fake LLM). |
 | `test_two_pass_fast_path.py` | 4 | `base_handler.predict_two_pass_structured` fast-path — trivial (<250-char) requests skip the reasoning pass (one LLM call), keyed on `raw_request`. |
@@ -108,6 +108,7 @@ has **no** skip/xfail markers.
 | `test_class_modification_missing_target.py` | 10 | `_build_model_index` / `_drop_phantom_target_ops` — deterministic missing-target detection for class removals/modifies (adds never validated). |
 | `test_class_modification_names.py` | 19 (param) | `schemas.class_diagram._is_placeholder` / `_clean_name` + `add_class` name resolution — junk placeholder names nulled, real names promoted. |
 | `test_ocl_constraint_capture.py` | 10 | OCL constraint capture — `OCLConstraintSpec`, `_validate_constraints` (drops unknown-context/empty), end-to-end into `inject_complete_system`. |
+| `test_prompt_snapshots.py` | 1 | Pins a hash of every prompt in `src/prompts/` (constants as they are, functions rendered with fixed samples); an unmeant byte change fails. |
 | `test_prompt_caching.py` | 5 (param) | Modification prompts are static module-level constants (no UUID/timestamp), clear the ~1024-token cache threshold, and are passed separately (not concatenated). |
 
 ### Diagram handlers — agent, BPMN, base & factory

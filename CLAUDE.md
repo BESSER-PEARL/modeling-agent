@@ -51,7 +51,7 @@ the image alike. Never import through `src.` and never add `sys.path` inserts. E
 (only the entrypoint `modeling_agent.py` sits at the repo root); a new package goes into the import-linter
 layers (`tests/test_packaging.py` checks). Its `version` is the agent's only version.
 
-**Import layering** (each top-level package is one layer and imports only those below it): `app` → `ingestion` → `execution` → `codegen` / `orchestrator` → `conversation` → `routing` → `memory` / `diagram_handlers` → `llm` / `schemas` → `utilities` → `protocol` → `common`. Packages on one level (`/`) do not import each other. Inside a package: `app` is `state_bodies` / `agent_setup` → `confirmation`; `conversation` is `session_helpers` → `reply_language` → the rest; `routing` is `unified_classifier` → `generation_signals` / `intents`; `llm` is `provider` → `byok` → `tracking` → `byok_config` / `model_catalog` / `model_config` / `retry`, and only `llm` imports `openai` / `anthropic`. `lint-imports` enforces all of it (`[tool.importlinter]` in `pyproject.toml`), with the one known cycle (`codegen.generation_handler` → `execution`: a confirmed generation re-runs the planned operations) ignored.
+**Import layering** (each top-level package is one layer and imports only those below it): `app` → `ingestion` → `execution` → `codegen` / `orchestrator` → `conversation` → `routing` → `memory` / `diagram_handlers` → `prompts` → `llm` / `schemas` → `utilities` → `protocol` → `common`. Packages on one level (`/`) do not import each other. Inside a package: `app` is `state_bodies` / `agent_setup` → `confirmation`; `conversation` is `session_helpers` → `reply_language` → the rest; `routing` is `unified_classifier` → `generation_signals` / `intents`; `llm` is `provider` → `byok` → `tracking` → `byok_config` / `model_catalog` / `model_config` / `retry`, and only `llm` imports `openai` / `anthropic`. `lint-imports` enforces all of it (`[tool.importlinter]` in `pyproject.toml`), with the one known cycle (`codegen.generation_handler` → `execution`: a confirmed generation re-runs the planned operations) ignored.
 
 - Handler tests instantiate handlers directly, e.g. `BPMNDiagramHandler(None)` (the LLM arg is only needed by
   methods that call the model), and test deterministic repair such as `_validate_and_refine` as a pure function
@@ -77,7 +77,7 @@ WebSocket message
       classify_message() → UnifiedClassification, cached per BAF event by get_or_classify().
       Returns the intent (which of the 10 states) AND every sub-routing field downstream code
       needs (generation_route, generator_type, target_diagram_type, model_disposition,
-      pending_flow_action, …) — no second prompt. Rules live in _SYSTEM_PROMPT.
+      pending_flow_action, …) — no second prompt. Rules live in prompts/classifier.py.
   → app/state_bodies.py                              state body; modeling bodies funnel through
                                                      execution/planning.py::execute_planned_operations
   → orchestrator/workspace_orchestrator.py           LAYER 2: determine_target_diagram_type()
@@ -88,7 +88,7 @@ WebSocket message
   → response envelope sent back over the WebSocket
 ```
 
-- **`_SYSTEM_PROMPT` in `unified_classifier.py` is the single authoritative rulebook.** Routing changes go there,
+- **`SYSTEM_PROMPT` in `prompts/classifier.py` is the single authoritative rulebook.** Routing changes go there,
   or — for decisions the LLM is measurably unreliable at — in an explicit deterministic guard
   (`_names_unsupported_stack()` in `unified_classifier.py`; `_GITHUB_URL_RE` / `_GITHUB_CONTINUE_VERB_RE` in
   `routing/generation_signals.py`). There is no keyword pre-filter layer to add special cases to.
@@ -116,17 +116,18 @@ in manual testing. Walkthrough: `docs/source/contributing/howto_guides.rst`.
 
 1. `src/schemas/<type>.py` — Pydantic schemas for structured output (single element, complete system,
    modification actions with `Literal` names); re-export from `src/schemas/__init__.py`
-2. `src/diagram_handlers/types/<type>_diagram_handler.py` — the handler (see below)
+2. `src/diagram_handlers/types/<type>_diagram_handler.py` — the handler (see below), with its prompt text in
+   `src/prompts/<type>.py`
 3. `src/diagram_handlers/registry/factory.py` — add to `HANDLER_CLASSES` (keyed on the handler's own
    `get_diagram_type()`)
-4. `src/routing/unified_classifier.py` — token in `_TARGET_DIAGRAM_TYPES` **and** vocabulary in `_SYSTEM_PROMPT`. This is
+4. `src/routing/unified_classifier.py` — token in `_TARGET_DIAGRAM_TYPES` **and** vocabulary in `SYSTEM_PROMPT` (`src/prompts/classifier.py`). This is
    what makes the type reachable. Add one representative `training_sentence` in `modeling_agent.py`, but no
    vocabulary in its `description=`
 5. `src/orchestrator/workspace_orchestrator.py` — `KEYWORD_TARGETS`, an `_IMPLICIT_PATTERNS` regex, and
    `FALLBACK_PRIORITY`. Patterns are evaluated in order, first match wins: place a new one where a broader pattern
    above it won't steal its vocabulary (BPMN sits above StateMachineDiagram because "process" is in both)
 6. `src/app/state_bodies.py` — `_QUICK_RESPONSES["what_can_you_do"]` and `["help"]` (bump the hardcoded type count),
-   the `_fallback_llm_reply` prompt (shared by `global_fallback_body` and `greetings_body`), optionally a
+   the fallback prompt in `src/prompts/fallback.py` (shared by `global_fallback_body` and `greetings_body`), optionally a
    `modeling_help_body` branch
 7. `src/protocol/types.py` — `SUPPORTED_DIAGRAM_TYPES`; an `activeDiagramType` outside it is silently normalized
    to `ClassDiagram`
@@ -138,8 +139,8 @@ in manual testing. Walkthrough: `docs/source/contributing/howto_guides.rst`.
 12. Frontend (separate repo) — the type must exist in the WME's diagram-type union and be a valid
     `activeDiagramType`
 
-Capability lists are duplicated with no single source of truth (`_SYSTEM_PROMPT`, `_QUICK_RESPONSES`,
-`_fallback_llm_reply`, `suggestions.py`, README): grep for an existing type's name (e.g. `"quantum"`) to find
+Capability lists are duplicated with no single source of truth (`prompts/classifier.py`, `_QUICK_RESPONSES`,
+`prompts/fallback.py`, `suggestions.py`, README): grep for an existing type's name (e.g. `"quantum"`) to find
 every place. Two tokens break the `<Name>Diagram` convention: BPMN is `"BPMN"` (the editor's converter sets the
 Apollon `model.type` to `"BPMNDiagram"` itself) and User Profile is `"UserDiagram"`.
 
@@ -159,13 +160,27 @@ structured output and two-pass generation are inherited. Details: `docs/source/d
   the Pydantic schema. Skipped below `_TWO_PASS_MIN_LENGTH = 250` characters of the **raw** user message (not the
   enriched prompt, or history and workspace context would push trivial requests onto the expensive path). The
   reasoning prompt is the highest-leverage place to fix systematic completeness gaps (see
-  `bpmn_diagram_handler.py`'s `reasoning_prompt`, which stops the model merging several decision points into one
+  `prompts/bpmn.py`'s `reasoning_prompt`, which stops the model merging several decision points into one
   gateway).
 - **Deterministic post-generation repair** (`_validate_and_refine` / `_connect_orphaned_nodes` in
   `bpmn_diagram_handler.py`): prefer fixing the root cause in the prompt; add a repair pass only for invariants the
   LLM statistically violates and where a cheap, evidence-grounded heuristic exists — never a blind guess.
 - **LLMs never emit positions.** `core/layout_engine.py` runs after every generation (Sugiyama layout for class
   diagrams, per-type grids otherwise).
+
+## Prompts
+
+All prompt text lives in `src/prompts/`, one module per diagram type or state (`classifier`, `class_diagram`,
+`bpmn`, `gui`, …, `fragments` for rules several handlers share, `planner`, `modeling_help`, `describe_model`,
+`fallback`, `uml_rag`). A static prompt is a constant (`MODIFY_SYSTEM_PROMPT_CLASS`); a prompt built from the
+request is a function of exactly those values (`reasoning_prompt(user_request)`). Call sites import the module
+(`from prompts import bpmn as bpmn_prompts`) and look the prompt up by name.
+
+- Edit wording in the prompt module, never at a call site.
+- System prompts are composed at import time and must stay byte-identical across calls, or the prompt cache
+  misses (`docs/source/configuration.rst`, "Static prefix first"): nothing per-request in a constant.
+- `tests/test_prompt_snapshots.py` pins a hash of every prompt; a deliberate change updates its hash (the failure
+  prints the new one) in the same commit.
 
 ## Wire Protocol
 
@@ -216,8 +231,9 @@ src/
   routing/                        unified_classifier.py (layer 1 router), generation_signals.py (generator
                                   vocabulary + signals), intents.py
   memory/                         Verbatim window + rolling LLM summary per session
-  diagram_handlers/               core/ (base_handler, layout_engine, prompt_fragments), types/ (one handler per
+  diagram_handlers/               core/ (base_handler, layout_engine), types/ (one handler per
                                   type + gui_design_system.py, gui_html_converter.py), registry/ (factory, metadata)
+  prompts/                        Prompt text, one module per diagram type or state (see Prompts)
   schemas/<type>.py               Structured-output schemas
   llm/                            provider.py (the only SDK caller: text, JSON, structured, stream, vision), retry.py
                                   (shared-client retry), byok.py (per-request bring-your-own key), byok_config.py

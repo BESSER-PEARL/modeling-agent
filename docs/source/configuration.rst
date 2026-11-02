@@ -460,6 +460,8 @@ rates), else from the vendor price file (see
 ``gpt-6-sol`` and ``gpt-6-luna`` are not in the price file yet; their cached
 rates assume the 10 % that ``gpt-6-astra`` lists.
 
+.. _static-prefix-first:
+
 Static prefix first
 ~~~~~~~~~~~~~~~~~~~
 
@@ -479,6 +481,9 @@ Anthropic key, ``LLMProvider.parse`` sends that prompt plus the schema as a
 ``system`` block with ``cache_control: {"type": "ephemeral"}``; the first
 message in a five-minute window writes it at 1.25x the input rate and later
 ones read it at 0.1x.
+
+Every prompt lives in ``src/prompts/`` and ``tests/test_prompt_snapshots.py``
+pins a hash of each, so a byte that changes by accident fails the suite.
 
 Output caps, reasoning effort and the two-pass gate
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

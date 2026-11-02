@@ -24,6 +24,7 @@ from common.agent_config import LLM_MAX_TOKENS_SMALL, LLM_MAX_TOKENS_LARGE, LLM_
 from llm.model_config import MODEL_CLASSIFIER, MODEL_GENERATION_SMALL
 from llm.provider import LLMProvider, OutputTruncated
 from .layout_engine import apply_layout
+from prompts import class_diagram as class_prompts
 from common.errors import (
     ErrorCode, LLMPredictionError, ModelRefusal, build_error_response, classify_error,
     non_recoverable_cause, _RECOVERY_HINTS,
@@ -1370,39 +1371,7 @@ class BaseDiagramHandler(ABC):
                 f"({rel.get('type', '?')}, {rel.get('sourceMultiplicity', '?')}..{rel.get('targetMultiplicity', '?')})"
             )
 
-        critique_prompt = f"""Review this UML class diagram for quality issues.
-
-Classes:
-{chr(10).join('- ' + s for s in class_summary)}
-
-Relationships:
-{chr(10).join('- ' + r for r in rel_summary) if rel_summary else '(none)'}
-
-User's original request: "{user_request}"
-
-Check for these issues:
-1. MISSING RELATIONSHIPS: Are there classes that should clearly be connected but aren't? (e.g., Order and Customer without a relationship)
-2. WRONG MULTIPLICITIES: Are any multiplicities incorrect? (e.g., Order-Product should typically be many-to-many via OrderItem, not one-to-one)
-3. MISSING KEY ATTRIBUTES: Are any classes missing obviously essential attributes? (e.g., User without email, Order without date)
-4. REDUNDANT ATTRIBUTES: Are any attributes duplicated across classes unnecessarily?
-
-If you find issues, return a JSON object with fixes:
-{{
-  "has_issues": true,
-  "add_relationships": [
-    {{"type": "Association", "source": "Class1", "target": "Class2", "sourceMultiplicity": "1", "targetMultiplicity": "*", "name": "relName"}}
-  ],
-  "fix_multiplicities": [
-    {{"source": "Class1", "target": "Class2", "sourceMultiplicity": "1", "targetMultiplicity": "*"}}
-  ],
-  "add_attributes": [
-    {{"className": "ClassName", "attributes": [{{"name": "attr", "type": "String", "visibility": "public"}}]}}
-  ]
-}}
-
-If the diagram looks good, return: {{"has_issues": false}}
-
-Return ONLY the JSON, no explanations."""
+        critique_prompt = class_prompts.critique_prompt(class_summary, rel_summary, user_request)
 
         try:
             response = self.llm_provider.predict(critique_prompt)

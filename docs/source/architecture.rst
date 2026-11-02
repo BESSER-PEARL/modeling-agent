@@ -136,12 +136,34 @@ The system is organized into these layers, processed in order for each request:
 Every module lives in a top-level package under ``src/``, and each package is
 one import layer: ``app`` → ``ingestion`` → ``execution`` → ``codegen`` /
 ``orchestrator`` → ``conversation`` → ``routing`` → ``memory`` /
-``diagram_handlers`` → ``llm`` / ``schemas`` → ``utilities`` → ``protocol`` →
-``common``. A package imports only the ones below it (packages on one level do
+``diagram_handlers`` → ``prompts`` → ``llm`` / ``schemas`` → ``utilities`` →
+``protocol`` → ``common``. A package imports only the ones below it (packages on one level do
 not import each other); ``lint-imports`` enforces this from the contracts in
 ``pyproject.toml``. The one exception is a known cycle: a confirmed generation
 in ``codegen.generation_handler`` re-runs the planned operations in
 ``execution``.
+
+Prompts
+-------
+
+The text sent to the model lives in ``src/prompts/``, one module per diagram
+type or state: ``classifier`` (the routing rulebook), ``class_diagram``,
+``object_diagram``, ``state_machine``, ``agent_diagram``, ``bpmn``, ``gui``,
+``quantum_circuit``, ``user_profile``, ``component_diagram``,
+``deployment_diagram``, ``fragments`` (rules several handlers share),
+``planner``, ``modeling_help``, ``describe_model``, ``fallback`` and
+``uml_rag``. A prompt that never changes is a constant
+(``bpmn.MODIFY_SYSTEM_PROMPT_BPMN``); one built from the request is a function
+of exactly those values (``bpmn.reasoning_prompt(user_request)``). Call sites
+import the module and look the prompt up by name
+(``from prompts import bpmn as bpmn_prompts``).
+
+To change wording, edit the prompt module, never a call site. System prompts
+are composed once at import time and must stay byte-identical across calls
+(see :ref:`static-prefix-first`); ``tests/test_prompt_snapshots.py`` pins a
+hash of every prompt, so update the hash in the same change. The package sits
+right above ``schemas`` because some prompts embed schema vocabulary (component
+stereotypes, agent reply types).
 
 Entry Point
 -----------

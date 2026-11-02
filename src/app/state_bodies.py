@@ -46,6 +46,10 @@ from codegen.generation_handler import (
     should_route_to_generation,
 )
 from orchestrator import determine_target_diagram_type
+from prompts import describe_model as describe_prompts
+from prompts import fallback as fallback_prompts
+from prompts import modeling_help as help_prompts
+from prompts import uml_rag as uml_prompts
 from utilities.model_context import detailed_model_summary, is_diagram_nontrivial
 from utilities.user_metamodel import (
     build_user_profile_help_prompt,
@@ -327,18 +331,7 @@ def _fallback_llm_reply(session: Session, user_message: str) -> None:
     """LLM answer for an unclassifiable message. Shared by the global fallback
     and by greetings_body when it receives another state's fallback traffic."""
     try:
-        prompt = (
-            f"You are a modeling assistant that helps with UML diagrams, quantum circuits, "
-            f"GUI design, agent diagrams, BPMN business-process diagrams (including agentic "
-            f"BPMN swarms), user profiles, component diagrams, deployment diagrams, "
-            f"and code generation for any kind of app (web, mobile, desktop, CLI, ...). "
-            f"The user said: '{user_message}'. "
-            "If this is related to any kind of modeling (class diagrams, quantum circuits, "
-            "state machines, GUI design, BPMN processes, user profiles, component or "
-            "deployment diagrams, etc.), suggest how "
-            "you can help them. "
-            "Otherwise, politely explain your capabilities."
-        )
+        prompt = fallback_prompts.fallback_prompt(user_message)
         stream_llm_response(session, ctx.gpt_text, prompt)
     except Exception as e:
         logger.error(f"❌ Error in fallback LLM reply: {e}")
@@ -700,97 +693,19 @@ def modeling_help_body(session: Session):
 
     # Build context-aware help prompt depending on the diagram type
     if diagram_type == "BPMN":
-        help_prompt = (
-            f'You are an expert business-process modeling assistant. '
-            f'The user asked: "{request.message}"\n\n'
-            f'They are working with the BPMN process diagram editor.\n\n'
-            "You have deep knowledge of:\n"
-            "- BPMN elements: start/end events, tasks (user, service, send, receive, manual, script), "
-            "gateways (exclusive, parallel, inclusive), sequence flows\n"
-            "- Process design patterns: sequential flows, exclusive decisions, parallel work, loops\n"
-            "- Agentic BPMN: agentic lanes, roles (solution, supervision), "
-            "trust scores, multiplicity, reflection modes, and AgentDiagram references\n"
-            "- Governance: Agentic parallel/inclusive gateways, diverging/merging roles, and Governance DSL "
-            "on governed merging gateways\n"
-            "- Best practices: clear verb-phrase task names, gateway labeling, start/end event placement\n\n"
-            "Provide clear, practical advice about BPMN modeling. "
-            "If they ask about a process pattern, explain the key elements and how to express it in BPMN. "
-            "If they want to build something, tell them they can ask you to create it "
-            "(e.g., 'Create a BPMN process for order fulfillment').\n\n"
-            "Keep your response conversational, encouraging, and technically accurate."
-        )
+        help_prompt = help_prompts.bpmn_help_prompt(request.message)
     elif diagram_type == "ComponentDiagram":
-        help_prompt = (
-            f'You are an expert software architecture assistant. '
-            f'The user asked: "{request.message}"\n\n'
-            f'They are working with the UML Component Diagram editor.\n\n'
-            "You have deep knowledge of:\n"
-            "- Component diagram elements: Subsystems (containers grouping related components), "
-            "Components (services, agents, models, databases, tools), and ComponentDependencies\n"
-            "- Agent stereotypes: «solution» (an agent that does the work), «supervision» (an agent "
-            "that oversees other agents)\n"
-            "- Capability stereotypes (not agents): «llm» (language model), «db» (database/storage), "
-            "«rag» (retrieval-augmented knowledge), «tool» (callable utility), «skill» (reusable capability)\n"
-            "- Dependency stereotypes: agent→agent delegates (task handoff), supervises "
-            "(supervision→solution), revises (feedback loop), collaborates (peer exchange); "
-            "agent→capability has, uses, granted; capability implements\n"
-            "- Architecture patterns: layered systems, microservices, agent pipelines, AI-assisted workflows\n\n"
-            "Provide clear, practical advice about component architecture modeling. "
-            "If they ask about an architecture pattern, explain the key components and how to express it. "
-            "If they want to build something, tell them they can ask you to create it "
-            "(e.g., 'Create a component diagram for a RAG-based question-answering system').\n\n"
-            "Keep your response conversational, encouraging, and technically accurate."
-        )
+        help_prompt = help_prompts.component_help_prompt(request.message)
     elif diagram_type == "DeploymentDiagram":
-        help_prompt = (
-            f'You are an expert deployment architecture assistant. '
-            f'The user asked: "{request.message}"\n\n'
-            f'They are working with the UML Deployment Diagram editor.\n\n'
-            "You have deep knowledge of:\n"
-            "- Deployment diagram elements: DeploymentNodes (servers, VMs, Docker hosts, cloud services), "
-            "DeploymentArtifacts (physical deployments inside nodes), "
-            "DeploymentComponents (logical software units), and DeploymentDependencies\n"
-            "- Node stereotypes: node (generic), device (hardware), cloud (cloud environment), server\n"
-            "- Typical patterns: 3-tier architectures, microservice deployments, "
-            "containerized workloads, cloud-native topologies\n"
-            "- Artifact-to-component correspondence: artifacts represent physical packages; "
-            "components represent the logical system they implement (linked via manifestedBy)\n\n"
-            "Provide clear, practical advice about deployment topology modeling. "
-            "If they ask about an infrastructure pattern, explain the nodes, artifacts, and communication paths. "
-            "If they want to build something, tell them they can ask you to create it "
-            "(e.g., 'Create a deployment diagram for a containerized microservices setup').\n\n"
-            "Keep your response conversational, encouraging, and technically accurate."
-        )
+        help_prompt = help_prompts.deployment_help_prompt(request.message)
     elif diagram_type == "QuantumCircuitDiagram":
-        help_prompt = (
-            f'You are an expert quantum computing and quantum circuit modeling assistant. '
-            f'The user asked: "{request.message}"\n\n'
-            f'They are working with the Quantum Circuit Diagram editor.\n\n'
-            "You have deep knowledge of:\n"
-            "- Quantum gates (Hadamard, Pauli-X/Y/Z, CNOT, CZ, SWAP, S, T, QFT, etc.)\n"
-            "- Quantum algorithms (Grover's search, Shor's factoring, QFT, Deutsch-Jozsa, "
-            "Bernstein-Vazirani, quantum teleportation, superdense coding, phase estimation, VQE)\n"
-            "- Quantum concepts (superposition, entanglement, interference, measurement, decoherence)\n"
-            "- Circuit design principles (oracle construction, amplitude amplification, error correction)\n\n"
-            "Provide clear, educational explanations. If they ask about a quantum algorithm, "
-            "explain the key steps and intuition behind it. If they want to build something, "
-            "tell them they can ask you to create it (e.g., 'Create a Grover\\'s search circuit').\n\n"
-            "Keep your response conversational, encouraging, and technically accurate."
-        )
+        help_prompt = help_prompts.quantum_help_prompt(request.message)
     elif diagram_type == "UserDiagram" or is_user_profile_help(request.message):
         # Explain the user-profile modeling environment (elements, attributes,
         # enum values, how they connect) grounded in the bundled metamodel.
         help_prompt = build_user_profile_help_prompt(request.message)
     else:
-        help_prompt = (
-            f'You are an expert modeling assistant working with {diagram_info["name"]}. '
-            f'The user asked: "{request.message}"\n\n'
-            f'Current diagram type: {diagram_info["name"]} - {diagram_info["description"]}\n\n'
-            "Provide helpful, practical advice about modeling for this diagram type. "
-            "If they're asking about concepts, explain them clearly. "
-            "If they want to create something, guide them on how to express their requirements.\n\n"
-            "Keep your response conversational and encouraging. Suggest specific things they can ask you to create."
-        )
+        help_prompt = help_prompts.generic_help_prompt(request.message, diagram_info)
 
     try:
         stream_llm_response(session, ctx.gpt_text, help_prompt)
@@ -985,14 +900,7 @@ def describe_model_body(session: Session):
     # one", "those") resolve to the element the user actually means.
     history_block = _recent_conversation_block(session, request)
     history_section = (
-        (
-            "RECENT CONVERSATION (older first). Use it to resolve any referent "
-            "in the question below \u2014 \"it\", \"that\", \"the first one\", "
-            "\"those\", \"the second\", etc. \u2014 to the SPECIFIC element the "
-            "user means (based on what was just asked or answered), then answer "
-            "about THAT element, not the whole diagram:\n"
-            f"{history_block}\n\n"
-        )
+        describe_prompts.history_section(history_block)
         if history_block
         else ""
     )
@@ -1009,47 +917,12 @@ def describe_model_body(session: Session):
             if isinstance(diagrams, dict) and "UserDiagram" in diagrams:
                 include_user_guide = True
     user_guide_block = (
-        f"\n\nReference — the User Profile metamodel these elements are drawn from "
-        f"(use it to explain what an element or attribute means):\n\n{format_user_metamodel_guide()}\n"
+        describe_prompts.user_guide_block(format_user_metamodel_guide())
         if include_user_guide
         else ""
     )
 
-    qa_prompt = (
-        "You are an expert assistant for the BESSER Web Modeling Editor. "
-        "The user has a project that may contain multiple diagrams "
-        "(class, state machine, object, GUI, quantum circuit, agent, user profile, "
-        "BPMN, component, deployment).\n\n"
-        f"Here is a detailed summary of their project \u2014 note that empty or "
-        f"default-seed diagrams have already been filtered out, so describe "
-        f"ONLY the diagrams listed below:\n\n"
-        f"{full_summary}\n"
-        f"{user_guide_block}\n"
-        f"{history_section}"
-        f"The user asks: \"{request.message}\"\n\n"
-        "Answer their question accurately based ONLY on the project data above. "
-        "If they ask about a specific diagram type, focus on that one. "
-        "If they ask a general question, consider all diagrams that appear "
-        "in the summary. Be specific \u2014 reference class names, attribute "
-        "names, states, pages, gates, relationships, etc. by name.\n\n"
-        "**Do NOT enumerate empty diagrams.** If the summary above ends with "
-        "a note about diagram types that were filtered out, you may close "
-        "with one short sentence such as *\"(Other diagram types are empty.)\"* "
-        "\u2014 but do not list them one by one.\n\n"
-        "**For quantum circuits specifically**: when the user asks to 'describe' "
-        "or 'explain' a quantum circuit, do more than just list the gates. "
-        "Analyze the circuit and explain:\n"
-        "- What algorithm or pattern it implements (Bell state, Grover's search, "
-        "QFT, teleportation, entanglement, etc.)\n"
-        "- The purpose of each stage (initialization, oracle, diffusion, measurement)\n"
-        "- What the expected output/behavior would be\n"
-        "- The role of key gates (e.g., 'H creates superposition', "
-        "'CNOT entangles qubits')\n\n"
-        "End with the existing helper line *\"If you want, I can help you "
-        "expand any of these...\"*, but tailor it so it only refers to the "
-        "diagrams you actually described.\n\n"
-        "Keep the answer concise and well-formatted with Markdown."
-    )
+    qa_prompt = describe_prompts.qa_prompt(full_summary, user_guide_block, history_section, request.message)
 
     try:
         # Grounded analysis over real model data → SMALL generation tier
@@ -1163,12 +1036,7 @@ def uml_rag_body(session: Session):
 
     if ctx.uml_rag is None:
         logger.info("[UML_RAG] RAG unavailable — falling back to standard LLM")
-        fallback_response = LLMProvider(ctx.gpt_text).predict(
-            f"You are a UML specification expert. Answer the following question about UML:\n\n"
-            f"{user_message}\n\n"
-            "Provide accurate information based on UML 2.x specifications. "
-            "Be precise and reference specific UML concepts when applicable."
-        )
+        fallback_response = LLMProvider(ctx.gpt_text).predict(uml_prompts.fallback_prompt(user_message))
         reply_message(
             session,
             "*Note: UML knowledge base unavailable — answering from general knowledge.*\n\n"
@@ -1180,11 +1048,7 @@ def uml_rag_body(session: Session):
             reply_message(session, rag_message.answer)
         except Exception as e:
             logger.error(f"❌ Error in uml_rag_body: {e}")
-            fallback_response = LLMProvider(ctx.gpt_text).predict(
-                f"You are a UML specification expert. Answer the following question about UML:\n\n"
-                f"{user_message}\n\n"
-                "Provide accurate information based on UML 2.x specifications."
-            )
+            fallback_response = LLMProvider(ctx.gpt_text).predict(uml_prompts.error_fallback_prompt(user_message))
             reply_message(session, fallback_response)
 
 

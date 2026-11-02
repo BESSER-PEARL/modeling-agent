@@ -26,8 +26,8 @@ from common.session_keys import (
     REPLY_LANGUAGE,
     UNIFIED_CLASSIFICATION,
 )
+from prompts.classifier import SYSTEM_PROMPT
 from routing.unified_classifier import (
-    _SYSTEM_PROMPT,
     UnifiedClassification,
     _post_validate,
     classify_message,
@@ -119,8 +119,8 @@ class TestClassifierCarriesTheTarget:
                        # screen added to a generated native app became a web GUI edit.
                        "never a target", "never the REMEMBERED one",
                        "'añade una pantalla de ajustes'"):
-            assert phrase in _SYSTEM_PROMPT, phrase
-        assert "FIRST state the target explicitly" in _SYSTEM_PROMPT
+            assert phrase in SYSTEM_PROMPT, phrase
+        assert "FIRST state the target explicitly" in SYSTEM_PROMPT
 
     def test_classifier_sees_the_remembered_target_and_language(self):
         provider = _Provider(_uc(generation_route="smart", refined_instructions="x"))
@@ -636,7 +636,7 @@ class TestCorrectionGuardIsNarrow:
         assert result.target_description == "native Android app"
 
     def test_the_rulebook_keeps_a_refusal_target_free(self):
-        assert "I don't want the mobile app anymore" in _SYSTEM_PROMPT
+        assert "I don't want the mobile app anymore" in SYSTEM_PROMPT
 
 
 class TestNonWebFollowUpWiring:

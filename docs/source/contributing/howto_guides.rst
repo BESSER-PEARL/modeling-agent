@@ -22,7 +22,8 @@ the new diagram's own tab never exercises routing or discoverability, because
    complete-system spec, modification actions with ``Literal`` action names)
    and re-export them from ``src/schemas/__init__.py``.
 
-1. **Create the handler** in ``src/diagram_handlers/types/``:
+1. **Create the handler** in ``src/diagram_handlers/types/``, with its prompt
+   text in ``src/prompts/<type>.py``:
 
    .. code-block:: python
 
@@ -31,7 +32,7 @@ the new diagram's own tab never exercises routing or discoverability, because
               return "MyDiagram"
 
           def get_system_prompt(self) -> str:
-              return "You are a MyDiagram expert..."
+              return my_prompts.SYSTEM_PROMPT  # src/prompts/my_diagram.py
 
           def generate_single_element(self, user_request: str, existing_model=None, **kwargs) -> dict: ...
           def generate_complete_system(self, user_request: str, existing_model=None) -> dict: ...
@@ -78,12 +79,12 @@ the new diagram's own tab never exercises routing or discoverability, because
 
 8. **Teach the classifier**: add the token to ``_TARGET_DIAGRAM_TYPES`` in
    ``src/routing/unified_classifier.py`` and add the type's vocabulary to
-   ``_SYSTEM_PROMPT``, so a request naming it reaches a modeling intent at
+   ``SYSTEM_PROMPT`` in ``src/prompts/classifier.py``, so a request naming it reaches a modeling intent at
    all. Without this the message can fall through to the fallback body.
 
-9. **Update the capability copy** in ``src/app/state_bodies.py`` — the
-   ``_QUICK_RESPONSES`` capability text *and* ``global_fallback_body``'s
-   prompt both enumerate supported types independently. Grep for an existing
+9. **Update the capability copy** — the ``_QUICK_RESPONSES`` capability text
+   in ``src/app/state_bodies.py`` *and* the global fallback prompt in
+   ``src/prompts/fallback.py`` both enumerate supported types independently. Grep for an existing
    type's name (e.g. ``"quantum"``) to find every place.
 
 10. **Add suggestions** in ``src/conversation/suggestions.py`` and wire them into
@@ -181,7 +182,7 @@ How to Add a New Intent
 
 2. **Mirror the name** in ``_INTENT_NAMES`` in
    ``src/routing/unified_classifier.py`` and write the real routing rule in
-   ``_SYSTEM_PROMPT``. This is the step that actually makes the intent
+   ``SYSTEM_PROMPT`` (``src/prompts/classifier.py``). This is the step that actually makes the intent
    reachable — include positive examples, what it is *not*, and
    disambiguation against confusable intents.
 
@@ -222,13 +223,13 @@ your change:
 Fixing a Misclassification for a Specific Phrase
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Edit the rule for that intent in ``_SYSTEM_PROMPT``
-(``src/routing/unified_classifier.py``). This is the highest-impact, lowest-risk
+Edit the rule for that intent in ``SYSTEM_PROMPT``
+(``src/prompts/classifier.py``). This is the highest-impact, lowest-risk
 change, and it is the **only** place routing rules live.
 
 .. code-block:: python
 
-   _SYSTEM_PROMPT = (
+   SYSTEM_PROMPT = (
        ...
        "modify_model_intent: user wants to ADD / REMOVE / CHANGE "
        "elements in an existing diagram. ... "
@@ -251,7 +252,7 @@ Adding a Deterministic Guard (Zero Latency)
 The keyword pre-filter layer (``_is_modeling_request()``,
 ``_is_diagram_creation_request()``, and the ``json_intent_matches()``
 cross-validation) has been **removed**. Routing rules belong in
-``unified_classifier._SYSTEM_PROMPT``.
+``prompts.classifier.SYSTEM_PROMPT``.
 
 Reach for a deterministic guard only where the LLM is *measurably* unreliable
 and the decision must never be guessed. Existing examples:

@@ -190,7 +190,8 @@ Routing (``src/routing/``)
   - ``UnifiedClassification`` — the wide Pydantic verdict schema
   - ``classify_message(request, llm_provider, history, recent_smart_gen, pending_flow)``
   - ``get_or_classify(session, request, llm_provider)`` — per-message cache
-  - ``_SYSTEM_PROMPT`` — the authoritative routing rulebook
+  - its system prompt, the authoritative routing rulebook, is ``SYSTEM_PROMPT`` in
+    ``src/prompts/classifier.py``
 
 ``src/routing/generation_signals.py``
   Generation vocabulary and session signals shared by the classifier, the
@@ -254,9 +255,13 @@ Diagram Handlers
   - Constants: ``H_GAP``, ``V_GAP``, ``REL_EXTRA_GAP``, ``MARGIN``,
     ``GRID_SNAP``, ``CANVAS_MIN_X`` … ``CANVAS_MAX_Y``
 
-``src/diagram_handlers/core/prompt_fragments.py``
-  Shared prompt snippets reused across handlers — ``EXACT_NAMES_RULE``,
-  ``REMOVE_ELEMENT_RULE``, ``MULTI_MOD_ARRAY_RULE``, ``POSITION_DISCLAIMER``.
+``src/prompts/``
+  The prompt text, one module per diagram type or state (``class_diagram``,
+  ``bpmn``, ``gui``, ``classifier``, ``planner``, ``modeling_help``, …). Static
+  prompts are constants, request-built ones are functions of the request
+  values. ``fragments.py`` holds the snippets several handlers share —
+  ``EXACT_NAMES_RULE``, ``REMOVE_ELEMENT_RULE``, ``MULTI_MOD_ARRAY_RULE``,
+  ``POSITION_DISCLAIMER``.
 
 ``src/diagram_handlers/registry/factory.py``
   Handler factory:

@@ -171,7 +171,7 @@ means mirroring it here.
      - Nothing fits; BAF's fallback body runs
 
 **Intent declarations:** ``modeling_agent.py``.
-**Authoritative rulebook:** ``unified_classifier._SYSTEM_PROMPT`` — the
+**Authoritative rulebook:** ``prompts.classifier.SYSTEM_PROMPT`` — the
 one-line ``description=`` strings on each ``new_intent`` are summaries for
 the local fallback classifier, not the rules the router actually follows.
 
@@ -407,7 +407,7 @@ When routing goes wrong, check in this order:
    verdict lets it route away.
 
 4. **Check the rulebook, not the intent descriptions.** Routing rules live
-   in ``unified_classifier._SYSTEM_PROMPT``. The ``description=`` strings on
+   in ``prompts.classifier.SYSTEM_PROMPT``. The ``description=`` strings on
    ``new_intent`` only feed the local fallback classifier.
 
 5. **Check the deterministic guards.** ``_names_unsupported_stack()`` forces

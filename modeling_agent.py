@@ -90,7 +90,7 @@ meta_question_state = agent.new_state("meta_question_state")
 # that BAF's built-in classifier used as prompt context. Since
 # ``unified_classifier.py`` took over primary routing, those keyword
 # blobs are no longer driving any behavior — the real rules live in
-# ``unified_classifier._SYSTEM_PROMPT``. The one-liners below exist
+# ``prompts.classifier.SYSTEM_PROMPT``. The one-liners below exist
 # only so BAF's classifier can still pick a sensible intent if our
 # unified call ever fails (rare safety-net path). Keep them SHORT.
 #

@@ -127,8 +127,8 @@ Key Module Responsibilities
        extracts ``AssistantRequest`` and ``WorkspaceContext``.
    * - ``src/routing/unified_classifier.py``
      - The router. One structured-output LLM call per message returns the
-       intent plus all sub-routing fields; ``_SYSTEM_PROMPT`` is the
-       authoritative rulebook.
+       intent plus all sub-routing fields; its system prompt
+       (``src/prompts/classifier.py``) is the authoritative rulebook.
    * - ``src/codegen/generation_handler.py``
      - Code generation routing. Contains ``GENERATOR_REQUIRED_FIELDS``, the
        config-prompt flows, and the deterministic GitHub-continue guard.

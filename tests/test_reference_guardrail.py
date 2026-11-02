@@ -9,16 +9,12 @@ import re
 
 import pytest
 
-from diagram_handlers.core.prompt_fragments import EXACT_NAMES_RULE, POSITION_DISCLAIMER, REMOVE_ELEMENT_RULE
+from prompts.fragments import EXACT_NAMES_RULE, POSITION_DISCLAIMER, REMOVE_ELEMENT_RULE
 from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
-from diagram_handlers.types.component_diagram_handler import (
-    MODIFY_SYSTEM_PROMPT_COMPONENT,
-    ComponentDiagramHandler,
-)
-from diagram_handlers.types.deployment_diagram_handler import (
-    MODIFY_SYSTEM_PROMPT_DEPLOYMENT,
-    DeploymentDiagramHandler,
-)
+from diagram_handlers.types.component_diagram_handler import ComponentDiagramHandler
+from diagram_handlers.types.deployment_diagram_handler import DeploymentDiagramHandler
+from prompts.component_diagram import MODIFY_SYSTEM_PROMPT_COMPONENT
+from prompts.deployment_diagram import MODIFY_SYSTEM_PROMPT_DEPLOYMENT
 from schemas import ComponentModificationResponse, DeploymentModificationResponse
 
 COMPONENT_MODEL = {"elements": {

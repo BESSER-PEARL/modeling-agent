@@ -716,7 +716,8 @@ discoverability.
    extending ``BaseDiagramHandler`` and implementing the 5 abstract methods:
    ``get_diagram_type``, ``get_system_prompt``, ``generate_single_element``,
    ``generate_complete_system``, ``generate_fallback_element``. Override
-   ``generate_modification`` if the default LLM path is not enough.
+   ``generate_modification`` if the default LLM path is not enough. Its
+   prompt text goes in ``src/prompts/<type>.py``, not in the handler.
 3. **Factory** — add the class to ``HANDLER_CLASSES`` in
    ``src/diagram_handlers/registry/factory.py``.
 4. **Protocol** — add the token to ``SUPPORTED_DIAGRAM_TYPES`` in
@@ -724,14 +725,14 @@ discoverability.
 5. **Metadata** — add display metadata in
    ``src/diagram_handlers/registry/metadata.py``.
 6. **Classifier** — add the token to ``_TARGET_DIAGRAM_TYPES`` in
-   ``src/routing/unified_classifier.py`` and teach ``_SYSTEM_PROMPT`` the type's
+   ``src/routing/unified_classifier.py`` and teach ``SYSTEM_PROMPT`` (``src/prompts/classifier.py``) the type's
    vocabulary, so a request naming it routes to the right intent.
 7. **Orchestrator** — add ``KEYWORD_TARGETS`` entries, an
    ``_IMPLICIT_PATTERNS`` regex, and append the type to ``FALLBACK_PRIORITY``
    in ``src/orchestrator/workspace_orchestrator.py``.
-8. **Capability copy** — ``src/app/state_bodies.py`` enumerates supported types in
-   more than one place (the quick-response capability text and the global
-   fallback prompt). Grep for an existing type's name to find them all.
+8. **Capability copy** — supported types are enumerated in more than one
+   place (the quick-response capability text in ``src/app/state_bodies.py``,
+   the global fallback prompt in ``src/prompts/fallback.py``). Grep for an existing type's name to find them all.
 9. **Suggestions** — add a suggestion list in ``src/conversation/suggestions.py`` and wire
    it into ``_DIAGRAM_SUGGESTION_HANDLERS``.
 10. **Docs** — this page, the README table, and

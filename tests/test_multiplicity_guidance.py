@@ -13,8 +13,7 @@ import re
 from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 
 SOURCE = __import__("inspect").getsource(
-    __import__("src.diagram_handlers.types.class_diagram_handler",
-               fromlist=["x"]))
+    __import__("prompts.class_diagram", fromlist=["x"]))
 
 
 def test_prompt_maps_plural_language_to_many_multiplicity():
