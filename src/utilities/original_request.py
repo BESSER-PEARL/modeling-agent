@@ -3,7 +3,7 @@
 from session_keys import (
     APP_TARGET, APP_TARGET_PROJECT_ID, ORIGINAL_APP_REQUEST, ORIGINAL_APP_REQUEST_PROJECT_ID,
 )
-from utilities.message_limits import validate_message_length
+from protocol.message_limits import validate_message_length
 
 _TARGET_KINDS = ("web_app", "backend", "other")
 

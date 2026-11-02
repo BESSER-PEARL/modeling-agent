@@ -9,7 +9,7 @@ Tests live in two places with very different characters:
 
 | Location | Character | Runs in CI? | Cost |
 | --- | --- | --- | --- |
-| `tests/*.py` | Deterministic unit / integration tests. No live LLM — everything is stubbed (`FakeSession`, `FakeLLM`, recording fakes, monkeypatched classifiers). | Run manually (there is no CI). | Free, fast. |
+| `tests/*.py` | Deterministic unit / integration tests. No live LLM — everything is stubbed (`FakeSession`, `FakeLLM`, recording fakes, monkeypatched classifiers). | Yes: `.github/workflows/tests.yml` on every PR and push. | Free, fast. |
 | `tests/live/*.py` | **LIVE** harnesses that open a real WebSocket to a running agent (`AGENT_WS_URL`, required) and drive real generations. | **Never** — they hit a paid model. | Cost tokens; run manually before a release. |
 
 `tests/conftest.py` provides the shared scaffolding used across the flat suite:
@@ -36,8 +36,10 @@ pytest defaults (`test_*.py`), and `conftest.py` handles the `src/` path wiring.
 
 ### CI status
 
-**There is no CI in this repo.** No `.github/workflows/` directory exists — the suite is
-run manually. Keep that in mind: a green local run is the only gate on a change.
+`.github/workflows/tests.yml` runs `python -m pytest tests -q --tb=short --ignore=tests/live`
+on Python 3.11 and `ruff check src patches modeling_agent.py` (rules in `ruff.toml`) on every
+PR and on pushes to `develop` and `main`. `docs.yml` builds the documentation. The live
+harnesses in `tests/live/` are never run in CI.
 
 ### Running the live sweeps
 

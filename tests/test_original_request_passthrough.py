@@ -45,7 +45,7 @@ def test_spec_reaches_the_run_verbatim():
     assert "combined capacity of the rooms booked" in instructions
     # Machine framing must not make an accepted boundary-sized spec invalid.
     from agent_config import MAX_USER_MESSAGE_CHARS
-    from utilities.message_limits import UserMessageTooLong
+    from protocol.message_limits import UserMessageTooLong
     full = SPEC + "x" * (MAX_USER_MESSAGE_CHARS - len(SPEC))
     assert _payload(original_request=full)["instructions"] == full
     with pytest.raises(UserMessageTooLong, match="64,000"):
@@ -230,7 +230,7 @@ def test_same_project_create_gui_confirm_keeps_raw_spec_and_followups(monkeypatc
     assert generation._original_for_smart_generation(session, "yes!") == combined
     assert original_request_for_project(session, "hotel") == combined
     from agent_config import MAX_USER_MESSAGE_CHARS
-    from utilities.message_limits import UserMessageTooLong
+    from protocol.message_limits import UserMessageTooLong
     maximum = "x" * MAX_USER_MESSAGE_CHARS
     remember_original_request(session, maximum, "hotel")
     with pytest.raises(UserMessageTooLong, match="combined original specification"):

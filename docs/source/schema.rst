@@ -1043,7 +1043,7 @@ Supported Type Constants
        "UserDiagram",
    }
 
-   # src/handlers/generation_handler.py — keys only; each maps to a
+   # src/routing/generation_signals.py — keys only; each maps to a
    # keyword list. "export" and "deploy" are actions, not generators.
    GENERATOR_KEYWORDS.keys() == {
        "django", "web_app", "backend", "sqlalchemy", "sql", "python",

@@ -21,7 +21,7 @@ import agent_context as ctx
 from model_config import MODEL_GENERATION_SMALL
 from protocol.adapters import parse_assistant_request
 from protocol.types import AssistantRequest
-from utilities.message_limits import UserMessageTooLong
+from protocol.message_limits import UserMessageTooLong
 from memory import get_memory, memory_session_key
 from session_helpers import (
     get_user_message,
@@ -31,7 +31,6 @@ from session_helpers import (
     stream_llm_response,
     json_intent_matches,
     json_no_intent_matched,
-    route_to_generation,
 )
 from confirmation import handle_pending_system_confirmation, handle_pending_gui_choice
 from execution import (
@@ -45,6 +44,7 @@ from handlers.generation_handler import (
     handle_pending_plan_generation_confirmation,
     handle_pending_smart_gen_confirmation,
     _looks_like_mixed_modeling_and_generation,
+    should_route_to_generation,
 )
 from orchestrator import determine_target_diagram_type
 from utilities.model_context import detailed_model_summary, is_diagram_nontrivial
@@ -1235,6 +1235,12 @@ def meta_question_body(session: Session):
     # the pitch (presentation only — routing stays with the classifier).
     _prefix = "Yes. " if re.search(r"\bdo\s+you\b", request.message or "", re.IGNORECASE) else ""
     reply_message(session, _prefix + _META_ANSWER)
+
+
+def route_to_generation(session: Session) -> bool:
+    """Detect generation workflow requests or frontend callback events."""
+    request = parse_assistant_request(session)
+    return should_route_to_generation(session, request)
 
 
 def add_unified_transitions(state, intents_map, fallback_state, generation_state):

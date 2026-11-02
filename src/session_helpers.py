@@ -17,10 +17,6 @@ from typing import Any, Dict, Optional
 from baf.core.session import Session
 
 from protocol.adapters import parse_assistant_request
-from handlers.generation_handler import (
-    should_route_to_generation,
-    detect_generator_type,
-)
 from agent_config import (
     STREAM_BUFFER_THRESHOLD,
     LLM_TEXT_TEMPERATURE,
@@ -643,13 +639,3 @@ def _stream_openai(
         raise_if_openai_refusal({"message": {"refusal": refusal}, "finish_reason": finish_reason})
 
     return full_text
-
-
-# ------------------------------------------------------------------
-# Generation routing
-# ------------------------------------------------------------------
-
-def route_to_generation(session: Session) -> bool:
-    """Detect generation workflow requests or frontend callback events."""
-    request = parse_assistant_request(session)
-    return should_route_to_generation(session, request)

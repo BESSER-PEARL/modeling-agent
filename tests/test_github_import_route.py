@@ -13,11 +13,9 @@ Two deterministic guards under test:
 
 import pytest
 
-from handlers.generation_handler import (
-    _extract_github_reference,
-    handle_generation_request,
-)
+from handlers.generation_handler import handle_generation_request
 from protocol.types import AssistantRequest, WorkspaceContext
+from routing.generation_signals import _extract_github_reference
 from unified_classifier import UnifiedClassification, _post_validate
 
 from tests.conftest import FakeSession

@@ -126,7 +126,7 @@ operations before the generation step.
      - QuantumCircuitDiagram
 
 ``export`` and ``deploy`` have no prerequisites. ``GENERATOR_PREREQUISITES``
-(``src/handlers/generation_handler.py``) is the source of truth, and it is
+(``src/routing/generation_signals.py``) is the source of truth, and it is
 also injected verbatim into the Tier-2 planner prompt so the LLM planner
 orders operations correctly.
 

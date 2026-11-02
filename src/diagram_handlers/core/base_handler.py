@@ -21,7 +21,9 @@ from abc import ABC, abstractmethod
 from openai import LengthFinishReasonError
 from pydantic import BaseModel
 
+import byok
 from agent_config import LLM_MAX_TOKENS_SMALL, LLM_MAX_TOKENS_LARGE, LLM_TEMPERATURE
+from byok_config import get_current
 from model_config import (
     MODEL_CLASSIFIER,
     MODEL_GENERATION_SMALL,
@@ -693,7 +695,7 @@ class BaseDiagramHandler(ABC):
         path, which exposes none; BYOK records its own).
 
         BYOK: when the current request carries a user-supplied key (see
-        ``byok.current_byok``), this free-text generation call is routed
+        ``byok_config.current_byok``), this free-text generation call is routed
         through the user's own per-request client instead of the shared
         server LLM. SDK auth/rate-limit errors propagate so
         ``predict_with_retry`` / ``errors.classify_error`` surface them.
@@ -703,8 +705,7 @@ class BaseDiagramHandler(ABC):
         """
         effective_max_tokens = max_tokens or LLM_MAX_TOKENS_LARGE
 
-        from byok import get_active_client  # local import: avoids import cycle
-        byok_client = get_active_client()
+        byok_client = byok.get_active_client()
         if byok_client is not None:
             return byok_client.predict_raw(
                 prompt,
@@ -909,8 +910,7 @@ class BaseDiagramHandler(ABC):
             self.llm.name if hasattr(self.llm, 'name') else MODEL_CLASSIFIER
         )
         # BYOK: a user who saved a key pays for their own structured calls.
-        from byok import get_active_client, get_current, resolve_model
-        byok_client = get_active_client()
+        byok_client = byok.get_active_client()
         if byok_client is not None:
             client = byok_client.openai_client
             if client is None:
@@ -921,7 +921,7 @@ class BaseDiagramHandler(ABC):
                     images=images,
                 )
             cfg = get_current()
-            effective_model = resolve_model("openai", effective_model, cfg.model if cfg else None)
+            effective_model = byok.resolve_model("openai", effective_model, cfg.model if cfg else None)
         else:
             client = getattr(self.llm, 'client', None)
         # --- Check if client supports .parse() ---

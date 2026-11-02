@@ -11,6 +11,7 @@ import json
 import pytest
 
 import byok
+import byok_config
 import model_catalog
 from model_catalog import load_model_catalog
 from tracking.token_tracker import TokenTracker
@@ -68,7 +69,7 @@ def _cost_of_a_million_each(model):
 def test_without_a_catalog_there_is_no_gateway():
     token = _byok("pia")
     try:
-        assert byok.get_current() is None
+        assert byok_config.get_current() is None
     finally:
         byok.reset_current(token)
 
@@ -78,7 +79,7 @@ def test_the_gateway_endpoint_comes_from_the_catalog(use_catalog):
     # The gate stays off: the endpoint is the operator's, not the request's.
     token = _byok("pia", base_url="http://169.254.169.254/")
     try:
-        cfg = byok.get_current()
+        cfg = byok_config.get_current()
         assert (cfg.provider, cfg.base_url, cfg.model) == ("openai", GATEWAY_URL, "claude-sonnet-5-5")
     finally:
         byok.reset_current(token)
@@ -88,7 +89,7 @@ def test_a_custom_base_url_is_still_gated(use_catalog):
     use_catalog(CATALOG)
     token = _byok("openai", base_url="http://localhost:11434/v1")
     try:
-        assert byok.get_current() is None
+        assert byok_config.get_current() is None
     finally:
         byok.reset_current(token)
 

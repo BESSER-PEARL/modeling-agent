@@ -40,7 +40,13 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from byok_config import get_current
 from protocol.types import AssistantRequest
+from routing.generation_signals import (
+    _GITHUB_CONTINUE_VERB_RE,
+    _extract_github_reference,
+    recent_smart_gen_for_project,
+)
 from utilities.original_request import remember_target, request_project_id, target_for_project
 from session_keys import (
     LAST_SUGGESTED_PROMPTS,
@@ -91,7 +97,7 @@ _INTENT_NAMES = Literal[
 
 
 # Deterministic generators BESSER has built-in. Must stay in sync with
-# ``generation_handler.GENERATOR_KEYWORDS`` and the TypeScript frontend.
+# ``routing.generation_signals.GENERATOR_KEYWORDS`` and the TypeScript frontend.
 _DETERMINISTIC_GENERATOR_TYPES = Literal[
     "django",
     "backend",
@@ -1051,7 +1057,7 @@ def classify_message(
 
         import byok
         classifier_model = getattr(llm_provider, "model_name", "") or ""
-        cfg = byok.get_current()
+        cfg = get_current()
         if cfg is not None:
             # A user key sends this call to the user's model; size for that one.
             classifier_model = byok.resolve_model(cfg.provider, classifier_model, cfg.model)
@@ -1215,10 +1221,7 @@ def get_or_classify(
         # project the user is looking at. LAST_SMART_GEN_AT alone survives a
         # project switch (the BAF session is keyed on the per-browser user_id),
         # so using it raw would tell the classifier "you just generated an app" in
-        # a brand-new project. Deferred import — generation_handler owns both
-        # ends of that signal and imports this module at load time.
-        from handlers.generation_handler import recent_smart_gen_for_project
-
+        # a brand-new project.
         _recent_smart = recent_smart_gen_for_project(session, 15 * 60)
         _project_id = request_project_id(request)
         result = classify_message(
@@ -1660,15 +1663,8 @@ def _post_validate(
     # continuation verb is unambiguous; reroute it deterministically. The
     # verb requirement keeps e.g. "create a diagram like github.com/x/y"
     # on its classified intent. pending_flow_action='new_request' frees the
-    # message from any pending question's answer gate (deferred import: the
-    # detection lives with the emitting guard in generation_handler, which
-    # imports this module at load time — importing it back lazily here
-    # avoids the cycle).
+    # message from any pending question's answer gate.
     if result.intent != "generation_intent":
-        from handlers.generation_handler import (
-            _GITHUB_CONTINUE_VERB_RE,
-            _extract_github_reference,
-        )
         if _GITHUB_CONTINUE_VERB_RE.search(message or "") and (
             _extract_github_reference(message or "") is not None
         ):

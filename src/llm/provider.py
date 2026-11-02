@@ -28,6 +28,7 @@ from typing import Any, Dict, Iterator, List, Optional, Type
 from openai import LengthFinishReasonError
 from pydantic import BaseModel
 
+from byok_config import get_current
 from model_config import MODEL_CLASSIFIER, reasoning_effort_for, supports_custom_temperature
 from errors import raise_if_openai_refusal
 from tracking import get_tracker
@@ -100,7 +101,7 @@ class LLMProvider:
         """
         effective_model = model or self._model
         # BYOK: a user who saved a key pays for this call too.
-        from byok import _strip_code_fences, get_active_client, get_current, resolve_model
+        from byok import _strip_code_fences, get_active_client, resolve_model
         byok_client = get_active_client()
         if byok_client is not None:
             client = byok_client.openai_client

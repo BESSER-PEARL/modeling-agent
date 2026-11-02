@@ -25,7 +25,7 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional
 
-import byok
+import byok_config
 from reply_copy import SPEC_DRIVEN_NAME
 from session_keys import REPLY_LANGUAGE
 
@@ -129,7 +129,7 @@ def translate_texts(texts: List[str], code: str) -> List[str]:
     global _failed_until
     unique = tuple(dict.fromkeys(texts))
     key = (unique, code)
-    shared = byok.get_current() is None
+    shared = byok_config.get_current() is None
     with _cache_lock:
         translated = _cache.get(key) if shared else None
     if translated is None:

@@ -26,7 +26,7 @@ from handlers.generation_handler import (
 )
 from handlers.smart_generation_handler import GenerationClassification
 from protocol.types import AssistantRequest, WorkspaceContext
-from utilities.request_builders import build_generation_request
+from orchestrator.request_builders import build_generation_request
 
 from tests.conftest import FakeSession
 

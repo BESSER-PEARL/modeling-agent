@@ -30,7 +30,7 @@ from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, Field
 from agent_config import MAX_USER_MESSAGE_CHARS
-from utilities.message_limits import validate_message_length
+from protocol.message_limits import validate_message_length
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # The names BESSER's deterministic generator registry understands. If
 # the classifier picks ``deterministic`` with a type not in this list,
 # the caller falls back to ``None`` and shows the user the generator
-# menu. Keep in sync with ``generation_handler.GENERATOR_KEYWORDS``.
+# menu. Keep in sync with ``routing.generation_signals.GENERATOR_KEYWORDS``.
 _DETERMINISTIC_GENERATOR_TYPES = Literal[
     "django",
     "backend",

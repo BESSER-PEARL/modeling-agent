@@ -62,7 +62,6 @@ are Nit at most.
 - Prompt wording and LLM output quality, unless the change contradicts a rule in `CLAUDE.md`. Unit review cannot
   measure generation quality; the live probes in `tests/live/` do.
 - `uml_specs/` and other data files, and `ca-certs-extra/`.
-- `domain_patterns.py` and `state_patterns.py` being unused; that is documented.
 - Generic advice such as "consider more tests" without a concrete path.
 
 ## Cap the nits
