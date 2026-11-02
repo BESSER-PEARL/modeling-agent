@@ -99,3 +99,39 @@ def generic_help_prompt(message: str, diagram_info: Dict[str, Any]) -> str:
         "If they want to create something, guide them on how to express their requirements.\n\n"
         "Keep your response conversational and encouraging. Suggest specific things they can ask you to create."
     )
+
+
+def user_profile_help_prompt(message: str, guide: str) -> str:
+    """Explain the user-profile environment strictly against *guide*, the
+    bundled metamodel rendered by ``format_user_metamodel_guide``: questions like
+    "what is the Accessibility element?" or "which elements model an old user
+    with sight issues?"."""
+    return (
+        "You are an expert on the BESSER User Profile modeling language. A user "
+        "profile describes a target group of users as boxes drawn from a fixed "
+        "metamodel, and the user is asking about that modeling environment.\n\n"
+        f'The user asked: "{message}"\n\n'
+        "Use ONLY the metamodel below as your source of truth — its elements "
+        "(classes), their attributes and value types, the enumeration values, "
+        "and how the elements connect. Do not invent elements, attributes, or "
+        "enumeration values that are not listed.\n\n"
+        f"{guide}\n\n"
+        "Answer the user's question based on this metamodel and the semantics of "
+        "the element and attribute names:\n"
+        "- If they ask what an element or attribute IS, explain what it "
+        "represents, list its attributes and allowed values, and say how it "
+        "connects to the rest (e.g. Accessibility groups the user's accessibility "
+        "needs and sits between User and Disability).\n"
+        "- If they ask WHICH elements are needed to model a described user, name "
+        "the specific classes and the exact attributes / enumeration values to "
+        "use, with an example criterion and operator (e.g. an old user → "
+        "Personal_Information with age using '>' or '>='; sight issues → a "
+        "Disability with affects == 'Sight'). Mention the grouping/root elements "
+        "the boxes attach through (here, Disability attaches under Accessibility, "
+        "which attaches under User).\n"
+        "- Remember attribute rows are matching CRITERIA with a comparison "
+        "operator, not fixed values.\n\n"
+        "Keep the answer concise and well-formatted in Markdown. Where useful, "
+        "tell them they can ask you to build it (e.g. \"create a profile for a "
+        "user older than 65 with a sight disability\")."
+    )

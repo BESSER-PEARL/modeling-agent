@@ -151,8 +151,10 @@ type or state: ``classifier`` (the routing rulebook), ``class_diagram``,
 ``object_diagram``, ``state_machine``, ``agent_diagram``, ``bpmn``, ``gui``,
 ``quantum_circuit``, ``user_profile``, ``component_diagram``,
 ``deployment_diagram``, ``fragments`` (rules several handlers share),
-``planner``, ``modeling_help``, ``describe_model``, ``fallback`` and
-``uml_rag``. A prompt that never changes is a constant
+``planner``, ``modeling_help``, ``describe_model``, ``fallback``,
+``uml_rag``, ``file_conversion`` (file-upload schemas and conversion prompts),
+``reply_language``, ``spec_driven``, ``model_operations`` and
+``conversation_memory``. A prompt that never changes is a constant
 (``bpmn.MODIFY_SYSTEM_PROMPT_BPMN``); one built from the request is a function
 of exactly those values (``bpmn.reasoning_prompt(user_request)``). Call sites
 import the module and look the prompt up by name

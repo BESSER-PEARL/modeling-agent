@@ -50,11 +50,7 @@ from prompts import fallback as fallback_prompts
 from prompts import modeling_help as help_prompts
 from prompts import uml_rag as uml_prompts
 from utilities.model_context import detailed_model_summary, is_diagram_nontrivial
-from utilities.user_metamodel import (
-    build_user_profile_help_prompt,
-    format_user_metamodel_guide,
-    is_user_profile_help,
-)
+from utilities.user_metamodel import format_user_metamodel_guide, is_user_profile_help
 from routing import guards
 from routing.intents import GENERATION_INTENT_NAME
 from common.session_keys import (
@@ -528,7 +524,7 @@ def modeling_help_body(session: Session):
     elif diagram_type == "UserDiagram" or is_user_profile_help(request.message):
         # Explain the user-profile modeling environment (elements, attributes,
         # enum values, how they connect) grounded in the bundled metamodel.
-        help_prompt = build_user_profile_help_prompt(request.message)
+        help_prompt = help_prompts.user_profile_help_prompt(request.message, format_user_metamodel_guide())
     else:
         help_prompt = help_prompts.generic_help_prompt(request.message, diagram_info)
 

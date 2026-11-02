@@ -447,11 +447,12 @@ def test_is_user_profile_help_detection():
     assert not is_user_profile_help(None)
 
 
-def test_build_user_profile_help_prompt_embeds_question_and_guide():
-    from utilities.user_metamodel import build_user_profile_help_prompt, format_user_metamodel_guide
+def test_user_profile_help_prompt_embeds_question_and_guide():
+    from prompts.modeling_help import user_profile_help_prompt
+    from utilities.user_metamodel import format_user_metamodel_guide
 
     question = "which elements are necessary to define a user that is old and has sight issues?"
-    prompt = build_user_profile_help_prompt(question)
+    prompt = user_profile_help_prompt(question, format_user_metamodel_guide())
     assert question in prompt
     # The full metamodel guide is embedded as grounding.
     assert format_user_metamodel_guide() in prompt

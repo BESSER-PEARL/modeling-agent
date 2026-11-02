@@ -30,6 +30,7 @@ from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, Field
 from common.agent_config import MAX_USER_MESSAGE_CHARS
+from prompts import spec_driven as spec_prompts
 from protocol.message_limits import validate_message_length
 
 logger = logging.getLogger(__name__)
@@ -178,19 +179,7 @@ def build_trigger_smart_generator_payload(
         # The summary is kept (it can carry a stack the user accepted with a
         # plain "yes") but labelled as possibly inaccurate, since a summary can
         # contradict the spec (e.g. name a database the user did not ask for).
-        instructions = (
-            "## Assistant's notes (may be inaccurate)\n\n"
-            "Use these only for choices the user confirmed in the conversation "
-            "that are missing from their request below. Never add a feature, "
-            "database, framework, tool or deployment step that is not in the "
-            "user's request; where these notes disagree with it, the user's "
-            "request wins.\n\n"
-            f"{instructions}\n\n"
-            "## The user's original request, verbatim\n\n"
-            "This is the authority. Where the summary above is shorter or "
-            "differs, this text wins.\n\n"
-            f"{original}"
-        )
+        instructions = spec_prompts.framed_instructions(instructions, original)
     if len(instructions) > MAX_USER_MESSAGE_CHARS and original:
         # The machine summary is optional; the accepted user specification is
         # not. Do not reject or clip a 64k spec just because framing was added.

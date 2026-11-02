@@ -17,6 +17,7 @@ from conversation.session_helpers import reply_message, reply_payload, reply_pro
 from utilities.model_utils import model_has_elements
 from diagram_handlers.registry.metadata import get_diagram_type_info
 from orchestrator import determine_target_diagram_type, resolve_diagram_id
+from prompts import model_operations as operation_prompts
 from routing.generation_signals import detect_generator_type
 from utilities.model_resolution import (
     resolve_target_model,
@@ -713,16 +714,7 @@ def execute_model_operation(
     # loses the described enums, named actions and constraints.
     spec_block = ""
     if spec_to_stash and spec_to_stash not in operation_request:
-        spec_block = (
-            "## The user's request, verbatim - THIS IS THE AUTHORITY\n\n"
-            "Model exactly what it states: every status value it lists, every "
-            "action it names, every rule it gives, every attribute it "
-            "describes. The focused instruction that follows is a planner "
-            "summary of this text, not a replacement for it - where they "
-            "differ, this wins.\n\n"
-            f"{spec_to_stash}\n\n"
-            "## Focused instruction\n\n"
-        )
+        spec_block = operation_prompts.spec_block(spec_to_stash)
 
     modeling_prompt = (
         f"{conversation_context}"

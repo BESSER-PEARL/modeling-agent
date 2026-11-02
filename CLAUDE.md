@@ -180,7 +180,8 @@ structured output and two-pass generation are inherited. Details: `docs/source/d
 
 All prompt text lives in `src/prompts/`, one module per diagram type or state (`classifier`, `class_diagram`,
 `bpmn`, `gui`, …, `fragments` for rules several handlers share, `planner`, `modeling_help`, `describe_model`,
-`fallback`, `uml_rag`). A static prompt is a constant (`MODIFY_SYSTEM_PROMPT_CLASS`); a prompt built from the
+`fallback`, `uml_rag`, `file_conversion`, `reply_language`, `spec_driven`, `model_operations`,
+`conversation_memory`). A static prompt is a constant (`MODIFY_SYSTEM_PROMPT_CLASS`); a prompt built from the
 request is a function of exactly those values (`reasoning_prompt(user_request)`). Call sites import the module
 (`from prompts import bpmn as bpmn_prompts`) and look the prompt up by name.
 

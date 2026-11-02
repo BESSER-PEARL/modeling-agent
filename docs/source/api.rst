@@ -453,7 +453,8 @@ Utilities
 
   - ``load_user_metamodel()`` — cached; returns a ClassDiagram-shaped dict
   - ``load_user_metamodel_semantics()`` — curated element/attribute descriptions
-  - ``format_user_metamodel_guide()`` / ``build_user_profile_help_prompt(message)``
+  - ``format_user_metamodel_guide()`` — the metamodel as prompt text; the help
+    prompt around it is ``prompts.modeling_help.user_profile_help_prompt``
   - ``is_user_profile_help(message)``
 
 ``src/llm/retry.py``
