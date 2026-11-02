@@ -645,7 +645,7 @@ UnifiedClassification (Router Output)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The Pydantic object returned by the single per-message classification call
-(``src/unified_classifier.py``). Every downstream state body reads from it, so
+(``src/routing/unified_classifier.py``). Every downstream state body reads from it, so
 no second LLM call is ever needed to refine routing. See
 :doc:`intent_recognition` for the full field reference.
 

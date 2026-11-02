@@ -6,7 +6,7 @@ across all LLM calls.  Supports per-session and global aggregation.
 
 Usage::
 
-    from tracking import get_tracker
+    from llm.tracking import get_tracker
 
     tracker = get_tracker()
     tracker.record(prompt_tokens=120, completion_tokens=80, model="gpt-6-luna")
@@ -26,8 +26,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Optional
 
-from byok_config import get_current
-from model_catalog import load_model_catalog
+from llm.byok_config import get_current
+from llm.model_catalog import load_model_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # reported once via _warn_unknown_model.
 # ---------------------------------------------------------------------------
 
-_PRICES_PATH = Path(__file__).resolve().parent.parent / "resources" / "model_prices.json"
+_PRICES_PATH = Path(__file__).resolve().parents[2] / "resources" / "model_prices.json"
 
 # BESSER's lookup order: one bare id can be listed under several vendors at
 # different rates, so only the vendors we call are tried.

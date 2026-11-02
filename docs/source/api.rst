@@ -1,7 +1,8 @@
 API and Module Reference
 ========================
 
-This document maps all Python modules in the Modeling Agent codebase.
+This document maps all Python modules in the Modeling Agent codebase, one
+section per package, in layer order (a package imports only those below it).
 
 .. contents:: On this page
    :local:
@@ -14,30 +15,10 @@ Entry Point
   Creates the BESSER agent, defines 10 intents and 10 states, wires state
   bodies, starts the session reaper, and starts the WebSocket runtime.
 
-Core Runtime Modules
---------------------
+Application (``src/app/``)
+--------------------------
 
-``src/agent_context.py``
-  Shared runtime context container. Stores module-level globals (``agent``,
-  ``gpt``, ``gpt_text``, ``gpt_predict_json``, ``uml_rag``, ``diagram_factory``,
-  ``openai_api_key``, ``stt``) populated at startup.
-
-``src/agent_config.py``
-  Tunable constants: tab and message limits, session grace period, streaming
-  buffer, LLM temperatures and token budgets, conversation history depth.
-
-``src/model_config.py``
-  Per-call-site model routing:
-
-  - ``MODEL_CLASSIFIER``, ``MODEL_GENERATION_LARGE``, ``MODEL_GENERATION_GUI``,
-    ``MODEL_GENERATION_SMALL``, ``MODEL_REASONING``, ``MODEL_VISION``,
-    ``MODEL_EMBEDDINGS`` — all overridable via ``BESSER_AGENT_MODEL_*``
-  - ``supports_custom_temperature(model)`` — False for gpt-5+ / o-series and
-    the Claude models that reject sampling params
-  - ``reasoning_effort_for(model)`` — the ``reasoning_effort`` to pass, or
-    ``None`` for models that take a temperature instead
-
-``src/agent_setup.py``
+``src/app/agent_setup.py``
   Initialization functions called during startup:
 
   - ``init_llm(agent)`` — Creates the two shared ``LLMOpenAI`` instances
@@ -50,31 +31,7 @@ Core Runtime Modules
     ``SimpleIntentClassifierConfiguration(framework='tensorflow')``, the
     local free classifier used as BAF's default
 
-``src/unified_classifier.py``
-  The router. One structured-output call per message:
-
-  - ``UnifiedClassification`` — the wide Pydantic verdict schema
-  - ``classify_message(request, llm_provider, history, recent_smart_gen, pending_flow)``
-  - ``get_or_classify(session, request, llm_provider)`` — per-message cache
-  - ``_SYSTEM_PROMPT`` — the authoritative routing rulebook
-
-``src/byok.py``
-  Per-request bring-your-own-key routing:
-
-  - ``set_current(provider, api_key, model, base_url)`` / ``reset_current(token)``
-  - ``get_active_client()`` — the per-request client, or ``None``
-  - ``resolve_model(provider, requested_model, user_model)``
-  - ``SUPPORTED_PROVIDERS`` — ``openai``, ``anthropic``, ``mistral``, ``nebius``
-  - ``predict_json(prompt, model)`` / ``user_openai_key()`` — the attachment paths
-
-``src/byok_config.py``
-  The per-request BYOK state, below both ``byok`` and ``tracking``:
-
-  - ``BYOKConfig`` — the user's provider, key, model and base URL
-  - ``current_byok`` — the context variable holding it
-  - ``get_current()`` — the active ``BYOKConfig``, or ``None``
-
-``src/state_bodies.py``
+``src/app/state_bodies.py``
   All state body functions and transition wiring:
 
   - ``register_all(*, agent, states, intents)`` — Wires state bodies and
@@ -92,14 +49,7 @@ Core Runtime Modules
   - ``decline_body`` / ``out_of_scope_body`` / ``meta_question_body``
   - ``global_fallback_body(session)``
 
-``src/execution/`` (package)
-  Operation execution engine:
-
-  - ``execute_planned_operations(session, request, default_mode, matched_intent)`` — ``planning.py``
-  - ``execute_model_operation(session, request, operation, default_mode, ...)`` — ``model_operations.py``
-  - ``handle_file_attachments(session, request)`` — ``file_handling.py``
-
-``src/confirmation.py``
+``src/app/confirmation.py``
   Pending confirmation flow handlers. Each reads its own pending state off the
   session and returns ``True`` when it consumed the message:
 
@@ -108,80 +58,60 @@ Core Runtime Modules
   - ``handle_pending_gui_choice(session) -> bool`` — deterministic vs.
     AI-generated GUI
 
-``src/session_keys.py``
-  Every session-state key the agent writes, in one place — the pending-flow
-  keys (``PENDING_COMPLETE_SYSTEM``, ``PENDING_GUI_CHOICE``,
-  ``PENDING_GENERATOR_TYPE`` / ``_CONFIG``, ``PENDING_SMART_GEN_INSTRUCTIONS``,
-  ``PENDING_WEBAPP_GENERATE``, ``PLAN_GENERATION_CONFIRM_FLAG``), the
-  classification cache keys (``UNIFIED_CLASSIFICATION`` /
-  ``UNIFIED_CLASSIFICATION_EVENT_ID``), the parsed-request cache keys, and
-  ``VOICE_CONTEXT``. Import the constant, never the literal string.
+Ingestion (``src/ingestion/``)
+------------------------------
 
-``src/model_utils.py``
-  - ``model_has_elements(model)`` — the shared "is this model non-empty?" check
+``src/ingestion/file_handling.py``
+  ``handle_file_attachments(session, request)`` — the attachment step of a turn:
+  converts each file and executes the resulting model operation.
 
-``src/session_helpers.py``
-  Reply utilities and transition conditions:
+``src/ingestion/file_conversion_handler.py``
+  File upload conversion:
 
-  - ``reply_payload(session, payload)`` / ``reply_message(session, text)``
-  - ``reply_stream_start`` / ``reply_stream_chunk`` / ``reply_stream_done``
-  - ``reply_progress(session, message, step, total)``
-  - ``stream_llm_response(...)`` — streams a free-text reply, routed through
-    BYOK when a user key is active (fetched whole, then sent)
-  - ``json_intent_matches(session, params)`` — the priority-1 transition
-    condition; reads the unified classifier's verdict
-  - ``json_no_intent_matched(session)`` — the fallback condition
-  - ``replay_last_reply(session, request)`` — re-sends the buffered terminal
-    reply after a reconnect
-  - ``get_user_message`` / ``get_diagram_type`` / ``get_current_model``
+  - ``convert_file_to_diagram_spec(...)`` — the entry point
+  - ``detect_file_type(filename, content_text)`` /
+    ``detect_plantuml_diagram_type(content)``
+  - Per-format converters (private): ``_convert_plantuml``,
+    ``_convert_knowledge_graph``, ``_convert_xmi``, ``_convert_pdf``,
+    ``_convert_image``, ``_convert_generic_text``
+  - Per-type validators: ``_validate_class_diagram_spec``,
+    ``_validate_state_machine_spec``, ``_validate_object_diagram_spec``,
+    ``_validate_agent_diagram_spec``, ``_validate_bpmn_spec``
+  - ``PLANTUML_EXTENSIONS``, ``KG_EXTENSIONS``, ``IMAGE_EXTENSIONS``,
+    ``PDF_EXTENSIONS``, ``XMI_EXTENSIONS``, ``CONVERTIBLE_DIAGRAM_TYPES``
 
-``src/telemetry.py``
-  Opt-in, fire-and-forget study prompt telemetry. Posts one ``prompt``
-  event per handled message to ``{BESSER_BACKEND_URL}/besser_api/telemetry/event``
-  on a short-timeout daemon thread, only when the request carries a
-  ``pilotParticipant`` label. Every exception is swallowed.
+Execution (``src/execution/``)
+------------------------------
 
-``src/errors.py``
-  Unified error taxonomy:
+``src/execution/`` (package)
+  Operation execution engine:
 
-  - ``ErrorCode`` — the enum of error codes
-  - ``classify_error(error)`` → ``ErrorCode``
-  - ``get_recovery_hint(error_code)``
-  - ``build_error_response(error_code, message, ...)``
+  - ``execute_planned_operations(session, request, default_mode, matched_intent)`` — ``planning.py``
+  - ``execute_model_operation(session, request, operation, default_mode, ...)`` — ``model_operations.py``
 
-``src/reply_copy.py``
-  Shared user-facing copy (decline acknowledgement, meta answer,
-  out-of-scope redirect, confirmation prompts) kept in one place.
+Code Generation (``src/codegen/``)
+----------------------------------
 
-``src/suggestions.py``
-  Context-aware suggestion engine — see `Suggestions`_ below for the API.
+``src/codegen/generation_handler.py``
+  Code generation routing:
 
-Protocol Layer
---------------
+  - ``handle_generation_request(session, request)``
+  - ``should_route_to_generation(session, request)`` — the cheap transition
+    gate (frontend events and pending flows only)
+  - ``handle_pending_smart_gen_confirmation(session)``
+  - ``handle_pending_plan_generation_confirmation(session)``
+  - ``parse_inline_generator_config(...)``
+  - ``GENERATOR_REQUIRED_FIELDS`` — Required configuration fields per generator
+  - ``EXPORT_FORMATS`` / ``DIALECT_VALUES`` / ``MODE_VALUES`` / ``QISKIT_BACKENDS``
 
-``src/protocol/types.py``
-  Protocol data classes:
+``src/codegen/smart_generation_handler.py``
+  Smart (LLM-authored) generation dispatch:
 
-  - ``AssistantRequest`` — Canonical request object
-  - ``WorkspaceContext`` — Editor state snapshot
-  - ``FileAttachment`` — Uploaded file metadata
-  - ``SUPPORTED_DIAGRAM_TYPES`` — Set of valid diagram type strings
+  - ``GenerationClassification`` — the sub-routing schema
+  - ``build_trigger_smart_generator_payload(classification, reason_prefix)``
 
-``src/protocol/message_limits.py``
-  ``validate_message_length(message)`` and ``UserMessageTooLong``: a request
-  over ``MAX_USER_MESSAGE_CHARS`` is rejected, never truncated.
-
-``src/protocol/adapters.py``
-  Payload extraction and normalization:
-
-  - ``parse_assistant_request(session)`` — Main entry point
-  - ``extract_event_payload(session)`` — Extract from BESSER event
-  - ``parse_v2_payload(payload)`` — Parse v2 protocol format
-  - ``normalize_diagram_type(diagram_type)`` — Normalize type strings
-  - ``strip_diagram_prefix(message)`` — Remove diagram type prefixes
-
-Orchestration Layer
--------------------
+Orchestration (``src/orchestrator/``)
+-------------------------------------
 
 ``src/orchestrator/__init__.py``
   Re-exports for convenience.
@@ -199,6 +129,97 @@ Orchestration Layer
 
   - ``determine_target_diagram_type(request, last_intent)`` — Three-level resolution
   - ``KEYWORD_TARGETS`` — Explicit keyword-to-type mappings
+
+``src/orchestrator/request_builders.py``
+  Derived request factories:
+
+  - ``build_request_for_target(request, target_type, ...)``
+  - ``build_generation_request(request, generator_type, config, message_override)``
+
+Conversation (``src/conversation/``)
+------------------------------------
+
+``src/conversation/session_helpers.py``
+  Reply utilities and transition conditions:
+
+  - ``reply_payload(session, payload)`` / ``reply_message(session, text)``
+  - ``reply_stream_start`` / ``reply_stream_chunk`` / ``reply_stream_done``
+  - ``reply_progress(session, message, step, total)``
+  - ``stream_llm_response(...)`` — streams a free-text reply, routed through
+    BYOK when a user key is active (fetched whole, then sent)
+  - ``json_intent_matches(session, params)`` — the priority-1 transition
+    condition; reads the unified classifier's verdict
+  - ``json_no_intent_matched(session)`` — the fallback condition
+  - ``replay_last_reply(session, request)`` — re-sends the buffered terminal
+    reply after a reconnect
+  - ``get_user_message`` / ``get_diagram_type`` / ``get_current_model``
+
+``src/conversation/suggestions.py``
+  Context-aware next-step suggestions after operations:
+
+  - ``get_suggested_actions(diagram_type, operation_mode, available_diagrams=None,
+    model_summary=None, generator_type=None)`` — returns 2–4
+    ``{label, prompt}`` dicts
+  - ``format_suggestions_as_text(actions)``
+  - ``get_post_spec_suggestions(detected_generator)`` /
+    ``get_artifact_label(detected_generator)``
+  - ``_DIAGRAM_SUGGESTION_HANDLERS`` — per-diagram-type suggestion builders,
+    one entry per supported type
+
+``src/conversation/reply_copy.py``
+  Shared user-facing copy (decline acknowledgement, meta answer,
+  out-of-scope redirect, confirmation prompts) kept in one place.
+
+``src/conversation/telemetry.py``
+  Opt-in, fire-and-forget study prompt telemetry. Posts one ``prompt``
+  event per handled message to ``{BESSER_BACKEND_URL}/besser_api/telemetry/event``
+  on a short-timeout daemon thread, only when the request carries a
+  ``pilotParticipant`` label. Every exception is swallowed.
+
+``src/conversation/agent_context.py``
+  Shared runtime context container. Stores module-level globals (``agent``,
+  ``gpt``, ``gpt_text``, ``gpt_predict_json``, ``uml_rag``, ``diagram_factory``,
+  ``openai_api_key``, ``stt``) populated at startup.
+
+Routing (``src/routing/``)
+--------------------------
+
+``src/routing/unified_classifier.py``
+  The router. One structured-output call per message:
+
+  - ``UnifiedClassification`` — the wide Pydantic verdict schema
+  - ``classify_message(request, llm_provider, history, recent_smart_gen, pending_flow)``
+  - ``get_or_classify(session, request, llm_provider)`` — per-message cache
+  - ``_SYSTEM_PROMPT`` — the authoritative routing rulebook
+
+``src/routing/generation_signals.py``
+  Generation vocabulary and session signals shared by the classifier, the
+  planner and the generation handler:
+
+  - ``detect_generator_type(message)`` — pure keyword/regex detection
+  - ``GENERATOR_KEYWORDS`` — Keyword-to-generator mappings
+  - ``GENERATOR_PREREQUISITES`` — Diagrams each generator consumes
+  - ``recent_smart_gen_for_project(session, window_seconds)``
+  - ``_extract_github_reference(message)`` with ``_GITHUB_URL_RE`` /
+    ``_GITHUB_CONTINUE_VERB_RE`` — the continue-from-GitHub guard
+
+``src/routing/intents.py``
+  Intent name constants:
+
+  - ``GENERATION_INTENT_NAME`` — The string name for the generation intent
+
+Conversation Memory
+-------------------
+
+``src/memory/``
+  Per-session conversation memory: a verbatim window plus a rolling LLM
+  summary of everything older.
+
+  - ``memory_session_key(session, request)`` — prefers the v2 ``sessionId``,
+    which survives reconnects
+  - ``get_memory(session_id, ...)`` / ``remove_memory(session_id)``
+  - ``cleanup_stale_memories(max_age_seconds)`` — called by the reaper
+  - ``ConversationMemory``
 
 Diagram Handlers
 ----------------
@@ -299,49 +320,77 @@ Diagram Handlers
   widget-spoof guarded. ``find_widget_slots`` / ``replace_widget_slot`` splice
   real data-bound widgets into ``<!--WIDGET:kind-->`` markers.
 
-Auxiliary Handlers
+Schemas
+-------
+
+``src/schemas/``
+  Pydantic schemas for structured LLM output, one module per diagram type:
+  ``class_diagram``, ``compact_class_diagram`` (the token-trimmed generation
+  variant), ``object_diagram``, ``state_machine``, ``agent_diagram``,
+  ``gui_diagram``, ``quantum_circuit``, ``bpmn``, ``user_profile``. All are
+  re-exported from ``src/schemas/__init__.py``.
+
+LLM (``src/llm/``)
 ------------------
 
-``src/handlers/generation_handler.py``
-  Code generation routing:
+``src/llm/provider.py``
+  Provider abstraction over the OpenAI SDK:
 
-  - ``handle_generation_request(session, request)``
-  - ``should_route_to_generation(session, request)`` — the cheap transition
-    gate (frontend events and pending flows only)
-  - ``handle_pending_smart_gen_confirmation(session)``
-  - ``handle_pending_plan_generation_confirmation(session)``
-  - ``parse_inline_generator_config(...)``
-  - ``GENERATOR_REQUIRED_FIELDS`` — Required configuration fields per generator
-  - ``EXPORT_FORMATS`` / ``DIALECT_VALUES`` / ``MODE_VALUES`` / ``QISKIT_BACKENDS``
+  - ``LLMProvider`` — ``parse(messages, schema, temperature, max_tokens, model)``
+    for structured outputs, ``stream(...)`` for streaming text, and
+    ``predict(prompt, **kwargs)`` for a plain completion. All omit
+    ``temperature`` and pass ``reasoning_effort`` for gpt-5 / o-series models.
+    ``.client`` and ``.model_name`` expose the underlying SDK client and the
+    tier this provider was built for.
+  - ``get_provider(llm, model_name)`` — process-wide accessor
 
-``src/handlers/smart_generation_handler.py``
-  Smart (LLM-authored) generation dispatch:
+``src/llm/byok.py``
+  Per-request bring-your-own-key routing:
 
-  - ``GenerationClassification`` — the sub-routing schema
-  - ``build_trigger_smart_generator_payload(classification, reason_prefix)``
+  - ``set_current(provider, api_key, model, base_url)`` / ``reset_current(token)``
+  - ``get_active_client()`` — the per-request client, or ``None``
+  - ``resolve_model(provider, requested_model, user_model)``
+  - ``SUPPORTED_PROVIDERS`` — ``openai``, ``anthropic``, ``mistral``, ``nebius``
+  - ``predict_json(prompt, model)`` / ``user_openai_key()`` — the attachment paths
 
-``src/handlers/file_conversion_handler.py``
-  File upload conversion:
+``src/llm/byok_config.py``
+  The per-request BYOK state, below both ``byok`` and ``tracking``:
 
-  - ``convert_file_to_diagram_spec(...)`` — the entry point
-  - ``detect_file_type(filename, content_text)`` /
-    ``detect_plantuml_diagram_type(content)``
-  - Per-format converters (private): ``_convert_plantuml``,
-    ``_convert_knowledge_graph``, ``_convert_xmi``, ``_convert_pdf``,
-    ``_convert_image``, ``_convert_generic_text``
-  - Per-type validators: ``_validate_class_diagram_spec``,
-    ``_validate_state_machine_spec``, ``_validate_object_diagram_spec``,
-    ``_validate_agent_diagram_spec``, ``_validate_bpmn_spec``
-  - ``PLANTUML_EXTENSIONS``, ``KG_EXTENSIONS``, ``IMAGE_EXTENSIONS``,
-    ``PDF_EXTENSIONS``, ``XMI_EXTENSIONS``, ``CONVERTIBLE_DIAGRAM_TYPES``
+  - ``BYOKConfig`` — the user's provider, key, model and base URL
+  - ``current_byok`` — the context variable holding it
+  - ``get_current()`` — the active ``BYOKConfig``, or ``None``
+
+``src/llm/model_config.py``
+  Per-call-site model routing:
+
+  - ``MODEL_CLASSIFIER``, ``MODEL_GENERATION_LARGE``, ``MODEL_GENERATION_GUI``,
+    ``MODEL_GENERATION_SMALL``, ``MODEL_REASONING``, ``MODEL_VISION``,
+    ``MODEL_EMBEDDINGS`` — all overridable via ``BESSER_AGENT_MODEL_*``
+  - ``supports_custom_temperature(model)`` — False for gpt-5+ / o-series and
+    the Claude models that reject sampling params
+  - ``reasoning_effort_for(model)`` — the ``reasoning_effort`` to pass, or
+    ``None`` for models that take a temperature instead
+
+``src/llm/tracking/token_tracker.py``
+  Token usage and cost tracking per session and globally:
+
+  - ``get_tracker()`` → ``TokenTracker``
+  - ``TokenTracker.record_from_usage(usage, model=...)``
 
   .. note::
 
-     ``handle_file_attachments(session, request)`` lives in
-     ``src/execution/file_handling.py``, not here.
+     Prices come from the model catalog (``BESSER_MODEL_CATALOG``, read by
+     ``src/llm/model_catalog.py``), else from ``src/resources/model_prices.json``,
+     a copy of BESSER's vendored price file (see :ref:`agent-prices`). A model
+     neither prices falls back to placeholder pricing, so every reported cost
+     for it becomes an estimate: price a new ``MODEL_*`` default in the
+     catalog.
 
 Utilities
 ---------
+
+``src/utilities/model_utils.py``
+  - ``model_has_elements(model)`` — the shared "is this model non-empty?" check
 
 ``src/utilities/model_resolution.py``
   Target model resolution:
@@ -388,100 +437,53 @@ Utilities
   - ``build_workspace_context_block(request, ...)``
   - ``record_session_action(session, action_summary)``
 
-``src/orchestrator/request_builders.py``
-  Derived request factories:
-
-  - ``build_request_for_target(request, target_type, ...)``
-  - ``build_generation_request(request, generator_type, config, message_override)``
-
-Routing
--------
-
-``src/routing/intents.py``
-  Intent name constants:
-
-  - ``GENERATION_INTENT_NAME`` — The string name for the generation intent
-
-``src/routing/generation_signals.py``
-  Generation vocabulary and session signals shared by the classifier, the
-  planner and the generation handler:
-
-  - ``detect_generator_type(message)`` — pure keyword/regex detection
-  - ``GENERATOR_KEYWORDS`` — Keyword-to-generator mappings
-  - ``GENERATOR_PREREQUISITES`` — Diagrams each generator consumes
-  - ``recent_smart_gen_for_project(session, window_seconds)``
-  - ``_extract_github_reference(message)`` with ``_GITHUB_URL_RE`` /
-    ``_GITHUB_CONTINUE_VERB_RE`` — the continue-from-GitHub guard
-
-LLM Provider
-------------
-
-``src/llm/provider.py``
-  Provider abstraction over the OpenAI SDK:
-
-  - ``LLMProvider`` — ``parse(messages, schema, temperature, max_tokens, model)``
-    for structured outputs, ``stream(...)`` for streaming text, and
-    ``predict(prompt, **kwargs)`` for a plain completion. All omit
-    ``temperature`` and pass ``reasoning_effort`` for gpt-5 / o-series models.
-    ``.client`` and ``.model_name`` expose the underlying SDK client and the
-    tier this provider was built for.
-  - ``get_provider(llm, model_name)`` — process-wide accessor
-
-Conversation Memory
--------------------
-
-``src/memory/``
-  Per-session conversation memory: a verbatim window plus a rolling LLM
-  summary of everything older.
-
-  - ``memory_session_key(session, request)`` — prefers the v2 ``sessionId``,
-    which survives reconnects
-  - ``get_memory(session_id, ...)`` / ``remove_memory(session_id)``
-  - ``cleanup_stale_memories(max_age_seconds)`` — called by the reaper
-  - ``ConversationMemory``
-
-Schemas
--------
-
-``src/schemas/``
-  Pydantic schemas for structured LLM output, one module per diagram type:
-  ``class_diagram``, ``compact_class_diagram`` (the token-trimmed generation
-  variant), ``object_diagram``, ``state_machine``, ``agent_diagram``,
-  ``gui_diagram``, ``quantum_circuit``, ``bpmn``, ``user_profile``. All are
-  re-exported from ``src/schemas/__init__.py``.
-
-Token Tracking
+Protocol Layer
 --------------
 
-``src/tracking/token_tracker.py``
-  Token usage and cost tracking per session and globally:
+``src/protocol/types.py``
+  Protocol data classes:
 
-  - ``get_tracker()`` → ``TokenTracker``
-  - ``TokenTracker.record_from_usage(usage, model=...)``
+  - ``AssistantRequest`` — Canonical request object
+  - ``WorkspaceContext`` — Editor state snapshot
+  - ``FileAttachment`` — Uploaded file metadata
+  - ``SUPPORTED_DIAGRAM_TYPES`` — Set of valid diagram type strings
 
-  .. note::
+``src/protocol/message_limits.py``
+  ``validate_message_length(message)`` and ``UserMessageTooLong``: a request
+  over ``MAX_USER_MESSAGE_CHARS`` is rejected, never truncated.
 
-     Prices come from the model catalog (``BESSER_MODEL_CATALOG``, read by
-     ``src/model_catalog.py``), else from ``src/resources/model_prices.json``,
-     a copy of BESSER's vendored price file (see :ref:`agent-prices`). A model
-     neither prices falls back to placeholder pricing, so every reported cost
-     for it becomes an estimate: price a new ``MODEL_*`` default in the
-     catalog.
+``src/protocol/adapters.py``
+  Payload extraction and normalization:
 
-Suggestions
------------
+  - ``parse_assistant_request(session)`` — Main entry point
+  - ``extract_event_payload(session)`` — Extract from BESSER event
+  - ``parse_v2_payload(payload)`` — Parse v2 protocol format
+  - ``normalize_diagram_type(diagram_type)`` — Normalize type strings
+  - ``strip_diagram_prefix(message)`` — Remove diagram type prefixes
 
-``src/suggestions.py``
-  Context-aware next-step suggestions after operations:
+Common (``src/common/``)
+------------------------
 
-  - ``get_suggested_actions(diagram_type, operation_mode, available_diagrams=None,
-    model_summary=None, generator_type=None)`` — returns 2–4
-    ``{label, prompt}`` dicts
-  - ``format_suggestions_as_text(actions)``
-  - ``get_post_spec_suggestions(detected_generator)`` /
-    ``get_artifact_label(detected_generator)``
-  - ``_DIAGRAM_SUGGESTION_HANDLERS`` — per-diagram-type suggestion builders,
-    one entry per supported type
+``src/common/agent_config.py``
+  Tunable constants: tab and message limits, session grace period, streaming
+  buffer, LLM temperatures and token budgets, conversation history depth.
+
+``src/common/session_keys.py``
+  Every session-state key the agent writes, in one place — the pending-flow
+  keys (``PENDING_COMPLETE_SYSTEM``, ``PENDING_GUI_CHOICE``,
+  ``PENDING_GENERATOR_TYPE`` / ``_CONFIG``, ``PENDING_SMART_GEN_INSTRUCTIONS``,
+  ``PENDING_WEBAPP_GENERATE``, ``PLAN_GENERATION_CONFIRM_FLAG``), the
+  classification cache keys (``UNIFIED_CLASSIFICATION`` /
+  ``UNIFIED_CLASSIFICATION_EVENT_ID``), the parsed-request cache keys, and
+  ``VOICE_CONTEXT``. Import the constant, never the literal string.
+
+``src/common/errors.py``
+  Unified error taxonomy:
+
+  - ``ErrorCode`` — the enum of error codes
+  - ``classify_error(error)`` → ``ErrorCode``
+  - ``get_recovery_hint(error_code)``
+  - ``build_error_response(error_code, message, ...)``
 
 Test Infrastructure
 -------------------

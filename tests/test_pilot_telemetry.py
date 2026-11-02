@@ -15,10 +15,10 @@ import json
 import sys
 from unittest.mock import patch
 
-import session_helpers as sh
-import telemetry
+from conversation import session_helpers as sh
+from conversation import telemetry
 from protocol.adapters import parse_v2_payload
-from session_keys import TELEMETRY_EMITTED_EVENT_ID
+from common.session_keys import TELEMETRY_EMITTED_EVENT_ID
 
 
 class _FakeEvent:

@@ -10,11 +10,11 @@ import json
 
 import pytest
 
-import byok
-import byok_config
-import model_catalog
-from model_catalog import load_model_catalog
-from tracking.token_tracker import TokenTracker
+from llm import byok
+from llm import byok_config
+from llm import model_catalog
+from llm.model_catalog import load_model_catalog
+from llm.tracking.token_tracker import TokenTracker
 
 GATEWAY_URL = "https://gateway.example.internal/v1"
 CATALOG = {

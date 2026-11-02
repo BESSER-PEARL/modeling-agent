@@ -77,16 +77,16 @@ the new diagram's own tab never exercises routing or discoverability, because
    resolved from the project snapshot when nothing else matches.
 
 8. **Teach the classifier**: add the token to ``_TARGET_DIAGRAM_TYPES`` in
-   ``src/unified_classifier.py`` and add the type's vocabulary to
+   ``src/routing/unified_classifier.py`` and add the type's vocabulary to
    ``_SYSTEM_PROMPT``, so a request naming it reaches a modeling intent at
    all. Without this the message can fall through to the fallback body.
 
-9. **Update the capability copy** in ``src/state_bodies.py`` — the
+9. **Update the capability copy** in ``src/app/state_bodies.py`` — the
    ``_QUICK_RESPONSES`` capability text *and* ``global_fallback_body``'s
    prompt both enumerate supported types independently. Grep for an existing
    type's name (e.g. ``"quantum"``) to find every place.
 
-10. **Add suggestions** in ``src/suggestions.py`` and wire them into
+10. **Add suggestions** in ``src/conversation/suggestions.py`` and wire them into
     ``_DIAGRAM_SUGGESTION_HANDLERS``.
 
 11. **Add tests** in ``tests/test_diagram_handlers.py`` plus a dedicated
@@ -122,7 +122,7 @@ How to Add a New Generator
       (e.g. ``"sql"`` vs ``"sqlalchemy"``), place the longer keyword first.
 
 2. **Add required fields** (if any) to ``GENERATOR_REQUIRED_FIELDS`` in
-   ``src/handlers/generation_handler.py``:
+   ``src/codegen/generation_handler.py``:
 
    .. code-block:: python
 
@@ -142,8 +142,8 @@ How to Add a New Generator
    ``_normalize_defaults()``
 
 6. **Mirror the name** in the two ``_DETERMINISTIC_GENERATOR_TYPES``
-   ``Literal`` lists — ``src/unified_classifier.py`` and
-   ``src/handlers/smart_generation_handler.py``. A generator the classifier
+   ``Literal`` lists — ``src/routing/unified_classifier.py`` and
+   ``src/codegen/smart_generation_handler.py``. A generator the classifier
    cannot name is a generator it will never route to.
 
 7. **Add tests** in ``tests/test_generation_handler.py``
@@ -180,7 +180,7 @@ How to Add a New Intent
       :doc:`../intent_recognition`.
 
 2. **Mirror the name** in ``_INTENT_NAMES`` in
-   ``src/unified_classifier.py`` and write the real routing rule in
+   ``src/routing/unified_classifier.py`` and write the real routing rule in
    ``_SYSTEM_PROMPT``. This is the step that actually makes the intent
    reachable — include positive examples, what it is *not*, and
    disambiguation against confusable intents.
@@ -191,7 +191,7 @@ How to Add a New Intent
 
       my_state = agent.new_state("my_state")
 
-4. **Write the state body** in ``src/state_bodies.py``:
+4. **Write the state body** in ``src/app/state_bodies.py``:
 
    .. code-block:: python
 
@@ -223,7 +223,7 @@ Fixing a Misclassification for a Specific Phrase
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Edit the rule for that intent in ``_SYSTEM_PROMPT``
-(``src/unified_classifier.py``). This is the highest-impact, lowest-risk
+(``src/routing/unified_classifier.py``). This is the highest-impact, lowest-risk
 change, and it is the **only** place routing rules live.
 
 .. code-block:: python
@@ -256,7 +256,7 @@ cross-validation) has been **removed**. Routing rules belong in
 Reach for a deterministic guard only where the LLM is *measurably* unreliable
 and the decision must never be guessed. Existing examples:
 
-- ``_names_unsupported_stack()`` in ``src/unified_classifier.py`` — forces the
+- ``_names_unsupported_stack()`` in ``src/routing/unified_classifier.py`` — forces the
   smart generation route when a message names a language or framework BESSER
   has no generator for. Added because the classifier mapped "c classes" to
   ``java`` and "c++ classes" to ``python``.
@@ -289,7 +289,7 @@ Adding a Diagram Type Keyword
 Changing Transition Routing
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Modify ``add_unified_transitions()`` in ``src/state_bodies.py``.
+Modify ``add_unified_transitions()`` in ``src/app/state_bodies.py``.
 
 .. warning::
 

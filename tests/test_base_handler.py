@@ -9,7 +9,7 @@ from diagram_handlers.core.base_handler import (
     MODIFICATION_REQUIRED, MODIFICATION_INNER_REQUIRED,
     BaseDiagramHandler,
 )
-from errors import classify_error
+from common.errors import classify_error
 
 
 # ---------------------------------------------------------------------------

@@ -29,7 +29,7 @@ import logging
 from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, Field
-from agent_config import MAX_USER_MESSAGE_CHARS
+from common.agent_config import MAX_USER_MESSAGE_CHARS
 from protocol.message_limits import validate_message_length
 
 logger = logging.getLogger(__name__)

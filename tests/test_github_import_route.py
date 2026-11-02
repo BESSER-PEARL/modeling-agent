@@ -4,7 +4,7 @@ endpoint, loads the project, and arms the modify machinery — the agent only
 detects the intent and extracts owner/repo/branch).
 
 Two deterministic guards under test:
-  * handlers.generation_handler — extraction + the terminal payload, placed
+  * codegen.generation_handler — extraction + the terminal payload, placed
     BEFORE sub-route dispatch in handle_generation_request;
   * unified_classifier._post_validate — reroutes a github-continuation
     message that the LLM parked in fallback/modify back to
@@ -13,10 +13,10 @@ Two deterministic guards under test:
 
 import pytest
 
-from handlers.generation_handler import handle_generation_request
+from codegen.generation_handler import handle_generation_request
 from protocol.types import AssistantRequest, WorkspaceContext
 from routing.generation_signals import _extract_github_reference
-from unified_classifier import UnifiedClassification, _post_validate
+from routing.unified_classifier import UnifiedClassification, _post_validate
 
 from tests.conftest import FakeSession
 
@@ -161,7 +161,7 @@ class TestGithubImportGuard:
         """An import loads a DIFFERENT project — a stale pre-import smart-gen
         confirmation must not survive for a later generic "yes" to spend."""
         import time as _t
-        from session_keys import (
+        from common.session_keys import (
             PENDING_GENERATOR_TYPE,
             PENDING_SMART_GEN_INSTRUCTIONS,
             PENDING_SMART_GEN_PROVIDER,

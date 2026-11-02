@@ -18,52 +18,35 @@ Repository = "https://github.com/BESSER-PEARL/modeling-agent"
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
 
-# src/ is the import root: its packages and modules are top-level names
-# (``import protocol``, ``from utilities import ...``). Install editable
+# src/ is the import root: its packages are top-level names (``import protocol``,
+# ``from common.session_keys import ...``). Every module lives in a package; the
+# entrypoint modeling_agent.py stays at the repo root. Install editable
 # (``pip install -e .``): the code reads src/resources/ and uml_specs/ next to it.
 [tool.setuptools]
 package-dir = { "" = "src" }
-py-modules = [
-    "agent_config",
-    "agent_context",
-    "agent_setup",
-    "byok",
-    "byok_config",
-    "confirmation",
-    "errors",
-    "model_catalog",
-    "model_config",
-    "model_utils",
-    "reply_copy",
-    "reply_language",
-    "session_helpers",
-    "session_keys",
-    "state_bodies",
-    "suggestions",
-    "telemetry",
-    "unified_classifier",
-]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 namespaces = false
 
-# Import layering (CLAUDE.md, "Intended import layering"). import-linter
-# only scans packages, so the single-file modules (state_bodies,
-# session_helpers, byok, ...) appear only as import targets: the forbidden
-# contracts below catch a package importing one directly, not chains through them.
+# Import layering (CLAUDE.md, "Intended import layering"): each top-level package
+# is one layer and imports only the layers below it. tests/test_packaging.py
+# checks that every package in src/ is listed here.
 [tool.importlinter]
 root_packages = [
+    "app",
+    "codegen",
+    "common",
+    "conversation",
     "diagram_handlers",
     "execution",
-    "handlers",
+    "ingestion",
     "llm",
     "memory",
     "orchestrator",
     "protocol",
     "routing",
     "schemas",
-    "tracking",
     "utilities",
 ]
 include_external_packages = true
@@ -72,55 +55,43 @@ include_external_packages = true
 name = "Agent packages: a layer imports only the layers below it"
 type = "layers"
 layers = [
+    "app",
+    "ingestion",
     "execution",
-    "handlers | orchestrator",
-    "memory | routing",
-    "diagram_handlers",
-    "llm",
-    "tracking",
+    "codegen | orchestrator",
+    "conversation",
+    "routing",
+    "memory | diagram_handlers",
+    "llm | schemas",
     "utilities",
-    "protocol | schemas",
+    "protocol",
+    "common",
 ]
 ignore_imports = [
     # Known cycle: a confirmed generation re-runs the planned operations.
-    "handlers.generation_handler -> execution",
+    "codegen.generation_handler -> execution",
 ]
 
 [[tool.importlinter.contracts]]
-name = "Packages do not import the state, confirmation or bootstrap modules"
-type = "forbidden"
-source_modules = [
-    "diagram_handlers",
-    "execution",
-    "handlers",
-    "llm",
-    "memory",
-    "orchestrator",
-    "protocol",
-    "routing",
-    "schemas",
-    "tracking",
-    "utilities",
-]
-forbidden_modules = ["agent_setup", "confirmation", "state_bodies"]
+name = "app: the state bodies and bootstrap sit above the confirmation flows"
+type = "layers"
+containers = ["app"]
+layers = ["state_bodies | agent_setup", "confirmation"]
 
 [[tool.importlinter.contracts]]
-name = "Packages below the conversation layer do not import it"
-type = "forbidden"
-source_modules = [
-    "diagram_handlers",
-    "llm",
-    "memory",
-    "protocol",
-    "routing",
-    "schemas",
-    "tracking",
-    "utilities",
-]
-forbidden_modules = ["session_helpers", "unified_classifier"]
+name = "conversation: reply helpers above reply language above the leaves"
+type = "layers"
+containers = ["conversation"]
+layers = ["session_helpers", "reply_language", "agent_context | reply_copy | suggestions | telemetry"]
 
 [[tool.importlinter.contracts]]
-name = "Packages below the LLM layer do not import BYOK routing"
-type = "forbidden"
-source_modules = ["protocol", "schemas", "tracking", "utilities"]
-forbidden_modules = ["byok"]
+name = "routing: the classifier above its signals"
+type = "layers"
+containers = ["routing"]
+layers = ["unified_classifier", "generation_signals | intents"]
+
+[[tool.importlinter.contracts]]
+name = "llm: provider above BYOK above tracking above the per-request config"
+type = "layers"
+containers = ["llm"]
+layers = ["provider", "byok", "tracking", "byok_config | model_catalog | model_config"]

@@ -351,7 +351,7 @@ Common Preamble
 ---------------
 
 Every state body starts with ``_common_preamble()``
-(``src/state_bodies.py``), which runs these checks in order:
+(``src/app/state_bodies.py``), which runs these checks in order:
 
 1. **Reconnect replay** — a ``replay_last_response`` action re-sends the
    buffered terminal reply and stops. It never re-runs generation or consumes

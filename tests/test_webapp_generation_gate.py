@@ -63,7 +63,7 @@ def test_webapp_plan_strips_generation_and_shows_prompt():
     # and the user is shown the "generate the web app?" prompt
     assert prompt.called
     # the web-app pause keeps its own mechanism — no generic stash armed
-    from session_keys import PENDING_GENERATOR_TYPE
+    from common.session_keys import PENDING_GENERATOR_TYPE
     assert session.get(PENDING_GENERATOR_TYPE) is None
 
 
@@ -71,7 +71,7 @@ def test_explicit_non_gui_mixed_plan_pauses_generation():
     # A class-diagram plan with an explicit generation op (no GUI) now pauses
     # exactly like the web-app flow: the model is built, the generation op is
     # stashed, and the user decides via the injection message's question.
-    from session_keys import (
+    from common.session_keys import (
         PENDING_GENERATOR_CONFIG,
         PENDING_GENERATOR_TYPE,
         PLAN_GENERATION_CONFIRM_FLAG,
@@ -92,7 +92,7 @@ def test_explicit_non_gui_mixed_plan_pauses_generation():
 def test_direct_generation_only_plan_still_runs():
     # A DIRECT generation request (no modeling step in the plan) keeps its
     # current behavior: the generator runs immediately, nothing is stashed.
-    from session_keys import PENDING_GENERATOR_TYPE
+    from common.session_keys import PENDING_GENERATOR_TYPE
     plan = [
         {"type": "generation", "generatorType": "django", "config": {}},
     ]
@@ -112,8 +112,8 @@ def test_direct_generation_only_plan_still_runs():
 # then goes silent.
 # ---------------------------------------------------------------------------
 
-import confirmation  # noqa: E402
-from session_keys import PENDING_GUI_CHOICE, PENDING_WEBAPP_GENERATE  # noqa: E402
+from app import confirmation  # noqa: E402
+from common.session_keys import PENDING_GUI_CHOICE, PENDING_WEBAPP_GENERATE  # noqa: E402
 
 
 def _run_gui_choice(answer):

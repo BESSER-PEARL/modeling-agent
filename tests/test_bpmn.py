@@ -1,7 +1,7 @@
 def test_bpmn_routing_explicit():
     import importlib, sys
     # Import workspace_orchestrator directly to avoid orchestrator/__init__.py
-    # pulling in request_planner -> handlers.generation_handler -> baf (not installed).
+    # pulling in request_planner -> codegen.generation_handler -> baf (not installed).
     import importlib.util, os
     src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
     spec = importlib.util.spec_from_file_location(
@@ -472,7 +472,7 @@ def test_bpmn_guardrail_unnamed_element_resolved_by_type_label(monkeypatch):
 
 
 def test_bpmn_suggestions_have_nonempty_prompts():
-    from suggestions import get_suggested_actions
+    from conversation.suggestions import get_suggested_actions
     actions = get_suggested_actions("BPMN", "complete_system", [])
     for action in actions:
         assert action.get("prompt"), (

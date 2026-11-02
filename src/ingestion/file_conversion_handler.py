@@ -28,8 +28,8 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from errors import ModelRefusal
-from model_config import MODEL_VISION, reasoning_effort_for, supports_custom_temperature
+from common.errors import ModelRefusal
+from llm.model_config import MODEL_VISION, reasoning_effort_for, supports_custom_temperature
 
 
 def _vision_sampling_params() -> Dict[str, Any]:

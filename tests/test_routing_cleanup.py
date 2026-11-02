@@ -23,16 +23,16 @@ from typing import get_args
 
 from unittest.mock import patch, MagicMock
 
-import confirmation
-from confirmation import handle_pending_system_confirmation
-from session_helpers import json_intent_matches
-from session_keys import (
+from app import confirmation
+from app.confirmation import handle_pending_system_confirmation
+from conversation.session_helpers import json_intent_matches
+from common.session_keys import (
     LAST_SMART_GEN_AT,
     PENDING_COMPLETE_SYSTEM,
     PENDING_GENERATOR_TYPE,
     UNIFIED_CLASSIFICATION,
 )
-from unified_classifier import UnifiedClassification, _build_user_block
+from routing.unified_classifier import UnifiedClassification, _build_user_block
 from protocol.types import AssistantRequest, WorkspaceContext
 
 from tests.conftest import FakeSession
@@ -207,8 +207,8 @@ class TestPendingFlowContext:
     session keys (no storage migration) with the preamble's precedence."""
 
     def test_kinds_and_precedence(self):
-        from unified_classifier import _pending_flow_context
-        from session_keys import (
+        from routing.unified_classifier import _pending_flow_context
+        from common.session_keys import (
             PENDING_GUI_CHOICE, PENDING_SMART_GEN_INSTRUCTIONS,
         )
         s = FakeSession()
@@ -294,7 +294,7 @@ class TestVerdictPrimaryConfirmation:
 
 class TestSmartGenRecencySignal:
     def test_result_handler_sets_timestamp(self):
-        from handlers.generation_handler import _handle_frontend_event
+        from codegen.generation_handler import _handle_frontend_event
         session = FakeSession()
         request = types.SimpleNamespace(
             action="frontend_event", message="",
@@ -323,10 +323,10 @@ class TestSmartGenRecencySignal:
 
 class TestGeneratorRegistrySync:
     def test_deterministic_generator_literals_identical(self):
-        from unified_classifier import (
+        from routing.unified_classifier import (
             _DETERMINISTIC_GENERATOR_TYPES as unified_lit,
         )
-        from handlers.smart_generation_handler import (
+        from codegen.smart_generation_handler import (
             _DETERMINISTIC_GENERATOR_TYPES as dispatch_lit,
         )
         assert set(get_args(unified_lit)) == set(get_args(dispatch_lit)), (
@@ -358,8 +358,8 @@ class TestSyntheticSubRequestClassification:
     verdicts — anything else re-classifies the sub-request's own text."""
 
     def test_non_generation_cache_triggers_fresh_classification(self, monkeypatch):
-        import handlers.generation_handler as gen_mod
-        from handlers.generation_handler import (
+        import codegen.generation_handler as gen_mod
+        from codegen.generation_handler import (
             _get_classification_from_cache_or_classify,
         )
         session = FakeSession()
@@ -380,7 +380,7 @@ class TestSyntheticSubRequestClassification:
         """The LLM fills generation_route='other' even on CREATE verdicts —
         that noise must not hijack the route (regression: the mismatch
         rebuild got the 'didn't catch a code-generation request' reply)."""
-        from handlers.generation_handler import _classification_to_legacy
+        from codegen.generation_handler import _classification_to_legacy
         noisy = UnifiedClassification(
             intent="create_complete_system_intent",
             generation_route="other",       # schema noise, not a real verdict
@@ -389,8 +389,8 @@ class TestSyntheticSubRequestClassification:
         assert _classification_to_legacy(noisy).route == "modeling"
 
     def test_generation_cache_is_used_without_llm_call(self, monkeypatch):
-        import handlers.generation_handler as gen_mod
-        from handlers.generation_handler import (
+        import codegen.generation_handler as gen_mod
+        from codegen.generation_handler import (
             _get_classification_from_cache_or_classify,
         )
         session = FakeSession()
@@ -412,8 +412,8 @@ class TestConfigFlowCancel:
     defaults and generated the very thing the user was refusing."""
 
     def _run(self, message, cached_intent=None):
-        from handlers.generation_handler import handle_generation_request
-        from session_keys import CONFIG_PROMPT_ATTEMPTS
+        from codegen.generation_handler import handle_generation_request
+        from common.session_keys import CONFIG_PROMPT_ATTEMPTS
         session = FakeSession()
         session.set(PENDING_GENERATOR_TYPE, "django")
         session.set(CONFIG_PROMPT_ATTEMPTS, 2)
@@ -436,8 +436,8 @@ class TestConfigFlowCancel:
     def test_config_answer_continues_the_flow(self):
         # A real config answer must NOT be treated as a cancel. (Needs a class
         # model in context or the prerequisite check ends the flow first.)
-        from handlers.generation_handler import handle_generation_request
-        from session_keys import CONFIG_PROMPT_ATTEMPTS
+        from codegen.generation_handler import handle_generation_request
+        from common.session_keys import CONFIG_PROMPT_ATTEMPTS
         model = {"elements": {"c1": {"type": "Class", "name": "Book"}},
                  "relationships": {}}
         request = AssistantRequest(
@@ -465,7 +465,7 @@ class TestPendingStashInterjections:
 
     def _session_with_stash(self, cached_intent):
         import time as _t
-        from session_keys import (
+        from common.session_keys import (
             PENDING_SMART_GEN_INSTRUCTIONS,
             PENDING_SMART_GEN_PROVIDER,
             PENDING_SMART_GEN_TIMESTAMP,
@@ -478,9 +478,9 @@ class TestPendingStashInterjections:
         return session
 
     def test_out_of_scope_interjection_answers_and_keeps_stash(self):
-        from handlers.generation_handler import handle_generation_request
-        from reply_copy import OUT_OF_SCOPE_REDIRECT
-        from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+        from codegen.generation_handler import handle_generation_request
+        from conversation.reply_copy import OUT_OF_SCOPE_REDIRECT
+        from common.session_keys import PENDING_SMART_GEN_INSTRUCTIONS
         session = self._session_with_stash("out_of_scope_intent")
         result = handle_generation_request(session, _req("draw me a cat"))
         assert result["message"] == OUT_OF_SCOPE_REDIRECT
@@ -491,7 +491,7 @@ class TestPendingStashInterjections:
         'confirm' must NOT fire it — confirmation stays exact-phrase/button
         only. (Regression: "fast", meant for the GUI choice, was read
         as an eager confirm and fired an unwanted run.)"""
-        from handlers.generation_handler import handle_generation_request
+        from codegen.generation_handler import handle_generation_request
         session = self._session_with_stash("generation_intent")
         uc = session.get(UNIFIED_CLASSIFICATION)
         session.set(UNIFIED_CLASSIFICATION, UnifiedClassification(
@@ -502,8 +502,8 @@ class TestPendingStashInterjections:
         assert result.get("action") != "trigger_smart_generator"
 
     def test_verdict_cancel_still_cancels(self):
-        from handlers.generation_handler import handle_generation_request
-        from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+        from codegen.generation_handler import handle_generation_request
+        from common.session_keys import PENDING_SMART_GEN_INSTRUCTIONS
         session = self._session_with_stash("generation_intent")
         session.set(UNIFIED_CLASSIFICATION, UnifiedClassification(
             intent="generation_intent", reason="stub",
@@ -513,8 +513,8 @@ class TestPendingStashInterjections:
         assert not session.get(PENDING_SMART_GEN_INSTRUCTIONS)
 
     def test_decline_at_confirmation_cancels_cleanly(self):
-        from handlers.generation_handler import handle_generation_request
-        from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+        from codegen.generation_handler import handle_generation_request
+        from common.session_keys import PENDING_SMART_GEN_INSTRUCTIONS
         session = self._session_with_stash("decline_intent")
         result = handle_generation_request(session, _req("nah, I am good"))
         assert "cancelled" in result["message"].lower()
@@ -527,13 +527,13 @@ class TestErrorFallbackMarker:
     verdict gets the clarify reply."""
 
     def test_safe_fallback_is_tagged(self):
-        from unified_classifier import classify_message
+        from routing.unified_classifier import classify_message
         result = classify_message(_req("generate django"), llm_provider=None)
         assert result.intent == "fallback_intent"
         assert result.reason.startswith("[classifier-error]")
 
     def test_adapter_menu_on_error_but_other_on_deliberate(self):
-        from handlers.generation_handler import _classification_to_legacy
+        from codegen.generation_handler import _classification_to_legacy
         error = UnifiedClassification(
             intent="fallback_intent", reason="[classifier-error] LLM down")
         assert _classification_to_legacy(error).route == "deterministic"
@@ -547,7 +547,7 @@ class TestOutageNetPins:
     to bare phrases / explicit artifact asks (never real requests)."""
 
     def test_phrase_set_and_pattern(self):
-        from state_bodies import _OUTAGE_DECLINE_PHRASES, _OUTAGE_ARTIFACT_RE
+        from app.state_bodies import _OUTAGE_DECLINE_PHRASES, _OUTAGE_ARTIFACT_RE
         assert "nothing" in _OUTAGE_DECLINE_PHRASES
         assert "never mind" in _OUTAGE_DECLINE_PHRASES
         assert _OUTAGE_ARTIFACT_RE.search("generate a picture of a cat")
@@ -564,7 +564,7 @@ class TestMismatchRegenFixes:
 
     def test_regen_prompt_matcher(self):
         from execution.model_operations import _matches_regen_prompt
-        from session_keys import MISMATCH_REGEN_PENDING
+        from common.session_keys import MISMATCH_REGEN_PENDING
         session = FakeSession()
         req = _req("Create a class diagram   for a SHOE store")
         assert _matches_regen_prompt(session, req) is False  # nothing stashed
@@ -573,8 +573,8 @@ class TestMismatchRegenFixes:
         assert _matches_regen_prompt(session, _req("create a class diagram for a hat store")) is False
 
     def test_typed_label_dispatches_stashed_rebuild(self):
-        import handlers.generation_handler as gh
-        from session_keys import MISMATCH_REGEN_PENDING
+        import codegen.generation_handler as gh
+        from common.session_keys import MISMATCH_REGEN_PENDING
         session = FakeSession()
         session.set(MISMATCH_REGEN_PENDING, "create a class diagram for a shoe store")
         req = _req("Update model + generate")
@@ -589,7 +589,7 @@ class TestMismatchRegenFixes:
         assert dispatched["request"].message == "create a class diagram for a shoe store"
 
     def test_label_without_stash_is_untouched(self):
-        import handlers.generation_handler as gh
+        import codegen.generation_handler as gh
         assert "update model + generate" in gh._MISMATCH_LABEL_ALIASES
         session = FakeSession()  # no stash
         req = _req("Update model + generate")

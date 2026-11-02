@@ -281,7 +281,7 @@ completed while the socket was reconnecting can be replayed on request:
 ``inject_complete_system``, ``modify_model``, ``auto_generate_gui``,
 ``trigger_generator``, ``trigger_github_import`` and ``assistant_message``
 (``_TERMINAL_REPLY_ACTIONS`` / ``replay_last_reply`` in
-``src/session_helpers.py``). A turn-scoped replay (see below) also covers
+``src/conversation/session_helpers.py``). A turn-scoped replay (see below) also covers
 ``inject_element``, ``trigger_smart_generator``, ``agent_error``,
 ``trigger_export``, ``trigger_deploy``, ``create_diagram_tab`` and ``stream_done``
 (``_TURN_REPLY_ACTIONS``). These are kept out of the legacy replay because it
@@ -580,7 +580,7 @@ keys on ``rate_limit`` / ``auth_error``).
 
 Most structured errors are instead sent as an ``assistant_message`` carrying
 the same fields plus ``"error": true`` — see ``build_error_response()`` in
-``src/errors.py``:
+``src/common/errors.py``:
 
 .. code-block:: json
 
@@ -597,7 +597,7 @@ the same fields plus ``"error": true`` — see ``build_error_response()`` in
 Error codes
 ^^^^^^^^^^^
 
-``ErrorCode`` in ``src/errors.py``. Values are lowercase snake_case. Each code
+``ErrorCode`` in ``src/common/errors.py``. Values are lowercase snake_case. Each code
 carries a default user-facing message, a recovery hint, and a ``retryable``
 flag that the caller may override.
 
@@ -718,7 +718,7 @@ Hand off to the LLM-authored **Spec-Driven Agent**. Emitted when the request nam
 stack BESSER has no deterministic generator for, or a BESSER stack plus
 extras the template cannot produce (auth, JWT, Docker, migrations, tests, …).
 Built by ``build_trigger_smart_generator_payload()`` in
-``src/handlers/smart_generation_handler.py``.
+``src/codegen/smart_generation_handler.py``.
 
 .. code-block:: json
 
@@ -852,7 +852,7 @@ Multi-Step: Create Model → Generate Code
    needs ``dbms``, ``qiskit`` needs ``backend`` and ``shots``, ``export`` needs
    ``format``) ask for those values in the same way before the
    ``trigger_generator`` payload is emitted; ``GENERATOR_REQUIRED_FIELDS`` in
-   ``src/handlers/generation_handler.py`` is the source of truth.
+   ``src/codegen/generation_handler.py`` is the source of truth.
 
 Streaming Response (Help/Explanation)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

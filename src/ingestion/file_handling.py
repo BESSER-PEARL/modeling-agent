@@ -11,22 +11,22 @@ from typing import Optional
 
 from baf.core.session import Session
 
-import agent_context as ctx
-from byok import user_openai_key
-from model_config import MODEL_GENERATION_SMALL
+from conversation import agent_context as ctx
+from llm.byok import user_openai_key
+from llm.model_config import MODEL_GENERATION_SMALL
 from protocol.types import AssistantRequest, FileAttachment
-from session_helpers import reply_payload
-from model_utils import model_has_elements
-from unified_classifier import get_or_classify
+from conversation.session_helpers import reply_payload
+from utilities.model_utils import model_has_elements
+from routing.unified_classifier import get_or_classify
 from utilities.image_inputs import data_url
-from handlers.file_conversion_handler import (
+from ingestion.file_conversion_handler import (
     GUI_MOCKUP_ACTION,
     convert_file_to_diagram_spec,
     detect_file_type,
     image_mime_type,
 )
 
-from .model_operations import _build_existing_model_confirmation, execute_model_operation
+from execution.model_operations import _build_existing_model_confirmation, execute_model_operation
 
 logger = logging.getLogger(__name__)
 

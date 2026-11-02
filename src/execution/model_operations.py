@@ -10,11 +10,11 @@ from typing import Any, Dict, Optional
 
 from baf.core.session import Session
 
-import agent_context as ctx
-from agent_config import MAX_TABS, CONVERSATION_HISTORY_DEPTH
+from conversation import agent_context as ctx
+from common.agent_config import MAX_TABS, CONVERSATION_HISTORY_DEPTH
 from protocol.types import AssistantRequest
-from session_helpers import reply_message, reply_payload, reply_progress
-from model_utils import model_has_elements
+from conversation.session_helpers import reply_message, reply_payload, reply_progress
+from utilities.model_utils import model_has_elements
 from diagram_handlers.registry.metadata import get_diagram_type_info
 from orchestrator import determine_target_diagram_type, resolve_diagram_id
 from routing.generation_signals import detect_generator_type
@@ -31,8 +31,8 @@ from utilities.model_context import is_diagram_nontrivial
 from utilities.original_request import (
     current_target, original_request_for_project, remember_original_request, request_project_id,
 )
-from suggestions import get_suggested_actions, get_artifact_label, get_post_spec_suggestions
-from session_keys import (
+from conversation.suggestions import get_suggested_actions, get_artifact_label, get_post_spec_suggestions
+from common.session_keys import (
     LAST_EXECUTED_DIAGRAM_TYPE,
     LAST_MATCHED_INTENT,
     MISMATCH_REGEN_PENDING,
@@ -772,7 +772,7 @@ def execute_model_operation(
         {"agent_diagram_refs": resolve_agent_diagram_refs(request)}
         if target_diagram_type == "BPMN" else {}
     )
-    # Screenshots / mockups the GUI reproduces (see execution/file_handling.py).
+    # Screenshots / mockups the GUI reproduces (see ingestion/file_handling.py).
     mockup_kwargs: Dict[str, Any] = (
         {"images": operation["images"]}
         if target_diagram_type == "GUINoCodeDiagram" and operation.get("images") else {}
@@ -861,13 +861,13 @@ def execute_model_operation(
         # own key, prompt them to add one (BYOK); when the user's OWN key
         # fails, tell them to check it. errorCode (rate_limit / auth_error) is
         # carried so the frontend can offer "Add your API key".
-        from errors import classify_error, ErrorCode
+        from common.errors import classify_error, ErrorCode
         try:
             _code = classify_error(exc)
         except Exception:
             _code = ErrorCode.UNKNOWN
         try:
-            import byok
+            from llm import byok
             _byok_active = byok.is_active()
         except Exception:
             _byok_active = False
@@ -1073,7 +1073,7 @@ def execute_model_operation(
     ):
         session.delete(MISMATCH_REGEN_PENDING)  # consume once
         try:
-            from handlers.generation_handler import (
+            from codegen.generation_handler import (
                 _build_smart_gen_confirmation,
                 _smart_gen_stash_is_fresh,
             )

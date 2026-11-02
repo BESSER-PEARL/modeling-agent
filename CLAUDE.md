@@ -45,12 +45,13 @@ lint-imports                                        # import layers (contracts i
 ```
 CI (`.github/workflows/tests.yml`) runs this suite, ruff and `lint-imports` on every PR and push.
 
-**Packaging**: `pyproject.toml` installs `src/` as the import root, so the agent's packages and modules are
-top-level names (`from protocol.types import ...`, `import session_helpers`) in the app, the tests and the
-image alike. Never import through `src.` and never add `sys.path` inserts. A new top-level module in `src/`
-goes into `py-modules` there (`tests/test_packaging.py` checks). Its `version` is the agent's only version.
+**Packaging**: `pyproject.toml` installs `src/` as the import root, so the agent's packages are top-level
+names (`from protocol.types import ...`, `from conversation import session_helpers`) in the app, the tests and
+the image alike. Never import through `src.` and never add `sys.path` inserts. Every module lives in a package
+(only the entrypoint `modeling_agent.py` sits at the repo root); a new package goes into the import-linter
+layers (`tests/test_packaging.py` checks). Its `version` is the agent's only version.
 
-**Intended import layering** (a layer imports only those below it): `state_bodies` / `agent_setup` → `confirmation` → `execution` → `handlers` / `orchestrator` → `session_helpers` → `unified_classifier` → `memory` / `reply_language` / `routing` → `diagram_handlers` → `llm` → `byok` → `tracking` → `byok_config` → `utilities` → `protocol` → leaf modules (`agent_config`, `session_keys`, `errors`, …). `lint-imports` enforces this for the packages (`[tool.importlinter]` in `pyproject.toml`): a layers contract over them, with the one known cycle (`handlers.generation_handler` → `execution`) ignored, and forbidden contracts for a package importing a higher single-file module directly. Single-file modules are not scanned, so their own imports and chains through them are not checked.
+**Import layering** (each top-level package is one layer and imports only those below it): `app` → `ingestion` → `execution` → `codegen` / `orchestrator` → `conversation` → `routing` → `memory` / `diagram_handlers` → `llm` / `schemas` → `utilities` → `protocol` → `common`. Packages on one level (`/`) do not import each other. Inside a package: `app` is `state_bodies` / `agent_setup` → `confirmation`; `conversation` is `session_helpers` → `reply_language` → the rest; `routing` is `unified_classifier` → `generation_signals` / `intents`; `llm` is `provider` → `byok` → `tracking` → `byok_config` / `model_catalog` / `model_config`. `lint-imports` enforces all of it (`[tool.importlinter]` in `pyproject.toml`), with the one known cycle (`codegen.generation_handler` → `execution`: a confirmed generation re-runs the planned operations) ignored.
 
 - Handler tests instantiate handlers directly, e.g. `BPMNDiagramHandler(None)` (the LLM arg is only needed by
   methods that call the model), and test deterministic repair such as `_validate_and_refine` as a pure function
@@ -72,12 +73,12 @@ decision is the most common source of bugs here. Full detail: `docs/source/inten
 ```
 WebSocket message
   → protocol/adapters.py + protocol/types.py        parse wire payload → AssistantRequest
-  → src/unified_classifier.py                        LAYER 1: THE ROUTER
+  → routing/unified_classifier.py                    LAYER 1: THE ROUTER
       classify_message() → UnifiedClassification, cached per BAF event by get_or_classify().
       Returns the intent (which of the 10 states) AND every sub-routing field downstream code
       needs (generation_route, generator_type, target_diagram_type, model_disposition,
       pending_flow_action, …) — no second prompt. Rules live in _SYSTEM_PROMPT.
-  → src/state_bodies.py                              state body; modeling bodies funnel through
+  → app/state_bodies.py                              state body; modeling bodies funnel through
                                                      execution/planning.py::execute_planned_operations
   → orchestrator/workspace_orchestrator.py           LAYER 2: determine_target_diagram_type()
       0. classifier's target_diagram_type  1. KEYWORD_TARGETS  2. _IMPLICIT_PATTERNS
@@ -118,19 +119,19 @@ in manual testing. Walkthrough: `docs/source/contributing/howto_guides.rst`.
 2. `src/diagram_handlers/types/<type>_diagram_handler.py` — the handler (see below)
 3. `src/diagram_handlers/registry/factory.py` — add to `HANDLER_CLASSES` (keyed on the handler's own
    `get_diagram_type()`)
-4. `src/unified_classifier.py` — token in `_TARGET_DIAGRAM_TYPES` **and** vocabulary in `_SYSTEM_PROMPT`. This is
+4. `src/routing/unified_classifier.py` — token in `_TARGET_DIAGRAM_TYPES` **and** vocabulary in `_SYSTEM_PROMPT`. This is
    what makes the type reachable. Add one representative `training_sentence` in `modeling_agent.py`, but no
    vocabulary in its `description=`
 5. `src/orchestrator/workspace_orchestrator.py` — `KEYWORD_TARGETS`, an `_IMPLICIT_PATTERNS` regex, and
    `FALLBACK_PRIORITY`. Patterns are evaluated in order, first match wins: place a new one where a broader pattern
    above it won't steal its vocabulary (BPMN sits above StateMachineDiagram because "process" is in both)
-6. `src/state_bodies.py` — `_QUICK_RESPONSES["what_can_you_do"]` and `["help"]` (bump the hardcoded type count),
+6. `src/app/state_bodies.py` — `_QUICK_RESPONSES["what_can_you_do"]` and `["help"]` (bump the hardcoded type count),
    the `_fallback_llm_reply` prompt (shared by `global_fallback_body` and `greetings_body`), optionally a
    `modeling_help_body` branch
 7. `src/protocol/types.py` — `SUPPORTED_DIAGRAM_TYPES`; an `activeDiagramType` outside it is silently normalized
    to `ClassDiagram`
 8. `src/diagram_handlers/registry/metadata.py` — `DIAGRAM_TYPE_METADATA`
-9. `src/suggestions.py` — a suggestion list + `_DIAGRAM_SUGGESTION_HANDLERS` entry
+9. `src/conversation/suggestions.py` — a suggestion list + `_DIAGRAM_SUGGESTION_HANDLERS` entry
 10. Tests — `tests/test_diagram_handlers.py` plus a dedicated `tests/test_<type>.py`
 11. Docs — `README.md` "Supported Diagram Types" table, `docs/source/diagram_handlers.rst`,
     `websocket_protocol.rst`, `getting_started.rst`
@@ -199,28 +200,34 @@ config_example.yaml               Template for the gitignored config.yaml
 Dockerfile                        Entrypoint writes config.yaml from env
 patches/websocket_platform.py     Vendored over pip-installed BAF 4.5.3 (see below)
 src/
-  agent_setup.py / agent_context.py   LLM/RAG/STT/factory bootstrapping; shared module-level context
-  agent_config.py                 Tunable constants (MAX_TABS, temperatures, token budgets, …)
-  model_config.py                 Per-call-site model tiers, all BESSER_AGENT_MODEL_* overridable
-  unified_classifier.py           Layer 1 router
-  state_bodies.py                 State bodies, transitions, global fallback, quick responses
-  session_helpers.py / session_keys.py   Reply/stream helpers; every session-state key (import, don't use literals)
-  confirmation.py                 Pending replace/keep and GUI-mode choice flows
-  byok.py                         Per-request bring-your-own-key routing
-  byok_config.py                  BYOKConfig and its per-request contextvar (read by byok and tracking)
-  routing/                        generation_signals.py: generator vocabulary + signals shared below handlers
+  app/                            The top layer: agent_setup.py (LLM/RAG/STT/factory bootstrapping), state_bodies.py
+                                  (state bodies, transitions, global fallback, quick responses), confirmation.py
+                                  (pending replace/keep and GUI-mode choice flows)
+  ingestion/                      file_handling.py (the attachment step of a turn), file_conversion_handler.py
+                                  (file → diagram spec)
+  execution/                      planning.py (multi-op dispatch), model_operations.py, progress.py
+  codegen/                        generation_handler.py (generator requests and pending generator flows),
+                                  smart_generation_handler.py (Spec-Driven Agent trigger)
   orchestrator/                   workspace_orchestrator.py (layer 2), request_planner.py (multi-op planning),
                                   request_builders.py (re-targeted requests)
+  conversation/                   session_helpers.py (reply/stream helpers), reply_language.py, reply_copy.py,
+                                  suggestions.py ("What's next?"), telemetry.py, agent_context.py (runtime handles
+                                  the entrypoint fills in)
+  routing/                        unified_classifier.py (layer 1 router), generation_signals.py (generator
+                                  vocabulary + signals), intents.py
+  memory/                         Verbatim window + rolling LLM summary per session
   diagram_handlers/               core/ (base_handler, layout_engine, prompt_fragments), types/ (one handler per
                                   type + gui_design_system.py, gui_html_converter.py), registry/ (factory, metadata)
   schemas/<type>.py               Structured-output schemas
-  execution/                      planning.py (multi-op dispatch), model_operations.py, file_handling.py, progress.py
-  handlers/                       generation_handler.py, smart_generation_handler.py, file_conversion_handler.py
+  llm/                            provider.py (structured outputs, streaming), byok.py (per-request bring-your-own
+                                  key), byok_config.py (its contextvar), model_config.py (per-call-site model
+                                  tiers, all BESSER_AGENT_MODEL_* overridable), model_catalog.py,
+                                  tracking/ (token/cost tracking; prices: resources/model_prices.json)
+  utilities/                      Model summaries/resolution, JSON repair, LLM retry, model_utils.py
   protocol/                       types.py, adapters.py, message_limits.py
-  memory/                         Verbatim window + rolling LLM summary per session
-  llm/provider.py                 Provider abstraction (structured outputs, streaming)
-  tracking/token_tracker.py       Token/cost tracking (prices: resources/model_prices.json)
-  suggestions.py                  "What's next?" suggestions
+  common/                         agent_config.py (tunable constants), session_keys.py (every session-state key:
+                                  import, don't use literals), errors.py
+  resources/                      Price file and the bundled User Profile metamodel
 ```
 
 **`patches/websocket_platform.py`** is copied over BAF's file at image build. Stock BAF evicts the `_connections`

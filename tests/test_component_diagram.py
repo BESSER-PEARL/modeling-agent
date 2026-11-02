@@ -280,7 +280,7 @@ def test_component_guardrail_drops_dependency_with_missing_source(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_component_suggestions_have_nonempty_prompts():
-    from suggestions import get_suggested_actions
+    from conversation.suggestions import get_suggested_actions
     actions = get_suggested_actions("ComponentDiagram", "complete_system", [])
     for action in actions:
         assert action.get("prompt"), (

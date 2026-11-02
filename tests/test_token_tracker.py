@@ -2,7 +2,7 @@
 import pytest
 import threading
 
-from tracking.token_tracker import TokenTracker, get_tracker
+from llm.tracking.token_tracker import TokenTracker, get_tracker
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +229,7 @@ def test_zero_tokens(tracker):
 
 def test_unknown_model_warns_once(caplog):
     import logging
-    from tracking import token_tracker as tt
+    from llm.tracking import token_tracker as tt
 
     tt._unknown_models_seen.discard("totally-made-up-model")
     tracker = tt.get_tracker()
@@ -245,8 +245,8 @@ def test_every_model_a_user_key_can_route_to_has_a_price():
     """BYOK maps each call to a provider tier model; an unpriced one reports
     placeholder costs, as happened for the Nebius Qwen model and for
     gpt-5-mini."""
-    from byok import _PROVIDER_TIER_MODELS
-    from tracking.token_tracker import _vendor_cost_table
+    from llm.byok import _PROVIDER_TIER_MODELS
+    from llm.tracking.token_tracker import _vendor_cost_table
 
     routed = {model for tiers in _PROVIDER_TIER_MODELS.values() for model in tiers.values()}
     for model in routed | {"gpt-5-mini"}:
@@ -293,7 +293,7 @@ PRICES = {
 
 @pytest.mark.parametrize("model,price", sorted(PRICES.items()))
 def test_model_has_its_list_price(model, price):
-    from tracking.token_tracker import _vendor_cost_table
+    from llm.tracking.token_tracker import _vendor_cost_table
 
     entry = _vendor_cost_table(model)
     assert entry is not None, f"{model} would be costed from placeholder pricing"
@@ -304,7 +304,7 @@ def test_model_has_its_list_price(model, price):
 def test_unpublished_rows_are_not_in_the_price_file():
     """_UNPUBLISHED only bridges ids the price file lacks; once a refresh lists
     one, its row would shadow nothing and should be deleted."""
-    from tracking.token_tracker import _UNPUBLISHED, _price_file
+    from llm.tracking.token_tracker import _UNPUBLISHED, _price_file
 
     assert _price_file(), "the price file did not load"
     listed = [model for model in _UNPUBLISHED if model in _price_file()]
@@ -312,7 +312,7 @@ def test_unpublished_rows_are_not_in_the_price_file():
 
 
 def test_a_missing_price_file_never_reads_as_free(monkeypatch, tmp_path):
-    from tracking import token_tracker as tt
+    from llm.tracking import token_tracker as tt
 
     monkeypatch.setattr(tt, "_PRICES_PATH", tmp_path / "missing.json")
     tt._price_file.cache_clear()

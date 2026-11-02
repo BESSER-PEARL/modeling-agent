@@ -5,7 +5,7 @@ itself re-misrouted — re-creating the identical confirmation in a loop.
 The _post_validate guard breaks that class of loop deterministically.
 """
 
-from unified_classifier import UnifiedClassification, _post_validate
+from routing.unified_classifier import UnifiedClassification, _post_validate
 
 
 def _gen(route="smart", **kw):

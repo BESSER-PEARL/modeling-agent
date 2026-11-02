@@ -9,8 +9,8 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel
 
-import byok
-import byok_config
+from llm import byok
+from llm import byok_config
 from diagram_handlers.types.agent_diagram_handler import AgentDiagramHandler
 
 

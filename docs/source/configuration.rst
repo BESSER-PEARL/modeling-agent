@@ -130,7 +130,7 @@ NLP / LLM
 Model Routing
 -------------
 
-**Location:** ``src/model_config.py``
+**Location:** ``src/llm/model_config.py``
 
 Every LLM call in the agent belongs to a *tier*, and each tier is
 independently env-overridable so a deployment (e.g. a gateway exposing
@@ -252,7 +252,7 @@ Environment Variables
    * - ``BESSER_BACKEND_URL``
      - ``http://localhost:3001``
      - Base URL of the BESSER backend, used by the opt-in study telemetry
-       collector (``src/telemetry.py``).
+       collector (``src/conversation/telemetry.py``).
    * - ``BESSER_AGENT_ALLOW_CUSTOM_BASE_URL``
      - unset (off)
      - Whether a BYOK request may specify its own API base URL. Set to
@@ -295,7 +295,7 @@ Environment Variables
 Bring Your Own Key (BYOK)
 --------------------------
 
-**Location:** ``src/byok.py``, plus the request boundary in
+**Location:** ``src/llm/byok.py``, plus the request boundary in
 ``patches/websocket_platform.py``.
 
 A user can paste their own API key in the frontend. It arrives as BAF
@@ -342,7 +342,7 @@ and the shared server LLM is never mutated.
 
 Because BYOK bypasses any gateway, the agent's per-call tiers are collapsed
 into two and mapped to each provider's equivalent (``_PROVIDER_TIER_MODELS``
-in ``src/byok.py``). A model the user explicitly chose is used for every call;
+in ``src/llm/byok.py``). A model the user explicitly chose is used for every call;
 only without one does ``small`` use the provider's cheap sibling, so small
 edits, routing and repair calls stay inexpensive on the user's key. The
 mapping and its cost effect are in :ref:`cost-and-model-routing`.
@@ -483,7 +483,7 @@ ones read it at 0.1x.
 Output caps, reasoning effort and the two-pass gate
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- **Output caps** (``src/agent_config.py``): ``LLM_MAX_TOKENS_LARGE`` 8192 for
+- **Output caps** (``src/common/agent_config.py``): ``LLM_MAX_TOKENS_LARGE`` 8192 for
   complete-system schemas, ``LLM_MAX_TOKENS_SMALL`` 2048 for single-element and
   modification schemas, ``LLM_MAX_TOKENS_TEXT`` 4096 for free text, and
   ``GUI_COMPLETE_SYSTEM_MAX_TOKENS`` 16384 for multi-page GUI output. The
@@ -563,7 +563,7 @@ they map to ``small``.
 Where to see spend
 ~~~~~~~~~~~~~~~~~~
 
-``src/tracking/token_tracker.py`` accumulates the tokens and estimated cost
+``src/llm/tracking/token_tracker.py`` accumulates the tokens and estimated cost
 of every recorded call for the whole process since it started. Every
 ``BESSER_AGENT_COST_LOG_INTERVAL`` seconds (600 by default) the next call logs
 one INFO line, for example::
@@ -589,7 +589,7 @@ A call is priced, in order, from:
    vendors (``besser/spec_driven_agent/providers/data/model_prices.json``,
    reduced from litellm's ``model_prices_and_context_window.json``), so the
    agent and the backend price a model the same way;
-3. ``_UNPUBLISHED`` in ``src/tracking/token_tracker.py``: the few current
+3. ``_UNPUBLISHED`` in ``src/llm/tracking/token_tracker.py``: the few current
    models the price file does not list yet. A test fails once a refresh lists
    one, so its row is deleted.
 
@@ -606,7 +606,7 @@ warning.
 Tunable Constants
 -----------------
 
-**Location:** ``src/agent_config.py`` — values that are not env-driven but
+**Location:** ``src/common/agent_config.py`` — values that are not env-driven but
 live in one place instead of being scattered across modules.
 
 .. list-table::
@@ -668,7 +668,7 @@ and answers carry no retrieved context.
 Research Study Mode
 -------------------
 
-**Location:** ``src/telemetry.py``, with the label parsed in
+**Location:** ``src/conversation/telemetry.py``, with the label parsed in
 ``src/protocol/adapters.py``.
 
 Study mode is an opt-in usage recording for facilitated research sessions. It

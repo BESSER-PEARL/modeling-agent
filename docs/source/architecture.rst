@@ -11,7 +11,7 @@ The BESSER Modeling Agent is a WebSocket-based conversational AI system built on
 the `BESSER Agentic Framework <https://besser-agentic-framework.readthedocs.io/latest/>`_. It
 connects the `BESSER Web Modeling Editor <https://editor.besser-pearl.org>`_ (a
 React/TypeScript SPA) with OpenAI models, routed per call site through the
-model tier table in ``src/model_config.py``. Code generation is powered by
+model tier table in ``src/llm/model_config.py``. Code generation is powered by
 `BESSER generators <https://besser.readthedocs.io/en/latest/generators.html>`_
 (Django, Python, Java, SQL, SQLAlchemy, and more).
 
@@ -86,12 +86,12 @@ The system is organized into these layers, processed in order for each request:
 1. **Protocol Layer** (``src/protocol/``): Parses raw WebSocket messages into
    canonical ``AssistantRequest`` objects.
 
-2. **Classification Layer** (``src/unified_classifier.py``): One
+2. **Classification Layer** (``src/routing/unified_classifier.py``): One
    structured-output LLM call per message, cached, returning the state-level
    intent plus every sub-routing field downstream code needs. See
    :doc:`intent_recognition`.
 
-3. **State Machine** (``modeling_agent.py`` + ``src/state_bodies.py``): Routes
+3. **State Machine** (``modeling_agent.py`` + ``src/app/state_bodies.py``): Routes
    requests to the appropriate handler based on that classification.
 
 4. **Orchestration Layer** (``src/orchestrator/``): Plans multi-step operations
@@ -110,7 +110,7 @@ The system is organized into these layers, processed in order for each request:
    OpenAI, encapsulating model selection and call conventions (structured
    outputs via ``parse()``, streaming via ``stream()``).
 
-9. **BYOK Routing** (``src/byok.py``): Per-request routing of generation,
+9. **BYOK Routing** (``src/llm/byok.py``): Per-request routing of generation,
    structured-output, classification and conversational calls through a
    user-supplied API key, driven by a context var set at the WebSocket
    request boundary.
@@ -122,13 +122,23 @@ The system is organized into these layers, processed in order for each request:
 11. **Schemas** (``src/schemas/``): Pydantic models for each diagram type,
     used by the structured-output pass of diagram handlers.
 
-12. **Token Tracking** (``src/tracking/``): Process-wide token usage and
+12. **Token Tracking** (``src/llm/tracking/``): Process-wide token usage and
     estimated cost, logged periodically at INFO. Per-session buckets exist
     but no call site passes a session id, so only the global totals are
     populated — see :ref:`cost-and-model-routing`.
 
-13. **Suggestion Engine** (``src/suggestions.py``): Contextual next-step
+13. **Suggestion Engine** (``src/conversation/suggestions.py``): Contextual next-step
     action suggestions returned to the frontend after each operation.
+
+Every module lives in a top-level package under ``src/``, and each package is
+one import layer: ``app`` → ``ingestion`` → ``execution`` → ``codegen`` /
+``orchestrator`` → ``conversation`` → ``routing`` → ``memory`` /
+``diagram_handlers`` → ``llm`` / ``schemas`` → ``utilities`` → ``protocol`` →
+``common``. A package imports only the ones below it (packages on one level do
+not import each other); ``lint-imports`` enforces this from the contracts in
+``pyproject.toml``. The one exception is a known cycle: a confirmed generation
+in ``codegen.generation_handler`` re-runs the planned operations in
+``execution``.
 
 Entry Point
 -----------
@@ -146,15 +156,15 @@ Entry Point
 6. Starts the session reaper thread
 7. Calls ``agent.run()``
 
-It imports the agent's modules by top-level name (``import agent_context``,
-``from state_bodies import register_all``). They resolve because the agent is
+It imports the agent's packages by top-level name (``from conversation import
+agent_context``, ``from app.state_bodies import register_all``). They resolve because the agent is
 installed with ``pip install -e .``: ``pyproject.toml`` makes ``src/`` the
 import root, locally, in CI and in the Docker image.
 
 Shared Runtime Context
 ----------------------
 
-``src/agent_context.py`` stores module-level globals populated at startup:
+``src/conversation/agent_context.py`` stores module-level globals populated at startup:
 
 .. list-table::
    :header-rows: 1
@@ -199,7 +209,7 @@ State Machine and Intent Classification
 ----------------------------------------
 
 The agent uses 10 states with corresponding intents. The authoritative
-classification comes from ``src/unified_classifier.py`` — one structured-output
+classification comes from ``src/routing/unified_classifier.py`` — one structured-output
 LLM call per message, cached, read by the ``json_intent_matches`` transition
 condition. BAF's own local ``SimpleIntentClassifier`` is only an
 exception-path and voice/text-event fallback. See :doc:`intent_recognition`.
@@ -250,8 +260,9 @@ parameters.
 Execution Engine
 ----------------
 
-``src/execution/`` is the core dispatch layer (package with ``planning.py``,
-``model_operations.py``, ``file_handling.py``).
+``src/execution/`` is the core dispatch layer (package with ``planning.py`` and
+``model_operations.py``; file attachments go through
+``src/ingestion/file_handling.py`` first).
 
 **execute_planned_operations():**
 
@@ -292,14 +303,14 @@ via ``_common_preamble()``, the generation ones via the generation state body.
 
    * - Flow
      - Question asked
-   * - Complete-system confirmation (``src/confirmation.py``)
+   * - Complete-system confirmation (``src/app/confirmation.py``)
      - A model already exists — replace it, keep it, or use a new tab?
-   * - GUI generation-mode choice (``src/confirmation.py``)
+   * - GUI generation-mode choice (``src/app/confirmation.py``)
      - "Basic CRUD pages" (one page per class, no LLM) or
        "Experimental AI design"?
-   * - Spec-Driven Agent confirmation (``src/handlers/generation_handler.py``)
+   * - Spec-Driven Agent confirmation (``src/codegen/generation_handler.py``)
      - Confirm before handing off to the LLM-authored Spec-Driven Agent
-   * - Plan-generation pause (``src/handlers/generation_handler.py``)
+   * - Plan-generation pause (``src/codegen/generation_handler.py``)
      - A mixed modeling + generation plan pauses after the modeling step and
        waits for an explicit "generate" before running the generator
    * - Destructive-modification confirmation (``src/execution/model_operations.py``)

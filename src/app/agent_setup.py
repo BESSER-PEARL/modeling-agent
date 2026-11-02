@@ -19,14 +19,14 @@ from baf.nlp.intent_classifier.intent_classifier_configuration import SimpleInte
 from baf.nlp.llm.llm_openai_api import LLMOpenAI
 from baf.nlp.speech2text.openai_speech2text import OpenAISpeech2Text
 
-from agent_config import (
+from common.agent_config import (
     LLM_TEMPERATURE,
     LLM_TEXT_TEMPERATURE,
     LLM_MAX_TOKENS_LARGE,
     LLM_MAX_TOKENS_TEXT,
     CONVERSATION_HISTORY_DEPTH,
 )
-from model_config import (
+from llm.model_config import (
     MODEL_CLASSIFIER,
     MODEL_EMBEDDINGS,
     reasoning_effort_for,
@@ -35,7 +35,7 @@ from model_config import (
 
 logger = logging.getLogger(__name__)
 
-UML_SPECS_DIR = Path(__file__).resolve().parent.parent / "uml_specs"
+UML_SPECS_DIR = Path(__file__).resolve().parents[2] / "uml_specs"
 UML_VECTOR_STORE_DIR = "uml_vector_store"
 # Written once the specification is fully embedded, so an interrupted run is
 # redone rather than leaving a partial index that looks loaded.
@@ -143,7 +143,7 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
         text path). BAF's ``predict`` cannot vary the model per call, so
         the override goes through the OpenAI client directly.
         """
-        from byok import predict_json as byok_predict_json
+        from llm.byok import predict_json as byok_predict_json
         routed = byok_predict_json(prompt, model=model)
         if routed is not None:
             return routed
@@ -157,13 +157,13 @@ def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
             usage = getattr(completion, 'usage', None)
             if usage is not None:
                 try:
-                    from tracking import get_tracker
+                    from llm.tracking import get_tracker
                     get_tracker().record_from_usage(usage, model=model)
                 except Exception as exc:
                     logger.debug(f"Token tracking failed (best-effort): {exc}")
             if not completion.choices:
                 return ""
-            from errors import raise_if_openai_refusal
+            from common.errors import raise_if_openai_refusal
             raise_if_openai_refusal(completion.choices[0])
             return completion.choices[0].message.content or ""
         return gpt.predict(prompt, parameters=_json_params_for(MODEL_CLASSIFIER))

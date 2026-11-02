@@ -1,9 +1,9 @@
-"""Tests for the generation handler (handlers/generation_handler.py)."""
+"""Tests for the generation handler (codegen/generation_handler.py)."""
 
 import types
 
 import pytest
-from handlers.generation_handler import (
+from codegen.generation_handler import (
     parse_inline_generator_config,
     _required_missing,
     _normalize_defaults,
@@ -12,7 +12,7 @@ from handlers.generation_handler import (
     handle_generation_request,
     should_route_to_generation,
 )
-from handlers.smart_generation_handler import GenerationClassification
+from codegen.smart_generation_handler import GenerationClassification
 from protocol.types import AssistantRequest, WorkspaceContext
 from routing.generation_signals import GENERATOR_KEYWORDS, detect_generator_type
 
@@ -47,7 +47,7 @@ def _make_request(message: str, action: str = "user_message") -> AssistantReques
 def _to_unified(decision: GenerationClassification):
     """Adapt a legacy-shaped stub into the unified classifier's output —
     what a real ``provider.parse`` returns on the retired-legacy path."""
-    from unified_classifier import UnifiedClassification
+    from routing.unified_classifier import UnifiedClassification
     return UnifiedClassification(
         intent="generation_intent",
         generation_route=decision.route,
@@ -70,7 +70,7 @@ class _FakeLLMProvider:
 
 def _patch_classifier(monkeypatch, decision: GenerationClassification):
     """Make ``_get_llm_provider()`` return a stub that yields ``decision``."""
-    import handlers.generation_handler as gen_mod
+    import codegen.generation_handler as gen_mod
     monkeypatch.setattr(
         gen_mod, "_get_llm_provider",
         lambda: _FakeLLMProvider(decision),
@@ -369,7 +369,7 @@ class TestHandleGenerationRequest:
         """Populate the per-message unified-classification cache the way the
         state_bodies priority-0 hook does in production (the pivot check reads
         it directly — no LLM call)."""
-        from session_keys import UNIFIED_CLASSIFICATION
+        from common.session_keys import UNIFIED_CLASSIFICATION
         session.set(UNIFIED_CLASSIFICATION, types.SimpleNamespace(
             intent="generation_intent",
             generation_route=route,
@@ -584,7 +584,7 @@ class TestMismatchRegenChain:
 
     def _arm(self, session):
         import time as _t
-        from session_keys import (
+        from common.session_keys import (
             PENDING_SMART_GEN_INSTRUCTIONS,
             PENDING_SMART_GEN_PROVIDER,
             PENDING_SMART_GEN_TIMESTAMP,
@@ -596,8 +596,8 @@ class TestMismatchRegenChain:
     _REBUILD_PROMPT = "create a class diagram for a hotel booking system"
 
     def test_mismatch_confirmation_arms_the_flag(self):
-        from handlers.generation_handler import _build_mismatch_confirmation
-        from session_keys import (
+        from codegen.generation_handler import _build_mismatch_confirmation
+        from common.session_keys import (
             MISMATCH_REGEN_PENDING,
             PENDING_SMART_GEN_INSTRUCTIONS,
         )
@@ -614,7 +614,7 @@ class TestMismatchRegenChain:
 
     def test_rebuild_preserves_stash_on_matching_prompt(self, monkeypatch):
         """The stashed rebuild prompt survives when THIS message equals it."""
-        from session_keys import (
+        from common.session_keys import (
             MISMATCH_REGEN_PENDING,
             PENDING_SMART_GEN_INSTRUCTIONS,
         )
@@ -637,7 +637,7 @@ class TestMismatchRegenChain:
     def test_different_create_after_mismatch_abandons_stash(self, monkeypatch):
         """A DIFFERENT create typed after a mismatch (not the button prompt)
         must abandon the stash — no spurious resume of the old domain."""
-        from session_keys import (
+        from common.session_keys import (
             MISMATCH_REGEN_PENDING,
             PENDING_SMART_GEN_INSTRUCTIONS,
         )
@@ -660,7 +660,7 @@ class TestMismatchRegenChain:
     def test_rebuild_clears_stash_without_flag(self, monkeypatch):
         """Without the flag, an unrelated request still abandons the stash
         (the pre-existing safety behavior is unchanged)."""
-        from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+        from common.session_keys import PENDING_SMART_GEN_INSTRUCTIONS
         _patch_classifier(monkeypatch, GenerationClassification(
             route="modeling", reason="a different modeling request",
         ))
@@ -686,7 +686,7 @@ class TestMismatchRegenChain:
 
 def _fresh_run_session():
     import time as _time
-    from session_keys import LAST_SMART_GEN_AT, LAST_SMART_GEN_SUMMARY
+    from common.session_keys import LAST_SMART_GEN_AT, LAST_SMART_GEN_SUMMARY
     session = FakeSession()
     session.set(LAST_SMART_GEN_AT, _time.time())
     session.set(LAST_SMART_GEN_SUMMARY, "Smart generation finished successfully.")

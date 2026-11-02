@@ -389,7 +389,7 @@ def test_detailed_summary_lists_boxes_and_criteria():
 
 
 def test_user_profile_suggestions_have_prompts():
-    from suggestions import get_suggested_actions
+    from conversation.suggestions import get_suggested_actions
 
     actions = get_suggested_actions("UserDiagram", "complete_system", [])
     assert actions

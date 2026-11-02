@@ -10,7 +10,7 @@ terse edits like "delete the Doctor class" and even self-contradictory ones like
 "delete everything and make it bigger" — must NOT be caught.
 """
 
-from state_bodies import _request_is_non_modeling as _blocked
+from app.state_bodies import _request_is_non_modeling as _blocked
 
 
 def test_injection_and_subversion_are_blocked():

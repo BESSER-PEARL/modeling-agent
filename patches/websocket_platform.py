@@ -64,7 +64,7 @@ def _set_request_byok(session):
     BYOK is unavailable for any reason (the request then uses the shared LLM).
     """
     try:
-        import byok
+        from llm import byok
         return byok.set_current(
             session.get("user_api_provider"),
             session.get("user_api_key"),
@@ -81,7 +81,7 @@ def _reset_request_byok(token) -> None:
     if token is None:
         return
     try:
-        import byok
+        from llm import byok
         byok.reset_current(token)
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(f"BYOK: could not reset per-request key: {exc}")

@@ -1,7 +1,7 @@
 """Tests for the contextual suggestion engine."""
 import pytest
 
-from suggestions import get_suggested_actions, format_suggestions_as_text
+from conversation.suggestions import get_suggested_actions, format_suggestions_as_text
 
 
 # ------------------------------------------------------------------

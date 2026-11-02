@@ -6,7 +6,7 @@ time), so they are always populated when user messages arrive.
 
 Usage::
 
-    from agent_context import diagram_factory, gpt_predict_json
+    from conversation.agent_context import diagram_factory, gpt_predict_json
 """
 
 from __future__ import annotations

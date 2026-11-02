@@ -9,7 +9,7 @@ that the editor applies to the canvas or hands to a generator.
 ## What It Does
 
 - Creates and modifies models from natural language.
-- Routes every message with **one** LLM classification call (`src/unified_classifier.py`),
+- Routes every message with **one** LLM classification call (`src/routing/unified_classifier.py`),
   cached per message; a local, free TensorFlow `SimpleIntentClassifier` is the fallback.
 - Supports multi-step orchestration (for example: model first, then generate code).
 - Triggers BESSER's deterministic generators, or hands off to the LLM-authored
@@ -66,32 +66,24 @@ modeling-agent/
   config_example.yaml              # Template for the gitignored config.yaml
   Dockerfile                       # Image + entrypoint that writes config.yaml from env
   patches/websocket_platform.py    # Vendored BAF fix (see the note below)
-  src/
-    agent_setup.py                 # LLM/STT/RAG/factory bootstrapping
-    agent_context.py               # Shared runtime globals populated at startup
-    agent_config.py                # Tunable constants (limits, temperatures, budgets)
-    model_config.py                # Per-call-site model tiers, env-overridable
-    unified_classifier.py          # ONE classification call per message (routing brain)
-    state_bodies.py                # State bodies + transition wiring
-    session_helpers.py             # Reply/streaming helpers, transition conditions
-    confirmation.py                # Pending replace/keep + GUI-mode flows
-    byok.py                        # Per-request bring-your-own-key routing
-    suggestions.py                 # Context-aware "what's next?" suggestions
-    telemetry.py                   # Opt-in study prompt telemetry (fire-and-forget)
-    llm/                           # LLM provider abstraction (structured output, streaming)
-    memory/                        # Conversation memory + rolling summary
-    schemas/                       # Pydantic schemas for structured LLM output
-    tracking/                      # Token usage and cost tracking
-    protocol/                      # Request parsing and protocol types
-    routing/                       # Shared intent-name constants
+  src/                             # One package per layer, top to bottom:
+    app/                           # Bootstrapping, state bodies + transition wiring, pending flows
+    ingestion/                     # File attachments: detection, conversion, the attachment step
+    execution/                     # Operation execution engine (planning, model ops)
+    codegen/                       # Generator requests, Spec-Driven Agent trigger
     orchestrator/                  # Multi-operation planning + diagram-type resolution
-    execution/                     # Operation execution engine (planning, model ops, files)
-    handlers/                      # Generation, smart generation, file conversion, validation
-    utilities/                     # Shared context/model/request helpers, LLM retry
+    conversation/                  # Reply/streaming helpers, reply language, suggestions, telemetry
+    routing/                       # ONE classification call per message (routing brain) + signals
+    memory/                        # Conversation memory + rolling summary
     diagram_handlers/
       core/                        # Base handler + deterministic layout + prompt fragments
       types/                       # Concrete per-diagram handlers
       registry/                    # Factory + metadata registry
+    schemas/                       # Pydantic schemas for structured LLM output
+    llm/                           # LLM provider, bring-your-own-key, model tiers, token/cost tracking
+    utilities/                     # Shared context/model/request helpers, LLM retry
+    protocol/                      # Request parsing and protocol types
+    common/                        # Tunable constants, session-state keys, error taxonomy
   tests/
   docs/
 ```

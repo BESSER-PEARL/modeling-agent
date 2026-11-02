@@ -25,9 +25,9 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional
 
-import byok_config
-from reply_copy import SPEC_DRIVEN_NAME
-from session_keys import REPLY_LANGUAGE
+from llm import byok_config
+from conversation.reply_copy import SPEC_DRIVEN_NAME
+from common.session_keys import REPLY_LANGUAGE
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +162,7 @@ def _reset_state() -> None:
 def _translate_uncached(texts: List[str], code: str) -> List[str]:
     predict = _predict_json
     if predict is None:
-        import agent_context as ctx
+        from conversation import agent_context as ctx
         predict = ctx.gpt_predict_json
     if predict is None:
         raise RuntimeError("no LLM available")

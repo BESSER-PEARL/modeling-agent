@@ -30,11 +30,11 @@ for _name in (
     'besser.agent.core.session',
     'baf.core.session',
     'protocol.adapters',
-    'session_helpers',
+    'conversation.session_helpers',
 ):
     _stub_if_missing(_name)
 
-from confirmation import (
+from app.confirmation import (
     keyword_matches,
     model_has_elements,
     REPLACE_KEYWORDS,
@@ -264,7 +264,7 @@ class TestKeywordListsNonEmpty:
         # removed outright: both consumed real pivot messages like
         # "no, just add an email attribute to Customer" as a KEEP answer,
         # discarding the user's actual instruction.
-        from confirmation import _WEAK_KEEP_KEYWORDS, _WEAK_KEEP_MAX_WORDS
+        from app.confirmation import _WEAK_KEEP_KEYWORDS, _WEAK_KEEP_MAX_WORDS
         assert "no" not in KEEP_KEYWORDS
         assert "add" not in KEEP_KEYWORDS
         assert "no" in _WEAK_KEEP_KEYWORDS

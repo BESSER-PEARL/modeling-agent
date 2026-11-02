@@ -8,7 +8,7 @@ import httpx
 import openai
 import pytest
 
-import agent_setup
+from app import agent_setup
 from utilities import llm_retry
 
 

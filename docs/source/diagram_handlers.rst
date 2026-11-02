@@ -724,15 +724,15 @@ discoverability.
 5. **Metadata** — add display metadata in
    ``src/diagram_handlers/registry/metadata.py``.
 6. **Classifier** — add the token to ``_TARGET_DIAGRAM_TYPES`` in
-   ``src/unified_classifier.py`` and teach ``_SYSTEM_PROMPT`` the type's
+   ``src/routing/unified_classifier.py`` and teach ``_SYSTEM_PROMPT`` the type's
    vocabulary, so a request naming it routes to the right intent.
 7. **Orchestrator** — add ``KEYWORD_TARGETS`` entries, an
    ``_IMPLICIT_PATTERNS`` regex, and append the type to ``FALLBACK_PRIORITY``
    in ``src/orchestrator/workspace_orchestrator.py``.
-8. **Capability copy** — ``src/state_bodies.py`` enumerates supported types in
+8. **Capability copy** — ``src/app/state_bodies.py`` enumerates supported types in
    more than one place (the quick-response capability text and the global
    fallback prompt). Grep for an existing type's name to find them all.
-9. **Suggestions** — add a suggestion list in ``src/suggestions.py`` and wire
+9. **Suggestions** — add a suggestion list in ``src/conversation/suggestions.py`` and wire
    it into ``_DIAGRAM_SUGGESTION_HANDLERS``.
 10. **Docs** — this page, the README table, and
     :doc:`websocket_protocol`'s supported-types list.

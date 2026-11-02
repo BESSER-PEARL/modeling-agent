@@ -5,7 +5,7 @@ build instead of hallucinating a default model — while any real domain noun
 lets the request proceed unchanged.
 """
 
-from state_bodies import _create_request_is_too_vague as _vague
+from app.state_bodies import _create_request_is_too_vague as _vague
 
 
 def test_pure_filler_creates_are_caught():

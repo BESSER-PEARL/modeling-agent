@@ -28,7 +28,7 @@ from .gui_design_system import (
     pick_domain,
     _hex_to_rgba,
 )
-from model_config import (
+from llm.model_config import (
     MODEL_GENERATION_GUI,
     MODEL_GENERATION_LARGE,
     MODEL_GENERATION_SMALL,

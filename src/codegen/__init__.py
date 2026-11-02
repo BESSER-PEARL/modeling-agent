@@ -1,4 +1,4 @@
-"""Specialized assistant handlers."""
+"""Generator triggers: BESSER generators, the Spec-Driven Agent and GitHub."""
 
 from .generation_handler import (
     should_route_to_generation,

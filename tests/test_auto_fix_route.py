@@ -5,7 +5,7 @@ nothing) and never interpreted as an answer to a pending question.
 """
 
 from protocol.types import AssistantRequest, WorkspaceContext
-from unified_classifier import AUTO_FIX_PREFIX, classify_message
+from routing.unified_classifier import AUTO_FIX_PREFIX, classify_message
 
 
 class _ExplodingProvider:

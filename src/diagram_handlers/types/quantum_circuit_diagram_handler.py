@@ -10,7 +10,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
-from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
+from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
 from schemas import SingleQuantumGateSpec, SystemQuantumCircuitSpec, QuantumModificationSpec
 from utilities.model_context import detailed_model_summary
 

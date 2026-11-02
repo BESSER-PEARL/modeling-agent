@@ -13,17 +13,17 @@ comes from the UNIFIED classifier's single per-message call, adapted via
 
 import pytest
 
-from handlers.generation_handler import (
+from codegen.generation_handler import (
     handle_generation_request,
     should_route_to_generation,
 )
-from handlers.smart_generation_handler import (
+from codegen.smart_generation_handler import (
     GenerationClassification,
     build_trigger_smart_generator_payload,
 )
-from unified_classifier import UnifiedClassification
+from routing.unified_classifier import UnifiedClassification
 from protocol.types import AssistantRequest, WorkspaceContext
-from session_keys import PENDING_GENERATOR_TYPE
+from common.session_keys import PENDING_GENERATOR_TYPE
 
 from tests.conftest import FakeSession
 
@@ -93,8 +93,8 @@ class TestClassificationFallback:
     def test_no_provider_returns_safe_route(self, monkeypatch):
         """With an empty cache and no LLM provider, the sub-router must
         return a safe classification (menu fallback), never crash."""
-        import handlers.generation_handler as gen_mod
-        from handlers.generation_handler import _get_classification_from_cache_or_classify
+        import codegen.generation_handler as gen_mod
+        from codegen.generation_handler import _get_classification_from_cache_or_classify
         monkeypatch.setattr(gen_mod, "_get_llm_provider", None, raising=False)
         session = FakeSession()
         result = _get_classification_from_cache_or_classify(
@@ -102,8 +102,8 @@ class TestClassificationFallback:
         assert result.route in ("deterministic", "smart", "modeling", "other")
 
     def test_provider_exception_returns_safe_route(self, monkeypatch):
-        import handlers.generation_handler as gen_mod
-        from handlers.generation_handler import _get_classification_from_cache_or_classify
+        import codegen.generation_handler as gen_mod
+        from codegen.generation_handler import _get_classification_from_cache_or_classify
         fake = _FakeProvider(None, raise_on_parse=True)
         monkeypatch.setattr(gen_mod, "_get_llm_provider", lambda: fake, raising=False)
         session = FakeSession()
@@ -175,7 +175,7 @@ class TestHandleGenerationRequest:
     def _patch_provider(self, monkeypatch, decision):
         """Patch ``_get_llm_provider`` to return a fake provider whose
         ``parse`` yields the unified classifier's structured output."""
-        import handlers.generation_handler as gen_mod
+        import codegen.generation_handler as gen_mod
         fake = _FakeProvider(_wrap(decision))
         monkeypatch.setattr(gen_mod, "_get_llm_provider", lambda: fake, raising=False)
         return fake
@@ -201,7 +201,7 @@ class TestHandleGenerationRequest:
         # Cancel button removed (product decision) — only Run is offered;
         # the user can still cancel by typing.
         assert "cancel the generation" not in prompts
-        from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+        from common.session_keys import PENDING_SMART_GEN_INSTRUCTIONS
         assert "Rails" in session.get(PENDING_SMART_GEN_INSTRUCTIONS)
 
         # Confirm: now (and only now) the trigger payload is emitted.

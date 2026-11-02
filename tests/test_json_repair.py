@@ -167,7 +167,7 @@ def test_the_classifier_json_path_survives_it_too(monkeypatch):
     from types import SimpleNamespace
     from pydantic import BaseModel
 
-    import byok
+    from llm import byok
     from llm.provider import LLMProvider
 
     class Rule(BaseModel):
@@ -248,7 +248,7 @@ def test_the_classifier_json_path_decodes_stringified_lists(monkeypatch):
     from typing import List, Optional
     from pydantic import BaseModel
 
-    import byok
+    from llm import byok
     from llm.provider import LLMProvider
 
     class Rules(BaseModel):

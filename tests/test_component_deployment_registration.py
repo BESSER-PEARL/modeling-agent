@@ -10,8 +10,8 @@ import pytest
 from diagram_handlers.core.base_handler import BaseDiagramHandler
 from orchestrator.request_planner import _try_heuristic_decomposition
 from protocol.types import AssistantRequest, SUPPORTED_DIAGRAM_TYPES, WorkspaceContext
-from reply_copy import META_ANSWER, OUT_OF_SCOPE_REDIRECT
-from unified_classifier import (
+from conversation.reply_copy import META_ANSWER, OUT_OF_SCOPE_REDIRECT
+from routing.unified_classifier import (
     _RELEVANT_DIAGRAM_TYPES,
     _SYSTEM_PROMPT,
     _TARGET_DIAGRAM_TYPES,
@@ -85,7 +85,7 @@ def test_capability_copy_mentions_new_types():
 
 
 def test_fallback_and_quick_responses_list_new_types():
-    import state_bodies
+    from app import state_bodies
 
     help_text = state_bodies._QUICK_RESPONSES["help"]
     assert "10 diagram types" in help_text and "Component, and Deployment" in help_text
@@ -98,7 +98,7 @@ def test_fallback_and_quick_responses_list_new_types():
 
 def test_quick_capability_list_is_one_markdown_list():
     """A stray blank line inside the bullet list splits it into two lists."""
-    import state_bodies
+    from app import state_bodies
 
     text = state_bodies._QUICK_RESPONSES["what_can_you_do"]
     block = text[text.index("**Create diagrams:**"):text.index("**Modify diagrams:**")]

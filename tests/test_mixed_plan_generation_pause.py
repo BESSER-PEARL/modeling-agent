@@ -18,9 +18,9 @@ import types
 from unittest.mock import MagicMock, patch
 
 import execution.planning as planning
-from handlers.generation_handler import handle_generation_request
+from codegen.generation_handler import handle_generation_request
 from protocol.types import AssistantRequest, WorkspaceContext
-from session_keys import (
+from common.session_keys import (
     PENDING_GENERATOR_CONFIG,
     PENDING_GENERATOR_TYPE,
     PLAN_GENERATION_CONFIRM_FLAG,
@@ -63,7 +63,7 @@ def _cache_verdict(
         pending_flow_action=flow_action,
         pending_flow_answer=flow_answer,
     ))
-    from unified_classifier import _current_event_id
+    from routing.unified_classifier import _current_event_id
     event_id = _current_event_id(session)
     if event_id is not None:
         session.set(UNIFIED_CLASSIFICATION_EVENT_ID, event_id)
@@ -230,8 +230,8 @@ class TestPausedGenerationConfirmation:
     def test_unrelated_message_abandons_the_pause(self, monkeypatch):
         """A non-answer clears the stash and is routed on its own merits —
         it must NOT fire the paused generator."""
-        import handlers.generation_handler as gen_mod
-        from unified_classifier import UnifiedClassification
+        import codegen.generation_handler as gen_mod
+        from routing.unified_classifier import UnifiedClassification
 
         class _Provider:
             model_name = "test-model"
@@ -349,7 +349,7 @@ class TestRealRoutingFunnel:
     def test_ok_through_decline_state_fires_generation(self):
         """The exact route: "ok" stamped decline_intent as a new
         request lands in decline_state — the stashed generator must fire."""
-        import state_bodies
+        from app import state_bodies
         session = self._funnel_session("ok")
         _cache_verdict(session, "decline_intent", flow_action="new_request")
         state_bodies.decline_body(session)
@@ -362,7 +362,7 @@ class TestRealRoutingFunnel:
     def test_ok_through_generation_state_fires_generation(self):
         """The suppressed-intent route: an "answer" verdict keeps the message
         in the flow and route_to_generation delivers it to generation_body."""
-        import state_bodies
+        from app import state_bodies
         session = self._funnel_session("ok")
         _cache_verdict(session, "decline_intent", flow_action="answer")
         state_bodies.generation_body(session)
@@ -372,7 +372,7 @@ class TestRealRoutingFunnel:
         assert reply["generatorType"] == "pydantic"
 
     def test_no_through_decline_state_cancels(self):
-        import state_bodies
+        from app import state_bodies
         session = self._funnel_session("no")
         _cache_verdict(session, "decline_intent", flow_action="new_request")
         state_bodies.decline_body(session)
@@ -386,7 +386,7 @@ class TestRealRoutingFunnel:
         """A non-exact message is NOT consumed by the preamble intercept —
         decline_body's own pending-generator reroute then lets the in-handler
         gate judge it with the classifier verdict (decline → cancel)."""
-        import state_bodies
+        from app import state_bodies
         session = self._funnel_session("nah, I'd rather not")
         _cache_verdict(session, "decline_intent", flow_action="answer",
                        flow_answer="cancel")

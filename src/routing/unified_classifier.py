@@ -40,7 +40,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from byok_config import get_current
+from llm.byok_config import get_current
 from protocol.types import AssistantRequest
 from routing.generation_signals import (
     _GITHUB_CONTINUE_VERB_RE,
@@ -48,7 +48,7 @@ from routing.generation_signals import (
     recent_smart_gen_for_project,
 )
 from utilities.original_request import remember_target, request_project_id, target_for_project
-from session_keys import (
+from common.session_keys import (
     LAST_SUGGESTED_PROMPTS,
     PENDING_COMPLETE_SYSTEM,
     PENDING_GENERATOR_CONFIG,
@@ -1053,9 +1053,9 @@ def classify_message(
         # structured output is starved → parsed=None → _safe_fallback on
         # EVERY message. Give reasoning models headroom; keep the tight
         # budget for fast non-reasoning models like gpt-4o-mini.
-        from model_config import supports_custom_temperature
+        from llm.model_config import supports_custom_temperature
 
-        import byok
+        from llm import byok
         classifier_model = getattr(llm_provider, "model_name", "") or ""
         cfg = get_current()
         if cfg is not None:

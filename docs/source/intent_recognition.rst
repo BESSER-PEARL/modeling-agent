@@ -47,9 +47,9 @@ answer, …), so no second prompt is ever needed to refine the verdict.
            State Transition
            → State body → Handler
 
-**Location:** ``src/unified_classifier.py`` (classifier),
-``src/session_helpers.py`` (transition conditions),
-``src/state_bodies.py`` (transition wiring).
+**Location:** ``src/routing/unified_classifier.py`` (classifier),
+``src/conversation/session_helpers.py`` (transition conditions),
+``src/app/state_bodies.py`` (transition wiring).
 
 
 Stage 1: Deterministic Short-Circuits
@@ -57,7 +57,7 @@ Stage 1: Deterministic Short-Circuits
 
 Two message shapes never reach the LLM at all. Both are handled in
 ``get_or_classify()`` / ``classify_message()``
-(``src/unified_classifier.py``).
+(``src/routing/unified_classifier.py``).
 
 frontend_event callbacks
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -123,7 +123,7 @@ without ever causing a transition itself.
 The 11 intents
 ~~~~~~~~~~~~~~
 
-``_INTENT_NAMES`` in ``src/unified_classifier.py`` mirrors the
+``_INTENT_NAMES`` in ``src/routing/unified_classifier.py`` mirrors the
 ``new_intent`` declarations in ``modeling_agent.py``. Adding a state there
 means mirroring it here.
 
@@ -276,7 +276,7 @@ not ``decline_intent``.
 ``reply_language`` is kept in ``REPLY_LANGUAGE`` (a quick-action click, which
 sends the button's English prompt, does not change it). LLM-written replies
 are asked to answer in that language; templated replies are translated at the
-reply choke point in ``src/session_helpers.py`` by ``src/reply_language.py``:
+reply choke point in ``src/conversation/session_helpers.py`` by ``src/conversation/reply_language.py``:
 one classifier-tier call per reply for the message and its labels, cached for
 the shared key only and per call input, so a label translated next to one
 user's text is never reused in another user's reply.
@@ -289,12 +289,12 @@ translation pauses briefly.
 Stage 3: Post-Validation and the Pending-Flow Gate
 ---------------------------------------------------
 
-``_post_validate()`` (``src/unified_classifier.py``) runs on the returned
+``_post_validate()`` (``src/routing/unified_classifier.py``) runs on the returned
 object before it is cached, correcting verdicts the rulebook says must hold
 (for example rerouting a continue-from-GitHub message).
 
 The pending-flow gate lives in ``json_intent_matches`` /
-``json_no_intent_matched`` (``src/session_helpers.py``). When the assistant
+``json_no_intent_matched`` (``src/conversation/session_helpers.py``). When the assistant
 is awaiting a reply to a question — replace/keep, the GUI generation-mode
 choice, a smart-gen confirmation, a generator config prompt — the
 classifier decides, *with that pending question in its context*, whether
@@ -312,7 +312,7 @@ Transition Priority System
 
 State transitions are checked in this order (first match wins).
 
-**Location:** ``src/state_bodies.py`` → ``add_unified_transitions()``
+**Location:** ``src/app/state_bodies.py`` → ``add_unified_transitions()``
 
 .. code-block:: text
 
@@ -335,7 +335,7 @@ State transitions are checked in this order (first match wins).
        json_no_intent_matched(session) → the state's fallback state
 
 Priority 2 is deliberately cheap: ``should_route_to_generation()``
-(``src/handlers/generation_handler.py``) makes **no** LLM call and runs
+(``src/codegen/generation_handler.py``) makes **no** LLM call and runs
 **no** text heuristics. It returns ``True`` only for ``frontend_event``
 payloads and for messages arriving while a generator config or smart-gen
 confirmation is pending. The older keyword safety nets
@@ -422,7 +422,7 @@ When routing goes wrong, check in this order:
 .. code-block:: python
 
    # Quick diagnostic snippet (no agent runtime needed):
-   from unified_classifier import _names_unsupported_stack
+   from routing.unified_classifier import _names_unsupported_stack
    from routing.generation_signals import detect_generator_type
 
    msg = "your test message here"

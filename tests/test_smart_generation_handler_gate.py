@@ -5,7 +5,7 @@ path may emit ``trigger_smart_generator`` without an explicit user
 confirmation. The gate stashes the payload (+ timestamp), replies with
 run/cancel quick actions, and the confirm handler rejects stale stashes.
 
-``handlers.generation_handler`` imports ``baf.core.session`` at module
+``codegen.generation_handler`` imports ``baf.core.session`` at module
 level; the stub is installed at test RUN time (autouse fixture) and the
 handler is imported lazily so the pre-existing collection errors of
 baf-dependent test modules stay untouched.
@@ -44,7 +44,7 @@ def _baf_stub():
 
 
 def _gen_handler():
-    import handlers.generation_handler as gen_mod
+    import codegen.generation_handler as gen_mod
     return gen_mod
 
 
@@ -57,7 +57,7 @@ def _make_request(message: str):
 
 
 def _smart_classification():
-    from handlers.smart_generation_handler import GenerationClassification
+    from codegen.smart_generation_handler import GenerationClassification
     return GenerationClassification(
         route="smart",
         refined_instructions="Build a Rails 7 API for the Library domain.",
@@ -68,7 +68,7 @@ def _smart_classification():
 
 def _patch_provider(monkeypatch, decision):
     gen_mod = _gen_handler()
-    from unified_classifier import UnifiedClassification
+    from routing.unified_classifier import UnifiedClassification
 
     unified = UnifiedClassification(
         intent="generation_intent",
@@ -93,7 +93,7 @@ def _patch_provider(monkeypatch, decision):
 
 def test_smart_route_stashes_and_asks_instead_of_firing(monkeypatch):
     gen_mod = _gen_handler()
-    from session_keys import (
+    from common.session_keys import (
         PENDING_SMART_GEN_INSTRUCTIONS,
         PENDING_SMART_GEN_PROVIDER,
         PENDING_SMART_GEN_TIMESTAMP,
@@ -128,7 +128,7 @@ def test_smart_route_stashes_and_asks_instead_of_firing(monkeypatch):
 
 def test_confirm_fires_trigger_and_clears_stash(monkeypatch):
     gen_mod = _gen_handler()
-    from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+    from common.session_keys import PENDING_SMART_GEN_INSTRUCTIONS
 
     _patch_provider(monkeypatch, _smart_classification())
     session = FakeSession()
@@ -146,7 +146,7 @@ def test_confirm_fires_trigger_and_clears_stash(monkeypatch):
 @pytest.mark.parametrize("reply", ["yes", "Yes, please!", "run it now"])
 def test_natural_confirmation_fires_trigger(monkeypatch, reply):
     gen_mod = _gen_handler()
-    from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+    from common.session_keys import PENDING_SMART_GEN_INSTRUCTIONS
 
     _patch_provider(monkeypatch, _smart_classification())
     session = FakeSession()
@@ -160,7 +160,7 @@ def test_natural_confirmation_fires_trigger(monkeypatch, reply):
 
 def test_cancel_clears_stash_without_firing(monkeypatch):
     gen_mod = _gen_handler()
-    from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+    from common.session_keys import PENDING_SMART_GEN_INSTRUCTIONS
 
     _patch_provider(monkeypatch, _smart_classification())
     session = FakeSession()
@@ -177,7 +177,7 @@ def test_cancel_clears_stash_without_firing(monkeypatch):
 @pytest.mark.parametrize("reply", ["no", "No, thanks!", "cancel"])
 def test_natural_cancellation_never_fires(monkeypatch, reply):
     gen_mod = _gen_handler()
-    from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+    from common.session_keys import PENDING_SMART_GEN_INSTRUCTIONS
 
     _patch_provider(monkeypatch, _smart_classification())
     session = FakeSession()
@@ -202,7 +202,7 @@ def test_mixed_or_qualified_confirmation_is_not_interpreted(reply):
 
 def test_pending_smart_confirmation_routes_to_generation_handler():
     gen_mod = _gen_handler()
-    from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+    from common.session_keys import PENDING_SMART_GEN_INSTRUCTIONS
 
     session = FakeSession()
     session.set(PENDING_SMART_GEN_INSTRUCTIONS, "Build a Rails API.")
@@ -217,7 +217,7 @@ def test_pending_smart_confirmation_routes_to_generation_handler():
 
 def test_confirm_rejects_stash_older_than_30_minutes(monkeypatch):
     gen_mod = _gen_handler()
-    from session_keys import (
+    from common.session_keys import (
         PENDING_SMART_GEN_INSTRUCTIONS,
         PENDING_SMART_GEN_TIMESTAMP,
     )
@@ -245,7 +245,7 @@ def test_confirm_with_legacy_stash_without_timestamp_is_rejected(monkeypatch):
     """Stashes written before the timestamp key existed are of unknown
     age — they must not fire."""
     gen_mod = _gen_handler()
-    from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+    from common.session_keys import PENDING_SMART_GEN_INSTRUCTIONS
 
     session = FakeSession()
     session.set(PENDING_SMART_GEN_INSTRUCTIONS, "Build something old.")

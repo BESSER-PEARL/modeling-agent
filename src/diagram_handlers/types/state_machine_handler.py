@@ -25,7 +25,7 @@ from ..core.prompt_fragments import (
     POSITION_DISCLAIMER,
     REMOVE_ELEMENT_RULE,
 )
-from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
+from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
 from schemas import SingleStateSpec as SingleStateSchema, SystemStateMachineSpec, StateMachineModificationResponse
 from utilities.model_context import detailed_model_summary
 

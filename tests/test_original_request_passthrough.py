@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import pytest
 
-from handlers.smart_generation_handler import (
+from codegen.smart_generation_handler import (
     GenerationClassification,
     build_trigger_smart_generator_payload,
 )
-from unified_classifier import _SYSTEM_PROMPT, UnifiedClassification
+from routing.unified_classifier import _SYSTEM_PROMPT, UnifiedClassification
 
 SUMMARY = "Build a hotel booking web app. FastAPI, SQLite, React."
 
@@ -44,7 +44,7 @@ def test_spec_reaches_the_run_verbatim():
     assert "not arrived, checked in, or checked out" in instructions
     assert "combined capacity of the rooms booked" in instructions
     # Machine framing must not make an accepted boundary-sized spec invalid.
-    from agent_config import MAX_USER_MESSAGE_CHARS
+    from common.agent_config import MAX_USER_MESSAGE_CHARS
     from protocol.message_limits import UserMessageTooLong
     full = SPEC + "x" * (MAX_USER_MESSAGE_CHARS - len(SPEC))
     assert _payload(original_request=full)["instructions"] == full
@@ -159,8 +159,8 @@ def test_missing_message_attribute_is_tolerated():
 
 
 def test_original_context_is_project_scoped_and_direct_requests_are_frozen(monkeypatch):
-    from handlers import generation_handler as generation
-    from session_keys import PENDING_SMART_GEN_ORIGINAL_REQUEST
+    from codegen import generation_handler as generation
+    from common.session_keys import PENDING_SMART_GEN_ORIGINAL_REQUEST
     from utilities.original_request import remember_original_request, original_request_for_project
 
     class Session:
@@ -202,8 +202,8 @@ def test_original_context_is_project_scoped_and_direct_requests_are_frozen(monke
 
 
 def test_same_project_create_gui_confirm_keeps_raw_spec_and_followups(monkeypatch):
-    from handlers import generation_handler as generation
-    from session_keys import PENDING_SMART_GEN_ORIGINAL_REQUEST
+    from codegen import generation_handler as generation
+    from common.session_keys import PENDING_SMART_GEN_ORIGINAL_REQUEST
     from utilities.original_request import remember_original_request, original_request_for_project
 
     class Session:
@@ -229,7 +229,7 @@ def test_same_project_create_gui_confirm_keeps_raw_spec_and_followups(monkeypatc
     assert generation._original_for_smart_generation(session, "yes") == combined
     assert generation._original_for_smart_generation(session, "yes!") == combined
     assert original_request_for_project(session, "hotel") == combined
-    from agent_config import MAX_USER_MESSAGE_CHARS
+    from common.agent_config import MAX_USER_MESSAGE_CHARS
     from protocol.message_limits import UserMessageTooLong
     maximum = "x" * MAX_USER_MESSAGE_CHARS
     remember_original_request(session, maximum, "hotel")
@@ -242,7 +242,7 @@ def test_same_project_create_gui_confirm_keeps_raw_spec_and_followups(monkeypatc
     from unittest.mock import MagicMock
     import execution.model_operations as modeling
     from protocol.types import AssistantRequest, WorkspaceContext
-    from session_keys import MISMATCH_REGEN_PENDING
+    from common.session_keys import MISMATCH_REGEN_PENDING
     from tests.conftest import FakeSession
     handler = MagicMock()
     handler.generate_complete_system.return_value = {"action": "assistant_message", "message": "captured"}

@@ -49,12 +49,12 @@ import contextvars
 import logging
 from typing import Optional, Sequence
 
-from agent_config import (
+from common.agent_config import (
     LLM_MAX_TOKENS_LARGE,
     LLM_TEMPERATURE,
     LLM_TEXT_TEMPERATURE,
 )
-from model_config import (
+from llm.model_config import (
     MODEL_CLASSIFIER,
     MODEL_GENERATION_GUI,
     MODEL_GENERATION_LARGE,
@@ -66,8 +66,8 @@ from model_config import (
     reasoning_effort_for,
     supports_custom_temperature,
 )
-from byok_config import BYOKConfig, current_byok
-from model_catalog import load_model_catalog
+from llm.byok_config import BYOKConfig, current_byok
+from llm.model_catalog import load_model_catalog
 from utilities.image_inputs import anthropic_content, openai_content
 
 logger = logging.getLogger(__name__)
@@ -371,7 +371,7 @@ class BYOKClient:
         self._track_openai(getattr(completion, "usage", None), model)
         if not completion.choices:
             return ""
-        from errors import raise_if_openai_refusal
+        from common.errors import raise_if_openai_refusal
         raise_if_openai_refusal(completion.choices[0])
         return completion.choices[0].message.content or ""
 
@@ -407,7 +407,7 @@ class BYOKClient:
             kwargs["extra_body"] = {"output_config": {"effort": anthropic_effort(model)}}
         message = self._client.messages.create(**kwargs)
         self._track_anthropic(getattr(message, "usage", None), model)
-        from errors import raise_if_anthropic_refusal
+        from common.errors import raise_if_anthropic_refusal
         raise_if_anthropic_refusal(message)
         text = "".join(
             getattr(block, "text", "")
@@ -425,7 +425,7 @@ class BYOKClient:
         if usage is None:
             return
         try:
-            from tracking import get_tracker
+            from llm.tracking import get_tracker
 
             get_tracker().record_from_usage(usage, model=model)
         except Exception as exc:  # pragma: no cover - tracking is best effort
@@ -436,7 +436,7 @@ class BYOKClient:
         if usage is None:
             return
         try:
-            from tracking import get_tracker
+            from llm.tracking import get_tracker
 
             # input_tokens excludes the cache reads and writes, which bill separately.
             cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0

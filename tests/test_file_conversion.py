@@ -4,7 +4,7 @@ import base64
 import json
 import pytest
 
-from handlers.file_conversion_handler import (
+from ingestion.file_conversion_handler import (
     convert_file_to_class_spec,
     convert_file_to_diagram_spec,
     detect_file_type,

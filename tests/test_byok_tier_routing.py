@@ -7,8 +7,8 @@ model: gpt-5.5 or claude-sonnet-5 instead of gpt-4o-mini or claude-haiku-4-5.
 
 import pytest
 
-import byok
-from model_config import (
+from llm import byok
+from llm.model_config import (
     MODEL_CLASSIFIER,
     MODEL_GENERATION_GUI,
     MODEL_GENERATION_LARGE,

@@ -9,7 +9,7 @@ message on reconnect. These tests cover the buffer + replay directly.
 import json
 from unittest.mock import patch
 
-import session_helpers as sh
+from conversation import session_helpers as sh
 
 
 class _FakeSession:
@@ -114,7 +114,7 @@ def test_buffer_is_bounded_lru():
 
 
 def test_common_preamble_intercepts_replay_and_never_runs_generation():
-    import state_bodies as sb
+    from app import state_bodies as sb
 
     class _Req:
         action = "replay_last_response"

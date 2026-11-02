@@ -14,7 +14,7 @@ Prerequisites
 
 - **Python 3.11+** — the codebase uses modern typing features and f-strings
 - **An OpenAI API key** — the model used per call site comes from the tier
-  table in ``src/model_config.py`` (all tiers env-overridable)
+  table in ``src/llm/model_config.py`` (all tiers env-overridable)
 - **Git** — for version control and branch management
 
 Installation
@@ -55,34 +55,45 @@ Project Structure
    ├── config.yaml                # Runtime configuration (API keys, LLM settings)
    ├── config_example.yaml        # Template for config.yaml
    │
-   ├── src/                       # All source code
-   │   ├── protocol/              # WebSocket protocol layer
-   │   │   ├── types.py           #   AssistantRequest, WorkspaceContext, SUPPORTED_DIAGRAM_TYPES
-   │   │   └── adapters.py        #   parse_assistant_request(), v2 envelope unwrapping
+   ├── src/                       # All source code, one package per layer (top to bottom)
+   │   ├── app/                   # The top layer
+   │   │   ├── agent_setup.py     #   LLM initialization, classifier configuration
+   │   │   ├── state_bodies.py    #   State body functions + transition wiring
+   │   │   └── confirmation.py    #   Pending replace/keep and GUI-mode flows
    │   │
-   │   ├── handlers/              # Request handlers
+   │   ├── ingestion/             # File attachments
+   │   │   └── file_handling.py   #   File attachment processing
+   │   │
+   │   ├── execution/             # Operation execution engine
+   │   │   ├── planning.py        #   Multi-operation planning
+   │   │   └── model_operations.py #  Single operation dispatch
+   │   │
+   │   ├── codegen/               # Generator triggers
    │   │   └── generation_handler.py  # Code generation routing, config parsing, safety guards
+   │   │
+   │   ├── orchestrator/          # Multi-step planning and diagram type resolution
+   │   │   ├── request_planner.py #   3-tier planner (heuristic → keyword → LLM)
+   │   │   └── workspace_orchestrator.py  # Diagram type resolution (keywords → patterns → context)
+   │   │
+   │   ├── conversation/          # Reply helpers, reply language, suggestions, telemetry
+   │   │   └── session_helpers.py #   Reply helpers, streaming, intent matching conditions
+   │   │
+   │   ├── routing/               # The unified classifier, generation signals, intent constants
+   │   ├── memory/                # Conversation memory (sliding window + summarization)
    │   │
    │   ├── diagram_handlers/      # Diagram-specific handlers
    │   │   ├── core/              #   BaseDiagramHandler, layout engine, shared logic
    │   │   ├── types/             #   ClassDiagramHandler, StateMachineHandler, etc.
    │   │   └── registry/          #   DiagramHandlerFactory, metadata
    │   │
-   │   ├── orchestrator/          # Multi-step planning and diagram type resolution
-   │   │   ├── request_planner.py #   3-tier planner (heuristic → keyword → LLM)
-   │   │   └── workspace_orchestrator.py  # Diagram type resolution (keywords → patterns → context)
+   │   ├── schemas/               # Structured-output schemas
+   │   ├── llm/                   # Provider, BYOK, model tiers, token and cost tracking
+   │   ├── utilities/             # Shared helpers
+   │   ├── protocol/              # WebSocket protocol layer
+   │   │   ├── types.py           #   AssistantRequest, WorkspaceContext, SUPPORTED_DIAGRAM_TYPES
+   │   │   └── adapters.py        #   parse_assistant_request(), v2 envelope unwrapping
    │   │
-   │   ├── routing/               # Intent constants and routing helpers
-   │   ├── state_bodies.py        # State body functions + transition wiring
-   │   ├── session_helpers.py     # Reply helpers, streaming, intent matching conditions
-   │   ├── execution/             # Operation execution engine (package)
-   │   │   ├── planning.py        #   Multi-operation planning
-   │   │   ├── model_operations.py #  Single operation dispatch
-   │   │   └── file_handling.py   #   File attachment processing
-   │   ├── agent_setup.py         # LLM initialization, classifier configuration
-   │   ├── memory/                # Conversation memory (sliding window + summarization)
-   │   ├── tracking/              # Token counting and cost tracking
-   │   └── suggestions.py         # Context-aware "What's next?" suggestions
+   │   └── common/                # Constants, session-state keys, error taxonomy
    │
    ├── tests/                     # Test suite
    │   ├── conftest.py            #   FakeSession, FakeLLM, make_v2_payload, fixtures
@@ -114,11 +125,11 @@ Key Module Responsibilities
    * - ``src/protocol/``
      - Parses the v2 WebSocket protocol. Unwraps the BESSER framework envelope,
        extracts ``AssistantRequest`` and ``WorkspaceContext``.
-   * - ``src/unified_classifier.py``
+   * - ``src/routing/unified_classifier.py``
      - The router. One structured-output LLM call per message returns the
        intent plus all sub-routing fields; ``_SYSTEM_PROMPT`` is the
        authoritative rulebook.
-   * - ``src/handlers/generation_handler.py``
+   * - ``src/codegen/generation_handler.py``
      - Code generation routing. Contains ``GENERATOR_REQUIRED_FIELDS``, the
        config-prompt flows, and the deterministic GitHub-continue guard.
    * - ``src/routing/generation_signals.py``
@@ -129,10 +140,10 @@ Key Module Responsibilities
      - Multi-step planning (``request_planner.py``) and diagram type resolution
        (``workspace_orchestrator.py``). Converts a user message into an ordered
        list of operations.
-   * - ``src/state_bodies.py``
+   * - ``src/app/state_bodies.py``
      - State body functions (one per intent) and the transition wiring system
        (``add_unified_transitions()``).
-   * - ``src/session_helpers.py``
+   * - ``src/conversation/session_helpers.py``
      - Intent matching conditions (``json_intent_matches``,
        ``json_no_intent_matched``), reply helpers, streaming utilities, and
        cross-validation logic.

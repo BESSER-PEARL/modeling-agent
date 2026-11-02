@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional, Type
 
 from pydantic import BaseModel
 
-from model_config import MODEL_GENERATION_LARGE, MODEL_REASONING
+from llm.model_config import MODEL_GENERATION_LARGE, MODEL_REASONING
 from utilities.model_context import detailed_model_summary
 
 from .base_handler import BaseDiagramHandler, LLMPredictionError

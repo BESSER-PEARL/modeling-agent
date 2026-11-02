@@ -10,16 +10,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from baf.core.session import Session
 
-import agent_context as ctx
+from conversation import agent_context as ctx
 from protocol.types import AssistantRequest
-from session_helpers import reply_message, reply_payload, emit_webapp_generate_prompt
+from conversation.session_helpers import reply_message, reply_payload, emit_webapp_generate_prompt
 from orchestrator import plan_assistant_operations
-from handlers.generation_handler import handle_generation_request
+from codegen.generation_handler import handle_generation_request
 from orchestrator.request_builders import build_request_for_target, build_generation_request
 from utilities.original_request import current_target
-from suggestions import get_suggested_actions
-from errors import ErrorCode, ModelRefusal, classify_error, build_error_response
-from session_keys import (
+from conversation.suggestions import get_suggested_actions
+from common.errors import ErrorCode, ModelRefusal, classify_error, build_error_response
+from common.session_keys import (
     PENDING_COMPLETE_SYSTEM,
     PENDING_GENERATOR_CONFIG,
     PENDING_GENERATOR_TYPE,
@@ -121,7 +121,7 @@ def execute_planned_operations(
     # only the fallback.
     _llm_target = None
     try:
-        from session_keys import UNIFIED_CLASSIFICATION
+        from common.session_keys import UNIFIED_CLASSIFICATION
         _uc = session.get(UNIFIED_CLASSIFICATION)
         _llm_target = getattr(_uc, "target_diagram_type", None) if _uc is not None else None
     except Exception:

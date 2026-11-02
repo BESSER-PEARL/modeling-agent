@@ -17,13 +17,13 @@ from baf.core.session import Session
 from baf.library.transition.events.base_events import ReceiveJSONEvent
 from baf.nlp.rag.rag import RAGMessage
 
-import agent_context as ctx
-from model_config import MODEL_GENERATION_SMALL
+from conversation import agent_context as ctx
+from llm.model_config import MODEL_GENERATION_SMALL
 from protocol.adapters import parse_assistant_request
 from protocol.types import AssistantRequest
 from protocol.message_limits import UserMessageTooLong
 from memory import get_memory, memory_session_key
-from session_helpers import (
+from conversation.session_helpers import (
     get_user_message,
     reply_message,
     reply_payload,
@@ -32,14 +32,12 @@ from session_helpers import (
     json_intent_matches,
     json_no_intent_matched,
 )
-from confirmation import handle_pending_system_confirmation, handle_pending_gui_choice
-from execution import (
-    execute_planned_operations,
-    handle_file_attachments,
-)
-from suggestions import get_suggested_actions, format_suggestions_as_text
+from app.confirmation import handle_pending_system_confirmation, handle_pending_gui_choice
+from execution import execute_planned_operations
+from ingestion.file_handling import handle_file_attachments
+from conversation.suggestions import get_suggested_actions, format_suggestions_as_text
 from diagram_handlers.registry.metadata import get_diagram_type_info
-from handlers.generation_handler import (
+from codegen.generation_handler import (
     handle_generation_request,
     handle_pending_plan_generation_confirmation,
     handle_pending_smart_gen_confirmation,
@@ -54,7 +52,7 @@ from utilities.user_metamodel import (
     is_user_profile_help,
 )
 from routing.intents import GENERATION_INTENT_NAME
-from session_keys import (
+from common.session_keys import (
     HAS_GREETED,
     LAST_EXECUTED_DIAGRAM_TYPE,
     LAST_MATCHED_INTENT,
@@ -63,12 +61,12 @@ from session_keys import (
     PENDING_GENERATOR_TYPE,
     UNIFIED_CLASSIFICATION,
 )
-from reply_copy import (
+from conversation.reply_copy import (
     DECLINE_ACK as _DECLINE_ACK,
     META_ANSWER as _META_ANSWER,
     OUT_OF_SCOPE_REDIRECT as _OUT_OF_SCOPE_REDIRECT,
 )
-from unified_classifier import get_or_classify
+from routing.unified_classifier import get_or_classify
 
 try:
     from llm.provider import get_provider as _get_llm_provider

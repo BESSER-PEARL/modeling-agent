@@ -19,9 +19,9 @@ from typing import Any, Optional
 from baf.core.session import Session
 
 from protocol.adapters import parse_assistant_request
-from session_helpers import reply_message, reply_payload, emit_webapp_generate_prompt
-from model_utils import model_has_elements  # noqa: F401  (re-export for backward compat)
-from session_keys import (
+from conversation.session_helpers import reply_message, reply_payload, emit_webapp_generate_prompt
+from utilities.model_utils import model_has_elements  # noqa: F401  (re-export for backward compat)
+from common.session_keys import (
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
     PENDING_SMART_GEN_INSTRUCTIONS,
@@ -112,11 +112,11 @@ def _build_auto_gui_message(request: Any, detected_gen: Optional[str] = None) ->
     resolved (the frontend still generates the GUI; we just can't name pages).
     """
     from routing.generation_signals import detect_generator_type
-    from suggestions import get_artifact_label
+    from conversation.suggestions import get_artifact_label
 
     if detected_gen is None:
         detected_gen = detect_generator_type(getattr(request, "message", "") or "")
-    from reply_copy import continue_generating_prompt
+    from conversation.reply_copy import continue_generating_prompt
     _artifact = get_artifact_label(detected_gen)
     _follow_up = "\n\n" + continue_generating_prompt(_artifact)
 
@@ -241,7 +241,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
 
     if wants_auto:
         from routing.generation_signals import detect_generator_type
-        from suggestions import get_post_spec_suggestions
+        from conversation.suggestions import get_post_spec_suggestions
 
         remaining_ops = pending.get('remaining_operations')
         session.set(PENDING_GUI_CHOICE, None)
@@ -612,7 +612,7 @@ def _resume_smart_gen_after_replace(session: Session) -> None:
     stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic"
 
     try:
-        from handlers.generation_handler import (
+        from codegen.generation_handler import (
             _build_smart_gen_confirmation,
             _clear_pending_smart_gen,
         )
@@ -707,9 +707,9 @@ def _resume_remaining_ops(
                     "Please try again.",
                 )
         elif op_type == 'generation':
-            from handlers.generation_handler import handle_generation_request
+            from codegen.generation_handler import handle_generation_request
             from orchestrator.request_builders import build_generation_request
-            from session_helpers import reply_payload
+            from conversation.session_helpers import reply_payload
 
             # Defensive net: a web-app plan's generation is normally STRIPPED at
             # the source (planning.execute_planned_operations), so a generation op

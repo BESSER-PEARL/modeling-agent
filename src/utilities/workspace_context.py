@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from baf.core.session import Session
 
 from protocol.types import AssistantRequest
-from session_keys import SESSION_ACTION_HISTORY
+from common.session_keys import SESSION_ACTION_HISTORY
 from .model_context import compact_model_summary, detailed_model_summary
 
 logger = logging.getLogger(__name__)

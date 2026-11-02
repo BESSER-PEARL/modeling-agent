@@ -23,7 +23,7 @@ for _name in ("protocol", "protocol.types"):
     if _mod is not None and not hasattr(sys.modules.get("protocol"), "__path__"):
         sys.modules.pop(_name, None)
 
-# handlers.generation_handler imports ``baf.core.session`` at module
+# codegen.generation_handler imports ``baf.core.session`` at module
 # level; stub it so the test runs without the BAF stack installed.
 if "baf" not in sys.modules:
     baf = types.ModuleType("baf")
@@ -40,7 +40,7 @@ if "baf" not in sys.modules:
     sys.modules["baf.core"] = baf_core
     sys.modules["baf.core.session"] = baf_session
 
-from handlers.generation_handler import _handle_frontend_event  # noqa: E402
+from codegen.generation_handler import _handle_frontend_event  # noqa: E402
 
 
 class _FakeRequest:
@@ -190,5 +190,5 @@ def test_memory_failure_never_breaks_the_reply(monkeypatch):
     assert result["action"] == "assistant_message"
     # The structured recency signal must survive a memory-stack failure —
     # it is set OUTSIDE the memory try/except precisely for this.
-    from session_keys import LAST_SMART_GEN_AT
+    from common.session_keys import LAST_SMART_GEN_AT
     assert session.get(LAST_SMART_GEN_AT) is not None

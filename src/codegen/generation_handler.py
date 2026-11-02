@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple  # noqa: F401
 
 from baf.core.session import Session
 
-from handlers.smart_generation_handler import (
+from codegen.smart_generation_handler import (
     build_trigger_smart_generator_payload,
 )
 from protocol.types import AssistantRequest
@@ -14,7 +14,7 @@ from utilities.original_request import (
     clear_original_request, current_target, original_request_for_project,
     remember_original_request,
 )
-from session_keys import (
+from common.session_keys import (
     CONFIG_PROMPT_ATTEMPTS,
     LAST_SMART_GEN_AT,
     LAST_SMART_GEN_PROJECT_ID,
@@ -31,7 +31,7 @@ from session_keys import (
     SMART_GEN_ARMED_PROJECT_ID,
     UNIFIED_CLASSIFICATION,
 )
-from reply_copy import OUT_OF_SCOPE_REDIRECT, SPEC_DRIVEN_NAME
+from conversation.reply_copy import OUT_OF_SCOPE_REDIRECT, SPEC_DRIVEN_NAME
 from routing.generation_signals import (
     GENERATOR_PREREQUISITES,
     _active_project_id,
@@ -39,8 +39,8 @@ from routing.generation_signals import (
     _smart_gen_project_has_app,
     detect_generator_type,
 )
-from session_helpers import reply_message, reply_payload
-from unified_classifier import (
+from conversation.session_helpers import reply_message, reply_payload
+from routing.unified_classifier import (
     UnifiedClassification,
     classify_message as _unified_classify_message,
 )
@@ -66,7 +66,7 @@ def _classification_to_legacy(cls_obj: UnifiedClassification):
     ``route == "modeling"`` branch, which picks the mode from the cached
     intent), everything else gets the 'other' clarify reply.
     """
-    from handlers.smart_generation_handler import GenerationClassification
+    from codegen.smart_generation_handler import GenerationClassification
     # generation_route is only MEANINGFUL on generation verdicts (the schema
     # says "REQUIRED when intent='generation_intent'") — but the LLM often
     # fills it as 'other' on non-generation intents too. Trusting that noise
@@ -948,7 +948,7 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
         return True
 
     if decision == "confirm":
-        from handlers.smart_generation_handler import GenerationClassification
+        from codegen.smart_generation_handler import GenerationClassification
         stashed_instructions = session.get(PENDING_SMART_GEN_INSTRUCTIONS) or ""
         stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic"
         stashed_ts = session.get(PENDING_SMART_GEN_TIMESTAMP)
@@ -1429,7 +1429,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         # place a trigger_smart_generator payload is emitted — every
         # other path stashes + asks first (the run spends the
         # user's own API key).
-        from handlers.smart_generation_handler import GenerationClassification
+        from codegen.smart_generation_handler import GenerationClassification
         stashed_instructions = session.get(PENDING_SMART_GEN_INSTRUCTIONS) or ""
         stashed_provider = session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic"
         stashed_ts = session.get(PENDING_SMART_GEN_TIMESTAMP)

@@ -278,7 +278,7 @@ def test_deployment_guardrail_drops_dependency_with_missing_target(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_deployment_suggestions_have_nonempty_prompts():
-    from suggestions import get_suggested_actions
+    from conversation.suggestions import get_suggested_actions
     actions = get_suggested_actions("DeploymentDiagram", "complete_system", [])
     for action in actions:
         assert action.get("prompt"), (

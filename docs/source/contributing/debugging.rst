@@ -65,7 +65,7 @@ Two decisions override the LLM verdict and cannot be changed by prompting:
 
 .. code-block:: python
 
-   from unified_classifier import _names_unsupported_stack
+   from routing.unified_classifier import _names_unsupported_stack
    from routing.generation_signals import detect_generator_type
 
    msg = "your test message here"

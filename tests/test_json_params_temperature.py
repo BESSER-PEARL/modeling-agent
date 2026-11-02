@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from model_config import reasoning_effort_for, supports_custom_temperature
+from llm.model_config import reasoning_effort_for, supports_custom_temperature
 
 
 @pytest.mark.parametrize("model", [
@@ -62,7 +62,7 @@ def test_a_standard_model_keeps_its_temperature():
 
 def test_agent_setup_uses_the_guard():
     """The real call site must not send temperature unconditionally."""
-    source = (Path(__file__).resolve().parents[1] / "src" / "agent_setup.py").read_text(
+    source = (Path(__file__).resolve().parents[1] / "src" / "app" / "agent_setup.py").read_text(
         encoding="utf-8"
     )
     assert "_json_params_for" in source, "the per-model params helper is gone"
@@ -91,7 +91,7 @@ def test_shared_llm_defaults_carry_no_temperature_for_reasoning_models(monkeypat
     classifier tier on gpt-6-luna those defaults carried temperature 0.2 / 0.4,
     so every one of those calls would 400.
     """
-    import agent_setup
+    from app import agent_setup
 
     monkeypatch.setattr(agent_setup, "LLMOpenAI", _RecordingLLM)
     monkeypatch.setattr(agent_setup, "MODEL_CLASSIFIER", classifier)
@@ -105,7 +105,7 @@ def test_shared_llm_defaults_carry_no_temperature_for_reasoning_models(monkeypat
 
 
 def test_shared_llm_defaults_keep_temperature_for_standard_models(monkeypatch):
-    import agent_setup
+    from app import agent_setup
 
     monkeypatch.setattr(agent_setup, "LLMOpenAI", _RecordingLLM)
     monkeypatch.setattr(agent_setup, "MODEL_CLASSIFIER", "gpt-4o")

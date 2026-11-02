@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
-import session_helpers as sh
+from conversation import session_helpers as sh
 from tests.conftest import FakeSession
 
 

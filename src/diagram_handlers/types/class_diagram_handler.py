@@ -31,8 +31,8 @@ from ..core.prompt_fragments import (
     REMOVE_ELEMENT_RULE,
     RENAME_CASCADES_RULE,
 )
-from errors import non_recoverable_cause
-from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
+from common.errors import non_recoverable_cause
+from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
 from schemas import SingleClassSpec, SystemClassSpec, ClassModificationResponse
 from schemas.class_diagram import RecoveredEnumerationsSpec
 from schemas.compact_class_diagram import (

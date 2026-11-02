@@ -112,7 +112,7 @@ def test_deploy_wording_would_trigger_the_deploy_generator():
 
 def test_classifier_modify_example_is_not_a_generator_request():
     from routing.generation_signals import detect_generator_type
-    from unified_classifier import _SYSTEM_PROMPT
+    from routing.unified_classifier import _SYSTEM_PROMPT
 
     example = "place a component on a cloud node"
     assert f"'{example}'" in _SYSTEM_PROMPT
@@ -122,7 +122,7 @@ def test_classifier_modify_example_is_not_a_generator_request():
 @pytest.mark.parametrize("diagram_type", ["ComponentDiagram", "DeploymentDiagram"])
 def test_suggestion_chips_are_not_generator_requests(diagram_type):
     from routing.generation_signals import detect_generator_type
-    from suggestions import get_suggested_actions
+    from conversation.suggestions import get_suggested_actions
 
     for action in get_suggested_actions(diagram_type, "complete_system", []):
         assert detect_generator_type(action["prompt"]) is None, action
@@ -130,7 +130,7 @@ def test_suggestion_chips_are_not_generator_requests(diagram_type):
 
 def test_classifier_prompt_does_not_map_architecture_words_to_component_diagram():
     """Layer 1 (the unified classifier) gets the same rule as layer 2."""
-    from unified_classifier import _SYSTEM_PROMPT
+    from routing.unified_classifier import _SYSTEM_PROMPT
 
     assert ("'model the system architecture of a library with classes Book and Author' is "
             "ClassDiagram") in _SYSTEM_PROMPT

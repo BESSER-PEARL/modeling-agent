@@ -4,7 +4,7 @@ follow-up modify lands in the CREATE state; the reconciliation honors the
 classifier so "add Death to the PetStatus enum" modifies instead of rebuilding.
 """
 
-from state_bodies import _reconcile_intent as _rec
+from app.state_bodies import _reconcile_intent as _rec
 
 
 def test_modify_stuck_in_create_is_reconciled():

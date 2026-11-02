@@ -100,7 +100,7 @@ Glossary
    State Body
       A Python function that executes when the BESSER state machine enters a
       particular state. Each state body (e.g., ``modify_modeling_body``) handles
-      a specific type of user request. Defined in ``src/state_bodies.py``.
+      a specific type of user request. Defined in ``src/app/state_bodies.py``.
 
    Structured Outputs
       An OpenAI API feature that constrains the LLM response to match a Pydantic
@@ -118,7 +118,7 @@ Glossary
       model accepts one).
 
    Unified Classifier
-      ``src/unified_classifier.py`` — the agent's router. One
+      ``src/routing/unified_classifier.py`` — the agent's router. One
       structured-output LLM call per message returns the state-level intent
       *and* every sub-routing field downstream code needs, cached on the BAF
       event id. It replaced both BAF's per-message LLM intent classification

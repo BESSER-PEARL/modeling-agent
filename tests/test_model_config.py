@@ -8,7 +8,7 @@ import importlib
 
 import pytest
 
-import model_config
+from llm import model_config
 
 _ALL_ENV_VARS = [
     "BESSER_AGENT_MODEL_CLASSIFIER",
@@ -70,7 +70,7 @@ def test_blank_env_value_falls_back_to_default(monkeypatch):
 def test_routed_models_have_cost_table_entries():
     """Every routed model must have a price entry â€” unknown models fall
     back to ``_DEFAULT_COST`` and silently skew cost reporting."""
-    from tracking.token_tracker import _vendor_cost_table
+    from llm.tracking.token_tracker import _vendor_cost_table
 
     for model in {
         model_config.MODEL_CLASSIFIER,
@@ -85,7 +85,7 @@ def test_routed_models_have_cost_table_entries():
 
 def test_supports_custom_temperature_families():
     """gpt-5* / o-series reject explicit temperature; older tiers accept it."""
-    from model_config import supports_custom_temperature
+    from llm.model_config import supports_custom_temperature
 
     assert supports_custom_temperature("gpt-4o")
     assert supports_custom_temperature("gpt-4o-mini")
@@ -101,7 +101,7 @@ def test_supports_custom_temperature_families():
 def test_reasoning_effort_only_for_reasoning_models(monkeypatch):
     """reasoning_effort is sent for gpt-5*/o-series only — gpt-4o & friends
     reject the parameter with a 400."""
-    from model_config import reasoning_effort_for
+    from llm.model_config import reasoning_effort_for
 
     assert reasoning_effort_for("gpt-4o") is None
     assert reasoning_effort_for("gpt-4o-mini") is None

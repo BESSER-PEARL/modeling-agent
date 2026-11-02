@@ -16,9 +16,9 @@ from types import SimpleNamespace
 import pytest
 from anthropic.resources.messages import Messages as _SdkMessages
 
-import byok
-import model_config
-from model_config import anthropic_effort, reasoning_effort_for, supports_custom_temperature
+from llm import byok
+from llm import model_config
+from llm.model_config import anthropic_effort, reasoning_effort_for, supports_custom_temperature
 
 
 @pytest.mark.parametrize("model", [
@@ -94,7 +94,7 @@ def test_an_older_claude_key_sends_no_sampling_params(model):
 def test_the_classifier_sizes_its_budget_for_the_users_model(monkeypatch):
     """A user key sends the classifier call to the user's model; an 800-token
     budget sized for the server's gpt-4o would starve Sonnet 5's thinking."""
-    import unified_classifier
+    from routing import unified_classifier
     from protocol.types import AssistantRequest, WorkspaceContext
 
     seen = {}

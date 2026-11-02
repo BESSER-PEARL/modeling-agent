@@ -21,17 +21,17 @@ from abc import ABC, abstractmethod
 from openai import LengthFinishReasonError
 from pydantic import BaseModel
 
-import byok
-from agent_config import LLM_MAX_TOKENS_SMALL, LLM_MAX_TOKENS_LARGE, LLM_TEMPERATURE
-from byok_config import get_current
-from model_config import (
+from llm import byok
+from common.agent_config import LLM_MAX_TOKENS_SMALL, LLM_MAX_TOKENS_LARGE, LLM_TEMPERATURE
+from llm.byok_config import get_current
+from llm.model_config import (
     MODEL_CLASSIFIER,
     MODEL_GENERATION_SMALL,
     reasoning_effort_for,
     supports_custom_temperature,
 )
 from .layout_engine import apply_layout
-from errors import (
+from common.errors import (
     ErrorCode, LLMPredictionError, ModelRefusal, build_error_response, classify_error,
     non_recoverable_cause, raise_if_openai_refusal, _RECOVERY_HINTS,
 )
@@ -54,7 +54,7 @@ def _track_usage(usage: Any, model: str) -> None:
     if usage is None:
         return
     try:
-        from tracking import get_tracker
+        from llm.tracking import get_tracker
         get_tracker().record_from_usage(usage, model=model)
     except Exception as exc:
         logger.debug(f"Token tracking failed (best-effort): {exc}")
@@ -742,7 +742,7 @@ class BaseDiagramHandler(ABC):
             raise LLMPredictionError("This LLM client cannot send images")
         response = self.llm.predict(prompt)
         try:
-            from tracking import get_tracker
+            from llm.tracking import get_tracker
             get_tracker().record(
                 prompt_tokens=len(prompt) // 4,
                 completion_tokens=len(response) // 4 if response else 0,
@@ -943,7 +943,7 @@ class BaseDiagramHandler(ABC):
             )
 
         # --- Structured parse with retry ---
-        from tracking import get_tracker
+        from llm.tracking import get_tracker
         tracker = get_tracker()
 
         messages = []

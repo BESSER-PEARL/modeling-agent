@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from llm.provider import LLMProvider
-from model_config import MODEL_CLASSIFIER
+from llm.model_config import MODEL_CLASSIFIER
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ class TestConstructor:
     def test_default_model_name(self):
         # The provider default follows the routing table's classifier tier
         # (env-overridable) instead of a hard-coded literal.
-        from model_config import MODEL_CLASSIFIER
+        from llm.model_config import MODEL_CLASSIFIER
         mock_llm = _make_mock_llm()
         provider = LLMProvider(mock_llm)
         assert provider.model_name == MODEL_CLASSIFIER

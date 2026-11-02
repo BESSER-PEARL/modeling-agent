@@ -42,7 +42,7 @@ _DRIVER = textwrap.dedent(
 
     sys.meta_path.insert(0, _BafStub())
 
-    import confirmation
+    from app import confirmation
     import utilities.model_resolution as mr
 
     MODEL = {model!r}

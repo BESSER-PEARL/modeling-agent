@@ -5,17 +5,17 @@ from types import SimpleNamespace
 import pytest
 
 from protocol.types import AssistantRequest, WorkspaceContext
-from session_keys import (
+from common.session_keys import (
     UNIFIED_CLASSIFICATION,
     UNIFIED_CLASSIFICATION_EVENT_ID,
 )
-from unified_classifier import (
+from routing.unified_classifier import (
     _SYSTEM_PROMPT,
     UnifiedClassification,
     classify_message,
     get_or_classify,
 )
-from session_helpers import json_intent_matches, json_no_intent_matched
+from conversation.session_helpers import json_intent_matches, json_no_intent_matched
 
 from tests.conftest import FakeSession
 

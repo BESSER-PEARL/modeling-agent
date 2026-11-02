@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel
 
-import byok
+from llm import byok
 from diagram_handlers.core.base_handler import LLMPredictionError
 from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 
@@ -280,7 +280,7 @@ def _event(*, content=None, refusal=None, finish_reason=None):
     [_event(finish_reason="content_filter")],
 ], ids=["delta-refusal", "content-filter"])
 def test_streamed_refusal_tells_the_user_the_model_declined(events):
-    from session_helpers import stream_llm_response
+    from conversation.session_helpers import stream_llm_response
     from tests.conftest import FakeSession
 
     llm = SimpleNamespace(client=_stream_client(events), name="gpt-4o-mini")
@@ -291,7 +291,7 @@ def test_streamed_refusal_tells_the_user_the_model_declined(events):
 
 
 def test_streamed_normal_reply_is_unchanged():
-    from session_helpers import stream_llm_response
+    from conversation.session_helpers import stream_llm_response
     from tests.conftest import FakeSession
 
     events = [_event(content="Your model has "), _event(content="3 classes."), _event(finish_reason="stop")]
@@ -305,7 +305,7 @@ def test_streamed_normal_reply_is_unchanged():
 # ---------------------------------------------------------------------------
 
 def test_sdk_retry_wrapper_does_not_retry_a_refusal():
-    from errors import ModelRefusal
+    from common.errors import ModelRefusal
     from utilities.llm_retry import with_retry
 
     calls = []
@@ -320,13 +320,13 @@ def test_sdk_retry_wrapper_does_not_retry_a_refusal():
 
 
 def test_classify_error_maps_a_refusal_to_its_own_code():
-    from errors import ErrorCode, ModelRefusal, classify_error
+    from common.errors import ErrorCode, ModelRefusal, classify_error
 
     assert classify_error(ModelRefusal("openai", "content_filter")) is ErrorCode.MODEL_REFUSAL
 
 
 def test_user_message_text():
-    from errors import ModelRefusal
+    from common.errors import ModelRefusal
 
     assert ModelRefusal("anthropic", "cyber").user_message() == CYBER_MESSAGE
     assert ModelRefusal("anthropic", "reasoning_extraction").user_message().startswith(
@@ -340,7 +340,7 @@ def test_user_message_text():
 
 def test_vision_refusal_is_not_retried(monkeypatch):
     import requests as http_requests
-    from handlers.file_conversion_handler import convert_file_to_class_spec
+    from ingestion.file_conversion_handler import convert_file_to_class_spec
 
     posts = []
 
@@ -370,8 +370,8 @@ def test_vision_refusal_is_not_retried(monkeypatch):
 def test_file_text_refusal_reaches_the_user():
     import base64
 
-    from errors import ModelRefusal
-    from handlers.file_conversion_handler import convert_file_to_class_spec
+    from common.errors import ModelRefusal
+    from ingestion.file_conversion_handler import convert_file_to_class_spec
 
     def declined(_prompt):
         raise ModelRefusal("anthropic", "cyber")

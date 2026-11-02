@@ -13,19 +13,19 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import BaseModel
 
-import execution.file_handling as fh
+import ingestion.file_handling as fh
 import execution.model_operations as modeling
-from byok import BYOKClient
+from llm.byok import BYOKClient
 from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 from diagram_handlers.types.gui_nocode_diagram_handler import GUINoCodeDiagramHandler
-from handlers.file_conversion_handler import (
+from ingestion.file_conversion_handler import (
     GUI_MOCKUP_ACTION,
     _build_image_prompt,
     _parse_llm_response,
 )
 from protocol.types import AssistantRequest, FileAttachment, WorkspaceContext
 from schemas import AuthoredSystemGUISpec
-from session_keys import PENDING_GUI_CHOICE
+from common.session_keys import PENDING_GUI_CHOICE
 from tests.conftest import MINIMAL_CLASS_MODEL, FakeSession
 from utilities.image_inputs import anthropic_content, content_text, openai_content
 

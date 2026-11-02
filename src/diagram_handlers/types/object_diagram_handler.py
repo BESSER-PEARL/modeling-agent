@@ -20,7 +20,7 @@ from ..core.prompt_fragments import (
     POSITION_DISCLAIMER,
     REMOVE_ELEMENT_RULE,
 )
-from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
+from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
 from schemas import SingleObjectSpec, SystemObjectSpec, ObjectModificationResponse
 from utilities.model_context import detailed_model_summary
 

@@ -17,9 +17,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import byok
-import model_config
-from model_config import reasoning_effort_for, supports_custom_temperature
+from llm import byok
+from llm import model_config
+from llm.model_config import reasoning_effort_for, supports_custom_temperature
 
 GPT6 = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]
 CLAUDE_NO_SAMPLING = [
@@ -69,7 +69,7 @@ def test_an_openai_key_on_gpt6_sends_only_params_gpt6_accepts(model, monkeypatch
 
 @pytest.mark.parametrize("model", GPT6)
 def test_gpt6_vision_uses_max_completion_tokens(model, monkeypatch):
-    from handlers import file_conversion_handler
+    from ingestion import file_conversion_handler
 
     monkeypatch.setattr(file_conversion_handler, "MODEL_VISION", model)
     params = file_conversion_handler._vision_sampling_params()
@@ -78,7 +78,7 @@ def test_gpt6_vision_uses_max_completion_tokens(model, monkeypatch):
 
 
 def test_gpt6_luna_streaming_uses_configured_low_effort(monkeypatch):
-    import session_helpers
+    from conversation import session_helpers
 
     monkeypatch.setattr(model_config, "MODEL_REASONING_EFFORT", "low")
     monkeypatch.setattr(session_helpers, "reply_stream_chunk", lambda *_: None)

@@ -17,18 +17,18 @@ from baf.core.agent import Agent
 from baf import nlp
 from baf.exceptions.logger import logger
 
-import agent_context as ctx
-from agent_setup import (
+from conversation import agent_context as ctx
+from app.agent_setup import (
     init_llm,
     init_stt,
     init_rag,
     init_diagram_factory,
     init_intent_classifier_config,
 )
-from agent_config import GRACE_PERIOD_SECONDS
-from model_catalog import load_model_catalog
+from common.agent_config import GRACE_PERIOD_SECONDS
+from llm.model_catalog import load_model_catalog
 from routing.intents import GENERATION_INTENT_NAME
-from state_bodies import register_all
+from app.state_bodies import register_all
 from memory.conversation_memory import cleanup_stale_memories
 
 # ── Logging ──────────────────────────────────────────────────────────────

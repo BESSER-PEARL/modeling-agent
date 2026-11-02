@@ -13,7 +13,7 @@ from ..core.prompt_fragments import (
     MULTI_MOD_ARRAY_RULE,
     POSITION_DISCLAIMER,
 )
-from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
+from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
 from schemas import AgentSingleElementSpec, SystemAgentSpec, AgentModificationResponse, reply_type_help
 from utilities.model_context import agent_model_elements, detailed_model_summary
 

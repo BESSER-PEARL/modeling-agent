@@ -17,14 +17,14 @@ from typing import Any, Dict, Optional
 from baf.core.session import Session
 
 from protocol.adapters import parse_assistant_request
-from agent_config import (
+from common.agent_config import (
     STREAM_BUFFER_THRESHOLD,
     LLM_TEXT_TEMPERATURE,
     LLM_MAX_TOKENS_TEXT,
 )
-from model_config import MODEL_CLASSIFIER
+from llm.model_config import MODEL_CLASSIFIER
 from memory import get_memory, memory_session_key
-from session_keys import (
+from common.session_keys import (
     LAST_SUGGESTED_PROMPTS,
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
@@ -33,9 +33,9 @@ from session_keys import (
     TELEMETRY_EMITTED_EVENT_ID,
     UNIFIED_CLASSIFICATION,
 )
-from reply_language import language_instruction, localize_payload, translate_text
-from telemetry import emit_prompt_event
-from unified_classifier import _pending_flow_context
+from conversation.reply_language import language_instruction, localize_payload, translate_text
+from conversation.telemetry import emit_prompt_event
+from routing.unified_classifier import _pending_flow_context
 
 logger = logging.getLogger(__name__)
 
@@ -379,8 +379,8 @@ def emit_webapp_generate_prompt(session: Session) -> None:
     user to review or generate — instead of auto-running code generation. Single
     source of truth for the prompt (called from every path where a web-app GUI
     completes)."""
-    from suggestions import get_post_spec_suggestions
-    from reply_copy import continue_generating_prompt
+    from conversation.suggestions import get_post_spec_suggestions
+    from conversation.reply_copy import continue_generating_prompt
     reply_payload(session, {
         "action": "assistant_message",
         "message": (
@@ -499,7 +499,7 @@ def stream_llm_response(
         # streaming chunk shape, so BYOK replies are fetched whole and sent
         # as a single chunk through the same stream protocol. SDK
         # auth/rate-limit errors propagate to the handler below.
-        from byok import get_active_client
+        from llm.byok import get_active_client
         byok_client = get_active_client()
         if byok_client is not None:
             # No system/user split in the free-text BYOK shape; fold the
@@ -530,7 +530,7 @@ def stream_llm_response(
     except Exception as e:
         logger.error(f"❌ [Streaming] Error: {e}")
         if not full_text:
-            from errors import ModelRefusal, classify_error, get_recovery_hint
+            from common.errors import ModelRefusal, classify_error, get_recovery_hint
             if isinstance(e, ModelRefusal):
                 full_text = e.user_message()
             else:
@@ -558,7 +558,7 @@ def _stream_openai(
     instant visual feedback instead of waiting for the full response.
     Tracks token usage via stream_options.
     """
-    from tracking import get_tracker
+    from llm.tracking import get_tracker
 
     messages = []
     if system_prompt:
@@ -577,7 +577,7 @@ def _stream_openai(
     # structural issues" on EVERY describe-my-model call (the streaming
     # error handler's canned text). Only pass temperature to models that
     # accept a custom one.
-    from model_config import reasoning_effort_for, supports_custom_temperature
+    from llm.model_config import reasoning_effort_for, supports_custom_temperature
     stream_kwargs: dict = {
         "model": model,
         "messages": messages,
@@ -635,7 +635,7 @@ def _stream_openai(
         tracker.record_from_usage(usage, model=model)
 
     if not full_text:
-        from errors import raise_if_openai_refusal
+        from common.errors import raise_if_openai_refusal
         raise_if_openai_refusal({"message": {"refusal": refusal}, "finish_reason": finish_reason})
 
     return full_text
