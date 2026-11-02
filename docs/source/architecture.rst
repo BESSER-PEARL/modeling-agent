@@ -467,7 +467,7 @@ Design Patterns
 execution. Downstream code works only with typed Python objects.
 
 **Handler Extensibility:** Adding a new diagram type requires implementing the
-5 abstract methods of ``BaseDiagramHandler`` and registering the class in
+6 abstract methods of ``BaseDiagramHandler`` and registering the class in
 ``HANDLER_CLASSES``. Layout, retry, structured output, and two-pass generation
 are inherited. See :doc:`diagram_handlers` for the full checklist.
 

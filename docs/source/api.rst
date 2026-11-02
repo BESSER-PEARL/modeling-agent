@@ -249,14 +249,14 @@ Diagram Handlers
 ``src/diagram_handlers/core/base_handler.py``
   Abstract base handler with shared infrastructure:
 
-  - ``BaseDiagramHandler`` (abstract class; 5 abstract methods)
+  - ``BaseDiagramHandler`` (abstract class; 6 abstract methods)
   - ``predict_with_retry(prompt, max_retries=1, *, model=None, ...)``
   - ``predict_structured(prompt, response_schema, *, system_prompt, temperature, model)``
   - ``predict_two_pass_structured(user_request, system_prompt, reasoning_prompt, response_schema, ...)``
   - ``predict_two_pass(...)``
   - ``generate_complete_system`` / ``generate_single_element`` /
-    ``generate_modification`` — template methods over the ``_build_system`` /
-    ``_build_single_element`` / ``_build_modification`` hooks
+    ``generate_modification`` — template methods over the ``_prepare_*`` and
+    ``_build_system`` / ``_build_single_element`` / ``_build_modification`` hooks
   - ``self_correct(...)`` / ``parse_validate_or_correct(...)``
   - ``repair_json_response(malformed_json, schema_hint)`` /
     ``parse_and_validate_with_repair(...)``

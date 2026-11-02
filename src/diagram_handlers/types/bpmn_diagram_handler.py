@@ -18,7 +18,7 @@ flow type.
 
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.base_handler import BaseDiagramHandler
 from prompts import bpmn as bpmn_prompts
@@ -89,68 +89,47 @@ class BPMNDiagramHandler(BaseDiagramHandler):
             )
         return False
 
-    def _build_system(
+    def _prepare_system(
         self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs,
-    ) -> Dict[str, Any]:
-        agent_diagram_refs = kwargs.get("agent_diagram_refs") or {}
-
+    ) -> Tuple[bool, str, str, str]:
+        """``(agentic, system_prompt, request_prompt, reasoning_prompt)``."""
         # Detect on the user's own words: the enriched request also carries
         # conversation history and workspace context.
         if self._is_agentic_bpmn_request(kwargs.get("raw_request") or user_request, existing_model):
-            return self._build_agentic_system(user_request, agent_diagram_refs)
+            # The base rules plus the agentic ones; same repair pass after.
+            system_prompt = f"{self.get_system_prompt()}\n\n{bpmn_prompts.AGENTIC_DESIGN_RULES}"
+            refs_block = format_agent_diagram_refs(kwargs.get("agent_diagram_refs") or {})
+            reasoning_prompt = bpmn_prompts.agentic_reasoning_prompt(user_request)
+            return True, system_prompt, f"{user_request}\n\n{refs_block}", reasoning_prompt
+        return False, self.get_system_prompt(), user_request, bpmn_prompts.reasoning_prompt(user_request)
 
-        system_prompt = self.get_system_prompt()
-
-        reasoning_prompt = bpmn_prompts.reasoning_prompt(user_request)
-
+    def _build_system(
+        self, user_request: str, existing_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        agentic, system_prompt, request_prompt, reasoning_prompt = prepared
         parsed = self.predict_two_pass_structured(
-            user_request=user_request,
+            user_request=request_prompt,
             system_prompt=system_prompt,
             reasoning_prompt=reasoning_prompt,
             response_schema=SystemBPMNSpec,
         )
         system_spec = parsed.model_dump()
         system_spec = self._validate_and_refine(system_spec)
-        self._sanitize_agentic_refs(system_spec, agent_diagram_refs)
+        self._sanitize_agentic_refs(system_spec, kwargs.get("agent_diagram_refs") or {})
 
         return inject_complete_system(
             system_spec,
             self.get_diagram_type(),
-            self._build_system_message(system_spec),
+            self._build_agentic_message(system_spec) if agentic else self._build_system_message(system_spec),
         )
 
-    def _system_failure_reply(self, exc, user_request, existing_model, **kwargs) -> Dict[str, Any]:
-        if self._is_agentic_bpmn_request(kwargs.get("raw_request") or user_request, existing_model):
+    def _system_failure_reply(self, exc, user_request, existing_model, *, prepared=None, **kwargs) -> Dict[str, Any]:
+        if prepared[0]:
             return self._error_response(
                 "I couldn't generate that agentic process. Please try again or rephrase your request.",
                 code=self._LLM_FAILURE_CODE,
             )
-        return super()._system_failure_reply(exc, user_request, existing_model, **kwargs)
-
-    def _build_agentic_system(
-        self, user_request: str, agent_diagram_refs: Dict[str, str],
-    ) -> Dict[str, Any]:
-        """Generate an Agentic BPMN process: the base rules plus the agentic ones,
-        followed by the same deterministic repair pass as the base path."""
-        system_prompt = f"{self.get_system_prompt()}\n\n{bpmn_prompts.AGENTIC_DESIGN_RULES}"
-        refs_block = format_agent_diagram_refs(agent_diagram_refs)
-
-        reasoning_prompt = bpmn_prompts.agentic_reasoning_prompt(user_request)
-
-        parsed = self.predict_two_pass_structured(
-            user_request=f"{user_request}\n\n{refs_block}",
-            system_prompt=system_prompt,
-            reasoning_prompt=reasoning_prompt,
-            response_schema=SystemBPMNSpec,
-        )
-        system_spec = parsed.model_dump()
-        system_spec = self._validate_and_refine(system_spec)
-        self._sanitize_agentic_refs(system_spec, agent_diagram_refs)
-        return inject_complete_system(
-            system_spec,
-            self.get_diagram_type(),
-            self._build_agentic_message(system_spec),
-        )
+        return super()._system_failure_reply(exc, user_request, existing_model, prepared=prepared, **kwargs)
 
     @staticmethod
     def _sanitize_agentic_refs(spec: Dict[str, Any], agent_diagram_refs: Dict[str, str]) -> None:
@@ -475,9 +454,10 @@ class BPMNDiagramHandler(BaseDiagramHandler):
     # Modification
     # ------------------------------------------------------------------
 
-    def _build_modification(
+    def _prepare_modification(
         self, user_request: str, current_model: Dict[str, Any] = None, **kwargs,
-    ) -> Dict[str, Any]:
+    ) -> Tuple[str, str, Dict[str, Any]]:
+        """``(system_prompt, user_prompt, elements)``."""
         agentic = self._is_agentic_bpmn_request(kwargs.get("raw_request") or user_request, current_model)
         system_prompt = bpmn_prompts.MODIFY_SYSTEM_PROMPT_AGENTIC_BPMN if agentic else bpmn_prompts.MODIFY_SYSTEM_PROMPT_BPMN
         agent_diagram_refs = kwargs.get("agent_diagram_refs") or {}
@@ -500,7 +480,13 @@ class BPMNDiagramHandler(BaseDiagramHandler):
         if agentic:
             context_block += f"\n\n{format_agent_diagram_refs(agent_diagram_refs)}"
 
-        user_prompt = f"Modify the BPMN process: {user_request}{context_block}"
+        return system_prompt, f"Modify the BPMN process: {user_request}{context_block}", elements
+
+    def _build_modification(
+        self, user_request: str, current_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        system_prompt, user_prompt, elements = prepared
+        agent_diagram_refs = kwargs.get("agent_diagram_refs") or {}
 
         def _normalize_bpmn_mods(mod_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             """Normalize common malformed BPMN batches from the LLM.
@@ -665,12 +651,22 @@ class BPMNDiagramHandler(BaseDiagramHandler):
     # Single element + fallbacks (required by BaseDiagramHandler)
     # ------------------------------------------------------------------
 
-    def _build_single_element(
+    # v1 has no append-one-node BPMN path on the WME side: a single-element
+    # request becomes a one-task starter process (no LLM call).
+    def _prepare_single_element(
         self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs,
+    ) -> str:
+        return self.extract_name_from_request(user_request, "Task")
+
+    def _build_single_element(
+        self, user_request: str, existing_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
     ) -> Dict[str, Any]:
-        """v1 has no append-one-node BPMN path on the WME side — funnel single-
-        element requests into a one-task starter process so the contract holds."""
-        name = self.extract_name_from_request(user_request, "Task")
+        return self._starter_process(prepared)
+
+    def generate_fallback_element(self, request: str) -> Dict[str, Any]:
+        return self._starter_process(self.extract_name_from_request(request, "Task"))
+
+    def _starter_process(self, name: str) -> Dict[str, Any]:
         return inject_complete_system(
             {
                 "systemName": name,
@@ -687,9 +683,6 @@ class BPMNDiagramHandler(BaseDiagramHandler):
             self.get_diagram_type(),
             f"I created a starter process with a **{name}** task. Describe the full flow and I'll build it out!",
         )
-
-    def generate_fallback_element(self, request: str) -> Dict[str, Any]:
-        return self.generate_single_element(request)
 
     def generate_fallback_system(self) -> Dict[str, Any]:
         fallback = {

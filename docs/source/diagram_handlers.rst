@@ -58,48 +58,62 @@ Abstract Methods (must override)
      - Return the diagram type string (e.g., ``"ClassDiagram"``)
    * - ``get_system_prompt() -> str``
      - Return the LLM system prompt for this handler
-   * - ``_build_single_element(request, model, **kw) -> dict``
-     - Prompt, LLM call, repair, layout and reply envelope for one element
-   * - ``_build_system(request, model, **kw) -> dict``
+   * - ``_build_single_element(request, model, *, prepared, **kw) -> dict``
+     - LLM call, repair, layout and reply envelope for one element
+   * - ``_build_system(request, model, *, prepared, **kw) -> dict``
      - The same for a complete diagram
    * - ``generate_fallback_element(request) -> dict``
-     - Return a minimal valid element when all else fails
+     - Starter element when single-element generation crashes; must not call
+       ``generate_single_element``
+   * - ``generate_fallback_system() -> dict``
+     - Starter diagram when complete-system generation crashes
 
 Template Methods
 ~~~~~~~~~~~~~~~~
 
-The public entry points are template methods on the base class: they log the
-call, run the handler's ``_build_*`` hook, and turn its failures into replies,
-so a handler only writes the part that differs.
+The public entry points are template methods on the base class. Each runs
+the handler's ``_prepare_*`` hook (everything before the LLM call: prompts,
+model normalisation) and then its ``_build_*`` hook (LLM call, repair,
+layout, reply), and turns the failures of ``_build_*`` into replies, so a
+handler only writes the part that differs. An exception raised by
+``_prepare_*`` is not caught: it propagates to ``model_operations``, whose
+error reply answers it. ``_prepare_*`` returns what ``_build_*`` needs, which
+every later hook receives as ``prepared``, or a ``ReplyNow(reply)`` to answer
+without an LLM call (the agent multi-agent guard, the class
+duplicate-association-end repair, the GUI deterministic edit). Every hook takes
+the entry point's arguments.
 
 .. list-table::
    :header-rows: 1
    :widths: 30 20 50
 
    * - Entry point
-     - Hook
+     - Hooks
      - Failure replies (overridable)
    * - ``generate_complete_system(request, model, **kw)``
-     - ``_build_system``
+     - ``_prepare_system``, ``_build_system``
      - LLM failure: ``_system_failure_reply`` (``_SYSTEM_FAILURE_MESSAGE``,
        ``_LLM_FAILURE_CODE``); other exception: ``_system_crash_reply``
        (``generate_fallback_system()``)
    * - ``generate_single_element(request, model, **kw)``
-     - ``_build_single_element``
-     - LLM failure: ``_SINGLE_FAILURE_MESSAGE``; other exception:
-       ``_single_crash_reply`` (``generate_fallback_element(request)``)
+     - ``_prepare_single_element``, ``_build_single_element``
+     - LLM failure: ``_single_failure_reply`` (``_SINGLE_FAILURE_MESSAGE``,
+       ``_LLM_FAILURE_CODE``); other exception: ``_single_crash_reply``
+       (``generate_fallback_element(request)``)
    * - ``generate_modification(request, model, **kw)``
-     - ``_build_modification``
+     - ``_prepare_modification``, ``_build_modification``
      - LLM failure: ``_modification_failure_reply`` (``_MODIFY_FAILURE_MESSAGE``,
        ``_MODIFY_FAILURE_CODE``); other exception: ``_modification_crash_reply``
-       (``generate_fallback_modification(request)``)
+       (``generate_fallback_modification(request)``, which a handler needs
+       only while it keeps this default)
 
 An LLM failure is any ``LLMPredictionError``, model refusals included
 (``_error_response`` turns a refusal into the ``model_refusal`` reply). The
-Quantum Circuit and GUI handlers override ``generate_modification`` itself:
-every one of their replies, failures included, carries the model being edited.
-Reply envelopes are built with ``protocol.actions`` (see
-:doc:`websocket_protocol`).
+Quantum Circuit and GUI modification replies, failures included, carry the
+model being edited, which their reply hooks take from ``prepared``. Handlers
+are singletons shared by every session, so per-request values travel through
+``prepared`` and locals, never handler attributes. Reply envelopes are built
+with ``protocol.actions`` (see :doc:`websocket_protocol`).
 
 Shared Concrete Methods
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -748,10 +762,11 @@ discoverability.
    complete-system spec, modification actions) and export them from
    ``src/schemas/__init__.py``.
 2. **Handler** — add ``src/diagram_handlers/types/<type>_diagram_handler.py``
-   extending ``BaseDiagramHandler`` and implementing the 5 abstract methods:
+   extending ``BaseDiagramHandler`` and implementing the 6 abstract methods:
    ``get_diagram_type``, ``get_system_prompt``, ``_build_single_element``,
-   ``_build_system``, ``generate_fallback_element``, plus
-   ``generate_fallback_system``. Implement ``_build_modification`` and
+   ``_build_system``, ``generate_fallback_element`` and
+   ``generate_fallback_system``, with the ``_prepare_*`` hooks for the work
+   before the LLM call. Implement ``_build_modification`` and
    ``generate_fallback_modification`` for edits, and set the failure texts
    (``_SYSTEM_FAILURE_MESSAGE`` …, see `Template Methods`_). Build replies with
    ``protocol.actions``, never action string literals. Its prompt text goes in

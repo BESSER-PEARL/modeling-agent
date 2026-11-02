@@ -5,11 +5,12 @@ Handles generation of UML Class Diagrams
 
 import logging
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from ..core.base_handler import (
     BaseDiagramHandler,
     ModelRefusal,
+    ReplyNow,
     SINGLE_CLASS_REQUIRED,
     SINGLE_CLASS_OPTIONAL,
     SYSTEM_CLASS_REQUIRED,
@@ -91,11 +92,15 @@ class ClassDiagramHandler(BaseDiagramHandler):
     def get_system_prompt(self) -> str:
         return class_prompts.SYSTEM_PROMPT
 
-    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _prepare_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Tuple[str, str]:
+        return self.get_system_prompt(), f"Create a class specification for: {user_request}"
+
+    def _build_single_element(
+        self, user_request: str, existing_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
         """Generate a single class element with structured outputs and deterministic positioning."""
 
-        system_prompt = self.get_system_prompt()
-        user_prompt = f"Create a class specification for: {user_request}"
+        system_prompt, user_prompt = prepared
 
         # Single element → SMALL generation tier (latency-sensitive).
         parsed = self.predict_structured(
@@ -118,11 +123,16 @@ class ClassDiagramHandler(BaseDiagramHandler):
         """Return the system prompt for complete class diagram generation."""
         return class_prompts.SYSTEM_GENERATION_PROMPT
 
+    def _prepare_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> str:
+        return self._get_system_generation_prompt()
+
     def _build_system(
         self,
         user_request: str,
         existing_model: Dict[str, Any] = None,
         raw_request: Optional[str] = None,
+        *,
+        prepared=None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Generate a complete class diagram with two-pass structured outputs, domain patterns,
@@ -134,7 +144,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         full ``user_request`` when not provided.
         """
 
-        system_prompt = self._get_system_generation_prompt()
+        system_prompt = prepared
 
         # --- Two-pass structured: reason first, then produce validated Pydantic model ---
         # The reasoning prompt uses the raw request only; the enriched
@@ -311,7 +321,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             user_request, existing_model, raw_request=kwargs.get("raw_request"),
         )
 
-    def _single_crash_reply(self, exc: Exception, user_request: str) -> Dict[str, Any]:
+    def _single_crash_reply(self, exc, user_request, existing_model, **kwargs) -> Dict[str, Any]:
         return self._error_response(
             "I had trouble generating that class. Could you try rephrasing?",
             code="generation_error",
@@ -2878,8 +2888,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
             spec.pop("modification", None)
             spec["modifications"] = all_mods
 
-    def _build_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate modifications for existing class diagram elements.
+    def _prepare_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Any:
+        """``(dup_errors, system_prompt, user_prompt)``, or the deterministic repair as ``ReplyNow``.
 
         Enhanced with impact analysis: when renaming or removing a class,
         the LLM is informed of dependent relationships so it can cascade
@@ -2893,7 +2903,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # normal path and enforce uniqueness in a post-guard below.
         _dup_errors, _dup_pure = self._detect_duplicate_end_errors(user_request)
         if _dup_errors and _dup_pure:
-            return self._repair_duplicate_ends(current_model, _dup_errors)
+            return ReplyNow(self._repair_duplicate_ends(current_model, _dup_errors))
         # Build impact context for modifications that affect relationships
         impact_context = self._build_impact_context(current_model)
 
@@ -2913,6 +2923,13 @@ class ClassDiagramHandler(BaseDiagramHandler):
         user_prompt = f"Modify the class diagram: {user_request}{context_block}"
 
         logger.debug(f"[ClassDiagram] Modification context block length: {len(context_block)} chars")
+        return _dup_errors, system_prompt, user_prompt
+
+    def _build_modification(
+        self, user_request: str, current_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        """Generate modifications for existing class diagram elements."""
+        _dup_errors, system_prompt, user_prompt = prepared
 
         def _strip_spurious_relationship_mods(mod_list):
             """Strip modify_relationship entries that accompany a modify_class

@@ -3,11 +3,11 @@ Agent Diagram Handler
 Handles generation of UML Agent Diagrams (multi-agent conversational flows)
 """
 
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional, Set, Tuple
 import logging
 import re
 
-from ..core.base_handler import BaseDiagramHandler, ModelRefusal
+from ..core.base_handler import BaseDiagramHandler, ModelRefusal, ReplyNow
 from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
 from schemas import AgentSingleElementSpec, SystemAgentSpec, AgentModificationResponse
 from prompts import agent_diagram as agent_prompts
@@ -54,9 +54,13 @@ class _EmptyModificationError(Exception):
 
     Used internally to bail out of the modification path and return a
     non-mutating clarification instead of a (potentially destructive)
-    ``modify_model`` payload.
+    ``modify_model`` payload. ``skipped`` carries the validator's skip
+    records, which word that clarification.
     """
-    pass
+
+    def __init__(self, skipped: Optional[List[Dict[str, Any]]] = None):
+        super().__init__()
+        self.skipped = skipped or []
 
 
 class AgentDiagramHandler(BaseDiagramHandler):
@@ -71,11 +75,15 @@ class AgentDiagramHandler(BaseDiagramHandler):
     def get_system_prompt(self) -> str:
         return agent_prompts.SYSTEM_PROMPT
 
-    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _prepare_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Tuple[str, str]:
+        return self.get_system_prompt(), f"Create an agent diagram element specification for: {user_request}"
+
+    def _build_single_element(
+        self, user_request: str, existing_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
         """Generate a single agent diagram element with deterministic positioning."""
 
-        system_prompt = self.get_system_prompt()
-        user_prompt = f"Create an agent diagram element specification for: {user_request}"
+        system_prompt, user_prompt = prepared
 
         # Single element → SMALL generation tier (latency-sensitive).
         parsed = self.predict_structured(
@@ -94,9 +102,7 @@ class AgentDiagramHandler(BaseDiagramHandler):
 
         return inject_element(normalized_spec, self.get_diagram_type(), message)
 
-    def _build_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate a complete agent conversation flow with deterministic positioning."""
-
+    def _prepare_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Any:
         # Multi-agent guard: the editor models ONE agent per Agent diagram, so
         # a "multi-agent system" request must not be silently flattened. Detect
         # it on the RAW user message (not the context-enriched prompt, which
@@ -109,7 +115,7 @@ class AgentDiagramHandler(BaseDiagramHandler):
             r"|\bagents?\s+that\s+(?:delegate|coordinate|communicate|hand\s*off|talk)\b",
             _raw, _re.IGNORECASE,
         ):
-            return assistant_message(
+            return ReplyNow(assistant_message(
                 "BESSER's editor models **one agent per Agent diagram**, so I can't build "
                 "a true multi-agent system (agents delegating to each other) inside a single "
                 "diagram yet. I can either:\n\n"
@@ -118,11 +124,15 @@ class AgentDiagramHandler(BaseDiagramHandler):
                 "2. Create **separate Agent diagrams** (one per agent) in their own tabs.\n\n"
                 "Which would you prefer? (For real agent-to-agent orchestration you'd wire "
                 "them together in Python with the BESSER Agentic Framework.)",
-            )
+            ))
 
-        system_prompt = agent_prompts.COMPLETE_SYSTEM_PROMPT
+        return agent_prompts.COMPLETE_SYSTEM_PROMPT, f"{user_request}"
 
-        user_request_prompt = f"{user_request}"
+    def _build_system(
+        self, user_request: str, existing_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        """Generate a complete agent conversation flow with deterministic positioning."""
+        system_prompt, user_request_prompt = prepared
 
         # Complete-system generation → LARGE tier (see model_config).
         parsed = self.predict_structured(
@@ -959,7 +969,7 @@ class AgentDiagramHandler(BaseDiagramHandler):
             "message": message,
         }
 
-    def _build_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _prepare_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Any:
         """Generate modifications for existing agent diagram elements.
 
         Safety contract (never violate): a modify request must NEVER delete or
@@ -981,13 +991,13 @@ class AgentDiagramHandler(BaseDiagramHandler):
                 "(%r) — asking for clarification, diagram left unchanged.",
                 (raw_request or "")[:60],
             )
-            return self._clarify_response(
+            return ReplyNow(self._clarify_response(
                 "I'm not sure what change you'd like me to make to the agent diagram. "
                 f"\"{(raw_request or '').strip()[:60]}\" doesn't map to a specific edit, so "
                 "I left the diagram unchanged. Try something like *'Add an intent called "
                 "Greeting'*, *'Rename the welcome state to start'*, or *'Add a transition "
                 "from greeting to support'*."
-            )
+            ))
 
         system_prompt = agent_prompts.MODIFY_SYSTEM_PROMPT_AGENT
 
@@ -998,33 +1008,36 @@ class AgentDiagramHandler(BaseDiagramHandler):
             if summary and 'no model data' not in summary and 'no structured model' not in summary:
                 context_block = '\n\n' + summary
 
-        user_prompt = f"Modify the agent diagram: {user_request}{context_block}"
+        return system_prompt, f"Modify the agent diagram: {user_request}{context_block}"
+
+    def _build_modification(
+        self, user_request: str, current_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        system_prompt, user_prompt = prepared
+        # Per-request results of the post-processor, kept local: handlers
+        # are singletons shared by every session.
+        orphans: List[str] = []
 
         # Validate every LLM-proposed modification against the *real* model
         # before it is wrapped into the outgoing payload. This is what turns a
         # hallucinated / destructive batch into a safe, no-op clarification.
         def _post_processor(mod_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             result = self._validate_modifications(mod_list, current_model or {})
-            # Stash skip metadata so the success path can build an honest
-            # message ("X already exists", "couldn't find Y", …).
-            self._last_skipped = result["skipped"]
             kept = result["kept"]
             if not kept:
                 # Nothing safe to apply. Abort here so the executor never sends
                 # an empty / destructive modify_model payload — the diagram is
-                # left exactly as-is.
-                raise _EmptyModificationError()
+                # left exactly as-is. The skip records word an honest reply
+                # ("X already exists", "couldn't find Y", …).
+                raise _EmptyModificationError(result["skipped"])
             # Backstop: flag any just-added state that no kept transition wires
             # into the flow. Covers both the "LLM never emitted a connecting
             # transition" case and anything the pending-name pass couldn't rescue. We don't
             # invent an edge — we tell the user honestly (message appended below).
-            self._last_orphan_states = self._find_orphan_added_states(kept)
+            orphans.extend(self._find_orphan_added_states(kept))
             # Guarantee every replyType="code" reply is a proper function block
             # before it is applied.
             return self._fix_code_replies_in_modifications(kept)
-
-        self._last_skipped = []
-        self._last_orphan_states = []
 
         spec = self._execute_modification(
             user_prompt, system_prompt, AgentModificationResponse,
@@ -1032,13 +1045,12 @@ class AgentDiagramHandler(BaseDiagramHandler):
         )
         # Surface orphaned new states so a modify never silently leaves a
         # disconnected node with a misleading "Applied N changes" message.
-        orphans = getattr(self, "_last_orphan_states", []) or []
         if orphans and isinstance(spec, dict) and spec.get("action") == Action.MODIFY_MODEL:
             existing = spec.get("message") or ""
             spec["message"] = (existing + self._orphan_states_note(orphans)).strip()
         return spec
 
-    def _modification_failure_reply(self, exc: Exception, user_request: str) -> Dict[str, Any]:
+    def _modification_failure_reply(self, exc, user_request, current_model, **kwargs) -> Dict[str, Any]:
         if isinstance(exc, ModelRefusal):
             return self._error_response(exc.user_message(), code="model_refusal", retryable=False)
         return self._clarify_response(
@@ -1047,16 +1059,15 @@ class AgentDiagramHandler(BaseDiagramHandler):
             "*'Add a transition from greeting to support'*. Your diagram is unchanged."
         )
 
-    def _modification_crash_reply(self, exc: Exception, user_request: str) -> Dict[str, Any]:
+    def _modification_crash_reply(self, exc, user_request, current_model, **kwargs) -> Dict[str, Any]:
         if isinstance(exc, _EmptyModificationError):
             # No safe, applicable change survived validation: leave the
             # diagram untouched and ask the user to clarify.
-            return self._clarify_response(self._build_clarification_message(user_request))
+            return self._clarify_response(self._build_clarification_message(exc.skipped))
         return self.generate_fallback_modification(user_request)
 
-    def _build_clarification_message(self, user_request: str) -> str:
-        """Build an honest clarification message from the last skip metadata."""
-        skipped = getattr(self, "_last_skipped", []) or []
+    def _build_clarification_message(self, skipped: List[Dict[str, Any]]) -> str:
+        """Build an honest clarification message from the validator's skip records."""
         reasons = {s.get("reason") for s in skipped if isinstance(s, dict)}
 
         if "exists" in reasons:

@@ -14,7 +14,7 @@ import random
 import sys
 import time
 import uuid
-from typing import Callable, Dict, Any, List, Optional, Sequence, Tuple, Type
+from typing import Callable, Dict, Any, List, NamedTuple, Optional, Sequence, Tuple, Type
 from abc import ABC, abstractmethod
 
 from pydantic import BaseModel
@@ -117,6 +117,12 @@ MODIFICATION_INNER_REQUIRED = {"action": str, "target": dict}
 _ERROR_RECOVERY = _RECOVERY_HINTS
 
 
+class ReplyNow(NamedTuple):
+    """Returned by a ``_prepare_*`` hook to answer with ``reply`` and skip the LLM."""
+
+    reply: Dict[str, Any]
+
+
 class BaseDiagramHandler(ABC):
     """Base class for all diagram type handlers"""
 
@@ -141,12 +147,21 @@ class BaseDiagramHandler(ABC):
 
     @abstractmethod
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
-        """Generate a fallback element when AI generation fails"""
-        pass
+        """Starter element returned when single-element generation crashes.
+
+        It must not call ``generate_single_element``: this is that entry
+        point's crash reply.
+        """
 
     # ------------------------------------------------------------------
-    # Generation template: the public entry points own the failure
-    # handling; subclasses implement ``_build_*`` and set the reply texts.
+    # Generation template. Each public entry point runs the handler's
+    # ``_prepare_*`` hook (everything before the LLM call: prompts, model
+    # normalisation), then its ``_build_*`` hook (LLM call, repair, layout,
+    # reply) inside the failure handling. An exception from ``_prepare_*``
+    # propagates to the caller, whose error reply answers it; from
+    # ``_build_*``, an ``LLMPredictionError`` (refusals included) becomes the
+    # ``_*_failure_reply`` and any other exception the ``_*_crash_reply``.
+    # The hooks after ``_prepare_*`` get its result as ``prepared``.
     # ------------------------------------------------------------------
 
     #: Reply when the LLM call of ``generate_complete_system`` fails.
@@ -159,27 +174,32 @@ class BaseDiagramHandler(ABC):
     def generate_complete_system(
         self, user_request: str, existing_model: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> Dict[str, Any]:
-        """Generate a complete diagram (template method around ``_build_system``).
-
-        An LLM failure (``LLMPredictionError``, refusals included) becomes
-        ``_system_failure_reply``; any other exception ``_system_crash_reply``.
-        """
+        """Generate a complete diagram (template method around ``_build_system``)."""
         tag = self.get_diagram_type()
         logger.info(f"[{tag}] generate_complete_system called with: {user_request[:120]!r}")
+        prepared = self._prepare_system(user_request, existing_model, **kwargs)
+        if isinstance(prepared, ReplyNow):
+            return prepared.reply
         try:
-            return self._build_system(user_request, existing_model, **kwargs)
+            return self._build_system(user_request, existing_model, prepared=prepared, **kwargs)
         except LLMPredictionError as exc:
             logger.error(f"[{tag}] generate_complete_system LLM FAILED: {exc}")
-            return self._system_failure_reply(exc, user_request, existing_model, **kwargs)
+            return self._system_failure_reply(exc, user_request, existing_model, prepared=prepared, **kwargs)
         except Exception as exc:
             logger.error(f"[{tag}] generate_complete_system FAILED: {exc}", exc_info=True)
-            return self._system_crash_reply(exc, user_request, existing_model, **kwargs)
+            return self._system_crash_reply(exc, user_request, existing_model, prepared=prepared, **kwargs)
+
+    def _prepare_system(
+        self, user_request: str, existing_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Any:
+        """Work before the LLM call; a crash here propagates. May return ``ReplyNow``."""
+        return None
 
     @abstractmethod
     def _build_system(
-        self, user_request: str, existing_model: Optional[Dict[str, Any]], **kwargs,
+        self, user_request: str, existing_model: Optional[Dict[str, Any]], *, prepared: Any = None, **kwargs,
     ) -> Dict[str, Any]:
-        """Prompt → LLM → repair → layout → reply envelope for a complete diagram."""
+        """LLM → repair → layout → reply envelope for a complete diagram."""
 
     def _system_failure_reply(
         self, exc: Exception, user_request: str, existing_model: Optional[Dict[str, Any]], **kwargs,
@@ -191,31 +211,47 @@ class BaseDiagramHandler(ABC):
     ) -> Dict[str, Any]:
         return self.generate_fallback_system()
 
+    @abstractmethod
     def generate_fallback_system(self) -> Dict[str, Any]:
         """Starter diagram returned when complete-system generation crashes."""
-        raise NotImplementedError
 
     def generate_single_element(
         self, user_request: str, existing_model: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> Dict[str, Any]:
         """Generate one element (template method around ``_build_single_element``)."""
         tag = self.get_diagram_type()
+        prepared = self._prepare_single_element(user_request, existing_model, **kwargs)
+        if isinstance(prepared, ReplyNow):
+            return prepared.reply
         try:
-            return self._build_single_element(user_request, existing_model, **kwargs)
+            return self._build_single_element(user_request, existing_model, prepared=prepared, **kwargs)
         except LLMPredictionError as exc:
             logger.error(f"[{tag}] generate_single_element LLM FAILED: {exc}")
-            return self._error_response(self._SINGLE_FAILURE_MESSAGE, code=self._LLM_FAILURE_CODE)
+            return self._single_failure_reply(exc, user_request, existing_model, prepared=prepared, **kwargs)
         except Exception as exc:
             logger.error(f"[{tag}] generate_single_element FAILED: {exc}", exc_info=True)
-            return self._single_crash_reply(exc, user_request)
+            return self._single_crash_reply(exc, user_request, existing_model, prepared=prepared, **kwargs)
+
+    def _prepare_single_element(
+        self, user_request: str, existing_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Any:
+        """Work before the LLM call; a crash here propagates. May return ``ReplyNow``."""
+        return None
 
     @abstractmethod
     def _build_single_element(
-        self, user_request: str, existing_model: Optional[Dict[str, Any]], **kwargs,
+        self, user_request: str, existing_model: Optional[Dict[str, Any]], *, prepared: Any = None, **kwargs,
     ) -> Dict[str, Any]:
-        """Prompt → LLM → repair → layout → reply envelope for one element."""
+        """LLM → repair → layout → reply envelope for one element."""
 
-    def _single_crash_reply(self, exc: Exception, user_request: str) -> Dict[str, Any]:
+    def _single_failure_reply(
+        self, exc: Exception, user_request: str, existing_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Dict[str, Any]:
+        return self._error_response(self._SINGLE_FAILURE_MESSAGE, code=self._LLM_FAILURE_CODE)
+
+    def _single_crash_reply(
+        self, exc: Exception, user_request: str, existing_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Dict[str, Any]:
         return self.generate_fallback_element(user_request)
 
     def _error_response(
@@ -437,36 +473,31 @@ class BaseDiagramHandler(ABC):
     def generate_modification(
         self, user_request: str, current_model: Optional[Dict[str, Any]] = None, **kwargs,
     ) -> Dict[str, Any]:
-        """Modify the current diagram (template method around ``_build_modification``).
-
-        An LLM failure becomes ``_modification_failure_reply``; any other
-        exception ``_modification_crash_reply``.
-        """
+        """Modify the current diagram (template method around ``_build_modification``)."""
         tag = self.get_diagram_type()
         logger.info(f"[{tag}] generate_modification called with: {user_request[:120]!r}")
+        prepared = self._prepare_modification(user_request, current_model, **kwargs)
+        if isinstance(prepared, ReplyNow):
+            return prepared.reply
         try:
-            return self._build_modification(user_request, current_model, **kwargs)
+            return self._build_modification(user_request, current_model, prepared=prepared, **kwargs)
         except LLMPredictionError as exc:
             logger.error(f"[{tag}] generate_modification LLM FAILED: {exc}")
-            return self._modification_failure_reply(exc, user_request)
+            return self._modification_failure_reply(exc, user_request, current_model, prepared=prepared, **kwargs)
         except Exception as exc:
             logger.error(f"[{tag}] generate_modification FAILED: {exc}", exc_info=True)
-            return self._modification_crash_reply(exc, user_request)
+            return self._modification_crash_reply(exc, user_request, current_model, prepared=prepared, **kwargs)
 
-    def _modification_failure_reply(self, exc: Exception, user_request: str) -> Dict[str, Any]:
-        return self._error_response(self._MODIFY_FAILURE_MESSAGE, code=self._MODIFY_FAILURE_CODE)
-
-    def _modification_crash_reply(self, exc: Exception, user_request: str) -> Dict[str, Any]:
-        return self.generate_fallback_modification(user_request)
-
-    def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
-        """Reply when modification crashes."""
-        raise NotImplementedError
+    def _prepare_modification(
+        self, user_request: str, current_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Any:
+        """Work before the LLM call; a crash here propagates. May return ``ReplyNow``."""
+        return None
 
     def _build_modification(
-        self, user_request: str, current_model: Optional[Dict[str, Any]], **kwargs,
+        self, user_request: str, current_model: Optional[Dict[str, Any]], *, prepared: Any = None, **kwargs,
     ) -> Dict[str, Any]:
-        """Prompt → LLM → validate → ``modify_model`` envelope. The default is a
+        """LLM → validate → ``modify_model`` envelope. The default is a
         placeholder for diagram types without modification support."""
         return {
             "action": Action.MODIFY_MODEL,
@@ -478,6 +509,24 @@ class BaseDiagramHandler(ABC):
             "diagramType": self.get_diagram_type(),
             "message": "Modification not implemented for this diagram type."
         }
+
+    def _modification_failure_reply(
+        self, exc: Exception, user_request: str, current_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Dict[str, Any]:
+        return self._error_response(self._MODIFY_FAILURE_MESSAGE, code=self._MODIFY_FAILURE_CODE)
+
+    def _modification_crash_reply(
+        self, exc: Exception, user_request: str, current_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Dict[str, Any]:
+        return self.generate_fallback_modification(user_request)
+
+    def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
+        """Reply when ``_build_modification`` crashes; needed only while the
+        handler keeps the default ``_modification_crash_reply``."""
+        raise NotImplementedError(
+            f"{type(self).__name__} implements neither generate_fallback_modification "
+            "nor _modification_crash_reply"
+        )
 
     # ------------------------------------------------------------------
     # Shared modification response handling

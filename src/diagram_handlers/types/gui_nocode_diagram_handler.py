@@ -10,9 +10,9 @@ import json
 import re
 import logging
 from html import escape as _html_escape
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from ..core.base_handler import BaseDiagramHandler, LLMPredictionError, ModelRefusal
+from ..core.base_handler import BaseDiagramHandler, ModelRefusal, ReplyNow
 from .gui_html_converter import (
     html_to_components,
     lift_actions_from_text,
@@ -3480,12 +3480,18 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
         msg += ". Want me to add more screens or change the layout?"
         return msg
 
-    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _prepare_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> str:
         class_metadata: Optional[List[Dict[str, Any]]] = kwargs.get("class_metadata")
         class_info = ""
         if class_metadata:
             class_info = format_class_metadata_for_prompt(class_metadata)
-        prompt = self.get_system_prompt(class_info=class_info)
+        return self.get_system_prompt(class_info=class_info)
+
+    def _build_single_element(
+        self, user_request: str, existing_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        class_metadata: Optional[List[Dict[str, Any]]] = kwargs.get("class_metadata")
+        prompt = prepared
 
         # Single element → SMALL generation tier (latency-sensitive).
         parsed = self.predict_structured(
@@ -3518,12 +3524,8 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
             return GUI_COMPLETE_SYSTEM_MAX_TOKENS
         return super()._structured_max_tokens(response_schema)
 
-    def _build_system(
-        self,
-        user_request: str,
-        existing_model: Dict[str, Any] = None,
-        **kwargs,
-    ) -> Dict[str, Any]:
+    def _prepare_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Tuple[str, str]:
+        """``(domain, system_prompt)``."""
         class_metadata: Optional[List[Dict[str, Any]]] = kwargs.get("class_metadata")
         class_block = ""
         if class_metadata:
@@ -3544,7 +3546,21 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
 
         interactions_block = gui_prompts.interactions_block(bool(class_metadata))
 
-        system_prompt = gui_prompts.complete_system_prompt(domain, exemplars_block, interactions_block, class_block, mockup_block)
+        return domain, gui_prompts.complete_system_prompt(
+            domain, exemplars_block, interactions_block, class_block, mockup_block,
+        )
+
+    def _build_system(
+        self,
+        user_request: str,
+        existing_model: Dict[str, Any] = None,
+        *,
+        prepared=None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        class_metadata: Optional[List[Dict[str, Any]]] = kwargs.get("class_metadata")
+        images = kwargs.get("images") or ()
+        domain, system_prompt = prepared
 
         # --- Two-pass generation for richer UI design ---
         if class_metadata:
@@ -3676,12 +3692,12 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
             "screens are untouched. Please try again."
         )
 
-    def generate_modification(
-        self,
-        user_request: str,
-        current_model: Dict[str, Any] = None,
-        **kwargs,
-    ) -> Dict[str, Any]:
+    def _prepare_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Any:
+        """``(model, page_names, raw_request, prompt)``, or the deterministic edit as ``ReplyNow``.
+
+        ``model`` is edited in place, so every reply after the LLM call
+        carries the model as far as the edit got.
+        """
         class_metadata: Optional[List[Dict[str, Any]]] = kwargs.get("class_metadata")
         class_block = ""
         if class_metadata:
@@ -3709,77 +3725,83 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
             if fast is not None:
                 applied_model, message = fast
                 self._wire_model_safely(applied_model, class_metadata)
-                return model_reply(Action.MODIFY_MODEL, self.get_diagram_type(), applied_model, message)
+                return ReplyNow(model_reply(Action.MODIFY_MODEL, self.get_diagram_type(), applied_model, message))
         except Exception:
             logger.warning("[GUINoCode] deterministic modify fast-path failed", exc_info=True)
 
         # ── 2. LLM-structured path ──────────────────────────────────────────
         outline = self._page_outline(model)
         prompt = gui_prompts.modification_prompt(outline, class_metadata, class_block)
+        return model, page_names, raw_request, prompt
 
-        try:
-            user_prompt = f"User Request: {raw_request}"
-            # Modification → SMALL generation tier (latency-sensitive); the
-            # batch schema rides the LARGE token budget for authored HTML.
-            parsed = self.predict_structured(
-                user_prompt, GUIModificationBatchSpec, system_prompt=prompt,
-                model=MODEL_GENERATION_SMALL,
+    def _build_modification(
+        self, user_request: str, current_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        class_metadata: Optional[List[Dict[str, Any]]] = kwargs.get("class_metadata")
+        model, _, raw_request, prompt = prepared
+        user_prompt = f"User Request: {raw_request}"
+        # Modification → SMALL generation tier (latency-sensitive); the
+        # batch schema rides the LARGE token budget for authored HTML.
+        parsed = self.predict_structured(
+            user_prompt, GUIModificationBatchSpec, system_prompt=prompt,
+            model=MODEL_GENERATION_SMALL,
+        )
+        operations = parsed.model_dump().get("operations") or []
+        messages: List[str] = []
+        for op in operations[:5]:
+            if not isinstance(op, dict):
+                continue
+            # Recompute page names between ops — an earlier add/rename
+            # must be visible to the next op in the same batch.
+            page_names = [
+                _clean_text(page.get("name"))
+                for page in model.get("pages", [])
+                if isinstance(page, dict) and _clean_text(page.get("name"))
+            ]
+            model, message = self._apply_modification_spec(
+                model, op, page_names, class_metadata,
             )
-            operations = parsed.model_dump().get("operations") or []
-            messages: List[str] = []
-            for op in operations[:5]:
-                if not isinstance(op, dict):
-                    continue
-                # Recompute page names between ops — an earlier add/rename
-                # must be visible to the next op in the same batch.
-                page_names = [
-                    _clean_text(page.get("name"))
-                    for page in model.get("pages", [])
-                    if isinstance(page, dict) and _clean_text(page.get("name"))
-                ]
-                model, message = self._apply_modification_spec(
-                    model, op, page_names, class_metadata,
-                )
-                messages.append(message)
-            if not messages:
-                raise ValueError("empty modification batch")
-            combined = (
-                messages[0] if len(messages) == 1
-                else "\n".join(f"- {m}" for m in messages)
-            )
-            self._wire_model_safely(model, class_metadata)
-            return model_reply(Action.MODIFY_MODEL, self.get_diagram_type(), model, combined)
-        except ModelRefusal as exc:
+            messages.append(message)
+        if not messages:
+            raise ValueError("empty modification batch")
+        combined = (
+            messages[0] if len(messages) == 1
+            else "\n".join(f"- {m}" for m in messages)
+        )
+        self._wire_model_safely(model, class_metadata)
+        return model_reply(Action.MODIFY_MODEL, self.get_diagram_type(), model, combined)
+
+    def _modification_failure_reply(self, exc, user_request, current_model, *, prepared=None, **kwargs) -> Dict[str, Any]:
+        model, page_names = prepared[0], prepared[1]
+        if isinstance(exc, ModelRefusal):
             logger.warning("[GUINoCode] generate_modification declined: %s", exc)
             return model_reply(Action.MODIFY_MODEL, self.get_diagram_type(), model, exc.user_message())
-        except LLMPredictionError:
-            logger.error("[GUINoCode] generate_modification LLM FAILED", exc_info=True)
-            # SAFETY: never destroy the existing GUI on failure. Return the
-            # original model unchanged with a clarification asking the user to
-            # be specific, rather than an empty/error payload.
-            return model_reply(
-                Action.MODIFY_MODEL,
-                self.get_diagram_type(),
-                model,
-                (
-                    "I couldn't apply that change automatically, and I've left your GUI "
-                    "unchanged. Could you be more specific? For example: *'rename the "
-                    f"{(page_names[0] if page_names else 'Home')} page to Overview'*, "
-                    "*'change the hero section color to red'*, or *'move the Recent edits "
-                    "card to the top'*."
-                ),
-            )
-        except Exception:
-            logger.warning("[GUINoCode] generate_modification apply failed", exc_info=True)
-            return model_reply(
-                Action.MODIFY_MODEL,
-                self.get_diagram_type(),
-                model,
-                (
-                    "I couldn't parse that GUI modification, but your existing model is "
-                    "safe and unchanged. Could you rephrase what you'd like to change?"
-                ),
-            )
+        # SAFETY: never destroy the existing GUI on failure. Return the
+        # original model unchanged with a clarification asking the user to
+        # be specific, rather than an empty/error payload.
+        return model_reply(
+            Action.MODIFY_MODEL,
+            self.get_diagram_type(),
+            model,
+            (
+                "I couldn't apply that change automatically, and I've left your GUI "
+                "unchanged. Could you be more specific? For example: *'rename the "
+                f"{(page_names[0] if page_names else 'Home')} page to Overview'*, "
+                "*'change the hero section color to red'*, or *'move the Recent edits "
+                "card to the top'*."
+            ),
+        )
+
+    def _modification_crash_reply(self, exc, user_request, current_model, *, prepared=None, **kwargs) -> Dict[str, Any]:
+        return model_reply(
+            Action.MODIFY_MODEL,
+            self.get_diagram_type(),
+            prepared[0],
+            (
+                "I couldn't parse that GUI modification, but your existing model is "
+                "safe and unchanged. Could you rephrase what you'd like to change?"
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Modification helpers

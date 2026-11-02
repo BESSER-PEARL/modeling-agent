@@ -13,6 +13,7 @@ Regenerate (only for a deliberate wire change):
 ``python tests/test_handler_envelopes.py``
 """
 
+import importlib
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -361,6 +362,176 @@ def test_envelope_is_byte_identical(case_id, dtype, entry, request_text, kwargs,
 
 def test_every_case_is_frozen():
     assert sorted(_frozen()) == sorted(c[0] for c in CASES)
+
+
+# ---------------------------------------------------------------------------
+# A crash BEFORE the LLM call (prompt building, model normalisation) is not
+# the handler's to answer: it propagates, and model_operations replies with
+# its error, as before the template. Only failures after the call get the
+# handler's failure/crash replies (the cases above). Patch target: a handler
+# attribute, "module:function", or None when the kwargs themselves crash.
+# ---------------------------------------------------------------------------
+
+class _PreLLMCrash(Exception):
+    pass
+
+
+class _UnreachableProvider(FakeProvider):
+    def __init__(self):
+        super().__init__("ok")
+
+    def parse(self, *args, **kwargs):
+        raise AssertionError("the LLM must not be reached")
+
+    complete = parse
+
+
+_H = "diagram_handlers.types."
+_PRE_LLM_CRASHES: List[tuple] = [
+    ("class.system", "ClassDiagram", "generate_complete_system", "Create a library", {}, "_get_system_generation_prompt"),
+    ("class.single", "ClassDiagram", "generate_single_element", "Create a Book class", {}, "get_system_prompt"),
+    ("class.modify", "ClassDiagram", "generate_modification", "add isbn to Book",
+     {"current_model": _CLASS_MODEL}, "_build_impact_context"),
+    ("class.modify_dup_check", "ClassDiagram", "generate_modification", "add isbn to Book",
+     {"current_model": _CLASS_MODEL}, "_detect_duplicate_end_errors"),
+    ("object.system", "ObjectDiagram", "generate_complete_system", "Create two library objects",
+     {"reference_diagram": _CLASS_MODEL}, "_extract_reference_catalog"),
+    ("object.single", "ObjectDiagram", "generate_single_element", "Create a book object", {}, "get_system_prompt"),
+    ("object.modify", "ObjectDiagram", "generate_modification", "add another book",
+     {"reference_diagram": _CLASS_MODEL}, "_format_reference_classes"),
+    ("state.system", "StateMachineDiagram", "generate_complete_system", "Create an order state machine", {},
+     "_get_system_generation_prompt"),
+    ("state.single", "StateMachineDiagram", "generate_single_element", "Add a Paid state", {}, "get_system_prompt"),
+    ("state.modify", "StateMachineDiagram", "generate_modification", "add a Cancelled state",
+     {"current_model": _STATE_MODEL}, _H + "state_machine_handler:detailed_model_summary"),
+    ("agent.system", "AgentDiagram", "generate_complete_system", "Create a pizza ordering bot",
+     {"raw_request": 5}, None),
+    ("agent.single", "AgentDiagram", "generate_single_element", "Add a farewell state", {}, "get_system_prompt"),
+    ("agent.modify", "AgentDiagram", "generate_modification", "add a farewell state after greeting",
+     {"current_model": _AGENT_MODEL}, "_looks_like_actionable_request"),
+    ("bpmn.system", "BPMN", "generate_complete_system", "Model an order process", {}, "get_system_prompt"),
+    ("bpmn.system_agentic", "BPMN", "generate_complete_system", "Model an agentic order process with AI agent lanes",
+     {}, _H + "bpmn_diagram_handler:format_agent_diagram_refs"),
+    ("bpmn.single", "BPMN", "generate_single_element", "Add a Review task", {}, "extract_name_from_request"),
+    ("bpmn.modify", "BPMN", "generate_modification", "add a Pack task after Check Stock",
+     {"current_model": _BPMN_MODEL}, "_is_agentic_bpmn_request"),
+    ("user.system", "UserDiagram", "generate_complete_system", "A teenager learner profile", {},
+     "_system_prompt_for_system"),
+    ("user.single", "UserDiagram", "generate_single_element", "A teenager learner profile", {},
+     "_system_prompt_for_system"),
+    ("user.modify", "UserDiagram", "generate_modification", "make the age at least 18", {}, "_model_class_index"),
+    ("quantum.system", "QuantumCircuitDiagram", "generate_complete_system", "Create a Bell state", {},
+     "_select_algorithm_templates"),
+    ("quantum.single", "QuantumCircuitDiagram", "generate_single_element", "Add a CNOT", {}, "get_system_prompt"),
+    ("quantum.modify", "QuantumCircuitDiagram", "generate_modification", "add an X on qubit 1", {},
+     _H + "quantum_circuit_diagram_handler:_normalize_quantum_model"),
+    ("gui.system", "GUINoCodeDiagram", "generate_complete_system", "Build a shop dashboard", {},
+     _H + "gui_nocode_diagram_handler:pick_domain"),
+    ("gui.single", "GUINoCodeDiagram", "generate_single_element", "Add a news section", {}, "get_system_prompt"),
+    ("gui.modify", "GUINoCodeDiagram", "generate_modification", "add a contact page", {},
+     _H + "gui_nocode_diagram_handler:_normalize_gui_model"),
+    ("component.single", "ComponentDiagram", "generate_single_element", "Add a Billing component", {},
+     "extract_name_from_request"),
+    ("component.modify", "ComponentDiagram", "generate_modification", "add a cache",
+     {"current_model": _COMPONENT_MODEL}, "diagram_handlers.core.architecture_handler:detailed_model_summary"),
+    ("deployment.single", "DeploymentDiagram", "generate_single_element", "Add a web server", {},
+     "extract_name_from_request"),
+    ("deployment.modify", "DeploymentDiagram", "generate_modification", "add a cache host",
+     {"current_model": _DEPLOYMENT_MODEL}, "diagram_handlers.core.architecture_handler:detailed_model_summary"),
+]
+
+
+def _crash(*args, **kwargs):
+    raise _PreLLMCrash("prompt building failed")
+
+
+@pytest.mark.parametrize(
+    "case_id,dtype,entry,request_text,kwargs,patch", _PRE_LLM_CRASHES, ids=[c[0] for c in _PRE_LLM_CRASHES],
+)
+def test_pre_llm_crash_propagates(case_id, dtype, entry, request_text, kwargs, patch, monkeypatch):
+    handler = DiagramHandlerFactory(llm=None).get_handler(dtype)
+    monkeypatch.setattr(BaseDiagramHandler, "llm_provider", property(lambda self: _UnreachableProvider()))
+    if patch and ":" in patch:
+        module, name = patch.split(":")
+        monkeypatch.setattr(importlib.import_module(module), name, _crash)
+    elif patch:
+        monkeypatch.setattr(handler, patch, _crash)
+    with pytest.raises(_PreLLMCrash if patch else TypeError):
+        getattr(handler, entry)(request_text, **kwargs)
+
+
+# The starter-element handlers' fallback must not re-enter
+# generate_single_element (whose crash reply it is): a crash raised once,
+# not a RecursionError after hundreds of logged tracebacks.
+@pytest.mark.parametrize("dtype", ["BPMN", "ComponentDiagram", "DeploymentDiagram"])
+def test_single_element_crash_is_raised_once(dtype, monkeypatch):
+    handler = DiagramHandlerFactory(llm=None).get_handler(dtype)
+    calls: List[str] = []
+
+    def crash(request, default):
+        calls.append(request)
+        raise _PreLLMCrash("no name")
+
+    monkeypatch.setattr(handler, "extract_name_from_request", crash)
+    with pytest.raises(_PreLLMCrash):
+        handler.generate_single_element("Add a Review step")
+    with pytest.raises(_PreLLMCrash):
+        handler.generate_fallback_element("Add a Review step")
+    assert calls == ["Add a Review step", "Add a Review step"]
+
+
+@pytest.mark.parametrize("dtype", ["BPMN", "ComponentDiagram", "DeploymentDiagram"])
+def test_fallback_element_is_the_starter_without_the_entry_point(dtype, monkeypatch):
+    handler = DiagramHandlerFactory(llm=None).get_handler(dtype)
+    expected = handler.generate_single_element("Add a Review step")
+    monkeypatch.setattr(handler, "generate_single_element", _crash)
+    assert handler.generate_fallback_element("Add a Review step") == expected
+
+
+# Handlers are singletons shared by every session: per-request results must
+# not be written to the handler, where a concurrent request overwrites them.
+
+class _CannedProvider(FakeProvider):
+    def __init__(self, canned: Dict[str, Any]):
+        super().__init__("ok")
+        self.canned = canned
+
+    def parse(self, messages, schema, **kwargs):
+        return schema.model_validate(self.canned)
+
+
+def test_agent_modification_keeps_its_results_local(monkeypatch):
+    handler = DiagramHandlerFactory(llm=None).get_handler("AgentDiagram")
+    duplicate = {"modifications": [{"action": "add_state", "target": {"stateName": "greeting"}, "changes": {}}]}
+    monkeypatch.setattr(BaseDiagramHandler, "llm_provider", property(lambda self: _CannedProvider(duplicate)))
+    reply = handler.generate_modification("add a greeting state", current_model=_AGENT_MODEL)
+    assert reply["action"] == "assistant_message"
+    assert reply["message"].startswith("That element already exists")
+    monkeypatch.setattr(BaseDiagramHandler, "llm_provider", property(lambda self: FakeProvider("ok")))
+    reply = handler.generate_modification("add a farewell state after greeting", current_model=_AGENT_MODEL)
+    assert reply["action"] == "modify_model"
+    assert not {"_last_skipped", "_last_orphan_states"} & set(vars(handler))
+
+
+def test_object_reference_values_keep_their_enum_literals_local(monkeypatch):
+    handler = DiagramHandlerFactory(llm=None).get_handler("ObjectDiagram")
+    reference = {
+        "elements": {
+            **_CLASS_MODEL["elements"],
+            "a2": {"id": "a2", "type": "ClassAttribute", "name": "+ status: BookStatus",
+                   "attributeType": "BookStatus", "owner": "c1"},
+            "e1": {"id": "e1", "type": "Enumeration", "name": "BookStatus", "attributes": ["l1", "l2"]},
+            "l1": {"id": "l1", "type": "ClassAttribute", "name": "AVAILABLE", "owner": "e1"},
+            "l2": {"id": "l2", "type": "ClassAttribute", "name": "LOANED", "owner": "e1"},
+        },
+        "relationships": {},
+    }
+    reference["elements"]["c1"] = {**reference["elements"]["c1"], "attributes": ["a1", "a2"]}
+    monkeypatch.setattr(BaseDiagramHandler, "llm_provider", property(lambda self: FakeProvider("ok")))
+    reply = handler.generate_complete_system("Create two library objects", reference_diagram=reference)
+    book = next(o for o in reply["systemSpec"]["objects"] if o["className"] == "Book")
+    assert {a["name"]: a["value"] for a in book["attributes"]}["status"] in {"AVAILABLE", "LOANED"}
+    assert "_enum_literals" not in vars(handler)
 
 
 def _capture(path: Optional[Path] = None) -> None:

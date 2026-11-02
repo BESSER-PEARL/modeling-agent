@@ -32,6 +32,9 @@ class _TestHandler(BaseDiagramHandler):
     def generate_fallback_element(self, *a):
         return {}
 
+    def generate_fallback_system(self):
+        return {}
+
 
 class _FakeLLM:
     """Minimal LLM stub with a .predict() method."""

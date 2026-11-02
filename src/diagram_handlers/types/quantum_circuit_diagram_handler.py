@@ -9,7 +9,7 @@ import copy
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
+from ..core.base_handler import BaseDiagramHandler
 from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
 from prompts import quantum_circuit as quantum_prompts
 from schemas import SingleQuantumGateSpec, SystemQuantumCircuitSpec, QuantumModificationSpec
@@ -352,6 +352,7 @@ class QuantumCircuitDiagramHandler(BaseDiagramHandler):
 
     _SYSTEM_FAILURE_MESSAGE = "I couldn't generate that quantum circuit. Please try again or rephrase your request."
     _SINGLE_FAILURE_MESSAGE = "I couldn't generate that quantum gate. Please try again or rephrase your request."
+    _MODIFY_FAILURE_MESSAGE = "I couldn't process that circuit modification. Please try again or rephrase your request."
 
     def get_diagram_type(self) -> str:
         return "QuantumCircuitDiagram"
@@ -416,8 +417,13 @@ class QuantumCircuitDiagramHandler(BaseDiagramHandler):
         normalized["gateMetadata"] = gate_metadata
         return normalized
 
-    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        prompt = self.get_system_prompt()
+    def _prepare_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> str:
+        return self.get_system_prompt()
+
+    def _build_single_element(
+        self, user_request: str, existing_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        prompt = prepared
 
         # Single element → SMALL generation tier (latency-sensitive).
         parsed = self.predict_structured(
@@ -482,13 +488,14 @@ class QuantumCircuitDiagramHandler(BaseDiagramHandler):
         header = quantum_prompts.ALGORITHM_TEMPLATES_HEADER
         return header + "\n\n".join(templates)
 
-    def _build_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _prepare_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Tuple[str, str]:
         algorithm_section = self._select_algorithm_templates(user_request)
+        return quantum_prompts.complete_system_prompt(algorithm_section), f"User Request: {user_request}"
 
-        prompt = quantum_prompts.complete_system_prompt(algorithm_section)
-
-        system_prompt = prompt
-        user_prompt = f"User Request: {user_request}"
+    def _build_system(
+        self, user_request: str, existing_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        system_prompt, user_prompt = prepared
 
         # Complete-system generation → LARGE tier (see model_config).
         parsed = self.predict_structured(
@@ -525,7 +532,8 @@ class QuantumCircuitDiagramHandler(BaseDiagramHandler):
             ),
         )
 
-    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _prepare_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Tuple[Dict[str, Any], str, str]:
+        """``(base_model, context_block, system_prompt)``."""
         base_model = _normalize_quantum_model(current_model)
 
         # Build context from current circuit using centralized helper
@@ -535,47 +543,49 @@ class QuantumCircuitDiagramHandler(BaseDiagramHandler):
             if summary:
                 context_block = f"\n\n{summary}"
 
-        prompt = quantum_prompts.MODIFY_SYSTEM_PROMPT
+        return base_model, context_block, quantum_prompts.MODIFY_SYSTEM_PROMPT
 
-        try:
-            user_prompt = f"User Request: {user_request}{context_block}"
-            # Modification → SMALL generation tier (latency-sensitive).
-            parsed = self.predict_structured(
-                user_prompt, QuantumModificationSpec, system_prompt=prompt,
-                model=MODEL_GENERATION_SMALL,
-            )
-            spec = parsed.model_dump()
+    def _build_modification(
+        self, user_request: str, current_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        base_model, context_block, prompt = prepared
+        user_prompt = f"User Request: {user_request}{context_block}"
+        # Modification → SMALL generation tier (latency-sensitive).
+        parsed = self.predict_structured(
+            user_prompt, QuantumModificationSpec, system_prompt=prompt,
+            model=MODEL_GENERATION_SMALL,
+        )
+        spec = parsed.model_dump()
 
-            operations = spec.get("operations") if isinstance(spec.get("operations"), list) else []
-            typed_operations = [op for op in operations if isinstance(op, dict)]
-            if not typed_operations:
-                raise ValueError("No operations for modification")
+        operations = spec.get("operations") if isinstance(spec.get("operations"), list) else []
+        typed_operations = [op for op in operations if isinstance(op, dict)]
+        if not typed_operations:
+            raise ValueError("No operations for modification")
 
-            mode = str(spec.get("mode", "append")).strip().lower()
-            append = mode != "replace"
-            model = self._apply_operations(
-                base_model,
-                typed_operations,
-                append=append,
-                qubit_count_hint=spec.get("qubitCount"),
-            )
-            action_label = "updated" if append else "replaced"
-            return model_reply(
-                Action.MODIFY_MODEL,
-                self.get_diagram_type(),
-                model,
-                f"Quantum circuit **{action_label}** with {len(typed_operations)} operation(s). You can add more gates or change the circuit layout!",
-            )
-        except LLMPredictionError:
-            logger.error("[QuantumCircuit] generate_modification LLM FAILED", exc_info=True)
-            return self._error_response("I couldn't process that circuit modification. Please try again or rephrase your request.")
-        except Exception:
-            return model_reply(
-                Action.MODIFY_MODEL,
-                self.get_diagram_type(),
-                base_model,
-                "I couldn't parse the requested modification, so the current circuit is unchanged. Try rephrasing, e.g. *'Add an X gate to qubit 1'*.",
-            )
+        mode = str(spec.get("mode", "append")).strip().lower()
+        append = mode != "replace"
+        model = self._apply_operations(
+            base_model,
+            typed_operations,
+            append=append,
+            qubit_count_hint=spec.get("qubitCount"),
+        )
+        action_label = "updated" if append else "replaced"
+        return model_reply(
+            Action.MODIFY_MODEL,
+            self.get_diagram_type(),
+            model,
+            f"Quantum circuit **{action_label}** with {len(typed_operations)} operation(s). You can add more gates or change the circuit layout!",
+        )
+
+    def _modification_crash_reply(self, exc, user_request, current_model, *, prepared=None, **kwargs) -> Dict[str, Any]:
+        # Every reply carries the circuit being edited (here: unchanged).
+        return model_reply(
+            Action.MODIFY_MODEL,
+            self.get_diagram_type(),
+            prepared[0],
+            "I couldn't parse the requested modification, so the current circuit is unchanged. Try rephrasing, e.g. *'Add an X gate to qubit 1'*.",
+        )
 
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
         model = self._apply_operations(

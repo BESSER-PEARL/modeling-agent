@@ -9,7 +9,7 @@ declare the base handler's reference-guardrail tables.
 
 import logging
 from abc import abstractmethod
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, Optional, Tuple, Type
 
 from pydantic import BaseModel
 
@@ -51,11 +51,20 @@ class ArchitectureDiagramHandler(BaseDiagramHandler):
     def generate_fallback_system(self) -> Dict[str, Any]:
         """Starter diagram returned when generation fails unexpectedly."""
 
+    #: Name of the single-element starter when the request names none, e.g. "Component".
+    _STARTER_DEFAULT_NAME: str = ""
+
+    @abstractmethod
+    def _starter_element(self, name: str) -> Dict[str, Any]:
+        """Starter-diagram reply to a single-element request for ``name``."""
+
     def _build_system(
         self,
         user_request: str,
         existing_model: Dict[str, Any] = None,
         raw_request: Optional[str] = None,
+        *,
+        prepared=None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Generate a complete diagram with two-pass structured output.
@@ -76,9 +85,9 @@ class ArchitectureDiagramHandler(BaseDiagramHandler):
         system_spec = parsed.model_dump()
         return inject_complete_system(system_spec, tag, self._build_system_message(system_spec))
 
-    def _build_modification(
+    def _prepare_modification(
         self, user_request: str, current_model: Dict[str, Any] = None, **kwargs,
-    ) -> Dict[str, Any]:
+    ) -> Tuple[Dict[str, Any], str]:
         tag = self.get_diagram_type()
         # Passed explicitly: handlers are singletons shared by every session.
         elements: Dict[str, Any] = {}
@@ -91,7 +100,12 @@ class ArchitectureDiagramHandler(BaseDiagramHandler):
             if summary:
                 context_block = f"\n\n{summary}"
 
-        user_prompt = f"Modify the {self._LABEL}: {user_request}{context_block}"
+        return elements, f"Modify the {self._LABEL}: {user_request}{context_block}"
+
+    def _build_modification(
+        self, user_request: str, current_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        elements, user_prompt = prepared
         result = self._execute_modification(
             user_prompt, self._MODIFY_SYSTEM_PROMPT, self._MODIFICATION_SCHEMA, elements=elements,
         )
@@ -103,5 +117,16 @@ class ArchitectureDiagramHandler(BaseDiagramHandler):
             f"For example: {self._MODIFY_EXAMPLES}.",
         )
 
+    # No LLM call: a single-element request gets a starter diagram.
+    def _prepare_single_element(
+        self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs,
+    ) -> str:
+        return self.extract_name_from_request(user_request, self._STARTER_DEFAULT_NAME)
+
+    def _build_single_element(
+        self, user_request: str, existing_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        return self._starter_element(prepared)
+
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
-        return self.generate_single_element(request)
+        return self._starter_element(self.extract_name_from_request(request, self._STARTER_DEFAULT_NAME))

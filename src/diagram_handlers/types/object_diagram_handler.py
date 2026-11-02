@@ -41,12 +41,14 @@ class ObjectDiagramHandler(BaseDiagramHandler):
             base = f"obj{base}"
         return base[0].lower() + base[1:]
 
-    def _value_for_attribute(self, attr_name: str, attr_type: str, class_name: str, index: int) -> str:
+    def _value_for_attribute(
+        self, attr_name: str, attr_type: str, class_name: str, index: int,
+        enum_literals: Dict[str, List[str]],
+    ) -> str:
         normalized_type = (attr_type or "").strip().lower()
         key = (attr_name or "").strip().lower()
 
         # Check if the attribute type is an enumeration — pick a valid literal
-        enum_literals = getattr(self, '_enum_literals', {})
         if attr_type and attr_type in enum_literals and enum_literals[attr_type]:
             literals = enum_literals[attr_type]
             return literals[index % len(literals)]
@@ -93,25 +95,6 @@ class ObjectDiagramHandler(BaseDiagramHandler):
         relationships = reference_diagram.get("relationships")
         if not isinstance(elements, dict):
             return {}, []
-
-        # First pass: collect enumerations and their literals
-        self._enum_literals: Dict[str, List[str]] = {}  # enum_name -> [literal_names]
-        for el_id, element in elements.items():
-            if not isinstance(element, dict):
-                continue
-            if element.get("type") != "Enumeration":
-                continue
-            enum_name = (element.get("name") or "").strip()
-            if not enum_name:
-                continue
-            literals = []
-            for attr_id in element.get("attributes", []):
-                attr = elements.get(attr_id)
-                if isinstance(attr, dict):
-                    lit_name = (attr.get("name") or "").replace("+ ", "").replace("- ", "").replace("# ", "").split(":")[0].strip()
-                    if lit_name:
-                        literals.append(lit_name)
-            self._enum_literals[enum_name] = literals
 
         classes: Dict[str, Dict[str, Any]] = {}
         by_id: Dict[str, Dict[str, Any]] = {}
@@ -195,6 +178,7 @@ class ObjectDiagramHandler(BaseDiagramHandler):
         self,
         classes: Dict[str, Dict[str, Any]],
         relationships: List[Dict[str, str]],
+        enum_literals: Dict[str, List[str]],
     ) -> Dict[str, Any]:
         if not classes:
             return {
@@ -219,7 +203,7 @@ class ObjectDiagramHandler(BaseDiagramHandler):
                         "attributeId": attr["id"],
                         "type": attr.get("type", "str"),  # carry type through
                         "value": self._value_for_attribute(
-                            attr["name"], attr.get("type", "str"), class_name, index
+                            attr["name"], attr.get("type", "str"), class_name, index, enum_literals,
                         ),
                     }
                 )
@@ -258,13 +242,14 @@ class ObjectDiagramHandler(BaseDiagramHandler):
         system_spec: Dict[str, Any],
         classes: Dict[str, Dict[str, Any]],
         relationships: List[Dict[str, str]],
+        enum_literals: Dict[str, List[str]],
     ) -> Dict[str, Any]:
         if not isinstance(system_spec, dict):
-            return self._build_reference_fallback_system(classes, relationships)
+            return self._build_reference_fallback_system(classes, relationships, enum_literals)
 
         raw_objects = system_spec.get("objects")
         if not isinstance(raw_objects, list):
-            return self._build_reference_fallback_system(classes, relationships)
+            return self._build_reference_fallback_system(classes, relationships, enum_literals)
 
         normalized_objects: List[Dict[str, Any]] = []
         object_lookup: Dict[str, Dict[str, str]] = {}
@@ -307,7 +292,7 @@ class ObjectDiagramHandler(BaseDiagramHandler):
                 value = incoming_attr.get("value")
                 if not isinstance(value, str) or not value.strip():
                     value = self._value_for_attribute(
-                        ref_attr_name, ref_attr.get("type", "str"), class_name, object_index
+                        ref_attr_name, ref_attr.get("type", "str"), class_name, object_index, enum_literals,
                     )
                 normalized_attrs.append(
                     {
@@ -411,19 +396,24 @@ class ObjectDiagramHandler(BaseDiagramHandler):
     def get_system_prompt(self) -> str:
         return object_prompts.SYSTEM_PROMPT
     
-    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
-                                reference_diagram: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate a single object instance with deterministic positioning."""
-        
+    def _prepare_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
+                                reference_diagram: Dict[str, Any] = None, **kwargs) -> Tuple[str, str]:
         system_prompt = self.get_system_prompt()
-        
+
         # Build user prompt with reference diagram context
         user_prompt = f"Create an object specification for: {user_request}"
-        
+
         if reference_diagram and reference_diagram.get('elements'):
             user_prompt += "\n\nREFERENCE CLASS DIAGRAM (use these exact class and attribute definitions):\n"
             user_prompt += self._format_reference_classes(reference_diagram['elements'])
-        
+        return system_prompt, user_prompt
+
+    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
+                                reference_diagram: Dict[str, Any] = None, *, prepared=None,
+                                **kwargs) -> Dict[str, Any]:
+        """Generate a single object instance with deterministic positioning."""
+        system_prompt, user_prompt = prepared
+
         # Single element → SMALL generation tier (latency-sensitive).
         parsed = self.predict_structured(
             user_prompt, SingleObjectSpec, system_prompt=system_prompt,
@@ -453,11 +443,11 @@ class ObjectDiagramHandler(BaseDiagramHandler):
             self._build_single_object_message(object_spec),
         )
     
-    def _build_system(self, user_request: str, existing_model: Dict[str, Any] = None,
-                                reference_diagram: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate a complete object diagram with deterministic positioning."""
-
+    def _prepare_system(self, user_request: str, existing_model: Dict[str, Any] = None,
+                                reference_diagram: Dict[str, Any] = None, **kwargs) -> tuple:
+        """``(classes, class_relationships, enum_literals, system_prompt, user_prompt)``."""
         classes, class_relationships = self._extract_reference_catalog(reference_diagram)
+        enum_literals = self._enum_literals(reference_diagram["elements"]) if classes else {}
         system_prompt = object_prompts.COMPLETE_SYSTEM_PROMPT
 
         user_prompt = user_request
@@ -466,6 +456,13 @@ class ObjectDiagramHandler(BaseDiagramHandler):
             user_prompt += self._format_reference_classes(reference_diagram.get("elements", {}))
             user_prompt += "\n\nREFERENCE CLASS RELATIONSHIPS:\n"
             user_prompt += self._format_reference_relationships(class_relationships)
+        return classes, class_relationships, enum_literals, system_prompt, user_prompt
+
+    def _build_system(self, user_request: str, existing_model: Dict[str, Any] = None,
+                                reference_diagram: Dict[str, Any] = None, *, prepared=None,
+                                **kwargs) -> Dict[str, Any]:
+        """Generate a complete object diagram with deterministic positioning."""
+        classes, class_relationships, enum_literals, system_prompt, user_prompt = prepared
 
         # Complete-system generation → LARGE tier (see model_config).
         parsed = self.predict_structured(
@@ -476,7 +473,7 @@ class ObjectDiagramHandler(BaseDiagramHandler):
 
         if classes:
             system_spec = self._normalize_system_from_reference(
-                system_spec, classes, class_relationships
+                system_spec, classes, class_relationships, enum_literals,
             )
             
         # Strip any hallucinated positions and apply deterministic layout
@@ -576,12 +573,9 @@ class ObjectDiagramHandler(BaseDiagramHandler):
             attr_el = elements.get(attr.get('attributeId'))
             attr['type'] = (attr_el.get('attributeType') if isinstance(attr_el, dict) else None) or 'str'
 
-    def _format_reference_classes(self, elements: Dict[str, Any]) -> str:
-        """Format reference diagram classes for LLM context"""
-        formatted = []
-
-        # Extract enumeration literals on the fly (don't rely on _extract_reference_catalog
-        # being called first — generate_single_element calls this method directly).
+    @staticmethod
+    def _enum_literals(elements: Dict[str, Any]) -> Dict[str, List[str]]:
+        """``{enumeration name: [literal names]}`` of a class diagram's elements."""
         enum_literals: Dict[str, List[str]] = {}
         for el in elements.values():
             if not isinstance(el, dict) or el.get('type') != 'Enumeration':
@@ -597,9 +591,13 @@ class ObjectDiagramHandler(BaseDiagramHandler):
                     if lit_name:
                         literals.append(lit_name)
             enum_literals[enum_name] = literals
+        return enum_literals
 
-        # Cache for any subsequent code path that reads self._enum_literals
-        self._enum_literals = enum_literals
+    def _format_reference_classes(self, elements: Dict[str, Any]) -> str:
+        """Format reference diagram classes for LLM context"""
+        formatted = []
+
+        enum_literals = self._enum_literals(elements)
 
         # List enumerations and their valid values
         for enum_name, literals in enum_literals.items():
@@ -667,9 +665,8 @@ class ObjectDiagramHandler(BaseDiagramHandler):
     # Modification Support
     # ------------------------------------------------------------------
 
-    def _build_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate modifications for existing object diagram elements."""
-
+    def _prepare_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> tuple:
+        """``(system_prompt, user_prompt, reference_classes)``."""
         # If a reference class diagram is available, include it for context
         reference_diagram = kwargs.get("reference_diagram")
         reference_context = ""
@@ -697,6 +694,13 @@ class ObjectDiagramHandler(BaseDiagramHandler):
                 context_block = f"\n\n{summary}"
 
         user_prompt = f"Modify the object diagram: {user_request}{context_block}{reference_context}"
+        return system_prompt, user_prompt, reference_classes
+
+    def _build_modification(
+        self, user_request: str, current_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        """Generate modifications for existing object diagram elements."""
+        system_prompt, user_prompt, reference_classes = prepared
 
         def _resolve_class_references(mod_list: list) -> list:
             """Set classId / attributeId for add_object mods from the reference catalog.

@@ -20,7 +20,7 @@ import re
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..core.base_handler import BaseDiagramHandler
+from ..core.base_handler import BaseDiagramHandler, ReplyNow
 from prompts import user_profile as user_profile_prompts
 from schemas import (
     SystemUserProfileSpec,
@@ -76,10 +76,7 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
     def _extract_reference_catalog(
         self, reference_diagram: Optional[Dict[str, Any]]
     ) -> Tuple[Dict[str, Dict[str, Any]], List[Dict[str, str]]]:
-        """Build {className.lower(): {name,id,attributes[]}} and a relationship list.
-
-        Also caches enumeration literals on ``self._enum_literals``.
-        """
+        """Build {className.lower(): {name,id,attributes[]}} and a relationship list."""
         if not isinstance(reference_diagram, dict):
             return {}, []
 
@@ -87,23 +84,6 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
         relationships = reference_diagram.get("relationships")
         if not isinstance(elements, dict):
             return {}, []
-
-        # First pass: collect enumerations and their literals.
-        self._enum_literals: Dict[str, List[str]] = {}
-        for element in elements.values():
-            if not isinstance(element, dict) or element.get("type") != "Enumeration":
-                continue
-            enum_name = (element.get("name") or "").strip()
-            if not enum_name:
-                continue
-            literals = []
-            for attr_id in element.get("attributes", []):
-                attr = elements.get(attr_id)
-                if isinstance(attr, dict):
-                    lit = (attr.get("name") or "").replace("+ ", "").replace("- ", "").replace("# ", "").split(":")[0].strip()
-                    if lit:
-                        literals.append(lit)
-            self._enum_literals[enum_name] = literals
 
         classes: Dict[str, Dict[str, Any]] = {}
         by_id: Dict[str, Dict[str, Any]] = {}
@@ -183,7 +163,6 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
                     if lit:
                         literals.append(lit)
             enum_literals[enum_name] = literals
-        self._enum_literals = enum_literals
 
         for enum_name, literals in enum_literals.items():
             if literals:
@@ -646,15 +625,21 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
     # Generation
     # ------------------------------------------------------------------
 
-    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
-                                **kwargs) -> Dict[str, Any]:
-        # A user profile is only meaningful when rooted at User with the right
-        # metamodel links, so even a "single" request produces a complete,
-        # structured profile rather than an isolated box.
-        return self.generate_complete_system(user_request, existing_model, **kwargs)
+    # A user profile is only meaningful when rooted at User with the right
+    # metamodel links, so even a "single" request produces a complete,
+    # structured profile rather than an isolated box: the complete-system
+    # flow answers it, failure replies included.
+    def _prepare_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
+                                **kwargs) -> ReplyNow:
+        return ReplyNow(self.generate_complete_system(user_request, existing_model, **kwargs))
 
-    def _build_system(self, user_request: str, existing_model: Dict[str, Any] = None,
-                                 **kwargs) -> Dict[str, Any]:
+    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
+                              *, prepared=None, **kwargs) -> Dict[str, Any]:
+        raise AssertionError("unreachable: _prepare_single_element always replies")
+
+    def _prepare_system(self, user_request: str, existing_model: Dict[str, Any] = None,
+                        **kwargs) -> tuple:
+        """``(elements, classes, class_relationships, system_prompt, user_prompt)``."""
         reference = self._reference()
         elements = reference.get("elements", {})
         classes, class_relationships = self._extract_reference_catalog(reference)
@@ -667,7 +652,11 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
             f"METAMODEL RELATIONSHIPS:\n"
             f"{self._format_reference_relationships(class_relationships)}"
         )
+        return elements, classes, class_relationships, system_prompt, user_prompt
 
+    def _build_system(self, user_request: str, existing_model: Dict[str, Any] = None,
+                      *, prepared=None, **kwargs) -> Dict[str, Any]:
+        elements, classes, class_relationships, system_prompt, user_prompt = prepared
         parsed = self.predict_structured(user_prompt, SystemUserProfileSpec, system_prompt=system_prompt)
         spec = parsed.model_dump()
         system_spec = self._normalize_system(spec, classes, elements, class_relationships)
@@ -779,8 +768,9 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
     # Modification
     # ------------------------------------------------------------------
 
-    def _build_modification(self, user_request: str, current_model: Dict[str, Any] = None,
-                              **kwargs) -> Dict[str, Any]:
+    def _prepare_modification(self, user_request: str, current_model: Dict[str, Any] = None,
+                              **kwargs) -> tuple:
+        """``(user_prompt, elements, reference_classes, existing_by_class, existing_links)``."""
         reference = self._reference()
         elements = reference.get("elements", {})
         reference_classes, _ = self._extract_reference_catalog(reference)
@@ -795,6 +785,11 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
         user_prompt = f"Modify the user-profile model: {user_request}{context_block}{reference_context}"
 
         existing_by_class, existing_links = self._model_class_index(current_model)
+        return user_prompt, elements, reference_classes, existing_by_class, existing_links
+
+    def _build_modification(self, user_request: str, current_model: Dict[str, Any] = None,
+                            *, prepared=None, **kwargs) -> Dict[str, Any]:
+        user_prompt, elements, reference_classes, existing_by_class, existing_links = prepared
 
         def _resolve_class_references(mod_list: list) -> list:
             """Expand add_object mods so the new box is wired into the metamodel.

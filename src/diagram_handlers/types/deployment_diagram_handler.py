@@ -48,10 +48,9 @@ class DeploymentDiagramHandler(ArchitectureDiagramHandler):
     # Single element + fallbacks
     # ------------------------------------------------------------------
 
-    def _build_single_element(
-        self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs,
-    ) -> Dict[str, Any]:
-        name = self.extract_name_from_request(user_request, "Server")
+    _STARTER_DEFAULT_NAME = "Server"
+
+    def _starter_element(self, name: str) -> Dict[str, Any]:
         return inject_complete_system(
             {
                 "systemName": name,

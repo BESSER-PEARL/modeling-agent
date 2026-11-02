@@ -169,15 +169,17 @@ phrasing that doesn't literally name the type.
 
 ## Diagram Handlers
 
-Handlers extend `BaseDiagramHandler` (`src/diagram_handlers/core/base_handler.py`) and implement five abstract
+Handlers extend `BaseDiagramHandler` (`src/diagram_handlers/core/base_handler.py`) and implement six abstract
 methods: `get_diagram_type()` (the WME storage-bucket token), `get_system_prompt()` (design rules),
-`_build_single_element`, `_build_system` (primary path) and `generate_fallback_element` (error-path stub), plus
-`generate_fallback_system` and, for edits, `_build_modification` / `generate_fallback_modification`. The public
+`_build_single_element`, `_build_system` (primary path), `generate_fallback_element` and `generate_fallback_system`
+(error-path starters), and, for edits, `_build_modification` / `generate_fallback_modification`. The public
 `generate_complete_system` / `generate_single_element` / `generate_modification` are **template methods** on the
-base class: they call the `_build_*` hook and turn an `LLMPredictionError` into the handler's
-`_SYSTEM_FAILURE_MESSAGE` / `_SINGLE_FAILURE_MESSAGE` / `_MODIFY_FAILURE_MESSAGE` reply (with `_LLM_FAILURE_CODE`
-/ `_MODIFY_FAILURE_CODE`) and any other exception into the fallback; override the `_*_failure_reply` /
-`_*_crash_reply` hooks only when a handler answers differently. Layout, retry, structured output and two-pass
+base class: they run the `_prepare_*` hook (prompt building; a crash there propagates to `model_operations`' error
+reply, and a `ReplyNow` answers without the LLM), then the `_build_*` hook, and turn an `LLMPredictionError` into
+the handler's `_SYSTEM_FAILURE_MESSAGE` / `_SINGLE_FAILURE_MESSAGE` / `_MODIFY_FAILURE_MESSAGE` reply (with
+`_LLM_FAILURE_CODE` / `_MODIFY_FAILURE_CODE`) and any other exception into the fallback; override the
+`_*_failure_reply` / `_*_crash_reply` hooks only when a handler answers differently. Every hook gets the entry
+point's arguments plus `prepared`; per-request values never go on the handler (a singleton shared by all sessions). Layout, retry, structured output and two-pass
 generation are inherited. Details: `docs/source/diagram_handlers.rst`.
 
 - **Two-pass generation** (`predict_two_pass_structured`): a free-text reasoning pass, then a structured pass into

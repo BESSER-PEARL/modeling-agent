@@ -10,7 +10,7 @@ Enhanced with:
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from ..core.base_handler import (
     BaseDiagramHandler,
     SINGLE_STATE_REQUIRED,
@@ -41,11 +41,15 @@ class StateMachineHandler(BaseDiagramHandler):
     def get_system_prompt(self) -> str:
         return state_machine_prompts.SYSTEM_PROMPT
 
-    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _prepare_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Tuple[str, str]:
+        return self.get_system_prompt(), f"Create a state specification for: {user_request}"
+
+    def _build_single_element(
+        self, user_request: str, existing_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
         """Generate a single state with structured outputs and deterministic positioning."""
 
-        system_prompt = self.get_system_prompt()
-        user_prompt = f"Create a state specification for: {user_request}"
+        system_prompt, user_prompt = prepared
 
         # Single element → SMALL generation tier (latency-sensitive).
         parsed = self.predict_structured(
@@ -70,11 +74,16 @@ class StateMachineHandler(BaseDiagramHandler):
         """Return the enhanced system prompt for complete state machine generation."""
         return state_machine_prompts.SYSTEM_GENERATION_PROMPT
 
+    def _prepare_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> str:
+        return self._get_system_generation_prompt()
+
     def _build_system(
         self,
         user_request: str,
         existing_model: Dict[str, Any] = None,
         raw_request: Optional[str] = None,
+        *,
+        prepared=None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Generate a complete state machine with two-pass structured outputs, pattern injection,
@@ -86,7 +95,7 @@ class StateMachineHandler(BaseDiagramHandler):
         full ``user_request`` when not provided.
         """
 
-        system_prompt = self._get_system_generation_prompt()
+        system_prompt = prepared
 
         # --- Two-pass structured: reason about behavior first, then produce validated model ---
         # The reasoning prompt uses the raw request only; the enriched
@@ -373,9 +382,7 @@ class StateMachineHandler(BaseDiagramHandler):
     # Modification Support
     # ------------------------------------------------------------------
 
-    def _build_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate modifications for existing state machine elements."""
-
+    def _prepare_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Tuple[str, str]:
         system_prompt = state_machine_prompts.MODIFY_SYSTEM_PROMPT_STATE_MACHINE
 
         # Build context from current model using centralized helper
@@ -385,8 +392,13 @@ class StateMachineHandler(BaseDiagramHandler):
             if summary:
                 context_block = f"\n\n{summary}"
 
-        user_prompt = f"Modify the state machine: {user_request}{context_block}"
+        return system_prompt, f"Modify the state machine: {user_request}{context_block}"
 
+    def _build_modification(
+        self, user_request: str, current_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        """Generate modifications for existing state machine elements."""
+        system_prompt, user_prompt = prepared
         return self._execute_modification(
             user_prompt, system_prompt, StateMachineModificationResponse,
         )
