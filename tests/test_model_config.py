@@ -70,7 +70,7 @@ def test_blank_env_value_falls_back_to_default(monkeypatch):
 def test_routed_models_have_cost_table_entries():
     """Every routed model must have a price entry â€” unknown models fall
     back to ``_DEFAULT_COST`` and silently skew cost reporting."""
-    from tracking.token_tracker import _COST_PER_1K
+    from tracking.token_tracker import _vendor_cost_table
 
     for model in {
         model_config.MODEL_CLASSIFIER,
@@ -80,7 +80,7 @@ def test_routed_models_have_cost_table_entries():
         model_config.MODEL_REASONING,
         model_config.MODEL_VISION,
     }:
-        assert model in _COST_PER_1K, f"no cost entry for routed model {model}"
+        assert _vendor_cost_table(model) is not None, f"no price for routed model {model}"
 
 
 def test_supports_custom_temperature_families():
