@@ -29,7 +29,11 @@ package-dir = { "" = "src" }
 where = ["src"]
 namespaces = false
 
-# Import layering (CLAUDE.md, "Intended import layering"): each top-level package
+# The vendor price file, read from llm/tracking/data/ next to its module.
+[tool.setuptools.package-data]
+"llm.tracking" = ["data/*.json"]
+
+# Import layering (CLAUDE.md, "Import layering"): each top-level package
 # is one layer and imports only the layers below it. tests/test_packaging.py
 # checks that every package in src/ is listed here.
 [tool.importlinter]

@@ -5,6 +5,7 @@ The suite used to import the same code two ways (``from src.x`` and bare
 """
 import ast
 import importlib
+import importlib.util
 import tomllib
 from pathlib import Path
 
@@ -12,8 +13,17 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 
 
+def _pyproject() -> dict:
+    return tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+
 def _importlinter_config() -> dict:
-    return tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["importlinter"]
+    return _pyproject()["tool"]["importlinter"]
+
+
+def _code_dirs() -> set:
+    """Every directory under src/ that holds Python code."""
+    return {path.parent for path in SRC.rglob("*.py")}
 
 
 def test_every_module_lives_in_a_package():
@@ -31,9 +41,32 @@ def test_every_package_is_a_layer():
 
 def test_src_is_the_import_root_not_a_package():
     assert not (SRC / "__init__.py").exists()
-    for name in ("common.session_keys", "protocol"):
-        module = importlib.import_module(name)
-        assert Path(module.__file__).resolve().is_relative_to(SRC)
+    module = importlib.import_module("common.session_keys")
+    assert Path(module.__file__).resolve().is_relative_to(SRC)
+
+
+def test_no_installed_package_shadows_ours():
+    """The editable install puts src/ after site-packages, so a dependency that
+    ships a top-level package of the same name (chromadb ships a schemas/
+    directory) would be imported instead of ours."""
+    shadowed = {}
+    for name in _importlinter_config()["root_packages"]:
+        origin = importlib.util.find_spec(name).origin
+        if not (origin and Path(origin).resolve().is_relative_to(SRC)):
+            shadowed[name] = origin
+    assert shadowed == {}
+
+
+def test_the_price_file_ships_with_its_package():
+    """A non-editable install copies only declared package data: the price
+    file sits in the package that reads it and matches its package-data."""
+    from llm.tracking import token_tracker
+
+    prices = token_tracker._PRICES_PATH
+    relative = prices.relative_to(Path(token_tracker.__file__).parent)
+    patterns = _pyproject()["tool"]["setuptools"]["package-data"]["llm.tracking"]
+    assert prices.is_file()
+    assert any(relative.match(pattern) for pattern in patterns)
 
 
 def test_nothing_imports_through_a_src_prefix():

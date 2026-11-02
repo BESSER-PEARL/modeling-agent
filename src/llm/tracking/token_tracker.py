@@ -36,15 +36,16 @@ logger = logging.getLogger(__name__)
 #
 # A call is priced from the deployment's model catalog (a gateway bills its own
 # rates), else from the vendor price file, else from _UNPUBLISHED. The price
-# file is a copy of the one BESSER vendors
+# file (data/, package data) is a copy of the one BESSER vendors
 # (besser/spec_driven_agent/providers/data/model_prices.json: litellm's
 # model_prices_and_context_window.json reduced to the vendors we call), so the
-# agent and the backend price a model the same; refresh both together. A model
+# agent and the backend price a model the same; refresh both together
+# (tests/test_token_tracker.py compares them when ../BESSER is checked out). A model
 # none of them prices records tokens at _DEFAULT_COST, a placeholder, and is
 # reported once via _warn_unknown_model.
 # ---------------------------------------------------------------------------
 
-_PRICES_PATH = Path(__file__).resolve().parents[2] / "resources" / "model_prices.json"
+_PRICES_PATH = Path(__file__).with_name("data") / "model_prices.json"
 
 # BESSER's lookup order: one bare id can be listed under several vendors at
 # different rates, so only the vendors we call are tried.
@@ -99,7 +100,8 @@ def _listed_cost_table(model: str) -> Optional[Dict[str, float]]:
     table = _price_file()
     for prefix in _PRICE_LOOKUP_PREFIXES:
         row = table.get(prefix + model)
-        if row and row.get("input_cost_per_token") is not None:
+        # Image and embedding rows list no output price, so no chat rate either.
+        if row and None not in (row.get("input_cost_per_token"), row.get("output_cost_per_token")):
             return _per_1k({
                 "input": _per_million(row["input_cost_per_token"]),
                 "output": _per_million(row["output_cost_per_token"]),

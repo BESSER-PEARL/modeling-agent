@@ -418,7 +418,7 @@ LLM (``src/llm/``)
   .. note::
 
      Prices come from the model catalog (``BESSER_MODEL_CATALOG``, read by
-     ``src/llm/model_catalog.py``), else from ``src/resources/model_prices.json``,
+     ``src/llm/model_catalog.py``), else from ``src/llm/tracking/data/model_prices.json``,
      a copy of BESSER's vendored price file (see :ref:`agent-prices`). A model
      neither prices falls back to placeholder pricing, so every reported cost
      for it becomes an estimate: price a new ``MODEL_*`` default in the

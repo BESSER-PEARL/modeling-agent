@@ -1,31 +1,64 @@
 cff-version: 1.2.0
-message: "If you use this software, please cite it as below."
+title: >-
+  Modeling Agent: the conversational modeling assistant of the
+  BESSER Web Modeling Editor
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
 authors:
-- family-names: "FamilyNames"
-  given-names: "GivenNames"
-  orcid: "https://orcid.org/0000-0000-0000-0000"
-- family-names: "FamilyNames"
-  given-names: "GivenNames"
-  orcid: "https://orcid.org/0000-0000-0000-0000"
-title: "The title of your paper"
-doi: 10.1007/s10664-021-10061-x
-date-released: 2021-11-16
-url: "https://github.com/SOM-Research/NonCodingRoleAnalysis-NPMPackages"
+  - name: BESSER-PEARL
+  - given-names: Armen
+    family-names: Sulejmani
+    affiliation: Luxembourg Institute of Science and Technology
+    email: armen.sulejmani@list.lu
+    orcid: 'https://orcid.org/0009-0005-9571-8780'
+repository-code: 'https://github.com/BESSER-PEARL/modeling-agent'
+abstract: >-
+  A WebSocket service that turns natural language into diagram
+  operations for the BESSER Web Modeling Editor: it creates and
+  modifies models, and hands them to BESSER's code generators.
+keywords:
+  - Low-code platform
+  - Model-driven engineering
+  - Conversational modeling
+  - LLM agent
+license: MIT
+version: 8.0.0
 preferred-citation:
-  type: article
+  type: conference-paper
   authors:
-  - family-names: "FamilyNames"
-    given-names: "GivenNames"
-    orcid: "https://orcid.org/0000-0000-0000-0000"
-  - family-names: "FamilyNames"
-    given-names: "GivenNames"
-    orcid: "https://orcid.org/0000-0000-0000-0000"
-  doi: "10.1007/s00000-000-00000-x"
-  journal: "JournalName"
-  month: 1
-  start: 1 # First page number
-  end: 100 # Last page number
-  title: "The title of your paper"
-  issue: 1
-  volume: 29
-  year: 2022
+  - family-names: "Alfonso"
+    given-names: "Iván"
+    orcid: "https://orcid.org/0000-0003-3940-0629"
+  - family-names: "Conrardy"
+    given-names: "Aaron"
+    orcid: 'https://orcid.org/0000-0002-3030-4529'
+  - family-names: "Sulejmani"
+    given-names: "Armen"
+    orcid: "https://orcid.org/0009-0005-9571-8780"
+  - family-names: "Nirumand"
+    given-names: "Atefeh"
+    orcid: "https://orcid.org/0009-0003-7677-5013"
+  - family-names: "Ul-Haq"
+    given-names: "Fitash"
+    orcid: "https://orcid.org/0000-0003-2253-9085"
+  - family-names: "Gomez-Vazquez"
+    given-names: "Marcos"
+    orcid: "https://orcid.org/0000-0001-7176-0793"
+  - family-names: "Sottet"
+    given-names: "Jean-Sébastien"
+    orcid: "https://orcid.org/0000-0002-3071-6371"
+  - family-names: "Cabot"
+    given-names: "Jordi"
+    orcid: "https://orcid.org/0000-0003-2418-2489"
+  title: "Building BESSER: An Open-Source Low-Code Platform"
+  conference:
+    name: "International Conference on Evaluation and Modeling Methods for Systems Analysis and Development, EMMSAD 2024, Limassol, Cyprus, June 3-4, 2024"
+  start: 203
+  end: 212
+  year: 2024
+  publisher:
+    name: Springer
+  url: "https://doi.org/10.1007/978-3-031-61007-3_16"
+  doi: "10.1007/978-3-031-61007-3_16"

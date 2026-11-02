@@ -269,7 +269,7 @@ src/
                                   (shared-client retry), byok.py (per-request bring-your-own key), byok_config.py
                                   (its contextvar), model_config.py (per-call-site model tiers, all
                                   BESSER_AGENT_MODEL_* overridable), model_catalog.py,
-                                  tracking/ (token/cost tracking; prices: resources/model_prices.json)
+                                  tracking/ (token/cost tracking; prices: tracking/data/model_prices.json)
   utilities/                      Model summaries/resolution, JSON repair, model_utils.py
   protocol/                       actions.py (wire action names + envelope builders), types.py, adapters.py,
                                   message_limits.py
@@ -277,7 +277,7 @@ src/
                                   read nowhere else), session_store.py (the per-session store expiries the
                                   reaper runs), session_keys.py (every session-state key: import, don't use
                                   literals), pending_dialogs.py (pending dialogs: slots, precedence), errors.py
-  resources/                      Price file and the bundled User Profile metamodel
+  resources/                      The bundled User Profile metamodel
 ```
 
 **`patches/websocket_platform.py`** is copied over BAF's file at image build. Stock BAF evicts the `_connections`
@@ -298,8 +298,8 @@ reply-route-to-sender, and sets/resets the per-request BYOK contextvar. **Re-ven
 - **Reasoning models reject `temperature`** (gpt-5+/gpt-6, o-series, and recent Claude families).
   `model_config.sampling_params(model, temperature)` picks `temperature` or `reasoning_effort`; `LLMProvider`
   applies it, so call sites never pass either parameter themselves.
-- **A new `MODEL_*` default needs a price**: the model catalog or `resources/model_prices.json` (a copy of BESSER's
-  vendored price file; refresh both together) — an unknown model
+- **A new `MODEL_*` default needs a price**: the model catalog or `llm/tracking/data/model_prices.json` (a copy of
+  BESSER's vendored price file; refresh both together, `tests/test_token_tracker.py` compares them) — an unknown model
   falls back to placeholder pricing and every reported cost silently becomes an estimate.
 - The Docker entrypoint (`python -m app.container_config`) generates `config.yaml` from `AgentSettings`, redacts
   the `api_key` line from its own log output, and emits `platforms.websocket.origins` from `BESSER_AGENT_WS_ORIGIN` / `BESSER_AGENT_WS_ORIGIN_ALT`

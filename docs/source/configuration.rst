@@ -608,7 +608,7 @@ Where prices come from
 A call is priced, in order, from:
 
 1. the deployment's model catalog, for the endpoint the call goes to;
-2. ``src/resources/model_prices.json``, a copy of the price file BESSER
+2. ``src/llm/tracking/data/model_prices.json``, a copy of the price file BESSER
    vendors (``besser/spec_driven_agent/providers/data/model_prices.json``,
    reduced from litellm's ``model_prices_and_context_window.json``), so the
    agent and the backend price a model the same way;
@@ -618,7 +618,8 @@ A call is priced, in order, from:
 
 A gateway's rates, and a new model, belong in the deployment's model catalog:
 an edit there and a restart, no release. Refresh the price file in BESSER and
-copy it here in the same change. An id that extends a listed id by a gateway
+copy it here in the same change; with BESSER checked out next to this repo,
+``tests/test_token_tracker.py`` fails while the two differ. An id that extends a listed id by a gateway
 prefix or a snapshot suffix (``claude-haiku-4-5-20251001``,
 ``us.anthropic.claude-opus-5-5``) is priced as that id, unless the file lists
 it under its own rate; a different variant such as ``gpt-6-sol-pro`` is not.

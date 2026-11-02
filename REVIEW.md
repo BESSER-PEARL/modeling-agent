@@ -38,7 +38,7 @@ Important is for findings that break behavior, the wire protocol, or a security 
 - an API key or BYOK value logged, persisted, or leaked across sessions (`byok.py` scopes it per request)
 - `temperature` or `reasoning_effort` hardcoded at a call site instead of `supports_custom_temperature()` /
   `reasoning_effort_for()`
-- a new `MODEL_*` default that neither the model catalog nor `resources/model_prices.json` prices, or a price
+- a new `MODEL_*` default that neither the model catalog nor `llm/tracking/data/model_prices.json` prices, or a price
   typed into code instead
 - the structured `gpt` and free-text `gpt_text` instances swapped
 - an LLM asked to emit positions (layout belongs to `core/layout_engine.py`)

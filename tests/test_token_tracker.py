@@ -1,6 +1,9 @@
 """Tests for token tracking -- recording, summarization, cost estimation."""
-import pytest
+import json
 import threading
+from pathlib import Path
+
+import pytest
 
 from llm.tracking.token_tracker import TokenTracker, get_tracker
 
@@ -322,3 +325,32 @@ def test_a_missing_price_file_never_reads_as_free(monkeypatch, tmp_path):
     finally:
         tt._price_file.cache_clear()
         tt._vendor_cost_table.cache_clear()
+
+
+def test_a_row_without_an_output_price_is_not_a_price(tracker):
+    """Image and embedding rows list only an input price; reading one as a chat
+    rate raised KeyError, so the call was never recorded."""
+    from llm.tracking.token_tracker import _price_file, _vendor_cost_table
+
+    assert _price_file()["gpt-image-1"].get("output_cost_per_token") is None
+    assert _vendor_cost_table("gpt-image-1") is None
+    tracker.record(prompt_tokens=10, completion_tokens=5, model="gpt-image-1")
+    assert tracker.summary()["call_count"] == 1
+
+
+# The workspace sibling checkout, as in tests/test_hotel_model_contract.py.
+_BESSER_PRICES = (
+    Path(__file__).resolve().parents[2]
+    / "BESSER" / "besser" / "spec_driven_agent" / "providers" / "data" / "model_prices.json"
+)
+
+
+def test_the_price_file_is_besser_s():
+    """The agent and the backend must price a model the same: refresh both together."""
+    from llm.tracking.token_tracker import _PRICES_PATH
+
+    if not _BESSER_PRICES.is_file():
+        pytest.skip(f"no BESSER checkout next to this repo ({_BESSER_PRICES})")
+    ours = json.loads(_PRICES_PATH.read_text(encoding="utf-8"))
+    besser = json.loads(_BESSER_PRICES.read_text(encoding="utf-8"))
+    assert ours == besser, f"copy {_BESSER_PRICES} to {_PRICES_PATH}"
