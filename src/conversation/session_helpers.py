@@ -21,7 +21,6 @@ from common.agent_config import STREAM_BUFFER_THRESHOLD
 from common.errors import ModelRefusal
 from llm.provider import LLMProvider
 from memory import get_memory, memory_session_key
-from common.session_store import sessions
 from common.session_keys import (
     LAST_SUGGESTED_PROMPTS,
     TELEMETRY_EMITTED_EVENT_ID,
@@ -159,26 +158,6 @@ _last_reply_buffer: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 # (session key, turn id) -> {"seq": last issued replySeq, "replies": [stamped terminal payloads]}
 _turn_replies: "OrderedDict[tuple, Dict[str, Any]]" = OrderedDict()
 _turn_lock = threading.Lock()
-
-
-def _discard_last_reply(key: str) -> None:
-    _last_reply_buffer.pop(key, None)
-
-
-def _discard_turn_replies(key: str) -> None:
-    with _turn_lock:
-        for turn_key in [k for k in _turn_replies if k[0] == key]:
-            del _turn_replies[turn_key]
-
-
-def _turn_reply_keys() -> list:
-    with _turn_lock:
-        return [k[0] for k in _turn_replies]
-
-
-# Both buffers are bounded LRUs (_REPLY_BUFFER_MAX), so they need no expiry.
-sessions.register("last_reply", discard=_discard_last_reply, keys=lambda: list(_last_reply_buffer))
-sessions.register("turn_replies", discard=_discard_turn_replies, keys=_turn_reply_keys)
 
 
 def _stamp_turn(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:

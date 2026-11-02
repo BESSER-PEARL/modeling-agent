@@ -63,8 +63,8 @@ are Nit at most.
 - **Config**: a new required setting is added to `config_example.yaml` and the Docker entrypoint
   (`src/app/container_config.py`); real keys never appear in `config.yaml` or `.env` in the diff. A new environment
   variable is a field on `AgentSettings` (`src/common/settings.py`), never an `os.getenv` call.
-- **Per-session state**: a new module-level store keyed by a session registers with `common.session_store.sessions`
-  (discard, keys, optional expiry), so `sessions.close(key)` reaches it.
+- **Per-session state**: a new module-level store keyed by a session is bounded (an LRU) or registers its expiry
+  with `common.session_store.sessions`, so the session reaper runs it.
 - **Pending dialogs**: a question the next message may answer stores its state as a slot in
   `common/pending_dialogs.py` (`get` / `put` / `clear`), never as its own session key or with
   `session.get` on a slot name. A new dialog adds its kind to `PRECEDENCE`, a handler to

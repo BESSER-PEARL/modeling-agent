@@ -324,11 +324,9 @@ def _start_cleanup_timer():
             except Exception as exc:
                 logger.warning(f"[Reaper] Session cleanup error: {exc}")
 
-            try:
-                # --- Expire per-session stores (stale conversation memories) ---
-                sessions.expire(3600)
-            except Exception:
-                pass
+            # Expire per-session stores (stale conversation memories); each
+            # store's failure is logged at warning inside expire().
+            sessions.expire(3600)
 
     t = threading.Thread(target=_cleanup_loop, daemon=True, name="session-reaper")
     t.start()

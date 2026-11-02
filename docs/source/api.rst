@@ -520,12 +520,13 @@ Common (``src/common/``)
   at import, per-call reads at each use. See :doc:`configuration`.
 
 ``src/common/session_store.py``
-  ``sessions``, the registry of every in-process store keyed by a session key
-  (conversation memory, the two reply-replay buffers, per-session token usage):
+  ``sessions``, the registry of the in-process per-session stores that expire
+  their own entries (today conversation memory; the reply-replay buffers are
+  bounded LRUs instead):
 
-  - ``sessions.close(key)`` — drops the key from every registered store
-  - ``sessions.expire(max_age_seconds)`` — each store's own expiry (the reaper)
-  - ``sessions.holding(key)`` — the stores that still hold a key
+  - ``sessions.register(name, expire=...)`` — a store's expiry
+  - ``sessions.expire(max_age_seconds)`` — runs every registered expiry (the
+    session reaper); a failing one is logged at warning and skipped
 
   BAF's session variables (every key in ``session_keys``) belong to BAF and
   are freed by ``Agent.close_session``.

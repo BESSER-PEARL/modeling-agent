@@ -291,11 +291,4 @@ def cleanup_stale_memories(max_age_seconds: int = 86400) -> int:
     return len(stale_ids)
 
 
-def _memory_keys() -> List[str]:
-    with _memories_lock:
-        return list(_memories)
-
-
-sessions.register(
-    "conversation_memory", discard=remove_memory, keys=_memory_keys, expire=cleanup_stale_memories,
-)
+sessions.register("conversation_memory", expire=cleanup_stale_memories)

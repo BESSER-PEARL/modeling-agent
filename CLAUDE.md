@@ -274,8 +274,8 @@ src/
   protocol/                       actions.py (wire action names + envelope builders), types.py, adapters.py,
                                   message_limits.py
   common/                         agent_config.py (tunable constants), settings.py (AgentSettings: every env var,
-                                  read nowhere else), session_store.py (registry of per-session stores, one
-                                  close(key)), session_keys.py (every session-state key: import, don't use
+                                  read nowhere else), session_store.py (the per-session store expiries the
+                                  reaper runs), session_keys.py (every session-state key: import, don't use
                                   literals), pending_dialogs.py (pending dialogs: slots, precedence), errors.py
   resources/                      Price file and the bundled User Profile metamodel
 ```
