@@ -339,7 +339,7 @@ def test_user_message_text():
 
 
 def test_vision_refusal_is_not_retried():
-    from ingestion.file_conversion_handler import convert_file_to_class_spec
+    from ingestion.file_conversion_handler import convert_file_to_diagram_spec
     from llm.provider import LLMProvider
 
     posts = []
@@ -353,7 +353,7 @@ def test_vision_refusal_is_not_retried():
         chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
     ))
     png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
-    result = convert_file_to_class_spec(
+    result = convert_file_to_diagram_spec(
         file_content_b64=png, filename="mockup.png",
         llm_predict=lambda _p: "{}", llm_vision_predict=LLMProvider(server).vision,
     )
@@ -366,12 +366,12 @@ def test_file_text_refusal_reaches_the_user():
     import base64
 
     from common.errors import ModelRefusal
-    from ingestion.file_conversion_handler import convert_file_to_class_spec
+    from ingestion.file_conversion_handler import convert_file_to_diagram_spec
 
     def declined(_prompt):
         raise ModelRefusal("anthropic", "cyber")
 
-    result = convert_file_to_class_spec(
+    result = convert_file_to_diagram_spec(
         file_content_b64=base64.b64encode(b"class Exploit: pass").decode(),
         filename="model.py", llm_predict=declined,
     )

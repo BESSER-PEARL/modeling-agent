@@ -30,9 +30,15 @@ def test_every_module_lives_in_a_package():
     assert sorted(p.name for p in SRC.glob("*.py")) == []
 
 
+def test_every_code_directory_is_a_package():
+    """With namespaces = false, an install leaves out a directory without __init__.py."""
+    missing = sorted(str(d.relative_to(SRC)) for d in _code_dirs() if not (d / "__init__.py").is_file())
+    assert missing == []
+
+
 def test_every_package_is_a_layer():
     """A package missing from the layers contract would go unchecked."""
-    on_disk = {p.parent.name for p in SRC.glob("*/__init__.py")}
+    on_disk = {d.relative_to(SRC).parts[0] for d in _code_dirs() if d != SRC}
     config = _importlinter_config()
     top = next(c for c in config["contracts"] if c["type"] == "layers" and "containers" not in c)
     layered = {name.strip() for layer in top["layers"] for name in layer.split("|")}

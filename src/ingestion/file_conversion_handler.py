@@ -256,10 +256,6 @@ def convert_file_to_diagram_spec(
         )
 
 
-# Keep the old name as an alias for backward compatibility
-convert_file_to_class_spec = convert_file_to_diagram_spec
-
-
 def _convert_plantuml(
     content: str, filename: str, llm_predict: callable,
 ) -> Dict[str, Any]:

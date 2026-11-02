@@ -36,12 +36,12 @@ for _name in (
 
 from app.confirmation import (
     keyword_matches,
-    model_has_elements,
     REPLACE_KEYWORDS,
     KEEP_KEYWORDS,
     CANCEL_KEYWORDS,
     NEW_TAB_KEYWORDS,
 )
+from utilities.model_utils import model_has_elements
 
 
 # =============================================================================

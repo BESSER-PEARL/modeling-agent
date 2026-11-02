@@ -68,10 +68,10 @@ layers = [
     "routing",
     "memory | diagram_handlers",
     "prompts",
-    "llm | schemas",
+    "llm",
     "utilities",
     "protocol",
-    "common",
+    "common | schemas",
 ]
 ignore_imports = [
     # Known cycle: a confirmed generation re-runs the planned operations.

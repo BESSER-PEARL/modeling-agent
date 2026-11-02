@@ -136,8 +136,8 @@ The system is organized into these layers, processed in order for each request:
 Every module lives in a top-level package under ``src/``, and each package is
 one import layer: ``app`` → ``ingestion`` → ``execution`` → ``codegen`` /
 ``orchestrator`` → ``conversation`` → ``routing`` → ``memory`` /
-``diagram_handlers`` → ``prompts`` → ``llm`` / ``schemas`` → ``utilities`` →
-``protocol`` → ``common``. A package imports only the ones below it (packages on one level do
+``diagram_handlers`` → ``prompts`` → ``llm`` → ``utilities`` → ``protocol`` →
+``common`` / ``schemas``. A package imports only the ones below it (packages on one level do
 not import each other); ``lint-imports`` enforces this from the contracts in
 ``pyproject.toml``. The one exception is a known cycle: a confirmed generation
 in ``codegen.generation_handler`` re-runs the planned operations in
@@ -164,7 +164,7 @@ To change wording, edit the prompt module, never a call site. System prompts
 are composed once at import time and must stay byte-identical across calls
 (see :ref:`static-prefix-first`); ``tests/test_prompt_snapshots.py`` pins a
 hash of every prompt, so update the hash in the same change. The package sits
-right above ``schemas`` because some prompts embed schema vocabulary (component
+above ``schemas`` because some prompts embed schema vocabulary (component
 stereotypes, agent reply types).
 
 Entry Point

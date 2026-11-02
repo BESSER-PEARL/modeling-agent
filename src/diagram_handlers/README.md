@@ -17,7 +17,3 @@ This package is organized in three layers:
 - `registry/`: assembly and metadata.
   - `factory.py`: handler instantiation and lookup.
   - `metadata.py`: supported diagram metadata and lookup helper.
-
-Backward compatibility is kept through module shims at package root
-(`base_handler.py`, `factory.py`, etc.), so existing imports continue to work.
-

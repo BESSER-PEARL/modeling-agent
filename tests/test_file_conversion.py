@@ -5,7 +5,6 @@ import json
 import pytest
 
 from ingestion.file_conversion_handler import (
-    convert_file_to_class_spec,
     convert_file_to_diagram_spec,
     detect_file_type,
     detect_plantuml_diagram_type,
@@ -160,7 +159,7 @@ class TestConvertFilePlantuml:
 
     def test_plantuml_successful_conversion(self):
         puml = "@startuml\nclass User {\n  +name: String\n}\n@enduml"
-        result = convert_file_to_class_spec(
+        result = convert_file_to_diagram_spec(
             file_content_b64=_make_b64(puml),
             filename="model.puml",
             llm_predict=_mock_llm_predict,
@@ -174,7 +173,7 @@ class TestConvertFilePlantuml:
 
     def test_plantuml_txt_extension_detected_by_content(self):
         puml = "@startuml\nclass Foo {}\n@enduml"
-        result = convert_file_to_class_spec(
+        result = convert_file_to_diagram_spec(
             file_content_b64=_make_b64(puml),
             filename="model.txt",
             llm_predict=_mock_llm_predict,
@@ -187,7 +186,7 @@ class TestConvertFileKnowledgeGraph:
 
     def test_turtle_file_conversion(self):
         ttl = "@prefix ex: <http://example.org/> .\nex:Person a rdfs:Class ."
-        result = convert_file_to_class_spec(
+        result = convert_file_to_diagram_spec(
             file_content_b64=_make_b64(ttl),
             filename="ontology.ttl",
             llm_predict=_mock_llm_predict,
@@ -197,7 +196,7 @@ class TestConvertFileKnowledgeGraph:
 
     def test_rdf_file_conversion(self):
         rdf = '<?xml version="1.0"?>\n<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"></rdf:RDF>'
-        result = convert_file_to_class_spec(
+        result = convert_file_to_diagram_spec(
             file_content_b64=_make_b64(rdf),
             filename="data.rdf",
             llm_predict=_mock_llm_predict,
@@ -211,7 +210,7 @@ class TestConvertFileImage:
     def test_image_without_api_key_returns_error(self):
         # A small 1x1 PNG
         png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
-        result = convert_file_to_class_spec(
+        result = convert_file_to_diagram_spec(
             file_content_b64=png_b64,
             filename="diagram.png",
             llm_predict=_mock_llm_predict,
@@ -239,7 +238,7 @@ class TestConvertFileImage:
         # The vision model actively REFUSED (finish=stop, refusal set). The old
         # path flattened this into "returned no content" — misleading a user
         # whose benign mockup was refused. We now say it was declined.
-        result = convert_file_to_class_spec(
+        result = convert_file_to_diagram_spec(
             file_content_b64=self._PNG_B64,
             filename="mockup.png",
             llm_predict=_mock_llm_predict,
@@ -255,7 +254,7 @@ class TestConvertFileImage:
     def test_image_empty_content_keeps_retryable_no_content_message(self):
         # A genuinely empty reply (no refusal) stays the retryable "no content"
         # message — retrying the same image often succeeds.
-        result = convert_file_to_class_spec(
+        result = convert_file_to_diagram_spec(
             file_content_b64=self._PNG_B64,
             filename="mockup.png",
             llm_predict=_mock_llm_predict,
@@ -281,7 +280,7 @@ class TestConvertFileEdgeCases:
             assert "couldn't read" in msg or "no content" in msg
 
     def test_invalid_base64_returns_error(self):
-        result = convert_file_to_class_spec(
+        result = convert_file_to_diagram_spec(
             file_content_b64="not-valid-base64!!!",
             filename="model.puml",
             llm_predict=_mock_llm_predict,
@@ -290,7 +289,7 @@ class TestConvertFileEdgeCases:
 
     def test_bad_json_from_llm_returns_error(self):
         puml = "@startuml\nclass User {}\n@enduml"
-        result = convert_file_to_class_spec(
+        result = convert_file_to_diagram_spec(
             file_content_b64=_make_b64(puml),
             filename="model.puml",
             llm_predict=_mock_llm_predict_bad_json,
@@ -299,7 +298,7 @@ class TestConvertFileEdgeCases:
 
     def test_empty_classes_returns_error(self):
         puml = "@startuml\n@enduml"
-        result = convert_file_to_class_spec(
+        result = convert_file_to_diagram_spec(
             file_content_b64=_make_b64(puml),
             filename="model.puml",
             llm_predict=_mock_llm_predict_empty_classes,
@@ -308,7 +307,7 @@ class TestConvertFileEdgeCases:
 
     def test_llm_exception_returns_error(self):
         puml = "@startuml\nclass User {}\n@enduml"
-        result = convert_file_to_class_spec(
+        result = convert_file_to_diagram_spec(
             file_content_b64=_make_b64(puml),
             filename="model.puml",
             llm_predict=_mock_llm_predict_raises,
@@ -317,7 +316,7 @@ class TestConvertFileEdgeCases:
 
     def test_unknown_file_type_with_text_attempts_generic(self):
         content = "Entity User has name, email. Entity Order has total."
-        result = convert_file_to_class_spec(
+        result = convert_file_to_diagram_spec(
             file_content_b64=_make_b64(content),
             filename="schema.txt",
             llm_predict=_mock_llm_predict,
@@ -328,7 +327,7 @@ class TestConvertFileEdgeCases:
     def test_unknown_file_type_binary_returns_error(self):
         # Binary content that can't be decoded as UTF-8
         binary_b64 = base64.b64encode(bytes(range(128, 256))).decode("utf-8")
-        result = convert_file_to_class_spec(
+        result = convert_file_to_diagram_spec(
             file_content_b64=binary_b64,
             filename="data.bin",
             llm_predict=_mock_llm_predict,
@@ -352,7 +351,7 @@ class TestConvertFileEdgeCases:
                 ],
             })
 
-        result = convert_file_to_class_spec(
+        result = convert_file_to_diagram_spec(
             file_content_b64=_make_b64("@startuml\nclass User {}\n@enduml"),
             filename="model.puml",
             llm_predict=mock_predict_bad_rel,
@@ -361,7 +360,7 @@ class TestConvertFileEdgeCases:
         assert len(result["systemSpec"]["relationships"]) == 0
 
     def test_message_includes_counts(self):
-        result = convert_file_to_class_spec(
+        result = convert_file_to_diagram_spec(
             file_content_b64=_make_b64("@startuml\nclass Test {}\n@enduml"),
             filename="test.puml",
             llm_predict=_mock_llm_predict,
@@ -916,32 +915,3 @@ class TestBpmnConversion:
         assert result["action"] == "inject_complete_system"
         node_types = {n["type"] for n in result["systemSpec"]["nodes"]}
         assert {"startEvent", "endEvent"} <= node_types
-
-
-class TestBackwardCompatibility:
-    """Ensure the old function alias still works."""
-
-    def test_old_function_name_works(self):
-        puml = "@startuml\nclass User {\n  +name: String\n}\n@enduml"
-        result = convert_file_to_class_spec(
-            file_content_b64=_make_b64(puml),
-            filename="model.puml",
-            llm_predict=_mock_llm_predict,
-        )
-        assert result["action"] == "inject_complete_system"
-        assert result["diagramType"] == "ClassDiagram"
-
-    def test_old_and_new_return_same_result(self):
-        puml = "@startuml\nclass User {\n  +name: String\n}\n@enduml"
-        b64 = _make_b64(puml)
-        old = convert_file_to_class_spec(
-            file_content_b64=b64,
-            filename="model.puml",
-            llm_predict=_mock_llm_predict,
-        )
-        new = convert_file_to_diagram_spec(
-            file_content_b64=b64,
-            filename="model.puml",
-            llm_predict=_mock_llm_predict,
-        )
-        assert old == new

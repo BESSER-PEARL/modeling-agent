@@ -348,16 +348,6 @@ Diagram Handlers
   widget-spoof guarded. ``find_widget_slots`` / ``replace_widget_slot`` splice
   real data-bound widgets into ``<!--WIDGET:kind-->`` markers.
 
-Schemas
--------
-
-``src/schemas/``
-  Pydantic schemas for structured LLM output, one module per diagram type:
-  ``class_diagram``, ``compact_class_diagram`` (the token-trimmed generation
-  variant), ``object_diagram``, ``state_machine``, ``agent_diagram``,
-  ``gui_diagram``, ``quantum_circuit``, ``bpmn``, ``user_profile``. All are
-  re-exported from ``src/schemas/__init__.py``.
-
 LLM (``src/llm/``)
 ------------------
 
@@ -559,6 +549,16 @@ Common (``src/common/``)
   - ``classify_error(error)`` → ``ErrorCode``
   - ``get_recovery_hint(error_code)``
   - ``build_error_response(error_code, message, ...)``
+
+Schemas
+-------
+
+``src/schemas/``
+  Pydantic schemas for structured LLM output, one module per diagram type:
+  ``class_diagram``, ``compact_class_diagram`` (the token-trimmed generation
+  variant), ``object_diagram``, ``state_machine``, ``agent_diagram``,
+  ``gui_diagram``, ``quantum_circuit``, ``bpmn``, ``user_profile``. All are
+  re-exported from ``src/schemas/__init__.py``.
 
 Test Infrastructure
 -------------------

@@ -76,14 +76,16 @@ modeling-agent/
     routing/                       # ONE classification call per message (routing brain) + signals
     memory/                        # Conversation memory + rolling summary
     diagram_handlers/
-      core/                        # Base handler + deterministic layout + prompt fragments
+      core/                        # Base handlers + deterministic layout
       types/                       # Concrete per-diagram handlers
       registry/                    # Factory + metadata registry
+    prompts/                       # Prompt text, one module per diagram type or state
+    llm/                           # LLM provider, retry, bring-your-own-key, model tiers, token/cost tracking
+    utilities/                     # Shared context/model/request helpers
+    protocol/                      # Wire actions, request parsing and protocol types
+    common/                        # Settings, tunable constants, session-state keys, pending dialogs, error taxonomy
     schemas/                       # Pydantic schemas for structured LLM output
-    llm/                           # LLM provider, bring-your-own-key, model tiers, token/cost tracking
-    utilities/                     # Shared context/model/request helpers, LLM retry
-    protocol/                      # Request parsing and protocol types
-    common/                        # Tunable constants, session-state keys, error taxonomy
+    resources/                     # Bundled User Profile metamodel
   tests/
   docs/
 ```

@@ -20,7 +20,6 @@ from baf.core.session import Session
 
 from protocol.adapters import parse_assistant_request
 from conversation.session_helpers import reply_message, reply_payload, emit_webapp_generate_prompt
-from utilities.model_utils import model_has_elements  # noqa: F401  (re-export for backward compat)
 from common.session_keys import UNIFIED_CLASSIFICATION
 from common import pending_dialogs
 from common.pending_dialogs import (

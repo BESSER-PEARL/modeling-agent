@@ -111,7 +111,7 @@ MODIFICATION_REQUIRED = {"modification": dict}
 MODIFICATION_INNER_REQUIRED = {"action": str, "target": dict}
 
 # ---------------------------------------------------------------------------
-# Error taxonomy — now delegated to the unified ``errors`` module.
+# Error taxonomy — now delegated to the unified ``common.errors`` module.
 # The module-level alias is kept so that existing references within this
 # file (e.g. _error_response) continue to resolve.
 # ---------------------------------------------------------------------------
@@ -230,7 +230,7 @@ class BaseDiagramHandler(ABC):
     ) -> Dict[str, Any]:
         """Return a structured error payload with recovery hints.
 
-        Delegates to :func:`errors.build_error_response` for the actual
+        Delegates to :func:`common.errors.build_error_response` for the actual
         payload construction.
 
         **Backward compatible**: existing callers that pass a human-readable

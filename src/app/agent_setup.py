@@ -4,7 +4,7 @@ Agent Setup
 Initialization functions for LLMs, RAG, and the diagram handler factory.
 
 Called once by ``modeling_agent.py`` during startup; returns the initialized
-objects so the entrypoint can populate :mod:`agent_context`.
+objects so the entrypoint can populate :mod:`conversation.agent_context`.
 """
 
 import logging

@@ -148,7 +148,7 @@ has **no** skip/xfail markers.
 | `test_smart_generator_result_event.py` | 6 | `generator_result` frontend event with `metadata.smart=True` — hides cost/internal name, records outcome to memory, maps error codes to tone. |
 | `test_webapp_generation_gate.py` | 4 | The web-app auto-generation **pause** — a GUI-create + `web_app` plan has the generation op stripped at source (`execution/planning.py`) and shows a generate nudge. Distinct from the smart-gen gate. |
 | `test_empty_workspace_bridge.py` | 11 | Same-turn create→generate bridging — an in-turn create is written back into the snapshot so a later generate step isn't wrongly refused as "empty workspace". |
-| `test_confirmation.py` | 52 | `confirmation.py` — `keyword_matches` (whole-word `\b`-bounded), `model_has_elements`, and the REPLACE/KEEP/CANCEL/NEW_TAB keyword lists. |
+| `test_confirmation.py` | 52 | `confirmation.py` — `keyword_matches` (whole-word `\b`-bounded), `utilities.model_utils.model_has_elements`, and the REPLACE/KEEP/CANCEL/NEW_TAB keyword lists. |
 | `test_suggestions.py` | 25 (param) | `suggestions.get_suggested_actions` per diagram type/mode + `format_suggestions_as_text`, with `{label,prompt}`-only and ≤4-suggestions invariants. |
 
 ### Protocol, memory, LLM & tracking
