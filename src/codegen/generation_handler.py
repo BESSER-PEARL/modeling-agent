@@ -32,7 +32,6 @@ from common.pending_dialogs import (
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
     PLAN_GENERATION_CONFIRM_FLAG,
-    SKIP_MISMATCH_CHECK_ONCE,
 )
 from conversation.reply_copy import OUT_OF_SCOPE_REDIRECT, SPEC_DRIVEN_NAME
 from routing.generation_signals import (
@@ -495,8 +494,8 @@ def _build_mismatch_confirmation(
     * "Update model + generate" → the create choke point in
       execution.model_operations picks up the stashed
       instructions and runs smart-gen after the new model is built.
-    * "Generate anyway"         → ``SKIP_MISMATCH_CHECK_ONCE`` is set so
-      the next pass through this handler skips this guard.
+    * "Generate anyway"         → :func:`handle_pending_smart_gen_confirmation`
+      runs the stash against the current model.
     * "Cancel"                  → clears all stashed state and stops.
     """
     refined = (classification.refined_instructions or "").strip()
@@ -847,7 +846,7 @@ def _clear_pending_state(session: Session) -> None:
 
 
 def _clear_pending_smart_gen(session: Session) -> None:
-    """Clear stashed smart-gen instructions and the skip-mismatch flag.
+    """Clear stashed smart-gen instructions and the mismatch-regen marker.
 
     Called after the user resolves a mismatch confirmation (via Generate
     Anyway, Cancel, or after a chained mismatch-regen run completes)
@@ -859,7 +858,6 @@ def _clear_pending_smart_gen(session: Session) -> None:
         PENDING_SMART_GEN_PROVIDER,
         PENDING_SMART_GEN_TIMESTAMP,
         PENDING_SMART_GEN_ORIGINAL_REQUEST,
-        SKIP_MISMATCH_CHECK_ONCE,
         MISMATCH_REGEN_PENDING,
     )
 
@@ -1610,17 +1608,11 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             # different domain than their existing class diagram, refuse
             # to silently rewrite generated code that won't match their
             # model. Surface the choice to the user via quick actions.
-            # Honors a one-shot ``SKIP_MISMATCH_CHECK_ONCE`` flag so the
-            # "Generate anyway" path doesn't loop on this question.
-            skip_mismatch = bool(pending_dialogs.get(session, SKIP_MISMATCH_CHECK_ONCE))
-            if skip_mismatch:
-                pending_dialogs.put(session, SKIP_MISMATCH_CHECK_ONCE, False)
-            else:
-                is_mismatch, suggested = _read_unified_mismatch_info(session)
-                if is_mismatch and suggested:
-                    return _build_mismatch_confirmation(
-                        session, classification, suggested, user_message=getattr(request, "message", None),
-                    )
+            is_mismatch, suggested = _read_unified_mismatch_info(session)
+            if is_mismatch and suggested:
+                return _build_mismatch_confirmation(
+                    session, classification, suggested, user_message=getattr(request, "message", None),
+                )
 
             # Never fire directly: the Spec-Driven Agent spends the user's
             # own API key, so stash + ask for explicit confirmation.

@@ -69,10 +69,6 @@ PENDING_SMART_GEN_PROVIDER = "_pending_smart_gen_provider"
 # later, unrelated request.
 PENDING_SMART_GEN_TIMESTAMP = "_pending_smart_gen_timestamp"
 PENDING_SMART_GEN_ORIGINAL_REQUEST = "_pending_smart_gen_original_request"
-# When set to True, the next smart-route classification skips the
-# domain-mismatch guard. Used by the "Generate anyway" path so the same
-# request (or its resend) doesn't loop on the confirmation question.
-SKIP_MISMATCH_CHECK_ONCE = "_skip_mismatch_check_once"
 # Set to the EXACT rebuild prompt ("create a class diagram for X") when the
 # domain-mismatch "Update model + generate" quick action is offered. That
 # action rebuilds the class diagram via a plain create; the guard and the

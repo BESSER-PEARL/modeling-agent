@@ -11,6 +11,7 @@ question the classifier is shown alike.
 import pathlib
 import re
 import threading
+import time
 from unittest.mock import patch
 
 from app import confirmation
@@ -59,12 +60,16 @@ class TestStore:
     def test_falsy_values_are_kept(self):
         session = FakeSession()
         pending_dialogs.put(session, pending_dialogs.CONFIG_PROMPT_ATTEMPTS, 0)
-        pending_dialogs.put(session, pending_dialogs.SKIP_MISMATCH_CHECK_ONCE, False)
         assert pending_dialogs.get(session, pending_dialogs.CONFIG_PROMPT_ATTEMPTS) == 0
-        assert pending_dialogs.get(session, pending_dialogs.SKIP_MISMATCH_CHECK_ONCE) is False
 
     def test_concurrent_puts_from_plan_threads_all_land(self):
-        session = FakeSession()
+        class SlowSetSession(FakeSession):
+            # Widens the read-modify-write window so unlocked puts overwrite each other.
+            def set(self, key, value):
+                time.sleep(0.001)
+                super().set(key, value)
+
+        session = SlowSetSession()
         slots = [f"slot{i}" for i in range(50)]
         threads = [threading.Thread(target=pending_dialogs.put, args=(session, s, True)) for s in slots]
         for t in threads:
@@ -99,6 +104,14 @@ class TestPrecedence:
             pending_dialogs.put(session, slot, None)
         assert pending_dialogs.current(session) is None
         assert _pending_flow_context(session) is None
+
+    def test_classifier_is_not_shown_the_generator_question_for_another_kind(self):
+        session = FakeSession()
+        pending_dialogs.put(session, "pending_new_kind", {"x": 1})
+        with patch.object(pending_dialogs, "PRECEDENCE", pending_dialogs.PRECEDENCE + ("new_kind",)), \
+                patch.dict(pending_dialogs._DIALOG_SLOT, {"new_kind": "pending_new_kind"}):
+            assert pending_dialogs.current(session).kind == "new_kind"
+            assert _pending_flow_context(session) is None
 
     def test_an_empty_smart_gen_stash_is_not_open(self):
         session = FakeSession()
@@ -142,7 +155,9 @@ def test_src_never_reads_a_slot_as_a_session_key():
     names = [n for n in dir(pending_dialogs) if n.isupper() and n not in (
         "PRECEDENCE", "GUI_CHOICE", "SYSTEM_CONFIRMATION", "SMART_GEN", "GENERATOR",
         "PLAN_GENERATION_CONFIRM_FLAG", "PENDING_DIALOGS")]
-    pattern = re.compile(r"\.(get|set|delete)\(\s*(" + "|".join(names) + r")\b")
+    pattern = re.compile(r"\.(get|set|delete)\(\s*(?:pending_dialogs\.)?(" + "|".join(names) + r")\b")
+    assert pattern.search("session.get(PENDING_GUI_CHOICE)")
+    assert pattern.search("session.set(pending_dialogs.PENDING_GUI_CHOICE, x)")
     offenders = [
         f"{path.relative_to(SRC)}:{n}"
         for path in SRC.rglob("*.py") if path.name != "pending_dialogs.py"

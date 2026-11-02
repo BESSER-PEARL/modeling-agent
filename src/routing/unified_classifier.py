@@ -561,6 +561,8 @@ def _pending_flow_context(session: Any) -> Optional[dict]:
                 ),
                 "valid_answers": ["confirm", "cancel"],
             }
+        if dialog.kind != pending_dialogs.GENERATOR:
+            return None
         pending_gen = dialog.payload
         if pending_gen == "_awaiting_selection":
             return {
