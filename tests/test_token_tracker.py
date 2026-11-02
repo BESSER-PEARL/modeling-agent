@@ -354,3 +354,44 @@ def test_the_price_file_is_besser_s():
     ours = json.loads(_PRICES_PATH.read_text(encoding="utf-8"))
     besser = json.loads(_BESSER_PRICES.read_text(encoding="utf-8"))
     assert ours == besser, f"copy {_BESSER_PRICES} to {_PRICES_PATH}"
+
+
+# BESSER's default model catalog (providers/data/model_catalog.json), USD per 1M:
+# input, output, cache read, cache write. Without a deployment catalog the agent
+# must price these the same, not from placeholder pricing.
+BESSER_CATALOG_PRICES = {
+    "claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0},
+    "claude-sonnet-5-5": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5},
+    "claude-haiku-5-5": {"input": 0.1, "output": 0.5},
+    "gpt-6.1-sol": {"input": 2.0, "output": 10.0},
+}
+
+
+def _assert_priced_as(model, rates):
+    from llm.tracking.token_tracker import _vendor_cost_table
+
+    entry = _vendor_cost_table(model)
+    assert entry is not None, f"{model} would be costed from placeholder pricing"
+    assert entry["prompt"] * 1000 == pytest.approx(rates["input"])
+    assert entry["completion"] * 1000 == pytest.approx(rates["output"])
+    for key, name in (("cache_read", "cached"), ("cache_write", "cache_write")):
+        if key in rates:
+            assert entry[name] * 1000 == pytest.approx(rates[key]), (model, key)
+
+
+@pytest.mark.parametrize("model", sorted(BESSER_CATALOG_PRICES))
+def test_besser_default_catalog_models_have_its_price(model):
+    _assert_priced_as(model, BESSER_CATALOG_PRICES[model])
+
+
+_BESSER_CATALOG = _BESSER_PRICES.with_name("model_catalog.json")
+
+
+def test_every_price_in_besser_s_default_catalog_is_ours():
+    if not _BESSER_CATALOG.is_file():
+        pytest.skip(f"no BESSER checkout next to this repo ({_BESSER_CATALOG})")
+    catalog = json.loads(_BESSER_CATALOG.read_text(encoding="utf-8"))
+    for provider in catalog["providers"].values():
+        for model in provider["models"]:
+            if "price" in model:
+                _assert_priced_as(model["id"], model["price"])
