@@ -8,13 +8,11 @@ message and record the outcome in conversation memory so follow-up turns
 path was fire-and-forget and the agent learned nothing.
 """
 
-import os
 import sys
 import types
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 # In full-suite runs an earlier test can leave a plain ``protocol``
 # MODULE in sys.modules that shadows the src/protocol PACKAGE (the same

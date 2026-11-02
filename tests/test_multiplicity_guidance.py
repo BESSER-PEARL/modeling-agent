@@ -10,7 +10,7 @@ which asks for them to be PRESENT, not for them to be CORRECT.
 """
 import re
 
-from src.diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
+from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 
 SOURCE = __import__("inspect").getsource(
     __import__("src.diagram_handlers.types.class_diagram_handler",
@@ -66,7 +66,7 @@ def test_multiplicity_rule_still_lists_the_legal_values():
 # which side of the emitted JSON each number lands on.
 # ----------------------------------------------------------------------
 
-from src.diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
+from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 
 PROMPT = ClassDiagramHandler(None)._get_system_generation_prompt()
 

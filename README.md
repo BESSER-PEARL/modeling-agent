@@ -141,6 +141,7 @@ python -m venv .venv
 
 python -m pip install --upgrade pip
 pip install -r requirements.txt
+pip install -e .            # the agent itself (src/ is the import root)
 ```
 
 ### Configure
@@ -197,6 +198,10 @@ Docker healthcheck uses a 300 s `start-period`.
 ## Testing
 
 ```bash
+# Once: test tools and the agent (editable install)
+pip install -r requirements-dev.txt
+pip install -e .
+
 # Full test suite
 python -m pytest
 

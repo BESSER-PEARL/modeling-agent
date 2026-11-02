@@ -11,18 +11,14 @@ none: a claude-haiku-4-5 key failed with a TypeError before any request.
 """
 
 import inspect
-import os
-import sys
 from types import SimpleNamespace
 
 import pytest
 from anthropic.resources.messages import Messages as _SdkMessages
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-import byok  # noqa: E402
-import model_config  # noqa: E402
-from model_config import anthropic_effort, reasoning_effort_for, supports_custom_temperature  # noqa: E402
+import byok
+import model_config
+from model_config import anthropic_effort, reasoning_effort_for, supports_custom_temperature
 
 
 @pytest.mark.parametrize("model", [

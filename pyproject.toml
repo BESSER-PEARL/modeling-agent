@@ -1,0 +1,126 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "modeling-agent"
+# The one version: docs/source/conf.py reads it from here.
+version = "8.0.0"
+description = "Conversational modeling assistant for the BESSER Web Modeling Editor"
+readme = "README.md"
+requires-python = ">=3.11"
+# Pinned for the Docker image in requirements.txt; installed from there.
+dynamic = ["dependencies"]
+
+[project.urls]
+Repository = "https://github.com/BESSER-PEARL/modeling-agent"
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+# src/ is the import root: its packages and modules are top-level names
+# (``import protocol``, ``from utilities import ...``). Install editable
+# (``pip install -e .``): the code reads src/resources/ and uml_specs/ next to it.
+[tool.setuptools]
+package-dir = { "" = "src" }
+py-modules = [
+    "agent_config",
+    "agent_context",
+    "agent_setup",
+    "byok",
+    "byok_config",
+    "confirmation",
+    "errors",
+    "model_catalog",
+    "model_config",
+    "model_utils",
+    "reply_copy",
+    "reply_language",
+    "session_helpers",
+    "session_keys",
+    "state_bodies",
+    "suggestions",
+    "telemetry",
+    "unified_classifier",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = false
+
+# Import layering (CLAUDE.md, "Intended import layering"). import-linter
+# only scans packages, so the single-file modules (state_bodies,
+# session_helpers, byok, ...) appear only as import targets: the forbidden
+# contracts below catch a package importing one directly, not chains through them.
+[tool.importlinter]
+root_packages = [
+    "diagram_handlers",
+    "execution",
+    "handlers",
+    "llm",
+    "memory",
+    "orchestrator",
+    "protocol",
+    "routing",
+    "schemas",
+    "tracking",
+    "utilities",
+]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Agent packages: a layer imports only the layers below it"
+type = "layers"
+layers = [
+    "execution",
+    "handlers | orchestrator",
+    "memory | routing",
+    "diagram_handlers",
+    "llm",
+    "tracking",
+    "utilities",
+    "protocol | schemas",
+]
+ignore_imports = [
+    # Known cycle: a confirmed generation re-runs the planned operations.
+    "handlers.generation_handler -> execution",
+]
+
+[[tool.importlinter.contracts]]
+name = "Packages do not import the state, confirmation or bootstrap modules"
+type = "forbidden"
+source_modules = [
+    "diagram_handlers",
+    "execution",
+    "handlers",
+    "llm",
+    "memory",
+    "orchestrator",
+    "protocol",
+    "routing",
+    "schemas",
+    "tracking",
+    "utilities",
+]
+forbidden_modules = ["agent_setup", "confirmation", "state_bodies"]
+
+[[tool.importlinter.contracts]]
+name = "Packages below the conversation layer do not import it"
+type = "forbidden"
+source_modules = [
+    "diagram_handlers",
+    "llm",
+    "memory",
+    "protocol",
+    "routing",
+    "schemas",
+    "tracking",
+    "utilities",
+]
+forbidden_modules = ["session_helpers", "unified_classifier"]
+
+[[tool.importlinter.contracts]]
+name = "Packages below the LLM layer do not import BYOK routing"
+type = "forbidden"
+source_modules = ["protocol", "schemas", "tracking", "utilities"]
+forbidden_modules = ["byok"]

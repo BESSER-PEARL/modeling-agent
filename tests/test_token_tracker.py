@@ -1,10 +1,6 @@
 """Tests for token tracking -- recording, summarization, cost estimation."""
 import pytest
-import sys
-import os
 import threading
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from tracking.token_tracker import TokenTracker, get_tracker
 

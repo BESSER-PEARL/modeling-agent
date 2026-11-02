@@ -7,13 +7,9 @@ key and re-sends it when the frontend fires a ``replay_last_response`` control
 message on reconnect. These tests cover the buffer + replay directly.
 """
 import json
-import os
-import sys
 from unittest.mock import patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-import session_helpers as sh  # noqa: E402
+import session_helpers as sh
 
 
 class _FakeSession:

@@ -29,8 +29,8 @@ caused a specific failure.
 """
 import inspect
 
-from src.diagram_handlers.types import class_diagram_handler
-from src.diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
+from diagram_handlers.types import class_diagram_handler
+from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 
 SOURCE = inspect.getsource(class_diagram_handler)
 PROMPT = ClassDiagramHandler(None)._get_system_generation_prompt()

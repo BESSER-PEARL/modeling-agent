@@ -11,13 +11,9 @@ for that flow); only DIRECT generation-only plans still run immediately.
 These tests exercise the strip + prompt directly (the path that previously let a
 rare auto-generation slip through).
 """
-import os
-import sys
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-import execution.planning as planning  # noqa: E402
+import execution.planning as planning
 
 
 class _FakeSession:

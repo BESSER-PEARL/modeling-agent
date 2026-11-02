@@ -10,12 +10,8 @@ to ``String``, so every closed value set was silently lost::
 The missing enumerations were this coercion, not a modelling choice, so the
 fix is deterministic and belongs here, not in a firmer prompt sentence.
 """
-import os
-import sys
 
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 from schemas.class_diagram import RecoveredEnumerationsSpec

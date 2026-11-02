@@ -1,9 +1,5 @@
 """Tests for the contextual suggestion engine."""
 import pytest
-import sys
-import os
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from suggestions import get_suggested_actions, format_suggestions_as_text
 

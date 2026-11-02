@@ -12,16 +12,13 @@ The invariants under test:
   - a telemetry failure never delays or breaks the actual reply.
 """
 import json
-import os
 import sys
 from unittest.mock import patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-import session_helpers as sh  # noqa: E402
-import telemetry  # noqa: E402
-from protocol.adapters import parse_v2_payload  # noqa: E402
-from session_keys import TELEMETRY_EMITTED_EVENT_ID  # noqa: E402
+import session_helpers as sh
+import telemetry
+from protocol.adapters import parse_v2_payload
+from session_keys import TELEMETRY_EMITTED_EVENT_ID
 
 
 class _FakeEvent:

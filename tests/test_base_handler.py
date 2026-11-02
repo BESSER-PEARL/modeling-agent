@@ -1,10 +1,6 @@
 """Tests for BaseDiagramHandler utilities -- JSON cleaning, validation, error classification."""
 import pytest
-import sys
-import os
 import json
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from diagram_handlers.core.base_handler import (
     validate_spec, LLMPredictionError,

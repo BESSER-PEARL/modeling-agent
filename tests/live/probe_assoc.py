@@ -1,6 +1,5 @@
 """Send the hotel benchmark prompt and dump the systemSpec the agent builds."""
 import asyncio, json, os, sys, time, uuid
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _agent_ws import connect  # noqa
 from test_nl_generation_scenarios import _unwrap, AGENT_WS_URL  # noqa
 

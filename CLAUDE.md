@@ -32,7 +32,8 @@ Python 3.11+.
 ```bash
 python -m venv venv
 source venv/bin/activate                 # Windows: .\venv\Scripts\Activate.ps1
-pip install -r requirements.txt          # pins besser-agentic-framework == 4.5.3
+pip install -r requirements-dev.txt      # runtime pins (besser-agentic-framework == 4.5.3) + test/lint tools
+pip install -e .                         # the agent itself; src/ is the import root
 cp config_example.yaml config.yaml       # config.yaml is gitignored; never commit real keys (same for .env)
 python modeling_agent.py                 # WebSocket on :8765
 
@@ -40,10 +41,16 @@ python -m pytest                                    # full suite
 python -m pytest tests/test_unified_classifier.py   # routing verdicts
 python -m pytest tests/test_diagram_handlers.py     # cross-handler contract tests
 python -m pytest tests/test_bpmn.py                 # one diagram type
+lint-imports                                        # import layers (contracts in pyproject.toml)
 ```
-CI (`.github/workflows/tests.yml`) runs this suite and ruff on every PR and push.
+CI (`.github/workflows/tests.yml`) runs this suite, ruff and `lint-imports` on every PR and push.
 
-**Intended import layering** (a layer imports only those below it): `state_bodies` / `agent_setup` → `confirmation` → `execution` → `handlers` / `orchestrator` → `session_helpers` → `unified_classifier` → `memory` / `reply_language` / `routing` → `diagram_handlers` → `llm` → `byok` → `tracking` → `byok_config` → `utilities` → `protocol` → leaf modules (`agent_config`, `session_keys`, `errors`, …); the import-linter contract arrives with the packaging work (A13).
+**Packaging**: `pyproject.toml` installs `src/` as the import root, so the agent's packages and modules are
+top-level names (`from protocol.types import ...`, `import session_helpers`) in the app, the tests and the
+image alike. Never import through `src.` and never add `sys.path` inserts. A new top-level module in `src/`
+goes into `py-modules` there (`tests/test_packaging.py` checks). Its `version` is the agent's only version.
+
+**Intended import layering** (a layer imports only those below it): `state_bodies` / `agent_setup` → `confirmation` → `execution` → `handlers` / `orchestrator` → `session_helpers` → `unified_classifier` → `memory` / `reply_language` / `routing` → `diagram_handlers` → `llm` → `byok` → `tracking` → `byok_config` → `utilities` → `protocol` → leaf modules (`agent_config`, `session_keys`, `errors`, …). `lint-imports` enforces this for the packages (`[tool.importlinter]` in `pyproject.toml`): a layers contract over them, with the one known cycle (`handlers.generation_handler` → `execution`) ignored, and forbidden contracts for a package importing a higher single-file module directly. Single-file modules are not scanned, so their own imports and chains through them are not checked.
 
 - Handler tests instantiate handlers directly, e.g. `BPMNDiagramHandler(None)` (the LLM arg is only needed by
   methods that call the model), and test deterministic repair such as `_validate_and_refine` as a pure function
@@ -187,6 +194,7 @@ Full reference: `docs/source/websocket_protocol.rst`. The traps:
 
 ```text
 modeling_agent.py                 Entrypoint: BAF agent, 10 states/intents, wiring
+pyproject.toml                    Package (src/ as import root, editable install), version, import-linter contracts
 config_example.yaml               Template for the gitignored config.yaml
 Dockerfile                        Entrypoint writes config.yaml from env
 patches/websocket_platform.py     Vendored over pip-installed BAF 4.5.3 (see below)

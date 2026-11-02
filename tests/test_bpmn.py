@@ -269,11 +269,6 @@ def test_bpmn_model_summary_flow_uses_ids():
 def test_bpmn_generate_modification_element_not_found_returns_assistant_message(monkeypatch):
     """When the LLM signals elementFound=False, generate_modification must return
     an assistant_message action — never forward an empty modify_model to the WME."""
-    import sys
-    from pathlib import Path
-    _SRC = Path(__file__).resolve().parent.parent / "src"
-    if str(_SRC) not in sys.path:
-        sys.path.insert(0, str(_SRC))
 
     from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
     from schemas.bpmn import BPMNModificationResponse
@@ -298,11 +293,6 @@ def test_bpmn_generate_modification_element_not_found_returns_assistant_message(
 def test_bpmn_generate_modification_add_task_returns_modify_model(monkeypatch):
     """A successful add_task modification must produce a modify_model action
     with the task name present in the message."""
-    import sys
-    from pathlib import Path
-    _SRC = Path(__file__).resolve().parent.parent / "src"
-    if str(_SRC) not in sys.path:
-        sys.path.insert(0, str(_SRC))
 
     from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
     from schemas.bpmn import BPMNModificationResponse, BPMNModification, BPMNModificationTarget
@@ -333,11 +323,6 @@ def test_bpmn_generate_modification_add_task_returns_modify_model(monkeypatch):
 def test_bpmn_generate_modification_add_flow_message_shows_arrow(monkeypatch):
     """add_flow modification message must show source → target names resolved
     from the current model, not raw element IDs."""
-    import sys
-    from pathlib import Path
-    _SRC = Path(__file__).resolve().parent.parent / "src"
-    if str(_SRC) not in sys.path:
-        sys.path.insert(0, str(_SRC))
 
     from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
     from schemas.bpmn import BPMNModificationResponse, BPMNModification, BPMNModificationTarget, BPMNModificationChanges
@@ -377,11 +362,6 @@ def test_bpmn_generate_modification_add_flow_message_shows_arrow(monkeypatch):
 
 def test_bpmn_generate_modification_remove_flow(monkeypatch):
     """remove_flow must produce a modify_model result."""
-    import sys
-    from pathlib import Path
-    _SRC = Path(__file__).resolve().parent.parent / "src"
-    if str(_SRC) not in sys.path:
-        sys.path.insert(0, str(_SRC))
 
     from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
     from schemas.bpmn import BPMNModificationResponse, BPMNModification, BPMNModificationTarget, BPMNModificationChanges
@@ -421,11 +401,6 @@ def test_bpmn_generate_modification_remove_flow(monkeypatch):
 def test_bpmn_guardrail_drops_modification_with_hallucinated_ref(monkeypatch):
     """When the LLM says elementFound=True but the target ID doesn't exist,
     the server-side guardrail must catch it and return an assistant_message."""
-    import sys
-    from pathlib import Path
-    _SRC = Path(__file__).resolve().parent.parent / "src"
-    if str(_SRC) not in sys.path:
-        sys.path.insert(0, str(_SRC))
 
     from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
     from schemas.bpmn import BPMNModificationResponse, BPMNModification, BPMNModificationTarget
@@ -461,11 +436,6 @@ def test_bpmn_guardrail_drops_modification_with_hallucinated_ref(monkeypatch):
 def test_bpmn_guardrail_unnamed_element_resolved_by_type_label(monkeypatch):
     """remove_element targeting an unnamed node by ID shows its type label in
     the message, not the raw Apollon UUID."""
-    import sys
-    from pathlib import Path
-    _SRC = Path(__file__).resolve().parent.parent / "src"
-    if str(_SRC) not in sys.path:
-        sys.path.insert(0, str(_SRC))
 
     from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
     from schemas.bpmn import BPMNModificationResponse, BPMNModification, BPMNModificationTarget

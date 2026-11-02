@@ -3,12 +3,8 @@ router. A pending flow (e.g. a GUI-choice prompt) can suppress intent routing so
 follow-up modify lands in the CREATE state; the reconciliation honors the
 classifier so "add Death to the PetStatus enum" modifies instead of rebuilding.
 """
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-from state_bodies import _reconcile_intent as _rec  # noqa: E402
+from state_bodies import _reconcile_intent as _rec
 
 
 def test_modify_stuck_in_create_is_reconciled():

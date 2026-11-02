@@ -13,17 +13,13 @@ model, so every gpt-6 call sent a temperature (and the vision path
 ``max_tokens``) and got a 400. Unpriced models report placeholder costs.
 """
 
-import os
-import sys
 from types import SimpleNamespace
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-import byok  # noqa: E402
-import model_config  # noqa: E402
-from model_config import reasoning_effort_for, supports_custom_temperature  # noqa: E402
+import byok
+import model_config
+from model_config import reasoning_effort_for, supports_custom_temperature
 
 GPT6 = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]
 CLAUDE_NO_SAMPLING = [

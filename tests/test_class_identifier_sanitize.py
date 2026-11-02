@@ -9,12 +9,8 @@ The guard rewrites such names to valid identifiers BEFORE the spec is injected,
 and rewrites every reference to a renamed class/enum (relationship endpoints,
 class-typed attribute types, OCL contexts) so the spec stays consistent.
 """
-import os
-import sys
 
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 

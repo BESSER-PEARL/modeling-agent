@@ -26,7 +26,8 @@ Installation
    cd modeling-agent
    python -m venv venv
    source venv/bin/activate  # or .\venv\Scripts\Activate.ps1 on Windows
-   pip install -r requirements.txt
+   pip install -r requirements-dev.txt  # runtime pins + test and lint tools
+   pip install -e .                     # the agent itself (src/ is the import root)
 
    # Copy and configure
    cp config_example.yaml config.yaml
@@ -50,6 +51,7 @@ Project Structure
 
    modeling-agent/
    ├── modeling_agent.py          # Entry point: defines intents, states, wires transitions
+   ├── pyproject.toml             # Package (src/ as import root), version, import-linter contracts
    ├── config.yaml                # Runtime configuration (API keys, LLM settings)
    ├── config_example.yaml        # Template for config.yaml
    │

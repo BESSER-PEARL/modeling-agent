@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import pytest
 
-from src.handlers.smart_generation_handler import (
+from handlers.smart_generation_handler import (
     GenerationClassification,
     build_trigger_smart_generator_payload,
 )
-from src.unified_classifier import _SYSTEM_PROMPT, UnifiedClassification
+from unified_classifier import _SYSTEM_PROMPT, UnifiedClassification
 
 SUMMARY = "Build a hotel booking web app. FastAPI, SQLite, React."
 
@@ -107,7 +107,7 @@ def test_non_smart_classification_still_rejected():
 # rewritten a long spec into one line by then.
 # ----------------------------------------------------------------------
 
-from src.execution.model_operations import original_request_to_stash
+from execution.model_operations import original_request_to_stash
 
 
 class _Req:
@@ -159,7 +159,7 @@ def test_missing_message_attribute_is_tolerated():
 
 
 def test_original_context_is_project_scoped_and_direct_requests_are_frozen(monkeypatch):
-    from src.handlers import generation_handler as generation
+    from handlers import generation_handler as generation
     from session_keys import PENDING_SMART_GEN_ORIGINAL_REQUEST
     from utilities.original_request import remember_original_request, original_request_for_project
 
@@ -202,7 +202,7 @@ def test_original_context_is_project_scoped_and_direct_requests_are_frozen(monke
 
 
 def test_same_project_create_gui_confirm_keeps_raw_spec_and_followups(monkeypatch):
-    from src.handlers import generation_handler as generation
+    from handlers import generation_handler as generation
     from session_keys import PENDING_SMART_GEN_ORIGINAL_REQUEST
     from utilities.original_request import remember_original_request, original_request_for_project
 

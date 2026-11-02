@@ -4,12 +4,8 @@ smart-gen confirmation, and every 'no, generate the gui model' reply was
 itself re-misrouted — re-creating the identical confirmation in a loop.
 The _post_validate guard breaks that class of loop deterministically.
 """
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-from unified_classifier import UnifiedClassification, _post_validate  # noqa: E402
+from unified_classifier import UnifiedClassification, _post_validate
 
 
 def _gen(route="smart", **kw):

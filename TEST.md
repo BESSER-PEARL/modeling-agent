@@ -15,12 +15,17 @@ Tests live in two places with very different characters:
 `tests/conftest.py` provides the shared scaffolding used across the flat suite:
 `FakeSession` (a stand-in for BAF's `Session`), `FakeLLM` (canned-response stub),
 `make_v2_payload` / `make_session` (build the double-JSON-encoded v2 wire payload the
-frontend sends), and the `MINIMAL_CLASS_MODEL` / `EMPTY_CLASS_MODEL` fixtures. It also
-inserts `src/` onto `sys.path` so tests can use bare-style imports (`from protocol.types import ...`).
+frontend sends), and the `MINIMAL_CLASS_MODEL` / `EMPTY_CLASS_MODEL` fixtures. Tests import the agent the way it
+imports itself, by top-level name (`from protocol.types import ...`), never `src.`: the
+agent is installed with `pip install -e .`, which puts `src/` on the path.
 
 ## Running the tests
 
 ```bash
+# Once: test tools and the agent (editable install)
+pip install -r requirements-dev.txt
+pip install -e .
+
 # Full deterministic suite
 python -m pytest
 
@@ -31,13 +36,15 @@ python -m pytest tests/test_request_planner.py
 python -m pytest tests/test_protocol.py
 ```
 
-There is **no `pytest.ini` / `pyproject.toml` / `setup.cfg`** — tests are discovered with
-pytest defaults (`test_*.py`), and `conftest.py` handles the `src/` path wiring.
+`pyproject.toml` declares the package but has no pytest section: tests are discovered with
+pytest defaults (`test_*.py`). Without the editable install they fail with
+`ModuleNotFoundError`.
 
 ### CI status
 
 `.github/workflows/tests.yml` runs `python -m pytest tests -q --tb=short --ignore=tests/live`
-on Python 3.11 and `ruff check src patches modeling_agent.py` (rules in `ruff.toml`) on every
+on Python 3.11, `ruff check src patches modeling_agent.py` (rules in `ruff.toml`) and
+`lint-imports` (layer contracts in `pyproject.toml`) on every
 PR and on pushes to `develop` and `main`. `docs.yml` builds the documentation. The live
 harnesses in `tests/live/` are never run in CI.
 

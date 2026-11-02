@@ -40,8 +40,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY patches/websocket_platform.py \
     /usr/local/lib/python3.11/site-packages/baf/platforms/websocket/websocket_platform.py
 
-# Copy the modeling agent code
+# Copy the modeling agent code and install it in place (editable: the code
+# reads src/resources/ and uml_specs/ next to it). No index access: the
+# dependencies are installed above and the base image ships setuptools.
 COPY . .
+RUN pip install --no-cache-dir --no-deps --no-build-isolation -e .
 
 # A build-time CA must not become runtime trust. Unconditional; the grep is an
 # assertion that fails the build if a known TLS-inspection CA is still trusted.
@@ -54,7 +57,6 @@ EXPOSE 8765
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app/src:/app
 
 # Create entrypoint script that generates config.yaml from environment variables
 RUN echo '#!/bin/bash\n\

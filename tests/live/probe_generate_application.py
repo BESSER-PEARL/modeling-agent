@@ -28,8 +28,6 @@ import sys
 import time
 import uuid
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 from _agent_ws import connect as agent_ws_connect  # noqa: E402
 from test_nl_generation_scenarios import _unwrap, AGENT_WS_URL  # noqa: E402
 

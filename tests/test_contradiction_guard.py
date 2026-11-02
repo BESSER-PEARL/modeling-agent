@@ -4,12 +4,8 @@ model anything") can't yield a real model — the agent should clarify instead o
 building a token 1-class model. HIGH-PRECISION: real, positive requests that
 merely contain a negation ("a shop with no online payments") must NOT be caught.
 """
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-from state_bodies import _create_is_self_contradictory as _contra  # noqa: E402
+from state_bodies import _create_is_self_contradictory as _contra
 
 
 def test_degenerate_creates_are_caught():

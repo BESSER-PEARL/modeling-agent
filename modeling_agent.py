@@ -1,23 +1,17 @@
 # Intelligent UML Modeling Assistant – slim entrypoint
 # ---------------------------------------------------
-# All business logic lives under ``src/``.  This file only:
-#   1. Puts ``src/`` on sys.path
-#   2. Creates the BESSER Agent and WebSocket platform
-#   3. Initialises LLMs / RAG / DiagramHandlerFactory via ``agent_setup``
-#   4. Populates the shared ``agent_context`` module
-#   5. Declares states & intents
-#   6. Wires state bodies and transitions via ``state_bodies.register_all``
-#   7. Runs the agent
+# All business logic lives under ``src/``, installed with ``pip install -e .``.
+# This file only:
+#   1. Creates the BESSER Agent and WebSocket platform
+#   2. Initialises LLMs / RAG / DiagramHandlerFactory via ``agent_setup``
+#   3. Populates the shared ``agent_context`` module
+#   4. Declares states & intents
+#   5. Wires state bodies and transitions via ``state_bodies.register_all``
+#   6. Runs the agent
 
 import logging
 import os
-import sys
 import threading
-
-# ── Make ``src/`` importable for bare-style imports ──────────────────────
-_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
 
 from baf.core.agent import Agent
 from baf import nlp

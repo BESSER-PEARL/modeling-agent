@@ -4,18 +4,14 @@
 type) used the server client unconditionally, so a user with their own key
 still spent the server's quota, and modeling failed when that quota ran out.
 """
-import os
-import sys
 from types import SimpleNamespace
 
 import pytest
 from pydantic import BaseModel
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-import byok  # noqa: E402
-import byok_config  # noqa: E402
-from diagram_handlers.types.agent_diagram_handler import AgentDiagramHandler  # noqa: E402
+import byok
+import byok_config
+from diagram_handlers.types.agent_diagram_handler import AgentDiagramHandler
 
 
 class _Answer(BaseModel):

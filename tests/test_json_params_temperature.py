@@ -14,14 +14,11 @@ configured model moved to a gpt-5 tier, every converted text file failed with
 
 which is what a user saw after pasting a requirements document.
 """
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from model_config import reasoning_effort_for, supports_custom_temperature  # noqa: E402
+from model_config import reasoning_effort_for, supports_custom_temperature
 
 
 @pytest.mark.parametrize("model", [

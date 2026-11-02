@@ -6,27 +6,23 @@ live LLM (the classifier path is bypassed; the keyword
 fallback and the message builders are pure).
 """
 
-import os
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+import time
 
-import time  # noqa: E402
-
-import execution.model_operations as mo  # noqa: E402
-import confirmation  # noqa: E402
-from session_keys import (  # noqa: E402
+import execution.model_operations as mo
+import confirmation
+from session_keys import (
     LAST_SMART_GEN_AT,
     LAST_SMART_GEN_PROJECT_ID,
     PENDING_GUI_CHOICE,
     SMART_GEN_ARMED_PROJECT_ID,
     UNIFIED_CLASSIFICATION,
 )
-from handlers.generation_handler import _build_smart_gen_confirmation  # noqa: E402
-from tests.conftest import FakeSession, make_session  # noqa: E402
+from handlers.generation_handler import _build_smart_gen_confirmation
+from tests.conftest import FakeSession, make_session
 
 
 # ---------------------------------------------------------------------------

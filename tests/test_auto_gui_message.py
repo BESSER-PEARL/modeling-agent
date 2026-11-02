@@ -14,14 +14,11 @@ pytest process — each assertion runs in an isolated subprocess that installs a
 ``baf`` import hook only for itself.
 """
 
-import os
 import subprocess
 import sys
 import textwrap
 
 import pytest
-
-_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
 
 # Driver template: installs a baf import hook, imports confirmation, patches the
 # class-diagram resolver, builds the message, and prints it on a marker line.
@@ -29,8 +26,6 @@ _DRIVER = textwrap.dedent(
     """
     import sys, types, importlib.abc, importlib.machinery
     from unittest.mock import MagicMock
-
-    sys.path.insert(0, {src!r})
 
     class _BafStub(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         def find_spec(self, fullname, path, target=None):
@@ -70,7 +65,7 @@ _DRIVER = textwrap.dedent(
 
 def _run_message(model=None, raise_=False) -> str:
     """Build the auto-GUI message in an isolated subprocess; return the message."""
-    code = _DRIVER.format(src=_SRC, model=model, raise_=raise_)
+    code = _DRIVER.format(model=model, raise_=raise_)
     proc = subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True, text=True,

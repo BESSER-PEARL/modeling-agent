@@ -9,8 +9,8 @@ The frontend fix stopped the modifier DESTROYING neighbours. This covers the
 other half: the agent must reconnect what the deletion strands, or at minimum
 name it, instead of reporting success.
 """
-from src.diagram_handlers.core.prompt_fragments import DELETE_CLASS_CASCADE_RULE
-from src.diagram_handlers.types.class_diagram_handler import _CLASS_KEY_RULES_BLOCK
+from diagram_handlers.core.prompt_fragments import DELETE_CLASS_CASCADE_RULE
+from diagram_handlers.types.class_diagram_handler import _CLASS_KEY_RULES_BLOCK
 
 
 def test_rule_still_requires_removing_connected_relationships():

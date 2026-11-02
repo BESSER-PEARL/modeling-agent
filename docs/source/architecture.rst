@@ -135,17 +135,21 @@ Entry Point
 
 ``modeling_agent.py`` performs the following startup sequence:
 
-1. Adds ``src/`` to ``sys.path``
-2. Creates the BESSER ``Agent`` object and the WebSocket platform (``use_ui=False``)
-3. Calls the five ``init_*`` functions from ``agent_setup`` — ``init_llm``,
+1. Creates the BESSER ``Agent`` object and the WebSocket platform (``use_ui=False``)
+2. Calls the five ``init_*`` functions from ``agent_setup`` — ``init_llm``,
    ``init_stt``, ``init_rag``, ``init_diagram_factory``,
    ``init_intent_classifier_config``
-4. Populates ``agent_context`` module-level globals
-5. Defines all 10 states and 10 intents (each intent with training sentences,
+3. Populates ``agent_context`` module-level globals
+4. Defines all 10 states and 10 intents (each intent with training sentences,
    required by the local Simple classifier)
-6. Calls ``state_bodies.register_all()`` to wire state bodies and transitions
-7. Starts the session reaper thread
-8. Calls ``agent.run()``
+5. Calls ``state_bodies.register_all()`` to wire state bodies and transitions
+6. Starts the session reaper thread
+7. Calls ``agent.run()``
+
+It imports the agent's modules by top-level name (``import agent_context``,
+``from state_bodies import register_all``). They resolve because the agent is
+installed with ``pip install -e .``: ``pyproject.toml`` makes ``src/`` the
+import root, locally, in CI and in the Docker image.
 
 Shared Runtime Context
 ----------------------

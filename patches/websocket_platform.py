@@ -56,8 +56,9 @@ def _set_request_byok(session):
     The frontend sends the user's key/provider/model via USER_SET_VARIABLE,
     so they live on the session under ``user_api_key`` / ``user_api_provider``
     / ``user_api_model``. ``byok`` is imported lazily because this file is
-    copied into the installed ``baf`` package at build time; ``src/`` is on
-    ``sys.path`` once the agent has started (and the handler only runs then).
+    copied into the installed ``baf`` package at build time; the agent's own
+    modules (``src/``, installed with ``pip install -e .``) are importable by
+    the time the handler runs.
 
     Returns a token to pass to :func:`_reset_request_byok`, or ``None`` if
     BYOK is unavailable for any reason (the request then uses the shared LLM).

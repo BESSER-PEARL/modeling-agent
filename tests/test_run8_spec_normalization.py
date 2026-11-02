@@ -8,7 +8,7 @@ create schemas unsatisfiable, and must not disturb anything else.
 """
 import pytest
 
-from src.diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
+from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 
 UNBOUNDED = ClassDiagramHandler._SPEC_UNBOUNDED
 

@@ -11,18 +11,14 @@ The assertions check behaviour (exception name, call counts, user text) rather
 than importing the new class, so they fail against the pre-fix code for the
 reason they exist, not with an ImportError.
 """
-import os
-import sys
 from types import SimpleNamespace
 
 import pytest
 from pydantic import BaseModel
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-import byok  # noqa: E402
-from diagram_handlers.core.base_handler import LLMPredictionError  # noqa: E402
-from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler  # noqa: E402
+import byok
+from diagram_handlers.core.base_handler import LLMPredictionError
+from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 
 CYBER_MESSAGE = (
     "The AI model declined this request (safety category: cyber). Please try "

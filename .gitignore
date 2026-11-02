@@ -23,3 +23,4 @@ tests/live/spec_out.json
 
 # Corporate proxy CA certs for local image builds (site-internal)
 ca-certs-extra/*.crt
+*.egg-info/

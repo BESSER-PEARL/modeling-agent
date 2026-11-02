@@ -15,12 +15,7 @@ Asserts:
   success message.
 """
 
-import os
-import sys
-
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from schemas.class_diagram import (
     ClassModification,

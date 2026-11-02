@@ -13,30 +13,23 @@ hit on the class-diagram modification path:
 """
 
 import re
-import sys
-from pathlib import Path
 
 import pytest
 
-# Make src/ importable when running pytest from the repo root.
-_SRC = Path(__file__).resolve().parent.parent / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-from diagram_handlers.types.class_diagram_handler import (  # noqa: E402
+from diagram_handlers.types.class_diagram_handler import (
     MODIFY_SYSTEM_PROMPT_CLASS,
     ClassDiagramHandler,
 )
-from diagram_handlers.types.agent_diagram_handler import (  # noqa: E402
+from diagram_handlers.types.agent_diagram_handler import (
     MODIFY_SYSTEM_PROMPT_AGENT,
 )
-from diagram_handlers.types.object_diagram_handler import (  # noqa: E402
+from diagram_handlers.types.object_diagram_handler import (
     MODIFY_SYSTEM_PROMPT_OBJECT,
 )
-from diagram_handlers.types.state_machine_handler import (  # noqa: E402
+from diagram_handlers.types.state_machine_handler import (
     MODIFY_SYSTEM_PROMPT_STATE_MACHINE,
 )
-from schemas import ClassModification  # noqa: E402
+from schemas import ClassModification
 
 
 # ---------------------------------------------------------------------------

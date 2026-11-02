@@ -4,12 +4,8 @@ Catches pure-filler creates ("create", "make an app") so the agent asks what to
 build instead of hallucinating a default model — while any real domain noun
 lets the request proceed unchanged.
 """
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-from state_bodies import _create_request_is_too_vague as _vague  # noqa: E402
+from state_bodies import _create_request_is_too_vague as _vague
 
 
 def test_pure_filler_creates_are_caught():
