@@ -412,9 +412,10 @@ Tiers
 
 Routing is by call site: each call names the tier it needs (see
 :ref:`model routing <model-routing>` above for the overrides). Prices are USD
-per million tokens from ``_COST_PER_1K`` in ``src/tracking/token_tracker.py``,
-unless the model catalog (``BESSER_MODEL_CATALOG``) prices the model on the
-endpoint the call goes to: a gateway bills its own rates.
+per million tokens, from the model catalog (``BESSER_MODEL_CATALOG``) when it
+prices the model on the endpoint the call goes to (a gateway bills its own
+rates), else from the vendor price file (see
+:ref:`where prices come from <agent-prices>`).
 
 .. list-table::
    :header-rows: 1
@@ -456,8 +457,8 @@ endpoint the call goes to: a gateway bills its own rates.
      - 0.02 / — / —
      - RAG vectors; pinned so the persisted store keeps matching.
 
-The ``gpt-6-sol`` and ``gpt-6-luna`` cached rates are not in the price file
-the table is sourced from; they assume the 10 % that ``gpt-6-astra`` lists.
+``gpt-6-sol`` and ``gpt-6-luna`` are not in the price file yet; their cached
+rates assume the 10 % that ``gpt-6-astra`` lists.
 
 Static prefix first
 ~~~~~~~~~~~~~~~~~~~
@@ -576,19 +577,30 @@ length. The tracker supports per-session buckets, but no call site passes a
 session id, so only the global totals are populated. The figures are
 estimates: the provider's billing dashboard is authoritative.
 
-Keeping ``_COST_PER_1K`` current
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. _agent-prices:
 
-A gateway's rates, and a vendor model the table does not know yet, belong
-in the deployment's model catalog instead: an edit there and a restart, no
-release. For the vendor list prices in the table: when a ``MODEL_*`` default
-changes, or a model joins the BYOK picker, add an entry with ``prompt``, ``completion`` and ``cached`` rates per 1K tokens (the
-per-million list price divided by 1000), taken from the price file BESSER
-vendors in ``spec_driven_agent/providers/data/model_prices.json``. Dated and
-gateway ids (``claude-haiku-4-5-20251001``, ``us.anthropic.claude-sonnet-5``)
-are priced as their base entry; a different variant such as ``gpt-5.5-pro``
-needs its own. A model with no entry is priced with placeholder rates and
-logged once as a warning.
+Where prices come from
+~~~~~~~~~~~~~~~~~~~~~~
+
+A call is priced, in order, from:
+
+1. the deployment's model catalog, for the endpoint the call goes to;
+2. ``src/resources/model_prices.json``, a copy of the price file BESSER
+   vendors (``besser/spec_driven_agent/providers/data/model_prices.json``,
+   reduced from litellm's ``model_prices_and_context_window.json``), so the
+   agent and the backend price a model the same way;
+3. ``_UNPUBLISHED`` in ``src/tracking/token_tracker.py``: the few current
+   models the price file does not list yet. A test fails once a refresh lists
+   one, so its row is deleted.
+
+A gateway's rates, and a new model, belong in the deployment's model catalog:
+an edit there and a restart, no release. Refresh the price file in BESSER and
+copy it here in the same change. An id that extends a listed id by a gateway
+prefix or a snapshot suffix (``claude-haiku-4-5-20251001``,
+``us.anthropic.claude-opus-5-5``) is priced as that id, unless the file lists
+it under its own rate; a different variant such as ``gpt-6-sol-pro`` is not.
+A model nothing prices is costed at placeholder rates and logged once as a
+warning.
 
 
 Tunable Constants

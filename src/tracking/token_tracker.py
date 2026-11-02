@@ -9,85 +9,54 @@ Usage::
     from tracking import get_tracker
 
     tracker = get_tracker()
-    tracker.record(prompt_tokens=120, completion_tokens=80, model=LLM_MODEL_DEFAULT)
+    tracker.record(prompt_tokens=120, completion_tokens=80, model="gpt-6-luna")
 
     print(tracker.summary())           # global totals
     print(tracker.session_summary(sid)) # per-session totals
 """
 
+import json
 import logging
 import os
 import re
 import threading
 import time
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 from typing import Dict, Optional
 
-from agent_config import LLM_MODEL_DEFAULT
 from byok_config import get_current
 from model_catalog import load_model_catalog
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Cost table (USD per 1 000 tokens)
+# Prices
 #
-# Every model the agent can be pointed at needs an entry here. A model that is
-# missing still records tokens, but its cost is computed from _DEFAULT_COST —
-# a placeholder, not that model's real pricing. That fallback is deliberately
-# quiet per call (this runs on every LLM response) but is reported once per
-# unknown model via _warn_unknown_model, so a model swap that forgets this
-# table shows up in the logs instead of silently producing wrong cost figures.
+# A call is priced from the deployment's model catalog (a gateway bills its own
+# rates), else from the vendor price file, else from _UNPUBLISHED. The price
+# file is a copy of the one BESSER vendors
+# (besser/spec_driven_agent/providers/data/model_prices.json: litellm's
+# model_prices_and_context_window.json reduced to the vendors we call), so the
+# agent and the backend price a model the same; refresh both together. A model
+# none of them prices records tokens at _DEFAULT_COST, a placeholder, and is
+# reported once via _warn_unknown_model.
 # ---------------------------------------------------------------------------
 
-# "cached" is the cache-read input rate; a model without one is billed at its
-# full prompt rate for cached tokens. Rates come from the price file BESSER
-# vendors (spec_driven_agent/providers/data/model_prices.json).
-_COST_PER_1K: Dict[str, Dict[str, float]] = {
-    "gpt-4.1-mini": {"prompt": 0.0004, "completion": 0.0016, "cached": 0.0001},
-    "gpt-4.1": {"prompt": 0.002, "completion": 0.008, "cached": 0.0005},
-    "gpt-4o-mini": {"prompt": 0.00015, "completion": 0.0006, "cached": 0.000075},
-    "gpt-4o": {"prompt": 0.0025, "completion": 0.01, "cached": 0.00125},
-    # Models used by the routing table in ``model_config.py`` — every
-    # routed model needs an entry here, otherwise its cost silently
-    # falls back to ``_DEFAULT_COST`` and skews cost reporting.
-    "gpt-5": {"prompt": 0.00125, "completion": 0.01, "cached": 0.000125},
-    "gpt-5.5": {"prompt": 0.005, "completion": 0.03, "cached": 0.0005},
-    # gpt-5.6 family and the 5.4/5.6 options offered in the BYOK model picker. Prices
-    # per 1K = per-1M list price / 1000 (sol $4/$20, terra $2/$12,
-    # luna $0.20/$1.20, 5.4-mini $0.75/$4.50, 5.4-nano $0.20/$1.25).
-    "gpt-5.6-sol": {"prompt": 0.004, "completion": 0.02, "cached": 0.0004},
-    "gpt-5.6-terra": {"prompt": 0.002, "completion": 0.012, "cached": 0.0002},
-    "gpt-5.6-luna": {"prompt": 0.0002, "completion": 0.0012, "cached": 0.00002},
-    "gpt-5.4-mini": {"prompt": 0.00075, "completion": 0.0045, "cached": 0.000075},
-    "gpt-5.4-nano": {"prompt": 0.0002, "completion": 0.00125, "cached": 0.00002},
-    # gpt-6 family (current defaults: sol for GUI generation, luna for small
-    # generation; astra $10/$50, sol $2/$10, luna $0.10/$0.50). sol/luna are
-    # not in the price file: their cached rate assumes astra's 10%.
-    "gpt-6-astra": {"prompt": 0.01, "completion": 0.05, "cached": 0.001},
-    "gpt-6-sol": {"prompt": 0.002, "completion": 0.01, "cached": 0.0002},
-    "gpt-6-luna": {"prompt": 0.0001, "completion": 0.0005, "cached": 0.00001},
-    # Production large/reasoning override (BESSER_AGENT_MODEL_*).
-    "gpt-5-mini": {"prompt": 0.00025, "completion": 0.002, "cached": 0.000025},
-    # BYOK tier models (byok._PROVIDER_TIER_MODELS). Rates from the price file
-    # BESSER vendors (spec_driven_agent/providers/data/model_prices.json).
-    # Claude cache reads are 0.1x input (0.025x on Fable 5.1, 0.05x on Opus 5.5).
-    "claude-sonnet-4-6": {"prompt": 0.003, "completion": 0.015, "cached": 0.0003},
-    "claude-haiku-4-5": {"prompt": 0.001, "completion": 0.005, "cached": 0.0001},
-    # Other current Claude models a user key can pick (Anthropic list prices).
-    "claude-fable-5-1": {"prompt": 0.01, "completion": 0.05, "cached": 0.00025},
-    "claude-fable-5": {"prompt": 0.01, "completion": 0.05, "cached": 0.001},
-    "claude-opus-5-5": {"prompt": 0.004, "completion": 0.02, "cached": 0.0002},
-    "claude-opus-5": {"prompt": 0.005, "completion": 0.025, "cached": 0.0005},
-    "claude-sonnet-5": {"prompt": 0.002, "completion": 0.01, "cached": 0.0002},
-    "claude-opus-4-8": {"prompt": 0.005, "completion": 0.025, "cached": 0.0005},
-    "claude-opus-4-7": {"prompt": 0.005, "completion": 0.025, "cached": 0.0005},
-    "claude-opus-4-6": {"prompt": 0.005, "completion": 0.025, "cached": 0.0005},
-    "mistral-large-latest": {"prompt": 0.0005, "completion": 0.0015},
-    "mistral-small-latest": {"prompt": 0.00015, "completion": 0.0006},
-    "Qwen/Qwen3-30B-A3B-Instruct-2507": {"prompt": 0.0001, "completion": 0.0003},
-    # RAG embeddings (MODEL_EMBEDDINGS).
-    "text-embedding-3-small": {"prompt": 0.00002, "completion": 0.0},
+_PRICES_PATH = Path(__file__).resolve().parent.parent / "resources" / "model_prices.json"
+
+# BESSER's lookup order: one bare id can be listed under several vendors at
+# different rates, so only the vendors we call are tried.
+_PRICE_LOOKUP_PREFIXES = ("", "anthropic/", "openai/", "mistral/", "nebius/")
+
+# USD per 1M tokens for models the price file does not list yet, at the rates
+# BESSER bills them. Delete a row once a refresh of the price file adds it.
+_UNPUBLISHED: Dict[str, Dict[str, float]] = {
+    # Cached rates assume the 10 % gpt-6-astra lists.
+    "gpt-6-sol": {"input": 2.0, "output": 10.0, "cache_read": 0.2},
+    "gpt-6-luna": {"input": 0.1, "output": 0.5, "cache_read": 0.01},
+    "claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0},
 }
 
 # Anthropic bills a 5-minute cache write at 1.25x the input rate.
@@ -97,6 +66,68 @@ _CACHE_WRITE_MULTIPLIER = 1.25
 _GATEWAY_PREFIX = re.compile(r"^(?:[a-z]{2}\.)?(?:anthropic|openai)[./]")
 # Snapshot suffixes after a canonical id: a date, a Vertex "@..." tag, a Bedrock "-v1:0".
 _SNAPSHOT_SUFFIX = re.compile(r"^(?:-\d{4}-?\d{2}-?\d{2}|@[\w.-]+)?(?:-v\d+(?::\d+)?)?$")
+
+
+@lru_cache(maxsize=1)
+def _price_file() -> Dict[str, dict]:
+    """The price file keyed by lower-cased id. Empty if unreadable, so every
+    model falls to the placeholder and its warning rather than reading as free."""
+    try:
+        with open(_PRICES_PATH, encoding="utf-8") as handle:
+            return {key.lower(): row for key, row in json.load(handle).items()}
+    except (OSError, ValueError):
+        logger.warning("Model price file unreadable at %s", _PRICES_PATH)
+        return {}
+
+
+def _per_1k(rates: Dict[str, Optional[float]]) -> Dict[str, float]:
+    """Per-1M ``input``/``output``/``cache_read``/``cache_write`` rates as the
+    per-1K table ``record`` reads; a missing cache rate keeps its default."""
+    table = {"prompt": rates["input"] / 1000, "completion": rates["output"] / 1000}
+    for key, name in (("cache_read", "cached"), ("cache_write", "cache_write")):
+        if rates.get(key) is not None:
+            table[name] = rates[key] / 1000
+    return table
+
+
+def _per_million(per_token: Optional[float]) -> Optional[float]:
+    return None if per_token is None else per_token * 1_000_000
+
+
+def _listed_cost_table(model: str) -> Optional[Dict[str, float]]:
+    """Rates for exactly *model* (lower-cased) from the price file or _UNPUBLISHED."""
+    table = _price_file()
+    for prefix in _PRICE_LOOKUP_PREFIXES:
+        row = table.get(prefix + model)
+        if row and row.get("input_cost_per_token") is not None:
+            return _per_1k({
+                "input": _per_million(row["input_cost_per_token"]),
+                "output": _per_million(row["output_cost_per_token"]),
+                "cache_read": _per_million(row.get("cache_read_input_token_cost")),
+                "cache_write": _per_million(row.get("cache_creation_input_token_cost")),
+            })
+    rates = _UNPUBLISHED.get(model)
+    return _per_1k(rates) if rates else None
+
+
+@lru_cache(maxsize=256)
+def _vendor_cost_table(model: str) -> Optional[Dict[str, float]]:
+    """Vendor list rates for *model*: the exact id, else the longest listed id
+    it extends by a gateway prefix and/or a snapshot suffix
+    (claude-opus-5-5-20261101, us.anthropic.claude-opus-5-5). A different
+    variant (gpt-6-sol-pro) stays unknown rather than inheriting its base
+    model's price."""
+    name = (model or "").strip().lower()
+    exact = _listed_cost_table(name)
+    if exact is not None:
+        return exact
+    base = _GATEWAY_PREFIX.sub("", name)
+    for cut in range(len(base), 0, -1):
+        if _SNAPSHOT_SUFFIX.match(base[cut:]):
+            table = _listed_cost_table(base[:cut])
+            if table is not None:
+                return table
+    return None
 
 
 def _current_route() -> Optional[str]:
@@ -111,37 +142,16 @@ def _current_route() -> Optional[str]:
 def _catalog_cost_table(model: str) -> Optional[Dict[str, float]]:
     """The model catalog's rate for *model* on the current route, per 1K."""
     rates = load_model_catalog().price(model, _current_route())
-    if rates is None:
-        return None
-    return {
-        "prompt": rates["input"] / 1000,
-        "completion": rates["output"] / 1000,
-        "cached": rates["cache_read"] / 1000,
-        "cache_write": rates["cache_write"] / 1000,
-    }
+    return None if rates is None else _per_1k(rates)
 
 
 def _cost_table_for(model: str) -> Optional[Dict[str, float]]:
-    """Rates for *model*: the model catalog's for the current route (a gateway
-    bills its own rates), else the exact id, else the longest table key it
-    extends by a gateway prefix and/or a snapshot suffix
-    (claude-haiku-4-5-20251001, us.anthropic.claude-sonnet-5). A different
-    variant (gpt-5.5-pro) stays unknown rather than inheriting its base
-    model's price."""
+    """Rates for *model*: the model catalog's for the current route, else the
+    vendor list rates."""
     catalog = _catalog_cost_table(model)
     if catalog is not None:
         return catalog
-    table = _COST_PER_1K.get(model)
-    if table is not None:
-        return table
-    name = _GATEWAY_PREFIX.sub("", (model or "").strip().lower())
-    best = None
-    for key in _COST_PER_1K:
-        k = key.lower()
-        if name.startswith(k) and _SNAPSHOT_SUFFIX.match(name[len(k):]):
-            if best is None or len(k) > len(best):
-                best = key
-    return _COST_PER_1K[best] if best else None
+    return _vendor_cost_table(model)
 
 
 # Seconds between INFO lines with the global totals (0 disables them).
@@ -150,22 +160,22 @@ _SUMMARY_INTERVAL_SECONDS = float(os.getenv("BESSER_AGENT_COST_LOG_INTERVAL", "6
 # Fallback for unknown models — placeholder pricing, not any real model's rate.
 _DEFAULT_COST = {"prompt": 0.001, "completion": 0.004}
 
-# Models already reported as missing from _COST_PER_1K, so the warning is
+# Models already reported as unpriced, so the warning is
 # emitted once per model rather than once per LLM call.
 _unknown_models_seen: set = set()
 _unknown_models_lock = threading.Lock()
 
 
 def _warn_unknown_model(model: str) -> None:
-    """Log once that `model` has no cost-table entry and is using placeholder pricing."""
+    """Log once that `model` has no price and is using placeholder pricing."""
     with _unknown_models_lock:
         if model in _unknown_models_seen:
             return
         _unknown_models_seen.add(model)
     logger.warning(
-        "No cost-table entry for model %r; reported costs for it are estimated from "
-        "placeholder pricing (%s/1K prompt, %s/1K completion). Add it to _COST_PER_1K "
-        "in tracking/token_tracker.py.",
+        "No price for model %r; reported costs for it are estimated from placeholder "
+        "pricing (%s/1K prompt, %s/1K completion). Price it in the model catalog "
+        "(BESSER_MODEL_CATALOG).",
         model, _DEFAULT_COST["prompt"], _DEFAULT_COST["completion"],
     )
 
@@ -201,7 +211,8 @@ class TokenTracker:
         self,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
-        model: str = LLM_MODEL_DEFAULT,
+        *,
+        model: str,
         session_id: Optional[str] = None,
         cached: bool = False,
         cached_prompt_tokens: int = 0,
@@ -278,7 +289,7 @@ class TokenTracker:
     def record_from_usage(
         self,
         usage,
-        model: str = LLM_MODEL_DEFAULT,
+        model: str,
         session_id: Optional[str] = None,
     ) -> None:
         """Record from an OpenAI ``CompletionUsage`` object (or any obj with

@@ -46,9 +46,9 @@ def test_basic_record(tracker):
 
 def test_multiple_records_accumulate(tracker):
     """Recording 3 times should accumulate token counts."""
-    tracker.record(prompt_tokens=100, completion_tokens=50)
-    tracker.record(prompt_tokens=200, completion_tokens=100)
-    tracker.record(prompt_tokens=300, completion_tokens=150)
+    tracker.record(prompt_tokens=100, completion_tokens=50, model="gpt-4.1-mini")
+    tracker.record(prompt_tokens=200, completion_tokens=100, model="gpt-4.1-mini")
+    tracker.record(prompt_tokens=300, completion_tokens=150, model="gpt-4.1-mini")
     s = tracker.summary()
     assert s["prompt_tokens"] == 600
     assert s["completion_tokens"] == 300
@@ -62,9 +62,9 @@ def test_multiple_records_accumulate(tracker):
 
 def test_per_session_tracking(tracker):
     """Session summaries should be isolated to their own session_id."""
-    tracker.record(prompt_tokens=100, completion_tokens=50, session_id="s1")
-    tracker.record(prompt_tokens=200, completion_tokens=100, session_id="s2")
-    tracker.record(prompt_tokens=300, completion_tokens=150, session_id="s1")
+    tracker.record(prompt_tokens=100, completion_tokens=50, session_id="s1", model="gpt-4.1-mini")
+    tracker.record(prompt_tokens=200, completion_tokens=100, session_id="s2", model="gpt-4.1-mini")
+    tracker.record(prompt_tokens=300, completion_tokens=150, session_id="s1", model="gpt-4.1-mini")
 
     s1 = tracker.session_summary("s1")
     s2 = tracker.session_summary("s2")
@@ -129,7 +129,7 @@ def test_record_from_usage(tracker):
 
 def test_record_from_usage_none(tracker):
     """record_from_usage(None) should silently do nothing."""
-    tracker.record_from_usage(None)
+    tracker.record_from_usage(None, model="gpt-4.1-mini")
     s = tracker.summary()
     assert s["total_tokens"] == 0
     assert s["call_count"] == 0
@@ -141,7 +141,7 @@ def test_record_from_usage_none(tracker):
 
 def test_reset_session(tracker):
     """After resetting a session, its summary should show zeros."""
-    tracker.record(prompt_tokens=500, completion_tokens=200, session_id="s1")
+    tracker.record(prompt_tokens=500, completion_tokens=200, session_id="s1", model="gpt-4.1-mini")
     tracker.reset_session("s1")
     s1 = tracker.session_summary("s1")
     assert s1["total_tokens"] == 0
@@ -158,7 +158,7 @@ def test_reset_session(tracker):
 
 def test_summary_format(tracker):
     """summary() should return a dict with all expected keys."""
-    tracker.record(prompt_tokens=10, completion_tokens=5)
+    tracker.record(prompt_tokens=10, completion_tokens=5, model="gpt-4.1-mini")
     s = tracker.summary()
     expected_keys = {
         "prompt_tokens",
@@ -197,7 +197,7 @@ def test_thread_safety(tracker):
     def worker():
         barrier.wait()
         for _ in range(calls_per_thread):
-            tracker.record(prompt_tokens=1, completion_tokens=1)
+            tracker.record(prompt_tokens=1, completion_tokens=1, model="gpt-4.1-mini")
 
     threads = [threading.Thread(target=worker) for _ in range(num_threads)]
     for t in threads:
@@ -217,7 +217,7 @@ def test_thread_safety(tracker):
 
 def test_zero_tokens(tracker):
     """Recording 0 prompt + 0 completion tokens should not crash."""
-    tracker.record(prompt_tokens=0, completion_tokens=0)
+    tracker.record(prompt_tokens=0, completion_tokens=0, model="gpt-4.1-mini")
     s = tracker.summary()
     assert s["total_tokens"] == 0
     assert s["estimated_cost_usd"] == 0.0
@@ -225,23 +225,11 @@ def test_zero_tokens(tracker):
 
 
 # ---------------------------------------------------------------------------
-# Cost-table coverage
+# Price coverage
 #
-# A model with no _COST_PER_1K entry still records tokens but prices them from
-# a placeholder, so every reported cost for it is wrong without any error. The
-# configured models must therefore always be present in the table.
+# A model nothing prices still records tokens but prices them from a
+# placeholder, so every reported cost for it is wrong without any error.
 # ---------------------------------------------------------------------------
-
-def test_configured_models_have_cost_entries():
-    from agent_config import LLM_MODEL_DEFAULT, LLM_MODEL_VISION
-    from tracking.token_tracker import _COST_PER_1K
-
-    for model in (LLM_MODEL_DEFAULT, LLM_MODEL_VISION):
-        assert model in _COST_PER_1K, (
-            f"{model!r} is configured in agent_config.py but has no _COST_PER_1K "
-            f"entry, so its reported costs would silently use placeholder pricing"
-        )
-
 
 def test_unknown_model_warns_once(caplog):
     import logging
@@ -262,39 +250,79 @@ def test_every_model_a_user_key_can_route_to_has_a_price():
     placeholder costs, as happened for the Nebius Qwen model and for
     gpt-5-mini."""
     from byok import _PROVIDER_TIER_MODELS
-    from tracking.token_tracker import _COST_PER_1K
+    from tracking.token_tracker import _vendor_cost_table
 
     routed = {model for tiers in _PROVIDER_TIER_MODELS.values() for model in tiers.values()}
     for model in routed | {"gpt-5-mini"}:
-        assert model in _COST_PER_1K, f"no cost entry for {model!r}"
+        assert _vendor_cost_table(model) is not None, f"no price for {model!r}"
 
 
-# USD per 1K tokens (= per-1M list price / 1000), input / output.
+# USD per 1M tokens, input / output / cache read. The 29 rates the agent typed
+# by hand before it read the price file; each must come out unchanged.
 PRICES = {
-    "gpt-6-astra": (0.01, 0.05),
-    "gpt-6-sol": (0.002, 0.01),
-    "gpt-6-luna": (0.0001, 0.0005),
-    # The 5.6 entries carried the wrong list prices (sol 5/30, terra 2.5/15, luna 1/6).
-    "gpt-5.6-sol": (0.004, 0.02),
-    "gpt-5.6-terra": (0.002, 0.012),
-    "gpt-5.6-luna": (0.0002, 0.0012),
-    "claude-fable-5-1": (0.01, 0.05),
-    "claude-fable-5": (0.01, 0.05),
-    "claude-opus-5-5": (0.004, 0.02),
-    "claude-opus-5": (0.005, 0.025),
-    "claude-sonnet-5": (0.002, 0.01),
-    "claude-opus-4-8": (0.005, 0.025),
-    "claude-opus-4-7": (0.005, 0.025),
-    "claude-opus-4-6": (0.005, 0.025),
-    "claude-sonnet-4-6": (0.003, 0.015),
-    "claude-haiku-4-5": (0.001, 0.005),
+    "gpt-4.1-mini": (0.4, 1.6, 0.1),
+    "gpt-4.1": (2.0, 8.0, 0.5),
+    "gpt-4o-mini": (0.15, 0.6, 0.075),
+    "gpt-4o": (2.5, 10.0, 1.25),
+    "gpt-5": (1.25, 10.0, 0.125),
+    "gpt-5-mini": (0.25, 2.0, 0.025),
+    "gpt-5.5": (5.0, 30.0, 0.5),
+    "gpt-5.4-mini": (0.75, 4.5, 0.075),
+    "gpt-5.4-nano": (0.2, 1.25, 0.02),
+    # The 5.6 entries once carried the wrong list prices (sol 5/30, terra 2.5/15, luna 1/6).
+    "gpt-5.6-sol": (4.0, 20.0, 0.4),
+    "gpt-5.6-terra": (2.0, 12.0, 0.2),
+    "gpt-5.6-luna": (0.2, 1.2, 0.02),
+    "gpt-6-astra": (10.0, 50.0, 1.0),
+    "gpt-6-sol": (2.0, 10.0, 0.2),
+    "gpt-6-luna": (0.1, 0.5, 0.01),
+    "claude-fable-5-1": (10.0, 50.0, 0.25),
+    "claude-fable-5": (10.0, 50.0, 1.0),
+    "claude-opus-5-5": (4.0, 20.0, 0.2),
+    "claude-opus-5": (5.0, 25.0, 0.5),
+    "claude-sonnet-5": (2.0, 10.0, 0.2),
+    "claude-opus-4-8": (5.0, 25.0, 0.5),
+    "claude-opus-4-7": (5.0, 25.0, 0.5),
+    "claude-opus-4-6": (5.0, 25.0, 0.5),
+    "claude-sonnet-4-6": (3.0, 15.0, 0.3),
+    "claude-haiku-4-5": (1.0, 5.0, 0.1),
+    # The hand table had no cache rate for these and billed cached input at the
+    # full rate; the price file lists Mistral's discount.
+    "mistral-large-latest": (0.5, 1.5, 0.05),
+    "mistral-small-latest": (0.15, 0.6, 0.015),
+    "Qwen/Qwen3-30B-A3B-Instruct-2507": (0.1, 0.3, 0.1),
+    "text-embedding-3-small": (0.02, 0.0, 0.02),
 }
 
 
 @pytest.mark.parametrize("model,price", sorted(PRICES.items()))
 def test_model_has_its_list_price(model, price):
-    from tracking.token_tracker import _COST_PER_1K
+    from tracking.token_tracker import _vendor_cost_table
 
-    assert model in _COST_PER_1K, f"{model} would be costed from placeholder pricing"
-    entry = _COST_PER_1K[model]
-    assert (entry["prompt"], entry["completion"]) == pytest.approx(price)
+    entry = _vendor_cost_table(model)
+    assert entry is not None, f"{model} would be costed from placeholder pricing"
+    rates = (entry["prompt"], entry["completion"], entry.get("cached", entry["prompt"]))
+    assert tuple(rate * 1000 for rate in rates) == pytest.approx(price)
+
+
+def test_unpublished_rows_are_not_in_the_price_file():
+    """_UNPUBLISHED only bridges ids the price file lacks; once a refresh lists
+    one, its row would shadow nothing and should be deleted."""
+    from tracking.token_tracker import _UNPUBLISHED, _price_file
+
+    assert _price_file(), "the price file did not load"
+    listed = [model for model in _UNPUBLISHED if model in _price_file()]
+    assert not listed, f"now in the price file, delete from _UNPUBLISHED: {listed}"
+
+
+def test_a_missing_price_file_never_reads_as_free(monkeypatch, tmp_path):
+    from tracking import token_tracker as tt
+
+    monkeypatch.setattr(tt, "_PRICES_PATH", tmp_path / "missing.json")
+    tt._price_file.cache_clear()
+    tt._vendor_cost_table.cache_clear()
+    try:
+        assert tt._vendor_cost_table("gpt-4o") is None
+    finally:
+        tt._price_file.cache_clear()
+        tt._vendor_cost_table.cache_clear()

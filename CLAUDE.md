@@ -211,7 +211,7 @@ src/
   protocol/                       types.py, adapters.py, message_limits.py
   memory/                         Verbatim window + rolling LLM summary per session
   llm/provider.py                 Provider abstraction (structured outputs, streaming)
-  tracking/token_tracker.py       Token/cost tracking (_COST_PER_1K)
+  tracking/token_tracker.py       Token/cost tracking (prices: resources/model_prices.json)
   suggestions.py                  "What's next?" suggestions
 ```
 
@@ -228,7 +228,8 @@ reply-route-to-sender, and sets/resets the per-request BYOK contextvar. **Re-ven
 - **Reasoning models reject `temperature`** (gpt-5+/gpt-6, o-series, and recent Claude families). Use
   `model_config.supports_custom_temperature(model)` and `reasoning_effort_for(model)` at every call site; never
   hardcode either parameter.
-- **When a `MODEL_*` default changes, add it to `_COST_PER_1K`** in `tracking/token_tracker.py` — an unknown model
+- **A new `MODEL_*` default needs a price**: the model catalog or `resources/model_prices.json` (a copy of BESSER's
+  vendored price file; refresh both together) — an unknown model
   falls back to placeholder pricing and every reported cost silently becomes an estimate.
 - The Docker entrypoint generates `config.yaml` from the environment, redacts the `api_key` line from its own log
   output, and emits `platforms.websocket.origins` from `BESSER_AGENT_WS_ORIGIN` / `BESSER_AGENT_WS_ORIGIN_ALT`

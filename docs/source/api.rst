@@ -461,11 +461,12 @@ Token Tracking
 
   .. note::
 
-     ``_COST_PER_1K`` must carry an entry for every model the agent can run,
-     unless the model catalog (``BESSER_MODEL_CATALOG``, read by
-     ``src/model_catalog.py``) prices it. An unknown model falls back to
-     placeholder pricing and every reported cost silently becomes an
-     estimate — add an entry whenever a ``MODEL_*`` default changes.
+     Prices come from the model catalog (``BESSER_MODEL_CATALOG``, read by
+     ``src/model_catalog.py``), else from ``src/resources/model_prices.json``,
+     a copy of BESSER's vendored price file (see :ref:`agent-prices`). A model
+     neither prices falls back to placeholder pricing, so every reported cost
+     for it becomes an estimate: price a new ``MODEL_*`` default in the
+     catalog.
 
 Suggestions
 -----------
