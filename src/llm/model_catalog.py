@@ -26,8 +26,6 @@ from common.settings import AgentSettings
 
 logger = logging.getLogger(__name__)
 
-CATALOG_ENV_VAR = "BESSER_MODEL_CATALOG"
-
 Rates = Dict[str, float]
 
 

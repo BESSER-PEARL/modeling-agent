@@ -162,6 +162,13 @@ def test_names_are_case_sensitive(clean_env):
     assert AgentSettings().log_prompts is False
 
 
+def test_a_variable_named_like_the_field_is_ignored(clean_env):
+    """Only BESSER_AGENT_WS_ORIGIN sets ws_origin. The field name differs from the
+    variable beyond case, so this holds on Windows too, unlike the test above."""
+    clean_env.setenv("ws_origin", "https://elsewhere.example")
+    assert AgentSettings().ws_origin == "https://editor.besser-pearl.org"
+
+
 def test_module_level_values_are_read_at_import(clean_env):
     """A reload sees the new environment, as before; the per-call reads see it at once."""
     from llm import byok, model_config
