@@ -339,24 +339,35 @@ def test_a_row_without_an_output_price_is_not_a_price(tracker):
 
 
 # The workspace sibling checkout, as in tests/test_hotel_model_contract.py.
-_BESSER_PRICES = (
-    Path(__file__).resolve().parents[2]
-    / "BESSER" / "besser" / "spec_driven_agent" / "providers" / "data" / "model_prices.json"
+_BESSER = Path(__file__).resolve().parents[2] / "BESSER"
+# BESSER's data directory: besser/llm/data/ since its Phase 4, before that
+# next to the Spec-Driven Agent's providers.
+_BESSER_DATA_DIRS = (
+    Path("besser", "llm", "data"),
+    Path("besser", "spec_driven_agent", "providers", "data"),
 )
+
+
+def _besser_file(name, root=_BESSER):
+    """*name* in BESSER's data directory, whichever layout the checkout has."""
+    for directory in _BESSER_DATA_DIRS:
+        path = root / directory / name
+        if path.is_file():
+            return path
+    pytest.skip(f"no BESSER checkout next to this repo ({root})")
 
 
 def test_the_price_file_is_besser_s():
     """The agent and the backend must price a model the same: refresh both together."""
     from llm.tracking.token_tracker import _PRICES_PATH
 
-    if not _BESSER_PRICES.is_file():
-        pytest.skip(f"no BESSER checkout next to this repo ({_BESSER_PRICES})")
+    besser_prices = _besser_file("model_prices.json")
     ours = json.loads(_PRICES_PATH.read_text(encoding="utf-8"))
-    besser = json.loads(_BESSER_PRICES.read_text(encoding="utf-8"))
-    assert ours == besser, f"copy {_BESSER_PRICES} to {_PRICES_PATH}"
+    besser = json.loads(besser_prices.read_text(encoding="utf-8"))
+    assert ours == besser, f"copy {besser_prices} to {_PRICES_PATH}"
 
 
-# BESSER's default model catalog (providers/data/model_catalog.json), USD per 1M:
+# BESSER's default model catalog (data/model_catalog.json), USD per 1M:
 # input, output, cache read, cache write. Without a deployment catalog the agent
 # must price these the same, not from placeholder pricing.
 BESSER_CATALOG_PRICES = {
@@ -384,13 +395,8 @@ def test_besser_default_catalog_models_have_its_price(model):
     _assert_priced_as(model, BESSER_CATALOG_PRICES[model])
 
 
-_BESSER_CATALOG = _BESSER_PRICES.with_name("model_catalog.json")
-
-
 def test_every_price_in_besser_s_default_catalog_is_ours():
-    if not _BESSER_CATALOG.is_file():
-        pytest.skip(f"no BESSER checkout next to this repo ({_BESSER_CATALOG})")
-    catalog = json.loads(_BESSER_CATALOG.read_text(encoding="utf-8"))
+    catalog = json.loads(_besser_file("model_catalog.json").read_text(encoding="utf-8"))
     for provider in catalog["providers"].values():
         for model in provider["models"]:
             if "price" in model:

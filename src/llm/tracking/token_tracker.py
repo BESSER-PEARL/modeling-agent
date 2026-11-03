@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # A call is priced from the deployment's model catalog (a gateway bills its own
 # rates), else from the vendor price file, else from _UNPUBLISHED. The price
 # file (data/, package data) is a copy of the one BESSER vendors
-# (besser/spec_driven_agent/providers/data/model_prices.json: litellm's
+# (besser/llm/data/model_prices.json: litellm's
 # model_prices_and_context_window.json reduced to the vendors we call), so the
 # agent and the backend price a model the same; refresh both together
 # (tests/test_token_tracker.py compares them when ../BESSER is checked out). A model
@@ -58,7 +58,7 @@ _UNPUBLISHED: Dict[str, Dict[str, float]] = {
     "gpt-6-sol": {"input": 2.0, "output": 10.0, "cache_read": 0.2},
     "gpt-6-luna": {"input": 0.1, "output": 0.5, "cache_read": 0.01},
     "claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0},
-    # BESSER's default model catalog rates (providers/data/model_catalog.json).
+    # BESSER's default model catalog rates (besser/llm/data/model_catalog.json).
     "claude-sonnet-5-5": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5},
     "claude-haiku-5-5": {"input": 0.1, "output": 0.5},
     "gpt-6.1-sol": {"input": 2.0, "output": 10.0},

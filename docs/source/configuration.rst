@@ -621,7 +621,7 @@ A call is priced, in order, from:
 
 1. the deployment's model catalog, for the endpoint the call goes to;
 2. ``src/llm/tracking/data/model_prices.json``, a copy of the price file BESSER
-   vendors (``besser/spec_driven_agent/providers/data/model_prices.json``,
+   vendors (``besser/llm/data/model_prices.json``,
    reduced from litellm's ``model_prices_and_context_window.json``), so the
    agent and the backend price a model the same way;
 3. ``_UNPUBLISHED`` in ``src/llm/tracking/token_tracker.py``: the few current
