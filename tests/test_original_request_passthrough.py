@@ -90,7 +90,6 @@ def test_payload_shape_is_untouched():
     payload = _payload(original_request=SPEC)
     assert payload["action"] == "trigger_smart_generator"
     assert payload["provider"] == "openai"
-    assert payload["llmModel"]
     assert payload["message"]
 
 

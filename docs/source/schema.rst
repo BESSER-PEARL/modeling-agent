@@ -316,7 +316,6 @@ BESSER built-in.
      "action": "trigger_smart_generator",
      "instructions": "Rails 7, PostgreSQL via Active Record, Devise auth",
      "provider": "anthropic",
-     "llmModel": "claude-sonnet-4-6",
      "message": "Generating your application from your specs…"
    }
 

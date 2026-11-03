@@ -140,17 +140,6 @@ class GenerationClassification(BaseModel):
 # ---------------------------------------------------------------------
 
 
-_DEFAULT_SMART_GEN_MODEL_BY_PROVIDER: Dict[str, str] = {
-    # Match ``besser/generators/llm/llm_client.py::DEFAULT_MODELS`` and
-    # the backend's config endpoint. If these diverge, a run with no
-    # explicit ``llmModel`` override will fail with an "unknown model"
-    # upstream error.
-    "anthropic": "claude-sonnet-5-5",
-    "openai": "gpt-6-sol",
-    "mistral": "mistral-large-latest",
-}
-
-
 def build_trigger_smart_generator_payload(
     classification: GenerationClassification,
     reason_prefix: str = "",
@@ -158,7 +147,9 @@ def build_trigger_smart_generator_payload(
 ) -> Dict[str, Any]:
     """Assemble the WebSocket ``trigger_smart_generator`` action payload.
 
-    Requires a classification whose ``route == 'smart'``.
+    Requires a classification whose ``route == 'smart'``. It names no
+    ``llmModel``: the user's pick in the editor, else the BESSER backend's
+    default for the provider (the deployment's model catalog first) runs.
 
     ``original_request`` is the user's verbatim app description. It is
     appended because ``refined_instructions`` is a 1-3 paragraph summary,
@@ -188,7 +179,6 @@ def build_trigger_smart_generator_payload(
     validate_message_length(instructions, label="The generation instructions")
 
     provider = classification.provider or "anthropic"
-    llm_model = _DEFAULT_SMART_GEN_MODEL_BY_PROVIDER.get(provider, "claude-sonnet-5-5")
 
     # Short, neutral run banner. The provider/free-tier choice and the BYOK
     # option were already conveyed by the confirmation copy shown before this
@@ -198,6 +188,5 @@ def build_trigger_smart_generator_payload(
         "action": Action.TRIGGER_SMART_GENERATOR,
         "instructions": instructions,
         "provider": provider,
-        "llmModel": llm_model,
         "message": "Generating your application from your specs…",
     }

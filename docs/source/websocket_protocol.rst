@@ -735,7 +735,6 @@ Built by ``build_trigger_smart_generator_payload()`` in
      "action": "trigger_smart_generator",
      "instructions": "Rails 7 with PostgreSQL via Active Record and Devise auth",
      "provider": "anthropic",
-     "llmModel": "claude-sonnet-4-6",
      "message": "Generating your application from your specs…"
    }
 
@@ -752,8 +751,10 @@ Built by ``build_trigger_smart_generator_payload()`` in
        the generator already has.
    * - ``provider``
      - Suggested provider. The frontend's BYOK selection can override it.
-   * - ``llmModel``
-     - Default model for that provider
+
+The action names no model: the run uses the model the user picked in the
+editor, else the BESSER backend's default for the provider (the deployment's
+model catalog first, see ``BESSER_MODEL_CATALOG`` in :doc:`configuration`).
 
 The Spec-Driven Agent itself does **not** run over this WebSocket — the
 frontend calls the BESSER backend's spec-driven HTTP/SSE endpoints with the

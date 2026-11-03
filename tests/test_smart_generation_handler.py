@@ -129,20 +129,22 @@ class TestBuildPayload:
         payload = build_trigger_smart_generator_payload(cls)
         assert payload["action"] == "trigger_smart_generator"
         assert payload["provider"] == "anthropic"
-        assert payload["llmModel"] == "claude-sonnet-5-5"
         assert payload["instructions"].startswith("Build a FastAPI")
         assert "message" in payload
 
-    def test_payload_openai_provider_uses_openai_default_model(self):
+    @pytest.mark.parametrize("provider", ["anthropic", "openai"])
+    def test_payload_leaves_the_model_to_the_backend(self, provider):
+        """A hard-coded default here overrode the deployment's model catalog:
+        without ``llmModel`` BESSER picks its default for the provider."""
         cls = GenerationClassification(
             route="smart",
             refined_instructions="…",
-            provider="openai",
+            provider=provider,
             reason="…",
         )
         payload = build_trigger_smart_generator_payload(cls)
-        assert payload["provider"] == "openai"
-        assert payload["llmModel"] == "gpt-6-sol"
+        assert payload["provider"] == provider
+        assert "llmModel" not in payload
 
     def test_payload_has_no_api_key_fields(self):
         cls = GenerationClassification(

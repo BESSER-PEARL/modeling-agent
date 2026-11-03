@@ -282,7 +282,10 @@ use.
        ``user_api_provider=pia`` runs against the gateway without the browser
        knowing its host, and the rates a model bills on a gateway or a vendor
        API (see :ref:`cost-and-model-routing`). Read once at startup; a
-       malformed file stops the agent.
+       malformed file stops the agent. The agent names no model when it hands
+       a request to the Spec-Driven Agent (``trigger_smart_generator``), so
+       without a pick in the editor the run uses the catalog's default for the
+       provider.
    * - ``BESSER_AGENT_STT_LANGUAGE``
      - auto-detect
      - Pins speech-to-text to a language (``en``, ``fr``, ``de``, …).
