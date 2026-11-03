@@ -420,4 +420,8 @@ A plan's model operations on independent diagram types run in parallel, but
 open at most one replace/keep, GUI-choice or destructive-modify question
 (``pending_dialogs.one_per_plan``): an operation whose question would come
 second stops before asking and is queued in the open dialog's
-``remaining_operations``, so it asks once that dialog is answered.
+``remaining_operations``, so it asks once that dialog is answered. A queued
+destructive modify keeps the change it already computed, so asking later makes
+no second LLM call. If the operation that claimed the dialog fails before
+opening it, the queued operations run in plan order right away and the first
+of them that has a question asks it.

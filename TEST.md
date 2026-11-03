@@ -84,8 +84,8 @@ Environment knobs (defaults in parentheses):
 ## Inventory
 
 Counts below are the tests `python -m pytest tests --collect-only -q --ignore=tests/live`
-collects per file, each parametrized case counted: **3,456** in all. Without BAF 4.5 the
-three files that import `patches.websocket_platform` are skipped at import, leaving 3,441.
+collects per file, each parametrized case counted: **3,458** in all. Without BAF 4.5 the
+three files that import `patches.websocket_platform` are skipped at import, leaving 3,443.
 
 ### Routing, classification & planning
 
@@ -230,7 +230,7 @@ three files that import `patches.websocket_platform` are skipped at import, leav
 | `test_original_request_passthrough.py` | 19 | The run must receive the user's spec, not only a summary of it. |
 | `test_packaging.py` | 10 | Packaging: src/ is the one import root, and pyproject.toml declares all of it. |
 | `test_parallel_association_merge.py` | 71 | Duplicate associations for one fact (two FKs, or an FK plus a join table) are merged; genuinely distinct ones are kept. |
-| `test_parallel_plan_dialogs.py` | 3 | A parallel plan opens one dialog at a time. |
+| `test_parallel_plan_dialogs.py` | 5 | A parallel plan opens one dialog at a time; an op queued behind it still asks if that dialog never opens, and a queued destructive change is not recomputed. |
 | `test_per_instance_multiplicity.py` | 36 | Per-instance multiplicity encoding in the compact class-diagram spec. |
 | `test_pilot_telemetry.py` | 14 | Opt-in study telemetry: context propagation + fire-and-forget posting. |
 | `test_progress_wording.py` | 10 | Progress lines for a complete build name the diagram being built. |

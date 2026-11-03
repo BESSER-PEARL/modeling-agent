@@ -6,7 +6,7 @@ GUI-choice prompts, handler dispatch, progress threads, and result enrichment.
 
 import logging
 import threading
-from typing import Any, Dict, Optional
+from typing import Any, Dict, NamedTuple, Optional
 
 from baf.core.session import Session
 
@@ -50,9 +50,18 @@ from protocol.actions import Action, assistant_message
 
 logger = logging.getLogger(__name__)
 
-# execute_model_operation's result when its question waits behind another
-# dialog of the same parallel plan (pending_dialogs.one_per_plan).
-DEFERRED = object()
+
+class Deferred(NamedTuple):
+    """execute_model_operation's result when its question waits behind another
+    dialog of the same parallel plan (pending_dialogs.one_per_plan).
+
+    *operation* is what to queue; a destructive modify carries its computed
+    change under :data:`_QUEUED_DESTRUCTIVE` so asking later costs no LLM call.
+    """
+    operation: Dict[str, Any]
+
+
+_QUEUED_DESTRUCTIVE = "_queued_destructive_confirmation"
 
 
 def _non_web_target_label(session, request):
@@ -503,9 +512,16 @@ def execute_model_operation(
 
     Returns the target diagram type on success, ``None`` if a confirmation
     prompt was stored (existing-model guard or GUI-choice prompt) or on failure,
-    and :data:`DEFERRED` when that prompt must wait for another dialog of the
+    and :class:`Deferred` when that prompt must wait for another dialog of the
     same parallel plan.
     """
+    queued_destructive = operation.get(_QUEUED_DESTRUCTIVE)
+    if isinstance(queued_destructive, dict):
+        if not pending_dialogs.may_open(PENDING_COMPLETE_SYSTEM):
+            return Deferred(operation)
+        _build_destructive_modify_confirmation(session=session, **queued_destructive)
+        return None
+
     target_diagram_type = operation.get("diagramType")
     if not isinstance(target_diagram_type, str) or not target_diagram_type:
         target_diagram_type = determine_target_diagram_type(
@@ -593,7 +609,7 @@ def execute_model_operation(
                 from utilities.model_context import compact_model_summary
 
                 if not pending_dialogs.may_open(PENDING_COMPLETE_SYSTEM):
-                    return DEFERRED
+                    return Deferred(operation)
                 summary = compact_model_summary(existing_model, target_diagram_type)
                 stored_operation = {**operation, 'mode': operation_mode}
 
@@ -631,7 +647,7 @@ def execute_model_operation(
         # Basic CRUD pages would ignore it, so there is nothing to choose.
         if _has_class_diagram and not _skip_gui_choice and not operation.get("images"):
             if not pending_dialogs.may_open(PENDING_GUI_CHOICE):
-                return DEFERRED
+                return Deferred(operation)
             pending_dialogs.put(session, PENDING_GUI_CHOICE, {
                 'operation_request': operation_request,
                 'operation': operation,
@@ -1024,15 +1040,15 @@ def execute_model_operation(
                     f"(existing={_existing_count}) — asking for confirmation "
                     "instead of applying silently."
                 )
+                confirmation = {
+                    "target_diagram_type": target_diagram_type,
+                    "removed_count": _removed_count,
+                    "existing_count": _existing_count,
+                    "result": result,
+                }
                 if not pending_dialogs.may_open(PENDING_COMPLETE_SYSTEM):
-                    return DEFERRED
-                _build_destructive_modify_confirmation(
-                    session=session,
-                    target_diagram_type=target_diagram_type,
-                    removed_count=_removed_count,
-                    existing_count=_existing_count,
-                    result=result,
-                )
+                    return Deferred({**operation, _QUEUED_DESTRUCTIVE: confirmation})
+                _build_destructive_modify_confirmation(session=session, **confirmation)
                 return None
 
     logger.info(

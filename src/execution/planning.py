@@ -30,7 +30,7 @@ from common.pending_dialogs import (
     PLAN_GENERATION_CONFIRM_FLAG,
 )
 
-from .model_operations import DEFERRED, execute_model_operation, _collect_available_diagrams
+from .model_operations import Deferred, execute_model_operation, _collect_available_diagrams
 from .progress import _report_progress
 
 logger = logging.getLogger(__name__)
@@ -220,8 +220,8 @@ def execute_planned_operations(
         )
 
         confirmation_triggered = False
-        # Ops whose question waits for the one dialog this plan opens.
-        deferred: List[dict] = []
+        # (planned op, op to queue) whose question waits for the plan's one dialog.
+        deferred: List[Tuple[dict, dict]] = []
 
         def _run_model_group(group: List[dict]) -> List[Tuple[dict, Optional[str], Optional[Exception]]]:
             results = []
@@ -271,8 +271,12 @@ def execute_planned_operations(
                         logger.error(f"❌ [PlannedOps] Model op error: {error}")
                         continue
 
-                    if executed_target is DEFERRED:
-                        deferred.append(op)
+                    if isinstance(executed_target, Deferred):
+                        deferred.append((op, executed_target.operation))
+                        logger.info(
+                            "[PlannedOps] %s waits for the plan's open dialog",
+                            op.get("diagramType"),
+                        )
                         continue
 
                     if executed_target is None:
@@ -284,19 +288,29 @@ def execute_planned_operations(
                             working_request, executed_target,
                         )
 
-        if confirmation_triggered:
-            # Asked in plan order once the open dialog is answered.
-            queued = [op for op in operations if any(op is d for d in deferred)]
+        # Asked in plan order once the open dialog is answered.
+        queued = [q for op in operations for d, q in deferred if op is d]
+        flat_model_ops = []
+        if queued and not (plan_dialog.slot and pending_dialogs.get(session, plan_dialog.slot)):
+            # The op that claimed the dialog failed before opening it: run the
+            # queued ops in order, so the first of them asks instead.
+            logger.info(
+                "[PlannedOps] The plan's dialog never opened — running %d waiting operation(s) in order",
+                len(queued),
+            )
+            flat_model_ops = queued
+            step_counter -= len(queued)  # their steps were counted above
+        elif confirmation_triggered or queued:
             _store_remaining_ops(
                 session, queued + gen_ops, request,
                 slots=(plan_dialog.slot,) if plan_dialog.slot else None,
             )
             logger.info("⏸️ [PlannedOps] Pending confirmation stored — halting remaining operations")
             return
-
     else:
         flat_model_ops = model_groups[0] if model_groups else []
 
+    if flat_model_ops:
         for idx, operation in enumerate(flat_model_ops):
             step_counter += 1
             _report_progress(session, step_counter - 1, total_steps, operation)

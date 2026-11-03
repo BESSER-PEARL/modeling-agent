@@ -548,7 +548,7 @@ Common (``src/common/``)
   - ``is_open(session, kind)`` / ``current(session)`` → ``PendingDialog(kind,
     payload)`` or ``None``
   - ``one_per_plan()`` / ``may_open(slot)`` — a parallel plan opens one
-    dialog; ``execute_model_operation`` returns ``DEFERRED`` for the others
+    dialog; ``execute_model_operation`` returns ``Deferred(operation)`` for the others
 
 ``src/common/errors.py``
   Unified error taxonomy:

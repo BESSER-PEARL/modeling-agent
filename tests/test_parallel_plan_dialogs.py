@@ -151,3 +151,66 @@ def test_a_parallel_plan_stores_its_leftover_operations_on_one_dialog(run_plan):
     for slot in carriers:
         leftovers = pending_dialogs.get(session, slot)["remaining_operations"]
         assert all(op["type"] == "model" for op in leftovers)
+
+
+def test_an_operation_waiting_on_a_question_that_never_opened_still_asks(run_plan):
+    """The op that claimed the plan's one dialog crashed before asking: the op
+    queued behind it must ask its own question, not vanish."""
+    from utilities import model_context
+
+    real_summary = model_context.compact_model_summary
+    calls = itertools.count()
+
+    def _fails_first(*args, **kwargs):
+        if next(calls) == 0:
+            raise RuntimeError("summary failed")
+        return real_summary(*args, **kwargs)
+
+    with patch.object(model_context, "compact_model_summary", side_effect=_fails_first):
+        session, frames = run_plan([_op("StateMachineDiagram"), _op("AgentDiagram")])
+
+    assert len(_questions(frames)) == 1
+    assert pending_dialogs.current(session).kind == pending_dialogs.SYSTEM_CONFIRMATION
+    assert len(_built(_answer(session, "replace", "replace"))) == 1
+    assert pending_dialogs.current(session) is None
+
+
+class _DeleteAllFactory:
+    """Every modify removes all elements, so each op asks the destructive question."""
+
+    def __init__(self, calls):
+        self.calls = calls
+
+    def get_handler(self, dtype):
+        calls = self.calls
+
+        class _DeleteAll(_Handler):
+            def generate_modification(self, prompt, current_model=None, **kw):
+                calls.append(self.dtype)
+                names = [e["name"] for e in (current_model or {}).get("elements", {}).values()]
+                return {"action": "modify_model", "diagramType": self.dtype,
+                        "modifications": [{"action": "remove_element", "target": {"elementName": n}}
+                                          for n in names],
+                        "message": "Removed."}
+
+        return _DeleteAll(dtype)
+
+
+def test_a_queued_destructive_change_is_not_recomputed_when_asked(run_plan, monkeypatch):
+    """A destructive modify waiting behind the plan's dialog keeps the change it
+    already computed: asking later must not pay for a second LLM call."""
+    calls = []
+    monkeypatch.setattr(ctx, "diagram_factory", _DeleteAllFactory(calls))
+    ops = [{"type": "model", "diagramType": d, "mode": "modify_model", "request": "delete everything"}
+           for d in ("StateMachineDiagram", "AgentDiagram")]
+    session, _ = run_plan(ops)
+    assert sorted(calls) == ["AgentDiagram", "StateMachineDiagram"]
+
+    applied = []
+    for _ in range(2):
+        assert pending_dialogs.current(session).payload.get("destructive_modify")
+        applied += [f["diagramType"] for f in _answer(session, "confirm", "confirm")
+                    if f.get("action") == "modify_model"]
+    assert sorted(applied) == ["AgentDiagram", "StateMachineDiagram"]
+    assert len(calls) == 2
+    assert pending_dialogs.current(session) is None
