@@ -377,7 +377,7 @@ def test_the_price_file_is_besser_s():
 BESSER_CATALOG_PRICES = {
     "claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0},
     "claude-sonnet-5-5": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5},
-    "claude-haiku-5-5": {"input": 0.1, "output": 0.5},
+    "claude-haiku-5-5": {"input": 0.1, "output": 0.5, "cache_read": 0.01, "cache_write": 0.125},
     "gpt-6.1-sol": {"input": 2.0, "output": 10.0},
 }
 
