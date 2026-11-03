@@ -342,14 +342,13 @@ and the shared server LLM is never mutated.
        (``base_handler.predict_structured`` and the intent classifier;
        ``.parse()`` on a user's OpenAI key, JSON mode + schema validation for
        the other providers), streaming replies (one chunk), the memory
-       summarizer, the no-RAG UML answer and image/PDF vision on the
-       provider's image model (see the ``vision`` column below)
-   * - Vision without an image model
+       summarizer, the no-RAG UML answer, image/PDF vision and a GUI mockup
+       (see the ``vision`` column below)
+   * - Images on a key that cannot read them
      - Nebius, a catalog gateway and a custom endpoint have no known
        image-capable model, so image/PDF conversion and a GUI mockup run on
-       the server key (logged at INFO). With an image model, a GUI mockup
-       call uses it whatever model the user picked. A provider that rejects the image request (HTTP 400)
-       gets a "can't read this image" reply.
+       the server key (logged at INFO). A provider that rejects the image
+       request (HTTP 400) gets a "can't read this image" reply.
    * - Not routed
      - The local BAF fallback classifier (no LLM), BAF's own RAG and
        intent-classifier calls, RAG embeddings and speech-to-text
@@ -558,9 +557,11 @@ BYOK cost behaviour
 ~~~~~~~~~~~~~~~~~~~
 
 With a user's key the user pays for every routed call. Without a chosen model
-the tiers map as follows; a chosen model is used for every call except
-file-conversion vision, which always uses the ``vision`` model (a chosen model
-may not read images).
+the tiers map as follows; a chosen model is used for every call. A call with
+images (file conversion, a GUI mockup) follows the ``vision`` column: "chosen
+model" keeps the pick (else the tier model), because every current OpenAI and
+Claude chat model reads images; a model name replaces the pick, which may be
+text-only (Mistral's ``codestral``).
 
 .. list-table::
    :header-rows: 1
@@ -569,15 +570,15 @@ may not read images).
    * - Provider
      - ``large``: GENERATION_LARGE, GENERATION_GUI, REASONING, VISION
      - ``small``: GENERATION_SMALL, CLASSIFIER
-     - ``vision``: file conversion
+     - ``vision``: calls with images
    * - ``openai``
      - ``gpt-5.5``
      - ``gpt-4o-mini``
-     - ``MODEL_VISION``
+     - chosen model
    * - ``anthropic``
      - ``claude-sonnet-5``
      - ``claude-haiku-4-5``
-     - ``claude-sonnet-5``
+     - chosen model
    * - ``mistral``
      - ``mistral-large-latest``
      - ``mistral-small-latest``

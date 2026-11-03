@@ -220,10 +220,32 @@ def test_a_users_openai_key_gets_the_same_vision_request(monkeypatch):
     assert sent == _old_image_payload(provider_module.MODEL_VISION, "read it", "image/png", "AAAA")
 
 
+@pytest.fixture
+def user_anthropic_sdk(monkeypatch):
+    """Records the ``messages.create`` calls an Anthropic key makes."""
+    import anthropic
+
+    sent = []
+
+    class _FakeAnthropic:
+        def __init__(self, **kwargs):
+            self.messages = SimpleNamespace(create=self._create)
+
+        def _create(self, **kwargs):
+            sent.append(kwargs)
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text='{"ok": true}')],
+                usage=None, stop_reason="end_turn",
+            )
+
+    monkeypatch.setattr(anthropic, "Anthropic", _FakeAnthropic)
+    return sent
+
+
 def test_an_anthropic_key_now_reads_images_on_the_users_key(monkeypatch):
-    """Before, a non-OpenAI key fell back to the server key for vision. The
-    user's chosen model is not used (it may not read images), and the call's
-    timeout reaches the SDK."""
+    """Before, a non-OpenAI key fell back to the server key for vision. Every
+    current Claude model reads images, so the user's pick is kept, and the
+    call's timeout reaches the SDK."""
     import anthropic
 
     sent = {}
@@ -249,7 +271,7 @@ def test_an_anthropic_key_now_reads_images_on_the_users_key(monkeypatch):
 
     assert text == '{"ok": true}'
     assert server.client.calls == []
-    assert sent["model"] == "claude-sonnet-5"
+    assert sent["model"] == "claude-opus-5"
     assert sent["timeout"] == 60
     image, prompt = sent["messages"][0]["content"]
     assert image["source"] == {"type": "base64", "media_type": "image/png", "data": "AAAA"}
@@ -304,6 +326,30 @@ def test_a_key_without_an_image_model_reads_images_on_the_server_key(
     assert server.client.calls == [
         {**_old_image_payload(provider_module.MODEL_VISION, "read it", "image/png", PNG), "timeout": 60},
     ]
+
+
+def test_an_openai_key_reads_images_on_the_users_model(user_openai_sdk):
+    """Every current OpenAI chat model reads images: the pick is kept."""
+    server = _vision_on("openai", "sk-user", "gpt-6.1-sol")
+
+    assert server.client.calls == []
+    assert "base_url" not in user_openai_sdk["clients"][0]
+    assert user_openai_sdk["calls"] == [
+        {**_old_image_payload("gpt-6.1-sol", "read it", "image/png", PNG), "timeout": 60},
+    ]
+
+
+@pytest.mark.parametrize("provider, key, tier_model", [
+    ("openai", "sk-user", "gpt-5.5"),
+    ("anthropic", "sk-ant-user", "claude-sonnet-5"),
+])
+def test_without_a_pick_images_run_on_the_tier_model(
+    user_openai_sdk, user_anthropic_sdk, provider, key, tier_model,
+):
+    _vision_on(provider, key)
+
+    sent = user_openai_sdk["calls"] or user_anthropic_sdk
+    assert [call["model"] for call in sent] == [tier_model]
 
 
 def test_a_mistral_key_reads_images_on_its_image_model(user_openai_sdk):
@@ -362,6 +408,20 @@ def test_a_mockup_on_a_mistral_key_runs_on_its_image_model(user_openai_sdk):
     sent = user_openai_sdk["calls"][0]
     assert sent["model"] == "mistral-large-latest"
     assert sent["messages"][0]["content"][1]["image_url"]["url"] == f"data:image/png;base64,{PNG}"
+
+
+@pytest.mark.parametrize("provider, key, model", [
+    ("openai", "sk-user", "gpt-6.1-sol"),
+    ("anthropic", "sk-ant-user", "claude-opus-5-5"),
+])
+def test_a_mockup_keeps_the_users_model_where_every_model_reads_images(
+    user_openai_sdk, user_anthropic_sdk, provider, key, model,
+):
+    server = _images_on(provider, key, model)
+
+    assert server.client.calls == []
+    sent = user_openai_sdk["calls"] or user_anthropic_sdk
+    assert [call["model"] for call in sent] == [model]
 
 
 def test_text_on_a_key_keeps_the_users_model(user_openai_sdk):

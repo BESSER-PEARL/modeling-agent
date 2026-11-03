@@ -361,8 +361,8 @@ LLM (``src/llm/``)
 
   - ``complete(prompt, *, model, json_mode, temperature, max_tokens, images)``
     — free text or JSON mode; on the server key without a ``model`` (and
-    images) it is BAF's ``predict`` with an estimated usage. Images on a BYOK
-    key go to its provider's image model, or to the server key, as in ``vision``
+    images) it is BAF's ``predict`` with an estimated usage. Images follow
+    the same rule as ``vision``
   - ``parse(messages, schema, *, temperature, max_tokens, model)`` — one
     structured-output attempt (OpenAI Structured Outputs, else JSON mode);
     raises ``OutputTruncated`` when the reply hits ``max_tokens``.
@@ -370,8 +370,10 @@ LLM (``src/llm/``)
   - ``stream(prompt, *, system_prompt, model, temperature, max_tokens)`` — the
     reply as text chunks (one chunk on a BYOK key)
   - ``vision(prompt, images, *, timeout)`` — the file-conversion vision call
-    (JSON mode) on the BYOK provider's image model, or on the server key and
-    ``MODEL_VISION`` when the provider has none; raises ``ImagesNotSupported``
+    (JSON mode) on the user's key where it reads images, as the ``vision``
+    entry of the BYOK tier table says (the chosen model for OpenAI and
+    Anthropic, ``mistral-large-latest`` for Mistral), else on the server key
+    and ``MODEL_VISION``; raises ``ImagesNotSupported``
     when the provider rejects the image request
   - ``get_provider(llm, model_name)`` — the process-wide provider over ``gpt``
 
@@ -380,7 +382,7 @@ LLM (``src/llm/``)
 
   - ``set_current(provider, api_key, model, base_url)`` / ``reset_current(token)``
   - ``get_active_client()`` — the per-request client, or ``None``
-  - ``active_vision_model()`` — the active key's image model, or ``None``
+  - ``active_vision_model()`` — the model the active key reads images with, or ``None``
     when vision runs on the server key
   - ``resolve_model(provider, requested_model, user_model)``
   - ``SUPPORTED_PROVIDERS`` — ``openai``, ``anthropic``, ``mistral``, ``nebius``

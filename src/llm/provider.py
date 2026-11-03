@@ -160,9 +160,8 @@ class LLMProvider:
 
         ``model`` is a ``model_config`` tier; without one (and without
         images) the server call goes through BAF's ``predict`` on the
-        instance. ``images`` are data URLs sent with the prompt; on a user's
-        key they go to its provider's image model, as in :meth:`vision`, and
-        to the server key when it has none.
+        instance. ``images`` are data URLs sent with the prompt, routed as
+        in :meth:`vision` (the server key when the user's cannot read them).
         """
         byok_client = _image_capable(byok.get_active_client(), images)
         if byok_client is not None:
@@ -197,10 +196,10 @@ class LLMProvider:
     def vision(self, prompt: str, images: Sequence[str], *, timeout: float) -> str:
         """The file-conversion vision call (JSON mode).
 
-        A user's key runs it on its provider's image model
-        (``BYOKClient.vision_model``): the official OpenAI endpoint gets the
+        A user's key runs it on ``BYOKClient.vision_model`` (the ``vision``
+        rule of the BYOK tier table): the official OpenAI endpoint gets the
         request as is, other providers go through their own client. A key
-        whose provider has none (Nebius, a gateway, a custom endpoint) leaves
+        that cannot read images (Nebius, a gateway, a custom endpoint) leaves
         the call to the server key and ``MODEL_VISION``.
 
         Raises:

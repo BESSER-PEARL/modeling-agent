@@ -25,9 +25,9 @@ Scope
 so these run on the user's key when one is active: free text and JSON mode,
 structured output (``.parse()`` on the user's OpenAI client, JSON mode for the
 other providers) and streaming (one chunk). A call with images (file
-conversion, a GUI mockup) uses the user's key only when the provider has a
-known image-capable model (``BYOKClient.vision_model``), and runs on that
-model; otherwise it runs on the server key.
+conversion, a GUI mockup) uses the user's key only when the provider can read
+images (the ``vision`` entry of the tier table, ``BYOKClient.vision_model``);
+otherwise it runs on the server key.
 
 Errors
 ------
@@ -98,16 +98,22 @@ class BYOKError(RuntimeError):
 # both tiers. Without one, ``small`` uses the provider's cheap sibling to keep
 # small edits and routing / repair calls inexpensive on the user's key.
 #
-# ``vision`` is the file-conversion image model, used whatever the user picked
-# (their pick may be text-only). Only providers whose docs list an image-capable
-# model have one; vision on the others runs on the server key.
-# mistral-large-latest is Mistral Large 3 or 4, both multimodal per Mistral's
-# docs; Nebius has no stable image model (Qwen3-30B-A3B is text-only).
+# ``vision`` is where a call with images (file conversion, a GUI mockup) runs:
+# - USER_MODEL: every current chat model of the provider reads images (OpenAI
+#   gpt-4o and later, Claude 4.x/5.x), so the call keeps the user's pick, else
+#   its tier model;
+# - a model id: the user's pick may be text-only (Mistral's codestral), so the
+#   images go to this model, mistral-large-latest (Mistral Large 3 or 4, both
+#   multimodal per Mistral's docs);
+# - none: no image model is known (Nebius's Qwen3-30B-A3B is text-only), and
+#   neither for a catalog gateway or a custom endpoint: the server key runs it.
+USER_MODEL = "user"
+
 _PROVIDER_TIER_MODELS = {
     "openai":    {"large": "gpt-5.5",              "small": "gpt-4o-mini",
-                  "vision": MODEL_VISION},
+                  "vision": USER_MODEL},
     "anthropic": {"large": "claude-sonnet-5",      "small": "claude-haiku-4-5",
-                  "vision": "claude-sonnet-5"},
+                  "vision": USER_MODEL},
     "mistral":   {"large": "mistral-large-latest", "small": "mistral-small-latest",
                   "vision": "mistral-large-latest"},
     # One small-activation MoE serves both tiers (BESSER's Nebius default).
@@ -116,12 +122,17 @@ _PROVIDER_TIER_MODELS = {
 }
 
 
-def _vision_model(provider: str, base_url: Optional[str]) -> Optional[str]:
-    """*provider*'s image-capable model, or ``None`` when none is known
-    (Nebius, a catalog gateway or a custom endpoint)."""
+def _image_model(
+    provider: str, base_url: Optional[str], requested_model: Optional[str], user_model: Optional[str],
+) -> Optional[str]:
+    """The model a call with images requesting *requested_model* runs on, or
+    ``None`` when the key cannot take it (see ``vision`` above)."""
     if base_url:
         return None
-    return _PROVIDER_TIER_MODELS.get(provider, {}).get("vision")
+    vision = _PROVIDER_TIER_MODELS.get(provider, {}).get("vision")
+    if vision == USER_MODEL:
+        return resolve_model(provider, requested_model, user_model)
+    return vision
 
 
 def _tier_of(requested_model: Optional[str]) -> str:
@@ -231,10 +242,10 @@ def reset_current(token: "contextvars.Token") -> None:
 
 
 def active_vision_model() -> Optional[str]:
-    """The image-capable model of the active key's provider, or ``None`` (no
-    key, or a provider without one: vision then runs on the server key)."""
+    """The model the active key's vision call runs on, or ``None`` (no key, or
+    one that cannot read images: vision then runs on the server key)."""
     cfg = current_byok.get()
-    return None if cfg is None else _vision_model(cfg.provider, cfg.base_url)
+    return None if cfg is None else _image_model(cfg.provider, cfg.base_url, MODEL_VISION, cfg.model)
 
 
 def is_active() -> bool:
@@ -335,18 +346,23 @@ class BYOKClient:
         complete-system path to keep large multi-page JSON from truncating).
         ``system`` is a static instruction prefix: a cached system block on
         Anthropic, prepended to the prompt elsewhere. ``images`` are data
-        URLs sent with the prompt (see ``utilities.image_inputs``) to
-        :attr:`vision_model` (callers check it is set), whatever the user picked.
+        URLs sent with the prompt (see ``utilities.image_inputs``), on the
+        model the ``vision`` rule names (callers check :attr:`vision_model`
+        is set).
         """
-        target = self.vision_model if images else resolve_model(self.provider, model, self._user_model)
+        if images:
+            target = _image_model(self.provider, self._base_url, model, self._user_model)
+        else:
+            target = resolve_model(self.provider, model, self._user_model)
         return self._call(
             prompt, target, json_mode, temperature, reasoning_effort, max_tokens, system, images,
         )
 
     @property
     def vision_model(self) -> Optional[str]:
-        """The provider's image-capable model (see :func:`_vision_model`)."""
-        return _vision_model(self.provider, self._base_url)
+        """The model a file-conversion vision call runs on, or ``None`` when
+        this key cannot read images (see :func:`_image_model`)."""
+        return _image_model(self.provider, self._base_url, MODEL_VISION, self._user_model)
 
     def vision(
         self,
