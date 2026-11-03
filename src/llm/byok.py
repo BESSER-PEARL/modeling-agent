@@ -24,9 +24,10 @@ Scope
 ``llm.provider.LLMProvider`` asks :func:`get_active_client` on every call,
 so these run on the user's key when one is active: free text and JSON mode,
 structured output (``.parse()`` on the user's OpenAI client, JSON mode for the
-other providers) and streaming (one chunk). The file-conversion vision call
-uses the user's key only when the provider has a known image-capable model
-(``BYOKClient.vision_model``); otherwise it runs on the server key.
+other providers) and streaming (one chunk). A call with images (file
+conversion, a GUI mockup) uses the user's key only when the provider has a
+known image-capable model (``BYOKClient.vision_model``), and runs on that
+model; otherwise it runs on the server key.
 
 Errors
 ------
@@ -335,9 +336,10 @@ class BYOKClient:
         complete-system path to keep large multi-page JSON from truncating).
         ``system`` is a static instruction prefix: a cached system block on
         Anthropic, prepended to the prompt elsewhere. ``images`` are data
-        URLs sent with the prompt (see ``utilities.image_inputs``).
+        URLs sent with the prompt (see ``utilities.image_inputs``) to
+        :attr:`vision_model` (callers check it is set), whatever the user picked.
         """
-        target = resolve_model(self.provider, model, self._user_model)
+        target = self.vision_model if images else resolve_model(self.provider, model, self._user_model)
         return self._call(
             prompt, target, json_mode, temperature, reasoning_effort, max_tokens, system, images,
         )

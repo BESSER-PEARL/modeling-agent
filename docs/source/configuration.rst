@@ -346,8 +346,9 @@ and the shared server LLM is never mutated.
        provider's image model (see the ``vision`` column below)
    * - Vision without an image model
      - Nebius, a catalog gateway and a custom endpoint have no known
-       image-capable model, so image/PDF conversion runs on the server key
-       (logged at INFO). A provider that rejects the image request (HTTP 400)
+       image-capable model, so image/PDF conversion and a GUI mockup run on
+       the server key (logged at INFO). With an image model, a GUI mockup
+       call uses it whatever model the user picked. A provider that rejects the image request (HTTP 400)
        gets a "can't read this image" reply.
    * - Not routed
      - The local BAF fallback classifier (no LLM), BAF's own RAG and

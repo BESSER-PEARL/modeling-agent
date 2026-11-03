@@ -81,6 +81,19 @@ def _vision_params(model: str) -> Dict[str, Any]:
     return {cap: _VISION_MAX_TOKENS, **sampling_params(model, _VISION_TEMPERATURE)}
 
 
+def _image_capable(byok_client: Optional["byok.BYOKClient"], images: Sequence[str]):
+    """*byok_client*, or None when it must not get *images*: its provider has no
+    image-capable model (Nebius, a gateway, a custom endpoint), so the call
+    runs on the server key."""
+    if byok_client is not None and images and byok_client.vision_model is None:
+        logger.info(
+            "Images: no image-capable %s model for the user's key; using the server key",
+            byok_client.provider,
+        )
+        return None
+    return byok_client
+
+
 class LLMProvider:
     """The call machinery over one BAF ``LLMOpenAI`` instance (or a test
     double exposing ``predict`` and optionally an OpenAI-shaped ``client``)."""
@@ -147,9 +160,11 @@ class LLMProvider:
 
         ``model`` is a ``model_config`` tier; without one (and without
         images) the server call goes through BAF's ``predict`` on the
-        instance. ``images`` are data URLs sent with the prompt.
+        instance. ``images`` are data URLs sent with the prompt; on a user's
+        key they go to its provider's image model, as in :meth:`vision`, and
+        to the server key when it has none.
         """
-        byok_client = byok.get_active_client()
+        byok_client = _image_capable(byok.get_active_client(), images)
         if byok_client is not None:
             return byok_client.predict_raw(
                 prompt,
@@ -191,13 +206,7 @@ class LLMProvider:
         Raises:
             ImagesNotSupported: the provider rejected the request (HTTP 400).
         """
-        byok_client = byok.get_active_client()
-        if byok_client is not None and byok_client.vision_model is None:
-            logger.info(
-                "Vision: no image-capable %s model for the user's key; using the server key",
-                byok_client.provider,
-            )
-            byok_client = None
+        byok_client = _image_capable(byok.get_active_client(), images)
         model = byok_client.vision_model if byok_client is not None else MODEL_VISION
         try:
             if byok_client is not None and byok_client.openai_client is None:

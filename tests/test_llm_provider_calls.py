@@ -318,6 +318,62 @@ def test_a_mistral_key_reads_images_on_its_image_model(user_openai_sdk):
     assert sent["response_format"] == {"type": "json_object"}
 
 
+# -- images with a prompt (the GUI mockup path): the vision rule ----------------
+
+def _images_on(provider, key, model=None, base_url=None):
+    """A handler's free-text call with a mockup, as the GUI reasoning pass and
+    the JSON-mode structured fallback send it."""
+    server = _ServerLLM()
+    token = byok.set_current(provider, key, model, base_url)
+    try:
+        ClassDiagramHandler(server).predict_with_retry(
+            "design it", max_retries=0, model="gpt-5-mini", images=[f"data:image/png;base64,{PNG}"],
+        )
+    finally:
+        byok.reset_current(token)
+    return server
+
+
+@pytest.mark.parametrize("provider, key, base_url", [
+    ("nebius", "nb-user", None),
+    ("openai", "gw-key", "https://gateway.example/v1"),
+])
+def test_a_mockup_on_a_key_without_an_image_model_runs_on_the_server_key(
+    monkeypatch, user_openai_sdk, provider, key, base_url,
+):
+    """A Nebius key sent the mockup to its text-only Qwen tier model."""
+    monkeypatch.setenv("BESSER_AGENT_ALLOW_CUSTOM_BASE_URL", "true")
+
+    server = _images_on(provider, key, base_url=base_url)
+
+    assert user_openai_sdk["calls"] == []
+    content = [
+        {"type": "text", "text": "design it"},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{PNG}"}},
+    ]
+    assert server.client.calls == [_old_predict_raw_kwargs("gpt-5-mini", content)]
+
+
+def test_a_mockup_on_a_mistral_key_runs_on_its_image_model(user_openai_sdk):
+    """The user's pick (codestral) may be text-only, as on the vision path."""
+    server = _images_on("mistral", "ms-user", "codestral-latest")
+
+    assert server.client.calls == []
+    sent = user_openai_sdk["calls"][0]
+    assert sent["model"] == "mistral-large-latest"
+    assert sent["messages"][0]["content"][1]["image_url"]["url"] == f"data:image/png;base64,{PNG}"
+
+
+def test_text_on_a_key_keeps_the_users_model(user_openai_sdk):
+    server = _ServerLLM()
+    token = byok.set_current("mistral", "ms-user", "codestral-latest")
+    try:
+        LLMProvider(server).complete("plan it", model="gpt-5-mini")
+    finally:
+        byok.reset_current(token)
+    assert user_openai_sdk["calls"][0]["model"] == "codestral-latest"
+
+
 def _bad_request():
     import httpx
     import openai

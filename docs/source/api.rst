@@ -361,7 +361,8 @@ LLM (``src/llm/``)
 
   - ``complete(prompt, *, model, json_mode, temperature, max_tokens, images)``
     — free text or JSON mode; on the server key without a ``model`` (and
-    images) it is BAF's ``predict`` with an estimated usage
+    images) it is BAF's ``predict`` with an estimated usage. Images on a BYOK
+    key go to its provider's image model, or to the server key, as in ``vision``
   - ``parse(messages, schema, *, temperature, max_tokens, model)`` — one
     structured-output attempt (OpenAI Structured Outputs, else JSON mode);
     raises ``OutputTruncated`` when the reply hits ``max_tokens``.
