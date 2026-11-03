@@ -84,8 +84,8 @@ Environment knobs (defaults in parentheses):
 ## Inventory
 
 Counts below are the tests `python -m pytest tests --collect-only -q --ignore=tests/live`
-collects per file, each parametrized case counted: **3,451** in all. Without BAF 4.5 the
-three files that import `patches.websocket_platform` are skipped at import, leaving 3,436.
+collects per file, each parametrized case counted: **3,456** in all. Without BAF 4.5 the
+three files that import `patches.websocket_platform` are skipped at import, leaving 3,441.
 
 ### Routing, classification & planning
 
@@ -159,7 +159,7 @@ three files that import `patches.websocket_platform` are skipped at import, leav
 | `test_conversation_memory.py` | 14 | — | `ConversationMemory` sliding window, summarizer trigger, `build_context`, the global registry, and thread safety. |
 | `test_memory_session_key.py` | 5 | — | `memory_session_key` derivation chain — `request.session_id` → payload `sessionId` → BAF `session.id` → `id(session)`. |
 | `test_llm_provider.py` | 17 | — | `LLMProvider` — construction, `complete`/`parse`/`stream` delegation, token recording, error propagation, no-client fallbacks. |
-| `test_llm_provider_calls.py` | 31 | — | Every migrated call site sends the request it sent before (vision, `gpt_predict_json`, handler free text, stream, structured); vision on OpenAI / Anthropic / Mistral keys on their image model, on the server key for Nebius / gateway keys, a 400 says the model can't read the image; one usage record per call; no LLM host outside `llm/`. |
+| `test_llm_provider_calls.py` | 36 | — | Every migrated call site sends the request it sent before (vision, `gpt_predict_json`, handler free text, stream, structured); images (vision and GUI mockups) keep the user's OpenAI / Anthropic model, go to Mistral's image model, and to the server key for Nebius / gateway keys, a 400 says the model can't read the image; one usage record per call; no LLM host outside `llm/`. |
 | `test_byok_reach.py` | 7 | — | A user's key reaches the memory summarizer, the no-RAG UML answer and parallel plan groups (pool threads get the request's context); vision is offered only when some key can read images. |
 | `test_llm_retry.py` | 8 | — | `llm.retry` — permanent quota/billing/invalid-key errors fail fast (1 call); genuine 429/5xx retry up to `MAX_ATTEMPTS`. |
 | `test_byok_base_url.py` | 4 | — | BYOK custom `base_url` SSRF gate (`BESSER_AGENT_ALLOW_CUSTOM_BASE_URL`) + `redacted()`. |
