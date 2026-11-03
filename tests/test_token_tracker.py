@@ -1,5 +1,6 @@
 """Tests for token tracking -- recording, summarization, cost estimation."""
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -338,8 +339,11 @@ def test_a_row_without_an_output_price_is_not_a_price(tracker):
     assert tracker.summary()["call_count"] == 1
 
 
-# The workspace sibling checkout, as in tests/test_hotel_model_contract.py.
-_BESSER = Path(__file__).resolve().parents[2] / "BESSER"
+# BESSER_CHECKOUT (CI checks BESSER out there), else the workspace sibling
+# checkout, as in tests/test_hotel_model_contract.py.
+_BESSER = Path(
+    os.environ.get("BESSER_CHECKOUT") or Path(__file__).resolve().parents[2] / "BESSER"
+)
 # BESSER's data directory: besser/llm/data/ since its Phase 4, before that
 # next to the Spec-Driven Agent's providers.
 _BESSER_DATA_DIRS = (
@@ -354,7 +358,7 @@ def _besser_file(name, root=_BESSER):
         path = root / directory / name
         if path.is_file():
             return path
-    pytest.skip(f"no BESSER checkout next to this repo ({root})")
+    pytest.skip(f"no BESSER checkout at {root} (set BESSER_CHECKOUT)")
 
 
 def test_the_price_file_is_besser_s():

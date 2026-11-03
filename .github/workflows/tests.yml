@@ -31,7 +31,22 @@ jobs:
         run: |
           python -m pip install -r requirements-dev.txt
           python -m pip install --no-deps -e .
+      # BESSER's price file and model catalog, which tests/test_token_tracker.py
+      # pins the agent's copies to (it skips without them).
+      - name: Check out BESSER's LLM data
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: BESSER-PEARL/BESSER
+          ref: development
+          path: .besser
+          persist-credentials: false
+          # The old directory until BESSER moves the files to besser/llm/data.
+          sparse-checkout: |
+            besser/llm/data
+            besser/spec_driven_agent/providers/data
       - name: Run the unit tests
+        env:
+          BESSER_CHECKOUT: ${{ github.workspace }}/.besser
         run: python -m pytest tests -q --tb=short --ignore=tests/live
 
   lint:
