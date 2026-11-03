@@ -84,8 +84,8 @@ Environment knobs (defaults in parentheses):
 ## Inventory
 
 Counts below are the tests `python -m pytest tests --collect-only -q --ignore=tests/live`
-collects per file, each parametrized case counted: **3,458** in all. Without BAF 4.5 the
-three files that import `patches.websocket_platform` are skipped at import, leaving 3,443.
+collects per file, each parametrized case counted: **3,464** in all. Without BAF 4.5 the
+three files that import `patches.websocket_platform` are skipped at import, leaving 3,449.
 
 ### Routing, classification & planning
 
