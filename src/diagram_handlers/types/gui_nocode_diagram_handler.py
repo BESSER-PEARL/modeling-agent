@@ -20,7 +20,6 @@ from .gui_html_converter import (
     splice_widget,
 )
 from .gui_design_system import (
-    stylesheet_rules,
     stylesheet_rules_from_tokens,
     merge_theme_overrides,
     theme_tokens,
@@ -30,7 +29,6 @@ from .gui_design_system import (
 )
 from llm.model_config import (
     MODEL_GENERATION_GUI,
-    MODEL_GENERATION_LARGE,
     MODEL_GENERATION_SMALL,
     MODEL_REASONING,
 )
@@ -38,7 +36,6 @@ from prompts import gui as gui_prompts
 from schemas import (
     AuthoredSystemGUISpec,
     GUIModificationBatchSpec,
-    GUIModificationSpec,
     SingleGUIElementSpec,
 )
 from utilities.class_metadata import format_class_metadata_for_prompt
@@ -3709,7 +3706,6 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
             for page in model.get("pages", [])
             if isinstance(page, dict) and _clean_text(page.get("name"))
         ]
-        pages_hint = ", ".join(page_names) if page_names else "Home"
 
         # Prefer the user's raw message for deterministic parsing — the modeling
         # prompt passed in ``user_request`` is enriched with workspace context.

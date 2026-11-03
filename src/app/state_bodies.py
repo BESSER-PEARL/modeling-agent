@@ -12,7 +12,7 @@ import functools
 import json
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from baf.core.session import Session
 from baf.library.transition.events.base_events import ReceiveJSONEvent
@@ -38,7 +38,7 @@ from conversation.session_helpers import (
 from app.confirmation import resume_pending
 from execution import execute_planned_operations
 from ingestion.file_handling import handle_file_attachments
-from conversation.suggestions import get_suggested_actions, format_suggestions_as_text
+from conversation.suggestions import get_suggested_actions
 from diagram_handlers.registry.metadata import get_diagram_type_info
 from codegen.generation_handler import (
     handle_generation_request,

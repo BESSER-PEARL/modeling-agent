@@ -10,13 +10,9 @@ Enhanced with:
 """
 
 import logging
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple
 from ..core.base_handler import (
     BaseDiagramHandler,
-    SINGLE_STATE_REQUIRED,
-    SINGLE_STATE_OPTIONAL,
-    SYSTEM_STATE_REQUIRED,
-    SYSTEM_STATE_OPTIONAL,
 )
 from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
 from prompts import state_machine as state_machine_prompts

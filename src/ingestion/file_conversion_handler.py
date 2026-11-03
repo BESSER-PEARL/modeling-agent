@@ -25,8 +25,7 @@ Supported target diagram types:
 import base64
 import json
 import logging
-import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from common.errors import ImagesNotSupported, ModelRefusal
 from llm import byok

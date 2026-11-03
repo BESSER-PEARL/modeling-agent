@@ -14,7 +14,7 @@ import random
 import sys
 import time
 import uuid
-from typing import Callable, Dict, Any, List, NamedTuple, Optional, Sequence, Tuple, Type
+from typing import Callable, Dict, Any, List, NamedTuple, Optional, Sequence, Type
 from abc import ABC, abstractmethod
 
 from pydantic import BaseModel
@@ -25,7 +25,7 @@ from llm.model_config import MODEL_CLASSIFIER, MODEL_GENERATION_SMALL
 from llm.provider import LLMProvider, OutputTruncated
 from .layout_engine import apply_layout
 from common.errors import (
-    ErrorCode, LLMPredictionError, ModelRefusal, build_error_response, classify_error,
+    ErrorCode, LLMPredictionError, ModelRefusal, build_error_response,
     non_recoverable_cause, _RECOVERY_HINTS,
 )
 

@@ -870,9 +870,6 @@ def _sugiyama_assign_coordinates(
     positions: Dict[str, Tuple[int, int]] = {}
     layer_widths: Dict[int, int] = {}
 
-    # Adaptive h_gap: reduce gap for wide layers (>4 nodes)
-    max_layer_size = max(len(layers[li]) for li in layer_indices) if layer_indices else 1
-
     for li in layer_indices:
         nodes = layers[li]
         if not nodes:

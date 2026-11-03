@@ -13,8 +13,6 @@ from ..core.base_handler import (
     ReplyNow,
     SINGLE_CLASS_REQUIRED,
     SINGLE_CLASS_OPTIONAL,
-    SYSTEM_CLASS_REQUIRED,
-    SYSTEM_CLASS_OPTIONAL,
 )
 from common.errors import non_recoverable_cause
 from common.settings import AgentSettings

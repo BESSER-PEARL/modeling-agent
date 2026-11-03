@@ -47,7 +47,6 @@ from typing import Optional, Sequence
 from common.agent_config import (
     LLM_MAX_TOKENS_LARGE,
     LLM_TEMPERATURE,
-    LLM_TEXT_TEMPERATURE,
 )
 from common.settings import AgentSettings
 from llm.model_config import (
@@ -383,12 +382,6 @@ class BYOKClient:
             prompt = f"{system}\n{prompt}"
         return self._openai_call(
             prompt, target, json_mode, temp, reasoning_effort, cap, images, timeout,
-        )
-
-    def predict_text(self, prompt: str) -> str:
-        """Simple free-text path (cheap/small tier, conversational temp)."""
-        return self.predict_raw(
-            prompt, model=None, json_mode=False, temperature=LLM_TEXT_TEMPERATURE
         )
 
     # -- provider implementations ------------------------------------------

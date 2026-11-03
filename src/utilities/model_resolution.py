@@ -6,7 +6,7 @@ Functions to resolve the correct model and reference data from the
 workspace-context builder.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from protocol.types import AssistantRequest
 

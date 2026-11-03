@@ -7,7 +7,7 @@ dispatches model and generation operations, and handles error reporting.
 import concurrent.futures
 import contextvars
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from baf.core.session import Session
 

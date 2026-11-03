@@ -8,10 +8,6 @@ import re
 from typing import Dict, Any, List, Optional, Tuple
 from ..core.base_handler import (
     BaseDiagramHandler,
-    SINGLE_OBJECT_REQUIRED,
-    SINGLE_OBJECT_OPTIONAL,
-    SYSTEM_OBJECT_REQUIRED,
-    SYSTEM_OBJECT_OPTIONAL,
 )
 from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
 from prompts import object_diagram as object_prompts

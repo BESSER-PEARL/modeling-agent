@@ -1104,8 +1104,6 @@ def _handle_smart_generator_result(
     an outcome-aware message + suggested next steps.
     """
     error_code = metadata.get("errorCode")
-    cost = metadata.get("costUsd")
-    generator_used = metadata.get("generator_used")
     # Cost is intentionally NOT surfaced to the user (kept out of chat).
     cost_text = ""
 

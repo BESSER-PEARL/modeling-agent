@@ -6,7 +6,6 @@ Handles generation of QuantumCircuitDiagram models.
 from __future__ import annotations
 
 import copy
-import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.base_handler import BaseDiagramHandler
@@ -15,8 +14,6 @@ from prompts import quantum_circuit as quantum_prompts
 from schemas import SingleQuantumGateSpec, SystemQuantumCircuitSpec, QuantumModificationSpec
 from utilities.model_context import detailed_model_summary
 from protocol.actions import Action, model_reply
-
-logger = logging.getLogger(__name__)
 
 DEFAULT_QUBITS = 5
 MAX_QUBITS = 12
