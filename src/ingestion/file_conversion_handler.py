@@ -29,6 +29,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from common.errors import ImagesNotSupported, ModelRefusal
+from llm import byok
 from llm.model_config import MODEL_VISION
 from prompts import file_conversion as file_prompts
 from utilities.image_inputs import data_url
@@ -407,6 +408,11 @@ def _convert_pdf(
     return _parse_llm_response(raw_text, filename, "PDF (image)", expected_type=None)
 
 
+def _vision_model() -> str:
+    """The model a vision call of this request runs on (``LLMProvider.vision``)."""
+    return byok.active_vision_model() or MODEL_VISION
+
+
 def _convert_image(
     image_b64: str,
     filename: str,
@@ -452,7 +458,7 @@ def _convert_image(
             break
         logger.warning(
             "[FileConversion] Vision returned null content (attempt %d/3, model=%s) for %s",
-            attempt + 1, MODEL_VISION, filename,
+            attempt + 1, _vision_model(), filename,
         )
 
     # A refusal (or a content-filter stop) is NOT the same as an empty reply:
@@ -461,7 +467,7 @@ def _convert_image(
     if refusal is not None:
         logger.warning(
             "[FileConversion] Vision declined the image (model=%s, category=%s) for %s",
-            MODEL_VISION, refusal.category, filename,
+            _vision_model(), refusal.category, filename,
         )
         return _error_response(
             "The AI model declined to read this image. This can happen with photos "

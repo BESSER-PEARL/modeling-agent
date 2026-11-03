@@ -266,6 +266,38 @@ class TestConvertFileImage:
         assert "declined" not in msg
 
 
+    @staticmethod
+    def _empty_vision(prompt, images, timeout):
+        return ""
+
+    @staticmethod
+    def _declining_vision(prompt, images, timeout):
+        from common.errors import ModelRefusal
+
+        raise ModelRefusal("mistral", "content_filter")
+
+    @pytest.mark.parametrize("vision, line", [
+        ("_empty_vision", "null content"),
+        ("_declining_vision", "declined the image"),
+    ])
+    def test_the_log_names_the_model_a_users_key_ran_on(self, caplog, vision, line):
+        """The lines named the server's MODEL_VISION while the Mistral key's
+        image model served the call."""
+        from llm import byok
+
+        token = byok.set_current("mistral", "ms-user")
+        try:
+            with caplog.at_level("WARNING", logger="ingestion.file_conversion_handler"):
+                convert_file_to_diagram_spec(
+                    file_content_b64=self._PNG_B64, filename="mockup.png",
+                    llm_predict=_mock_llm_predict, llm_vision_predict=getattr(self, vision),
+                )
+        finally:
+            byok.reset_current(token)
+        logged = [r.getMessage() for r in caplog.records if line in r.getMessage()]
+        assert logged and all("model=mistral-large-latest" in m for m in logged)
+
+
 class TestConvertFileEdgeCases:
     """Test error handling and edge cases."""
 
