@@ -145,8 +145,8 @@ _DEFAULT_SMART_GEN_MODEL_BY_PROVIDER: Dict[str, str] = {
     # the backend's config endpoint. If these diverge, a run with no
     # explicit ``llmModel`` override will fail with an "unknown model"
     # upstream error.
-    "anthropic": "claude-sonnet-5",
-    "openai": "gpt-4o",
+    "anthropic": "claude-sonnet-5-5",
+    "openai": "gpt-6-sol",
     "mistral": "mistral-large-latest",
 }
 
@@ -188,7 +188,7 @@ def build_trigger_smart_generator_payload(
     validate_message_length(instructions, label="The generation instructions")
 
     provider = classification.provider or "anthropic"
-    llm_model = _DEFAULT_SMART_GEN_MODEL_BY_PROVIDER.get(provider, "claude-sonnet-5")
+    llm_model = _DEFAULT_SMART_GEN_MODEL_BY_PROVIDER.get(provider, "claude-sonnet-5-5")
 
     # Short, neutral run banner. The provider/free-tier choice and the BYOK
     # option were already conveyed by the confirmation copy shown before this

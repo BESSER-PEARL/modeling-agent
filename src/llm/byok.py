@@ -110,9 +110,9 @@ class BYOKError(RuntimeError):
 USER_MODEL = "user"
 
 _PROVIDER_TIER_MODELS = {
-    "openai":    {"large": "gpt-5.5",              "small": "gpt-4o-mini",
+    "openai":    {"large": "gpt-6-sol",            "small": "gpt-6-luna",
                   "vision": USER_MODEL},
-    "anthropic": {"large": "claude-sonnet-5",      "small": "claude-haiku-4-5",
+    "anthropic": {"large": "claude-sonnet-5-5",    "small": "claude-haiku-5-5",
                   "vision": USER_MODEL},
     "mistral":   {"large": "mistral-large-latest", "small": "mistral-small-latest",
                   "vision": "mistral-large-latest"},

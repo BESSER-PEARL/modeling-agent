@@ -16,8 +16,8 @@ from llm.model_config import (
     MODEL_REASONING,
 )
 
-CHEAP = {"openai": "gpt-4o-mini", "anthropic": "claude-haiku-4-5", "mistral": "mistral-small-latest"}
-STRONG = {"openai": "gpt-5.5", "anthropic": "claude-sonnet-5", "mistral": "mistral-large-latest"}
+CHEAP = {"openai": "gpt-6-luna", "anthropic": "claude-haiku-5-5", "mistral": "mistral-small-latest"}
+STRONG = {"openai": "gpt-6-sol", "anthropic": "claude-sonnet-5-5", "mistral": "mistral-large-latest"}
 
 
 @pytest.mark.parametrize("provider", sorted(CHEAP))

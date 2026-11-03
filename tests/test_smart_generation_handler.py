@@ -129,7 +129,7 @@ class TestBuildPayload:
         payload = build_trigger_smart_generator_payload(cls)
         assert payload["action"] == "trigger_smart_generator"
         assert payload["provider"] == "anthropic"
-        assert payload["llmModel"] == "claude-sonnet-5"
+        assert payload["llmModel"] == "claude-sonnet-5-5"
         assert payload["instructions"].startswith("Build a FastAPI")
         assert "message" in payload
 
@@ -142,7 +142,7 @@ class TestBuildPayload:
         )
         payload = build_trigger_smart_generator_payload(cls)
         assert payload["provider"] == "openai"
-        assert payload["llmModel"] == "gpt-4o"
+        assert payload["llmModel"] == "gpt-6-sol"
 
     def test_payload_has_no_api_key_fields(self):
         cls = GenerationClassification(

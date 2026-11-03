@@ -340,8 +340,8 @@ def test_an_openai_key_reads_images_on_the_users_model(user_openai_sdk):
 
 
 @pytest.mark.parametrize("provider, key, tier_model", [
-    ("openai", "sk-user", "gpt-5.5"),
-    ("anthropic", "sk-ant-user", "claude-sonnet-5"),
+    ("openai", "sk-user", "gpt-6-sol"),
+    ("anthropic", "sk-ant-user", "claude-sonnet-5-5"),
 ])
 def test_without_a_pick_images_run_on_the_tier_model(
     user_openai_sdk, user_anthropic_sdk, provider, key, tier_model,

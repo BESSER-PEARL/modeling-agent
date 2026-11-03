@@ -251,8 +251,8 @@ def test_the_users_chosen_model_is_used_for_every_call(requested):
 
 
 def test_without_a_chosen_model_the_provider_defaults_apply():
-    assert byok.resolve_model("anthropic", "gpt-5.5", None) == "claude-sonnet-5"
-    assert byok.resolve_model("anthropic", None, None) == "claude-haiku-4-5"
+    assert byok.resolve_model("anthropic", "gpt-5.5", None) == "claude-sonnet-5-5"
+    assert byok.resolve_model("anthropic", None, None) == "claude-haiku-5-5"
 
 
 def test_a_caller_effort_is_not_sent_to_a_model_that_rejects_it(monkeypatch):

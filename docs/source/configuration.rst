@@ -572,12 +572,12 @@ text-only (Mistral's ``codestral``).
      - ``small``: GENERATION_SMALL, CLASSIFIER
      - ``vision``: calls with images
    * - ``openai``
-     - ``gpt-5.5``
-     - ``gpt-4o-mini``
+     - ``gpt-6-sol``
+     - ``gpt-6-luna``
      - chosen model
    * - ``anthropic``
-     - ``claude-sonnet-5``
-     - ``claude-haiku-4-5``
+     - ``claude-sonnet-5-5``
+     - ``claude-haiku-5-5``
      - chosen model
    * - ``mistral``
      - ``mistral-large-latest``
@@ -590,8 +590,9 @@ text-only (Mistral's ``codestral``).
 
 The tier is read from the model the call site requests, not from whether
 that model is a reasoning model. A small edit on an OpenAI key therefore runs
-on ``gpt-4o-mini`` ($0.15 / $0.60) rather than ``gpt-5.5`` ($5 / $30), and on
-an Anthropic key on ``claude-haiku-4-5`` rather than ``claude-sonnet-5``. BPMN
+on ``gpt-6-luna`` ($0.10 / $0.50) rather than ``gpt-6-sol`` ($2 / $10), and on
+an Anthropic key on ``claude-haiku-5-5`` ($0.10 / $0.50) rather than
+``claude-sonnet-5-5`` ($2 / $10). BPMN
 and User Profile complete-system generation request the classifier tier, so
 they map to ``small``.
 
