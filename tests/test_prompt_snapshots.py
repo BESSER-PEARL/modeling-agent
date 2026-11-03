@@ -25,8 +25,6 @@ SAMPLES = {
     "request": "an AI support desk",
     "wanted": "- LoanStatus (referenced by Loan.status)",
     "request_text": "Loans are active, returned or overdue.",
-    "class_summary": ["Book: title, isbn", "Member: name"],
-    "rel_summary": ["Member -> Book (Association, 1..*)"],
     "algorithm_section": "KNOWN ALGORITHMS",
     "class_block": "\n\nCLASS BLOCK",
     "domain": "finance",
@@ -67,14 +65,13 @@ SAMPLES = {
 }
 
 # The other values a parameter takes in a branch: the flags off, one image,
-# no relationships or classes, and every diagram type the converter accepts
+# no classes, and every diagram type the converter accepts
 # plus one it does not.
 _DIAGRAM_TYPES = sorted(CONVERTIBLE_DIAGRAM_TYPES) + ["UnknownDiagram"]
 VARIANTS = {
     "has_classes": [False],
     "detect_mockup": [False],
     "image_count": [1],
-    "rel_summary": [[]],
     "class_metadata": [[]],
     "diagram_type": _DIAGRAM_TYPES,
     "target_diagram_type": _DIAGRAM_TYPES,
