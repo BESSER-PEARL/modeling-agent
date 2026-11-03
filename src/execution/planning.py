@@ -30,7 +30,7 @@ from common.pending_dialogs import (
     PLAN_GENERATION_CONFIRM_FLAG,
 )
 
-from .model_operations import execute_model_operation, _collect_available_diagrams
+from .model_operations import DEFERRED, execute_model_operation, _collect_available_diagrams
 from .progress import _report_progress
 
 logger = logging.getLogger(__name__)
@@ -220,6 +220,8 @@ def execute_planned_operations(
         )
 
         confirmation_triggered = False
+        # Ops whose question waits for the one dialog this plan opens.
+        deferred: List[dict] = []
 
         def _run_model_group(group: List[dict]) -> List[Tuple[dict, Optional[str], Optional[Exception]]]:
             results = []
@@ -233,7 +235,7 @@ def execute_planned_operations(
                     results.append((op, None, exc))
             return results
 
-        with concurrent.futures.ThreadPoolExecutor(
+        with pending_dialogs.one_per_plan() as plan_dialog, concurrent.futures.ThreadPoolExecutor(
             max_workers=min(len(model_groups), 4),
         ) as executor:
             # Each group runs in a copy of this context: worker threads start
@@ -269,9 +271,11 @@ def execute_planned_operations(
                         logger.error(f"❌ [PlannedOps] Model op error: {error}")
                         continue
 
+                    if executed_target is DEFERRED:
+                        deferred.append(op)
+                        continue
+
                     if executed_target is None:
-                        remaining_ops = gen_ops[:]
-                        _store_remaining_ops(session, remaining_ops, request)
                         confirmation_triggered = True
                         continue
 
@@ -281,6 +285,12 @@ def execute_planned_operations(
                         )
 
         if confirmation_triggered:
+            # Asked in plan order once the open dialog is answered.
+            queued = [op for op in operations if any(op is d for d in deferred)]
+            _store_remaining_ops(
+                session, queued + gen_ops, request,
+                slots=(plan_dialog.slot,) if plan_dialog.slot else None,
+            )
             logger.info("⏸️ [PlannedOps] Pending confirmation stored — halting remaining operations")
             return
 
@@ -366,13 +376,15 @@ def execute_planned_operations(
 
 def _store_remaining_ops(
     session: Session, remaining: List[dict], request: AssistantRequest,
+    slots: Optional[Tuple[str, ...]] = None,
 ) -> None:
-    """Persist remaining operations alongside a pending confirmation."""
+    """Persist remaining operations alongside a pending confirmation (the
+    dialog in *slots*, by default whichever is open)."""
     remaining = [op for op in remaining if isinstance(op, dict)]
     if not remaining:
         return
 
-    for key in (PENDING_COMPLETE_SYSTEM, PENDING_GUI_CHOICE):
+    for key in slots or (PENDING_COMPLETE_SYSTEM, PENDING_GUI_CHOICE):
         pending = pending_dialogs.get(session, key)
         if isinstance(pending, dict):
             pending['remaining_operations'] = remaining

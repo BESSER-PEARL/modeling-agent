@@ -50,6 +50,11 @@ from protocol.actions import Action, assistant_message
 
 logger = logging.getLogger(__name__)
 
+# execute_model_operation's result when its question waits behind another
+# dialog of the same parallel plan (pending_dialogs.one_per_plan).
+DEFERRED = object()
+
+
 def _non_web_target_label(session, request):
     """The non-web app the user asked for ("native mobile app"), or None."""
     target = current_target(session, request) or {}
@@ -493,11 +498,13 @@ def execute_model_operation(
     _replace_existing: Optional[bool] = None,
     _skip_gui_choice: bool = False,
     _create_new_tab: bool = False,
-) -> Optional[str]:
+) -> Any:
     """Execute a single model operation (create, modify, etc.).
 
     Returns the target diagram type on success, ``None`` if a confirmation
-    prompt was stored (existing-model guard or GUI-choice prompt) or on failure.
+    prompt was stored (existing-model guard or GUI-choice prompt) or on failure,
+    and :data:`DEFERRED` when that prompt must wait for another dialog of the
+    same parallel plan.
     """
     target_diagram_type = operation.get("diagramType")
     if not isinstance(target_diagram_type, str) or not target_diagram_type:
@@ -585,6 +592,8 @@ def execute_model_operation(
             if model_has_elements(existing_model):
                 from utilities.model_context import compact_model_summary
 
+                if not pending_dialogs.may_open(PENDING_COMPLETE_SYSTEM):
+                    return DEFERRED
                 summary = compact_model_summary(existing_model, target_diagram_type)
                 stored_operation = {**operation, 'mode': operation_mode}
 
@@ -621,6 +630,8 @@ def execute_model_operation(
         # A mockup (operation["images"]) is reproduced by the AI design path;
         # Basic CRUD pages would ignore it, so there is nothing to choose.
         if _has_class_diagram and not _skip_gui_choice and not operation.get("images"):
+            if not pending_dialogs.may_open(PENDING_GUI_CHOICE):
+                return DEFERRED
             pending_dialogs.put(session, PENDING_GUI_CHOICE, {
                 'operation_request': operation_request,
                 'operation': operation,
@@ -1013,6 +1024,8 @@ def execute_model_operation(
                     f"(existing={_existing_count}) — asking for confirmation "
                     "instead of applying silently."
                 )
+                if not pending_dialogs.may_open(PENDING_COMPLETE_SYSTEM):
+                    return DEFERRED
                 _build_destructive_modify_confirmation(
                     session=session,
                     target_diagram_type=target_diagram_type,

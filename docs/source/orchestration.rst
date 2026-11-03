@@ -415,3 +415,9 @@ plan-pause question — reach ``handle_generation_request`` through routing: the
 pending gate in ``json_intent_matches`` keeps them out of intent routing,
 ``should_route_to_generation`` sends them to the generation state, and
 ``decline_body`` hands a decline to it while a generator dialog is open.
+
+A plan's model operations on independent diagram types run in parallel, but
+open at most one replace/keep, GUI-choice or destructive-modify question
+(``pending_dialogs.one_per_plan``): an operation whose question would come
+second stops before asking and is queued in the open dialog's
+``remaining_operations``, so it asks once that dialog is answered.

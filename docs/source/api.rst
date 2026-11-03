@@ -545,6 +545,8 @@ Common (``src/common/``)
     ``GENERATOR``: which open dialog a message is checked against first
   - ``is_open(session, kind)`` / ``current(session)`` → ``PendingDialog(kind,
     payload)`` or ``None``
+  - ``one_per_plan()`` / ``may_open(slot)`` — a parallel plan opens one
+    dialog; ``execute_model_operation`` returns ``DEFERRED`` for the others
 
 ``src/common/errors.py``
   Unified error taxonomy:

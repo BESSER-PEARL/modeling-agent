@@ -21,7 +21,9 @@ monitoring database is not enabled) and are freed by ``Agent.close_session``.
 from __future__ import annotations
 
 import threading
-from typing import Any, NamedTuple, Optional
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Iterator, NamedTuple, Optional
 
 from common.session_keys import PENDING_DIALOGS
 
@@ -143,3 +145,43 @@ def current(session: Any) -> Optional[PendingDialog]:
         if payload:
             return PendingDialog(kind, payload)
     return None
+
+
+# ── One question per parallel plan ────────────────────────────────────
+
+class PlanDialog:
+    """The dialog a parallel plan opened: its groups run in threads, and a
+    second question would overwrite the first's slot or bury it."""
+
+    def __init__(self) -> None:
+        self.slot: Optional[str] = None
+        self._lock = threading.Lock()
+
+    def claim(self, slot: str) -> bool:
+        with self._lock:
+            if self.slot is None:
+                self.slot = slot
+                return True
+            return False
+
+
+_plan_dialog: ContextVar[Optional[PlanDialog]] = ContextVar("plan_dialog", default=None)
+
+
+@contextmanager
+def one_per_plan() -> Iterator[PlanDialog]:
+    """Within this block (and the contexts copied from it) only the first
+    model operation that asks a question may open its dialog."""
+    plan_dialog = PlanDialog()
+    token = _plan_dialog.set(plan_dialog)
+    try:
+        yield plan_dialog
+    finally:
+        _plan_dialog.reset(token)
+
+
+def may_open(slot: str) -> bool:
+    """Whether a model operation may open a dialog in *slot* now: always,
+    except inside :func:`one_per_plan` once another dialog is open."""
+    plan_dialog = _plan_dialog.get()
+    return plan_dialog is None or plan_dialog.claim(slot)
