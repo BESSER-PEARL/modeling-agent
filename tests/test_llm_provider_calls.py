@@ -434,33 +434,112 @@ def test_text_on_a_key_keeps_the_users_model(user_openai_sdk):
     assert user_openai_sdk["calls"][0]["model"] == "codestral-latest"
 
 
-def _bad_request():
+def _bad_request(message, code=None):
+    """An ``openai.BadRequestError`` as the SDK raises it: the text carries the body."""
     import httpx
     import openai
 
     request = httpx.Request("POST", "https://api.example/v1/chat/completions")
+    body = {"message": message, "type": "invalid_request_error", "param": None, "code": code}
     return openai.BadRequestError(
-        "Invalid content type. image_url is only supported by certain models.",
-        response=httpx.Response(400, request=request), body=None,
+        f"Error code: 400 - {{'error': {body}}}",
+        response=httpx.Response(400, request=request), body=body,
     )
 
 
-def test_a_400_on_images_says_the_model_cannot_read_them(no_byok):
+def _convert_png(vision):
+    return fc.convert_file_to_diagram_spec(
+        file_content_b64=PNG, filename="diagram.png",
+        llm_predict=lambda p: "{}", llm_vision_predict=vision,
+    )
+
+
+def test_a_400_on_images_says_the_model_cannot_read_them(no_byok, caplog):
     def _reject(**kw):
-        raise _bad_request()
+        raise _bad_request("Invalid content type. image_url is only supported by certain models.")
 
     server = _ServerLLM(client=_Client(_reject))
 
     with pytest.raises(ImagesNotSupported) as raised:
         LLMProvider(server).vision("read it", ["data:image/png;base64,AAAA"], timeout=60)
-    result = fc.convert_file_to_diagram_spec(
-        file_content_b64=PNG, filename="diagram.png",
-        llm_predict=lambda p: "{}", llm_vision_predict=LLMProvider(server).vision,
-    )
+    result = _convert_png(LLMProvider(server).vision)
 
     assert isinstance(raised.value.__cause__, Exception)
     assert "can't read this image" in result["message"]
     assert provider_module.MODEL_VISION in result["message"]
+    # The provider's reason reaches the log, not only "rejected the image request".
+    assert "image_url is only supported by certain models" in caplog.text
+
+
+@pytest.mark.parametrize("message, code", [
+    ("This model's maximum context length is 128000 tokens. However, your messages "
+     "resulted in 131072 tokens. Please reduce the length of the messages.",
+     "context_length_exceeded"),
+    ("Unsupported parameter: 'max_tokens' is not supported with this model. "
+     "Use 'max_completion_tokens' instead.", "unsupported_parameter"),
+])
+def test_a_400_not_about_the_image_keeps_its_own_error(no_byok, caplog, message, code):
+    """Every vision 400 used to become "can't read this image", hiding the
+    provider's reason (a context overflow, a bad parameter)."""
+    def _reject(**kw):
+        raise _bad_request(message, code)
+
+    server = _ServerLLM(client=_Client(_reject))
+
+    with pytest.raises(Exception) as raised:
+        LLMProvider(server).vision("read it", ["data:image/png;base64,AAAA"], timeout=60)
+    result = _convert_png(LLMProvider(server).vision)
+
+    assert not isinstance(raised.value, ImagesNotSupported)
+    assert "can't read this image" not in result["message"]
+    assert code in caplog.text
+
+
+def test_an_anthropic_400_about_the_image_says_the_model_cannot_read_it(monkeypatch, caplog):
+    import anthropic
+    import httpx
+
+    error = {"type": "invalid_request_error",
+             "message": "messages.0.content.0.image.source.base64: image exceeds 5 MB maximum"}
+
+    class _FakeAnthropic:
+        def __init__(self, **kwargs):
+            self.messages = SimpleNamespace(create=self._create)
+
+        def _create(self, **kwargs):
+            request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+            body = {"type": "error", "error": error}
+            raise anthropic.BadRequestError(
+                f"Error code: 400 - {body}", response=httpx.Response(400, request=request), body=body,
+            )
+
+    monkeypatch.setattr(anthropic, "Anthropic", _FakeAnthropic)
+    token = byok.set_current("anthropic", "sk-ant-user", "claude-opus-5-5")
+    try:
+        result = _convert_png(LLMProvider(_ServerLLM()).vision)
+    finally:
+        byok.reset_current(token)
+
+    assert "can't read this image" in result["message"]
+    assert "claude-opus-5-5" in result["message"]
+    assert "image exceeds 5 MB maximum" in caplog.text
+
+
+@pytest.mark.parametrize("provider, key, base_url", [
+    ("nebius", "nb-user", None),
+    ("openai", "gw-key", "https://gateway.example/v1"),
+])
+def test_images_moved_to_the_server_key_are_a_warning(
+    monkeypatch, caplog, user_openai_sdk, provider, key, base_url,
+):
+    """The user's key does not pay for these images, the deployment's does."""
+    monkeypatch.setenv("BESSER_AGENT_ALLOW_CUSTOM_BASE_URL", "true")
+
+    with caplog.at_level("INFO", logger=provider_module.logger.name):
+        _vision_on(provider, key, base_url=base_url)
+
+    moved = [r for r in caplog.records if "using the server key" in r.getMessage()]
+    assert [r.levelname for r in moved] == ["WARNING"]
 
 
 # -- the other migrated call sites --------------------------------------------

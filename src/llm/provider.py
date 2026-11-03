@@ -86,12 +86,21 @@ def _image_capable(byok_client: Optional["byok.BYOKClient"], images: Sequence[st
     image-capable model (Nebius, a gateway, a custom endpoint), so the call
     runs on the server key."""
     if byok_client is not None and images and byok_client.vision_model is None:
-        logger.info(
+        logger.warning(
             "Images: no image-capable %s model for the user's key; using the server key",
             byok_client.provider,
         )
         return None
     return byok_client
+
+
+def _rejects_images(exc: Exception) -> bool:
+    """Whether *exc* is a provider's HTTP 400 about the image input. The SDK
+    error text carries the provider's message and code, which name the image
+    (OpenAI ``invalid_image*`` / "image_url is only supported by certain
+    models", Anthropic "image exceeds 5 MB maximum"); a context-length or
+    parameter 400 does not."""
+    return getattr(exc, "status_code", None) == 400 and "image" in str(exc).lower()
 
 
 class LLMProvider:
@@ -203,7 +212,8 @@ class LLMProvider:
         the call to the server key and ``MODEL_VISION``.
 
         Raises:
-            ImagesNotSupported: the provider rejected the request (HTTP 400).
+            ImagesNotSupported: the provider rejected the image input (an
+                HTTP 400 about the image); other errors propagate as is.
         """
         byok_client = _image_capable(byok.get_active_client(), images)
         model = byok_client.vision_model if byok_client is not None else MODEL_VISION
@@ -224,8 +234,8 @@ class LLMProvider:
                 "timeout": timeout,
             })
         except Exception as exc:
-            if getattr(exc, "status_code", None) == 400:
-                raise ImagesNotSupported(model) from exc
+            if _rejects_images(exc):
+                raise ImagesNotSupported(model, str(exc)) from exc
             raise
 
     # ------------------------------------------------------------------

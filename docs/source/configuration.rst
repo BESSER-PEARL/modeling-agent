@@ -347,8 +347,10 @@ and the shared server LLM is never mutated.
    * - Images on a key that cannot read them
      - Nebius, a catalog gateway and a custom endpoint have no known
        image-capable model, so image/PDF conversion and a GUI mockup run on
-       the server key (logged at INFO). A provider that rejects the image
-       request (HTTP 400) gets a "can't read this image" reply.
+       the server key (logged as a WARNING). A provider that rejects the image
+       input (an HTTP 400 whose error names the image) gets a "can't read this
+       image" reply; any other 400 (context length, a bad parameter) gets the
+       generic conversion error. The provider's reason is logged either way.
    * - Not routed
      - The local BAF fallback classifier (no LLM), BAF's own RAG and
        intent-classifier calls, RAG embeddings and speech-to-text

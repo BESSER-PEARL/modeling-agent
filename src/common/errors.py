@@ -43,12 +43,14 @@ class ModelRefusal(LLMPredictionError):
 
 
 class ImagesNotSupported(LLMPredictionError):
-    """The provider rejected an image request (HTTP 400), most often because
-    the model cannot read images."""
+    """The provider rejected the image input (an HTTP 400 about the image),
+    most often because the model cannot read images. ``reason`` is the
+    provider's error text."""
 
-    def __init__(self, model: str) -> None:
+    def __init__(self, model: str, reason: str = "") -> None:
         self.model = model
-        super().__init__(f"{model} rejected the image request")
+        self.reason = reason
+        super().__init__(f"{model} rejected the image request" + (f": {reason}" if reason else ""))
 
     def user_message(self) -> str:
         return (
