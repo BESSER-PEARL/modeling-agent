@@ -11,16 +11,12 @@ The repair runs only after ``json.loads`` has failed, so every answer that
 parses today is untouched.
 """
 import json
-import os
-import sys
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-from utilities.json_repair import loads_tolerant, repair_invalid_escapes  # noqa: E402
+from utilities.json_repair import loads_tolerant, repair_invalid_escapes
 
 EMAIL_OCL = r"context Person inv validEmail: self.email.matches('^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')"
 PHONE_OCL = r"context Person inv validPhone: self.phone.matches('^\+?[0-9]{7,15}$')"
@@ -171,7 +167,7 @@ def test_the_classifier_json_path_survives_it_too(monkeypatch):
     from types import SimpleNamespace
     from pydantic import BaseModel
 
-    import byok
+    from llm import byok
     from llm.provider import LLMProvider
 
     class Rule(BaseModel):
@@ -252,7 +248,7 @@ def test_the_classifier_json_path_decodes_stringified_lists(monkeypatch):
     from typing import List, Optional
     from pydantic import BaseModel
 
-    import byok
+    from llm import byok
     from llm.provider import LLMProvider
 
     class Rules(BaseModel):

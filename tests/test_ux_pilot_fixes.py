@@ -6,27 +6,24 @@ live LLM (the classifier path is bypassed; the keyword
 fallback and the message builders are pure).
 """
 
-import os
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+import time
 
-import time  # noqa: E402
-
-import execution.model_operations as mo  # noqa: E402
-import confirmation  # noqa: E402
-from session_keys import (  # noqa: E402
+import execution.model_operations as mo
+from app import confirmation
+from common.session_keys import (
     LAST_SMART_GEN_AT,
     LAST_SMART_GEN_PROJECT_ID,
-    PENDING_GUI_CHOICE,
     SMART_GEN_ARMED_PROJECT_ID,
     UNIFIED_CLASSIFICATION,
 )
-from handlers.generation_handler import _build_smart_gen_confirmation  # noqa: E402
-from tests.conftest import FakeSession, make_session  # noqa: E402
+from common.pending_dialogs import PENDING_GUI_CHOICE
+from codegen.generation_handler import _build_smart_gen_confirmation
+from tests.conftest import FakeSession, make_session
+from common import pending_dialogs
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +92,7 @@ def _route_gui_choice(answer: str, verdict=None):
     if verdict is not None:
         session.set(UNIFIED_CLASSIFICATION, MagicMock(
             pending_flow_action="answer", pending_flow_answer=verdict))
-    session.set(PENDING_GUI_CHOICE, {
+    pending_dialogs.put(session, PENDING_GUI_CHOICE, {
         "operation_request": "create a web app",
         "operation": {"diagramType": "GUINoCodeDiagram"},
         "default_mode": "complete_system",
@@ -439,7 +436,7 @@ def test_armed_project_is_recorded_and_promoted_on_success():
     is a context-free frontend_event) and promoted once the run succeeds."""
     import types as _types
 
-    from handlers.generation_handler import _handle_frontend_event
+    from codegen.generation_handler import _handle_frontend_event
 
     session = _project_session("I want a todo app")
     _build_smart_gen_confirmation(
@@ -473,7 +470,7 @@ def test_failed_run_does_not_mark_the_project_as_generated():
     """Only SUCCESSFUL runs count — a failed run leaves no app to fix."""
     import types as _types
 
-    from handlers.generation_handler import _handle_frontend_event
+    from codegen.generation_handler import _handle_frontend_event
 
     session = _project_session("I want a todo app")
     _build_smart_gen_confirmation(
@@ -493,8 +490,8 @@ def test_legacy_run_without_a_project_id_still_counts_as_an_app():
     """Runs recorded before project attribution carry only LAST_SMART_GEN_AT.
     Failing closed on those silenced the follow-up signal, and "fix my app"
     got prose instead of a fix run."""
-    from handlers.generation_handler import _smart_gen_project_has_app
-    from session_keys import LAST_SMART_GEN_AT
+    from codegen.generation_handler import _smart_gen_project_has_app
+    from common.session_keys import LAST_SMART_GEN_AT
     import time as _t
 
     session = make_session("fix my app", project_snapshot={"id": "proj-A"})
@@ -506,8 +503,11 @@ def test_legacy_run_without_a_project_id_still_counts_as_an_app():
 def test_a_recorded_project_id_that_mismatches_still_fails_closed():
     """The allowance must NOT weaken the actual fix: once a project id exists,
     a different project gets no app."""
-    from handlers.generation_handler import _smart_gen_project_has_app
-    from session_keys import LAST_SMART_GEN_AT, LAST_SMART_GEN_PROJECT_ID
+    from codegen.generation_handler import _smart_gen_project_has_app
+    from common.session_keys import (
+        LAST_SMART_GEN_AT,
+        LAST_SMART_GEN_PROJECT_ID,
+    )
     import time as _t
 
     session = make_session("fix my app", project_snapshot={"id": "proj-B"})
@@ -519,7 +519,7 @@ def test_a_recorded_project_id_that_mismatches_still_fails_closed():
 def test_no_run_at_all_is_still_no_app():
     """The allowance is keyed on a timestamp EXISTING — an untouched session
     must not inherit an app."""
-    from handlers.generation_handler import _smart_gen_project_has_app
+    from codegen.generation_handler import _smart_gen_project_has_app
     session = make_session("fix my app", project_snapshot={"id": "proj-A"})
     assert _smart_gen_project_has_app(session, "proj-A") is False
 
@@ -546,5 +546,5 @@ def test_gui_choice_is_asked_even_when_the_request_mentions_a_dashboard():
         )
 
     assert result is None, "no GUI may be generated before the user chose how"
-    assert session.get(PENDING_GUI_CHOICE), "the choice must be pending"
+    assert pending_dialogs.get(session, PENDING_GUI_CHOICE), "the choice must be pending"
     assert "How would you like me to create your screens" in captured[0]["message"]

@@ -4,7 +4,7 @@ endpoint, loads the project, and arms the modify machinery — the agent only
 detects the intent and extracts owner/repo/branch).
 
 Two deterministic guards under test:
-  * handlers.generation_handler — extraction + the terminal payload, placed
+  * codegen.generation_handler — extraction + the terminal payload, placed
     BEFORE sub-route dispatch in handle_generation_request;
   * unified_classifier._post_validate — reroutes a github-continuation
     message that the LLM parked in fallback/modify back to
@@ -13,12 +13,13 @@ Two deterministic guards under test:
 
 import pytest
 
-from handlers.generation_handler import handle_generation_request
+from codegen.generation_handler import handle_generation_request
 from protocol.types import AssistantRequest, WorkspaceContext
 from routing.generation_signals import _extract_github_reference
-from unified_classifier import UnifiedClassification, _post_validate
+from routing.unified_classifier import UnifiedClassification, _post_validate
 
 from tests.conftest import FakeSession
+from common import pending_dialogs
 
 
 _CLASS_MODEL = {
@@ -161,23 +162,23 @@ class TestGithubImportGuard:
         """An import loads a DIFFERENT project — a stale pre-import smart-gen
         confirmation must not survive for a later generic "yes" to spend."""
         import time as _t
-        from session_keys import (
+        from common.pending_dialogs import (
             PENDING_GENERATOR_TYPE,
             PENDING_SMART_GEN_INSTRUCTIONS,
             PENDING_SMART_GEN_PROVIDER,
             PENDING_SMART_GEN_TIMESTAMP,
         )
         session = FakeSession()
-        session.set(PENDING_SMART_GEN_INSTRUCTIONS, "build a shop app")
-        session.set(PENDING_SMART_GEN_PROVIDER, "anthropic")
-        session.set(PENDING_SMART_GEN_TIMESTAMP, _t.time())
-        session.set(PENDING_GENERATOR_TYPE, "django")
+        pending_dialogs.put(session, PENDING_SMART_GEN_INSTRUCTIONS, "build a shop app")
+        pending_dialogs.put(session, PENDING_SMART_GEN_PROVIDER, "anthropic")
+        pending_dialogs.put(session, PENDING_SMART_GEN_TIMESTAMP, _t.time())
+        pending_dialogs.put(session, PENDING_GENERATOR_TYPE, "django")
         result = handle_generation_request(
             session, _make_request("continue from github.com/armen/hotel-app"),
         )
         assert result["action"] == "trigger_github_import"
-        assert not session.get(PENDING_SMART_GEN_INSTRUCTIONS)
-        assert not session.get(PENDING_GENERATOR_TYPE)
+        assert not pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
+        assert not pending_dialogs.get(session, PENDING_GENERATOR_TYPE)
 
     def test_plain_generation_request_unaffected(self):
         """No GitHub reference → the guard stays out of the way (this message

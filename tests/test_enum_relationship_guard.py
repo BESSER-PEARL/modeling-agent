@@ -14,12 +14,7 @@ These tests exercise the deterministic post-process guards directly (no LLM):
   model and enums added in the same batch).
 """
 
-import os
-import sys
-
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 

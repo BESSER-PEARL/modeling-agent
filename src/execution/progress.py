@@ -4,7 +4,7 @@ import logging
 
 from baf.core.session import Session
 
-from session_helpers import reply_progress
+from conversation.session_helpers import reply_progress
 
 logger = logging.getLogger(__name__)
 

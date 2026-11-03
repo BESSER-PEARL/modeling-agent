@@ -4,18 +4,14 @@
 type) used the server client unconditionally, so a user with their own key
 still spent the server's quota, and modeling failed when that quota ran out.
 """
-import os
-import sys
 from types import SimpleNamespace
 
 import pytest
 from pydantic import BaseModel
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-import byok  # noqa: E402
-import byok_config  # noqa: E402
-from diagram_handlers.types.agent_diagram_handler import AgentDiagramHandler  # noqa: E402
+from llm import byok
+from llm import byok_config
+from diagram_handlers.types.agent_diagram_handler import AgentDiagramHandler
 
 
 class _Answer(BaseModel):
@@ -50,7 +46,7 @@ class _ServerLLM:
         self.client = _ParseClient(answer="server")
         self.predict_calls = 0
 
-    def predict(self, prompt):
+    def predict(self, prompt, parameters=None):
         self.predict_calls += 1
         return '{"name": "server"}'
 
@@ -90,6 +86,23 @@ def test_an_openai_key_runs_the_structured_call_on_the_users_client(monkeypatch,
     assert result.name == "user"
     assert server.client.calls == [], "the server key must not be used"
     assert len(user_client.calls) == 1
+
+
+def test_the_structured_call_logs_the_model_it_calls(monkeypatch, caplog, handler):
+    """On a user's key the log names their model, not the server tier."""
+    user_client = _ParseClient(answer="user")
+    stub = SimpleNamespace(provider="openai", openai_client=user_client)
+    monkeypatch.setattr(byok, "get_active_client", lambda: stub)
+    token = byok.set_current("openai", "sk-user", "gpt-4.1")
+    try:
+        with caplog.at_level("INFO"):
+            handler.predict_structured("make it", _Answer, max_retries=0, model="gpt-5.5")
+    finally:
+        byok.reset_current(token)
+
+    started = [r.getMessage() for r in caplog.records if "Structured LLM call started" in r.getMessage()]
+    assert user_client.calls[0]["model"] == "gpt-4.1"
+    assert started and "model=gpt-4.1" in started[0]
 
 
 @pytest.mark.parametrize("provider", ["anthropic", "mistral"])
@@ -157,7 +170,9 @@ def test_classifier_parse_uses_json_mode_for_other_providers(monkeypatch, server
 # File / image attachments -> diagram
 # ---------------------------------------------------------------------------
 
-def test_json_prediction_runs_on_the_users_key(monkeypatch):
+def test_json_prediction_runs_on_the_users_key(monkeypatch, server):
+    from llm.provider import LLMProvider
+
     seen = {}
 
     def predict_raw(prompt, **kwargs):
@@ -166,31 +181,19 @@ def test_json_prediction_runs_on_the_users_key(monkeypatch):
 
     token = _with_key(monkeypatch, "mistral", SimpleNamespace(provider="mistral", predict_raw=predict_raw))
     try:
-        assert byok.predict_json("convert this", model="gpt-4o") == '{"ok": true}'
+        result = LLMProvider(server).complete("convert this", model="gpt-4o", json_mode=True)
     finally:
         byok.reset_current(token)
-    assert seen == {"model": "gpt-4o", "json_mode": True}
+    assert result == '{"ok": true}'
+    assert (seen["model"], seen["json_mode"]) == ("gpt-4o", True)
+    assert server.predict_calls == 0
 
 
-def test_json_prediction_without_a_user_key_defers_to_the_server():
-    assert byok.predict_json("convert this") is None
+def test_json_prediction_without_a_user_key_runs_on_the_server(server):
+    from llm.provider import LLMProvider
 
-
-@pytest.mark.parametrize(("provider", "base_url", "expected"), [
-    ("openai", None, "sk-user"),        # official OpenAI: the user's key pays for vision
-    ("anthropic", None, None),          # cannot call OpenAI vision -> server key
-    ("mistral", None, None),
-])
-def test_vision_uses_the_users_openai_key_when_it_can(provider, base_url, expected):
-    token = byok.set_current(provider, "sk-user", None, base_url)
-    try:
-        assert byok.user_openai_key() == expected
-    finally:
-        byok.reset_current(token)
-
-
-def test_vision_without_a_user_key_uses_the_server_key():
-    assert byok.user_openai_key() is None
+    LLMProvider(server).complete("convert this", json_mode=True)
+    assert server.predict_calls == 1
 
 
 # ---------------------------------------------------------------------------
@@ -248,8 +251,8 @@ def test_the_users_chosen_model_is_used_for_every_call(requested):
 
 
 def test_without_a_chosen_model_the_provider_defaults_apply():
-    assert byok.resolve_model("anthropic", "gpt-5.5", None) == "claude-sonnet-5"
-    assert byok.resolve_model("anthropic", None, None) == "claude-haiku-4-5"
+    assert byok.resolve_model("anthropic", "gpt-5.5", None) == "claude-sonnet-5-5"
+    assert byok.resolve_model("anthropic", None, None) == "claude-haiku-5-5"
 
 
 def test_a_caller_effort_is_not_sent_to_a_model_that_rejects_it(monkeypatch):

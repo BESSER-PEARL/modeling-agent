@@ -12,6 +12,7 @@ from routing.generation_signals import detect_generator_type
 from utilities.model_resolution import resolve_target_model
 
 from .workspace_orchestrator import resolve_diagram_id
+from protocol.actions import Action
 
 
 def build_request_for_target(
@@ -88,7 +89,7 @@ def build_generation_request(
     resolved_model = base_request.current_model if isinstance(base_request.current_model, dict) else None
 
     raw_payload = {
-        "action": "user_message",
+        "action": Action.USER_MESSAGE,
         "protocolVersion": "2.0",
         "clientMode": base_request.client_mode,
         "sessionId": base_request.session_id,
@@ -102,7 +103,7 @@ def build_generation_request(
     }
 
     return AssistantRequest(
-        action="user_message",
+        action=Action.USER_MESSAGE,
         protocol_version="2.0",
         client_mode=base_request.client_mode,
         session_id=base_request.session_id,

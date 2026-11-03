@@ -175,7 +175,7 @@ def test_normalize_system_spec_keeps_named_components():
 
 
 def test_modify_prompt_documents_new_component_actions():
-    from diagram_handlers.types.agent_diagram_handler import MODIFY_SYSTEM_PROMPT_AGENT
+    from prompts.agent_diagram import MODIFY_SYSTEM_PROMPT_AGENT
     for action in ("add_llm", "add_tool", "add_skill", "add_workspace", "add_gui", "add_rag_element"):
         assert f"- {action}:" in MODIFY_SYSTEM_PROMPT_AGENT
 
@@ -183,7 +183,7 @@ def test_modify_prompt_documents_new_component_actions():
 def test_prompts_list_every_reply_type_from_schema():
     from typing import get_args
     from schemas.agent_diagram import ReplyType
-    from diagram_handlers.types.agent_diagram_handler import MODIFY_SYSTEM_PROMPT_AGENT
+    from prompts.agent_diagram import MODIFY_SYSTEM_PROMPT_AGENT
     single_prompt = _handler().get_system_prompt()
     for v in get_args(ReplyType):
         assert f'"{v}"' in MODIFY_SYSTEM_PROMPT_AGENT
@@ -261,7 +261,7 @@ def test_layout_single_intent_new_vs_old_format():
 
 
 def test_modify_prompt_documents_transition_target_fields():
-    from diagram_handlers.types.agent_diagram_handler import MODIFY_SYSTEM_PROMPT_AGENT
+    from prompts.agent_diagram import MODIFY_SYSTEM_PROMPT_AGENT
     for line_start in ("- add_transition:", "- remove_transition:"):
         idx = MODIFY_SYSTEM_PROMPT_AGENT.index(line_start)
         entry = MODIFY_SYSTEM_PROMPT_AGENT[idx:MODIFY_SYSTEM_PROMPT_AGENT.index("\n- ", idx + 1)]
@@ -271,7 +271,7 @@ def test_modify_prompt_documents_transition_target_fields():
 
 
 def test_modify_prompt_places_type_specific_fields_per_action():
-    from diagram_handlers.types.agent_diagram_handler import MODIFY_SYSTEM_PROMPT_AGENT
+    from prompts.agent_diagram import MODIFY_SYSTEM_PROMPT_AGENT
     assert "changes.replies[i]" in MODIFY_SYSTEM_PROMPT_AGENT
     assert "for add_state_body they go directly in changes" in MODIFY_SYSTEM_PROMPT_AGENT
 

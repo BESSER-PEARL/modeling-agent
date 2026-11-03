@@ -16,18 +16,10 @@ app, and each one traced back to the compact schema or the generation prompt:
   ``agreedPrice``; the extra charges were dropped.
 """
 
-import sys
-from pathlib import Path
-
-# Make src/ importable when running pytest from the repo root.
-_SRC = Path(__file__).resolve().parent.parent / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-import diagram_handlers.types.class_diagram_handler as handler_mod  # noqa: E402
-from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler  # noqa: E402
-from schemas.class_diagram import AttributeSpec  # noqa: E402
-from schemas.compact_class_diagram import (  # noqa: E402
+import diagram_handlers.types.class_diagram_handler as handler_mod
+from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
+from schemas.class_diagram import AttributeSpec
+from schemas.compact_class_diagram import (
     COMPACT_ENCODING_RULES,
     CompactClassSpec,
     CompactRelationshipSpec,

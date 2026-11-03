@@ -1,0 +1,316 @@
+"""Unified error handling for the modeling agent.
+
+Consolidates error classification, recovery hints, and response building
+that was previously split between base_handler.py and execution.py.
+"""
+from enum import Enum
+from typing import Dict, Any, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class LLMPredictionError(Exception):
+    """Raised when the LLM fails to produce a usable response after retries."""
+    pass
+
+
+class ModelRefusal(LLMPredictionError):
+    """The model declined the request (safety refusal or content filter).
+
+    It arrives as a successful response, so no retry layer sees an error, and
+    the same prompt is declined again: callers must not retry it.
+    """
+
+    def __init__(
+        self, provider: str, category: Optional[str] = None, detail: Optional[str] = None,
+    ) -> None:
+        self.provider = provider
+        self.category = category
+        self.detail = detail
+        super().__init__(
+            f"{provider} model declined the request "
+            f"(category={category or 'unspecified'})"
+        )
+
+    def user_message(self) -> str:
+        """Polite, user-facing explanation (no raw model output)."""
+        reason = f" (safety category: {self.category.replace('_', ' ')})" if self.category else ""
+        return (
+            f"The AI model declined this request{reason}. Please try rephrasing "
+            "it, or switch to a different model in the assistant settings."
+        )
+
+
+class ImagesNotSupported(LLMPredictionError):
+    """The provider rejected the image input (an HTTP 400 about the image),
+    most often because the model cannot read images. ``reason`` is the
+    provider's error text."""
+
+    def __init__(self, model: str, reason: str = "") -> None:
+        self.model = model
+        self.reason = reason
+        super().__init__(f"{model} rejected the image request" + (f": {reason}" if reason else ""))
+
+    def user_message(self) -> str:
+        return (
+            f"The AI model ({self.model}) can't read this image: the provider "
+            "rejected the image input. Try a smaller PNG or JPEG, or describe "
+            "the diagram in text."
+        )
+
+
+def _field(obj: Any, name: str) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def raise_if_anthropic_refusal(message: Any) -> None:
+    """Raise :class:`ModelRefusal` when an Anthropic message has ``stop_reason == "refusal"``."""
+    if _field(message, "stop_reason") != "refusal":
+        return
+    details = _field(message, "stop_details")
+    raise ModelRefusal(
+        "anthropic", _field(details, "category"), _field(details, "explanation"),
+    )
+
+
+def raise_if_openai_refusal(choice: Any) -> None:
+    """Raise :class:`ModelRefusal` for an OpenAI choice carrying ``message.refusal``
+    or stopped by the content filter (``finish_reason == "content_filter"``)."""
+    refusal = _field(_field(choice, "message"), "refusal")
+    if isinstance(refusal, str) and refusal.strip():
+        raise ModelRefusal("openai", detail=refusal.strip())
+    if _field(choice, "finish_reason") == "content_filter":
+        raise ModelRefusal("openai", category="content_filter")
+
+
+# Provider errors that a retry or a degraded re-generation cannot fix: the
+# same request fails again, so they must reach the user instead.
+_NON_RECOVERABLE_ERRORS = frozenset({
+    "RateLimitError", "AuthenticationError", "PermissionDeniedError",
+    "BadRequestError", "LengthFinishReasonError",
+})
+
+
+def non_recoverable_cause(error: Optional[BaseException]) -> Optional[BaseException]:
+    """The provider error in *error*'s cause/context chain listed in
+    ``_NON_RECOVERABLE_ERRORS`` (it may be wrapped in LLMPredictionError), else None."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if type(error).__name__ in _NON_RECOVERABLE_ERRORS:
+            return error
+        error = error.__cause__ or error.__context__
+    return None
+
+
+class ErrorCode(str, Enum):
+    """Error taxonomy for the modeling agent."""
+    GENERATION_ERROR = "generation_error"
+    PARSE_ERROR = "parse_error"
+    LLM_FAILURE = "llm_failure"
+    VALIDATION_ERROR = "validation_error"
+    TIMEOUT = "timeout"
+    RATE_LIMIT = "rate_limit"
+    AUTH_ERROR = "auth_error"
+    CONTEXT_ERROR = "context_error"
+    SCHEMA_ERROR = "schema_error"
+    UNSUPPORTED = "unsupported"
+    PREREQUISITE_MISSING = "prerequisite_missing"
+    HANDLER_MISSING = "handler_missing"
+    GENERATION_HANDLER_ERROR = "generation_handler_error"
+    MODEL_REFUSAL = "model_refusal"
+    UNKNOWN = "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Unified recovery hints
+# ---------------------------------------------------------------------------
+# Merged from base_handler._ERROR_RECOVERY and execution._get_recovery_hint.
+# Each entry carries a user-facing message, a recovery suggestion, and a
+# retryable flag.
+
+_RECOVERY_HINTS: Dict[str, Dict[str, Any]] = {
+    # --- from base_handler._ERROR_RECOVERY ---
+    "llm_failure": {
+        "message": "The AI service is temporarily unavailable.",
+        "recovery": "try again",
+        "retryable": True,
+    },
+    "parse_error": {
+        "message": "I had trouble structuring that response.",
+        "recovery": "try rephrasing your request more specifically",
+        "retryable": True,
+    },
+    "validation_error": {
+        "message": "The generated model had structural issues.",
+        "recovery": "try simplifying your request",
+        "retryable": True,
+    },
+    "timeout": {
+        "message": "That request was too complex to process in time.",
+        "recovery": "try breaking it into smaller steps",
+        "retryable": True,
+    },
+    "schema_error": {
+        "message": "The response format was unexpected.",
+        "recovery": "try again with a simpler description",
+        "retryable": True,
+    },
+    "context_error": {
+        "message": "I couldn't find the diagram or element you're referring to.",
+        "recovery": "make sure you have an active diagram open",
+        "retryable": False,
+    },
+    "generation_error": {
+        "message": "Something went wrong during generation.",
+        "recovery": "try rephrasing your request",
+        "retryable": True,
+    },
+    "unsupported": {
+        "message": "This operation is not supported for this diagram type.",
+        "recovery": "check the documentation for supported operations",
+        "retryable": False,
+    },
+    "rate_limit": {
+        "message": "The AI service is currently busy.",
+        "recovery": "please wait a moment and try again",
+        "retryable": True,
+    },
+    "auth_error": {
+        "message": "The AI service is temporarily unavailable.",
+        "recovery": "please try again later",
+        "retryable": False,
+    },
+    # --- from execution._get_recovery_hint (additions not in base_handler) ---
+    "prerequisite_missing": {
+        "message": "A required diagram is missing.",
+        "recovery": "create the required diagram first",
+        "retryable": False,
+    },
+    "handler_missing": {
+        "message": "This diagram type is not yet supported.",
+        "recovery": "this diagram type is not yet supported",
+        "retryable": False,
+    },
+    "generation_handler_error": {
+        "message": "Code generation encountered an error.",
+        "recovery": "try regenerating — if it persists, check the model for issues",
+        "retryable": True,
+    },
+    "model_refusal": {
+        "message": "The AI model declined this request.",
+        "recovery": "try rephrasing it, or switch to a different model",
+        "retryable": False,
+    },
+    "unknown": {
+        "message": "Something went wrong.",
+        "recovery": "try rephrasing your request",
+        "retryable": True,
+    },
+}
+
+
+def get_recovery_hint(error_code: ErrorCode) -> Dict[str, Any]:
+    """Get the recovery hint for a given error code."""
+    return _RECOVERY_HINTS.get(error_code.value, _RECOVERY_HINTS["unknown"])
+
+
+def classify_error(error: Exception) -> ErrorCode:
+    """Classify an exception into an ErrorCode.
+
+    Consolidates _classify_error from both base_handler.py and execution.py.
+
+    Classification priority:
+    1. Exception class name matching (most specific)
+    2. Error message string matching (fallback)
+    """
+    if isinstance(error, ModelRefusal):
+        return ErrorCode.MODEL_REFUSAL
+
+    err_name = type(error).__name__.lower()
+    err_msg = str(error).lower()
+
+    # SDK class names first: provider messages mention "api" / "openai"
+    # and would otherwise be read as a generic LLM failure.
+    if "rate" in err_name and "limit" in err_name:
+        return ErrorCode.RATE_LIMIT
+    if "auth" in err_name:
+        return ErrorCode.AUTH_ERROR
+
+    # Timeout detection (both files check this)
+    if "timeout" in err_name or "timeout" in err_msg or "timed out" in err_msg:
+        return ErrorCode.TIMEOUT
+
+    # Parse / JSON errors (both files check this)
+    if "parse" in err_name or "json" in err_name or "parse" in err_msg or "decode" in err_msg:
+        return ErrorCode.PARSE_ERROR
+
+    # Validation / schema errors (base_handler also checks "schema")
+    if "validation" in err_name or "validation" in err_msg or "invalid" in err_msg or "schema" in err_msg:
+        return ErrorCode.VALIDATION_ERROR
+
+    # LLM-specific exception class (base_handler checks isinstance)
+    if isinstance(error, LLMPredictionError):
+        return ErrorCode.LLM_FAILURE
+
+    # LLM / API errors detected by message content (execution checks this)
+    if any(kw in err_msg for kw in ("openai", "llm", "rate limit", "api")):
+        return ErrorCode.LLM_FAILURE
+
+    # Auth errors
+    if "unauthorized" in err_msg or "forbidden" in err_msg or "api_key" in err_msg or "invalid_api_key" in err_msg:
+        return ErrorCode.AUTH_ERROR
+
+    # Default: base_handler used generation_error, execution used unknown.
+    # Use UNKNOWN for the unified version — callers can override if needed.
+    return ErrorCode.UNKNOWN
+
+
+def build_error_response(
+    error_code: ErrorCode,
+    message: str = "",
+    *,
+    diagram_type: str = "",
+    details: str = "",
+    retryable: Optional[bool] = None,
+    operation: Optional[dict] = None,
+) -> Dict[str, Any]:
+    """Build a standardized error response payload.
+
+    Replaces both:
+    - base_handler._error_response()
+    - execution._build_error_payload()
+
+    The response uses ``"action": "assistant_message"`` to match what the
+    frontend expects.
+    """
+    recovery = _RECOVERY_HINTS.get(error_code.value, _RECOVERY_HINTS["unknown"])
+
+    if retryable is None:
+        retryable = recovery.get("retryable", True)
+
+    effective_message = message or recovery.get("message", "Something went wrong. Please try again.")
+    if details:
+        effective_message = f"{effective_message} {details}".strip()
+
+    payload: Dict[str, Any] = {
+        "action": "assistant_message",
+        "error": True,
+        "errorCode": error_code.value,
+        "message": effective_message,
+        "suggestedRecovery": recovery.get("recovery", "Try rephrasing your request."),
+        "retryable": retryable,
+        "diagramType": diagram_type,
+    }
+
+    if operation is not None:
+        payload["operation"] = {
+            "type": operation.get("type"),
+            "diagramType": operation.get("diagramType"),
+            "mode": operation.get("mode"),
+        }
+
+    return payload

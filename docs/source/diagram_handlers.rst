@@ -58,12 +58,62 @@ Abstract Methods (must override)
      - Return the diagram type string (e.g., ``"ClassDiagram"``)
    * - ``get_system_prompt() -> str``
      - Return the LLM system prompt for this handler
-   * - ``generate_single_element(request, model, **kw) -> dict``
-     - Generate a single diagram element
-   * - ``generate_complete_system(request, model) -> dict``
-     - Generate a complete diagram (no ``**kwargs`` on the base signature)
+   * - ``_build_single_element(request, model, *, prepared, **kw) -> dict``
+     - LLM call, repair, layout and reply envelope for one element
+   * - ``_build_system(request, model, *, prepared, **kw) -> dict``
+     - The same for a complete diagram
    * - ``generate_fallback_element(request) -> dict``
-     - Return a minimal valid element when all else fails
+     - Starter element when single-element generation crashes; must not call
+       ``generate_single_element``
+   * - ``generate_fallback_system() -> dict``
+     - Starter diagram when complete-system generation crashes
+
+Template Methods
+~~~~~~~~~~~~~~~~
+
+The public entry points are template methods on the base class. Each runs
+the handler's ``_prepare_*`` hook (everything before the LLM call: prompts,
+model normalisation) and then its ``_build_*`` hook (LLM call, repair,
+layout, reply), and turns the failures of ``_build_*`` into replies, so a
+handler only writes the part that differs. An exception raised by
+``_prepare_*`` is not caught: it propagates to ``model_operations``, whose
+error reply answers it. ``_prepare_*`` returns what ``_build_*`` needs, which
+every later hook receives as ``prepared``, or a ``ReplyNow(reply)`` to answer
+without an LLM call (the agent multi-agent guard, the class
+duplicate-association-end repair, the GUI deterministic edit). Every hook takes
+the entry point's arguments.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 20 50
+
+   * - Entry point
+     - Hooks
+     - Failure replies (overridable)
+   * - ``generate_complete_system(request, model, **kw)``
+     - ``_prepare_system``, ``_build_system``
+     - LLM failure: ``_system_failure_reply`` (``_SYSTEM_FAILURE_MESSAGE``,
+       ``_LLM_FAILURE_CODE``); other exception: ``_system_crash_reply``
+       (``generate_fallback_system()``)
+   * - ``generate_single_element(request, model, **kw)``
+     - ``_prepare_single_element``, ``_build_single_element``
+     - LLM failure: ``_single_failure_reply`` (``_SINGLE_FAILURE_MESSAGE``,
+       ``_LLM_FAILURE_CODE``); other exception: ``_single_crash_reply``
+       (``generate_fallback_element(request)``)
+   * - ``generate_modification(request, model, **kw)``
+     - ``_prepare_modification``, ``_build_modification``
+     - LLM failure: ``_modification_failure_reply`` (``_MODIFY_FAILURE_MESSAGE``,
+       ``_MODIFY_FAILURE_CODE``); other exception: ``_modification_crash_reply``
+       (``generate_fallback_modification(request)``, which a handler needs
+       only while it keeps this default)
+
+An LLM failure is any ``LLMPredictionError``, model refusals included
+(``_error_response`` turns a refusal into the ``model_refusal`` reply). The
+Quantum Circuit and GUI modification replies, failures included, carry the
+model being edited, which their reply hooks take from ``prepared``. Handlers
+are singletons shared by every session, so per-request values travel through
+``prepared`` and locals, never handler attributes. Reply envelopes are built
+with ``protocol.actions`` (see :doc:`websocket_protocol`).
 
 Shared Concrete Methods
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -74,8 +124,9 @@ Shared Concrete Methods
 
    * - Method
      - Description
-   * - ``generate_modification()``
-     - Default modification handler using LLM
+   * - ``_execute_modification()``
+     - Structured modification call, ``modify_model`` envelope and friendly
+       message, shared by every ``_build_modification``
    * - ``predict_with_retry()``
      - Free-text LLM call with jittered exponential backoff. Routed through
        the user's BYOK client when one is active for this request.
@@ -89,8 +140,6 @@ Shared Concrete Methods
        ``_TWO_PASS_MIN_LENGTH`` (250 chars).
    * - ``predict_two_pass()``
      - Older free-text two-pass variant (reasoning then JSON)
-   * - ``validate_and_refine()``
-     - LLM self-critique loop for output validation
    * - ``self_correct()`` / ``parse_validate_or_correct()``
      - Re-prompt the model with the validation error and re-parse
    * - ``repair_json_response()`` / ``parse_and_validate_with_repair()``
@@ -108,7 +157,7 @@ Retry Strategy
 - **Handler retry:** ``predict_with_retry()`` runs ``1 + max_retries``
   attempts (default 1 retry) with jittered exponential backoff.
 - **Shared-client retry:** underneath that, the shared server LLM's SDK client
-  is patched once (``src/utilities/llm_retry.py``) to retry transient upstream
+  is patched once (``src/llm/retry.py``) to retry transient upstream
   failures — 429 and 5xx — up to ``MAX_ATTEMPTS = 4`` with a bounded backoff
   (~5 s worst case). Non-429 4xx responses fail fast.
 - **Fallback:** graceful degradation through multiple levels (primary LLM →
@@ -713,10 +762,15 @@ discoverability.
    complete-system spec, modification actions) and export them from
    ``src/schemas/__init__.py``.
 2. **Handler** — add ``src/diagram_handlers/types/<type>_diagram_handler.py``
-   extending ``BaseDiagramHandler`` and implementing the 5 abstract methods:
-   ``get_diagram_type``, ``get_system_prompt``, ``generate_single_element``,
-   ``generate_complete_system``, ``generate_fallback_element``. Override
-   ``generate_modification`` if the default LLM path is not enough.
+   extending ``BaseDiagramHandler`` and implementing the 6 abstract methods:
+   ``get_diagram_type``, ``get_system_prompt``, ``_build_single_element``,
+   ``_build_system``, ``generate_fallback_element`` and
+   ``generate_fallback_system``, with the ``_prepare_*`` hooks for the work
+   before the LLM call. Implement ``_build_modification`` and
+   ``generate_fallback_modification`` for edits, and set the failure texts
+   (``_SYSTEM_FAILURE_MESSAGE`` …, see `Template Methods`_). Build replies with
+   ``protocol.actions``, never action string literals. Its prompt text goes in
+   ``src/prompts/<type>.py``, not in the handler.
 3. **Factory** — add the class to ``HANDLER_CLASSES`` in
    ``src/diagram_handlers/registry/factory.py``.
 4. **Protocol** — add the token to ``SUPPORTED_DIAGRAM_TYPES`` in
@@ -724,15 +778,15 @@ discoverability.
 5. **Metadata** — add display metadata in
    ``src/diagram_handlers/registry/metadata.py``.
 6. **Classifier** — add the token to ``_TARGET_DIAGRAM_TYPES`` in
-   ``src/unified_classifier.py`` and teach ``_SYSTEM_PROMPT`` the type's
+   ``src/routing/unified_classifier.py`` and teach ``SYSTEM_PROMPT`` (``src/prompts/classifier.py``) the type's
    vocabulary, so a request naming it routes to the right intent.
 7. **Orchestrator** — add ``KEYWORD_TARGETS`` entries, an
    ``_IMPLICIT_PATTERNS`` regex, and append the type to ``FALLBACK_PRIORITY``
    in ``src/orchestrator/workspace_orchestrator.py``.
-8. **Capability copy** — ``src/state_bodies.py`` enumerates supported types in
-   more than one place (the quick-response capability text and the global
-   fallback prompt). Grep for an existing type's name to find them all.
-9. **Suggestions** — add a suggestion list in ``src/suggestions.py`` and wire
+8. **Capability copy** — supported types are enumerated in more than one
+   place (the quick-response capability text in ``src/app/state_bodies.py``,
+   the global fallback prompt in ``src/prompts/fallback.py``). Grep for an existing type's name to find them all.
+9. **Suggestions** — add a suggestion list in ``src/conversation/suggestions.py`` and wire
    it into ``_DIAGRAM_SUGGESTION_HANDLERS``.
 10. **Docs** — this page, the README table, and
     :doc:`websocket_protocol`'s supported-types list.

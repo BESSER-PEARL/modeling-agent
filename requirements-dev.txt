@@ -1,5 +1,7 @@
 # Test and lint tools (CI and local development); runtime deps are in requirements.txt.
+# Install the agent itself with: pip install -e .
 -r requirements.txt
 pytest==7.4.0
 hypothesis==6.156.1
 ruff==0.16.6
+import-linter==2.15

@@ -1,6 +1,6 @@
 """A shared reject-not-truncate boundary for authoritative user requirements."""
 
-from agent_config import MAX_USER_MESSAGE_CHARS
+from common.agent_config import MAX_USER_MESSAGE_CHARS
 
 
 class UserMessageTooLong(ValueError):

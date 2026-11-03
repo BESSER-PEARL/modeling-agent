@@ -4,11 +4,6 @@ Covers: routing, schema defaults, fallback, model summary,
 generate_modification behaviour, and the server-side ref guardrail.
 """
 import sys
-from pathlib import Path
-
-_SRC = Path(__file__).resolve().parent.parent / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +280,7 @@ def test_component_guardrail_drops_dependency_with_missing_source(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_component_suggestions_have_nonempty_prompts():
-    from suggestions import get_suggested_actions
+    from conversation.suggestions import get_suggested_actions
     actions = get_suggested_actions("ComponentDiagram", "complete_system", [])
     for action in actions:
         assert action.get("prompt"), (

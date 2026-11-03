@@ -8,7 +8,8 @@ The Modeling Agent reads two kinds of configuration:
   Copy ``config_example.yaml`` to ``config.yaml`` and edit the values.
 - **Environment variables** — everything the agent itself added on top:
   the per-call-site model routing table, the backend URL, and a handful of
-  behavioral switches.
+  behavioral switches. Each one is declared once on ``AgentSettings`` in
+  ``src/common/settings.py``; read the environment only through it.
 
 .. contents:: On this page
    :local:
@@ -130,7 +131,7 @@ NLP / LLM
 Model Routing
 -------------
 
-**Location:** ``src/model_config.py``
+**Location:** ``src/llm/model_config.py``
 
 Every LLM call in the agent belongs to a *tier*, and each tier is
 independently env-overridable so a deployment (e.g. a gateway exposing
@@ -194,7 +195,7 @@ Opus 5, Sonnet 5, Fable 5 / 5.1), Opus 4.7 / 4.8 and Mythos reject
 them an ``output_config.effort`` instead. A user's Anthropic key sends no
 sampling parameters to any Claude model: the ``anthropic`` SDK removed them
 in 1.0, and API version 2026-10-21 rejects them on every model.
-``model_config`` exposes two helpers that every call site uses:
+``model_config`` holds the rule:
 
 .. code-block:: python
 
@@ -206,15 +207,12 @@ in 1.0, and API version 2026-10-21 rejects them on every model.
        # None for models that accept a temperature (they reject the param);
        # otherwise MODEL_REASONING_EFFORT
 
-The pattern appears in ``diagram_handlers/core/base_handler.py`` and
-``llm/provider.py``:
+   sampling_params(model, temperature) -> dict
+       # {"temperature": t}, {"reasoning_effort": e} or {}
 
-.. code-block:: python
-
-   if supports_custom_temperature(effective_model):
-       parse_kwargs["temperature"] = temperature
-   else:
-       parse_kwargs["reasoning_effort"] = reasoning_effort_for(effective_model)
+``llm/provider.py`` applies it to every shared-client call (the BYOK client in
+``llm/byok.py`` applies it per provider), and ``app/agent_setup.py`` to the
+BAF constructor parameters. Call sites never pass either parameter themselves.
 
 .. list-table::
    :header-rows: 1
@@ -235,6 +233,10 @@ The pattern appears in ``diagram_handlers/core/base_handler.py`` and
 Environment Variables
 ---------------------
 
+**Location:** ``src/common/settings.py`` (``AgentSettings``). Variables
+marked *at import* are read once when their module loads; the others at each
+use.
+
 .. list-table::
    :header-rows: 1
    :widths: 38 14 48
@@ -246,13 +248,23 @@ Environment Variables
      - —
      - Server OpenAI key. The Docker entrypoint writes it into the
        generated ``config.yaml`` as ``nlp.openai.api_key``.
+   * - ``BESSER_AGENT_WS_ORIGIN`` / ``BESSER_AGENT_WS_ORIGIN_ALT``
+     - ``https://editor.besser-pearl.org`` /
+       ``https://experimental.besser-pearl.org``
+     - The two host entries of ``platforms.websocket.origins`` in the
+       container's ``config.yaml``; blank means the default.
+   * - ``OPENAI_BASE_URL``
+     - unset
+     - Endpoint of the shared OpenAI client (read by the SDK). The agent
+       reads it to price calls on that route (see
+       :ref:`cost-and-model-routing`).
    * - ``BESSER_AGENT_MODEL_*``
      - see above
-     - Per-tier model overrides
+     - Per-tier model overrides (at import; blank means the default)
    * - ``BESSER_BACKEND_URL``
      - ``http://localhost:3001``
      - Base URL of the BESSER backend, used by the opt-in study telemetry
-       collector (``src/telemetry.py``).
+       collector (``src/conversation/telemetry.py``).
    * - ``BESSER_AGENT_ALLOW_CUSTOM_BASE_URL``
      - unset (off)
      - Whether a BYOK request may specify its own API base URL. Set to
@@ -270,7 +282,10 @@ Environment Variables
        ``user_api_provider=pia`` runs against the gateway without the browser
        knowing its host, and the rates a model bills on a gateway or a vendor
        API (see :ref:`cost-and-model-routing`). Read once at startup; a
-       malformed file stops the agent.
+       malformed file stops the agent. The agent names no model when it hands
+       a request to the Spec-Driven Agent (``trigger_smart_generator``), so
+       without a pick in the editor the run uses the catalog's default for the
+       provider.
    * - ``BESSER_AGENT_STT_LANGUAGE``
      - auto-detect
      - Pins speech-to-text to a language (``en``, ``fr``, ``de``, …).
@@ -278,14 +293,17 @@ Environment Variables
        mis-transcribed non-English voice.
    * - ``BESSER_AGENT_COMPACT_SPEC``
      - ``1`` (on)
-     - Use the compact class-diagram spec schema for generation.
+     - Use the compact class-diagram spec schema for generation (at
+       import); only ``0`` turns it off.
    * - ``BESSER_AGENT_COST_LOG_INTERVAL``
      - ``600``
      - Seconds between the INFO log lines with the token and cost totals
-       (see :ref:`cost-and-model-routing`). ``0`` turns them off.
+       (see :ref:`cost-and-model-routing`). ``0`` turns them off. At
+       import; a value that is not a number stops the agent.
    * - ``LOG_PROMPTS``
      - unset (off)
-     - Log full LLM prompts. Leave off outside local debugging.
+     - Log full LLM prompts (``1``, ``true`` or ``yes``; at import). Leave
+       off outside local debugging.
    * - ``ANONYMIZED_TELEMETRY`` / ``CHROMA_TELEMETRY_ENABLED``
      - ``False``
      - Set defensively at startup by ``modeling_agent.py`` to disable
@@ -295,7 +313,7 @@ Environment Variables
 Bring Your Own Key (BYOK)
 --------------------------
 
-**Location:** ``src/byok.py``, plus the request boundary in
+**Location:** ``src/llm/byok.py``, plus the request boundary in
 ``patches/websocket_platform.py``.
 
 A user can paste their own API key in the frontend. It arrives as BAF
@@ -322,15 +340,23 @@ and the shared server LLM is never mutated.
        ``https://api.mistral.ai/v1`` and
        ``https://api.tokenfactory.nebius.com/v1/``)
    * - Routed call shapes
-     - ``base_handler._predict_raw`` / ``predict_with_retry`` (generation),
-       ``session_helpers.stream_llm_response`` (conversational reply, help,
-       describe), ``base_handler.predict_structured`` and the intent
-       classifier's ``LLMProvider.parse`` (``.parse()`` on a user's OpenAI
-       key, JSON mode + schema validation for the other providers), and file
-       attachments (``gpt_predict_json``; image/PDF vision with an OpenAI key)
+     - Every ``llm.provider.LLMProvider`` call: free text and JSON
+       (generation, ``gpt_predict_json``), structured output
+       (``base_handler.predict_structured`` and the intent classifier;
+       ``.parse()`` on a user's OpenAI key, JSON mode + schema validation for
+       the other providers), streaming replies (one chunk), the memory
+       summarizer, the no-RAG UML answer, image/PDF vision and a GUI mockup
+       (see the ``vision`` column below)
+   * - Images on a key that cannot read them
+     - Nebius, a catalog gateway and a custom endpoint have no known
+       image-capable model, so image/PDF conversion and a GUI mockup run on
+       the server key (logged as a WARNING). A provider that rejects the image
+       input (an HTTP 400 whose error names the image) gets a "can't read this
+       image" reply; any other 400 (context length, a bad parameter) gets the
+       generic conversion error. The provider's reason is logged either way.
    * - Not routed
-     - The local BAF fallback classifier (no LLM), RAG embeddings, and image/PDF
-       vision for non-OpenAI keys (they cannot call the OpenAI vision API)
+     - The local BAF fallback classifier (no LLM), BAF's own RAG and
+       intent-classifier calls, RAG embeddings and speech-to-text
    * - Per-request timeout
      - 300 s (without it the SDKs default to several minutes, letting one
        hung call stall a whole turn; 120 s cut long-spec reasoning passes short)
@@ -342,7 +368,7 @@ and the shared server LLM is never mutated.
 
 Because BYOK bypasses any gateway, the agent's per-call tiers are collapsed
 into two and mapped to each provider's equivalent (``_PROVIDER_TIER_MODELS``
-in ``src/byok.py``). A model the user explicitly chose is used for every call;
+in ``src/llm/byok.py``). A model the user explicitly chose is used for every call;
 only without one does ``small`` use the provider's cheap sibling, so small
 edits, routing and repair calls stay inexpensive on the user's key. The
 mapping and its cost effect are in :ref:`cost-and-model-routing`.
@@ -412,9 +438,10 @@ Tiers
 
 Routing is by call site: each call names the tier it needs (see
 :ref:`model routing <model-routing>` above for the overrides). Prices are USD
-per million tokens from ``_COST_PER_1K`` in ``src/tracking/token_tracker.py``,
-unless the model catalog (``BESSER_MODEL_CATALOG``) prices the model on the
-endpoint the call goes to: a gateway bills its own rates.
+per million tokens, from the model catalog (``BESSER_MODEL_CATALOG``) when it
+prices the model on the endpoint the call goes to (a gateway bills its own
+rates), else from the vendor price file (see
+:ref:`where prices come from <agent-prices>`).
 
 .. list-table::
    :header-rows: 1
@@ -456,8 +483,10 @@ endpoint the call goes to: a gateway bills its own rates.
      - 0.02 / — / —
      - RAG vectors; pinned so the persisted store keeps matching.
 
-The ``gpt-6-sol`` and ``gpt-6-luna`` cached rates are not in the price file
-the table is sourced from; they assume the 10 % that ``gpt-6-astra`` lists.
+``gpt-6-sol`` and ``gpt-6-luna`` are not in the price file yet; their cached
+rates assume the 10 % that ``gpt-6-astra`` lists.
+
+.. _static-prefix-first:
 
 Static prefix first
 ~~~~~~~~~~~~~~~~~~~
@@ -479,10 +508,13 @@ Anthropic key, ``LLMProvider.parse`` sends that prompt plus the schema as a
 message in a five-minute window writes it at 1.25x the input rate and later
 ones read it at 0.1x.
 
+Every prompt lives in ``src/prompts/`` and ``tests/test_prompt_snapshots.py``
+pins a hash of each, so a byte that changes by accident fails the suite.
+
 Output caps, reasoning effort and the two-pass gate
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- **Output caps** (``src/agent_config.py``): ``LLM_MAX_TOKENS_LARGE`` 8192 for
+- **Output caps** (``src/common/agent_config.py``): ``LLM_MAX_TOKENS_LARGE`` 8192 for
   complete-system schemas, ``LLM_MAX_TOKENS_SMALL`` 2048 for single-element and
   modification schemas, ``LLM_MAX_TOKENS_TEXT`` 4096 for free text, and
   ``GUI_COMPLETE_SYSTEM_MAX_TOKENS`` 16384 for multi-page GUI output. The
@@ -507,7 +539,7 @@ Output caps, reasoning effort and the two-pass gate
 Retries
 ~~~~~~~
 
-- **Shared server clients**: ``src/utilities/llm_retry.py`` is the only
+- **Shared server clients**: ``src/llm/retry.py`` is the only
   transport retry. The SDK's own retries are turned off (``max_retries=0``) so
   they do not nest under it. A 429 or 5xx is tried up to ``MAX_ATTEMPTS`` (4)
   times with 0.6 / 1.2 / 2.4 s backoff (about 5 s of sleep in the worst case,
@@ -530,39 +562,49 @@ BYOK cost behaviour
 ~~~~~~~~~~~~~~~~~~~
 
 With a user's key the user pays for every routed call. Without a chosen model
-the tiers map as follows; a chosen model is used for every call.
+the tiers map as follows; a chosen model is used for every call. A call with
+images (file conversion, a GUI mockup) follows the ``vision`` column: "chosen
+model" keeps the pick (else the tier model), because every current OpenAI and
+Claude chat model reads images; a model name replaces the pick, which may be
+text-only (Mistral's ``codestral``).
 
 .. list-table::
    :header-rows: 1
-   :widths: 22 39 39
+   :widths: 16 30 30 24
 
    * - Provider
      - ``large``: GENERATION_LARGE, GENERATION_GUI, REASONING, VISION
      - ``small``: GENERATION_SMALL, CLASSIFIER
+     - ``vision``: calls with images
    * - ``openai``
-     - ``gpt-5.5``
-     - ``gpt-4o-mini``
+     - ``gpt-6-sol``
+     - ``gpt-6-luna``
+     - chosen model
    * - ``anthropic``
-     - ``claude-sonnet-5``
-     - ``claude-haiku-4-5``
+     - ``claude-sonnet-5-5``
+     - ``claude-haiku-5-5``
+     - chosen model
    * - ``mistral``
      - ``mistral-large-latest``
      - ``mistral-small-latest``
+     - ``mistral-large-latest``
    * - ``nebius``
      - ``Qwen/Qwen3-30B-A3B-Instruct-2507``
      - same model
+     - none (server key)
 
 The tier is read from the model the call site requests, not from whether
 that model is a reasoning model. A small edit on an OpenAI key therefore runs
-on ``gpt-4o-mini`` ($0.15 / $0.60) rather than ``gpt-5.5`` ($5 / $30), and on
-an Anthropic key on ``claude-haiku-4-5`` rather than ``claude-sonnet-5``. BPMN
+on ``gpt-6-luna`` ($0.10 / $0.50) rather than ``gpt-6-sol`` ($2 / $10), and on
+an Anthropic key on ``claude-haiku-5-5`` ($0.10 / $0.50) rather than
+``claude-sonnet-5-5`` ($2 / $10). BPMN
 and User Profile complete-system generation request the classifier tier, so
 they map to ``small``.
 
 Where to see spend
 ~~~~~~~~~~~~~~~~~~
 
-``src/tracking/token_tracker.py`` accumulates the tokens and estimated cost
+``src/llm/tracking/token_tracker.py`` accumulates the tokens and estimated cost
 of every recorded call for the whole process since it started. Every
 ``BESSER_AGENT_COST_LOG_INTERVAL`` seconds (600 by default) the next call logs
 one INFO line, for example::
@@ -576,25 +618,38 @@ length. The tracker supports per-session buckets, but no call site passes a
 session id, so only the global totals are populated. The figures are
 estimates: the provider's billing dashboard is authoritative.
 
-Keeping ``_COST_PER_1K`` current
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. _agent-prices:
 
-A gateway's rates, and a vendor model the table does not know yet, belong
-in the deployment's model catalog instead: an edit there and a restart, no
-release. For the vendor list prices in the table: when a ``MODEL_*`` default
-changes, or a model joins the BYOK picker, add an entry with ``prompt``, ``completion`` and ``cached`` rates per 1K tokens (the
-per-million list price divided by 1000), taken from the price file BESSER
-vendors in ``spec_driven_agent/providers/data/model_prices.json``. Dated and
-gateway ids (``claude-haiku-4-5-20251001``, ``us.anthropic.claude-sonnet-5``)
-are priced as their base entry; a different variant such as ``gpt-5.5-pro``
-needs its own. A model with no entry is priced with placeholder rates and
-logged once as a warning.
+Where prices come from
+~~~~~~~~~~~~~~~~~~~~~~
+
+A call is priced, in order, from:
+
+1. the deployment's model catalog, for the endpoint the call goes to;
+2. ``src/llm/tracking/data/model_prices.json``, a copy of the price file BESSER
+   vendors (``besser/llm/data/model_prices.json``,
+   reduced from litellm's ``model_prices_and_context_window.json``), so the
+   agent and the backend price a model the same way;
+3. ``_UNPUBLISHED`` in ``src/llm/tracking/token_tracker.py``: the few current
+   models the price file does not list yet. A test fails once a refresh lists
+   one, so its row is deleted.
+
+A gateway's rates, and a new model, belong in the deployment's model catalog:
+an edit there and a restart, no release. Refresh the price file in BESSER and
+copy it here in the same change; with BESSER checked out next to this repo
+(or at ``BESSER_CHECKOUT``, where CI checks out its ``development`` branch),
+``tests/test_token_tracker.py`` fails while the two differ. An id that extends a listed id by a gateway
+prefix or a snapshot suffix (``claude-haiku-4-5-20251001``,
+``us.anthropic.claude-opus-5-5``) is priced as that id, unless the file lists
+it under its own rate; a different variant such as ``gpt-6-sol-pro`` is not.
+A model nothing prices is costed at placeholder rates and logged once as a
+warning.
 
 
 Tunable Constants
 -----------------
 
-**Location:** ``src/agent_config.py`` — values that are not env-driven but
+**Location:** ``src/common/agent_config.py`` — values that are not env-driven but
 live in one place instead of being scattered across modules.
 
 .. list-table::
@@ -656,7 +711,7 @@ and answers carry no retrieved context.
 Research Study Mode
 -------------------
 
-**Location:** ``src/telemetry.py``, with the label parsed in
+**Location:** ``src/conversation/telemetry.py``, with the label parsed in
 ``src/protocol/adapters.py``.
 
 Study mode is an opt-in usage recording for facilitated research sessions. It
@@ -688,8 +743,9 @@ Security Notes
 - **Never** commit real API keys to the repository.
 - Use ``config_example.yaml`` and ``.env.example`` as templates.
 - ``config.yaml`` is listed in ``.gitignore``.
-- The Docker entrypoint prints the generated config for debugging but
-  **redacts** the ``api_key`` line, so the key never lands in container logs.
+- The Docker entrypoint (``src/app/container_config.py``) prints the
+  generated config for debugging but **redacts** the ``api_key`` line, so the
+  key never lands in container logs.
 - A user's BYOK key lives only in the per-request context var and the BAF
   session; it is never logged or persisted.
 - In production, use environment variables or secrets management.

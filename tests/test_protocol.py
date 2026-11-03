@@ -165,11 +165,11 @@ class TestParseV2Payload:
 
 def test_full_spec_limit_is_preserved_or_explicitly_rejected_for_both_transports(monkeypatch):
     from types import SimpleNamespace
-    from agent_config import MAX_USER_MESSAGE_CHARS
+    from common.agent_config import MAX_USER_MESSAGE_CHARS
     from protocol.adapters import parse_assistant_request
     from protocol.message_limits import UserMessageTooLong
     from tests.conftest import FakeSession
-    import state_bodies
+    from app import state_bodies
 
     spec = "x" * (MAX_USER_MESSAGE_CHARS - 17) + "FINAL REQUIREMENT"
     assert len(spec) == 64_000

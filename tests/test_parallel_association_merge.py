@@ -10,7 +10,7 @@ distinct parallel links.
 """
 import pytest
 
-from src.diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
+from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 
 
 @pytest.fixture

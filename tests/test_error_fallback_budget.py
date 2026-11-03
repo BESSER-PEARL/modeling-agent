@@ -14,7 +14,7 @@ import openai
 import pytest
 
 from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
-from errors import ErrorCode, classify_error
+from common.errors import ErrorCode, classify_error
 
 REQUEST = "Create a library system with books, members, loans, authors and branches"
 _QUOTA_BODY = {"error": {

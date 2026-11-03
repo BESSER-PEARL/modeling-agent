@@ -4,12 +4,8 @@ model anything") can't yield a real model — the agent should clarify instead o
 building a token 1-class model. HIGH-PRECISION: real, positive requests that
 merely contain a negation ("a shop with no online payments") must NOT be caught.
 """
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-from state_bodies import _create_is_self_contradictory as _contra  # noqa: E402
+from routing.guards import is_self_contradictory_create
 
 
 def test_degenerate_creates_are_caught():
@@ -27,7 +23,7 @@ def test_degenerate_creates_are_caught():
         "create an empty state machine diagram",
         "model nothing",
     ]:
-        assert _contra(msg), f"expected self-contradictory: {msg!r}"
+        assert is_self_contradictory_create(msg), f"expected self-contradictory: {msg!r}"
 
 
 def test_real_positive_requests_are_not_caught():
@@ -43,4 +39,4 @@ def test_real_positive_requests_are_not_caught():
         "create a class diagram with a User and an Order class",
         "build a diagram with no more than five classes",
     ]:
-        assert not _contra(msg), f"expected NOT self-contradictory: {msg!r}"
+        assert not is_self_contradictory_create(msg), f"expected NOT self-contradictory: {msg!r}"

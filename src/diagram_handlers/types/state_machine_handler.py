@@ -10,39 +10,16 @@ Enhanced with:
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional, Tuple
 from ..core.base_handler import (
     BaseDiagramHandler,
-    LLMPredictionError,
-    SINGLE_STATE_REQUIRED,
-    SINGLE_STATE_OPTIONAL,
-    SYSTEM_STATE_REQUIRED,
-    SYSTEM_STATE_OPTIONAL,
 )
-from ..core.prompt_fragments import (
-    CHANGES_FIELD_RULE,
-    EXACT_NAMES_RULE,
-    POSITION_DISCLAIMER,
-    REMOVE_ELEMENT_RULE,
-)
-from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
+from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
+from prompts import state_machine as state_machine_prompts
 from schemas import SingleStateSpec as SingleStateSchema, SystemStateMachineSpec, StateMachineModificationResponse
 from utilities.model_context import detailed_model_summary
+from protocol.actions import Action, inject_complete_system, inject_element
 
-
-MODIFY_SYSTEM_PROMPT_STATE_MACHINE = f"""You are a UML modeling expert. The user wants to modify a state machine diagram.
-
-MODIFICATION RULES:
-1. Actions available: "add_state", "modify_state", "add_transition", "modify_transition", "add_code_block", "remove_element"
-2. add_state: set target.stateName to the new state name. Put stateType ("regular", "initial", or "final"), entryAction, exitAction, doActivity in "changes".
-3. modify_state: {EXACT_NAMES_RULE}
-4. add_transition: set target.sourceState and target.targetState. Put trigger, guard, effect in "changes".
-5. {REMOVE_ELEMENT_RULE}
-6. {CHANGES_FIELD_RULE}
-7. Use PascalCase for state names and camelCase for triggers
-8. Example: "add a Processing state" → add_state with target.stateName="Processing", changes.stateType="regular"
-9. Example: "add a state with entry action validate" → add_state with changes.stateType="regular", changes.entryAction="validate()"
-10. add_code_block: create a Python code block. Set target.stateName to a label, put code and language in changes."""
 
 logger = logging.getLogger(__name__)
 
@@ -50,101 +27,59 @@ logger = logging.getLogger(__name__)
 class StateMachineHandler(BaseDiagramHandler):
     """Handler for State Machine Diagram generation"""
 
+    _SYSTEM_FAILURE_MESSAGE = "I couldn't generate that state machine. Please try again or rephrase your request."
+    _SINGLE_FAILURE_MESSAGE = "I couldn't generate that state. Please try again or rephrase your request."
+    _LLM_FAILURE_CODE = "llm_failure"
+
     def get_diagram_type(self) -> str:
         return "StateMachineDiagram"
 
     def get_system_prompt(self) -> str:
-        return f"""You are a UML modeling expert. Create a state specification based on the user's request.
+        return state_machine_prompts.SYSTEM_PROMPT
 
-DESIGN RULES:
-1. State names must be descriptive and represent real lifecycle stages (e.g., PendingPayment, Shipped, Authenticated — NOT generic names like State1, Active)
-2. Use PascalCase for state names (e.g., PaymentProcessing, not payment_processing)
-3. Keep it SIMPLE and focused
-4. {POSITION_DISCLAIMER}
+    def _prepare_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Tuple[str, str]:
+        return self.get_system_prompt(), f"Create a state specification for: {user_request}"
 
-Examples of good states:
-- "create idle state" -> Idle with doActivity "await user input"
-- "create processing state" -> Processing with entryAction "start timer", exitAction "stop timer", doActivity "process data"
-- "create payment pending state" -> PendingPayment with entryAction "display payment form", doActivity "await payment confirmation" """
-
-    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _build_single_element(
+        self, user_request: str, existing_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
         """Generate a single state with structured outputs and deterministic positioning."""
 
-        system_prompt = self.get_system_prompt()
-        user_prompt = f"Create a state specification for: {user_request}"
+        system_prompt, user_prompt = prepared
 
-        try:
-            # Single element → SMALL generation tier (latency-sensitive).
-            parsed = self.predict_structured(
-                user_prompt,
-                SingleStateSchema,
-                system_prompt=system_prompt,
-                model=MODEL_GENERATION_SMALL,
-            )
-            state_spec = parsed.model_dump()
+        # Single element → SMALL generation tier (latency-sensitive).
+        parsed = self.predict_structured(
+            user_prompt,
+            SingleStateSchema,
+            system_prompt=system_prompt,
+            model=MODEL_GENERATION_SMALL,
+        )
+        state_spec = parsed.model_dump()
 
-            # Remove any hallucinated position and apply deterministic layout
-            state_spec.pop("position", None)
-            self.apply_single_layout(state_spec, existing_model)
+        # Remove any hallucinated position and apply deterministic layout
+        state_spec.pop("position", None)
+        self.apply_single_layout(state_spec, existing_model)
 
-            return {
-                "action": "inject_element",
-                "element": state_spec,
-                "diagramType": "StateMachineDiagram",
-                "message": self._build_single_state_message(state_spec)
-            }
-
-        except LLMPredictionError as e:
-            logger.error(f"[StateMachine] generate_single_element LLM FAILED: {e}")
-            return self._error_response(
-                "I couldn't generate that state. Please try again or rephrase your request.",
-                code="llm_failure",
-            )
-        except Exception as e:
-            logger.error(f"[StateMachine] generate_single_element FAILED: {e}", exc_info=True)
-            return self.generate_fallback_element(user_request)
+        return inject_element(
+            state_spec,
+            "StateMachineDiagram",
+            self._build_single_state_message(state_spec),
+        )
 
     def _get_system_generation_prompt(self) -> str:
         """Return the enhanced system prompt for complete state machine generation."""
-        return f"""You are a UML modeling expert. Create a COMPLETE, well-structured state machine diagram.
+        return state_machine_prompts.SYSTEM_GENERATION_PROMPT
 
-Before generating, think through:
-- What are the key lifecycle stages (states) of this process?
-- What events (triggers) cause transitions between states?
-- What conditions (guards) determine which path to take?
-- What side effects (effects) happen on transitions?
-- What error/exception paths exist beyond the happy path?
-- Are there retry or loop-back scenarios?
+    def _prepare_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> str:
+        return self._get_system_generation_prompt()
 
-DESIGN RULES:
-1. Always start with exactly ONE "initial" state and end with ONE "final" state
-2. Include 4-8 regular states that represent REAL lifecycle stages
-3. EVERY regular state MUST have at least one incoming and one outgoing transition (no orphan states)
-4. State names should be domain-specific and descriptive:
-   - GOOD: PendingPayment, Shipped, UnderReview, Authenticated, InProgress
-   - BAD: State1, Active, Process, Step2
-5. Transitions MUST have meaningful triggers (events that cause the transition):
-   - GOOD: submitPayment, approveRequest, sessionTimeout, deliveryConfirmed
-   - BAD: go, next, transition1, move
-6. Use guards to express conditions: "payment valid", "attempts < max"
-7. Use effects for side-effects: "send notification", "update inventory"
-8. Include error/exception paths — not just the happy path:
-   - Payment failures, validation errors, timeouts, cancellations
-   - Loop-back transitions for retry scenarios
-9. {POSITION_DISCLAIMER}
-
-TRANSITION DESIGN GUIDELINES:
-- Every state (except initial/final) should have both incoming AND outgoing transitions
-- Include at least one alternative/error path (not just the happy flow)
-- Self-transitions are valid for retry/refresh scenarios
-- Guard conditions should be specific and testable
-- Trigger names should be verbs or verb phrases in camelCase"""
-
-    def generate_complete_system(
+    def _build_system(
         self,
         user_request: str,
         existing_model: Dict[str, Any] = None,
         raw_request: Optional[str] = None,
+        *,
+        prepared=None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Generate a complete state machine with two-pass structured outputs, pattern injection,
@@ -156,69 +91,40 @@ TRANSITION DESIGN GUIDELINES:
         full ``user_request`` when not provided.
         """
 
-        system_prompt = self._get_system_generation_prompt()
+        system_prompt = prepared
 
+        # --- Two-pass structured: reason about behavior first, then produce validated model ---
+        # The reasoning prompt uses the raw request only; the enriched
+        # context (history + workspace block) reaches the structured pass
+        # via ``user_request`` exactly once.
+        reasoning_prompt = state_machine_prompts.reasoning_prompt(raw_request or user_request)
 
-        logger.info(f"[StateMachine] generate_complete_system called with: {user_request!r}")
+        # Complete-system generation → LARGE tier; reasoning pass on
+        # the REASONING tier (see model_config).
+        parsed = self.predict_two_pass_structured(
+            user_request=user_request,
+            system_prompt=system_prompt,
+            reasoning_prompt=reasoning_prompt,
+            response_schema=SystemStateMachineSpec,
+            raw_request=raw_request,
+            model=MODEL_GENERATION_LARGE,
+            reasoning_model=MODEL_REASONING,
+        )
+        system_spec = parsed.model_dump()
 
-        try:
-            # --- Two-pass structured: reason about behavior first, then produce validated model ---
-            # The reasoning prompt uses the raw request only; the enriched
-            # context (history + workspace block) reaches the structured pass
-            # via ``user_request`` exactly once.
-            reasoning_prompt = (
-                "You are a UML behavioral modeling expert. Think step by step about "
-                "the following state machine request and plan the design.\n\n"
-                f"User Request: {raw_request or user_request}\n\n"
-                "Analyze:\n"
-                "1. What are the key lifecycle stages (states) of this process?\n"
-                "2. What events (triggers) cause transitions between states?\n"
-                "3. What conditions (guards) determine which path to take?\n"
-                "4. What side effects (effects) occur during transitions?\n"
-                "5. What error/exception paths exist? (timeouts, failures, cancellations)\n"
-                "6. Are there any loop-back or retry scenarios?\n"
-                "7. What entry/exit actions and ongoing activities does each state have?\n\n"
-                "Provide a clear behavioral analysis. Focus on TRANSITIONS — they are "
-                "the most commonly under-specified element."
-            )
+        # --- Validation-feedback loop for state machine quality ---
+        system_spec = self._validate_and_refine_state_machine(system_spec, user_request)
 
-            # Complete-system generation → LARGE tier; reasoning pass on
-            # the REASONING tier (see model_config).
-            parsed = self.predict_two_pass_structured(
-                user_request=user_request,
-                system_prompt=system_prompt,
-                reasoning_prompt=reasoning_prompt,
-                response_schema=SystemStateMachineSpec,
-                raw_request=raw_request,
-                model=MODEL_GENERATION_LARGE,
-                reasoning_model=MODEL_REASONING,
-            )
-            system_spec = parsed.model_dump()
+        # Strip any hallucinated positions and apply deterministic layout
+        for s in system_spec.get("states", []):
+            s.pop("position", None)
+        self.apply_system_layout(system_spec, existing_model)
 
-            # --- Validation-feedback loop for state machine quality ---
-            system_spec = self._validate_and_refine_state_machine(system_spec, user_request)
-
-            # Strip any hallucinated positions and apply deterministic layout
-            for s in system_spec.get("states", []):
-                s.pop("position", None)
-            self.apply_system_layout(system_spec, existing_model)
-
-            return {
-                "action": "inject_complete_system",
-                "systemSpec": system_spec,
-                "diagramType": "StateMachineDiagram",
-                "message": self._build_system_message(system_spec)
-            }
-
-        except LLMPredictionError as e:
-            logger.error(f"[StateMachine] generate_complete_system LLM FAILED: {e}")
-            return self._error_response(
-                "I couldn't generate that state machine. Please try again or rephrase your request.",
-                code="llm_failure",
-            )
-        except Exception as e:
-            logger.error(f"[StateMachine] generate_complete_system FAILED: {e}", exc_info=True)
-            return self.generate_fallback_system()
+        return inject_complete_system(
+            system_spec,
+            "StateMachineDiagram",
+            self._build_system_message(system_spec),
+        )
 
     # ------------------------------------------------------------------
     # State Machine Validation & Refinement
@@ -377,12 +283,11 @@ TRANSITION DESIGN GUIDELINES:
         # Apply deterministic layout so the fallback doesn't render at 0,0
         self.apply_single_layout(fallback_spec)
         
-        return {
-            "action": "inject_element",
-            "element": fallback_spec,
-            "diagramType": "StateMachineDiagram",
-            "message": f"I created a starter **{state_name}** state. Describe the state machine flow in more detail and I'll add transitions and guards!"
-        }
+        return inject_element(
+            fallback_spec,
+            "StateMachineDiagram",
+            f"I created a starter **{state_name}** state. Describe the state machine flow in more detail and I'll add transitions and guards!",
+        )
     
     def generate_fallback_system(self) -> Dict[str, Any]:
         """Generate a fallback state machine"""
@@ -432,12 +337,11 @@ TRANSITION DESIGN GUIDELINES:
         # Apply deterministic layout so the fallback doesn't render at 0,0
         self.apply_system_layout(fallback_system)
 
-        return {
-            "action": "inject_complete_system",
-            "systemSpec": fallback_system,
-            "diagramType": "StateMachineDiagram",
-            "message": "I created a starter state machine with a basic state. Describe your workflow (e.g. *'Create an order processing flow with states: pending, confirmed, shipped, delivered'*) and I'll build a richer model!"
-        }
+        return inject_complete_system(
+            fallback_system,
+            "StateMachineDiagram",
+            "I created a starter state machine with a basic state. Describe your workflow (e.g. *'Create an order processing flow with states: pending, confirmed, shipped, delivered'*) and I'll build a richer model!",
+        )
 
     # ------------------------------------------------------------------
     # Message Builders
@@ -474,10 +378,8 @@ TRANSITION DESIGN GUIDELINES:
     # Modification Support
     # ------------------------------------------------------------------
 
-    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate modifications for existing state machine elements."""
-
-        system_prompt = MODIFY_SYSTEM_PROMPT_STATE_MACHINE
+    def _prepare_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Tuple[str, str]:
+        system_prompt = state_machine_prompts.MODIFY_SYSTEM_PROMPT_STATE_MACHINE
 
         # Build context from current model using centralized helper
         context_block = ''
@@ -486,27 +388,25 @@ TRANSITION DESIGN GUIDELINES:
             if summary:
                 context_block = f"\n\n{summary}"
 
-        user_prompt = f"Modify the state machine: {user_request}{context_block}"
+        return system_prompt, f"Modify the state machine: {user_request}{context_block}"
 
-        logger.info(f"[StateMachine] generate_modification called with: {user_request!r}")
+    def _build_modification(
+        self, user_request: str, current_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        """Generate modifications for existing state machine elements."""
+        system_prompt, user_prompt = prepared
+        return self._execute_modification(
+            user_prompt, system_prompt, StateMachineModificationResponse,
+        )
 
-        try:
-            return self._execute_modification(
-                user_prompt, system_prompt, StateMachineModificationResponse,
-            )
-
-        except LLMPredictionError as exc:
-            logger.error(f"[StateMachine] generate_modification LLM FAILED: {exc}")
-            return self._error_response("I couldn't process that modification. Please try again or rephrase your request.")
-        except Exception as exc:
-            logger.error(f"[StateMachine] generate_modification FAILED: {exc}", exc_info=True)
-            return {
-                "action": "modify_model",
-                "modification": {
-                    "action": "modify_state",
-                    "target": {"stateName": "Unknown"},
-                    "changes": {"name": "ModifiedState"}
-                },
-                "diagramType": self.get_diagram_type(),
-                "message": "I couldn't apply that modification automatically. Could you rephrase it? For example: *'Add a transition from idle to active'* or *'Rename state X to Y'*."
-            }
+    def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
+        return {
+            "action": Action.MODIFY_MODEL,
+            "modification": {
+                "action": "modify_state",
+                "target": {"stateName": "Unknown"},
+                "changes": {"name": "ModifiedState"}
+            },
+            "diagramType": self.get_diagram_type(),
+            "message": "I couldn't apply that modification automatically. Could you rephrase it? For example: *'Add a transition from idle to active'* or *'Rename state X to Y'*."
+        }

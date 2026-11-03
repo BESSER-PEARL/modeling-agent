@@ -20,19 +20,15 @@ import re
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
-from ..core.prompt_fragments import (
-    EXACT_NAMES_RULE,
-    MULTI_MOD_ARRAY_RULE,
-    POSITION_DISCLAIMER,
-    REMOVE_ELEMENT_RULE,
-)
+from ..core.base_handler import BaseDiagramHandler, ReplyNow
+from prompts import user_profile as user_profile_prompts
 from schemas import (
     SystemUserProfileSpec,
     UserProfileModificationResponse,
 )
 from utilities.model_context import detailed_model_summary
 from utilities.user_metamodel import load_user_metamodel
+from protocol.actions import Action, inject_complete_system
 
 logger = logging.getLogger(__name__)
 
@@ -42,22 +38,11 @@ ROOT_CLASS = "User"
 _OPERATORS = ("<", "<=", "==", ">=", ">")
 
 
-MODIFY_SYSTEM_PROMPT_USER = f"""You are a user-profile modeling expert. The user wants to modify a user-profile model.
-
-A user-profile model is a set of class-instance boxes (drawn from a fixed metamodel) whose attribute rows are matching CRITERIA with a comparison operator (e.g. "age >= 18", "level == B2").
-
-IMPORTANT RULES:
-1. Actions available: "add_object", "modify_object", "modify_attribute_value", "add_link", "remove_element"
-2. add_object: set target.profileName to a short lowercase instance identifier (e.g. "personal_information1", "language2"). Put className, classId, and attributes in "changes". Each attribute needs name, operator (one of {", ".join(_OPERATORS)}), and value. FILL IN EVERY attribute of the class with a plausible, coherent value inferred from the request (e.g. a disability "paraplegia" -> name == "Paraplegia", description == "Paralysis of the lower limbs", affects == a valid aspect literal). Leave only uniquely-identifying attributes (firstName, lastName, address) blank.
-3. modify_attribute_value: set target.profileName + target.attributeName; put the new operator and/or value in "changes".
-4. {EXACT_NAMES_RULE}
-5. {REMOVE_ELEMENT_RULE}
-6. {MULTI_MOD_ARRAY_RULE}
-7. Use ONLY classes and attributes from the metamodel below; copy classId and attributeId verbatim — the frontend uses these ids to link the profile back to the metamodel."""
-
-
 class UserProfileDiagramHandler(BaseDiagramHandler):
     """Handler for User Profile (UserDiagram) generation."""
+
+    _SYSTEM_FAILURE_MESSAGE = "I couldn't generate that user profile. Please try again or rephrase."
+    _MODIFY_FAILURE_MESSAGE = "I couldn't process that modification. Please try again or rephrase."
 
     def get_diagram_type(self) -> str:
         return DIAGRAM_TYPE
@@ -91,10 +76,7 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
     def _extract_reference_catalog(
         self, reference_diagram: Optional[Dict[str, Any]]
     ) -> Tuple[Dict[str, Dict[str, Any]], List[Dict[str, str]]]:
-        """Build {className.lower(): {name,id,attributes[]}} and a relationship list.
-
-        Also caches enumeration literals on ``self._enum_literals``.
-        """
+        """Build {className.lower(): {name,id,attributes[]}} and a relationship list."""
         if not isinstance(reference_diagram, dict):
             return {}, []
 
@@ -102,23 +84,6 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
         relationships = reference_diagram.get("relationships")
         if not isinstance(elements, dict):
             return {}, []
-
-        # First pass: collect enumerations and their literals.
-        self._enum_literals: Dict[str, List[str]] = {}
-        for element in elements.values():
-            if not isinstance(element, dict) or element.get("type") != "Enumeration":
-                continue
-            enum_name = (element.get("name") or "").strip()
-            if not enum_name:
-                continue
-            literals = []
-            for attr_id in element.get("attributes", []):
-                attr = elements.get(attr_id)
-                if isinstance(attr, dict):
-                    lit = (attr.get("name") or "").replace("+ ", "").replace("- ", "").replace("# ", "").split(":")[0].strip()
-                    if lit:
-                        literals.append(lit)
-            self._enum_literals[enum_name] = literals
 
         classes: Dict[str, Dict[str, Any]] = {}
         by_id: Dict[str, Dict[str, Any]] = {}
@@ -198,7 +163,6 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
                     if lit:
                         literals.append(lit)
             enum_literals[enum_name] = literals
-        self._enum_literals = enum_literals
 
         for enum_name, literals in enum_literals.items():
             if literals:
@@ -652,56 +616,30 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
     # ------------------------------------------------------------------
 
     def get_system_prompt(self) -> str:
-        return f"""You are a user-profile modeling expert. Create a SINGLE user-profile class-instance box based on the user's request.
-
-A user-profile box instantiates a class from the metamodel and lists matching CRITERIA as attribute rows. Each criterion has a comparison operator.
-
-CRITICAL RULES:
-1. Use ONLY classes and attributes that exist in the METAMODEL below.
-2. className MUST match a metamodel class exactly. classId/attributeId are filled in automatically — you may omit them.
-3. ENUMERATIONS — STRICT: if an attribute's type matches a listed enumeration, the value MUST be one of that enumeration's valid literals. Never invent enum values.
-4. Each attribute MUST have: name (exact metamodel attribute name), operator (one of {", ".join(_OPERATORS)}), value.
-5. Infer the operator from phrasing: "older than 18" -> '>', "at least B2" -> '>=', "under 18" -> '<', otherwise '=='.
-6. {POSITION_DISCLAIMER}"""
+        return user_profile_prompts.SYSTEM_PROMPT
 
     def _system_prompt_for_system(self) -> str:
-        return f"""You are a user-profile modeling expert. Describe a target user by choosing which METAMODEL classes hold the relevant matching CRITERIA.
-
-Each box instantiates a metamodel class and lists criteria as attribute rows with comparison operators (e.g. "age >= 18", "level == B2").
-
-IMPORTANT RULES:
-1. Use ONLY classes/attributes from the METAMODEL below. Put each criterion on the class that actually owns the attribute:
-   - age / firstName / lastName / gender / nationality / address -> Personal_Information
-   - a language and its proficiency (iso693_3, level) -> Language
-   - a skill (name, score) -> Skill
-   - religion -> Culture
-   - a disability (name, description, affects) -> Disability
-   - degree / field of study -> Education
-2. Do NOT output a "User" box, intermediate boxes (e.g. Competence, Accessibility), or any links — the root User element, the required intermediate boxes, and all connections are added automatically from the metamodel associations. Just emit the leaf boxes that carry criteria.
-3. A profile may contain several boxes of the same class (e.g. multiple Language boxes for multiple languages).
-4. FILL IN EVERY attribute of each class you include — don't just set the one the user named. Infer plausible, coherent values for the rest from the persona. Examples:
-   - "speaks Portuguese" (native/only language) -> Language: iso693_3 == "por", level == "C2"
-   - "has sight issues" -> Disability: affects == "Sight", name == "Visual impairment", description == "Reduced or impaired vision"
-   EXCEPTION: leave attributes that uniquely identify ONE individual (firstName, lastName, address) blank (empty value) — a profile represents a GROUP of users, so those wouldn't generalize. Always fill descriptive/characterizing attributes.
-5. Each attribute MUST have name (exact metamodel attribute), operator (one of {", ".join(_OPERATORS)}), and value.
-6. Infer operators from phrasing: "older than 18" -> '>', "at least B2" -> '>=', "under 18" -> '<', otherwise '=='.
-7. ENUMERATIONS — STRICT: enum-typed values MUST be one of the listed valid literals.
-8. classId/attributeId/profileName are filled in automatically — you may omit them.
-9. {POSITION_DISCLAIMER}"""
+        return user_profile_prompts.SYSTEM_GENERATION_PROMPT
 
     # ------------------------------------------------------------------
     # Generation
     # ------------------------------------------------------------------
 
-    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
-                                **kwargs) -> Dict[str, Any]:
-        # A user profile is only meaningful when rooted at User with the right
-        # metamodel links, so even a "single" request produces a complete,
-        # structured profile rather than an isolated box.
-        return self.generate_complete_system(user_request, existing_model, **kwargs)
+    # A user profile is only meaningful when rooted at User with the right
+    # metamodel links, so even a "single" request produces a complete,
+    # structured profile rather than an isolated box: the complete-system
+    # flow answers it, failure replies included.
+    def _prepare_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
+                                **kwargs) -> ReplyNow:
+        return ReplyNow(self.generate_complete_system(user_request, existing_model, **kwargs))
 
-    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None,
-                                 **kwargs) -> Dict[str, Any]:
+    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
+                              *, prepared=None, **kwargs) -> Dict[str, Any]:
+        raise AssertionError("unreachable: _prepare_single_element always replies")
+
+    def _prepare_system(self, user_request: str, existing_model: Dict[str, Any] = None,
+                        **kwargs) -> tuple:
+        """``(elements, classes, class_relationships, system_prompt, user_prompt)``."""
         reference = self._reference()
         elements = reference.get("elements", {})
         classes, class_relationships = self._extract_reference_catalog(reference)
@@ -714,28 +652,20 @@ IMPORTANT RULES:
             f"METAMODEL RELATIONSHIPS:\n"
             f"{self._format_reference_relationships(class_relationships)}"
         )
+        return elements, classes, class_relationships, system_prompt, user_prompt
 
-        try:
-            parsed = self.predict_structured(user_prompt, SystemUserProfileSpec, system_prompt=system_prompt)
-            spec = parsed.model_dump()
-            system_spec = self._normalize_system(spec, classes, elements, class_relationships)
+    def _build_system(self, user_request: str, existing_model: Dict[str, Any] = None,
+                      *, prepared=None, **kwargs) -> Dict[str, Any]:
+        elements, classes, class_relationships, system_prompt, user_prompt = prepared
+        parsed = self.predict_structured(user_prompt, SystemUserProfileSpec, system_prompt=system_prompt)
+        spec = parsed.model_dump()
+        system_spec = self._normalize_system(spec, classes, elements, class_relationships)
 
-            for profile in system_spec.get("profiles", []):
-                profile.pop("position", None)
-            self.apply_system_layout(system_spec, existing_model)
+        for profile in system_spec.get("profiles", []):
+            profile.pop("position", None)
+        self.apply_system_layout(system_spec, existing_model)
 
-            return {
-                "action": "inject_complete_system",
-                "systemSpec": system_spec,
-                "diagramType": DIAGRAM_TYPE,
-                "message": self._build_system_message(system_spec),
-            }
-        except LLMPredictionError:
-            logger.error("[UserDiagram] generate_complete_system LLM FAILED", exc_info=True)
-            return self._error_response("I couldn't generate that user profile. Please try again or rephrase.")
-        except Exception:
-            logger.error("[UserDiagram] generate_complete_system FAILED", exc_info=True)
-            return self.generate_fallback_system()
+        return inject_complete_system(system_spec, DIAGRAM_TYPE, self._build_system_message(system_spec))
 
     def _normalize_system(self, spec: Dict[str, Any], classes: Dict[str, Dict[str, Any]],
                           elements: Dict[str, Any], relationships: List[Dict[str, str]]) -> Dict[str, Any]:
@@ -787,16 +717,15 @@ IMPORTANT RULES:
     def generate_fallback_system(self) -> Dict[str, Any]:
         spec = self._fallback_system_spec()
         self.apply_system_layout(spec)
-        return {
-            "action": "inject_complete_system",
-            "systemSpec": spec,
-            "diagramType": DIAGRAM_TYPE,
-            "message": (
+        return inject_complete_system(
+            spec,
+            DIAGRAM_TYPE,
+            (
                 "I created a starter user profile. Describe your target user in more detail "
                 "(e.g. *'a teenager who speaks Spanish at B2 and is studying engineering'*) "
                 "and I'll build a richer profile!"
             ),
-        }
+        )
 
     # ------------------------------------------------------------------
     # Message builders
@@ -839,8 +768,9 @@ IMPORTANT RULES:
     # Modification
     # ------------------------------------------------------------------
 
-    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None,
-                              **kwargs) -> Dict[str, Any]:
+    def _prepare_modification(self, user_request: str, current_model: Dict[str, Any] = None,
+                              **kwargs) -> tuple:
+        """``(user_prompt, elements, reference_classes, existing_by_class, existing_links)``."""
         reference = self._reference()
         elements = reference.get("elements", {})
         reference_classes, _ = self._extract_reference_catalog(reference)
@@ -854,9 +784,12 @@ IMPORTANT RULES:
         reference_context = "\n\nMETAMODEL (use these classes and attributes):\n" + self._format_reference_classes(elements)
         user_prompt = f"Modify the user-profile model: {user_request}{context_block}{reference_context}"
 
-        logger.info(f"[UserDiagram] generate_modification called with: {user_request!r}")
-
         existing_by_class, existing_links = self._model_class_index(current_model)
+        return user_prompt, elements, reference_classes, existing_by_class, existing_links
+
+    def _build_modification(self, user_request: str, current_model: Dict[str, Any] = None,
+                            *, prepared=None, **kwargs) -> Dict[str, Any]:
+        user_prompt, elements, reference_classes, existing_by_class, existing_links = prepared
 
         def _resolve_class_references(mod_list: list) -> list:
             """Expand add_object mods so the new box is wired into the metamodel.
@@ -877,29 +810,25 @@ IMPORTANT RULES:
                     out.append(mod)
             return out
 
-        try:
-            return self._execute_modification(
-                user_prompt, MODIFY_SYSTEM_PROMPT_USER, UserProfileModificationResponse,
-                post_processor=_resolve_class_references,
-            )
-        except LLMPredictionError as exc:
-            logger.error(f"[UserDiagram] generate_modification LLM FAILED: {exc}")
-            return self._error_response("I couldn't process that modification. Please try again or rephrase.")
-        except Exception as exc:
-            logger.error(f"[UserDiagram] generate_modification FAILED: {exc}", exc_info=True)
-            return {
-                "action": "modify_model",
-                "modification": {
-                    "action": "modify_object",
-                    "target": {"profileName": "Unknown"},
-                    "changes": {"profileName": "ModifiedProfile"},
-                },
-                "diagramType": DIAGRAM_TYPE,
-                "message": (
-                    "I couldn't apply that modification automatically. Could you rephrase it? "
-                    "For example: *'set the age criterion to >= 21'* or *'add a Language box for French at C1'*."
-                ),
-            }
+        return self._execute_modification(
+            user_prompt, user_profile_prompts.MODIFY_SYSTEM_PROMPT_USER, UserProfileModificationResponse,
+            post_processor=_resolve_class_references,
+        )
+
+    def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
+        return {
+            "action": Action.MODIFY_MODEL,
+            "modification": {
+                "action": "modify_object",
+                "target": {"profileName": "Unknown"},
+                "changes": {"profileName": "ModifiedProfile"},
+            },
+            "diagramType": DIAGRAM_TYPE,
+            "message": (
+                "I couldn't apply that modification automatically. Could you rephrase it? "
+                "For example: *'set the age criterion to >= 21'* or *'add a Language box for French at C1'*."
+            ),
+        }
 
     def _build_mod_target_name(
         self, action: str, target: dict, mod: dict = None, elements: Optional[Dict[str, Any]] = None,

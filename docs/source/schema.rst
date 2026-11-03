@@ -316,7 +316,6 @@ BESSER built-in.
      "action": "trigger_smart_generator",
      "instructions": "Rails 7, PostgreSQL via Active Record, Devise auth",
      "provider": "anthropic",
-     "llmModel": "claude-sonnet-4-6",
      "message": "Generating your application from your specs…"
    }
 
@@ -645,7 +644,7 @@ UnifiedClassification (Router Output)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The Pydantic object returned by the single per-message classification call
-(``src/unified_classifier.py``). Every downstream state body reads from it, so
+(``src/routing/unified_classifier.py``). Every downstream state body reads from it, so
 no second LLM call is ever needed to refine routing. See
 :doc:`intent_recognition` for the full field reference.
 

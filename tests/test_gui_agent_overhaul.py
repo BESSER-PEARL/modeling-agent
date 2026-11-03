@@ -3,24 +3,20 @@ failure, and the Studio-grade modification path (outline + batch +
 edit_section). Pins the contracts introduced when the free-text create path
 and the single-op modify path were retired.
 """
-import os
-import sys
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-from diagram_handlers.types.gui_nocode_diagram_handler import (  # noqa: E402
+from diagram_handlers.types.gui_nocode_diagram_handler import (
     GUI_COMPLETE_SYSTEM_MAX_TOKENS,
     GUINoCodeDiagramHandler,
     _nav_header_component,
     _parse_llm_css,
 )
-from diagram_handlers.types.gui_design_system import (  # noqa: E402
+from diagram_handlers.types.gui_design_system import (
     merge_theme_overrides,
     stylesheet_rules_from_tokens,
 )
-from schemas import (  # noqa: E402
+from schemas import (
     AuthoredGUIPageSpec,
     AuthoredGUISectionSpec,
     AuthoredSystemGUISpec,

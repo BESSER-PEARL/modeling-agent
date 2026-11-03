@@ -13,7 +13,7 @@ import openai
 import pytest
 from pydantic import BaseModel
 
-import byok
+from llm import byok
 from llm.provider import LLMProvider
 
 SYSTEM = "You are the router. " * 50

@@ -47,17 +47,20 @@ answer, …), so no second prompt is ever needed to refine the verdict.
            State Transition
            → State body → Handler
 
-**Location:** ``src/unified_classifier.py`` (classifier),
-``src/session_helpers.py`` (transition conditions),
-``src/state_bodies.py`` (transition wiring).
+**Location:** ``src/routing/unified_classifier.py`` (classifier),
+``src/routing/guards.py`` (deterministic routing rules),
+``src/conversation/session_helpers.py`` (transition conditions),
+``src/app/state_bodies.py`` (transition wiring).
 
 
 Stage 1: Deterministic Short-Circuits
 --------------------------------------
 
-Two message shapes never reach the LLM at all. Both are handled in
-``get_or_classify()`` / ``classify_message()``
-(``src/unified_classifier.py``).
+Two message shapes never reach the LLM at all. The rules are
+``frontend_event_verdict()`` and ``auto_fix_verdict()`` in
+``src/routing/guards.py``; ``get_or_classify()`` applies the first and
+``classify_message()`` the second (after its provider check, so with no LLM
+configured at all an ``[auto-fix]`` message still gets the error fallback).
 
 frontend_event callbacks
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -76,10 +79,11 @@ routed to greetings. They are pinned deterministically:
        reason="frontend_event callback — routed deterministically, no LLM call",
    )
 
-A third shape never reaches the classifier at all: the
-``replay_last_response`` control message, which
-``_ensure_unified_classification`` returns on before classifying. It is pure
-reconnect recovery and must not consume a turn.
+Two more shapes never reach the classifier at all
+(``guards.skips_classification()``, checked by
+``_ensure_unified_classification``): the ``replay_last_response`` control
+message, which is pure reconnect recovery and must not consume a turn, and a
+blank message that is not a ``frontend_event``.
 
 The ``[auto-fix]`` repair marker
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -123,7 +127,7 @@ without ever causing a transition itself.
 The 11 intents
 ~~~~~~~~~~~~~~
 
-``_INTENT_NAMES`` in ``src/unified_classifier.py`` mirrors the
+``_INTENT_NAMES`` in ``src/routing/unified_classifier.py`` mirrors the
 ``new_intent`` declarations in ``modeling_agent.py``. Adding a state there
 means mirroring it here.
 
@@ -171,7 +175,7 @@ means mirroring it here.
      - Nothing fits; BAF's fallback body runs
 
 **Intent declarations:** ``modeling_agent.py``.
-**Authoritative rulebook:** ``unified_classifier._SYSTEM_PROMPT`` — the
+**Authoritative rulebook:** ``prompts.classifier.SYSTEM_PROMPT`` — the
 one-line ``description=`` strings on each ``new_intent`` are summaries for
 the local fallback classifier, not the rules the router actually follows.
 
@@ -276,7 +280,7 @@ not ``decline_intent``.
 ``reply_language`` is kept in ``REPLY_LANGUAGE`` (a quick-action click, which
 sends the button's English prompt, does not change it). LLM-written replies
 are asked to answer in that language; templated replies are translated at the
-reply choke point in ``src/session_helpers.py`` by ``src/reply_language.py``:
+reply choke point in ``src/conversation/session_helpers.py`` by ``src/conversation/reply_language.py``:
 one classifier-tier call per reply for the message and its labels, cached for
 the shared key only and per call input, so a label translated next to one
 user's text is never reused in another user's reply.
@@ -289,12 +293,12 @@ translation pauses briefly.
 Stage 3: Post-Validation and the Pending-Flow Gate
 ---------------------------------------------------
 
-``_post_validate()`` (``src/unified_classifier.py``) runs on the returned
+``_post_validate()`` (``src/routing/unified_classifier.py``) runs on the returned
 object before it is cached, correcting verdicts the rulebook says must hold
 (for example rerouting a continue-from-GitHub message).
 
 The pending-flow gate lives in ``json_intent_matches`` /
-``json_no_intent_matched`` (``src/session_helpers.py``). When the assistant
+``json_no_intent_matched`` (``src/conversation/session_helpers.py``). When the assistant
 is awaiting a reply to a question — replace/keep, the GUI generation-mode
 choice, a smart-gen confirmation, a generator config prompt — the
 classifier decides, *with that pending question in its context*, whether
@@ -312,7 +316,7 @@ Transition Priority System
 
 State transitions are checked in this order (first match wins).
 
-**Location:** ``src/state_bodies.py`` → ``add_unified_transitions()``
+**Location:** ``src/app/state_bodies.py`` → ``add_unified_transitions()``
 
 .. code-block:: text
 
@@ -335,7 +339,7 @@ State transitions are checked in this order (first match wins).
        json_no_intent_matched(session) → the state's fallback state
 
 Priority 2 is deliberately cheap: ``should_route_to_generation()``
-(``src/handlers/generation_handler.py``) makes **no** LLM call and runs
+(``src/codegen/generation_handler.py``) makes **no** LLM call and runs
 **no** text heuristics. It returns ``True`` only for ``frontend_event``
 payloads and for messages arriving while a generator config or smart-gen
 confirmation is pending. The older keyword safety nets
@@ -367,7 +371,10 @@ It is consulted in only two situations:
    ``session.event.predicted_intent``.
 2. **Text events** — voice messages (after speech-to-text) and plain-text
    events arrive without a JSON payload and route via
-   ``when_intent_matched`` (transition priority 3).
+   ``when_intent_matched`` (transition priority 3). The unified hook is
+   registered for JSON events only, so these transitions are the voice
+   path's only route; the state body still reads the unified verdict
+   through ``_common_preamble``.
 
 .. note::
 
@@ -375,6 +382,54 @@ It is consulted in only two situations:
    (plus a NER model), which is why the container takes minutes to open its
    WebSocket. See :doc:`deployment` for the health-check start period that
    accounts for it.
+
+
+Deterministic Guards After Routing
+----------------------------------
+
+A few decisions are settled by text match in the state that received the
+message. The rules live in ``src/routing/guards.py`` as pure functions over
+the message (and the cached verdict where they depend on it); the state body
+or handler only maps the decision to a reply. The tables in
+``tests/test_routing_guards.py`` pin each one.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 26 40
+
+   * - Guard
+     - Where it runs
+     - What it decides
+   * - ``reconcile_intent()``
+     - create / modify states
+     - The classifier's create-vs-modify verdict over the state's default
+       (they differ when a pending flow suppressed intent routing)
+   * - ``modeling_guard()``
+     - create / modify states
+     - First match wins: ``non_modeling`` (prompt injection, persona
+       hijack, shell commands; both states), the classifier-outage net
+       ``outage_decline`` / ``outage_artifact`` (only when the verdict is
+       missing or ``fallback_intent``), then ``self_contradictory`` and
+       ``too_vague`` (create only)
+   * - ``quick_response_key()``
+     - global fallback, greetings, modeling help
+     - A canned capability / help / how-to-run reply, no LLM call
+   * - ``is_mixed_modeling_and_generation()``
+     - generation state
+     - "create a class diagram and generate Django": build the model first,
+       generation waits for the go-ahead
+   * - ``is_past_generation_question()``
+     - generation handler
+     - "what did you generate?" after a run is answered from its outcome
+   * - ``generation_route()``
+     - generation handler
+     - The dispatch route of a verdict: ``generation_route`` on generation
+       verdicts; ``modeling`` for create/modify; the generator menu on a
+       classifier error; ``other`` otherwise
+
+The diagram-type keywords (layer 2) stay in the workspace orchestrator, see
+below. Answers to a pending question (replace/keep, GUI choice, generator
+confirmations) are parsed by the pending-flow handlers, not by these guards.
 
 
 Diagram Type Resolution
@@ -407,12 +462,13 @@ When routing goes wrong, check in this order:
    verdict lets it route away.
 
 4. **Check the rulebook, not the intent descriptions.** Routing rules live
-   in ``unified_classifier._SYSTEM_PROMPT``. The ``description=`` strings on
+   in ``prompts.classifier.SYSTEM_PROMPT``. The ``description=`` strings on
    ``new_intent`` only feed the local fallback classifier.
 
 5. **Check the deterministic guards.** ``_names_unsupported_stack()`` forces
    the smart route; the GitHub-continue regexes force an import. Neither
-   can be overridden by the LLM verdict.
+   can be overridden by the LLM verdict. In a create / modify state,
+   ``guards.modeling_guard()`` may answer instead of modeling.
 
 6. **Check diagram type resolution.** Does the classifier's
    ``target_diagram_type`` match what you expect? If it is ``None``, step
@@ -422,7 +478,7 @@ When routing goes wrong, check in this order:
 .. code-block:: python
 
    # Quick diagnostic snippet (no agent runtime needed):
-   from unified_classifier import _names_unsupported_stack
+   from routing.unified_classifier import _names_unsupported_stack
    from routing.generation_signals import detect_generator_type
 
    msg = "your test message here"
