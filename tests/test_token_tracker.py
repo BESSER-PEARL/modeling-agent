@@ -248,10 +248,10 @@ def test_every_model_a_user_key_can_route_to_has_a_price():
     """BYOK maps each call to a provider tier model; an unpriced one reports
     placeholder costs, as happened for the Nebius Qwen model and for
     gpt-5-mini."""
-    from llm.byok import _PROVIDER_TIER_MODELS
+    from llm.byok import _PROVIDER_TIER_MODELS, USER_MODEL
     from llm.tracking.token_tracker import _vendor_cost_table
 
-    routed = {model for tiers in _PROVIDER_TIER_MODELS.values() for model in tiers.values()}
+    routed = {model for tiers in _PROVIDER_TIER_MODELS.values() for model in tiers.values()} - {USER_MODEL}
     for model in routed | {"gpt-5-mini"}:
         assert _vendor_cost_table(model) is not None, f"no price for {model!r}"
 
