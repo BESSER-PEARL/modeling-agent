@@ -498,6 +498,7 @@ def classify_message(
         return _post_validate(
             result, message, follow_up_target_kind=follow_up_kind,
             has_class_model=ctx is None or bool(_extract_class_names(ctx)),
+            linked_repo_has_app=(getattr(ctx, "github_repo", None) or {}).get("has_code") is True,
         )
     except Exception:
         logger.exception("classify_message failed; falling back to fallback_intent")
@@ -1030,6 +1031,7 @@ def _post_validate(
     result: UnifiedClassification, message: str = "", *,
     follow_up_target_kind: Optional[str] = None,
     has_class_model: bool = True,
+    linked_repo_has_app: bool = False,
 ) -> UnifiedClassification:
     """Defensive validation of LLM output.
 
@@ -1162,10 +1164,11 @@ def _post_validate(
             )
         # Same guard, EDIT form ("add a Reports page" with an existing GUI
         # must not stash a spec-driven web-app confirmation). Adding/
-        # removing/renaming a page or screen edits the GUI DIAGRAM — it is
-        # never a code-generation request.
+        # removing/renaming a page or screen edits the GUI DIAGRAM — unless a
+        # linked repo holds the app, whose pages live in its code.
         if (
             _web_gui_guards
+            and not linked_repo_has_app
             and re.search(r"\b(pages?|screens?)\b", _low)
             and re.search(r"\b(add|insert|remove|delete|rename)\b", _low)
             and not re.search(

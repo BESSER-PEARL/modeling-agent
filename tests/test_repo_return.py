@@ -27,7 +27,7 @@ from protocol.adapters import parse_assistant_request
 from protocol.types import AssistantRequest, WorkspaceContext
 from routing import unified_classifier
 from routing.generation_signals import linked_repo_recap, remember_repo_recap, repo_holds_app
-from routing.unified_classifier import UnifiedClassification, get_or_classify
+from routing.unified_classifier import UnifiedClassification, _post_validate, get_or_classify
 from tests.conftest import FakeSession
 
 RECAP = "**Recent work**\n- 2026-11-01: `add a search bar`"
@@ -217,8 +217,13 @@ def test_a_replayed_reply_records_nothing(monkeypatch):
 
 
 class _Provider:
+    """The classifier's LLM: everything after its answer is the real path."""
+
+    def __init__(self, decision=None):
+        self.decision = decision or UnifiedClassification(intent="fallback_intent", reason="test")
+
     def parse(self, *, messages, schema, temperature, max_tokens):
-        return UnifiedClassification(intent="fallback_intent", reason="test")
+        return self.decision
 
 
 @pytest.mark.parametrize("has_code,told", [(True, True), (False, False)])
@@ -235,12 +240,18 @@ def test_the_classifier_is_told_when_the_repo_holds_the_app(monkeypatch, has_cod
     assert seen["recent_smart_gen"] is told
 
 
-def _generation_turn(message: str, disposition, repo=REPO):
-    session = _session(repo, message)
-    session.set(UNIFIED_CLASSIFICATION, UnifiedClassification(
+def _classify(session: FakeSession, message: str, disposition) -> None:
+    decision = UnifiedClassification(
         intent="generation_intent", generation_route="smart", refined_instructions=message,
         model_disposition=disposition, reason="test",
-    ))
+    )
+    # This fake event has no id to cache under, so hold the classifier's result for the handler.
+    session.set(UNIFIED_CLASSIFICATION, get_or_classify(session, parse_assistant_request(session), _Provider(decision)))
+
+
+def _generation_turn(message: str, disposition, repo=REPO):
+    session = _session(repo, message)
+    _classify(session, message, disposition)
     return session, handle_generation_request(session, parse_assistant_request(session))
 
 
@@ -258,17 +269,44 @@ def test_a_change_with_a_question_shape_reaches_the_run_instead_of_the_recap():
     assert "update your existing app" in result["message"]
 
 
-@pytest.mark.parametrize("message,disposition", [
-    ("start from scratch", "replace_existing"),
-    ("build a new app for a hotel", "new_from_scratch"),
-])
-def test_starting_over_is_not_called_an_update_and_the_run_rebuilds(message, disposition):
-    session, result = _generation_turn(message, disposition)
+def test_a_page_change_on_a_repo_holding_the_app_stays_a_code_change():
+    # The GUI-diagram guard read this as a diagram edit, so no run ever started.
+    message = "show the login page we generated and add a logout button"
+    verdict = lambda: UnifiedClassification(
+        intent="generation_intent", generation_route="smart", refined_instructions=message, reason="test",
+    )
+    assert _post_validate(verdict(), message, linked_repo_has_app=True).intent == "generation_intent"
+    assert _post_validate(verdict(), message).intent == "modify_model_intent"
+
+
+def test_a_page_change_with_only_a_model_in_the_repo_edits_the_diagram():
+    session = _session({**REPO, "hasCode": False}, "add a Reports page")
+    decision = UnifiedClassification(
+        intent="generation_intent", generation_route="smart", refined_instructions="add a Reports page", reason="test",
+    )
+    verdict = get_or_classify(session, parse_assistant_request(session), _Provider(decision))
+    assert verdict.intent == "modify_model_intent"
+
+
+def test_discarding_the_app_says_which_repo_is_replaced_and_rebuilds():
+    session, result = _generation_turn("scrap it and start over", "replace_existing")
+    assert "update your existing app" not in result["message"]
+    assert "ana/library" in result["message"]
+    assert "replace" in result["message"]
+    assert result["suggestedActions"][0]["label"] == "Rebuild"
+    trigger = _confirm(session)
+    assert trigger["action"] == Action.TRIGGER_SMART_GENERATOR
+    assert trigger["mode"] == "generate"
+
+
+def test_a_verdict_of_no_usable_model_cannot_force_a_rebuild():
+    # The classifier also says this when the editor's model is empty, and the push would overwrite the repo's code.
+    session, result = _generation_turn("add auth to it", "new_from_scratch")
     assert "update your existing app" not in result["message"]
     assert result["suggestedActions"][0]["label"] == "Continue"
     trigger = _confirm(session)
     assert trigger["action"] == Action.TRIGGER_SMART_GENERATOR
-    assert trigger["mode"] == "generate"
+    assert "mode" not in trigger
 
 
 @pytest.mark.parametrize("disposition", ["reuse_for_generation", "extend_existing", None])
@@ -289,10 +327,7 @@ def test_starting_over_without_a_repo_holding_code_leaves_the_mode_alone():
 def test_an_earlier_rebuild_does_not_stick_to_the_next_request():
     session, _ = _generation_turn("start from scratch", "replace_existing")
     _next_message(session, _session(REPO, "add auth to it"))
-    session.set(UNIFIED_CLASSIFICATION, UnifiedClassification(
-        intent="generation_intent", generation_route="smart", refined_instructions="add auth",
-        model_disposition="reuse_for_generation", reason="test",
-    ))
+    _classify(session, "add auth to it", "reuse_for_generation")
     handle_generation_request(session, parse_assistant_request(session))
     assert "mode" not in _confirm(session)
 

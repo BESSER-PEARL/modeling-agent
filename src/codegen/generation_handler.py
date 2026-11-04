@@ -40,6 +40,7 @@ from routing.generation_signals import (
     _active_project_id,
     _extract_github_reference,
     _smart_gen_project_has_app,
+    linked_repo_name,
     linked_repo_recap,
     repo_holds_app,
 )
@@ -317,7 +318,9 @@ _FIX_INTENT_RE = re.compile(
 )
 
 
-# The verdicts that say the request does not build on what exists.
+# The verdicts that say the request does not build on what exists. Only
+# ``replace_existing`` is the user asking to discard it: ``new_from_scratch`` also
+# means "the editor's model is empty", which says nothing about the repo's code.
 _STARTING_OVER_DISPOSITIONS = frozenset({"replace_existing", "new_from_scratch"})
 
 
@@ -364,11 +367,10 @@ def _looks_like_fix_request(
     )
 
 
-def _starts_over_on_linked_repo(session: Session) -> bool:
-    """True when the user asks to discard the app their linked repo holds, so
-    the run must rebuild rather than continue from the repo's code."""
-    verdict = session.get(UNIFIED_CLASSIFICATION)
-    return repo_holds_app(session) and getattr(verdict, "model_disposition", None) in _STARTING_OVER_DISPOSITIONS
+def _starting_over_on_linked_repo(session: Session) -> Optional[str]:
+    """The verdict's starting-over disposition when the linked repo holds an app, else None."""
+    disposition = getattr(session.get(UNIFIED_CLASSIFICATION), "model_disposition", None)
+    return disposition if disposition in _STARTING_OVER_DISPOSITIONS and repo_holds_app(session) else None
 
 
 def _build_smart_gen_confirmation(
@@ -405,14 +407,15 @@ def _build_smart_gen_confirmation(
     # call wrote.
     project_id = _active_project_id(session)
     original = _original_for_smart_generation(session, user_message)
-    starts_over = (not reason_prefix) and _starts_over_on_linked_repo(session)
+    starting_over = None if reason_prefix else _starting_over_on_linked_repo(session)
+    replaces_repo_app = starting_over == "replace_existing"
     _stash_smart_gen(
-        session, refined, provider, original_request=original, mode="generate" if starts_over else None,
+        session, refined, provider, original_request=original, mode="generate" if replaces_repo_app else None,
     )
 
     prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
 
-    is_fix = (not reason_prefix) and (not starts_over) and _looks_like_fix_request(
+    is_fix = (not reason_prefix) and (not starting_over) and _looks_like_fix_request(
         session, user_message, project_id,
     )
 
@@ -423,7 +426,16 @@ def _build_smart_gen_confirmation(
     # (``[...](wme:add-key)``) that the frontend markdown renderer intercepts
     # to open the BYOK key dialog (see markdown-renderer.tsx — it dispatches
     # ``wme:specdriven-open-byok``); it never navigates anywhere.
-    if is_fix:
+    if replaces_repo_app:
+        message = (
+            f"{prefix}I'll rebuild the app from scratch instead of changing the code in "
+            f"**{linked_repo_name(session)}**. Pushing the result will replace that code. "
+            f"It uses the free model by default — "
+            f"[set up your own API key](wme:add-key) for higher quality.\n\n"
+            f"Do you want to continue?"
+        )
+        confirm_label = "Rebuild"
+    elif is_fix:
         message = (
             f"{prefix}I'll update your existing app to make that change. "
             f"It uses the free model by default — "

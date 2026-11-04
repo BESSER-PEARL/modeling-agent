@@ -760,8 +760,8 @@ Built by ``build_trigger_smart_generator_payload()`` in
      - Suggested provider. The frontend's BYOK selection can override it.
    * - ``mode``
      - Optional. ``"generate"`` rebuilds instead of continuing from the
-       existing app; sent when the user asks to start over on a linked GitHub
-       repo that holds one. Without it the frontend decides.
+       existing app; sent only when the user asks to discard the app a linked
+       GitHub repo holds. Without it the frontend decides.
 
 The action names no model: the run uses the model the user picked in the
 editor, else the BESSER backend's default for the provider (the deployment's

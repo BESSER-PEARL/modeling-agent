@@ -179,6 +179,11 @@ def repo_holds_app(session: Session) -> bool:
     return _linked_repo(session).get("has_code") is True
 
 
+def linked_repo_name(session: Session) -> str:
+    """``owner/repo`` of the open project's linked repo; empty without a link."""
+    return _linked_repo(session).get("full_name") or ""
+
+
 def linked_repo_recap(session: Session) -> str:
     """Where the linked repo's app stands, in chat markdown; empty when unknown."""
     return _linked_repo(session).get("recap") or ""
