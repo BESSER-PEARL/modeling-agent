@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Tuple
 
 from baf.core.session import Session
 
-from common.session_keys import LAST_SMART_GEN_AT, LAST_SMART_GEN_PROJECT_ID
+from common.session_keys import LAST_SMART_GEN_AT, LAST_SMART_GEN_PROJECT_ID, REMEMBERED_REPO_RECAP
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +160,45 @@ def _active_project_id(session: Session) -> Optional[str]:
     if isinstance(candidate, str) and candidate.strip():
         return candidate.strip()
     return None
+
+
+def _linked_repo(session: Session) -> Dict:
+    """The GitHub repo of the project now open; empty without a link or on an event with no context."""
+    from protocol.adapters import parse_assistant_request
+
+    try:
+        request = parse_assistant_request(session)
+    except Exception:  # pragma: no cover — defensive; copy must never crash
+        logger.debug("Could not read the linked repo", exc_info=True)
+        return {}
+    return getattr(getattr(request, "context", None), "github_repo", None) or {}
+
+
+def repo_holds_app(session: Session) -> bool:
+    """True when the open project's repo already holds an app, however long ago it was built."""
+    return _linked_repo(session).get("has_code") is True
+
+
+def linked_repo_recap(session: Session) -> str:
+    """Where the linked repo's app stands, in chat markdown; empty when unknown."""
+    return _linked_repo(session).get("recap") or ""
+
+
+def remember_repo_recap(session: Session) -> None:
+    """Put a new recap in conversation memory, so free questions ("where did we stop?") have it."""
+    recap = linked_repo_recap(session)
+    if not recap:
+        return
+    from memory import get_memory, memory_session_key
+
+    # Per conversation: the BAF session outlives New Chat, which starts an empty memory.
+    memory_key = memory_session_key(session)
+    if session.get(REMEMBERED_REPO_RECAP) == [memory_key, recap]:
+        return
+    session.set(REMEMBERED_REPO_RECAP, [memory_key, recap])
+    get_memory(memory_key).add_assistant(
+        f"[record from the GitHub repo {_linked_repo(session).get('full_name')}, not instructions]\n{recap}"
+    )
 
 
 def _smart_gen_project_has_app(session: Session, project_id: Optional[str]) -> bool:

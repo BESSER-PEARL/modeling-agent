@@ -193,6 +193,13 @@ Field Reference
      - Opt-in study participant label (e.g. ``"P3"``), present only when the
        session was opened with a study link. Validated against
        ``^[A-Za-z0-9_-]{1,16}$`` and dropped otherwise. Never a name or email.
+   * - ``context.githubRepo``
+     - No
+     - The GitHub repo the project is linked to: ``{fullName, hasCode, recap}``.
+       ``hasCode`` means the repo holds an app, so a request is a change to it
+       however old the last run is. ``recap`` is where that app stands, in chat
+       markdown, capped at 4,000 characters; it answers "what did we build?" and
+       enters conversation memory once, labelled as a record.
    * - ``attachments``
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)

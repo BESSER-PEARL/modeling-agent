@@ -39,6 +39,8 @@ from routing.generation_signals import (
     _active_project_id,
     _extract_github_reference,
     _smart_gen_project_has_app,
+    linked_repo_recap,
+    repo_holds_app,
 )
 from conversation.session_helpers import reply_message, reply_payload
 from routing.guards import generation_route, is_past_generation_question
@@ -340,6 +342,9 @@ def _looks_like_fix_request(
       user's OWN message still reads as a fix; anything else gets the
       neutral from-scratch copy.
     """
+    # The editor continues from the repo's code, however old the last run is.
+    if repo_holds_app(session):
+        return True
     if not _smart_gen_project_has_app(session, project_id):
         return False
     if _FIX_INTENT_RE.search(user_message or ""):
@@ -1278,6 +1283,12 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                     "to save the files, or tell me what to change and I'll "
                     "modify the generated app."
                 ),
+            }
+        _recap = linked_repo_recap(session)
+        if _recap:
+            return {
+                "action": Action.ASSISTANT_MESSAGE,
+                "message": f"{_recap}\n\nTell me what to change and I'll update the app.",
             }
 
     # Continue-from-GitHub guard: "continue from github.com/x/y" (or

@@ -45,6 +45,8 @@ SMART_GEN_ARMED_PROJECT_ID = "_smart_gen_armed_project_id"
 # run ("what we generated?") be ANSWERED instead of re-arming a brand-new
 # generation confirmation.
 LAST_SMART_GEN_SUMMARY = "_last_smart_gen_summary"
+# The conversation and linked repo's recap last written to memory, so it enters once.
+REMEMBERED_REPO_RECAP = "_remembered_repo_recap"
 
 # Voice context
 VOICE_CONTEXT = "_voice_context"

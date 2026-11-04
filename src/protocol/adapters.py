@@ -25,12 +25,29 @@ DIAGRAM_PREFIX_PATTERN = re.compile(r"^\[DIAGRAM_TYPE:(\w+)\]\s*(.+)$", re.DOTAL
 PILOT_PARTICIPANT_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,16}$")
 
 
+# Well above what the editor sends; the client is not trusted to keep it small.
+MAX_REPO_RECAP_CHARS = 4_000
+
+
 def _parse_pilot_participant(context_payload: Dict[str, Any]) -> Optional[str]:
     """Validate the optional ``context.pilotParticipant`` label (or drop it)."""
     candidate = context_payload.get("pilotParticipant")
     if isinstance(candidate, str) and PILOT_PARTICIPANT_PATTERN.match(candidate):
         return candidate
     return None
+
+
+def _parse_github_repo(context_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Validate the optional ``context.githubRepo`` (or drop it)."""
+    repo = context_payload.get("githubRepo")
+    if not isinstance(repo, dict) or not isinstance(repo.get("fullName"), str):
+        return None
+    recap = repo.get("recap")
+    return {
+        "full_name": repo["fullName"],
+        "has_code": repo.get("hasCode") is True,
+        "recap": recap[:MAX_REPO_RECAP_CHARS] if isinstance(recap, str) else "",
+    }
 
 
 def safe_json_loads(value: Any) -> Optional[Dict[str, Any]]:
@@ -261,6 +278,7 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         diagram_summaries=diagram_summaries,
         current_diagram_indices=current_diagram_indices,
         pilot_participant=pilot_participant,
+        github_repo=_parse_github_repo(context_payload),
     )
 
     # ── Parse file attachments ──
