@@ -9,12 +9,8 @@ Covers:
 """
 
 import json
-import os
-import sys
 
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from diagram_handlers.types.agent_diagram_handler import (
     AgentDiagramHandler,
@@ -301,7 +297,7 @@ class TestComponentFormatValidation:
 def test_modification_uses_shared_prompt_with_safety_rules():
     """generate_modification must send MODIFY_SYSTEM_PROMPT_AGENT (develop's
     component actions + reply types) and it must carry the safety rules."""
-    from diagram_handlers.types.agent_diagram_handler import MODIFY_SYSTEM_PROMPT_AGENT
+    from prompts.agent_diagram import MODIFY_SYSTEM_PROMPT_AGENT
 
     seen = []
 

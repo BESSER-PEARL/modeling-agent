@@ -10,12 +10,7 @@ Exercises the deterministic post-process guard directly (no LLM), mirroring
 test_enum_relationship_guard.py.
 """
 
-import os
-import sys
-
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 

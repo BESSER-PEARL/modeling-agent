@@ -1,41 +1,35 @@
 # Intelligent UML Modeling Assistant – slim entrypoint
 # ---------------------------------------------------
-# All business logic lives under ``src/``.  This file only:
-#   1. Puts ``src/`` on sys.path
-#   2. Creates the BESSER Agent and WebSocket platform
-#   3. Initialises LLMs / RAG / DiagramHandlerFactory via ``agent_setup``
-#   4. Populates the shared ``agent_context`` module
-#   5. Declares states & intents
-#   6. Wires state bodies and transitions via ``state_bodies.register_all``
-#   7. Runs the agent
+# All business logic lives under ``src/``, installed with ``pip install -e .``.
+# This file only:
+#   1. Creates the BESSER Agent and WebSocket platform
+#   2. Initialises LLMs / RAG / DiagramHandlerFactory via ``agent_setup``
+#   3. Populates the shared ``agent_context`` module
+#   4. Declares states & intents
+#   5. Wires state bodies and transitions via ``state_bodies.register_all``
+#   6. Runs the agent
 
 import logging
 import os
-import sys
 import threading
-
-# ── Make ``src/`` importable for bare-style imports ──────────────────────
-_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
 
 from baf.core.agent import Agent
 from baf import nlp
 from baf.exceptions.logger import logger
 
-import agent_context as ctx
-from agent_setup import (
+from conversation import agent_context as ctx
+from app.agent_setup import (
     init_llm,
     init_stt,
     init_rag,
     init_diagram_factory,
     init_intent_classifier_config,
 )
-from agent_config import GRACE_PERIOD_SECONDS
-from model_catalog import load_model_catalog
+from common.agent_config import GRACE_PERIOD_SECONDS
+from llm.model_catalog import load_model_catalog
 from routing.intents import GENERATION_INTENT_NAME
-from state_bodies import register_all
-from memory.conversation_memory import cleanup_stale_memories
+from app.state_bodies import register_all
+from common.session_store import sessions
 
 # ── Logging ──────────────────────────────────────────────────────────────
 logger.setLevel(logging.INFO)
@@ -96,7 +90,7 @@ meta_question_state = agent.new_state("meta_question_state")
 # that BAF's built-in classifier used as prompt context. Since
 # ``unified_classifier.py`` took over primary routing, those keyword
 # blobs are no longer driving any behavior — the real rules live in
-# ``unified_classifier._SYSTEM_PROMPT``. The one-liners below exist
+# ``prompts.classifier.SYSTEM_PROMPT``. The one-liners below exist
 # only so BAF's classifier can still pick a sensible intent if our
 # unified call ever fails (rare safety-net path). Keep them SHORT.
 #
@@ -330,11 +324,9 @@ def _start_cleanup_timer():
             except Exception as exc:
                 logger.warning(f"[Reaper] Session cleanup error: {exc}")
 
-            try:
-                # --- Reap stale conversation memories ---
-                cleanup_stale_memories(max_age_seconds=3600)
-            except Exception:
-                pass
+            # Expire per-session stores (stale conversation memories); each
+            # store's failure is logged at warning inside expire().
+            sessions.expire(3600)
 
     t = threading.Thread(target=_cleanup_loop, daemon=True, name="session-reaper")
     t.start()

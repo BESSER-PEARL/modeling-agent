@@ -7,8 +7,8 @@ model: gpt-5.5 or claude-sonnet-5 instead of gpt-4o-mini or claude-haiku-4-5.
 
 import pytest
 
-import byok
-from model_config import (
+from llm import byok
+from llm.model_config import (
     MODEL_CLASSIFIER,
     MODEL_GENERATION_GUI,
     MODEL_GENERATION_LARGE,
@@ -16,8 +16,8 @@ from model_config import (
     MODEL_REASONING,
 )
 
-CHEAP = {"openai": "gpt-4o-mini", "anthropic": "claude-haiku-4-5", "mistral": "mistral-small-latest"}
-STRONG = {"openai": "gpt-5.5", "anthropic": "claude-sonnet-5", "mistral": "mistral-large-latest"}
+CHEAP = {"openai": "gpt-6-luna", "anthropic": "claude-haiku-5-5", "mistral": "mistral-small-latest"}
+STRONG = {"openai": "gpt-6-sol", "anthropic": "claude-sonnet-5-5", "mistral": "mistral-large-latest"}
 
 
 @pytest.mark.parametrize("provider", sorted(CHEAP))

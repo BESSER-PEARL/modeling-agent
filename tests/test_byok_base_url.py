@@ -4,8 +4,8 @@ A custom base_url makes the agent open a user-supplied URL — an SSRF surface o
 a shared host — so it is OFF by default and only honoured when the deploy sets
 BESSER_AGENT_ALLOW_CUSTOM_BASE_URL. When off, BYOK falls back to the shared LLM.
 """
-import byok
-import byok_config
+from llm import byok
+from llm import byok_config
 
 
 def test_base_url_disabled_by_default(monkeypatch):

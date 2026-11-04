@@ -32,7 +32,8 @@ Python 3.11+.
 ```bash
 python -m venv venv
 source venv/bin/activate                 # Windows: .\venv\Scripts\Activate.ps1
-pip install -r requirements.txt          # pins besser-agentic-framework == 4.5.3
+pip install -r requirements-dev.txt      # runtime pins (besser-agentic-framework == 4.5.3) + test/lint tools
+pip install -e .                         # the agent itself; src/ is the import root
 cp config_example.yaml config.yaml       # config.yaml is gitignored; never commit real keys (same for .env)
 python modeling_agent.py                 # WebSocket on :8765
 
@@ -40,10 +41,17 @@ python -m pytest                                    # full suite
 python -m pytest tests/test_unified_classifier.py   # routing verdicts
 python -m pytest tests/test_diagram_handlers.py     # cross-handler contract tests
 python -m pytest tests/test_bpmn.py                 # one diagram type
+lint-imports                                        # import layers (contracts in pyproject.toml)
 ```
-CI (`.github/workflows/tests.yml`) runs this suite and ruff on every PR and push.
+CI (`.github/workflows/tests.yml`) runs this suite, ruff and `lint-imports` on every PR and push.
 
-**Intended import layering** (a layer imports only those below it): `state_bodies` / `agent_setup` → `confirmation` → `execution` → `handlers` / `orchestrator` → `session_helpers` → `unified_classifier` → `memory` / `reply_language` / `routing` → `diagram_handlers` → `llm` → `byok` → `tracking` → `byok_config` → `utilities` → `protocol` → leaf modules (`agent_config`, `session_keys`, `errors`, …); the import-linter contract arrives with the packaging work (A13).
+**Packaging**: `pyproject.toml` installs `src/` as the import root, so the agent's packages are top-level
+names (`from protocol.types import ...`, `from conversation import session_helpers`) in the app, the tests and
+the image alike. Never import through `src.` and never add `sys.path` inserts. Every module lives in a package
+(only the entrypoint `modeling_agent.py` sits at the repo root); a new package goes into the import-linter
+layers (`tests/test_packaging.py` checks). Its `version` is the agent's only version.
+
+**Import layering** (each top-level package is one layer and imports only those below it): `app` → `ingestion` → `execution` → `codegen` / `orchestrator` → `conversation` → `routing` → `memory` / `diagram_handlers` → `prompts` → `llm` → `utilities` → `protocol` → `common` / `schemas`. Packages on one level (`/`) do not import each other. Inside a package: `app` is `state_bodies` / `agent_setup` → `confirmation`; `conversation` is `session_helpers` → `reply_language` → the rest; `routing` is `unified_classifier` → `guards` → `generation_signals` / `intents`; `llm` is `provider` → `byok` → `tracking` → `byok_config` / `model_catalog` / `model_config` / `retry`, and only `llm` imports `openai` / `anthropic`. `lint-imports` enforces all of it (`[tool.importlinter]` in `pyproject.toml`), with the one known cycle (`codegen.generation_handler` → `execution`: a confirmed generation re-runs the planned operations) ignored.
 
 - Handler tests instantiate handlers directly, e.g. `BPMNDiagramHandler(None)` (the LLM arg is only needed by
   methods that call the model), and test deterministic repair such as `_validate_and_refine` as a pure function
@@ -65,12 +73,12 @@ decision is the most common source of bugs here. Full detail: `docs/source/inten
 ```
 WebSocket message
   → protocol/adapters.py + protocol/types.py        parse wire payload → AssistantRequest
-  → src/unified_classifier.py                        LAYER 1: THE ROUTER
+  → routing/unified_classifier.py                    LAYER 1: THE ROUTER
       classify_message() → UnifiedClassification, cached per BAF event by get_or_classify().
       Returns the intent (which of the 10 states) AND every sub-routing field downstream code
       needs (generation_route, generator_type, target_diagram_type, model_disposition,
-      pending_flow_action, …) — no second prompt. Rules live in _SYSTEM_PROMPT.
-  → src/state_bodies.py                              state body; modeling bodies funnel through
+      pending_flow_action, …) — no second prompt. Rules live in prompts/classifier.py.
+  → app/state_bodies.py                              state body; modeling bodies funnel through
                                                      execution/planning.py::execute_planned_operations
   → orchestrator/workspace_orchestrator.py           LAYER 2: determine_target_diagram_type()
       0. classifier's target_diagram_type  1. KEYWORD_TARGETS  2. _IMPLICIT_PATTERNS
@@ -80,15 +88,25 @@ WebSocket message
   → response envelope sent back over the WebSocket
 ```
 
-- **`_SYSTEM_PROMPT` in `unified_classifier.py` is the single authoritative rulebook.** Routing changes go there,
+- **`SYSTEM_PROMPT` in `prompts/classifier.py` is the single authoritative rulebook.** Routing changes go there,
   or — for decisions the LLM is measurably unreliable at — in an explicit deterministic guard
   (`_names_unsupported_stack()` in `unified_classifier.py`; `_GITHUB_URL_RE` / `_GITHUB_CONTINUE_VERB_RE` in
   `routing/generation_signals.py`). There is no keyword pre-filter layer to add special cases to.
+- **Every other deterministic routing rule lives in `routing/guards.py`**, as a pure function over the request or
+  message (and the verdict where it depends on it): before the classifier, `skips_classification`,
+  `frontend_event_verdict` and `auto_fix_verdict`; after routing, in the receiving state, `reconcile_intent`,
+  `modeling_guard` (injection input, the classifier-outage net, self-contradictory and contentless creates, first
+  match wins), `quick_response_key`, `is_mixed_modeling_and_generation`, `is_past_generation_question` and
+  `generation_route`. State bodies and the generation handler only map a guard's decision to a reply. A new
+  text rule goes there, with a row in `tests/test_routing_guards.py`, never inline in a state body. Answers to a
+  pending question (replace/keep, GUI choice, generator confirmations) are parsed by the pending-flow handlers
+  (`app/confirmation.py`, `codegen/generation_handler.py`), not by these guards.
 - **Intent `description=` strings in `modeling_agent.py` stay one-liners.** They only feed BAF's local fallback
   classifier and do not drive routing.
 - **BAF's own classifier is a local, non-LLM fallback** (`SimpleIntentClassifierConfiguration(framework='tensorflow')`
   in `agent_setup.py`, trained at startup on each intent's `training_sentences`). It routes only when the unified
-  call failed (`fallback_intent`) and for voice / plain-text events. `training_sentences` are therefore
+  call failed (`fallback_intent`) and for voice / plain-text events (a voice transcript is a text event, which the
+  unified hook never sees: `when_intent_matched` is its only route). `training_sentences` are therefore
   **mandatory** on every intent — an intent without them breaks that classifier at startup.
 - `config.yaml`'s `nlp.intent_threshold` (0.55) gates only that local classifier, not the unified one.
 - **Transition priority** (`state_bodies.add_unified_transitions`): 0 `_ensure_unified_classification` (side
@@ -98,6 +116,14 @@ WebSocket message
 - **A pending flow suppresses intent matching by design**: while the assistant awaits an answer,
   `json_intent_matches()` returns False for every intent unless the classifier set
   `pending_flow_action="new_request"`. A message that looks "stuck" is usually this, not a routing bug.
+- **Pending dialogs are one session variable** (`PENDING_DIALOGS`), read and written only through
+  `common/pending_dialogs.py` (`get` / `put` / `clear`; a slot name is not a session key). Several can be
+  open at once (the mismatch "Update model + generate" chain, a paused "design X and generate Y" plan), so
+  `PRECEDENCE` fixes the order: `resume_pending()` in `_common_preamble` tries the open dialogs' handlers
+  (`app/confirmation.RESUME_HANDLERS`) in it, and the classifier is shown the first open one. Generator
+  menu and settings answers reach `handle_generation_request` through routing. A new dialog adds a slot, a
+  kind in `PRECEDENCE`, a resume handler and a question in `_pending_flow_context`
+  (`docs/source/orchestration.rst`, "Pending Dialogs").
 - **Layer 2 is keyword/regex, not LLM.** Look there only if a message that reached a modeling state resolves to
   the *wrong diagram type*.
 
@@ -108,30 +134,32 @@ in manual testing. Walkthrough: `docs/source/contributing/howto_guides.rst`.
 
 1. `src/schemas/<type>.py` — Pydantic schemas for structured output (single element, complete system,
    modification actions with `Literal` names); re-export from `src/schemas/__init__.py`
-2. `src/diagram_handlers/types/<type>_diagram_handler.py` — the handler (see below)
+2. `src/diagram_handlers/types/<type>_diagram_handler.py` — the handler (see below), with its prompt text in
+   `src/prompts/<type>.py`; replies built with `protocol.actions`. Add its cases to
+   `tests/test_handler_envelopes.py` and regenerate the fixture
 3. `src/diagram_handlers/registry/factory.py` — add to `HANDLER_CLASSES` (keyed on the handler's own
    `get_diagram_type()`)
-4. `src/unified_classifier.py` — token in `_TARGET_DIAGRAM_TYPES` **and** vocabulary in `_SYSTEM_PROMPT`. This is
+4. `src/routing/unified_classifier.py` — token in `_TARGET_DIAGRAM_TYPES` **and** vocabulary in `SYSTEM_PROMPT` (`src/prompts/classifier.py`). This is
    what makes the type reachable. Add one representative `training_sentence` in `modeling_agent.py`, but no
    vocabulary in its `description=`
 5. `src/orchestrator/workspace_orchestrator.py` — `KEYWORD_TARGETS`, an `_IMPLICIT_PATTERNS` regex, and
    `FALLBACK_PRIORITY`. Patterns are evaluated in order, first match wins: place a new one where a broader pattern
    above it won't steal its vocabulary (BPMN sits above StateMachineDiagram because "process" is in both)
-6. `src/state_bodies.py` — `_QUICK_RESPONSES["what_can_you_do"]` and `["help"]` (bump the hardcoded type count),
-   the `_fallback_llm_reply` prompt (shared by `global_fallback_body` and `greetings_body`), optionally a
+6. `src/app/state_bodies.py` — `_QUICK_RESPONSES["what_can_you_do"]` and `["help"]` (bump the hardcoded type count),
+   the fallback prompt in `src/prompts/fallback.py` (shared by `global_fallback_body` and `greetings_body`), optionally a
    `modeling_help_body` branch
 7. `src/protocol/types.py` — `SUPPORTED_DIAGRAM_TYPES`; an `activeDiagramType` outside it is silently normalized
    to `ClassDiagram`
 8. `src/diagram_handlers/registry/metadata.py` — `DIAGRAM_TYPE_METADATA`
-9. `src/suggestions.py` — a suggestion list + `_DIAGRAM_SUGGESTION_HANDLERS` entry
+9. `src/conversation/suggestions.py` — a suggestion list + `_DIAGRAM_SUGGESTION_HANDLERS` entry
 10. Tests — `tests/test_diagram_handlers.py` plus a dedicated `tests/test_<type>.py`
 11. Docs — `README.md` "Supported Diagram Types" table, `docs/source/diagram_handlers.rst`,
     `websocket_protocol.rst`, `getting_started.rst`
 12. Frontend (separate repo) — the type must exist in the WME's diagram-type union and be a valid
     `activeDiagramType`
 
-Capability lists are duplicated with no single source of truth (`_SYSTEM_PROMPT`, `_QUICK_RESPONSES`,
-`_fallback_llm_reply`, `suggestions.py`, README): grep for an existing type's name (e.g. `"quantum"`) to find
+Capability lists are duplicated with no single source of truth (`prompts/classifier.py`, `_QUICK_RESPONSES`,
+`prompts/fallback.py`, `suggestions.py`, README): grep for an existing type's name (e.g. `"quantum"`) to find
 every place. Two tokens break the `<Name>Diagram` convention: BPMN is `"BPMN"` (the editor's converter sets the
 Apollon `model.type` to `"BPMNDiagram"` itself) and User Profile is `"UserDiagram"`.
 
@@ -141,23 +169,45 @@ phrasing that doesn't literally name the type.
 
 ## Diagram Handlers
 
-Handlers extend `BaseDiagramHandler` (`src/diagram_handlers/core/base_handler.py`) and implement five abstract
+Handlers extend `BaseDiagramHandler` (`src/diagram_handlers/core/base_handler.py`) and implement six abstract
 methods: `get_diagram_type()` (the WME storage-bucket token), `get_system_prompt()` (design rules),
-`generate_single_element`, `generate_complete_system` (primary path) and `generate_fallback_element` (error-path
-stub). `generate_modification` is concrete on the base class; override only when needed. Layout, retry,
-structured output and two-pass generation are inherited. Details: `docs/source/diagram_handlers.rst`.
+`_build_single_element`, `_build_system` (primary path), `generate_fallback_element` and `generate_fallback_system`
+(error-path starters), and, for edits, `_build_modification` / `generate_fallback_modification`. The public
+`generate_complete_system` / `generate_single_element` / `generate_modification` are **template methods** on the
+base class: they run the `_prepare_*` hook (prompt building; a crash there propagates to `model_operations`' error
+reply, and a `ReplyNow` answers without the LLM), then the `_build_*` hook, and turn an `LLMPredictionError` into
+the handler's `_SYSTEM_FAILURE_MESSAGE` / `_SINGLE_FAILURE_MESSAGE` / `_MODIFY_FAILURE_MESSAGE` reply (with
+`_LLM_FAILURE_CODE` / `_MODIFY_FAILURE_CODE`) and any other exception into the fallback; override the
+`_*_failure_reply` / `_*_crash_reply` hooks only when a handler answers differently. Every hook gets the entry
+point's arguments plus `prepared`; per-request values never go on the handler (a singleton shared by all sessions). Layout, retry, structured output and two-pass
+generation are inherited. Details: `docs/source/diagram_handlers.rst`.
 
 - **Two-pass generation** (`predict_two_pass_structured`): a free-text reasoning pass, then a structured pass into
   the Pydantic schema. Skipped below `_TWO_PASS_MIN_LENGTH = 250` characters of the **raw** user message (not the
   enriched prompt, or history and workspace context would push trivial requests onto the expensive path). The
   reasoning prompt is the highest-leverage place to fix systematic completeness gaps (see
-  `bpmn_diagram_handler.py`'s `reasoning_prompt`, which stops the model merging several decision points into one
+  `prompts/bpmn.py`'s `reasoning_prompt`, which stops the model merging several decision points into one
   gateway).
 - **Deterministic post-generation repair** (`_validate_and_refine` / `_connect_orphaned_nodes` in
   `bpmn_diagram_handler.py`): prefer fixing the root cause in the prompt; add a repair pass only for invariants the
   LLM statistically violates and where a cheap, evidence-grounded heuristic exists — never a blind guess.
 - **LLMs never emit positions.** `core/layout_engine.py` runs after every generation (Sugiyama layout for class
   diagrams, per-type grids otherwise).
+
+## Prompts
+
+All prompt text lives in `src/prompts/`, one module per diagram type or state (`classifier`, `class_diagram`,
+`bpmn`, `gui`, …, `fragments` for rules several handlers share, `planner`, `modeling_help`, `describe_model`,
+`fallback`, `uml_rag`, `file_conversion`, `reply_language`, `spec_driven`, `model_operations`,
+`conversation_memory`). A static prompt is a constant (`MODIFY_SYSTEM_PROMPT_CLASS`); a prompt built from the
+request is a function of exactly those values (`reasoning_prompt(user_request)`). Call sites import the module
+(`from prompts import bpmn as bpmn_prompts`) and look the prompt up by name.
+
+- Edit wording in the prompt module, never at a call site.
+- System prompts are composed at import time and must stay byte-identical across calls, or the prompt cache
+  misses (`docs/source/configuration.rst`, "Static prefix first"): nothing per-request in a constant.
+- `tests/test_prompt_snapshots.py` pins a hash of every prompt; a deliberate change updates its hash (the failure
+  prints the new one) in the same commit.
 
 ## Wire Protocol
 
@@ -182,37 +232,54 @@ Full reference: `docs/source/websocket_protocol.rst`. The traps:
   `agent_error`, `create_diagram_tab`, `trigger_generator`, `trigger_smart_generator`, `trigger_github_import`,
   `trigger_export`, `trigger_deploy`, `auto_generate_gui`; non-terminal: `progress`, `stream_start`,
   `stream_chunk`, `stream_done`. There is **no `switch_diagram` action**.
+- **Every action name is `protocol.actions.Action`** (a `StrEnum`: equal to its string, serialized as it): never
+  write an action literal (`tests/test_protocol_actions.py` fails on one outside `protocol/`). Build the repeated
+  envelopes with its builders (`assistant_message`, `inject_element`, `inject_complete_system`, `model_reply`);
+  they keep the key order, and `tests/test_handler_envelopes.py` pins every handler's JSON byte for byte.
 
 ## Where Things Live
 
 ```text
 modeling_agent.py                 Entrypoint: BAF agent, 10 states/intents, wiring
+pyproject.toml                    Package (src/ as import root, editable install), version, import-linter contracts
 config_example.yaml               Template for the gitignored config.yaml
-Dockerfile                        Entrypoint writes config.yaml from env
+Dockerfile                        Image; its entrypoint is app.container_config (config.yaml from env)
 patches/websocket_platform.py     Vendored over pip-installed BAF 4.5.3 (see below)
 src/
-  agent_setup.py / agent_context.py   LLM/RAG/STT/factory bootstrapping; shared module-level context
-  agent_config.py                 Tunable constants (MAX_TABS, temperatures, token budgets, …)
-  model_config.py                 Per-call-site model tiers, all BESSER_AGENT_MODEL_* overridable
-  unified_classifier.py           Layer 1 router
-  state_bodies.py                 State bodies, transitions, global fallback, quick responses
-  session_helpers.py / session_keys.py   Reply/stream helpers; every session-state key (import, don't use literals)
-  confirmation.py                 Pending replace/keep and GUI-mode choice flows
-  byok.py                         Per-request bring-your-own-key routing
-  byok_config.py                  BYOKConfig and its per-request contextvar (read by byok and tracking)
-  routing/                        generation_signals.py: generator vocabulary + signals shared below handlers
+  app/                            The top layer: agent_setup.py (LLM/RAG/STT/factory bootstrapping), state_bodies.py
+                                  (state bodies, transitions, global fallback, quick responses), confirmation.py
+                                  (resume_pending, replace/keep and GUI-mode choice flows), container_config.py (Docker
+                                  entrypoint: config.yaml from AgentSettings)
+  ingestion/                      file_handling.py (the attachment step of a turn), file_conversion_handler.py
+                                  (file → diagram spec)
+  execution/                      planning.py (multi-op dispatch), model_operations.py, progress.py
+  codegen/                        generation_handler.py (generator requests and pending generator flows),
+                                  smart_generation_handler.py (Spec-Driven Agent trigger)
   orchestrator/                   workspace_orchestrator.py (layer 2), request_planner.py (multi-op planning),
                                   request_builders.py (re-targeted requests)
-  diagram_handlers/               core/ (base_handler, layout_engine, prompt_fragments), types/ (one handler per
-                                  type + gui_design_system.py, gui_html_converter.py), registry/ (factory, metadata)
-  schemas/<type>.py               Structured-output schemas
-  execution/                      planning.py (multi-op dispatch), model_operations.py, file_handling.py, progress.py
-  handlers/                       generation_handler.py, smart_generation_handler.py, file_conversion_handler.py
-  protocol/                       types.py, adapters.py, message_limits.py
+  conversation/                   session_helpers.py (reply/stream helpers), reply_language.py, reply_copy.py,
+                                  suggestions.py ("What's next?"), telemetry.py, agent_context.py (runtime handles
+                                  the entrypoint fills in)
+  routing/                        unified_classifier.py (layer 1 router), guards.py (deterministic routing
+                                  rules), generation_signals.py (generator vocabulary + signals), intents.py
   memory/                         Verbatim window + rolling LLM summary per session
-  llm/provider.py                 Provider abstraction (structured outputs, streaming)
-  tracking/token_tracker.py       Token/cost tracking (_COST_PER_1K)
-  suggestions.py                  "What's next?" suggestions
+  diagram_handlers/               core/ (base_handler, layout_engine), types/ (one handler per
+                                  type + gui_design_system.py, gui_html_converter.py), registry/ (factory, metadata)
+  prompts/                        Prompt text, one module per diagram type or state (see Prompts)
+  schemas/<type>.py               Structured-output schemas
+  llm/                            provider.py (the only SDK caller: text, JSON, structured, stream, vision), retry.py
+                                  (shared-client retry), byok.py (per-request bring-your-own key), byok_config.py
+                                  (its contextvar), model_config.py (per-call-site model tiers, all
+                                  BESSER_AGENT_MODEL_* overridable), model_catalog.py,
+                                  tracking/ (token/cost tracking; prices: tracking/data/model_prices.json)
+  utilities/                      Model summaries/resolution, JSON repair, model_utils.py,
+                                  user_metamodel.py (the bundled User Profile metamodel: data/)
+  protocol/                       actions.py (wire action names + envelope builders), types.py, adapters.py,
+                                  message_limits.py
+  common/                         agent_config.py (tunable constants), settings.py (AgentSettings: every env var,
+                                  read nowhere else), session_store.py (the per-session store expiries the
+                                  reaper runs), session_keys.py (every session-state key: import, don't use
+                                  literals), pending_dialogs.py (pending dialogs: slots, precedence), errors.py
 ```
 
 **`patches/websocket_platform.py`** is copied over BAF's file at image build. Stock BAF evicts the `_connections`
@@ -222,14 +289,20 @@ reply-route-to-sender, and sets/resets the per-request BYOK contextvar. **Re-ven
 
 ## LLM Pitfalls
 
+- **One door to the SDKs**: every LLM call goes through `llm.provider.LLMProvider` (`complete`, `parse`, `stream`,
+  `vision`), which routes the request's BYOK key, records usage with the model actually called, applies
+  the sampling rules and raises `ModelRefusal`. Only `llm/` may import `openai` / `anthropic` (import-linter);
+  never post to a model API with `requests`/`httpx`.
 - **Two shared LLM instances**: `gpt` is the structured/JSON path, `gpt_text` is free text (help, greetings, RAG,
-  streaming). Both default to the `MODEL_CLASSIFIER` tier; generation call sites pass `model=` from
-  `model_config.py`. Passing the wrong one breaks silently or raises a JSON-parse error deep in `predict_structured`.
-- **Reasoning models reject `temperature`** (gpt-5+/gpt-6, o-series, and recent Claude families). Use
-  `model_config.supports_custom_temperature(model)` and `reasoning_effort_for(model)` at every call site; never
-  hardcode either parameter.
-- **When a `MODEL_*` default changes, add it to `_COST_PER_1K`** in `tracking/token_tracker.py` — an unknown model
+  streaming); code gets one injected (handlers, `stream_llm_response`) and calls it through `LLMProvider(llm)`.
+  Both default to the `MODEL_CLASSIFIER` tier; generation call sites pass `model=` from `model_config.py`. Passing
+  the wrong one breaks silently or raises a JSON-parse error deep in `predict_structured`.
+- **Reasoning models reject `temperature`** (gpt-5+/gpt-6, o-series, and recent Claude families).
+  `model_config.sampling_params(model, temperature)` picks `temperature` or `reasoning_effort`; `LLMProvider`
+  applies it, so call sites never pass either parameter themselves.
+- **A new `MODEL_*` default needs a price**: the model catalog or `llm/tracking/data/model_prices.json` (a copy of
+  BESSER's vendored price file; refresh both together, `tests/test_token_tracker.py` compares them) — an unknown model
   falls back to placeholder pricing and every reported cost silently becomes an estimate.
-- The Docker entrypoint generates `config.yaml` from the environment, redacts the `api_key` line from its own log
-  output, and emits `platforms.websocket.origins` from `BESSER_AGENT_WS_ORIGIN` / `BESSER_AGENT_WS_ORIGIN_ALT`
+- The Docker entrypoint (`python -m app.container_config`) generates `config.yaml` from `AgentSettings`, redacts
+  the `api_key` line from its own log output, and emits `platforms.websocket.origins` from `BESSER_AGENT_WS_ORIGIN` / `BESSER_AGENT_WS_ORIGIN_ALT`
   plus localhost dev origins.

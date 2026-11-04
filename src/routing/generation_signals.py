@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Tuple
 
 from baf.core.session import Session
 
-from session_keys import LAST_SMART_GEN_AT, LAST_SMART_GEN_PROJECT_ID
+from common.session_keys import LAST_SMART_GEN_AT, LAST_SMART_GEN_PROJECT_ID
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +224,7 @@ def recent_smart_gen_for_project(session: Session, window_seconds: float) -> boo
 # endpoint, loads the returned project, and arms the modify machinery —
 # the agent itself never touches GitHub or any HTTP endpoint).
 # Deterministic and precision-first, like the past-generation guard in
-# handlers/generation_handler.py:
+# codegen/generation_handler.py:
 # an LLM verdict is never allowed to invent, miss, or swallow an import.
 #
 # URL form — unambiguous on its own: github.com/{owner}/{repo} with an

@@ -38,6 +38,7 @@ Local Development
    # Install dependencies
    pip install --upgrade pip
    pip install -r requirements.txt
+   pip install -e .
 
    # Configure
    cp config_example.yaml config.yaml
@@ -59,8 +60,9 @@ Docker
    # Run
    docker run -p 8765:8765 --env-file .env modeling-agent
 
-The image is ``python:3.11-slim``. Its entrypoint **generates
-``config.yaml`` from the environment** at container start, so no config file
+The image is ``python:3.11-slim``. Its entrypoint
+(``python -m app.container_config``) **generates ``config.yaml`` from the
+environment** at container start, so no config file
 needs to be baked in or mounted. It prints the generated config for
 debugging but redacts the ``api_key`` line, so the key never reaches the
 container logs.
@@ -255,7 +257,7 @@ Scaling Considerations
 ----------------------
 
 - **Rate limiting:** handled by the provider API. The shared LLM client is
-  patched once at its network-call layer (``src/utilities/llm_retry.py``) to
+  patched once at its network-call layer (``src/llm/retry.py``) to
   retry 429 and 5xx with bounded backoff — ``MAX_ATTEMPTS = 4``, ~5 s of
   backoff sleep per call, with the SDK's own retries off so they do not
   multiply. Non-429 4xx responses fail fast rather than
@@ -273,8 +275,9 @@ Scaling Considerations
   (``RuntimeError: can't start new thread``). A reaper thread started by
   ``modeling_agent.py`` runs every 10 minutes and closes any session with no
   tracked connection that has been disconnected for longer than
-  ``GRACE_PERIOD_SECONDS`` (300 s). It also reaps conversation memories older
-  than an hour.
+  ``GRACE_PERIOD_SECONDS`` (300 s). It also runs the expiry of the
+  per-session stores registered in ``src/common/session_store.py``, which reaps
+  conversation memories older than an hour.
 - **Session continuity:** conversation memory is keyed on the v2 payload's
   ``sessionId``, which survives reconnects — see :doc:`architecture`.
 

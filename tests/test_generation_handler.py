@@ -1,22 +1,24 @@
-"""Tests for the generation handler (handlers/generation_handler.py)."""
+"""Tests for the generation handler (codegen/generation_handler.py)."""
 
 import types
 
 import pytest
-from handlers.generation_handler import (
+from codegen.generation_handler import (
     parse_inline_generator_config,
     _required_missing,
     _normalize_defaults,
     _build_config_prompt,
-    _looks_like_mixed_modeling_and_generation,
     handle_generation_request,
     should_route_to_generation,
 )
-from handlers.smart_generation_handler import GenerationClassification
+from codegen.smart_generation_handler import GenerationClassification
 from protocol.types import AssistantRequest, WorkspaceContext
 from routing.generation_signals import GENERATOR_KEYWORDS, detect_generator_type
+from routing.guards import is_mixed_modeling_and_generation
 
 from tests.conftest import FakeSession
+from common import pending_dialogs
+from common.pending_dialogs import PENDING_GENERATOR_CONFIG, PENDING_GENERATOR_TYPE
 
 
 _CLASS_MODEL = {
@@ -47,7 +49,7 @@ def _make_request(message: str, action: str = "user_message") -> AssistantReques
 def _to_unified(decision: GenerationClassification):
     """Adapt a legacy-shaped stub into the unified classifier's output —
     what a real ``provider.parse`` returns on the retired-legacy path."""
-    from unified_classifier import UnifiedClassification
+    from routing.unified_classifier import UnifiedClassification
     return UnifiedClassification(
         intent="generation_intent",
         generation_route=decision.route,
@@ -70,7 +72,7 @@ class _FakeLLMProvider:
 
 def _patch_classifier(monkeypatch, decision: GenerationClassification):
     """Make ``_get_llm_provider()`` return a stub that yields ``decision``."""
-    import handlers.generation_handler as gen_mod
+    import codegen.generation_handler as gen_mod
     monkeypatch.setattr(
         gen_mod, "_get_llm_provider",
         lambda: _FakeLLMProvider(decision),
@@ -242,20 +244,20 @@ class TestBuildConfigPrompt:
 
 
 # ---------------------------------------------------------------------------
-# _looks_like_mixed_modeling_and_generation
+# routing.guards.is_mixed_modeling_and_generation
 # ---------------------------------------------------------------------------
 
 class TestLooksMixedModelingAndGeneration:
     def test_pure_generation(self):
-        assert not _looks_like_mixed_modeling_and_generation("generate django code")
+        assert not is_mixed_modeling_and_generation("generate django code")
 
     def test_mixed(self):
-        assert _looks_like_mixed_modeling_and_generation(
+        assert is_mixed_modeling_and_generation(
             "create a class diagram for a library and then generate django code"
         )
 
     def test_pure_modeling(self):
-        assert not _looks_like_mixed_modeling_and_generation("create a class diagram")
+        assert not is_mixed_modeling_and_generation("create a class diagram")
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +273,7 @@ class TestShouldRouteToGeneration:
     def test_pending_generator(self):
         request = _make_request("sqlite")
         session = FakeSession()
-        session.set("pending_generator_type", "sql")
+        pending_dialogs.put(session, PENDING_GENERATOR_TYPE, "sql")
         assert should_route_to_generation(session, request) is True
 
     def test_generator_keyword_no_longer_routes_here(self):
@@ -369,7 +371,7 @@ class TestHandleGenerationRequest:
         """Populate the per-message unified-classification cache the way the
         state_bodies priority-0 hook does in production (the pivot check reads
         it directly — no LLM call)."""
-        from session_keys import UNIFIED_CLASSIFICATION
+        from common.session_keys import UNIFIED_CLASSIFICATION
         session.set(UNIFIED_CLASSIFICATION, types.SimpleNamespace(
             intent="generation_intent",
             generation_route=route,
@@ -391,8 +393,8 @@ class TestHandleGenerationRequest:
         ))
         request = _make_request("generate a sqlite database")
         session = FakeSession()
-        session.set("pending_generator_type", "django")
-        session.set("pending_generator_config", {})
+        pending_dialogs.put(session, PENDING_GENERATOR_TYPE, "django")
+        pending_dialogs.put(session, PENDING_GENERATOR_CONFIG, {})
         self._cache_classification(session, generator_type="sql")
         result = handle_generation_request(session, request)
         # Pivoted to SQL (dialect parsed from the message) — NOT a Django prompt.
@@ -410,8 +412,8 @@ class TestHandleGenerationRequest:
         ))
         request = _make_request("actually build me a full app with auth")
         session = FakeSession()
-        session.set("pending_generator_type", "django")
-        session.set("pending_generator_config", {})
+        pending_dialogs.put(session, PENDING_GENERATOR_TYPE, "django")
+        pending_dialogs.put(session, PENDING_GENERATOR_CONFIG, {})
         self._cache_classification(
             session, route="smart",
             refined_instructions="build a full app with authentication",
@@ -433,8 +435,8 @@ class TestHandleGenerationRequest:
         ))
         request = _make_request("use defaults")
         session = FakeSession()
-        session.set("pending_generator_type", "django")
-        session.set("pending_generator_config", {})
+        pending_dialogs.put(session, PENDING_GENERATOR_TYPE, "django")
+        pending_dialogs.put(session, PENDING_GENERATOR_CONFIG, {})
         self._cache_classification(session, generator_type="django")
         result = handle_generation_request(session, request)
         # Stayed in the Django flow — never pivoted to another generator.
@@ -584,20 +586,20 @@ class TestMismatchRegenChain:
 
     def _arm(self, session):
         import time as _t
-        from session_keys import (
+        from common.pending_dialogs import (
             PENDING_SMART_GEN_INSTRUCTIONS,
             PENDING_SMART_GEN_PROVIDER,
             PENDING_SMART_GEN_TIMESTAMP,
         )
-        session.set(PENDING_SMART_GEN_INSTRUCTIONS, "build a hotel booking app")
-        session.set(PENDING_SMART_GEN_PROVIDER, "anthropic")
-        session.set(PENDING_SMART_GEN_TIMESTAMP, _t.time())
+        pending_dialogs.put(session, PENDING_SMART_GEN_INSTRUCTIONS, "build a hotel booking app")
+        pending_dialogs.put(session, PENDING_SMART_GEN_PROVIDER, "anthropic")
+        pending_dialogs.put(session, PENDING_SMART_GEN_TIMESTAMP, _t.time())
 
     _REBUILD_PROMPT = "create a class diagram for a hotel booking system"
 
     def test_mismatch_confirmation_arms_the_flag(self):
-        from handlers.generation_handler import _build_mismatch_confirmation
-        from session_keys import (
+        from codegen.generation_handler import _build_mismatch_confirmation
+        from common.pending_dialogs import (
             MISMATCH_REGEN_PENDING,
             PENDING_SMART_GEN_INSTRUCTIONS,
         )
@@ -607,14 +609,14 @@ class TestMismatchRegenChain:
         )
         payload = _build_mismatch_confirmation(session, classification, "a hotel booking system")
         # Flag stores the EXACT rebuild prompt, matching the action's prompt.
-        assert session.get(MISMATCH_REGEN_PENDING) == self._REBUILD_PROMPT
-        assert session.get(PENDING_SMART_GEN_INSTRUCTIONS) == "build a hotel booking app"
+        assert pending_dialogs.get(session, MISMATCH_REGEN_PENDING) == self._REBUILD_PROMPT
+        assert pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS) == "build a hotel booking app"
         upd = next(a for a in payload["suggestedActions"] if a["label"] == "Update model + generate")
         assert upd["prompt"] == self._REBUILD_PROMPT
 
     def test_rebuild_preserves_stash_on_matching_prompt(self, monkeypatch):
         """The stashed rebuild prompt survives when THIS message equals it."""
-        from session_keys import (
+        from common.pending_dialogs import (
             MISMATCH_REGEN_PENDING,
             PENDING_SMART_GEN_INSTRUCTIONS,
         )
@@ -628,16 +630,16 @@ class TestMismatchRegenChain:
         )
         session = FakeSession()
         self._arm(session)
-        session.set(MISMATCH_REGEN_PENDING, self._REBUILD_PROMPT)
+        pending_dialogs.put(session, MISMATCH_REGEN_PENDING, self._REBUILD_PROMPT)
         handle_generation_request(session, _make_request(self._REBUILD_PROMPT))
         # Guard held: stash + flag survive into the build for the resume hook.
-        assert session.get(PENDING_SMART_GEN_INSTRUCTIONS) == "build a hotel booking app"
-        assert session.get(MISMATCH_REGEN_PENDING) == self._REBUILD_PROMPT
+        assert pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS) == "build a hotel booking app"
+        assert pending_dialogs.get(session, MISMATCH_REGEN_PENDING) == self._REBUILD_PROMPT
 
     def test_different_create_after_mismatch_abandons_stash(self, monkeypatch):
         """A DIFFERENT create typed after a mismatch (not the button prompt)
         must abandon the stash — no spurious resume of the old domain."""
-        from session_keys import (
+        from common.pending_dialogs import (
             MISMATCH_REGEN_PENDING,
             PENDING_SMART_GEN_INSTRUCTIONS,
         )
@@ -651,16 +653,16 @@ class TestMismatchRegenChain:
         )
         session = FakeSession()
         self._arm(session)
-        session.set(MISMATCH_REGEN_PENDING, self._REBUILD_PROMPT)  # armed for "hotel"
+        pending_dialogs.put(session, MISMATCH_REGEN_PENDING, self._REBUILD_PROMPT)  # armed for "hotel"
         # …but the user creates a ZOO instead of clicking the button.
         handle_generation_request(session, _make_request("create a class diagram for a zoo with animals and keepers"))
-        assert not session.get(PENDING_SMART_GEN_INSTRUCTIONS)
-        assert not session.get(MISMATCH_REGEN_PENDING)
+        assert not pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
+        assert not pending_dialogs.get(session, MISMATCH_REGEN_PENDING)
 
     def test_rebuild_clears_stash_without_flag(self, monkeypatch):
         """Without the flag, an unrelated request still abandons the stash
         (the pre-existing safety behavior is unchanged)."""
-        from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
+        from common.pending_dialogs import PENDING_SMART_GEN_INSTRUCTIONS
         _patch_classifier(monkeypatch, GenerationClassification(
             route="modeling", reason="a different modeling request",
         ))
@@ -672,7 +674,7 @@ class TestMismatchRegenChain:
         session = FakeSession()
         self._arm(session)  # no MISMATCH_REGEN_PENDING
         handle_generation_request(session, _make_request(self._REBUILD_PROMPT))
-        assert not session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+        assert not pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
 
 
 
@@ -686,7 +688,10 @@ class TestMismatchRegenChain:
 
 def _fresh_run_session():
     import time as _time
-    from session_keys import LAST_SMART_GEN_AT, LAST_SMART_GEN_SUMMARY
+    from common.session_keys import (
+        LAST_SMART_GEN_AT,
+        LAST_SMART_GEN_SUMMARY,
+    )
     session = FakeSession()
     session.set(LAST_SMART_GEN_AT, _time.time())
     session.set(LAST_SMART_GEN_SUMMARY, "Smart generation finished successfully.")

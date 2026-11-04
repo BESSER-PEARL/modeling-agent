@@ -5,21 +5,23 @@ dispatches model and generation operations, and handles error reporting.
 """
 
 import concurrent.futures
+import contextvars
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from baf.core.session import Session
 
-import agent_context as ctx
+from conversation import agent_context as ctx
 from protocol.types import AssistantRequest
-from session_helpers import reply_message, reply_payload, emit_webapp_generate_prompt
+from conversation.session_helpers import reply_message, reply_payload, emit_webapp_generate_prompt
 from orchestrator import plan_assistant_operations
-from handlers.generation_handler import handle_generation_request
+from codegen.generation_handler import handle_generation_request
 from orchestrator.request_builders import build_request_for_target, build_generation_request
 from utilities.original_request import current_target
-from suggestions import get_suggested_actions
-from errors import ErrorCode, ModelRefusal, classify_error, build_error_response
-from session_keys import (
+from conversation.suggestions import get_suggested_actions
+from common.errors import ErrorCode, ModelRefusal, classify_error, build_error_response
+from common import pending_dialogs
+from common.pending_dialogs import (
     PENDING_COMPLETE_SYSTEM,
     PENDING_GENERATOR_CONFIG,
     PENDING_GENERATOR_TYPE,
@@ -28,7 +30,7 @@ from session_keys import (
     PLAN_GENERATION_CONFIRM_FLAG,
 )
 
-from .model_operations import execute_model_operation, _collect_available_diagrams
+from .model_operations import Deferred, execute_model_operation, _collect_available_diagrams
 from .progress import _report_progress
 
 logger = logging.getLogger(__name__)
@@ -64,10 +66,10 @@ def _clear_paused_plan_generation(session: Session) -> None:
     marker — a user-driven config flow (no marker) is never touched. A
     broken build must never leave a generator armed to fire on a later,
     unrelated affirmative."""
-    config = session.get(PENDING_GENERATOR_CONFIG)
+    config = pending_dialogs.get(session, PENDING_GENERATOR_CONFIG)
     if isinstance(config, dict) and config.get(PLAN_GENERATION_CONFIRM_FLAG):
-        session.set(PENDING_GENERATOR_TYPE, None)
-        session.set(PENDING_GENERATOR_CONFIG, None)
+        pending_dialogs.put(session, PENDING_GENERATOR_TYPE, None)
+        pending_dialogs.put(session, PENDING_GENERATOR_CONFIG, None)
         logger.info("[PlannedOps] Cleared paused generation after a model-op failure")
 
 
@@ -121,7 +123,7 @@ def execute_planned_operations(
     # only the fallback.
     _llm_target = None
     try:
-        from session_keys import UNIFIED_CLASSIFICATION
+        from common.session_keys import UNIFIED_CLASSIFICATION
         _uc = session.get(UNIFIED_CLASSIFICATION)
         _llm_target = getattr(_uc, "target_diagram_type", None) if _uc is not None else None
     except Exception:
@@ -157,7 +159,7 @@ def execute_planned_operations(
     )
     if _webapp_build:
         gen_ops = []  # nothing auto-runs
-        session.set(PENDING_WEBAPP_GENERATE, True)
+        pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, True)
         logger.info("⏸️ [PlannedOps] Web-app build — stripped auto-generation; "
                     "user will be asked to generate after the GUI is built")
 
@@ -195,10 +197,9 @@ def execute_planned_operations(
                 _paused_op.get("config")
                 if isinstance(_paused_op.get("config"), dict) else {}
             )
-            session.set(PENDING_GENERATOR_TYPE, _paused_op["generatorType"])
-            session.set(
-                PENDING_GENERATOR_CONFIG,
-                {**_paused_config, PLAN_GENERATION_CONFIRM_FLAG: True},
+            pending_dialogs.put(session, PENDING_GENERATOR_TYPE, _paused_op["generatorType"])
+            pending_dialogs.put(session,
+                PENDING_GENERATOR_CONFIG, {**_paused_config, PLAN_GENERATION_CONFIRM_FLAG: True},
             )
             gen_ops = []  # nothing auto-runs
             logger.info(
@@ -219,6 +220,8 @@ def execute_planned_operations(
         )
 
         confirmation_triggered = False
+        # (planned op, op to queue) whose question waits for the plan's one dialog.
+        deferred: List[Tuple[dict, dict]] = []
 
         def _run_model_group(group: List[dict]) -> List[Tuple[dict, Optional[str], Optional[Exception]]]:
             results = []
@@ -232,11 +235,13 @@ def execute_planned_operations(
                     results.append((op, None, exc))
             return results
 
-        with concurrent.futures.ThreadPoolExecutor(
+        with pending_dialogs.one_per_plan() as plan_dialog, concurrent.futures.ThreadPoolExecutor(
             max_workers=min(len(model_groups), 4),
         ) as executor:
+            # Each group runs in a copy of this context: worker threads start
+            # with an empty one and would lose the request's BYOK key.
             futures = {
-                executor.submit(_run_model_group, group): group
+                executor.submit(contextvars.copy_context().run, _run_model_group, group): group
                 for group in model_groups
             }
             for future in concurrent.futures.as_completed(futures):
@@ -266,9 +271,15 @@ def execute_planned_operations(
                         logger.error(f"❌ [PlannedOps] Model op error: {error}")
                         continue
 
+                    if isinstance(executed_target, Deferred):
+                        deferred.append((op, executed_target.operation))
+                        logger.info(
+                            "[PlannedOps] %s waits for the plan's open dialog",
+                            op.get("diagramType"),
+                        )
+                        continue
+
                     if executed_target is None:
-                        remaining_ops = gen_ops[:]
-                        _store_remaining_ops(session, remaining_ops, request)
                         confirmation_triggered = True
                         continue
 
@@ -277,13 +288,29 @@ def execute_planned_operations(
                             working_request, executed_target,
                         )
 
-        if confirmation_triggered:
+        # Asked in plan order once the open dialog is answered.
+        queued = [q for op in operations for d, q in deferred if op is d]
+        flat_model_ops = []
+        if queued and not (plan_dialog.slot and pending_dialogs.get(session, plan_dialog.slot)):
+            # The op that claimed the dialog failed before opening it: run the
+            # queued ops in order, so the first of them asks instead.
+            logger.info(
+                "[PlannedOps] The plan's dialog never opened — running %d waiting operation(s) in order",
+                len(queued),
+            )
+            flat_model_ops = queued
+            step_counter -= len(queued)  # their steps were counted above
+        elif confirmation_triggered or queued:
+            _store_remaining_ops(
+                session, queued + gen_ops, request,
+                slots=(plan_dialog.slot,) if plan_dialog.slot else None,
+            )
             logger.info("⏸️ [PlannedOps] Pending confirmation stored — halting remaining operations")
             return
-
     else:
         flat_model_ops = model_groups[0] if model_groups else []
 
+    if flat_model_ops:
         for idx, operation in enumerate(flat_model_ops):
             step_counter += 1
             _report_progress(session, step_counter - 1, total_steps, operation)
@@ -307,8 +334,8 @@ def execute_planned_operations(
                 error_payload = _build_error_payload(operation, error, error_code)
                 reply_payload(session, error_payload)
                 for key in (PENDING_COMPLETE_SYSTEM, PENDING_GUI_CHOICE):
-                    if session.get(key):
-                        session.set(key, None)
+                    if pending_dialogs.get(session, key):
+                        pending_dialogs.put(session, key, None)
                 _clear_paused_plan_generation(session)
                 logger.error(f"❌ [PlannedOps] Model op error ({error_code}): {error}")
             continue
@@ -319,8 +346,8 @@ def execute_planned_operations(
     # halt for a choice, e.g. a slow/timeout auto-completion, so execution reached
     # here directly). The GUI-choice path emits the same prompt from
     # confirmation._resume_remaining_ops. Non-web-app generations still run below.
-    if session.get(PENDING_WEBAPP_GENERATE):
-        session.set(PENDING_WEBAPP_GENERATE, None)
+    if pending_dialogs.get(session, PENDING_WEBAPP_GENERATE):
+        pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, None)
         logger.info("⏸️ [PlannedOps] Web-app GUI built — asking the user to generate")
         emit_webapp_generate_prompt(session)
         return
@@ -363,18 +390,20 @@ def execute_planned_operations(
 
 def _store_remaining_ops(
     session: Session, remaining: List[dict], request: AssistantRequest,
+    slots: Optional[Tuple[str, ...]] = None,
 ) -> None:
-    """Persist remaining operations alongside a pending confirmation."""
+    """Persist remaining operations alongside a pending confirmation (the
+    dialog in *slots*, by default whichever is open)."""
     remaining = [op for op in remaining if isinstance(op, dict)]
     if not remaining:
         return
 
-    for key in (PENDING_COMPLETE_SYSTEM, PENDING_GUI_CHOICE):
-        pending = session.get(key)
+    for key in slots or (PENDING_COMPLETE_SYSTEM, PENDING_GUI_CHOICE):
+        pending = pending_dialogs.get(session, key)
         if isinstance(pending, dict):
             pending['remaining_operations'] = remaining
             pending['original_message'] = request.message
-            session.set(key, pending)
+            pending_dialogs.put(session, key, pending)
             logger.info(
                 f"[PlannedOps] Stored {len(remaining)} remaining operation(s) "
                 f"alongside {key}"

@@ -14,7 +14,7 @@ Property by the source class using source.multiplicity).
 """
 import pytest
 
-from src.schemas.compact_class_diagram import (
+from schemas.compact_class_diagram import (
     CompactClassSpec,
     CompactRelationshipSpec,
     CompactSystemClassSpec,
@@ -189,7 +189,7 @@ def test_full_hotel_model_has_no_inverted_end():
 def test_encoding_rules_do_not_advertise_the_old_field_names():
     """The rules text is sent to the model alongside the schema. After the
     rename it still said 'sm/tm', so the prose and the schema disagreed."""
-    from src.schemas.compact_class_diagram import COMPACT_ENCODING_RULES
+    from schemas.compact_class_diagram import COMPACT_ENCODING_RULES
     assert "sm/tm" not in COMPACT_ENCODING_RULES
     assert "how_many_TARGET_for_one_SOURCE" in COMPACT_ENCODING_RULES
     assert "how_many_SOURCE_for_one_TARGET" in COMPACT_ENCODING_RULES
@@ -198,13 +198,13 @@ def test_encoding_rules_do_not_advertise_the_old_field_names():
 def test_encoding_rules_forbid_a_two_part_relationship_label():
     """The model wrote 'contact / bookingsAsContact' into l,
     which fails the editor's quality check on the space."""
-    from src.schemas.compact_class_diagram import COMPACT_ENCODING_RULES
+    from schemas.compact_class_diagram import COMPACT_ENCODING_RULES
     assert "never two names" in COMPACT_ENCODING_RULES
     assert "slash" in COMPACT_ENCODING_RULES
 
 
 def test_every_schema_field_is_named_in_the_encoding_rules():
-    from src.schemas.compact_class_diagram import (
+    from schemas.compact_class_diagram import (
         COMPACT_ENCODING_RULES, CompactRelationshipSpec)
     for name in CompactRelationshipSpec.model_fields:
         if len(name) > 1:  # single letters appear as 'f:', 't:' etc.
@@ -253,7 +253,7 @@ def test_encoding_rules_agree_with_rule_15_about_naming_both_ends():
     """The rules are appended AFTER the system prompt, so recency favours
     them: they must not tell the model to name one end when rule 15 demands
     both."""
-    from src.schemas.compact_class_diagram import COMPACT_ENCODING_RULES
+    from schemas.compact_class_diagram import COMPACT_ENCODING_RULES
     assert "NAME BOTH ENDS" in COMPACT_ENCODING_RULES
     assert "ls" in COMPACT_ENCODING_RULES
     assert "l is ONE identifier naming the target end" not in COMPACT_ENCODING_RULES

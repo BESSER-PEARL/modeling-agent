@@ -14,7 +14,7 @@ menu 12/12 -> smart 12/12), so those must keep the classifier's verdict.
 """
 
 from protocol.types import AssistantRequest, WorkspaceContext
-from unified_classifier import UnifiedClassification, get_or_classify
+from routing.unified_classifier import UnifiedClassification, get_or_classify
 from utilities.original_request import remember_original_request
 
 from tests.conftest import FakeSession

@@ -1,6 +1,6 @@
 """Keep verbatim requirements bound to their project, not just a chat session."""
 
-from session_keys import (
+from common.session_keys import (
     APP_TARGET, APP_TARGET_PROJECT_ID, ORIGINAL_APP_REQUEST, ORIGINAL_APP_REQUEST_PROJECT_ID,
 )
 from protocol.message_limits import validate_message_length
@@ -64,7 +64,7 @@ def target_for_project(session, project_id):
 def current_target(session, request):
     """The target for this request: what this message stated, else what was
     remembered for its project. ``{"kind", "description", "architecture"}`` or None."""
-    from session_keys import UNIFIED_CLASSIFICATION
+    from common.session_keys import UNIFIED_CLASSIFICATION
 
     remembered = target_for_project(session, request_project_id(request)) or {}
     verdict = session.get(UNIFIED_CLASSIFICATION)

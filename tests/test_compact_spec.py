@@ -6,14 +6,10 @@ JSON object per member. These tests pin the deterministic expansion — every
 decoration of the encoding, every tolerant fallback — and that the handler
 swaps schemas correctly (with the BESSER_AGENT_COMPACT_SPEC kill switch).
 """
-import os
-import sys
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-from schemas.compact_class_diagram import (  # noqa: E402
+from schemas.compact_class_diagram import (
     COMPACT_ENCODING_RULES,
     CompactClassSpec,
     CompactRelationshipSpec,
@@ -22,7 +18,7 @@ from schemas.compact_class_diagram import (  # noqa: E402
     _parse_method,
     expand_compact_spec,
 )
-from schemas import SystemClassSpec  # noqa: E402
+from schemas import SystemClassSpec
 
 
 # ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ service unresponsive. Permanent codes must now short-circuit the retry.
 """
 import pytest
 
-from utilities import llm_retry
+from llm import retry as llm_retry
 
 
 class _FakeErr(Exception):

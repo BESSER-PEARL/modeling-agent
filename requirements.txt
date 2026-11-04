@@ -15,6 +15,9 @@ langchain-openai
 langchain-chroma
 PyMuPDF
 python-dotenv
+# common/settings.py (AgentSettings); already in the image through chromadb
+# and langchain-community.
+pydantic-settings >= 2.4, < 3
 # Held where BAF's extras (tiktoken) and transformers (the other two, chromadb
 # dependencies) kept them before those sets left the image.
 tiktoken == 0.9.0

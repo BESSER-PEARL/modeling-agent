@@ -40,8 +40,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY patches/websocket_platform.py \
     /usr/local/lib/python3.11/site-packages/baf/platforms/websocket/websocket_platform.py
 
-# Copy the modeling agent code
+# Copy the modeling agent code and install it in place (editable: the code
+# reads uml_specs/ next to it). No index access: the
+# dependencies are installed above and the base image ships setuptools.
 COPY . .
+RUN pip install --no-cache-dir --no-deps --no-build-isolation -e .
 
 # A build-time CA must not become runtime trust. Unconditional; the grep is an
 # assertion that fails the build if a known TLS-inspection CA is still trusted.
@@ -54,52 +57,6 @@ EXPOSE 8765
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app/src:/app
-
-# Create entrypoint script that generates config.yaml from environment variables
-RUN echo '#!/bin/bash\n\
-set -e\n\
-\n\
-# Generate config.yaml from environment variables\n\
-cat > /app/config.yaml << EOF\n\
-agent:\n\
-  check_transitions_delay: 5\n\
-\n\
-nlp:\n\
-  language: en\n\
-  region: US\n\
-  timezone: Europe/Madrid\n\
-  pre_processing: True\n\
-  intent_threshold: 0.55\n\
-  openai:\n\
-    api_key: ${OPENAI_API_KEY:-}\n\
-\n\
-platforms:\n\
-  websocket:\n\
-    host: 0.0.0.0\n\
-    port: 8765\n\
-    # CORS. BAF passes this to websockets.serve(origins=...); when the key is\n\
-    # ABSENT every origin is accepted. Override the two host entries per\n\
-    # deployment; the localhost entries are for local development.\n\
-    origins:\n\
-      - "${BESSER_AGENT_WS_ORIGIN:-https://editor.besser-pearl.org}"\n\
-      - "${BESSER_AGENT_WS_ORIGIN_ALT:-https://experimental.besser-pearl.org}"\n\
-      - "http://localhost:8080"\n\
-      - "http://localhost:5173"\n\
-      - "http://localhost:3000"\n\
-    streamlit:\n\
-      host: localhost\n\
-      port: 5000\n\
-EOF\n\
-\n\
-echo "✅ config.yaml created successfully"\n\
-# Print the config for debugging but NEVER the API key: redact the\n\
-# api_key line so the OpenAI key does not land in the container logs.\n\
-sed "s/\\(api_key:\\).*/\\1 [REDACTED]/" /app/config.yaml\n\
-\n\
-# Run the modeling agent\n\
-exec python modeling_agent.py\n\
-' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # Health check
 # start-period must cover the FULL boot, not just process start: BAF trains a
@@ -108,5 +65,6 @@ exec python modeling_agent.py\n\
 HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
     CMD python -c "import socket; s=socket.socket(); s.connect(('localhost', 8765)); s.close()" || exit 1
 
-# Run the entrypoint script
-ENTRYPOINT ["/app/entrypoint.sh"]
+# Write config.yaml from the environment (src/app/container_config.py), then
+# exec the agent.
+ENTRYPOINT ["python", "-m", "app.container_config"]

@@ -25,6 +25,9 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
+from common.session_store import sessions
+from prompts import conversation_memory as memory_prompts
+
 logger = logging.getLogger(__name__)
 
 # Defaults
@@ -181,12 +184,7 @@ class ConversationMemory:
         other threads that need to add messages to the memory.
         """
         try:
-            prompt = (
-                "Summarize this conversation history in 2-3 sentences. "
-                "Focus on: what diagrams were created/modified, key decisions, "
-                "and the user's current goal. Be concise.\n\n"
-                f"{text_to_summarize[:3000]}"
-            )
+            prompt = memory_prompts.summary_prompt(text_to_summarize[:3000])
             new_summary = self._summarizer(prompt)[:_DEFAULT_MAX_SUMMARY_LEN]
         except Exception as exc:
             logger.warning(f"[Memory:{self.session_id}] Summarization failed: {exc}")
@@ -291,3 +289,6 @@ def cleanup_stale_memories(max_age_seconds: int = 86400) -> int:
     if stale_ids:
         logger.info(f"[Memory] Cleaned up {len(stale_ids)} stale session(s)")
     return len(stale_ids)
+
+
+sessions.register("conversation_memory", expire=cleanup_stale_memories)

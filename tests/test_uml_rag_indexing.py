@@ -5,7 +5,7 @@ context. Indexing runs once in the background and survives an interrupted run.
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-import agent_setup
+from app import agent_setup
 
 
 class _FakeStore:

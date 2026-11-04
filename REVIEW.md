@@ -13,8 +13,11 @@ generic best-practice rubric.
   model tiers in `model_config.py`, the reply and stream helpers in `session_helpers.py`, handlers built on
   `BaseDiagramHandler`, test doubles from `tests/conftest.py` (`FakeSession`, `FakeLLM`, `make_v2_payload()`).
 - **Fix routing in the layer that owns it.** Layer 1 (`unified_classifier.py`) decides the intent and every
-  sub-routing field; layer 2 (`workspace_orchestrator.py`) picks the diagram type. A keyword special case in
-  a state body that overrides the classifier, or a second classification prompt, is a finding.
+  sub-routing field; layer 2 (`workspace_orchestrator.py`) picks the diagram type; every other deterministic text
+  rule lives in `routing/guards.py`. A keyword or regex special case in a state body or handler that overrides
+  the classifier, or a second classification prompt, is a finding. Answers to a pending question (replace/keep,
+  GUI choice, generator confirmations) are parsed by the pending-flow handlers (`app/confirmation.py`,
+  `codegen/generation_handler.py`), not by these guards.
 - **No papering over.** Flag an empty `except` that swallows an error, a deterministic repair pass added where
   the prompt should be fixed (repair is only for invariants the LLM statistically violates, with an
   evidence-grounded heuristic), a duplicated helper instead of an import, and a test made to pass by
@@ -27,14 +30,16 @@ generic best-practice rubric.
 Important is for findings that break behavior, the wire protocol, or a security rule:
 
 - incorrect logic, crashes, a reply that never reaches the client, a session or memory leak
-- a wire-protocol change (action names, envelope shape, double encoding) without the matching frontend change in
-  BESSER-WEB-MODELING-EDITOR (`features/assistant/services/`); say which file there must change
+- a wire-protocol change (action names in `src/protocol/actions.py`, envelope shape, double encoding) without the
+  matching frontend change in BESSER-WEB-MODELING-EDITOR (`features/assistant/services/`); say which file there
+  must change
 - a side-effect action (`trigger_smart_generator`, `trigger_deploy`, `trigger_export`, ...) that can be triggered
   from model prose instead of a structured, classified intent
 - an API key or BYOK value logged, persisted, or leaked across sessions (`byok.py` scopes it per request)
 - `temperature` or `reasoning_effort` hardcoded at a call site instead of `supports_custom_temperature()` /
   `reasoning_effort_for()`
-- a new `MODEL_*` default missing from `_COST_PER_1K` in `tracking/token_tracker.py`
+- a new `MODEL_*` default that neither the model catalog nor `llm/tracking/data/model_prices.json` prices, or a price
+  typed into code instead
 - the structured `gpt` and free-text `gpt_text` instances swapped
 - an LLM asked to emit positions (layout belongs to `core/layout_engine.py`)
 - `patches/websocket_platform.py` changed, or the BAF pin in `requirements.txt` changed without re-vendoring it
@@ -50,12 +55,21 @@ are Nit at most.
   vocabulary.
 - **Two-pass threshold**: `_TWO_PASS_MIN_LENGTH` is measured on the raw user message, not the enriched prompt.
 - **Tests**: handler logic tested as pure functions on hand-built dicts (see `tests/test_bpmn.py`); routing
-  changes covered in `tests/test_unified_classifier.py`; shared handler behavior in
+  changes covered in `tests/test_unified_classifier.py` (classifier) or `tests/test_routing_guards.py`
+  (deterministic guards); shared handler behavior in
   `tests/test_diagram_handlers.py`.
 - **Docs**: routing, protocol, and handler changes update the matching page in `docs/source/`
   (`intent_recognition.rst`, `websocket_protocol.rst`, `diagram_handlers.rst`, `configuration.rst`).
-- **Config**: a new required setting is added to `config_example.yaml` and the Docker entrypoint; real keys never
-  appear in `config.yaml` or `.env` in the diff.
+- **Config**: a new required setting is added to `config_example.yaml` and the Docker entrypoint
+  (`src/app/container_config.py`); real keys never appear in `config.yaml` or `.env` in the diff. A new environment
+  variable is a field on `AgentSettings` (`src/common/settings.py`), never an `os.getenv` call.
+- **Per-session state**: a new module-level store keyed by a session is bounded (an LRU) or registers its expiry
+  with `common.session_store.sessions`, so the session reaper runs it.
+- **Pending dialogs**: a question the next message may answer stores its state as a slot in
+  `common/pending_dialogs.py` (`get` / `put` / `clear`), never as its own session key or with
+  `session.get` on a slot name. A new dialog adds its kind to `PRECEDENCE`, a handler to
+  `app/confirmation.RESUME_HANDLERS` and its question to `_pending_flow_context`, never another check chained
+  into `_common_preamble`; a test in `tests/test_pending_dialogs.py` pins where it sits in the order.
 
 ## Do not report
 

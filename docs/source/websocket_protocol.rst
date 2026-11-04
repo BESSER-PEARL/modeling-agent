@@ -223,6 +223,15 @@ Outbound Messages (Backend → Frontend)
 All responses are JSON objects with an ``action`` field that determines the
 message type.
 
+Every action name, inbound and outbound, is a member of ``Action`` in
+``src/protocol/actions.py`` (a ``StrEnum``, so ``json.dumps`` writes the bare
+string). Code uses the members, never the string literals
+(``tests/test_protocol_actions.py`` checks), and builds the repeated envelopes
+with its builders: ``assistant_message``, ``inject_element``,
+``inject_complete_system`` and ``model_reply``. A builder keeps the key order of
+the literal it replaced, so the JSON is byte-identical
+(``tests/test_handler_envelopes.py`` pins every handler's envelopes).
+
 Action index
 ~~~~~~~~~~~~
 
@@ -281,7 +290,7 @@ completed while the socket was reconnecting can be replayed on request:
 ``inject_complete_system``, ``modify_model``, ``auto_generate_gui``,
 ``trigger_generator``, ``trigger_github_import`` and ``assistant_message``
 (``_TERMINAL_REPLY_ACTIONS`` / ``replay_last_reply`` in
-``src/session_helpers.py``). A turn-scoped replay (see below) also covers
+``src/conversation/session_helpers.py``). A turn-scoped replay (see below) also covers
 ``inject_element``, ``trigger_smart_generator``, ``agent_error``,
 ``trigger_export``, ``trigger_deploy``, ``create_diagram_tab`` and ``stream_done``
 (``_TURN_REPLY_ACTIONS``). These are kept out of the legacy replay because it
@@ -580,7 +589,7 @@ keys on ``rate_limit`` / ``auth_error``).
 
 Most structured errors are instead sent as an ``assistant_message`` carrying
 the same fields plus ``"error": true`` — see ``build_error_response()`` in
-``src/errors.py``:
+``src/common/errors.py``:
 
 .. code-block:: json
 
@@ -597,7 +606,7 @@ the same fields plus ``"error": true`` — see ``build_error_response()`` in
 Error codes
 ^^^^^^^^^^^
 
-``ErrorCode`` in ``src/errors.py``. Values are lowercase snake_case. Each code
+``ErrorCode`` in ``src/common/errors.py``. Values are lowercase snake_case. Each code
 carries a default user-facing message, a recovery hint, and a ``retryable``
 flag that the caller may override.
 
@@ -718,7 +727,7 @@ Hand off to the LLM-authored **Spec-Driven Agent**. Emitted when the request nam
 stack BESSER has no deterministic generator for, or a BESSER stack plus
 extras the template cannot produce (auth, JWT, Docker, migrations, tests, …).
 Built by ``build_trigger_smart_generator_payload()`` in
-``src/handlers/smart_generation_handler.py``.
+``src/codegen/smart_generation_handler.py``.
 
 .. code-block:: json
 
@@ -726,7 +735,6 @@ Built by ``build_trigger_smart_generator_payload()`` in
      "action": "trigger_smart_generator",
      "instructions": "Rails 7 with PostgreSQL via Active Record and Devise auth",
      "provider": "anthropic",
-     "llmModel": "claude-sonnet-4-6",
      "message": "Generating your application from your specs…"
    }
 
@@ -743,8 +751,10 @@ Built by ``build_trigger_smart_generator_payload()`` in
        the generator already has.
    * - ``provider``
      - Suggested provider. The frontend's BYOK selection can override it.
-   * - ``llmModel``
-     - Default model for that provider
+
+The action names no model: the run uses the model the user picked in the
+editor, else the BESSER backend's default for the provider (the deployment's
+model catalog first, see ``BESSER_MODEL_CATALOG`` in :doc:`configuration`).
 
 The Spec-Driven Agent itself does **not** run over this WebSocket — the
 frontend calls the BESSER backend's spec-driven HTTP/SSE endpoints with the
@@ -852,7 +862,7 @@ Multi-Step: Create Model → Generate Code
    needs ``dbms``, ``qiskit`` needs ``backend`` and ``shots``, ``export`` needs
    ``format``) ask for those values in the same way before the
    ``trigger_generator`` payload is emitted; ``GENERATOR_REQUIRED_FIELDS`` in
-   ``src/handlers/generation_handler.py`` is the source of truth.
+   ``src/codegen/generation_handler.py`` is the source of truth.
 
 Streaming Response (Help/Explanation)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

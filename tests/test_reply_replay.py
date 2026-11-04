@@ -7,13 +7,9 @@ key and re-sends it when the frontend fires a ``replay_last_response`` control
 message on reconnect. These tests cover the buffer + replay directly.
 """
 import json
-import os
-import sys
 from unittest.mock import patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-import session_helpers as sh  # noqa: E402
+from conversation import session_helpers as sh
 
 
 class _FakeSession:
@@ -118,7 +114,7 @@ def test_buffer_is_bounded_lru():
 
 
 def test_common_preamble_intercepts_replay_and_never_runs_generation():
-    import state_bodies as sb
+    from app import state_bodies as sb
 
     class _Req:
         action = "replay_last_response"
@@ -126,10 +122,8 @@ def test_common_preamble_intercepts_replay_and_never_runs_generation():
     session = _FakeSession()
     with patch.object(sb, "parse_assistant_request", return_value=_Req()), \
          patch.object(sb, "replay_last_reply") as mock_replay, \
-         patch.object(sb, "handle_pending_gui_choice") as mock_gui, \
-         patch.object(sb, "handle_pending_system_confirmation") as mock_conf:
+         patch.object(sb, "resume_pending") as mock_resume:
         result = sb._common_preamble(session)
     assert result is None                 # short-circuits — state body does nothing
     assert mock_replay.called             # the buffered reply is re-sent
-    assert not mock_gui.called            # pending flows are never consumed
-    assert not mock_conf.called
+    assert not mock_resume.called         # pending flows are never consumed

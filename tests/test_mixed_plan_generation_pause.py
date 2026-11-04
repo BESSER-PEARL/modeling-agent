@@ -18,17 +18,20 @@ import types
 from unittest.mock import MagicMock, patch
 
 import execution.planning as planning
-from handlers.generation_handler import handle_generation_request
+from codegen.generation_handler import handle_generation_request
 from protocol.types import AssistantRequest, WorkspaceContext
-from session_keys import (
-    PENDING_GENERATOR_CONFIG,
-    PENDING_GENERATOR_TYPE,
-    PLAN_GENERATION_CONFIRM_FLAG,
+from common.session_keys import (
     UNIFIED_CLASSIFICATION,
     UNIFIED_CLASSIFICATION_EVENT_ID,
 )
+from common.pending_dialogs import (
+    PENDING_GENERATOR_CONFIG,
+    PENDING_GENERATOR_TYPE,
+    PLAN_GENERATION_CONFIRM_FLAG,
+)
 
 from tests.conftest import FakeSession, MINIMAL_CLASS_MODEL, make_session
+from common import pending_dialogs
 
 
 _CLASS_MODEL = {
@@ -63,7 +66,7 @@ def _cache_verdict(
         pending_flow_action=flow_action,
         pending_flow_answer=flow_answer,
     ))
-    from unified_classifier import _current_event_id
+    from routing.unified_classifier import _current_event_id
     event_id = _current_event_id(session)
     if event_id is not None:
         session.set(UNIFIED_CLASSIFICATION_EVENT_ID, event_id)
@@ -86,10 +89,9 @@ def _make_request(message: str) -> AssistantRequest:
 
 def _arm_paused_generation(session, generator_type="pydantic", config=None):
     """Stash a plan-paused generation exactly as execution/planning.py does."""
-    session.set(PENDING_GENERATOR_TYPE, generator_type)
-    session.set(
-        PENDING_GENERATOR_CONFIG,
-        {**(config or {}), PLAN_GENERATION_CONFIRM_FLAG: True},
+    pending_dialogs.put(session, PENDING_GENERATOR_TYPE, generator_type)
+    pending_dialogs.put(session,
+        PENDING_GENERATOR_CONFIG, {**(config or {}), PLAN_GENERATION_CONFIRM_FLAG: True},
     )
 
 
@@ -130,8 +132,8 @@ class TestMixedPlanPause:
         gen, prompt, session = _run_plan(plan)
         assert not gen.called, "generation must wait for the user's answer"
         assert not prompt.called
-        assert session.get(PENDING_GENERATOR_TYPE) == "pydantic"
-        stash = session.get(PENDING_GENERATOR_CONFIG)
+        assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) == "pydantic"
+        stash = pending_dialogs.get(session, PENDING_GENERATOR_CONFIG)
         assert stash.get(PLAN_GENERATION_CONFIRM_FLAG) is True
 
     def test_paused_stash_preserves_planned_config(self):
@@ -143,7 +145,7 @@ class TestMixedPlanPause:
         ]
         gen, _prompt, session = _run_plan(plan)
         assert not gen.called
-        stash = session.get(PENDING_GENERATOR_CONFIG)
+        stash = pending_dialogs.get(session, PENDING_GENERATOR_CONFIG)
         assert stash.get("dialect") == "postgresql"
         assert stash.get(PLAN_GENERATION_CONFIRM_FLAG) is True
 
@@ -152,7 +154,7 @@ class TestMixedPlanPause:
         plan = [{"type": "generation", "generatorType": "pydantic", "config": {}}]
         gen, _prompt, session = _run_plan(plan)
         assert gen.called
-        assert session.get(PENDING_GENERATOR_TYPE) is None
+        assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) is None
 
     def test_model_op_failure_clears_paused_generation(self):
         """A broken build must never leave a generator armed to fire later."""
@@ -163,8 +165,8 @@ class TestMixedPlanPause:
         ]
         gen, _prompt, session = _run_plan(plan, model_op_raises=True)
         assert not gen.called
-        assert session.get(PENDING_GENERATOR_TYPE) is None
-        assert session.get(PENDING_GENERATOR_CONFIG) is None
+        assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) is None
+        assert pending_dialogs.get(session, PENDING_GENERATOR_CONFIG) is None
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +186,7 @@ class TestPausedGenerationConfirmation:
         assert result["generatorType"] == "pydantic"
         # The internal marker must never leak into the trigger config.
         assert PLAN_GENERATION_CONFIRM_FLAG not in result.get("config", {})
-        assert session.get(PENDING_GENERATOR_TYPE) is None
+        assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) is None
 
     def test_ok_fires_the_paused_generator(self):
         session = FakeSession()
@@ -216,7 +218,7 @@ class TestPausedGenerationConfirmation:
         result = handle_generation_request(session, _make_request("no"))
         assert result["action"] == "assistant_message"
         assert "won't run code generation" in result["message"]
-        assert session.get(PENDING_GENERATOR_TYPE) is None
+        assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) is None
 
     def test_decline_verdict_cancels_the_paused_generator(self):
         session = FakeSession()
@@ -225,13 +227,13 @@ class TestPausedGenerationConfirmation:
         result = handle_generation_request(
             session, _make_request("rather not, thanks"))
         assert result["action"] == "assistant_message"
-        assert session.get(PENDING_GENERATOR_TYPE) is None
+        assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) is None
 
     def test_unrelated_message_abandons_the_pause(self, monkeypatch):
         """A non-answer clears the stash and is routed on its own merits —
         it must NOT fire the paused generator."""
-        import handlers.generation_handler as gen_mod
-        from unified_classifier import UnifiedClassification
+        import codegen.generation_handler as gen_mod
+        from routing.unified_classifier import UnifiedClassification
 
         class _Provider:
             model_name = "test-model"
@@ -249,7 +251,7 @@ class TestPausedGenerationConfirmation:
         self._cache_intent(session, "modeling_help_intent", flow_action="answer")
         result = handle_generation_request(
             session, _make_request("what is an association class?"))
-        assert session.get(PENDING_GENERATOR_TYPE) is None
+        assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) is None
         assert result is None or result.get("action") != "trigger_generator"
 
     def test_confirm_with_missing_required_config_prompts_for_it(self):
@@ -261,8 +263,8 @@ class TestPausedGenerationConfirmation:
         assert result["action"] == "assistant_message"
         assert "dialect" in result["message"].lower()
         # Pending state persists for the config answer — without the marker.
-        assert session.get(PENDING_GENERATOR_TYPE) == "sql"
-        stored = session.get(PENDING_GENERATOR_CONFIG)
+        assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) == "sql"
+        stored = pending_dialogs.get(session, PENDING_GENERATOR_CONFIG)
         assert PLAN_GENERATION_CONFIRM_FLAG not in (stored or {})
 
 
@@ -284,7 +286,7 @@ class TestClassifierMisreadPrecedence:
         result = handle_generation_request(session, _make_request("ok"))
         assert result["action"] == "trigger_generator"
         assert result["generatorType"] == "pydantic"
-        assert session.get(PENDING_GENERATOR_TYPE) is None
+        assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) is None
 
     def test_yes_fires_even_when_classifier_says_flow_cancel(self):
         session = FakeSession()
@@ -323,7 +325,7 @@ class TestClassifierMisreadPrecedence:
         result = handle_generation_request(session, _make_request("no"))
         assert result["action"] == "assistant_message"
         assert "won't run code generation" in result["message"]
-        assert session.get(PENDING_GENERATOR_TYPE) is None
+        assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) is None
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +351,7 @@ class TestRealRoutingFunnel:
     def test_ok_through_decline_state_fires_generation(self):
         """The exact route: "ok" stamped decline_intent as a new
         request lands in decline_state — the stashed generator must fire."""
-        import state_bodies
+        from app import state_bodies
         session = self._funnel_session("ok")
         _cache_verdict(session, "decline_intent", flow_action="new_request")
         state_bodies.decline_body(session)
@@ -357,12 +359,12 @@ class TestRealRoutingFunnel:
         assert reply is not None
         assert reply["action"] == "trigger_generator"
         assert reply["generatorType"] == "pydantic"
-        assert session.get(PENDING_GENERATOR_TYPE) is None
+        assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) is None
 
     def test_ok_through_generation_state_fires_generation(self):
         """The suppressed-intent route: an "answer" verdict keeps the message
         in the flow and route_to_generation delivers it to generation_body."""
-        import state_bodies
+        from app import state_bodies
         session = self._funnel_session("ok")
         _cache_verdict(session, "decline_intent", flow_action="answer")
         state_bodies.generation_body(session)
@@ -372,7 +374,7 @@ class TestRealRoutingFunnel:
         assert reply["generatorType"] == "pydantic"
 
     def test_no_through_decline_state_cancels(self):
-        import state_bodies
+        from app import state_bodies
         session = self._funnel_session("no")
         _cache_verdict(session, "decline_intent", flow_action="new_request")
         state_bodies.decline_body(session)
@@ -380,13 +382,13 @@ class TestRealRoutingFunnel:
         assert reply is not None
         assert reply["action"] == "assistant_message"
         assert "won't run code generation" in reply["message"]
-        assert session.get(PENDING_GENERATOR_TYPE) is None
+        assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) is None
 
     def test_novel_phrasing_still_routes_normally(self):
         """A non-exact message is NOT consumed by the preamble intercept —
         decline_body's own pending-generator reroute then lets the in-handler
         gate judge it with the classifier verdict (decline → cancel)."""
-        import state_bodies
+        from app import state_bodies
         session = self._funnel_session("nah, I'd rather not")
         _cache_verdict(session, "decline_intent", flow_action="answer",
                        flow_answer="cancel")
@@ -395,4 +397,4 @@ class TestRealRoutingFunnel:
         assert reply is not None
         assert reply["action"] == "assistant_message"
         assert "won't run code generation" in reply["message"]
-        assert session.get(PENDING_GENERATOR_TYPE) is None
+        assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) is None

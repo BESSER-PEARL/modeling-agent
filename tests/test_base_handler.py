@@ -1,10 +1,6 @@
 """Tests for BaseDiagramHandler utilities -- JSON cleaning, validation, error classification."""
 import pytest
-import sys
-import os
 import json
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from diagram_handlers.core.base_handler import (
     validate_spec, LLMPredictionError,
@@ -13,7 +9,7 @@ from diagram_handlers.core.base_handler import (
     MODIFICATION_REQUIRED, MODIFICATION_INNER_REQUIRED,
     BaseDiagramHandler,
 )
-from errors import classify_error
+from common.errors import classify_error
 
 
 # ---------------------------------------------------------------------------
@@ -27,13 +23,16 @@ class _TestHandler(BaseDiagramHandler):
     def get_system_prompt(self):
         return "Test prompt"
 
-    def generate_single_element(self, *a, **kw):
+    def _build_single_element(self, *a, **kw):
         return {}
 
-    def generate_complete_system(self, *a, **kw):
+    def _build_system(self, *a, **kw):
         return {}
 
     def generate_fallback_element(self, *a):
+        return {}
+
+    def generate_fallback_system(self):
         return {}
 
 

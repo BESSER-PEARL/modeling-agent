@@ -11,7 +11,7 @@ The BESSER Modeling Agent is a WebSocket-based conversational AI system built on
 the `BESSER Agentic Framework <https://besser-agentic-framework.readthedocs.io/latest/>`_. It
 connects the `BESSER Web Modeling Editor <https://editor.besser-pearl.org>`_ (a
 React/TypeScript SPA) with OpenAI models, routed per call site through the
-model tier table in ``src/model_config.py``. Code generation is powered by
+model tier table in ``src/llm/model_config.py``. Code generation is powered by
 `BESSER generators <https://besser.readthedocs.io/en/latest/generators.html>`_
 (Django, Python, Java, SQL, SQLAlchemy, and more).
 
@@ -86,12 +86,12 @@ The system is organized into these layers, processed in order for each request:
 1. **Protocol Layer** (``src/protocol/``): Parses raw WebSocket messages into
    canonical ``AssistantRequest`` objects.
 
-2. **Classification Layer** (``src/unified_classifier.py``): One
+2. **Classification Layer** (``src/routing/unified_classifier.py``): One
    structured-output LLM call per message, cached, returning the state-level
    intent plus every sub-routing field downstream code needs. See
    :doc:`intent_recognition`.
 
-3. **State Machine** (``modeling_agent.py`` + ``src/state_bodies.py``): Routes
+3. **State Machine** (``modeling_agent.py`` + ``src/app/state_bodies.py``): Routes
    requests to the appropriate handler based on that classification.
 
 4. **Orchestration Layer** (``src/orchestrator/``): Plans multi-step operations
@@ -106,11 +106,14 @@ The system is organized into these layers, processed in order for each request:
 7. **Utility Layer** (``src/utilities/``): Model resolution, context building,
    metadata extraction, and layout helpers.
 
-8. **LLM Abstraction** (``src/llm/``): Provider abstraction over
-   OpenAI, encapsulating model selection and call conventions (structured
-   outputs via ``parse()``, streaming via ``stream()``).
+8. **LLM Abstraction** (``src/llm/``): ``llm.provider.LLMProvider`` is the
+   only code that calls the model SDKs: free text and JSON (``complete()``),
+   structured outputs (``parse()``), streaming (``stream()``) and the
+   file-conversion vision call (``vision()``), each with BYOK routing, retry,
+   token tracking and the per-model sampling rules. Handlers and helpers get
+   the shared ``LLMOpenAI`` instance injected and call it through the provider.
 
-9. **BYOK Routing** (``src/byok.py``): Per-request routing of generation,
+9. **BYOK Routing** (``src/llm/byok.py``): Per-request routing of generation,
    structured-output, classification and conversational calls through a
    user-supplied API key, driven by a context var set at the WebSocket
    request boundary.
@@ -122,35 +125,73 @@ The system is organized into these layers, processed in order for each request:
 11. **Schemas** (``src/schemas/``): Pydantic models for each diagram type,
     used by the structured-output pass of diagram handlers.
 
-12. **Token Tracking** (``src/tracking/``): Process-wide token usage and
+12. **Token Tracking** (``src/llm/tracking/``): Process-wide token usage and
     estimated cost, logged periodically at INFO. Per-session buckets exist
     but no call site passes a session id, so only the global totals are
     populated — see :ref:`cost-and-model-routing`.
 
-13. **Suggestion Engine** (``src/suggestions.py``): Contextual next-step
+13. **Suggestion Engine** (``src/conversation/suggestions.py``): Contextual next-step
     action suggestions returned to the frontend after each operation.
+
+Every module lives in a top-level package under ``src/``, and each package is
+one import layer: ``app`` → ``ingestion`` → ``execution`` → ``codegen`` /
+``orchestrator`` → ``conversation`` → ``routing`` → ``memory`` /
+``diagram_handlers`` → ``prompts`` → ``llm`` → ``utilities`` → ``protocol`` →
+``common`` / ``schemas``. A package imports only the ones below it (packages on one level do
+not import each other); ``lint-imports`` enforces this from the contracts in
+``pyproject.toml``. The one exception is a known cycle: a confirmed generation
+in ``codegen.generation_handler`` re-runs the planned operations in
+``execution``.
+
+Prompts
+-------
+
+The text sent to the model lives in ``src/prompts/``, one module per diagram
+type or state: ``classifier`` (the routing rulebook), ``class_diagram``,
+``object_diagram``, ``state_machine``, ``agent_diagram``, ``bpmn``, ``gui``,
+``quantum_circuit``, ``user_profile``, ``component_diagram``,
+``deployment_diagram``, ``fragments`` (rules several handlers share),
+``planner``, ``modeling_help``, ``describe_model``, ``fallback``,
+``uml_rag``, ``file_conversion`` (file-upload schemas and conversion prompts),
+``reply_language``, ``spec_driven``, ``model_operations`` and
+``conversation_memory``. A prompt that never changes is a constant
+(``bpmn.MODIFY_SYSTEM_PROMPT_BPMN``); one built from the request is a function
+of exactly those values (``bpmn.reasoning_prompt(user_request)``). Call sites
+import the module and look the prompt up by name
+(``from prompts import bpmn as bpmn_prompts``).
+
+To change wording, edit the prompt module, never a call site. System prompts
+are composed once at import time and must stay byte-identical across calls
+(see :ref:`static-prefix-first`); ``tests/test_prompt_snapshots.py`` pins a
+hash of every prompt, so update the hash in the same change. The package sits
+above ``schemas`` because some prompts embed schema vocabulary (component
+stereotypes, agent reply types).
 
 Entry Point
 -----------
 
 ``modeling_agent.py`` performs the following startup sequence:
 
-1. Adds ``src/`` to ``sys.path``
-2. Creates the BESSER ``Agent`` object and the WebSocket platform (``use_ui=False``)
-3. Calls the five ``init_*`` functions from ``agent_setup`` — ``init_llm``,
+1. Creates the BESSER ``Agent`` object and the WebSocket platform (``use_ui=False``)
+2. Calls the five ``init_*`` functions from ``agent_setup`` — ``init_llm``,
    ``init_stt``, ``init_rag``, ``init_diagram_factory``,
    ``init_intent_classifier_config``
-4. Populates ``agent_context`` module-level globals
-5. Defines all 10 states and 10 intents (each intent with training sentences,
+3. Populates ``agent_context`` module-level globals
+4. Defines all 10 states and 10 intents (each intent with training sentences,
    required by the local Simple classifier)
-6. Calls ``state_bodies.register_all()`` to wire state bodies and transitions
-7. Starts the session reaper thread
-8. Calls ``agent.run()``
+5. Calls ``state_bodies.register_all()`` to wire state bodies and transitions
+6. Starts the session reaper thread
+7. Calls ``agent.run()``
+
+It imports the agent's packages by top-level name (``from conversation import
+agent_context``, ``from app.state_bodies import register_all``). They resolve because the agent is
+installed with ``pip install -e .``: ``pyproject.toml`` makes ``src/`` the
+import root, locally, in CI and in the Docker image.
 
 Shared Runtime Context
 ----------------------
 
-``src/agent_context.py`` stores module-level globals populated at startup:
+``src/conversation/agent_context.py`` stores module-level globals populated at startup:
 
 .. list-table::
    :header-rows: 1
@@ -173,8 +214,8 @@ Shared Runtime Context
        under the key ``<model>-text`` because BAF keys LLMs by name.
    * - ``gpt_predict_json``
      - ``Callable``
-     - Closure enforcing ``response_format={"type": "json_object"}``,
-       with an optional per-call model override
+     - ``LLMProvider(gpt).complete(..., json_mode=True)``, with an
+       optional per-call model override
    * - ``uml_rag``
      - ``RAG | None``
      - ChromaDB-backed RAG, None if unavailable
@@ -195,7 +236,7 @@ State Machine and Intent Classification
 ----------------------------------------
 
 The agent uses 10 states with corresponding intents. The authoritative
-classification comes from ``src/unified_classifier.py`` — one structured-output
+classification comes from ``src/routing/unified_classifier.py`` — one structured-output
 LLM call per message, cached, read by the ``json_intent_matches`` transition
 condition. BAF's own local ``SimpleIntentClassifier`` is only an
 exception-path and voice/text-event fallback. See :doc:`intent_recognition`.
@@ -246,8 +287,9 @@ parameters.
 Execution Engine
 ----------------
 
-``src/execution/`` is the core dispatch layer (package with ``planning.py``,
-``model_operations.py``, ``file_handling.py``).
+``src/execution/`` is the core dispatch layer (package with ``planning.py`` and
+``model_operations.py``; file attachments go through
+``src/ingestion/file_handling.py`` first).
 
 **execute_planned_operations():**
 
@@ -279,8 +321,11 @@ Confirmation Flows
 ~~~~~~~~~~~~~~~~~~
 
 Several confirmation flows pause execution and resume on the next user
-message. Each stores pending state in the session; the modeling ones resume
-via ``_common_preamble()``, the generation ones via the generation state body.
+message. Their state lives in one session variable (``common.pending_dialogs``);
+``resume_pending()`` in ``_common_preamble()`` hands the next message to the
+open dialogs in a fixed precedence (GUI choice, replace/keep or destructive
+confirmation, Spec-Driven confirmation, generator), and a generator menu or
+settings answer reaches the generation state body through routing.
 
 .. list-table::
    :header-rows: 1
@@ -288,14 +333,14 @@ via ``_common_preamble()``, the generation ones via the generation state body.
 
    * - Flow
      - Question asked
-   * - Complete-system confirmation (``src/confirmation.py``)
+   * - Complete-system confirmation (``src/app/confirmation.py``)
      - A model already exists — replace it, keep it, or use a new tab?
-   * - GUI generation-mode choice (``src/confirmation.py``)
+   * - GUI generation-mode choice (``src/app/confirmation.py``)
      - "Basic CRUD pages" (one page per class, no LLM) or
        "Experimental AI design"?
-   * - Spec-Driven Agent confirmation (``src/handlers/generation_handler.py``)
+   * - Spec-Driven Agent confirmation (``src/codegen/generation_handler.py``)
      - Confirm before handing off to the LLM-authored Spec-Driven Agent
-   * - Plan-generation pause (``src/handlers/generation_handler.py``)
+   * - Plan-generation pause (``src/codegen/generation_handler.py``)
      - A mixed modeling + generation plan pauses after the modeling step and
        waits for an explicit "generate" before running the generator
    * - Destructive-modification confirmation (``src/execution/model_operations.py``)
@@ -372,10 +417,10 @@ Rate Limiting, Retries and Caching
 responses are treated as transient by the retry layer; other 4xx are
 permanent and fail fast.
 
-**Shared-client retry** (``src/utilities/llm_retry.py``): the shared server
+**Shared-client retry** (``src/llm/retry.py``): the shared server
 LLM's raw SDK call is patched once, at the client's network-call layer, so
-every path through it — BAF ``predict``/``chat``, the provider's ``parse()``
-and ``stream()``, and ``gpt_predict_json`` — inherits the same bounded
+every path through it — BAF ``predict``/``chat`` and every ``LLMProvider``
+call on the server key, vision included — inherits the same bounded
 backoff. ``MAX_ATTEMPTS = 4`` (1 try + 3 retries), base delay 0.6 s, per-attempt
 cap 6 s, ±0.3 s jitter — roughly 5 s of backoff sleep per call, on top of the
 failed attempts themselves. The SDK's own retries are disabled on these
@@ -422,7 +467,7 @@ Design Patterns
 execution. Downstream code works only with typed Python objects.
 
 **Handler Extensibility:** Adding a new diagram type requires implementing the
-5 abstract methods of ``BaseDiagramHandler`` and registering the class in
+6 abstract methods of ``BaseDiagramHandler`` and registering the class in
 ``HANDLER_CLASSES``. Layout, retry, structured output, and two-pass generation
 are inherited. See :doc:`diagram_handlers` for the full checklist.
 

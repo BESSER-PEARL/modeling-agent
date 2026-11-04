@@ -2,11 +2,8 @@
 
 import pytest
 import sys
-import os
 from unittest.mock import MagicMock
 
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 # Optionally stub out the besser.agent / baf module hierarchies when the
 # real packages aren't installed locally. ``setdefault`` is not enough here:
@@ -33,18 +30,18 @@ for _name in (
     'besser.agent.core.session',
     'baf.core.session',
     'protocol.adapters',
-    'session_helpers',
+    'conversation.session_helpers',
 ):
     _stub_if_missing(_name)
 
-from confirmation import (
+from app.confirmation import (
     keyword_matches,
-    model_has_elements,
     REPLACE_KEYWORDS,
     KEEP_KEYWORDS,
     CANCEL_KEYWORDS,
     NEW_TAB_KEYWORDS,
 )
+from utilities.model_utils import model_has_elements
 
 
 # =============================================================================
@@ -267,7 +264,7 @@ class TestKeywordListsNonEmpty:
         # removed outright: both consumed real pivot messages like
         # "no, just add an email attribute to Customer" as a KEEP answer,
         # discarding the user's actual instruction.
-        from confirmation import _WEAK_KEEP_KEYWORDS, _WEAK_KEEP_MAX_WORDS
+        from app.confirmation import _WEAK_KEEP_KEYWORDS, _WEAK_KEEP_MAX_WORDS
         assert "no" not in KEEP_KEYWORDS
         assert "add" not in KEEP_KEYWORDS
         assert "no" in _WEAK_KEEP_KEYWORDS

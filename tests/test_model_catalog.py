@@ -10,11 +10,10 @@ import json
 
 import pytest
 
-import byok
-import byok_config
-import model_catalog
-from model_catalog import load_model_catalog
-from tracking.token_tracker import TokenTracker
+from llm import byok
+from llm import byok_config
+from llm.model_catalog import load_model_catalog
+from llm.tracking.token_tracker import TokenTracker
 
 GATEWAY_URL = "https://gateway.example.internal/v1"
 CATALOG = {
@@ -38,7 +37,7 @@ CATALOG = {
 
 @pytest.fixture(autouse=True)
 def _fresh_catalog(monkeypatch):
-    monkeypatch.delenv(model_catalog.CATALOG_ENV_VAR, raising=False)
+    monkeypatch.delenv("BESSER_MODEL_CATALOG", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("BESSER_AGENT_ALLOW_CUSTOM_BASE_URL", raising=False)
     load_model_catalog.cache_clear()
@@ -51,7 +50,7 @@ def use_catalog(tmp_path, monkeypatch):
     def _use(data) -> None:
         path = tmp_path / "catalog.json"
         path.write_text(data if isinstance(data, str) else json.dumps(data), encoding="utf-8")
-        monkeypatch.setenv(model_catalog.CATALOG_ENV_VAR, str(path))
+        monkeypatch.setenv("BESSER_MODEL_CATALOG", str(path))
         load_model_catalog.cache_clear()
     return _use
 

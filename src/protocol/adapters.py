@@ -7,8 +7,9 @@ from baf.core.session import Session
 from baf.library.transition.events.base_events import ReceiveJSONEvent
 
 from .types import AssistantRequest, FileAttachment, WorkspaceContext, SUPPORTED_DIAGRAM_TYPES
-from session_keys import PARSED_ASSISTANT_REQUEST, PARSED_REQUEST_EVENT_ID, VOICE_CONTEXT
+from common.session_keys import PARSED_ASSISTANT_REQUEST, PARSED_REQUEST_EVENT_ID, VOICE_CONTEXT
 from .message_limits import validate_message_length
+from .actions import Action
 
 
 def _cap_user_message(msg: str) -> str:
@@ -277,7 +278,7 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
                 )
 
     return AssistantRequest(
-        action=raw_payload.get("action") if isinstance(raw_payload.get("action"), str) else "user_message",
+        action=raw_payload.get("action") if isinstance(raw_payload.get("action"), str) else Action.USER_MESSAGE,
         protocol_version="2.0",
         client_mode=raw_payload.get("clientMode") if isinstance(raw_payload.get("clientMode"), str) else "workspace",
         session_id=raw_payload.get("sessionId")
@@ -345,7 +346,7 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
             session.set(VOICE_CONTEXT, None)
             # Re-parse as if it were a v2 payload with the transcribed message
             synthetic_payload = {
-                "action": "user_message",
+                "action": Action.USER_MESSAGE,
                 "protocolVersion": "2.0",
                 "clientMode": "workspace",
                 "message": cleaned_message,
@@ -361,7 +362,7 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
 
         context = WorkspaceContext(active_diagram_type=diagram_type)
         request = AssistantRequest(
-            action="user_message",
+            action=Action.USER_MESSAGE,
             protocol_version="2.0",
             client_mode="workspace",
             message=cleaned_message,
