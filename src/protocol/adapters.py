@@ -27,6 +27,8 @@ PILOT_PARTICIPANT_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,16}$")
 
 # Well above what the editor sends; the client is not trusted to keep it small.
 MAX_REPO_RECAP_CHARS = 4_000
+# GitHub's own limits: owner up to 39 characters, repository up to 100.
+REPO_FULL_NAME_PATTERN = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}")
 
 
 def _parse_pilot_participant(context_payload: Dict[str, Any]) -> Optional[str]:
@@ -40,7 +42,11 @@ def _parse_pilot_participant(context_payload: Dict[str, Any]) -> Optional[str]:
 def _parse_github_repo(context_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Validate the optional ``context.githubRepo`` (or drop it)."""
     repo = context_payload.get("githubRepo")
-    if not isinstance(repo, dict) or not isinstance(repo.get("fullName"), str):
+    if (
+        not isinstance(repo, dict)
+        or not isinstance(repo.get("fullName"), str)
+        or not REPO_FULL_NAME_PATTERN.fullmatch(repo["fullName"])
+    ):
         return None
     recap = repo.get("recap")
     return {

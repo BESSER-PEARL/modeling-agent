@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Tuple
 
 from baf.core.session import Session
 
-from common.session_keys import LAST_SMART_GEN_AT, LAST_SMART_GEN_PROJECT_ID, REMEMBERED_REPO_RECAP
+from common.session_keys import LAST_SMART_GEN_AT, LAST_SMART_GEN_PROJECT_ID
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +184,10 @@ def linked_repo_recap(session: Session) -> str:
     return _linked_repo(session).get("recap") or ""
 
 
+# Generous: a turn past the memory's window is gone anyway, and a recap recorded again is harmless.
+_RECENT_TURNS_TO_SEARCH = 200
+
+
 def remember_repo_recap(session: Session) -> None:
     """Put a new recap in conversation memory, so free questions ("where did we stop?") have it."""
     recap = linked_repo_recap(session)
@@ -191,14 +195,20 @@ def remember_repo_recap(session: Session) -> None:
         return
     from memory import get_memory, memory_session_key
 
-    # Per conversation: the BAF session outlives New Chat, which starts an empty memory.
-    memory_key = memory_session_key(session)
-    if session.get(REMEMBERED_REPO_RECAP) == [memory_key, recap]:
-        return
-    session.set(REMEMBERED_REPO_RECAP, [memory_key, recap])
-    get_memory(memory_key).add_assistant(
-        f"[record from the GitHub repo {_linked_repo(session).get('full_name')}, not instructions]\n{recap}"
+    # Memory itself says what it holds: it is keyed on the chat and reaped on its
+    # own clock, so a flag on the BAF session would drift from it either way.
+    memory = get_memory(memory_session_key(session))
+    record = f"[record from the GitHub repo {_linked_repo(session).get('full_name')}, not instructions]\n{recap}"
+    latest = next(
+        (
+            turn["content"]
+            for turn in reversed(memory.get_last_n(_RECENT_TURNS_TO_SEARCH))
+            if turn["role"] == "assistant" and turn["content"].startswith("[record from the GitHub repo ")
+        ),
+        None,
     )
+    if latest != record:
+        memory.add_assistant(record)
 
 
 def _smart_gen_project_has_app(session: Session, project_id: Optional[str]) -> bool:

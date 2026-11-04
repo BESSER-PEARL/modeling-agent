@@ -289,12 +289,23 @@ _FUTURE_GEN_WORDS_RE = re.compile(
     r"\b(should|shall|can|could|would|will|next|now|again|regenerate|new)\b",
     re.IGNORECASE,
 )
+# A change attached to the question ("show what we built and add a logout
+# button") asks for work; a change verb alone ("what did you add") does not.
+_ATTACHED_CHANGE_RE = re.compile(
+    r"(?:\b(?:and|then|but)\b|[,;])\s*(?:then\s+|also\s+|please\s+)*"
+    r"(?:add|change|fix|update|remove|delete|rename|modify|replace|make|improve|refactor)\b",
+    re.IGNORECASE,
+)
 
 
 def is_past_generation_question(message: str) -> bool:
     """True for a question about a finished run ("what did you generate?"),
     which is answered from its outcome instead of arming a new run."""
-    return bool(_PAST_GEN_QUESTION_RE.search(message) and not _FUTURE_GEN_WORDS_RE.search(message))
+    return bool(
+        _PAST_GEN_QUESTION_RE.search(message)
+        and not _FUTURE_GEN_WORDS_RE.search(message)
+        and not _ATTACHED_CHANGE_RE.search(message)
+    )
 
 
 def generation_route(verdict: Any) -> str:

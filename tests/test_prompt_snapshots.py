@@ -22,6 +22,8 @@ from ingestion.file_conversion_handler import CONVERTIBLE_DIAGRAM_TYPES
 
 SAMPLES = {
     "user_request": "a library with books, members and loans",
+    "full_name": "ana/library",
+    "recap": "**Recent work**\n- `add a search bar`",
     "request": "an AI support desk",
     "wanted": "- LoanStatus (referenced by Loan.status)",
     "request_text": "Loans are active, returned or overdue.",
@@ -111,6 +113,7 @@ EXPECTED = {
     "deployment_diagram.reasoning_prompt": "53784dd17449d526",
     "describe_model.history_section": "f980800abbebefec",
     "describe_model.qa_prompt": "d316e3ecf54f18c7",
+    "describe_model.repo_recap_section": "d5744268cb9c3cdb",
     "describe_model.user_guide_block": "93891995a77c7844",
     "fallback.fallback_prompt": "dd14e0eb85cf0311",
     "file_conversion.AGENT_DIAGRAM_SCHEMA": "a8d3b3c7f6ef6186",

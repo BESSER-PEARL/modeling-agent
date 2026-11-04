@@ -726,6 +726,12 @@ def describe_model_body(session: Session):
         if history_block
         else ""
     )
+    # Whole, ahead of the history: its readers cut a turn to 300 characters.
+    linked_repo = request.context.github_repo or {}
+    if linked_repo.get("recap"):
+        history_section = (
+            describe_prompts.repo_recap_section(linked_repo["full_name"], linked_repo["recap"]) + history_section
+        )
 
     # For User Profile projects, add the metamodel semantics so the assistant
     # can explain what the boxes on the canvas (Accessibility, Disability, …)

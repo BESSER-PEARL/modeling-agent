@@ -199,7 +199,7 @@ Field Reference
        ``hasCode`` means the repo holds an app, so a request is a change to it
        however old the last run is. ``recap`` is where that app stands, in chat
        markdown, capped at 4,000 characters; it answers "what did we build?" and
-       enters conversation memory once, labelled as a record.
+       enters conversation memory when it changes, labelled as a record.
    * - ``attachments``
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)
@@ -758,6 +758,10 @@ Built by ``build_trigger_smart_generator_payload()`` in
        the generator already has.
    * - ``provider``
      - Suggested provider. The frontend's BYOK selection can override it.
+   * - ``mode``
+     - Optional. ``"generate"`` rebuilds instead of continuing from the
+       existing app; sent when the user asks to start over on a linked GitHub
+       repo that holds one. Without it the frontend decides.
 
 The action names no model: the run uses the model the user picked in the
 editor, else the BESSER backend's default for the provider (the deployment's

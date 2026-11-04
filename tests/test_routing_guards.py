@@ -204,6 +204,13 @@ def test_is_mixed_modeling_and_generation(message, mixed):
     ("what can you generate", False),
     ("generate rust classes", False),
     ("which diagrams do you support", False),
+    # A question with a change attached is a request, not a question about the outcome.
+    ("show the login page we generated and add a logout button", False),
+    ("show what you built, then remove the admin page", False),
+    ("Show me what was built and please change the colours", False),
+    # A change verb alone is still a question about what happened.
+    ("what did you add when you generated it?", True),
+    ("tell me what was changed in the app you built", True),
 ])
 def test_is_past_generation_question(message, past):
     assert guards.is_past_generation_question(message) is past
