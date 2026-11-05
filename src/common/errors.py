@@ -106,6 +106,20 @@ def non_recoverable_cause(error: Optional[BaseException]) -> Optional[BaseExcept
     return None
 
 
+def is_key_rejection(error: Optional[BaseException]) -> bool:
+    """Whether *error*'s cause/context chain holds a provider refusing the
+    credentials (HTTP 401 or 403)."""
+    return type(non_recoverable_cause(error)).__name__ in {
+        "AuthenticationError", "PermissionDeniedError",
+    }
+
+
+REJECTED_KEY_MESSAGE = (
+    "The AI provider rejected your API key. Open the key icon in the assistant "
+    "to check or replace it, then send your message again."
+)
+
+
 class ErrorCode(str, Enum):
     """Error taxonomy for the modeling agent."""
     GENERATION_ERROR = "generation_error"
@@ -176,12 +190,12 @@ _RECOVERY_HINTS: Dict[str, Dict[str, Any]] = {
     },
     "rate_limit": {
         "message": "The AI service is currently busy.",
-        "recovery": "please wait a moment and try again",
+        "recovery": "wait a moment and try again",
         "retryable": True,
     },
     "auth_error": {
         "message": "The AI service is temporarily unavailable.",
-        "recovery": "please try again later",
+        "recovery": "try again later",
         "retryable": False,
     },
     # --- from execution._get_recovery_hint (additions not in base_handler) ---
@@ -229,6 +243,8 @@ def classify_error(error: Exception) -> ErrorCode:
     """
     if isinstance(error, ModelRefusal):
         return ErrorCode.MODEL_REFUSAL
+    if is_key_rejection(error):
+        return ErrorCode.AUTH_ERROR
 
     err_name = type(error).__name__.lower()
     err_msg = str(error).lower()

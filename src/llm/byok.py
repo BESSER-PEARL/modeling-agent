@@ -48,6 +48,7 @@ from common.agent_config import (
     LLM_MAX_TOKENS_LARGE,
     LLM_TEMPERATURE,
 )
+from common.errors import is_key_rejection
 from common.settings import AgentSettings
 from llm.model_config import (
     MODEL_CLASSIFIER,
@@ -257,6 +258,12 @@ def is_active() -> bool:
     ``user_api_provider`` / ``user_api_model``.
     """
     return current_byok.get() is not None
+
+
+def rejected_user_key(error: Optional[BaseException]) -> bool:
+    """True when *error* is a provider refusing this request's BYOK key. With
+    no key active, the refused credentials are the server's own: an outage."""
+    return is_active() and is_key_rejection(error)
 
 
 # ---------------------------------------------------------------------------

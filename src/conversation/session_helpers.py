@@ -18,7 +18,8 @@ from baf.core.session import Session
 
 from protocol.adapters import parse_assistant_request
 from common.agent_config import STREAM_BUFFER_THRESHOLD
-from common.errors import ModelRefusal
+from common.errors import ErrorCode, ModelRefusal, REJECTED_KEY_MESSAGE
+from llm import byok
 from llm.provider import LLMProvider
 from memory import get_memory, memory_session_key
 from common.session_keys import (
@@ -378,6 +379,21 @@ def emit_webapp_generate_prompt(session: Session) -> None:
     ))
 
 
+def rejected_key_reply(error: Optional[BaseException]) -> Optional[Dict[str, Any]]:
+    """The reply for a provider refusing the user's own key, else ``None``.
+    ``auth_error`` makes the editor offer its API key button; not retryable, as
+    a refused key is refused again. The provider's text never reaches the user."""
+    if not byok.rejected_user_key(error):
+        return None
+    return {
+        "action": Action.AGENT_ERROR,
+        "errorCode": ErrorCode.AUTH_ERROR.value,
+        "message": REJECTED_KEY_MESSAGE,
+        "retryable": False,
+        "suggestedRecovery": "Check or replace your API key",
+    }
+
+
 def _send_to_session(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
     """Low-level helper: stamp *payload* with the turn (if any), serialize it as
     JSON and send it via the session. Every reply helper sends through here, so
@@ -483,7 +499,11 @@ def stream_llm_response(
         full_text = _send_chunks(session, chunks, stream_id)
     except Exception as e:
         logger.error(f"❌ [Streaming] Error: {e}")
-        if not full_text:
+        rejected = rejected_key_reply(e)
+        if not full_text and rejected is not None:
+            # An error reply, not a chunk: the stream below closes empty.
+            reply_payload(session, rejected)
+        elif not full_text:
             from common.errors import classify_error, get_recovery_hint
             if isinstance(e, ModelRefusal):
                 full_text = e.user_message()

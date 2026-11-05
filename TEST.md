@@ -84,8 +84,8 @@ Environment knobs (defaults in parentheses):
 ## Inventory
 
 Counts below are the tests `python -m pytest tests --collect-only -q --ignore=tests/live`
-collects per file, each parametrized case counted: **3,464** in all. Without BAF 4.5 the
-three files that import `patches.websocket_platform` are skipped at import, leaving 3,449.
+collects per file, each parametrized case counted: **3,543** in all. Without BAF 4.5 the
+three files that import `patches.websocket_platform` are skipped at import, leaving 3,528.
 
 ### Routing, classification & planning
 
@@ -161,6 +161,7 @@ three files that import `patches.websocket_platform` are skipped at import, leav
 | `test_llm_provider.py` | 17 | — | `LLMProvider` — construction, `complete`/`parse`/`stream` delegation, token recording, error propagation, no-client fallbacks. |
 | `test_llm_provider_calls.py` | 41 | — | Every migrated call site sends the request it sent before (vision, `gpt_predict_json`, handler free text, stream, structured); images (vision and GUI mockups) keep the user's OpenAI / Anthropic model, go to Mistral's image model, and to the server key for Nebius / gateway keys, a 400 about the image says the model can't read it, any other 400 keeps its own error, the provider's reason is logged, and images moved to the server key log a warning; one usage record per call; no LLM host outside `llm/`. |
 | `test_byok_reach.py` | 7 | — | A user's key reaches the memory summarizer, the no-RAG UML answer and parallel plan groups (pool threads get the request's context); vision is offered only when some key can read images. |
+| `test_byok_rejected_key.py` | 79 | — | A provider refusing the user's own key (401/403) tells them to change it, on every path (streaming, each handler's entry points, file conversion), never echoes the key; a refused server key or a real outage keeps the generic message. |
 | `test_llm_retry.py` | 8 | — | `llm.retry` — permanent quota/billing/invalid-key errors fail fast (1 call); genuine 429/5xx retry up to `MAX_ATTEMPTS`. |
 | `test_byok_base_url.py` | 4 | — | BYOK custom `base_url` SSRF gate (`BESSER_AGENT_ALLOW_CUSTOM_BASE_URL`) + `redacted()`. |
 | `test_model_config.py` | 6 | — | Env-driven model routing table + defaults/overrides, cost-table consistency, `supports_custom_temperature` / `reasoning_effort_for`. |
