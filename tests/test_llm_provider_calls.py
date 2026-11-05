@@ -9,9 +9,11 @@ tests assert the provider still sends exactly them.
 """
 
 import base64
+import io
 from pathlib import Path
 from types import SimpleNamespace
 
+import pypdfium2
 import pytest
 from openai.types import CompletionUsage
 from pydantic import BaseModel
@@ -173,11 +175,13 @@ def test_image_vision_request_is_the_old_payload(monkeypatch, no_byok, vision_mo
 
 
 def test_scanned_pdf_vision_request_is_the_old_payload(no_byok):
-    fitz = pytest.importorskip("fitz")
-    doc = fitz.open()
-    doc.new_page()
-    pdf = doc.tobytes()
-    page_png = base64.b64encode(doc[0].get_pixmap(dpi=200).tobytes("png")).decode("ascii")
+    doc = pypdfium2.PdfDocument.new()
+    doc.new_page(595, 842).close()
+    saved = io.BytesIO()
+    doc.save(saved)
+    pdf = saved.getvalue()
+    page_png = base64.b64encode(fc._page_png(doc, 0)).decode("ascii")
+    doc.close()
     server = _ServerLLM()
 
     fc.convert_file_to_diagram_spec(

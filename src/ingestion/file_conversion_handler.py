@@ -23,6 +23,7 @@ Supported target diagram types:
 """
 
 import base64
+import io
 import json
 import logging
 from typing import Any, Dict, Optional
@@ -33,6 +34,7 @@ from llm import byok
 from llm.model_config import MODEL_VISION
 from prompts import file_conversion as file_prompts
 from utilities.image_inputs import data_url
+from utilities.pdf import PDFIUM_LOCK, page_text
 from protocol.actions import Action, inject_complete_system
 
 logger = logging.getLogger(__name__)
@@ -304,6 +306,21 @@ def _convert_xmi(
     return _run_llm_conversion(prompt, filename, "XMI", None, llm_predict)
 
 
+def _page_png(doc, index: int) -> bytes:
+    """One page of an open document as a 200 dpi PNG (the caller holds PDFIUM_LOCK)."""
+    page = doc[index]
+    try:
+        bitmap = page.render(scale=200 / 72)
+        try:
+            png = io.BytesIO()
+            bitmap.to_pil().save(png, format="PNG")
+            return png.getvalue()
+        finally:
+            bitmap.close()
+    finally:
+        page.close()
+
+
 def _convert_pdf(
     pdf_bytes: bytes,
     filename: str,
@@ -313,59 +330,65 @@ def _convert_pdf(
     """Convert a PDF document to the best-fit diagram spec.
 
     Strategy:
-      1. Extract text from all pages using PyMuPDF.
+      1. Extract text from all pages using pypdfium2.
       2. If enough text is found (>50 chars), treat it as a text-based PDF
          and run LLM auto-detect conversion on the extracted text.
       3. If the PDF is mostly images/diagrams (little text), render the first
          pages to images and run vision-based conversion.
     """
     try:
-        import fitz  # PyMuPDF
+        import pypdfium2
     except ImportError:
         return _error_response(
-            "PDF processing is not available. The PyMuPDF library is missing. "
-            "Please install it with: pip install PyMuPDF"
+            "PDF processing is not available. The pypdfium2 library is missing. "
+            "Please install it with: pip install pypdfium2"
         )
 
-    try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    except Exception as e:
-        logger.error(f"[FileConversion] Failed to open PDF '{filename}': {e}")
-        return _error_response(
-            f"Could not open the PDF file '{filename}'. It may be corrupted or password-protected."
-        )
+    with PDFIUM_LOCK:
+        try:
+            doc = pypdfium2.PdfDocument(pdf_bytes)
+        except Exception as e:
+            logger.error(f"[FileConversion] Failed to open PDF '{filename}': {e}")
+            return _error_response(
+                f"Could not open the PDF file '{filename}'. It may be corrupted or password-protected."
+            )
 
-    page_count = len(doc)
-    if page_count == 0:
-        doc.close()
-        return _error_response(f"The PDF file '{filename}' has no pages.")
+        # Extract all content from the PDF upfront, then close the doc.
+        # Using try/finally ensures the doc is always closed even on unexpected errors.
+        full_text = ""
+        images_b64 = []
+        try:
+            page_count = len(doc)
+            if page_count == 0:
+                return _error_response(f"The PDF file '{filename}' has no pages.")
 
-    # Extract all content from the PDF upfront, then close the doc.
-    # Using try/finally ensures the doc is always closed even on unexpected errors.
-    full_text = ""
-    images_b64 = []
-    try:
-        # Extract text from all pages (cap at 20 pages to stay within LLM limits)
-        text_parts = []
-        max_pages = min(page_count, 20)
-        for i in range(max_pages):
-            page_text = doc[i].get_text("text").strip()
-            if page_text:
-                text_parts.append(f"--- Page {i + 1} ---\n{page_text}")
-        full_text = "\n\n".join(text_parts)
-
-        # If low text, render pages to images for vision analysis
-        if len(full_text) <= 50 and llm_vision_predict:
-            render_pages = min(page_count, 3)
-            for i in range(render_pages):
+            # Extract text from all pages (cap at 20 pages to stay within LLM limits)
+            text_parts = []
+            max_pages = min(page_count, 20)
+            for i in range(max_pages):
                 try:
-                    pix = doc[i].get_pixmap(dpi=200)
-                    img_bytes = pix.tobytes("png")
-                    images_b64.append(base64.b64encode(img_bytes).decode("ascii"))
-                except Exception as e:
-                    logger.warning(f"[FileConversion] Failed to render PDF page {i + 1}: {e}")
-    finally:
-        doc.close()
+                    page = doc[i]
+                    try:
+                        text = page_text(page).strip()
+                    finally:
+                        page.close()
+                except Exception as e:  # PDFium counts pages a damaged file cannot load
+                    logger.warning(f"[FileConversion] Failed to read PDF page {i + 1}: {e}")
+                    continue
+                if text:
+                    text_parts.append(f"--- Page {i + 1} ---\n{text}")
+            full_text = "\n\n".join(text_parts)
+
+            # If low text, render pages to images for vision analysis
+            if len(full_text) <= 50 and llm_vision_predict:
+                render_pages = min(page_count, 3)
+                for i in range(render_pages):
+                    try:
+                        images_b64.append(base64.b64encode(_page_png(doc, i)).decode("ascii"))
+                    except Exception as e:
+                        logger.warning(f"[FileConversion] Failed to render PDF page {i + 1}: {e}")
+        finally:
+            doc.close()
 
     # If we got meaningful text, use text-based conversion
     if len(full_text) > 50:
