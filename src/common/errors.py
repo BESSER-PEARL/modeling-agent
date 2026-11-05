@@ -118,6 +118,15 @@ REJECTED_KEY_MESSAGE = (
     "The AI provider rejected your API key. Open the key icon in the assistant "
     "to check or replace it, then send your message again."
 )
+RATE_LIMITED_KEY_MESSAGE = (
+    "Your API key hit its rate limit at the AI provider. Wait a minute and send your "
+    "message again, or open the key icon in the assistant to use a different key."
+)
+EXHAUSTED_KEY_MESSAGE = (
+    "Your API key has run out of credit or reached its spending limit at the AI "
+    "provider. Add credit in your provider account, or open the key icon in the "
+    "assistant to use a different key, then send your message again."
+)
 
 
 class ErrorCode(str, Enum):

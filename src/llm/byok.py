@@ -41,6 +41,7 @@ the local :class:`BYOKError`.
 from __future__ import annotations
 
 import contextvars
+import enum
 import logging
 from typing import Optional, Sequence
 
@@ -48,7 +49,7 @@ from common.agent_config import (
     LLM_MAX_TOKENS_LARGE,
     LLM_TEMPERATURE,
 )
-from common.errors import is_key_rejection
+from common.errors import is_key_rejection, non_recoverable_cause
 from common.settings import AgentSettings
 from llm.model_config import (
     MODEL_CLASSIFIER,
@@ -64,6 +65,7 @@ from llm.model_config import (
 )
 from llm.byok_config import BYOKConfig, current_byok
 from llm.model_catalog import load_model_catalog
+from llm.retry import _permanent_error_code
 from utilities.image_inputs import anthropic_content, openai_content
 
 logger = logging.getLogger(__name__)
@@ -258,10 +260,39 @@ def is_active() -> bool:
     return current_byok.get() is not None
 
 
-def rejected_user_key(error: Optional[BaseException]) -> bool:
-    """True when *error* is a provider refusing this request's BYOK key. With
-    no key active, the refused credentials are the server's own: an outage."""
-    return is_active() and is_key_rejection(error)
+class KeyFault(enum.Enum):
+    """Why a provider refused a user's key. Only a rate limit passes with time."""
+
+    REJECTED = "rejected"
+    EXHAUSTED = "exhausted"
+    RATE_LIMITED = "rate_limited"
+
+
+# Permanent codes (``llm.retry``) saying the account ran out, not that the key is wrong.
+_EXHAUSTED_CODES = frozenset({"insufficient_quota", "billing_hard_limit_reached"})
+# Anthropic has no such code: a depleted or capped account is a 400 with these words.
+_EXHAUSTED_TEXTS = ("credit balance is too low", "reached your specified api usage limits")
+
+
+def _account_exhausted(error: BaseException) -> bool:
+    text = str(error).lower()
+    return _permanent_error_code(error) in _EXHAUSTED_CODES or any(
+        words in text for words in _EXHAUSTED_TEXTS
+    )
+
+
+def user_key_fault(error: Optional[BaseException]) -> Optional[KeyFault]:
+    """How *error* says the provider refused this request's BYOK key, else None.
+    With no key active the credentials and limits are the server's own."""
+    if not is_active():
+        return None
+    if is_key_rejection(error):
+        return KeyFault.REJECTED
+    cause = non_recoverable_cause(error)
+    kind = type(cause).__name__
+    if kind in {"RateLimitError", "BadRequestError"} and _account_exhausted(cause):
+        return KeyFault.EXHAUSTED
+    return KeyFault.RATE_LIMITED if kind == "RateLimitError" else None
 
 
 # ---------------------------------------------------------------------------
