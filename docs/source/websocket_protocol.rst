@@ -87,10 +87,11 @@ Not every message from the frontend is a ``user_message``:
        variable, because the transcript arrives as plain text with no JSON
        context of its own.
    * - ``user_set_variable``
-     - Sets a BAF session variable. Used to arm BYOK
-       (``user_api_key`` / ``user_api_provider`` / ``user_api_model`` /
-       ``user_api_base``), to pass ``_voice_context``, and as a keep-alive
-       heartbeat.
+     - Sets a BAF session variable, to pass ``_voice_context``, and carries
+       the keep-alive heartbeat. Also arms BYOK (``user_api_key`` /
+       ``user_api_provider`` / ``user_api_model`` / ``user_api_base``): these
+       stay with the socket and never reach the session, so the client re-arms
+       them on every (re)connect.
    * - ``frontend_event``
      - Reports the outcome of an action the frontend executed (e.g. a
        generator finishing). Routed deterministically to the generation

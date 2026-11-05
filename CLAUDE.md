@@ -285,7 +285,8 @@ src/
 **`patches/websocket_platform.py`** is copied over BAF's file at image build. Stock BAF evicts the `_connections`
 slot unconditionally on close; with the stable `?user_id=`, a tab's two sockets (widget + drawer) share one
 session key, so a closing socket would drop the live one's replies. The patch adds an ownership-guarded delete and
-reply-route-to-sender, and sets/resets the per-request BYOK contextvar. **Re-vendor it if the BAF pin changes.**
+reply-route-to-sender, keeps the BYOK variables with their socket (never on the session), and sets/resets the
+per-request BYOK contextvar. **Re-vendor it if the BAF pin changes.**
 
 ## LLM Pitfalls
 
