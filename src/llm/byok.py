@@ -1,7 +1,7 @@
 """Bring-your-own-key (BYOK) per-request LLM routing for the modeling agent.
 
 A user can paste their own OpenAI / Anthropic / Mistral / Nebius API key in
-the frontend; it is sent over the WebSocket and stored on the BAF session
+the frontend; it is sent over the WebSocket and kept with that socket
 (keys ``user_api_key`` / ``user_api_provider`` / ``user_api_model``).
 When such a key is present, the agent's conversational + generation LLM
 calls run through a *per-request* client built from that key instead of
@@ -253,9 +253,7 @@ def is_active() -> bool:
     """True when a BYOK key is active for the current request/context.
 
     Downstream callers (e.g. the shared-limit message) can use this to know
-    whether the user's own key is in play. The user's key/provider/model
-    are stored on the BAF session under ``user_api_key`` /
-    ``user_api_provider`` / ``user_api_model``.
+    whether the user's own key is in play.
     """
     return current_byok.get() is not None
 

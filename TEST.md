@@ -84,8 +84,8 @@ Environment knobs (defaults in parentheses):
 ## Inventory
 
 Counts below are the tests `python -m pytest tests --collect-only -q --ignore=tests/live`
-collects per file, each parametrized case counted: **3,543** in all. Without BAF 4.5 the
-three files that import `patches.websocket_platform` are skipped at import, leaving 3,528.
+collects per file, each parametrized case counted: **3,550** in all. Without BAF 4.5 the
+four files that import `patches.websocket_platform` are skipped at import, leaving 3,528.
 
 ### Routing, classification & planning
 
@@ -253,6 +253,7 @@ three files that import `patches.websocket_platform` are skipped at import, leav
 | `test_ux_pilot_fixes.py` | 28 | Focused tests for UX fixes: new-diagram-tab wording, the AI-Generated screen-creation suggestion, and the clickable API-key link. |
 | `test_ws_reply_slot.py` | 6 | Reply-slot ownership across browser tabs. |
 | `test_ws_session_key.py` | 3 | Session keying on connect. |
+| `test_ws_byok_socket.py` | 7 | The user's API key stays with its socket and never reaches the session. |
 
 ### Live harnesses (`tests/live/`, manual)
 
