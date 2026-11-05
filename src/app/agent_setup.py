@@ -29,6 +29,7 @@ from common.settings import AgentSettings
 from llm.model_config import MODEL_CLASSIFIER, MODEL_EMBEDDINGS, sampling_params
 from llm.provider import LLMProvider
 from prompts import uml_rag as uml_prompts
+from utilities.pdf import PDFIUM_LOCK, page_text
 
 logger = logging.getLogger(__name__)
 
@@ -201,18 +202,17 @@ def init_rag(agent: Agent):
 
 
 def _read_uml_specs() -> list:
-    """One document per PDF page. PyMuPDF, not BAF's pypdf loader: same text,
-    4.5 s instead of 4 minutes of GIL-holding parsing for the 796-page spec."""
-    import fitz  # PyMuPDF
+    """One document per PDF page. pypdfium2, not BAF's pypdf loader, which took
+    4 minutes of GIL-holding parsing for the 796-page spec."""
+    import pypdfium2
     from langchain_core.documents import Document
 
     pages = []
     for pdf in sorted(UML_SPECS_DIR.glob("*.pdf")):
-        with fitz.open(pdf) as doc:
-            pages.extend(
-                Document(page_content=page.get_text(), metadata={"source": pdf.name, "page": number})
-                for number, page in enumerate(doc)
-            )
+        with PDFIUM_LOCK, pypdfium2.PdfDocument(pdf) as doc:
+            for number, page in enumerate(doc):
+                pages.append(Document(page_content=page_text(page), metadata={"source": pdf.name, "page": number}))
+                page.close()
     return pages
 
 

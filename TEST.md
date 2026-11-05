@@ -84,8 +84,8 @@ Environment knobs (defaults in parentheses):
 ## Inventory
 
 Counts below are the tests `python -m pytest tests --collect-only -q --ignore=tests/live`
-collects per file, each parametrized case counted: **3,852** in all. Without BAF 4.5 the
-four files that import `patches.websocket_platform` are skipped at import, leaving 3,830.
+collects per file, each parametrized case counted: **3,884** in all. Without BAF 4.5 the
+four files that import `patches.websocket_platform` are skipped at import, leaving 3,862.
 
 ### Routing, classification & planning
 
@@ -169,6 +169,7 @@ four files that import `patches.websocket_platform` are skipped at import, leavi
 | `test_token_tracker.py` | 52 | — | `TokenTracker` — record/accumulate, per-session isolation, cost estimation, `summary()`, singleton, thread safety. |
 | `test_ws_reply_outbox.py` | 6 | `importorskip("patches.websocket_platform")` | The "generate did nothing" reconnect fix — `_send`/`_buffer_reply`/`_flush_outbox` buffer on a dead conn and redeliver in order on reclaim. |
 | `test_file_conversion.py` | 77 | — | `file_conversion_handler` — `detect_file_type` + PlantUML / RDF-KG / image / text → diagram spec across Class/StateMachine/Object/Agent/BPMN. |
+| `test_pdf_conversion.py` | 31 | — | PDF uploads through pypdfium2: page text reaches the LLM, scanned pages reach the vision model as PNGs, an unreadable file becomes an error reply, and PDFium's calls hold `PDFIUM_LOCK` while the model calls do not. |
 | `test_schemas.py` | 256 | — | Every Pydantic schema under `src/schemas/` — field defaults, `Literal`/enum constraints, min-length/`ge` validators, across class/state-machine/object/agent/GUI/quantum. |
 
 ### Other files
@@ -248,7 +249,7 @@ four files that import `patches.websocket_platform` are skipped at import, leavi
 | `test_structured_truncation.py` | 2 | Truncated structured output: retry once with the concise instruction. |
 | `test_target_kind.py` | 60 | Any target, not only web apps: the classifier names it, it is remembered per project, and the planner, confirmation and replies honour it. |
 | `test_type_alias_normalisation.py` | 23 | A Java-flavoured type name must not silently become a string. |
-| `test_uml_rag_indexing.py` | 4 | The UML-spec RAG must load its PDF: nothing used to, so every container's vector store stayed empty and "according to the UML spec" answers had no context. |
+| `test_uml_rag_indexing.py` | 5 | The UML-spec RAG must load its PDF: nothing used to, so every container's vector store stayed empty and "according to the UML spec" answers had no context. |
 | `test_undeclared_enumeration_guard.py` | 17 | A closed value set must survive the model forgetting to declare its enum. |
 | `test_user_profile.py` | 20 | Tests for the User Profile (UserDiagram) handler, schemas, and routing. |
 | `test_ux_pilot_fixes.py` | 28 | Focused tests for UX fixes: new-diagram-tab wording, the AI-Generated screen-creation suggestion, and the clickable API-key link. |
