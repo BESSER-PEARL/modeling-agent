@@ -26,6 +26,7 @@ from protocol.adapters import parse_assistant_request
 from protocol.types import AssistantRequest
 from protocol.message_limits import UserMessageTooLong
 from memory import get_memory, memory_session_key
+from routing.generation_signals import remember_repo_recap
 from conversation.session_helpers import (
     get_user_message,
     reply_message,
@@ -144,6 +145,7 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     if getattr(_replay_req, "action", None) == Action.REPLAY_LAST_RESPONSE:
         replay_last_reply(session, _replay_req)
         return None
+    remember_repo_recap(session)
 
     # The answer to an open question (replace/keep, GUI mode, a run
     # confirmation, the plan-pause go-ahead) is consumed here, whichever state
@@ -724,6 +726,12 @@ def describe_model_body(session: Session):
         if history_block
         else ""
     )
+    # Whole, ahead of the history: its readers cut a turn to 300 characters.
+    linked_repo = request.context.github_repo or {}
+    if linked_repo.get("recap"):
+        history_section = (
+            describe_prompts.repo_recap_section(linked_repo["full_name"], linked_repo["recap"]) + history_section
+        )
 
     # For User Profile projects, add the metamodel semantics so the assistant
     # can explain what the boxes on the canvas (Accessibility, Disability, …)

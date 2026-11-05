@@ -319,6 +319,9 @@ BESSER built-in.
      "message": "Generating your application from your specs…"
    }
 
+An optional ``mode`` (``"generate"``) forces a rebuild; see
+:doc:`websocket_protocol`.
+
 trigger_github_import
 ~~~~~~~~~~~~~~~~~~~~~
 

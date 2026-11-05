@@ -280,7 +280,7 @@ def is_mixed_modeling_and_generation(message: str) -> bool:
 # imperative like "generate rust classes" never matches (no interrogative
 # opener), and future-directed questions are excluded separately.
 _PAST_GEN_QUESTION_RE = re.compile(
-    r"^(what|which|show|tell|list|describe|explain)\b.{0,60}\b(generat|built|created|produced)",
+    r"^(what|which|show|tell|list|describe|explain)\b.{0,60}?\b(generat|built|created|produced)",
     re.IGNORECASE,
 )
 # Future-directed words that turn "what ... generate" into a request for
@@ -289,12 +289,43 @@ _FUTURE_GEN_WORDS_RE = re.compile(
     r"\b(should|shall|can|could|would|will|next|now|again|regenerate|new)\b",
     re.IGNORECASE,
 )
+# What follows the finished run in "show what we built and add a logout button".
+_SECOND_CLAUSE_RE = re.compile(
+    r"(?P<break>[,;.!?]\s+|\s+(?:and|then|but)\s+)(?:(?:and|then|but|also|please)\s+)*(?P<clause>\S.*)",
+    re.IGNORECASE | re.DOTALL,
+)
+# A second clause opening like this only asks more about the run, or is courtesy.
+_ASKS_MORE_RE = re.compile(
+    r"(?:what|which|how|why|where|when|who|show|tell|list|describe|explain|please|thanks?)\b",
+    re.IGNORECASE,
+)
+
+
+def _second_clause_asks_for_work(message: str, question: re.Match) -> bool:
+    """True when the message goes on to request something after naming the run.
+
+    Judged by sentence shape, so no list of verbs goes stale. "what did you
+    generate and fix?" shares one question; "... and add a logout button" or a
+    new sentence does not.
+    """
+    second = _SECOND_CLAUSE_RE.search(message, question.end())
+    clause = second["clause"].rstrip(" .!?") if second else ""
+    if not clause or _ASKS_MORE_RE.match(clause):
+        return False
+    if question[1].lower() in ("what", "which") and second["break"].strip() not in (".", "!", "?"):
+        return not message.rstrip().endswith("?") and len(clause.split()) > 1
+    return True
 
 
 def is_past_generation_question(message: str) -> bool:
     """True for a question about a finished run ("what did you generate?"),
     which is answered from its outcome instead of arming a new run."""
-    return bool(_PAST_GEN_QUESTION_RE.search(message) and not _FUTURE_GEN_WORDS_RE.search(message))
+    question = _PAST_GEN_QUESTION_RE.search(message)
+    return bool(
+        question
+        and not _FUTURE_GEN_WORDS_RE.search(message)
+        and not _second_clause_asks_for_work(message, question)
+    )
 
 
 def generation_route(verdict: Any) -> str:

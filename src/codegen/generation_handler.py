@@ -28,6 +28,7 @@ from common.pending_dialogs import (
     PENDING_GENERATOR_CONFIG,
     PENDING_GENERATOR_TYPE,
     PENDING_SMART_GEN_INSTRUCTIONS,
+    PENDING_SMART_GEN_MODE,
     PENDING_SMART_GEN_ORIGINAL_REQUEST,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
@@ -39,6 +40,9 @@ from routing.generation_signals import (
     _active_project_id,
     _extract_github_reference,
     _smart_gen_project_has_app,
+    linked_repo_name,
+    linked_repo_recap,
+    repo_holds_app,
 )
 from conversation.session_helpers import reply_message, reply_payload
 from routing.guards import generation_route, is_past_generation_question
@@ -103,7 +107,7 @@ def _smart_gen_stash_is_fresh(timestamp: Any) -> bool:
 
 
 def _stash_smart_gen(
-    session: Session, instructions: str, provider: str, *, original_request: str = "",
+    session: Session, instructions: str, provider: str, *, original_request: str = "", mode: Optional[str] = None,
 ) -> None:
     """Stash a smart-gen payload with a fresh timestamp (see TTL above).
 
@@ -118,6 +122,7 @@ def _stash_smart_gen(
     pending_dialogs.put(session, PENDING_SMART_GEN_PROVIDER, provider)
     pending_dialogs.put(session, PENDING_SMART_GEN_TIMESTAMP, time.time())
     pending_dialogs.put(session, PENDING_SMART_GEN_ORIGINAL_REQUEST, original_request)
+    pending_dialogs.put(session, PENDING_SMART_GEN_MODE, mode)
     session.set(SMART_GEN_ARMED_PROJECT_ID, _active_project_id(session))
 
 
@@ -313,6 +318,12 @@ _FIX_INTENT_RE = re.compile(
 )
 
 
+# The verdicts that say the request does not build on what exists. Only
+# ``replace_existing`` is the user asking to discard it: ``new_from_scratch`` also
+# means "the editor's model is empty", which says nothing about the repo's code.
+_STARTING_OVER_DISPOSITIONS = frozenset({"replace_existing", "new_from_scratch"})
+
+
 def _looks_like_fix_request(
     session: Session,
     user_message: Optional[str],
@@ -321,9 +332,10 @@ def _looks_like_fix_request(
     """True when the pending smart-gen run edits an app that ALREADY exists
     (a fix / modify) rather than building one from scratch.
 
-    INVARIANT: this can only return True when a smart-gen run has SUCCEEDED
-    for ``project_id`` — the project the user is looking at right now. There is
-    no path to the fix copy for a project that has never produced an app.
+    INVARIANT: this can only return True when the project the user is looking
+    at right now has an app: its linked GitHub repo holds one, or a smart-gen
+    run has SUCCEEDED for ``project_id``. There is no path to the fix copy for
+    a project that has never produced an app.
 
     Without the project gate, a first message in a brand-new project would get
     the fix copy ("I'll update your existing app") because a run in a PREVIOUS
@@ -340,6 +352,9 @@ def _looks_like_fix_request(
       user's OWN message still reads as a fix; anything else gets the
       neutral from-scratch copy.
     """
+    # The editor continues from the repo's code, however old the last run is.
+    if repo_holds_app(session):
+        return True
     if not _smart_gen_project_has_app(session, project_id):
         return False
     if _FIX_INTENT_RE.search(user_message or ""):
@@ -350,6 +365,12 @@ def _looks_like_fix_request(
         and not isinstance(ts, bool)
         and (time.time() - ts) <= 30 * 60
     )
+
+
+def _starting_over_on_linked_repo(session: Session) -> Optional[str]:
+    """The verdict's starting-over disposition when the linked repo holds an app, else None."""
+    disposition = getattr(session.get(UNIFIED_CLASSIFICATION), "model_disposition", None)
+    return disposition if disposition in _STARTING_OVER_DISPOSITIONS and repo_holds_app(session) else None
 
 
 def _build_smart_gen_confirmation(
@@ -386,11 +407,15 @@ def _build_smart_gen_confirmation(
     # call wrote.
     project_id = _active_project_id(session)
     original = _original_for_smart_generation(session, user_message)
-    _stash_smart_gen(session, refined, provider, original_request=original)
+    starting_over = None if reason_prefix else _starting_over_on_linked_repo(session)
+    replaces_repo_app = starting_over == "replace_existing"
+    _stash_smart_gen(
+        session, refined, provider, original_request=original, mode="generate" if replaces_repo_app else None,
+    )
 
     prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
 
-    is_fix = (not reason_prefix) and _looks_like_fix_request(
+    is_fix = (not reason_prefix) and (not starting_over) and _looks_like_fix_request(
         session, user_message, project_id,
     )
 
@@ -401,7 +426,16 @@ def _build_smart_gen_confirmation(
     # (``[...](wme:add-key)``) that the frontend markdown renderer intercepts
     # to open the BYOK key dialog (see markdown-renderer.tsx — it dispatches
     # ``wme:specdriven-open-byok``); it never navigates anywhere.
-    if is_fix:
+    if replaces_repo_app:
+        message = (
+            f"{prefix}I'll rebuild the app from scratch instead of changing the code in "
+            f"**{linked_repo_name(session)}**. Pushing the result will replace that code. "
+            f"It uses the free model by default — "
+            f"[set up your own API key](wme:add-key) for higher quality.\n\n"
+            f"Do you want to continue?"
+        )
+        confirm_label = "Rebuild"
+    elif is_fix:
         message = (
             f"{prefix}I'll update your existing app to make that change. "
             f"It uses the free model by default — "
@@ -858,6 +892,7 @@ def _clear_pending_smart_gen(session: Session) -> None:
         PENDING_SMART_GEN_PROVIDER,
         PENDING_SMART_GEN_TIMESTAMP,
         PENDING_SMART_GEN_ORIGINAL_REQUEST,
+        PENDING_SMART_GEN_MODE,
         MISMATCH_REGEN_PENDING,
     )
 
@@ -905,6 +940,7 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
         stashed_provider = pending_dialogs.get(session, PENDING_SMART_GEN_PROVIDER) or "anthropic"
         stashed_ts = pending_dialogs.get(session, PENDING_SMART_GEN_TIMESTAMP)
         stashed_original = pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) or ""
+        stashed_mode = pending_dialogs.get(session, PENDING_SMART_GEN_MODE)
         if _pending_smart_gen_project_changed(session):
             _clear_pending_smart_gen(session)
             _clear_pending_state(session)
@@ -930,6 +966,7 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
                 ),
                 reason_prefix="generating with current model",
                 original_request=stashed_original,
+                mode=stashed_mode,
             )
             reply_payload(session, payload)
             return True
@@ -1279,6 +1316,12 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                     "modify the generated app."
                 ),
             }
+        _recap = linked_repo_recap(session)
+        if _recap:
+            return {
+                "action": Action.ASSISTANT_MESSAGE,
+                "message": f"{_recap}\n\nTell me what to change and I'll update the app.",
+            }
 
     # Continue-from-GitHub guard: "continue from github.com/x/y" (or
     # "continue from my repo x/y") means resuming a PAST generation that was
@@ -1342,6 +1385,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         stashed_provider = pending_dialogs.get(session, PENDING_SMART_GEN_PROVIDER) or "anthropic"
         stashed_ts = pending_dialogs.get(session, PENDING_SMART_GEN_TIMESTAMP)
         stashed_original = pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) or ""
+        stashed_mode = pending_dialogs.get(session, PENDING_SMART_GEN_MODE)
         if _pending_smart_gen_project_changed(session):
             _clear_pending_smart_gen(session)
             _clear_pending_state(session)
@@ -1372,6 +1416,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 ),
                 reason_prefix="generating with current model",
                 original_request=stashed_original,
+                mode=stashed_mode,
             )
         # Fall through to normal classification if the stash was empty.
 

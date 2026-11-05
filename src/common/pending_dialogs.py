@@ -71,6 +71,8 @@ PENDING_SMART_GEN_PROVIDER = "_pending_smart_gen_provider"
 # later, unrelated request.
 PENDING_SMART_GEN_TIMESTAMP = "_pending_smart_gen_timestamp"
 PENDING_SMART_GEN_ORIGINAL_REQUEST = "_pending_smart_gen_original_request"
+# The run mode to force on the editor; unset leaves the choice to the editor.
+PENDING_SMART_GEN_MODE = "_pending_smart_gen_mode"
 # Set to the EXACT rebuild prompt ("create a class diagram for X") when the
 # domain-mismatch "Update model + generate" quick action is offered. That
 # action rebuilds the class diagram via a plain create; the guard and the
