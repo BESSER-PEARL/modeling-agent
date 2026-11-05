@@ -49,13 +49,17 @@ _SENSITIVE_VAR_KEYS = {
     "user_api_key", "api_key", "apikey", "secret", "password", "token", "auth",
 }
 
+# USER_SET_VARIABLE keys that arm BYOK. They stay on the socket that sent them:
+# a session outlives its sockets, is shared by every tab of a browser, and is
+# written to BAF's monitoring database. Every (re)connect re-arms them.
+_BYOK_VARS = ("user_api_key", "user_api_provider", "user_api_model", "user_api_base")
 
-def _set_request_byok(session):
-    """Set the per-request BYOK context var from the session's stored key.
 
-    The frontend sends the user's key/provider/model via USER_SET_VARIABLE,
-    so they live on the session under ``user_api_key`` / ``user_api_provider``
-    / ``user_api_model``. ``byok`` is imported lazily because this file is
+def _set_request_byok(socket_byok):
+    """Set the per-request BYOK context var from the key armed on this socket.
+
+    The frontend sends the user's key/provider/model via USER_SET_VARIABLE, and
+    the handler keeps them in ``socket_byok``. ``byok`` is imported lazily because this file is
     copied into the installed ``baf`` package at build time; the agent's own
     modules (``src/``, installed with ``pip install -e .``) are importable by
     the time the handler runs.
@@ -66,10 +70,10 @@ def _set_request_byok(session):
     try:
         from llm import byok
         return byok.set_current(
-            session.get("user_api_provider"),
-            session.get("user_api_key"),
-            session.get("user_api_model"),
-            session.get("user_api_base"),
+            socket_byok.get("user_api_provider"),
+            socket_byok.get("user_api_key"),
+            socket_byok.get("user_api_model"),
+            socket_byok.get("user_api_base"),
         )
     except Exception as exc:  # never let BYOK wiring break message handling
         logger.warning(f"BYOK: could not set per-request key: {exc}")
@@ -205,6 +209,7 @@ class WebSocketPlatform(Platform):
                 conn (ServerConnection): the user connection
             """
             session: Session = None
+            socket_byok: dict[str, str] = {}
             current_time = datetime.now()
             request = getattr(conn, "request", None)
             headers = getattr(request, "headers", {}) if request else {}
@@ -281,14 +286,14 @@ class WebSocketPlatform(Platform):
                             session=session,
                             human=True)
                         # BYOK request boundary: if the user supplied their own
-                        # API key (stored on the session by USER_SET_VARIABLE),
+                        # API key (kept in socket_byok by USER_SET_VARIABLE),
                         # set the per-request context var BEFORE receive_event.
                         # receive_event -> Session.call_manage_transition ->
                         # loop.call_soon_threadsafe captures a copy of THIS
                         # thread's context, so the value propagates into the
                         # session's event-loop thread for this turn. Reset after
                         # so the handler thread never leaks the key.
-                        _byok_token = _set_request_byok(session)
+                        _byok_token = _set_request_byok(socket_byok)
                         try:
                             self._agent.receive_event(event)
                         finally:
@@ -307,7 +312,7 @@ class WebSocketPlatform(Platform):
                             session=session,
                             human=True)
                         # BYOK request boundary (voice turn) — see USER_MESSAGE.
-                        _byok_token = _set_request_byok(session)
+                        _byok_token = _set_request_byok(socket_byok)
                         try:
                             self._agent.receive_event(event)
                         finally:
@@ -342,7 +347,10 @@ class WebSocketPlatform(Platform):
                                 self._flush_outbox(str(session_key), conn)
                             continue
                         for key, value in payload.message.items():
-                            session.set(key, value)
+                            if key in _BYOK_VARS:
+                                socket_byok[key] = value
+                            else:
+                                session.set(key, value)
                             # Never log sensitive values (e.g. the user's BYOK
                             # API key arrives here as ``user_api_key``).
                             safe_value = (
