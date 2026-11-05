@@ -316,10 +316,10 @@ Bring Your Own Key (BYOK)
 **Location:** ``src/llm/byok.py``, plus the request boundary in
 ``patches/websocket_platform.py``.
 
-A user can paste their own API key in the frontend. It arrives as BAF
-session variables (``user_api_key``, ``user_api_provider``,
-``user_api_model``, ``user_api_base``) and is *never* written to
-``config.yaml`` or to the shared LLM objects.
+A user can paste their own API key in the frontend. It arrives through
+``user_set_variable`` (``user_api_key``, ``user_api_provider``,
+``user_api_model``, ``user_api_base``), stays with the socket that sent it, and
+is *never* written to the BAF session, ``config.yaml`` or the shared LLM objects.
 
 Routing is driven by a ``contextvars.ContextVar`` (``current_byok``). The
 WebSocket request boundary sets it just before ``agent.receive_event`` and
@@ -746,6 +746,8 @@ Security Notes
 - The Docker entrypoint (``src/app/container_config.py``) prints the
   generated config for debugging but **redacts** the ``api_key`` line, so the
   key never lands in container logs.
-- A user's BYOK key lives only in the per-request context var and the BAF
-  session; it is never logged or persisted.
+- A user's BYOK key lives only with its socket and in the per-request context
+  var; it is never logged or persisted. A context copy can outlast the socket:
+  BAF's transition timer re-arms inside the last turn's context, so that copy
+  goes at the session's next message, or when the reaper closes the session.
 - In production, use environment variables or secrets management.
