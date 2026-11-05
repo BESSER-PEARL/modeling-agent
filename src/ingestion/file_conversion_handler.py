@@ -28,7 +28,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from common.errors import ImagesNotSupported, ModelRefusal
-from conversation.session_helpers import rejected_key_reply
+from conversation.session_helpers import user_key_reply
 from llm import byok
 from llm.model_config import MODEL_VISION
 from prompts import file_conversion as file_prompts
@@ -400,7 +400,7 @@ def _convert_pdf(
         return _error_response(e.user_message())
     except Exception as e:
         logger.error(f"[FileConversion] Vision API call failed for PDF: {e}")
-        return _vision_rejected_key_reply(e) or _error_response(
+        return _vision_user_key_reply(e) or _error_response(
             f"Failed to process the diagram images from PDF '{filename}'. "
             "Please make sure the PDF contains clear UML diagrams."
         )
@@ -413,10 +413,10 @@ def _vision_model() -> str:
     return byok.active_vision_model() or MODEL_VISION
 
 
-def _vision_rejected_key_reply(error: Exception) -> Optional[Dict[str, Any]]:
-    """Like ``rejected_key_reply``, except that a user's key that cannot read
+def _vision_user_key_reply(error: Exception) -> Optional[Dict[str, Any]]:
+    """Like ``user_key_reply``, except that a user's key that cannot read
     images left the call to the server key, so the refusal is not theirs."""
-    return rejected_key_reply(error) if byok.active_vision_model() else None
+    return user_key_reply(error) if byok.active_vision_model() else None
 
 
 def _convert_image(
@@ -456,7 +456,7 @@ def _convert_image(
             return _error_response(e.user_message())
         except Exception as e:
             logger.error(f"[FileConversion] Vision API call failed: {e}")
-            return _vision_rejected_key_reply(e) or _error_response(
+            return _vision_user_key_reply(e) or _error_response(
                 "Failed to process the image. Please make sure the image contains "
                 "a clear UML diagram or UI mockup."
             )
@@ -502,7 +502,7 @@ def _run_llm_conversion(
         return _error_response(e.user_message())
     except Exception as e:
         logger.error(f"[FileConversion] LLM prediction failed for {source_label}: {e}")
-        return rejected_key_reply(e) or _error_response(
+        return user_key_reply(e) or _error_response(
             f"Failed to process the {source_label} file. The AI model encountered an error."
         )
     return _parse_llm_response(raw_response, filename, source_label, expected_type)

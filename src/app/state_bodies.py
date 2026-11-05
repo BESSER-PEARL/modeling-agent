@@ -32,6 +32,7 @@ from conversation.session_helpers import (
     reply_payload,
     replay_last_reply,
     stream_llm_response,
+    user_key_reply,
     json_intent_matches,
     json_no_intent_matched,
 )
@@ -856,11 +857,10 @@ def uml_rag_body(session: Session):
 
     if ctx.uml_rag is None:
         logger.info("[UML_RAG] RAG unavailable — falling back to standard LLM")
-        fallback_response = _text_reply(ctx.gpt_text, uml_prompts.fallback_prompt(user_message))
-        reply_message(
+        _uml_llm_reply(
             session,
-            "*Note: UML knowledge base unavailable — answering from general knowledge.*\n\n"
-            + fallback_response,
+            uml_prompts.fallback_prompt(user_message),
+            note="*Note: UML knowledge base unavailable — answering from general knowledge.*\n\n",
         )
     else:
         try:
@@ -868,8 +868,22 @@ def uml_rag_body(session: Session):
             reply_message(session, rag_message.answer)
         except Exception as e:
             logger.error(f"❌ Error in uml_rag_body: {e}")
-            fallback_response = _text_reply(ctx.gpt_text, uml_prompts.error_fallback_prompt(user_message))
-            reply_message(session, fallback_response)
+            _uml_llm_reply(session, uml_prompts.error_fallback_prompt(user_message))
+
+
+def _uml_llm_reply(session: Session, prompt: str, *, note: str = "") -> None:
+    """Answer from the LLM. BAF only logs what a state body raises, so a failing
+    user key must reply here or the turn ends in silence."""
+    try:
+        answer = _text_reply(ctx.gpt_text, prompt)
+    except Exception as e:
+        key_reply = user_key_reply(e)
+        if key_reply is None:
+            raise
+        logger.error(f"❌ UML answer failed on the user's key: {type(e).__name__}")
+        reply_payload(session, key_reply)
+        return
+    reply_message(session, note + answer)
 
 
 # ------------------------------------------------------------------

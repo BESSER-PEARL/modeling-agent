@@ -587,6 +587,9 @@ keys on ``rate_limit`` / ``auth_error``).
      "retryable": true
    }
 
+The editor's "Try again" chip appears when ``retryable`` is true and
+``suggestedRecovery`` is set, and sends that text as the next prompt.
+
 Most structured errors are instead sent as an ``assistant_message`` carrying
 the same fields plus ``"error": true`` — see ``build_error_response()`` in
 ``src/common/errors.py``:
@@ -640,7 +643,12 @@ flag that the caller may override.
      - The request was too complex to process in time
    * - ``rate_limit``
      - yes
-     - Provider rate limit or shared quota reached
+     - Provider rate limit or shared quota reached. On the user's own key it
+       always arrives as ``agent_error`` naming the key: a rate limit is retryable
+       and says to wait, with no ``suggestedRecovery``; an exhausted account
+       (``insufficient_quota``, ``billing_hard_limit_reached``, or Anthropic's 400
+       on credit or usage limits) is not retryable and says to add credit or use
+       a different key
    * - ``auth_error``
      - —
      - The API key was rejected. The provider refusing the user's own key (401
