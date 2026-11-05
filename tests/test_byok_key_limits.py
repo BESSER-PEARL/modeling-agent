@@ -9,6 +9,8 @@ The editor's "Try again" chip sends ``suggestedRecovery`` as the next prompt, so
 no reply may offer the chip with a recovery sentence.
 """
 
+import sys
+
 import anthropic
 import httpx
 import openai
@@ -135,10 +137,12 @@ def _openai_error(status: int, error: dict) -> Exception:
 
 
 def _anthropic_error(status: int, error: dict) -> Exception:
-    transport = httpx.MockTransport(
-        lambda _: httpx.Response(status, json={"type": "error", "error": error}),
+    # Unpinned, and recent versions moved from httpx to httpx2: use the HTTP library this one uses.
+    http = sys.modules[anthropic.DefaultHttpxClient.__mro__[1].__module__.partition(".")[0]]
+    transport = http.MockTransport(
+        lambda _: http.Response(status, json={"type": "error", "error": error}),
     )
-    client = anthropic.Anthropic(api_key=FAKE_KEY, max_retries=0, http_client=httpx.Client(transport=transport))
+    client = anthropic.Anthropic(api_key=FAKE_KEY, max_retries=0, http_client=http.Client(transport=transport))
     with pytest.raises(anthropic.APIStatusError) as info:
         client.messages.create(model="m", max_tokens=1, messages=[])
     return info.value
