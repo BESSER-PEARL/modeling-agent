@@ -13,7 +13,7 @@ from baf.core.session import Session
 from conversation import agent_context as ctx
 from common.agent_config import MAX_TABS, CONVERSATION_HISTORY_DEPTH
 from protocol.types import AssistantRequest
-from conversation.session_helpers import reply_message, reply_payload, reply_progress
+from conversation.session_helpers import rejected_key_reply, reply_message, reply_payload, reply_progress
 from utilities.model_utils import model_has_elements
 from diagram_handlers.registry.metadata import get_diagram_type_info
 from orchestrator import determine_target_diagram_type, resolve_diagram_id
@@ -891,7 +891,10 @@ def execute_model_operation(
             _byok_active = False
         # Emit action='agent_error' with errorCode so the frontend surfaces an
         # inline "Add your API key" button (it keys on rate_limit/auth_error).
-        if _byok_active and _code in (ErrorCode.RATE_LIMIT, ErrorCode.AUTH_ERROR):
+        _rejected = rejected_key_reply(exc)
+        if _rejected is not None:
+            reply_payload(session, _rejected)
+        elif _byok_active and _code in (ErrorCode.RATE_LIMIT, ErrorCode.AUTH_ERROR):
             reply_payload(session, {
                 "action": Action.AGENT_ERROR,
                 "errorCode": "auth_error",

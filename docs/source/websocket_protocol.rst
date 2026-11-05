@@ -644,7 +644,9 @@ flag that the caller may override.
      - Provider rate limit or shared quota reached
    * - ``auth_error``
      - —
-     - The API key was rejected
+     - The API key was rejected. The provider refusing the user's own key (401
+       or 403) always arrives as ``agent_error``, not retryable, telling them to
+       change the key; a refused server key is an outage and says so
    * - ``context_error``
      - —
      - Required workspace context was missing or unusable
