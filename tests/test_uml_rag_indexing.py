@@ -79,3 +79,28 @@ def test_a_failed_index_is_retried_next_start(tmp_path, monkeypatch):
     agent_setup._index_uml_specs_in_background(rag).join(timeout=60)
 
     assert not agent_setup._UML_INDEX_DONE.exists()
+
+
+def test_spec_pages_come_out_one_document_each_under_the_pdfium_lock(tmp_path, monkeypatch):
+    import pypdfium2
+    from utilities.pdf import PDFIUM_LOCK
+
+    from tests.test_pdf_conversion import _pdf, _text
+
+    (tmp_path / "spec.pdf").write_bytes(_pdf(_text("First line.", "Second line."), _text("Other page.")))
+    monkeypatch.setattr(agent_setup, "UML_SPECS_DIR", tmp_path)
+    held = []
+    real_text = pypdfium2.PdfTextPage.get_text_bounded
+
+    def spy(self, *args, **kwargs):
+        held.append(PDFIUM_LOCK.locked())
+        return real_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(pypdfium2.PdfTextPage, "get_text_bounded", spy)
+
+    pages = agent_setup._read_uml_specs()
+
+    assert [page.metadata for page in pages] == [{"source": "spec.pdf", "page": 0}, {"source": "spec.pdf", "page": 1}]
+    assert pages[0].page_content == "First line.\nSecond line."
+    assert held == [True, True]
+    assert not PDFIUM_LOCK.locked()

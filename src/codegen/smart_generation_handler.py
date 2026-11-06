@@ -144,6 +144,7 @@ def build_trigger_smart_generator_payload(
     classification: GenerationClassification,
     reason_prefix: str = "",
     original_request: str = "",
+    mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Assemble the WebSocket ``trigger_smart_generator`` action payload.
 
@@ -156,6 +157,9 @@ def build_trigger_smart_generator_payload(
     and the run's gap analyser diffs the request against the model: the
     summary drops details (status vocabularies, business rules) and can
     absorb assistant wording the user never wrote.
+
+    ``mode`` overrides the editor's own choice between editing the existing app
+    and rebuilding; without it the editor decides.
     """
     if classification.route != "smart":
         raise ValueError(
@@ -184,9 +188,12 @@ def build_trigger_smart_generator_payload(
     # option were already conveyed by the confirmation copy shown before this
     # run (see ``_build_smart_gen_confirmation``), so this mid-run line stays
     # minimal instead of repeating the API-key explanation.
-    return {
+    payload = {
         "action": Action.TRIGGER_SMART_GENERATOR,
         "instructions": instructions,
         "provider": provider,
         "message": "Generating your application from your specs…",
     }
+    if mode:
+        payload["mode"] = mode
+    return payload

@@ -31,6 +31,10 @@ class WorkspaceContext:
     # Opt-in study participant label. Present only when the frontend tags
     # the session; drives the telemetry "prompt" events. Never a name or email.
     pilot_participant: Optional[str] = None
+    # The GitHub repo the project is linked to: ``full_name``, ``has_code``
+    # (it holds an app a run continues from) and ``recap`` (where that app
+    # stands, in chat markdown). None without a link.
+    github_repo: Optional[Dict[str, Any]] = None
 
     def get_active_index(self, diagram_type: str) -> int:
         """Return the active tab index for the given diagram type (default 0)."""

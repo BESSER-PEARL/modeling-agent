@@ -95,8 +95,8 @@ parameter (so conversation memory survives reconnects), the two sockets a
 browser tab opens — the assistant widget and the workspace drawer — share one
 session key, and a closing socket would evict the live one, silently dropping
 the agent's replies. The vendored file adds an ownership-guarded delete plus
-reply-route-to-sender, and is also where the per-request BYOK context var is
-set and reset.
+reply-route-to-sender, and is also where the BYOK variables are kept with their
+socket and the per-request BYOK context var is set and reset.
 
 **Re-vendor this file if the pinned BAF version changes.**
 

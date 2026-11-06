@@ -18,7 +18,10 @@ from baf.core.session import Session
 
 from protocol.adapters import parse_assistant_request
 from common.agent_config import STREAM_BUFFER_THRESHOLD
-from common.errors import ModelRefusal
+from common.errors import (
+    EXHAUSTED_KEY_MESSAGE, ErrorCode, ModelRefusal, RATE_LIMITED_KEY_MESSAGE, REJECTED_KEY_MESSAGE,
+)
+from llm import byok
 from llm.provider import LLMProvider
 from memory import get_memory, memory_session_key
 from common.session_keys import (
@@ -378,6 +381,38 @@ def emit_webapp_generate_prompt(session: Session) -> None:
     ))
 
 
+# Both error codes make the editor offer its API key button.
+_USER_KEY_REPLIES: Dict[byok.KeyFault, Dict[str, Any]] = {
+    byok.KeyFault.REJECTED: {
+        "errorCode": ErrorCode.AUTH_ERROR.value,
+        "message": REJECTED_KEY_MESSAGE,
+        "retryable": False,
+        "suggestedRecovery": "Check or replace your API key",
+    },
+    byok.KeyFault.EXHAUSTED: {
+        "errorCode": ErrorCode.RATE_LIMIT.value,
+        "message": EXHAUSTED_KEY_MESSAGE,
+        "retryable": False,
+        "suggestedRecovery": "Add credit or use a different API key",
+    },
+    # No suggestedRecovery: the editor's "Try again" chip sends it as the prompt.
+    byok.KeyFault.RATE_LIMITED: {
+        "errorCode": ErrorCode.RATE_LIMIT.value,
+        "message": RATE_LIMITED_KEY_MESSAGE,
+        "retryable": True,
+    },
+}
+
+
+def user_key_reply(error: Optional[BaseException]) -> Optional[Dict[str, Any]]:
+    """The reply for a provider refusing or limiting the user's own key, else
+    ``None``. The provider's text never reaches the user."""
+    fault = byok.user_key_fault(error)
+    if fault is None:
+        return None
+    return {"action": Action.AGENT_ERROR, **_USER_KEY_REPLIES[fault]}
+
+
 def _send_to_session(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
     """Low-level helper: stamp *payload* with the turn (if any), serialize it as
     JSON and send it via the session. Every reply helper sends through here, so
@@ -483,7 +518,11 @@ def stream_llm_response(
         full_text = _send_chunks(session, chunks, stream_id)
     except Exception as e:
         logger.error(f"❌ [Streaming] Error: {e}")
-        if not full_text:
+        key_reply = user_key_reply(e)
+        if not full_text and key_reply is not None:
+            # An error reply, not a chunk: the stream below closes empty.
+            reply_payload(session, key_reply)
+        elif not full_text:
             from common.errors import classify_error, get_recovery_hint
             if isinstance(e, ModelRefusal):
                 full_text = e.user_message()

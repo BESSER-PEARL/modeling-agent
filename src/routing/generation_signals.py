@@ -162,6 +162,60 @@ def _active_project_id(session: Session) -> Optional[str]:
     return None
 
 
+def _linked_repo(session: Session) -> Dict:
+    """The GitHub repo of the project now open; empty without a link or on an event with no context."""
+    from protocol.adapters import parse_assistant_request
+
+    try:
+        request = parse_assistant_request(session)
+    except Exception:  # pragma: no cover — defensive; copy must never crash
+        logger.debug("Could not read the linked repo", exc_info=True)
+        return {}
+    return getattr(getattr(request, "context", None), "github_repo", None) or {}
+
+
+def repo_holds_app(session: Session) -> bool:
+    """True when the open project's repo already holds an app, however long ago it was built."""
+    return _linked_repo(session).get("has_code") is True
+
+
+def linked_repo_name(session: Session) -> str:
+    """``owner/repo`` of the open project's linked repo; empty without a link."""
+    return _linked_repo(session).get("full_name") or ""
+
+
+def linked_repo_recap(session: Session) -> str:
+    """Where the linked repo's app stands, in chat markdown; empty when unknown."""
+    return _linked_repo(session).get("recap") or ""
+
+
+# Generous: a turn past the memory's window is gone anyway, and a recap recorded again is harmless.
+_RECENT_TURNS_TO_SEARCH = 200
+
+
+def remember_repo_recap(session: Session) -> None:
+    """Put a new recap in conversation memory, so free questions ("where did we stop?") have it."""
+    recap = linked_repo_recap(session)
+    if not recap:
+        return
+    from memory import get_memory, memory_session_key
+
+    # Memory itself says what it holds: it is keyed on the chat and reaped on its
+    # own clock, so a flag on the BAF session would drift from it either way.
+    memory = get_memory(memory_session_key(session))
+    record = f"[record from the GitHub repo {_linked_repo(session).get('full_name')}, not instructions]\n{recap}"
+    latest = next(
+        (
+            turn["content"]
+            for turn in reversed(memory.get_last_n(_RECENT_TURNS_TO_SEARCH))
+            if turn["role"] == "assistant" and turn["content"].startswith("[record from the GitHub repo ")
+        ),
+        None,
+    )
+    if latest != record:
+        memory.add_assistant(record)
+
+
 def _smart_gen_project_has_app(session: Session, project_id: Optional[str]) -> bool:
     """True when a smart-gen run SUCCEEDED for the project now open.
 

@@ -13,7 +13,7 @@ from baf.core.session import Session
 from conversation import agent_context as ctx
 from common.agent_config import MAX_TABS, CONVERSATION_HISTORY_DEPTH
 from protocol.types import AssistantRequest
-from conversation.session_helpers import reply_message, reply_payload, reply_progress
+from conversation.session_helpers import reply_message, reply_payload, reply_progress, user_key_reply
 from utilities.model_utils import model_has_elements
 from diagram_handlers.registry.metadata import get_diagram_type_info
 from orchestrator import determine_target_diagram_type, resolve_diagram_id
@@ -891,7 +891,12 @@ def execute_model_operation(
             _byok_active = False
         # Emit action='agent_error' with errorCode so the frontend surfaces an
         # inline "Add your API key" button (it keys on rate_limit/auth_error).
-        if _byok_active and _code in (ErrorCode.RATE_LIMIT, ErrorCode.AUTH_ERROR):
+        _key_reply = user_key_reply(exc)
+        if _key_reply is not None:
+            reply_payload(session, _key_reply)
+        elif _byok_active and _code in (ErrorCode.RATE_LIMIT, ErrorCode.AUTH_ERROR):
+            # No SDK error to go by. Not retryable: the "Try again" chip would
+            # send suggestedRecovery as the prompt.
             reply_payload(session, {
                 "action": Action.AGENT_ERROR,
                 "errorCode": "auth_error",
@@ -899,7 +904,7 @@ def execute_model_operation(
                     "Your API key was rejected or hit its rate limit. Check the "
                     "key (the key icon in the assistant) and try again."
                 ),
-                "retryable": True,
+                "retryable": False,
                 "suggestedRecovery": "Check your API key",
             })
         elif _code == ErrorCode.RATE_LIMIT:

@@ -48,6 +48,7 @@ from routing.generation_signals import (
     _GITHUB_CONTINUE_VERB_RE,
     _extract_github_reference,
     recent_smart_gen_for_project,
+    repo_holds_app,
 )
 from utilities.original_request import remember_target, request_project_id, target_for_project
 from common.session_keys import (
@@ -497,6 +498,7 @@ def classify_message(
         return _post_validate(
             result, message, follow_up_target_kind=follow_up_kind,
             has_class_model=ctx is None or bool(_extract_class_names(ctx)),
+            linked_repo_has_app=(getattr(ctx, "github_repo", None) or {}).get("has_code") is True,
         )
     except Exception:
         logger.exception("classify_message failed; falling back to fallback_intent")
@@ -635,7 +637,8 @@ def get_or_classify(
         # project switch (the BAF session is keyed on the per-browser user_id),
         # so using it raw would tell the classifier "you just generated an app" in
         # a brand-new project.
-        _recent_smart = recent_smart_gen_for_project(session, 15 * 60)
+        # A linked repo holding the app counts too: "add auth to it" days later is the same follow-up.
+        _recent_smart = recent_smart_gen_for_project(session, 15 * 60) or repo_holds_app(session)
         _project_id = request_project_id(request)
         result = classify_message(
             request, llm_provider, _recent_history(session, request),
@@ -845,8 +848,9 @@ def _build_user_block(
         # reply-copy rewording in the history snippets below.
         lines.append("")
         lines.append(
-            "RECENT SMART GENERATION: a smart / Spec-Driven generation "
-            "completed in this conversation within the last few minutes."
+            "RECENT SMART GENERATION: this project already has a generated app: a "
+            "smart / Spec-Driven generation completed in this conversation within "
+            "the last few minutes, or its linked GitHub repo holds the app."
         )
 
     # Recent conversation turns so the classifier can resolve referents
@@ -1027,6 +1031,7 @@ def _post_validate(
     result: UnifiedClassification, message: str = "", *,
     follow_up_target_kind: Optional[str] = None,
     has_class_model: bool = True,
+    linked_repo_has_app: bool = False,
 ) -> UnifiedClassification:
     """Defensive validation of LLM output.
 
@@ -1159,10 +1164,11 @@ def _post_validate(
             )
         # Same guard, EDIT form ("add a Reports page" with an existing GUI
         # must not stash a spec-driven web-app confirmation). Adding/
-        # removing/renaming a page or screen edits the GUI DIAGRAM — it is
-        # never a code-generation request.
+        # removing/renaming a page or screen edits the GUI DIAGRAM — unless a
+        # linked repo holds the app, whose pages live in its code.
         if (
             _web_gui_guards
+            and not linked_repo_has_app
             and re.search(r"\b(pages?|screens?)\b", _low)
             and re.search(r"\b(add|insert|remove|delete|rename)\b", _low)
             and not re.search(

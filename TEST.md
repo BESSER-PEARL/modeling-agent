@@ -84,8 +84,8 @@ Environment knobs (defaults in parentheses):
 ## Inventory
 
 Counts below are the tests `python -m pytest tests --collect-only -q --ignore=tests/live`
-collects per file, each parametrized case counted: **3,464** in all. Without BAF 4.5 the
-three files that import `patches.websocket_platform` are skipped at import, leaving 3,449.
+collects per file, each parametrized case counted: **3,884** in all. Without BAF 4.5 the
+four files that import `patches.websocket_platform` are skipped at import, leaving 3,862.
 
 ### Routing, classification & planning
 
@@ -161,12 +161,15 @@ three files that import `patches.websocket_platform` are skipped at import, leav
 | `test_llm_provider.py` | 17 | — | `LLMProvider` — construction, `complete`/`parse`/`stream` delegation, token recording, error propagation, no-client fallbacks. |
 | `test_llm_provider_calls.py` | 41 | — | Every migrated call site sends the request it sent before (vision, `gpt_predict_json`, handler free text, stream, structured); images (vision and GUI mockups) keep the user's OpenAI / Anthropic model, go to Mistral's image model, and to the server key for Nebius / gateway keys, a 400 about the image says the model can't read it, any other 400 keeps its own error, the provider's reason is logged, and images moved to the server key log a warning; one usage record per call; no LLM host outside `llm/`. |
 | `test_byok_reach.py` | 7 | — | A user's key reaches the memory summarizer, the no-RAG UML answer and parallel plan groups (pool threads get the request's context); vision is offered only when some key can read images. |
+| `test_byok_rejected_key.py` | 79 | — | A provider refusing the user's own key (401/403) tells them to change it, on every path (streaming, each handler's entry points, file conversion), never echoes the key; a refused server key or a real outage keeps the generic message. |
+| `test_byok_key_limits.py` | 245 | — | A 429 on the user's own key names the key on every path: a rate limit says to wait, an exhausted account (OpenAI quota and spend caps, Anthropic's 400s) says to add credit or use a different key; real SDK errors are told apart; no reply offers the chip that would send recovery text as a prompt; the UML answer no longer ends a failed-key turn in silence; a server key's limit keeps its own replies. |
 | `test_llm_retry.py` | 8 | — | `llm.retry` — permanent quota/billing/invalid-key errors fail fast (1 call); genuine 429/5xx retry up to `MAX_ATTEMPTS`. |
 | `test_byok_base_url.py` | 4 | — | BYOK custom `base_url` SSRF gate (`BESSER_AGENT_ALLOW_CUSTOM_BASE_URL`) + `redacted()`. |
 | `test_model_config.py` | 6 | — | Env-driven model routing table + defaults/overrides, cost-table consistency, `supports_custom_temperature` / `reasoning_effort_for`. |
 | `test_token_tracker.py` | 52 | — | `TokenTracker` — record/accumulate, per-session isolation, cost estimation, `summary()`, singleton, thread safety. |
 | `test_ws_reply_outbox.py` | 6 | `importorskip("patches.websocket_platform")` | The "generate did nothing" reconnect fix — `_send`/`_buffer_reply`/`_flush_outbox` buffer on a dead conn and redeliver in order on reclaim. |
 | `test_file_conversion.py` | 77 | — | `file_conversion_handler` — `detect_file_type` + PlantUML / RDF-KG / image / text → diagram spec across Class/StateMachine/Object/Agent/BPMN. |
+| `test_pdf_conversion.py` | 31 | — | PDF uploads through pypdfium2: page text reaches the LLM, scanned pages reach the vision model as PNGs, an unreadable file becomes an error reply, and PDFium's calls hold `PDFIUM_LOCK` while the model calls do not. |
 | `test_schemas.py` | 256 | — | Every Pydantic schema under `src/schemas/` — field defaults, `Literal`/enum constraints, min-length/`ge` validators, across class/state-machine/object/agent/GUI/quantum. |
 
 ### Other files
@@ -246,12 +249,13 @@ three files that import `patches.websocket_platform` are skipped at import, leav
 | `test_structured_truncation.py` | 2 | Truncated structured output: retry once with the concise instruction. |
 | `test_target_kind.py` | 60 | Any target, not only web apps: the classifier names it, it is remembered per project, and the planner, confirmation and replies honour it. |
 | `test_type_alias_normalisation.py` | 23 | A Java-flavoured type name must not silently become a string. |
-| `test_uml_rag_indexing.py` | 4 | The UML-spec RAG must load its PDF: nothing used to, so every container's vector store stayed empty and "according to the UML spec" answers had no context. |
+| `test_uml_rag_indexing.py` | 5 | The UML-spec RAG must load its PDF: nothing used to, so every container's vector store stayed empty and "according to the UML spec" answers had no context. |
 | `test_undeclared_enumeration_guard.py` | 17 | A closed value set must survive the model forgetting to declare its enum. |
 | `test_user_profile.py` | 20 | Tests for the User Profile (UserDiagram) handler, schemas, and routing. |
 | `test_ux_pilot_fixes.py` | 28 | Focused tests for UX fixes: new-diagram-tab wording, the AI-Generated screen-creation suggestion, and the clickable API-key link. |
 | `test_ws_reply_slot.py` | 6 | Reply-slot ownership across browser tabs. |
 | `test_ws_session_key.py` | 3 | Session keying on connect. |
+| `test_ws_byok_socket.py` | 7 | The user's API key stays with its socket and never reaches the session. |
 
 ### Live harnesses (`tests/live/`, manual)
 

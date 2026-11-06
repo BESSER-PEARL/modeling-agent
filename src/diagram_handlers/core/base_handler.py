@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from common.agent_config import LLM_MAX_TOKENS_SMALL, LLM_MAX_TOKENS_LARGE, LLM_TEMPERATURE
 from common.settings import AgentSettings
+from llm.byok import user_key_fault
 from llm.model_config import MODEL_CLASSIFIER, MODEL_GENERATION_SMALL
 from llm.provider import LLMProvider, OutputTruncated
 from .layout_engine import apply_layout
@@ -117,6 +118,13 @@ MODIFICATION_INNER_REQUIRED = {"action": str, "target": dict}
 _ERROR_RECOVERY = _RECOVERY_HINTS
 
 
+def _raise_if_user_key_at_fault(error: Exception) -> None:
+    """A refused or limited user key is no case for "please rephrase" or a fallback
+    diagram: hand the provider's error to the caller, which says what to do."""
+    if user_key_fault(error) is not None:
+        raise non_recoverable_cause(error) from None
+
+
 class ReplyNow(NamedTuple):
     """Returned by a ``_prepare_*`` hook to answer with ``reply`` and skip the LLM."""
 
@@ -183,9 +191,11 @@ class BaseDiagramHandler(ABC):
         try:
             return self._build_system(user_request, existing_model, prepared=prepared, **kwargs)
         except LLMPredictionError as exc:
+            _raise_if_user_key_at_fault(exc)
             logger.error(f"[{tag}] generate_complete_system LLM FAILED: {exc}")
             return self._system_failure_reply(exc, user_request, existing_model, prepared=prepared, **kwargs)
         except Exception as exc:
+            _raise_if_user_key_at_fault(exc)
             logger.error(f"[{tag}] generate_complete_system FAILED: {exc}", exc_info=True)
             return self._system_crash_reply(exc, user_request, existing_model, prepared=prepared, **kwargs)
 
@@ -226,9 +236,11 @@ class BaseDiagramHandler(ABC):
         try:
             return self._build_single_element(user_request, existing_model, prepared=prepared, **kwargs)
         except LLMPredictionError as exc:
+            _raise_if_user_key_at_fault(exc)
             logger.error(f"[{tag}] generate_single_element LLM FAILED: {exc}")
             return self._single_failure_reply(exc, user_request, existing_model, prepared=prepared, **kwargs)
         except Exception as exc:
+            _raise_if_user_key_at_fault(exc)
             logger.error(f"[{tag}] generate_single_element FAILED: {exc}", exc_info=True)
             return self._single_crash_reply(exc, user_request, existing_model, prepared=prepared, **kwargs)
 
@@ -482,9 +494,11 @@ class BaseDiagramHandler(ABC):
         try:
             return self._build_modification(user_request, current_model, prepared=prepared, **kwargs)
         except LLMPredictionError as exc:
+            _raise_if_user_key_at_fault(exc)
             logger.error(f"[{tag}] generate_modification LLM FAILED: {exc}")
             return self._modification_failure_reply(exc, user_request, current_model, prepared=prepared, **kwargs)
         except Exception as exc:
+            _raise_if_user_key_at_fault(exc)
             logger.error(f"[{tag}] generate_modification FAILED: {exc}", exc_info=True)
             return self._modification_crash_reply(exc, user_request, current_model, prepared=prepared, **kwargs)
 

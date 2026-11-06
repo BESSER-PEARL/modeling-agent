@@ -26,12 +26,14 @@ from protocol.adapters import parse_assistant_request
 from protocol.types import AssistantRequest
 from protocol.message_limits import UserMessageTooLong
 from memory import get_memory, memory_session_key
+from routing.generation_signals import remember_repo_recap
 from conversation.session_helpers import (
     get_user_message,
     reply_message,
     reply_payload,
     replay_last_reply,
     stream_llm_response,
+    user_key_reply,
     json_intent_matches,
     json_no_intent_matched,
 )
@@ -144,6 +146,7 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     if getattr(_replay_req, "action", None) == Action.REPLAY_LAST_RESPONSE:
         replay_last_reply(session, _replay_req)
         return None
+    remember_repo_recap(session)
 
     # The answer to an open question (replace/keep, GUI mode, a run
     # confirmation, the plan-pause go-ahead) is consumed here, whichever state
@@ -724,6 +727,12 @@ def describe_model_body(session: Session):
         if history_block
         else ""
     )
+    # Whole, ahead of the history: its readers cut a turn to 300 characters.
+    linked_repo = request.context.github_repo or {}
+    if linked_repo.get("recap"):
+        history_section = (
+            describe_prompts.repo_recap_section(linked_repo["full_name"], linked_repo["recap"]) + history_section
+        )
 
     # For User Profile projects, add the metamodel semantics so the assistant
     # can explain what the boxes on the canvas (Accessibility, Disability, …)
@@ -856,11 +865,10 @@ def uml_rag_body(session: Session):
 
     if ctx.uml_rag is None:
         logger.info("[UML_RAG] RAG unavailable — falling back to standard LLM")
-        fallback_response = _text_reply(ctx.gpt_text, uml_prompts.fallback_prompt(user_message))
-        reply_message(
+        _uml_llm_reply(
             session,
-            "*Note: UML knowledge base unavailable — answering from general knowledge.*\n\n"
-            + fallback_response,
+            uml_prompts.fallback_prompt(user_message),
+            note="*Note: UML knowledge base unavailable — answering from general knowledge.*\n\n",
         )
     else:
         try:
@@ -868,8 +876,22 @@ def uml_rag_body(session: Session):
             reply_message(session, rag_message.answer)
         except Exception as e:
             logger.error(f"❌ Error in uml_rag_body: {e}")
-            fallback_response = _text_reply(ctx.gpt_text, uml_prompts.error_fallback_prompt(user_message))
-            reply_message(session, fallback_response)
+            _uml_llm_reply(session, uml_prompts.error_fallback_prompt(user_message))
+
+
+def _uml_llm_reply(session: Session, prompt: str, *, note: str = "") -> None:
+    """Answer from the LLM. BAF only logs what a state body raises, so a failing
+    user key must reply here or the turn ends in silence."""
+    try:
+        answer = _text_reply(ctx.gpt_text, prompt)
+    except Exception as e:
+        key_reply = user_key_reply(e)
+        if key_reply is None:
+            raise
+        logger.error(f"❌ UML answer failed on the user's key: {type(e).__name__}")
+        reply_payload(session, key_reply)
+        return
+    reply_message(session, note + answer)
 
 
 # ------------------------------------------------------------------

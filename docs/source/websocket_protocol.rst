@@ -87,10 +87,11 @@ Not every message from the frontend is a ``user_message``:
        variable, because the transcript arrives as plain text with no JSON
        context of its own.
    * - ``user_set_variable``
-     - Sets a BAF session variable. Used to arm BYOK
-       (``user_api_key`` / ``user_api_provider`` / ``user_api_model`` /
-       ``user_api_base``), to pass ``_voice_context``, and as a keep-alive
-       heartbeat.
+     - Sets a BAF session variable, to pass ``_voice_context``, and carries
+       the keep-alive heartbeat. Also arms BYOK (``user_api_key`` /
+       ``user_api_provider`` / ``user_api_model`` / ``user_api_base``): these
+       stay with the socket and never reach the session, so the client re-arms
+       them on every (re)connect.
    * - ``frontend_event``
      - Reports the outcome of an action the frontend executed (e.g. a
        generator finishing). Routed deterministically to the generation
@@ -193,6 +194,13 @@ Field Reference
      - Opt-in study participant label (e.g. ``"P3"``), present only when the
        session was opened with a study link. Validated against
        ``^[A-Za-z0-9_-]{1,16}$`` and dropped otherwise. Never a name or email.
+   * - ``context.githubRepo``
+     - No
+     - The GitHub repo the project is linked to: ``{fullName, hasCode, recap}``.
+       ``hasCode`` means the repo holds an app, so a request is a change to it
+       however old the last run is. ``recap`` is where that app stands, in chat
+       markdown, capped at 4,000 characters; it answers "what did we build?" and
+       enters conversation memory when it changes, labelled as a record.
    * - ``attachments``
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)
@@ -587,6 +595,9 @@ keys on ``rate_limit`` / ``auth_error``).
      "retryable": true
    }
 
+The editor's "Try again" chip appears when ``retryable`` is true and
+``suggestedRecovery`` is set, and sends that text as the next prompt.
+
 Most structured errors are instead sent as an ``assistant_message`` carrying
 the same fields plus ``"error": true`` — see ``build_error_response()`` in
 ``src/common/errors.py``:
@@ -640,10 +651,17 @@ flag that the caller may override.
      - The request was too complex to process in time
    * - ``rate_limit``
      - yes
-     - Provider rate limit or shared quota reached
+     - Provider rate limit or shared quota reached. On the user's own key it
+       always arrives as ``agent_error`` naming the key: a rate limit is retryable
+       and says to wait, with no ``suggestedRecovery``; an exhausted account
+       (``insufficient_quota``, ``billing_hard_limit_reached``, or Anthropic's 400
+       on credit or usage limits) is not retryable and says to add credit or use
+       a different key
    * - ``auth_error``
      - —
-     - The API key was rejected
+     - The API key was rejected. The provider refusing the user's own key (401
+       or 403) always arrives as ``agent_error``, not retryable, telling them to
+       change the key; a refused server key is an outage and says so
    * - ``context_error``
      - —
      - Required workspace context was missing or unusable
@@ -751,6 +769,10 @@ Built by ``build_trigger_smart_generator_payload()`` in
        the generator already has.
    * - ``provider``
      - Suggested provider. The frontend's BYOK selection can override it.
+   * - ``mode``
+     - Optional. ``"generate"`` rebuilds instead of continuing from the
+       existing app; sent only when the user asks to discard the app a linked
+       GitHub repo holds. Without it the frontend decides.
 
 The action names no model: the run uses the model the user picked in the
 editor, else the BESSER backend's default for the provider (the deployment's
