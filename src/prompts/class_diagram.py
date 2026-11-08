@@ -13,6 +13,7 @@ from .fragments import (
     POSITION_DISCLAIMER,
     REMOVE_ELEMENT_RULE,
     RENAME_CASCADES_RULE,
+    WHOLE_PART_DIRECTION_RULE,
 )
 
 
@@ -43,7 +44,8 @@ CLASS_KEY_RULES_BLOCK = f"""KEY RULES:
 6. {DELETE_CLASS_CASCADE_RULE}
 7. modify_relationship = update existing. add_relationship = brand new.
 8. add_class: set target.className and put className, attributes[], methods[] in "changes".
-9. When adding new classes, add relationships connecting them to existing classes. Include multiplicities. This is critical — isolated classes with no relationships are useless."""
+9. When adding new classes, add relationships connecting them to existing classes. Include multiplicities. This is critical — isolated classes with no relationships are useless.
+10. {WHOLE_PART_DIRECTION_RULE}"""
 
 
 CLASS_EXAMPLES_BLOCK = """Examples:
@@ -109,7 +111,7 @@ RULES:
 3. A class the user described gets exactly what they described — never padded to hit a count. A class they only named should have 3-5+ attributes rather than being a stub.
 4. When creating Enumerations (isEnumeration=true), list enum values as attributes (name only, no type needed). When another class has an attribute whose type is that enumeration, set the attribute's type to the enum's PascalCase name (e.g., type="OrderStatus", NOT "str" or "String"). An enumeration is used ONLY as an attribute type — NEVER create a relationship (Association, Composition, Aggregation, etc.) whose source or target is an enumeration. For example, for a Task with a status, add an attribute Task.status of type TaskStatus; do NOT add a relationship from Task to the TaskStatus enum.
 5. METHODS — TWO DIFFERENT CASES, DO NOT CONFUSE THEM. (a) THE USER NAMES ACTIONS. Any phrasing that describes something an entity DOES ("a booking can be cancelled", "produces a bill", "offers five actions: ...", "the member borrows and returns books") is an explicit request. Emit EXACTLY those methods, on the class the user attached them to, using the user's own names and the user's own COUNT — an explicit list overrides the cap in (b) completely. Five stated actions means five methods, not two. (b) THE USER SAYS NOTHING ABOUT BEHAVIOUR. Then SKIP methods, or at most 1-2 obvious core domain methods per class. In BOTH cases: NEVER invent a method on a class the user said nothing about, and NEVER include getters/setters. Worked example: "A booking offers five actions: produce the bill, check the guest in, check the guest out, cancel the booking, and compute the amount due" => Booking gets produceBill(), checkIn(), checkOut(), cancel(), computeAmountDue() — all five — and Employee, Guest and Room get NO methods, because the user described none for them.
-6. Connect the classes with meaningful relationships — isolated classes are the most common gap. Use Association (general), Inheritance (is-a, sparingly), Composition (strong has-a), Aggregation (weak has-a), Realization (interface).
+6. Connect the classes with meaningful relationships — isolated classes are the most common gap. Use Association (general), Inheritance (is-a, sparingly), Composition (strong has-a), Aggregation (weak has-a), Realization (interface). {WHOLE_PART_DIRECTION_RULE}
 7. MULTIPLICITIES COME FROM THE USER'S OWN WORDS — never default to 1-to-1. Always include multiplicities (1, 0..1, 0..*, 1..*), and when the user states a cardinality in prose, TRANSCRIBE IT rather than guessing. Read each side separately: "may appear on several X" / "may hold several" / "many" / "one or more" / "zero or multiple" => the MANY side is 0..* or 1..* (use 1..* only when the user says at least one); "exactly one" / "one ... who is responsible" / "belongs to one" => that side is 1; "may ... or none" / "at most one" / "never more than one" / "optional" => 0..1 or 0..*. Worked example: "a given guest may appear on several bookings" AND "each booking lists at least one guest" => Booking 0..* -- 1..* Guest. "an employee may be responsible for many bookings" AND "each booking is handled by exactly one employee" => Employee 1 -- 0..* Booking. "a booking may have a bill raised against it, but never more than one" => Booking 1 -- 0..1 Bill. CHECK YOURSELF: a 1--1 association is rare and means the two objects always exist together and are never shared. Before emitting 1--1, re-read the request; if either side is described with a plural ("several", "many", "multiple", "a list of"), it is NOT 1--1. Getting this wrong produces a UNIQUE foreign key in the generated database and makes the app reject the user's real data. WHICH END GETS WHICH NUMBER - THIS IS THE PART THAT GOES WRONG. A multiplicity written at an end says HOW MANY OF THAT END'S CLASS relate to ONE instance of the class at the other end. So put the 'many' number on the class you have many OF. Worked example, with the exact encoding: "each booking has one person acting as its contact" AND "any individual may hold several bookings at once, or none at all" => source=Booking with multiplicity "0..*", target=Person with multiplicity "1" - because for one Person there are 0..* Bookings, and for one Booking there is exactly 1 contact Person. Writing it the other way round (source=Booking "1", target=Person "0..*") says every Person has exactly one Booking, which is the opposite of what the user wrote. Observed live 2026-09-17: that inversion on the contact, guests and handledBy associations made PersonCreate require a booking and BookingCreate require a contact person, so neither could ever be created and the whole app was unusable. Before emitting each relationship, say to yourself: 'for ONE <target class>, how many <source class> are there?' - that number is the SOURCE multiplicity.
 8. Generate both associations AND inheritance where appropriate (e.g., SavingsAccount/CheckingAccount → inherit from Account).
 9. Use proper naming: PascalCase for classes, camelCase for attributes/methods.
@@ -142,7 +144,9 @@ def reasoning_prompt(user_request: str) -> str:
         "asks for a comprehensive/complete system or names many entities.\n"
         "2. What attributes does each class need? (be thorough)\n"
         "3. What relationships connect these classes? What type (Association, "
-        "Composition, Aggregation, Inheritance)? For each one state the two "
+        "Composition, Aggregation, Inheritance)? For a Composition or "
+        "Aggregation say which class is the WHOLE: it becomes the target. "
+        "For each one state the two "
         "directions as SEPARATE sentences in this exact form — 'for one X "
         "there are <n> Y' and 'for one Y there are <n> X' — quoting the "
         "user's words for each. Do NOT use dash shorthand like 'X 1--* Y'; "

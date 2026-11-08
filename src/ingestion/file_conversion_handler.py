@@ -35,6 +35,7 @@ from llm.model_config import MODEL_VISION
 from prompts import file_conversion as file_prompts
 from utilities.image_inputs import data_url
 from utilities.pdf import PDFIUM_LOCK, page_text
+from utilities.whole_part import orient_composition_spec
 from protocol.actions import Action, inject_complete_system
 
 logger = logging.getLogger(__name__)
@@ -679,6 +680,12 @@ def _validate_class_diagram_spec(
         source = rel.get("source", "")
         target = rel.get("target", "")
         if source in class_names and target in class_names:
+            # The whole of a composition is its target end (BESSER-PEARL/BESSER#746).
+            if orient_composition_spec(rel):
+                logger.info(
+                    f"[FileConversion] Swapped composition {source}->{target}: "
+                    f"the whole is the target end"
+                )
             validated_rels.append(rel)
         else:
             logger.warning(
