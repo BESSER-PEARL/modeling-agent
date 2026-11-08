@@ -12,15 +12,26 @@ SPEC_DRIVEN_NAME = "Spec-Driven Agent"
 
 
 def continue_generating_prompt(artifact: str = "web app") -> str:
-    """The single post-screens pause sentence.
+    """The single "continue with generation?" pause sentence.
 
-    Every pause goes through this one function so the wording stays
-    consistent across emit paths.
+    Only for a generation the user ASKED for in the same request (a paused
+    "design X and generate Y" plan, a web-app build): it answers their own
+    request. Every pause goes through this one function so the wording stays
+    consistent across emit paths. A plain modeling reply uses
+    :data:`REFINE_MODEL_PROMPT` instead (BESSER-PEARL/BESSER#747).
     """
     return (
         "You can now review or refine your model, or continue with "
         f"generating your {artifact}. What would you like to do?"
     )
+
+
+# Closing line of a plain modeling reply (a model built or a GUI laid out with
+# no generation asked for). The assistant helps with the modeling; it does not
+# propose generating the application (BESSER-PEARL/BESSER#747).
+REFINE_MODEL_PROMPT = (
+    "You can now review the model on the canvas or tell me what to refine."
+)
 
 
 DECLINE_ACK = (

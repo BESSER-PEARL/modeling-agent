@@ -18,44 +18,51 @@ logger = logging.getLogger(__name__)
 # Pools are ordered by relevance; the engine picks from these based on
 # context and available diagrams.
 
-# The class diagram the agent just built IS "the spec". After creation the
-# user should either move on to code, or review the spec — not pick among
-# generators. Keep this to a clean two-step choice.
+# Modeling follow-ups only (BESSER-PEARL/BESSER#747). The assistant lives in
+# the modeling editor: after it builds or edits a diagram, the next steps it
+# offers are about the model (refine, review, explain, extend) — never a
+# "Generate ..." button. Generation stays one sentence away ("generate the
+# application", "generate django"), and the editor's own Generate menu is
+# right there; the assistant just does not push it.
 #
-# - "generate the code" routes into the Spec-Driven (smart) generation flow,
-#   which builds the app FROM THE SPEC (deterministic generators + LLM for
-#   gaps) without inventing requirements. It deliberately does NOT say
-#   "generate the backend" (that mapped to the backend-only deterministic
-#   generator and made the agent fabricate requirements).
 # - "Review the model" sends the ``wme:review-spec`` sentinel, which the
 #   frontend intercepts to CLOSE the assistant drawer so the user sees the
 #   diagram on the canvas — it is never relayed to the agent.
+# - "Explain the specs" is relayed like any chip; its wording routes to
+#   describe_model, which streams a plain-language overview of the model.
+_REVIEW_MODEL = ("Review the model", "wme:review-spec")
+_EXPLAIN_SPECS = (
+    "Explain the specs",
+    "Give me a plain-language overview of my current model — the "
+    "main entities and how they relate, in plain words (no "
+    "multiplicity jargon).",
+)
+
 _CLASS_DIAGRAM_COMPLETE = [
-    ("Generate the code", "generate the application"),
-    ("Review the model", "wme:review-spec"),
+    _EXPLAIN_SPECS,
+    _REVIEW_MODEL,
 ]
 
 _CLASS_DIAGRAM_SINGLE = [
     ("Add another class", "create another class"),
     ("Add a relationship", "add a relationship between classes"),
-    ("Generate Python code", "generate python"),
+    ("Describe my diagram", "describe my diagram"),
 ]
 
 _CLASS_DIAGRAM_MODIFY = [
-    ("Generate Python code", "generate python"),
     ("Describe my diagram", "describe my diagram"),
+    _REVIEW_MODEL,
     ("Make another change", ""),
 ]
 
 _STATE_MACHINE_SUGGESTIONS = [
-    ("Generate Python code", "generate python"),
     ("Add more states", "add a new state"),
+    ("Add a transition", "add a transition between states"),
     ("Describe my state machine", "describe my state machine"),
 ]
 
 _GUI_SUGGESTIONS_WITH_CLASS = [
-    ("Generate web app", "generate web app"),
-    ("Generate React frontend", "generate react"),
+    ("Describe my GUI", "describe my gui"),
     ("See GUI", ""),
 ]
 
@@ -65,7 +72,6 @@ _GUI_SUGGESTIONS_WITHOUT_CLASS = [
 ]
 
 _AGENT_SUGGESTIONS = [
-    ("Generate agent code", "generate agent"),
     ("Add more intents", "add a new intent"),
     ("Describe my agent", "describe my agent"),
 ]
@@ -73,11 +79,9 @@ _AGENT_SUGGESTIONS = [
 _OBJECT_DIAGRAM_SUGGESTIONS = [
     ("Modify the object diagram", ""),
     ("Describe my object diagram", "describe my object diagram"),
-    ("Generate Python code", "generate python"),
 ]
 
 _QUANTUM_SUGGESTIONS = [
-    ("Generate Qiskit code", "generate qiskit"),
     ("Add more gates", "add more quantum gates"),
     ("Describe my circuit", "describe my quantum circuit"),
 ]
@@ -185,7 +189,11 @@ def get_artifact_label(detected_generator: Optional[str]) -> str:
 def get_post_spec_suggestions(
     detected_generator: Optional[str], label: Optional[str] = None,
 ) -> List[Dict[str, str]]:
-    """Artifact-aware buttons shown after a complete spec is built.
+    """Artifact-aware buttons for a generation the USER asked for.
+
+    Only for a request that itself asked to generate (a paused "design X and
+    generate Y" plan, a web-app build): a plain modeling reply never offers
+    generation (BESSER-PEARL/BESSER#747) and uses :func:`get_suggested_actions`.
 
     When the original prompt signals a specific generator (e.g. 'database' → sql),
     the primary button names that artifact. Falls back to 'application' when no
@@ -196,19 +204,8 @@ def get_post_spec_suggestions(
     prompt = _GENERATOR_PROMPTS.get(detected_generator, "generate the application") if detected_generator else "generate the application"
     return [
         {"label": f"Generate {label}", "prompt": prompt},
-        {
-            "label": "Explain the specs",
-            # Relayed to the agent like any chip; the wording routes to
-            # describe_model, which streams a plain-language overview of the
-            # model (entities + relationships in words). Same request the
-            # assistant's "explain" affordance sends.
-            "prompt": (
-                "Give me a plain-language overview of my current model — the "
-                "main entities and how they relate, in plain words (no "
-                "multiplicity jargon)."
-            ),
-        },
-        {"label": "Review the model", "prompt": "wme:review-spec"},
+        {"label": _EXPLAIN_SPECS[0], "prompt": _EXPLAIN_SPECS[1]},
+        {"label": _REVIEW_MODEL[0], "prompt": _REVIEW_MODEL[1]},
     ]
 
 
@@ -263,8 +260,8 @@ def get_suggested_actions(
 
     # Fallback: generic next-step suggestions
     return _build_actions([
-        ("Generate Python code", "generate python"),
         ("Describe my diagram", "describe my diagram"),
+        ("Make another change", ""),
     ])
 
 
@@ -421,17 +418,10 @@ def _context_aware_suggestions(
     candidates: List[tuple] = []
 
     if diagram_type == "ClassDiagram":
-        # The class diagram the agent just built IS "the spec". Frame the
-        # next step as a two-step choice: generate the code, or review the
-        # spec — not a menu of generators. "generate the application" routes
-        # into the Spec-Driven (smart) flow and builds the app from the spec;
-        # "wme:review-spec" is a frontend sentinel that closes the drawer so
-        # the user sees the diagram (never relayed to the agent).
-        candidates.append(("Generate the code", "generate the application"))
-        candidates.append(("Review the model", "wme:review-spec"))
-        # Secondary: a context-aware tweak that references the user's own
-        # classes (only if there's room after the two-step choice, capped
-        # at 4 below).
+        # Modeling next steps only (#747): explain or review the model, then
+        # a context-aware tweak that references the user's own classes.
+        candidates.append(_EXPLAIN_SPECS)
+        candidates.append(_REVIEW_MODEL)
         if relationship_count == 0 and element_count > 1:
             candidates.append(
                 ("Add relationships", "add relationships between my classes")
@@ -448,7 +438,7 @@ def _context_aware_suggestions(
             candidates.append(
                 (f"Add transitions from {first_state}", f"add a transition from {first_state}")
             )
-        candidates.append(("Generate code", "generate python"))
+        candidates.append(("Describe my state machine", "describe my state machine"))
 
     if not candidates:
         return []

@@ -709,8 +709,10 @@ def _log_classification(
         pass
 
 
-# The "Generate the code" suggestion offered after the agent builds a class
-# diagram (suggestions.py). gpt-6-luna sent it to the generator menu
+# The words users type to build the app from the model, and the prompt of the
+# "Generate application" button offered when their own request asked to
+# generate (suggestions.get_post_spec_suggestions; a plain modeling reply
+# offers no generation button, BESSER-PEARL/BESSER#747). gpt-6-luna sent it to the generator menu
 # (deterministic, generator_type=None) in 4 of 12 live runs; a rulebook rule
 # scoped to "right after a build" also moved the hand-drawn and no-model
 # readings of the same words, so the scope is checked here instead.

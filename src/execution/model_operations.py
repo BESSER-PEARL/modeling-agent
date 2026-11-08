@@ -32,6 +32,7 @@ from utilities.model_context import is_diagram_nontrivial
 from utilities.original_request import (
     current_target, original_request_for_project, remember_original_request, request_project_id,
 )
+from conversation.reply_copy import REFINE_MODEL_PROMPT, continue_generating_prompt
 from conversation.suggestions import get_suggested_actions, get_artifact_label, get_post_spec_suggestions
 from common.session_keys import (
     LAST_EXECUTED_DIAGRAM_TYPE,
@@ -41,7 +42,9 @@ from common import pending_dialogs
 from common.pending_dialogs import (
     MISMATCH_REGEN_PENDING,
     PENDING_COMPLETE_SYSTEM,
+    PENDING_GENERATOR_CONFIG,
     PENDING_GUI_CHOICE,
+    PLAN_GENERATION_CONFIRM_FLAG,
     PENDING_SMART_GEN_INSTRUCTIONS,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
@@ -70,6 +73,18 @@ def _non_web_target_label(session, request):
     if target.get("kind") == "other" and target.get("description"):
         return target["description"]
     return None
+
+
+def _user_asked_generation(session) -> bool:
+    """True when this request itself asked to generate code.
+
+    A mixed "design X and generate Y" plan pauses its generation op before the
+    model step runs (``execution.planning``) and marks the stash with
+    ``PLAN_GENERATION_CONFIRM_FLAG``; only then may a modeling reply ask
+    whether to continue with generation (BESSER-PEARL/BESSER#747).
+    """
+    config = pending_dialogs.get(session, PENDING_GENERATOR_CONFIG)
+    return isinstance(config, dict) and bool(config.get(PLAN_GENERATION_CONFIRM_FLAG))
 
 
 def original_request_to_stash(request, operation_mode, target_diagram_type):
@@ -997,38 +1012,31 @@ def execute_model_operation(
     if suggestions:
         result["suggestedActions"] = suggestions
 
-    # For complete-system creations, detect the intended artifact type from the
-    # original user message and append an artifact-aware follow-up sentence +
-    # replace the generic buttons with artifact-specific ones.
-    # Skip for web_app: the GUI-choice flow runs next and emit_webapp_generate_prompt
-    # shows its own artifact-aware follow-up after the screens are built.
-    if operation_mode == "complete_system" and isinstance(result.get("message"), str):
+    # Closing line and quick actions. The assistant lives in the modeling
+    # editor, so a modeling reply offers modeling next steps only — never
+    # "continue with generating your application?" nor a "Generate ..." button
+    # (BESSER-PEARL/BESSER#747). The one exception is a request that itself
+    # asked to generate ("design X and generate Y"): planning paused that
+    # generation (PLAN_GENERATION_CONFIRM_FLAG) and this reply is where the
+    # user confirms it, so it names the artifact and offers the button.
+    # web_app is left to the GUI-choice flow's own prompt.
+    if operation_mode in ("complete_system", "modify_model") and isinstance(result.get("message"), str):
         _detected_gen = detect_generator_type(request.message)
         if _detected_gen != "web_app":
-            _artifact = _non_web_target_label(session, request) or get_artifact_label(_detected_gen)
-            result["message"] += (
-                f"\n\nYou can now review or refine your model, or continue "
-                f"with generating your {_artifact}. What would you like to do?"
-            )
-            result["suggestedActions"] = get_post_spec_suggestions(
-                _detected_gen, label=_non_web_target_label(session, request),
-            )
-
-    # After a MODIFY, keep the conversation flowing toward generation instead of
-    # showing the generic "Generate Python code / Describe my diagram" buttons:
-    # acknowledge the change and offer to continue generating, mirroring the
-    # create flow above. (web_app is left to the GUI-choice flow's own prompt.)
-    if operation_mode == "modify_model" and isinstance(result.get("message"), str):
-        _detected_gen = detect_generator_type(request.message)
-        if _detected_gen != "web_app":
-            _artifact = _non_web_target_label(session, request) or get_artifact_label(_detected_gen)
-            result["message"] += (
-                f"\n\nWant to keep refining, or continue with generating your "
-                f"{_artifact}?"
-            )
-            result["suggestedActions"] = get_post_spec_suggestions(
-                _detected_gen, label=_non_web_target_label(session, request),
-            )
+            if _user_asked_generation(session):
+                _artifact = _non_web_target_label(session, request) or get_artifact_label(_detected_gen)
+                if operation_mode == "complete_system":
+                    result["message"] += "\n\n" + continue_generating_prompt(_artifact)
+                else:
+                    result["message"] += (
+                        f"\n\nWant to keep refining, or continue with generating your "
+                        f"{_artifact}?"
+                    )
+                result["suggestedActions"] = get_post_spec_suggestions(
+                    _detected_gen, label=_non_web_target_label(session, request),
+                )
+            elif operation_mode == "complete_system":
+                result["message"] += "\n\n" + REFINE_MODEL_PROMPT
 
     # ── Destructive modify-model guard ───────────────────────────────────
     # Block a modify_model plan whose net effect would delete most/all of
