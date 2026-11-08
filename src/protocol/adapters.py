@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from baf.core.session import Session
 from baf.library.transition.events.base_events import ReceiveJSONEvent
@@ -27,6 +27,12 @@ PILOT_PARTICIPANT_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,16}$")
 
 # Well above what the editor sends; the client is not trusted to keep it small.
 MAX_REPO_RECAP_CHARS = 4_000
+# ``recentHistory`` caps, the same as the editor's (MAX_RECENT_HISTORY_TURNS /
+# _CHARS in AssistantClient.ts): enough turns to rebuild the conversation memory
+# (its window is 20 messages), enforced again here.
+MAX_RECENT_HISTORY_TURNS = 20
+MAX_RECENT_HISTORY_CHARS = 4_000
+_RECENT_HISTORY_ROLES = frozenset({"user", "assistant"})
 # GitHub's own limits: owner up to 39 characters, repository up to 100.
 REPO_FULL_NAME_PATTERN = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}")
 
@@ -319,7 +325,29 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         attachments=attachments,
         pilot_participant=pilot_participant,
         turn_id=_parse_turn_id(raw_payload),
+        recent_history=_parse_recent_history(raw_payload),
     )
+
+
+def _parse_recent_history(raw_payload: Dict[str, Any]) -> List[Dict[str, str]]:
+    """The payload's ``recentHistory``, clamped: entries that are not a
+    ``{"role": "user" | "assistant", "content": <non-empty string>}`` are
+    dropped, each content is cut at ``MAX_RECENT_HISTORY_CHARS`` and only the
+    newest ``MAX_RECENT_HISTORY_TURNS`` are kept (oldest first)."""
+    raw = raw_payload.get("recentHistory")
+    if not isinstance(raw, list):
+        return []
+    turns: List[Dict[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        role, content = entry.get("role"), entry.get("content")
+        if not isinstance(role, str) or role not in _RECENT_HISTORY_ROLES:
+            continue
+        if not isinstance(content, str) or not content.strip():
+            continue
+        turns.append({"role": role, "content": content[:MAX_RECENT_HISTORY_CHARS]})
+    return turns[-MAX_RECENT_HISTORY_TURNS:]
 
 
 def _parse_turn_id(raw_payload: Dict[str, Any]) -> Optional[str]:
