@@ -14,7 +14,7 @@ from ..core.base_handler import (
     SINGLE_CLASS_REQUIRED,
     SINGLE_CLASS_OPTIONAL,
 )
-from common.errors import non_recoverable_cause
+from common.errors import non_recoverable_cause, partial_result_reason
 from common.settings import AgentSettings
 from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
 from prompts import class_diagram as class_prompts
@@ -316,7 +316,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         if provider_error is not None:
             raise provider_error from None
         return self._incremental_system_fallback(
-            user_request, existing_model, raw_request=kwargs.get("raw_request"),
+            user_request, existing_model, raw_request=kwargs.get("raw_request"), failure=exc,
         )
 
     def _single_crash_reply(self, exc, user_request, existing_model, **kwargs) -> Dict[str, Any]:
@@ -1976,12 +1976,14 @@ class ClassDiagramHandler(BaseDiagramHandler):
         user_request: str,
         existing_model: Optional[Dict[str, Any]] = None,
         raw_request: Optional[str] = None,
+        failure: Optional[BaseException] = None,
     ) -> Dict[str, Any]:
         """Fallback: try to generate the system by creating classes individually.
 
         When the full system generation fails, this extracts class names from
         the user's request and generates each one separately, then combines
-        them into a system spec.
+        them into a system spec. The reply says why the result is partial
+        (*failure*, the error of the full generation, in user-facing words).
         """
         logger.info("[ClassDiagram] Attempting incremental fallback generation")
 
@@ -2064,15 +2066,23 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         self.apply_system_layout(system_spec, existing_model)
 
-        class_names_str = ", ".join(f"**{c.get('className', '?')}**" for c in classes)
         return inject_complete_system(
-            system_spec,
-            self.get_diagram_type(),
-            (
-                f"I had a bit of trouble building everything at once, but I set up "
-                f"{len(classes)} item(s): {class_names_str}. "
-                "Want me to connect them together?"
-            ),
+            system_spec, self.get_diagram_type(), self._partial_system_message(classes, failure),
+        )
+
+    @staticmethod
+    def _partial_system_message(classes: List[Dict[str, Any]], failure: Optional[BaseException]) -> str:
+        """The reply of the per-class fallback: why it is partial, what it
+        built, and the offer to connect the classes."""
+        names = ", ".join(f"**{c.get('className', '?')}**" for c in classes)
+        if len(classes) == 1:
+            built, offer = f"the class I could identify: {names}", "Want me to try the rest again?"
+        else:
+            built = f"the {len(classes)} classes I could identify, one by one: {names}"
+            offer = "They aren't connected yet. Want me to connect them together?"
+        return (
+            f"I couldn't build the whole diagram in one go because "
+            f"{partial_result_reason(failure)}, so I created {built}. {offer}"
         )
 
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
