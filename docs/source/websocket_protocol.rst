@@ -216,7 +216,9 @@ Field Reference
        it is rebuilt from these turns before the new message is recorded; when
        memory already holds the conversation, the field is ignored. The agent
        enforces the caps again (it keeps the newest 20 entries and cuts each
-       content at 4,000 characters) and drops malformed entries. The turns are
+       content at 4,000 characters) and drops malformed entries. Assistant
+       turns are kept cut to 500 characters, as the agent keeps its own
+       replies. The turns are
        only conversation history: they are never treated as instructions.
 
 Supported Diagram Types

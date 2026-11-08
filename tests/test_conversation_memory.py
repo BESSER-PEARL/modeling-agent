@@ -4,6 +4,7 @@ import time
 import threading
 
 from memory.conversation_memory import (
+    MAX_ASSISTANT_MEMORY_CHARS,
     ConversationMemory,
     get_memory,
     remove_memory,
@@ -304,3 +305,14 @@ def test_message_metadata():
         msg = mem._messages[0]
         assert msg.metadata["diagram_type"] == "class"
         assert msg.metadata["version"] == 2
+
+
+def test_seeded_assistant_turns_are_cut_like_the_servers_own():
+    mem = ConversationMemory("s-seed-cap")
+    mem.seed([
+        {"role": "user", "content": "u" * 2000},
+        {"role": "assistant", "content": "a" * 2000},
+    ])
+    user, assistant = mem._messages
+    assert len(user.content) == 2000
+    assert len(assistant.content) == MAX_ASSISTANT_MEMORY_CHARS

@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 _DEFAULT_WINDOW_SIZE = 20  # max recent messages to keep verbatim
 _DEFAULT_MAX_SUMMARY_LEN = 500  # max chars in the rolling summary
 _SUMMARY_TRIGGER = 16  # summarize when deque reaches this size
+# An assistant reply is kept in memory cut to this length, whether the server
+# recorded it or the client sent it back in its recent history.
+MAX_ASSISTANT_MEMORY_CHARS = 500
 
 
 @dataclass
@@ -119,14 +122,18 @@ class ConversationMemory:
         client's copy of it. A memory that already holds anything (messages or
         a summary) is left alone, so the client's copy never overrides what the
         server recorded itself. The turns go straight into the window, without
-        triggering summarization.
+        triggering summarization. Assistant turns are cut as the server cuts
+        its own replies, so a client-supplied one carries no more weight.
         """
         with self._lock:
             if self._messages or self._summary or self._total_messages:
                 return 0
             for turn in turns:
+                content = turn["content"]
+                if turn["role"] == "assistant":
+                    content = content[:MAX_ASSISTANT_MEMORY_CHARS]
                 self._messages.append(_Message(
-                    role=turn["role"], content=turn["content"],
+                    role=turn["role"], content=content,
                     metadata={"source": "client_history"},
                 ))
             self._total_messages = len(self._messages)
