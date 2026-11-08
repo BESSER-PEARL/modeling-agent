@@ -240,7 +240,13 @@ Conversation Memory
     which survives reconnects
   - ``get_memory(session_id, ...)`` / ``remove_memory(session_id)``
   - ``cleanup_stale_memories(max_age_seconds)`` — the reaper runs it through
-    ``common.session_store.sessions.expire``
+    ``common.session_store.sessions.expire``; it drops memories with no new
+    message and no heartbeat for ``max_age_seconds``
+  - ``touch_memory(session_id)`` — marks a conversation as in use; the
+    platform calls it on each keep-alive heartbeat (whose ``user_id`` is the
+    tab's ``sessionId``)
+  - ``ConversationMemory.seed(turns)`` — rebuilds an empty memory from the
+    client's ``recentHistory``
   - ``ConversationMemory``
 
 Diagram Handlers

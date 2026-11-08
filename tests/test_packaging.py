@@ -100,16 +100,22 @@ def test_nothing_imports_through_a_src_prefix():
     assert offenders == []
 
 
-def test_the_baf_patch_imports_byok_from_its_package():
-    """The vendored BAF file imports byok lazily and swallows the error, so a
-    stale module path would silently turn BYOK off instead of failing."""
+def test_the_baf_patch_imports_resolve_in_the_agents_packages():
+    """The vendored BAF file imports the agent's modules lazily and swallows
+    the error, so a stale path would silently turn BYOK (or the memory
+    heartbeat) off instead of failing."""
     tree = ast.parse((ROOT / "patches" / "websocket_platform.py").read_text(encoding="utf-8"))
     packages = {p.parent.name for p in SRC.glob("*/__init__.py")}
-    imported = []
+    imported = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and not node.level and node.module.split(".")[0] in packages:
-            imported += [importlib.import_module(f"{node.module}.{alias.name}") for alias in node.names]
-    assert imported and all(hasattr(m, "set_current") and hasattr(m, "reset_current") for m in imported)
+            module = importlib.import_module(node.module)
+            for alias in node.names:
+                assert hasattr(module, alias.name), f"{node.module}.{alias.name}"
+                imported[f"{node.module}.{alias.name}"] = getattr(module, alias.name)
+    byok = imported["llm.byok"]
+    assert hasattr(byok, "set_current") and hasattr(byok, "reset_current")
+    assert callable(imported["memory.touch_memory"])
 
 
 def test_every_package_but_llm_is_kept_off_the_model_sdks():

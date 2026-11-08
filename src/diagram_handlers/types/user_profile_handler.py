@@ -839,8 +839,4 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
             or target.get("className")
             or target.get("attributeName")
         )
-        attr_name = target.get("attributeName")
-        profile = target.get("profileName") or target.get("className")
-        if profile and attr_name and action in ("remove_element", "modify_attribute_value"):
-            return f"attribute {attr_name} on {profile}"
         return name or "profile"

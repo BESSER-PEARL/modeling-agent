@@ -403,6 +403,13 @@ It falls back to the BAF session id only when no parsed request is available
 — the BAF id changes on every reconnect without a stable user query param,
 which would silently drop all conversation context.
 
+A memory lives as long as its conversation is in use: the reaper drops it after
+an hour with no new message and no keep-alive heartbeat from the tab that holds
+it (``touch_memory``; the heartbeat's ``user_id`` is the tab's ``sessionId``).
+If the server lost it anyway (a restart, a tab left closed for over an hour),
+the client's ``recentHistory`` on its first message after a reconnect rebuilds
+it (:doc:`websocket_protocol`).
+
 The frontend keeps that continuity by appending a persisted ``?user_id=``
 query parameter to the WebSocket URL. Because the two sockets a browser tab
 opens (the assistant widget and the workspace drawer) then share one session

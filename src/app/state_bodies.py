@@ -86,6 +86,30 @@ def _text_reply(llm: Any, prompt: str) -> str:
     )
 
 
+def _conversation_memory(session: Session, request: AssistantRequest):
+    """This conversation's memory (created with the summarizer), rebuilt from
+    the client's ``recentHistory`` when the server no longer holds it.
+
+    The client sends its latest turns on the first message after a
+    (re)connect. They seed only an EMPTY memory (a restart, a conversation
+    reaped while the tab was gone), before the new message is recorded and
+    before the classifier reads the history; a memory that already holds the
+    conversation keeps what the server recorded and ignores them.
+    """
+    key = memory_session_key(session, request)
+    summarizer = getattr(ctx, 'gpt_text', None)
+    summarize_fn = functools.partial(_text_reply, summarizer) if summarizer else None
+    mem = get_memory(key, summarizer=summarize_fn)
+    if request.recent_history:
+        seeded = mem.seed(request.recent_history)
+        if seeded:
+            logger.info(
+                "[Memory:%s] Rebuilt the conversation from the client's recent history (%d turn(s))",
+                key, seeded,
+            )
+    return mem
+
+
 # ------------------------------------------------------------------
 # Common preamble helper
 # ------------------------------------------------------------------
@@ -108,6 +132,12 @@ def _ensure_unified_classification(session: Session) -> bool:
     """
     try:
         request = parse_assistant_request(session)
+        if request.recent_history:
+            # Before the classifier reads the conversation history.
+            try:
+                _conversation_memory(session, request)
+            except Exception as exc:
+                logger.warning("Rebuilding conversation memory from the client failed: %s", exc)
         if guards.skips_classification(request):
             return False
         provider = _get_llm_provider() if _get_llm_provider else None
@@ -163,11 +193,7 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     # payload sessionId so memory survives WebSocket reconnects.
     if request.message:
         try:
-            session_id = memory_session_key(session, request)
-            summarizer = getattr(ctx, 'gpt_text', None)
-            summarize_fn = functools.partial(_text_reply, summarizer) if summarizer else None
-            mem = get_memory(session_id, summarizer=summarize_fn)
-            mem.add_user(request.message)
+            _conversation_memory(session, request).add_user(request.message)
         except Exception as exc:
             logger.debug(f"Recording user message in memory failed (best-effort): {exc}")
 

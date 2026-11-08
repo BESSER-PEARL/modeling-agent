@@ -385,6 +385,23 @@ class BaseDiagramHandler(ABC):
         'remove_flow': 'Removed flow from',
     }
 
+    # Actions on a member (attribute / method) of an element: verb, member kind
+    # and preposition, so the reply names both ("Updated attribute **aliases**
+    # in **Brand**."). ``remove_element`` on a member is resolved from the target.
+    _MEMBER_ACTIONS = {
+        'add_attribute': ('Added', 'attribute', 'to'),
+        'modify_attribute': ('Updated', 'attribute', 'in'),
+        'remove_attribute': ('Removed', 'attribute', 'from'),
+        'add_method': ('Added', 'method', 'to'),
+        'modify_method': ('Updated', 'method', 'in'),
+        'remove_method': ('Removed', 'method', 'from'),
+        'modify_attribute_value': ('Updated', 'attribute', 'on'),  # User Profile
+    }
+    # Target keys naming the element that owns the member, first match wins. A
+    # User Profile target can also carry the class of its profile box, so its
+    # profile name comes first.
+    _MEMBER_OWNER_KEYS = ('profileName', 'className', 'objectName')
+
     @staticmethod
     def _sanitize_target_name(name: str) -> str:
         """Strip JSON artifacts the LLM may leak into names."""
@@ -406,14 +423,54 @@ class BaseDiagramHandler(ABC):
         human = action.replace('_', ' ').capitalize()
         return f"{human} **{target_name}**."
 
+    @classmethod
+    def _describe_member_change(cls, action: str, target: dict, mod: Optional[dict] = None) -> Optional[str]:
+        """The reply for a change to an attribute or method, naming the member
+        and its owner (``"Updated attribute **aliases** in **Brand**."``), or
+        ``None`` when *action* is not a member change or a name is missing."""
+        owner = next((target.get(k) for k in cls._MEMBER_OWNER_KEYS if target.get(k)), None)
+        changes = (mod or {}).get('changes') if isinstance(mod, dict) else None
+        changes = changes if isinstance(changes, dict) else {}
+        if action == 'remove_element':
+            kind = 'attribute' if target.get('attributeName') else 'method' if target.get('methodName') else None
+            if kind is None:
+                return None
+            verb, prep = 'Removed', 'from'
+        elif action in cls._MEMBER_ACTIONS:
+            verb, kind, prep = cls._MEMBER_ACTIONS[action]
+        else:
+            return None
+        member = target.get(f'{kind}Name')
+        new_name = changes.get('name') if isinstance(changes.get('name'), str) else None
+        if not member and action.startswith('add_'):
+            member, new_name = new_name, None
+        if not owner or not member:
+            return None
+        owner, member = cls._sanitize_target_name(owner), cls._sanitize_target_name(member)
+        if action.startswith('modify_') and new_name and cls._sanitize_target_name(new_name) != member:
+            return (
+                f"Renamed {kind} **{member}** to **{cls._sanitize_target_name(new_name)}** "
+                f"in **{owner}**."
+            )
+        return f"{verb} {kind} **{member}** {prep} **{owner}**."
+
+    def _describe_modification(
+        self, action: str, target: dict, mod: Optional[dict] = None, elements: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """The reply sentence for one modification."""
+        member_change = self._describe_member_change(action, target, mod)
+        if member_change:
+            return member_change
+        name = self._build_mod_target_name(action, target, mod, elements=elements)
+        return self._friendly_mod_message(action, name)
+
     def _build_mod_target_name(
         self, action: str, target: dict, mod: dict = None, elements: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Build a descriptive target name that includes sub-element context.
+        """Name the element a modification targets, for the reply message.
 
-        For remove_element / modify_attribute / etc., if both a class name and
-        an attribute/method name are present, return something like
-        ``"attribute gender from Shoe"`` instead of just ``"Shoe"``.
+        A change to a named attribute or method is described in full by
+        :meth:`_describe_member_change` before this is consulted.
 
         Subclasses may override to extend with diagram-specific resolution
         (e.g. BPMN flow endpoint lookup). The full ``mod`` dict is passed so
@@ -442,12 +499,6 @@ class BaseDiagramHandler(ABC):
         if rel_source and rel_target:
             return f"{rel_source} → {rel_target}"
 
-        # Sub-element (attribute or method) on a class
-        if class_name and attr_name and action in ('remove_element', 'modify_attribute', 'remove_attribute'):
-            return f"attribute {attr_name} from {class_name}"
-        if class_name and method_name and action in ('remove_element', 'modify_method', 'remove_method'):
-            return f"method {method_name} from {class_name}"
-
         # Agent transition endpoints (source → target state)
         src_state = target.get('sourceStateName')
         tgt_state = target.get('targetStateName')
@@ -472,8 +523,7 @@ class BaseDiagramHandler(ABC):
         for m in mods:
             act = m.get('action', 'modification')
             t = m.get('target', {})
-            name = self._build_mod_target_name(act, t, m, elements=elements)
-            parts.append(self._friendly_mod_message(act, name))
+            parts.append(self._describe_modification(act, t, m, elements=elements))
         if len(parts) == 1:
             return parts[0]
         return f"Applied {len(parts)} changes:\n" + "\n".join(f"- {p}" for p in parts)
@@ -629,9 +679,7 @@ class BaseDiagramHandler(ABC):
                 mod = modification_spec['modification']
                 act = mod.get('action', 'modification')
                 target = mod.get('target', {})
-                name = self._build_mod_target_name(act, target, mod, elements=elements)
-                name = self._sanitize_target_name(name)
-                modification_spec['message'] = self._friendly_mod_message(act, name)
+                modification_spec['message'] = self._describe_modification(act, target, mod, elements=elements)
 
         # Surface partial-validation skips so the user knows something was
         # dropped (otherwise a 4-of-5 batch silently looks like a 4-of-4).

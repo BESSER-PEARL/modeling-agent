@@ -91,6 +91,23 @@ def _reset_request_byok(token) -> None:
         logger.warning(f"BYOK: could not reset per-request key: {exc}")
 
 
+def _keep_conversation_alive(tab_id) -> None:
+    """Tell the conversation memory that this tab is still connected.
+
+    A heartbeat's ``user_id`` is the tab's payload ``sessionId``, the key its
+    conversation memory is stored under, so the reaper does not drop a
+    conversation while its tab is open (it expires idle memories). Imported
+    lazily, like ``byok`` above; best effort.
+    """
+    if not tab_id:
+        return
+    try:
+        from memory import touch_memory
+        touch_memory(tab_id)
+    except Exception as exc:  # never let it break the heartbeat
+        logger.warning(f"Could not mark conversation {tab_id!r} as in use: {exc}")
+
+
 def _tab_id_of(payload_str) -> str | None:
     """The sending tab's id: the editor puts its per-tab session id in the raw
     payload's ``user_id``, which ``Payload.decode`` drops."""
@@ -341,6 +358,7 @@ class WebSocketPlatform(Platform):
                         # the client currently holds -- even after reconnects. Then
                         # skip without setting a variable or spamming the logs.
                         if '__heartbeat' in payload.message:
+                            _keep_conversation_alive(tab_id)
                             if self._claim_slot(str(session_key), conn, tab_id, sender=False):
                                 # A heartbeat proves this socket is live -> flush any
                                 # replies buffered while the slot was stale/absent.

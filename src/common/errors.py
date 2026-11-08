@@ -294,6 +294,34 @@ def classify_error(error: Exception) -> ErrorCode:
     return ErrorCode.UNKNOWN
 
 
+# Why a generation fell back to a partial result, in words for the user; never
+# the raw error, which can carry provider details.
+_PARTIAL_REASONS: Dict[ErrorCode, str] = {
+    ErrorCode.TIMEOUT: "the AI model took too long to answer",
+    ErrorCode.PARSE_ERROR: "the AI model's answer was incomplete or malformed",
+    ErrorCode.VALIDATION_ERROR: "the AI model's answer was incomplete or malformed",
+    ErrorCode.SCHEMA_ERROR: "the AI model's answer was incomplete or malformed",
+    ErrorCode.LLM_FAILURE: "I couldn't get a complete answer from the AI service",
+}
+_TRUNCATED_REASON = "the AI model's answer was cut off before it was complete"
+_PARTIAL_REASON_DEFAULT = "something went wrong while I was putting the full diagram together"
+_TRUNCATION_ERRORS = frozenset({"OutputTruncated", "LengthFinishReasonError"})
+
+
+def partial_result_reason(error: Optional[BaseException]) -> str:
+    """Why the full generation failed, as a clause that follows "because"."""
+    seen = set()
+    cause = error
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if type(cause).__name__ in _TRUNCATION_ERRORS:
+            return _TRUNCATED_REASON
+        cause = cause.__cause__ or cause.__context__
+    if not isinstance(error, Exception):
+        return _PARTIAL_REASON_DEFAULT
+    return _PARTIAL_REASONS.get(classify_error(error), _PARTIAL_REASON_DEFAULT)
+
+
 def build_error_response(
     error_code: ErrorCode,
     message: str = "",

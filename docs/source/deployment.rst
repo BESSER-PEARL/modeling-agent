@@ -277,7 +277,9 @@ Scaling Considerations
   tracked connection that has been disconnected for longer than
   ``GRACE_PERIOD_SECONDS`` (300 s). It also runs the expiry of the
   per-session stores registered in ``src/common/session_store.py``, which reaps
-  conversation memories older than an hour.
+  conversation memories idle for more than an hour. A connected tab's keep-alive
+  heartbeat keeps its conversation in use, so the hour only starts once the tab
+  is gone.
 - **Session continuity:** conversation memory is keyed on the v2 payload's
   ``sessionId``, which survives reconnects — see :doc:`architecture`.
 

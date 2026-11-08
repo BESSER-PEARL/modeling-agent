@@ -23,7 +23,7 @@ from common.errors import (
 )
 from llm import byok
 from llm.provider import LLMProvider
-from memory import get_memory, memory_session_key
+from memory import MAX_ASSISTANT_MEMORY_CHARS, get_memory, memory_session_key
 from common.session_keys import (
     LAST_SUGGESTED_PROMPTS,
     TELEMETRY_EMITTED_EVENT_ID,
@@ -431,7 +431,7 @@ def _record_assistant_response(session: Session, content: str) -> None:
             # Keyed on the stable payload sessionId so memory survives
             # WebSocket reconnects (BAF session ids churn).
             mem = get_memory(memory_session_key(session))
-            mem.add_assistant(content[:500])  # cap to avoid bloating memory
+            mem.add_assistant(content[:MAX_ASSISTANT_MEMORY_CHARS])
     except Exception as exc:
         logger.debug(f"Recording assistant response failed (best-effort): {exc}")
 
