@@ -3,11 +3,11 @@
 import logging
 from typing import Any, Optional
 
-from .conversation_memory import ConversationMemory, get_memory
+from .conversation_memory import ConversationMemory, get_memory, touch_memory
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ConversationMemory", "get_memory", "memory_session_key"]
+__all__ = ["ConversationMemory", "get_memory", "memory_session_key", "touch_memory"]
 
 
 def memory_session_key(session: Any, request: Optional[Any] = None) -> str:

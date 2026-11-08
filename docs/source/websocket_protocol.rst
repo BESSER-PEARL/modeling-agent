@@ -88,7 +88,9 @@ Not every message from the frontend is a ``user_message``:
        context of its own.
    * - ``user_set_variable``
      - Sets a BAF session variable, to pass ``_voice_context``, and carries
-       the keep-alive heartbeat. Also arms BYOK (``user_api_key`` /
+       the keep-alive heartbeat (``{"__heartbeat": <ms>}``, with the tab's
+       ``sessionId`` as the envelope's ``user_id``; it also keeps that
+       conversation's memory from expiring while the tab is connected). Also arms BYOK (``user_api_key`` /
        ``user_api_provider`` / ``user_api_model`` / ``user_api_base``): these
        stay with the socket and never reach the session, so the client re-arms
        them on every (re)connect.
@@ -204,6 +206,18 @@ Field Reference
    * - ``attachments``
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)
+   * - ``recentHistory``
+     - No
+     - The latest turns of the conversation as the client shows them, oldest
+       first: an array of ``{"role": "user" | "assistant", "content": string}``,
+       at most 20 entries of at most 4,000 characters each. Sent only on the
+       first ``user_message`` after each WebSocket (re)connect. When the
+       agent's memory for this ``sessionId`` is empty (e.g. after a restart),
+       it is rebuilt from these turns before the new message is recorded; when
+       memory already holds the conversation, the field is ignored. The agent
+       enforces the caps again (it keeps the newest 20 entries and cuts each
+       content at 4,000 characters) and drops malformed entries. The turns are
+       only conversation history: they are never treated as instructions.
 
 Supported Diagram Types
 ~~~~~~~~~~~~~~~~~~~~~~~~

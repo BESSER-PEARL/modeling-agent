@@ -60,6 +60,9 @@ class ConversationMemory:
         self._summarizer = summarizer
         self._lock = threading.Lock()
         self._total_messages: int = 0
+        # Last sign that a connected tab still uses this conversation (its
+        # keep-alive heartbeat, see :func:`touch_memory`); 0 until the first one.
+        self._last_seen: float = 0.0
 
     # ------------------------------------------------------------------
     # Adding messages
@@ -102,6 +105,38 @@ class ConversationMemory:
         # Run the summarizer outside the lock so it doesn't block other threads
         if compress_text is not None:
             self._run_compress(compress_text, compress_count)
+
+    def touch(self) -> None:
+        """Mark the conversation as still in use, so the reaper keeps it."""
+        with self._lock:
+            self._last_seen = time.time()
+
+    def seed(self, turns: List[Dict[str, str]]) -> int:
+        """Fill an EMPTY memory with earlier *turns* (``{"role", "content"}``,
+        oldest first); return how many were recorded.
+
+        Used to rebuild a conversation the server no longer remembers from the
+        client's copy of it. A memory that already holds anything (messages or
+        a summary) is left alone, so the client's copy never overrides what the
+        server recorded itself. The turns go straight into the window, without
+        triggering summarization.
+        """
+        with self._lock:
+            if self._messages or self._summary or self._total_messages:
+                return 0
+            for turn in turns:
+                self._messages.append(_Message(
+                    role=turn["role"], content=turn["content"],
+                    metadata={"source": "client_history"},
+                ))
+            self._total_messages = len(self._messages)
+            return self._total_messages
+
+    def _last_activity(self) -> float:
+        """When the conversation was last used: its newest message or the
+        last heartbeat of a tab holding it. Must hold ``self._lock``."""
+        last_msg = self._messages[-1].timestamp if self._messages else 0.0
+        return max(last_msg, self._last_seen)
 
     # ------------------------------------------------------------------
     # Context building
@@ -267,22 +302,39 @@ def remove_memory(session_id: str) -> None:
         _memories.pop(session_id, None)
 
 
-def cleanup_stale_memories(max_age_seconds: int = 86400) -> int:
-    """Remove conversation memories that haven't been updated in max_age_seconds.
+def touch_memory(session_id: str) -> bool:
+    """Mark *session_id*'s conversation as in use by a connected tab.
 
-    Call this periodically (e.g., every hour) to prevent memory leaks
-    from disconnected sessions.
+    Called on the client's keep-alive heartbeat (``patches/websocket_platform.py``),
+    whose ``user_id`` is the tab's payload ``sessionId``, i.e. the memory key.
+    Never creates a memory. Returns whether one was touched.
+    """
+    with _memories_lock:
+        mem = _memories.get(session_id)
+    if mem is None:
+        return False
+    mem.touch()
+    return True
+
+
+def cleanup_stale_memories(max_age_seconds: int = 86400) -> int:
+    """Remove conversation memories idle for more than *max_age_seconds*.
+
+    Idle means no new message and no heartbeat from a tab holding the
+    conversation (:func:`touch_memory`), so a conversation is never reaped while
+    its tab is still connected: the idle clock effectively starts when the tab
+    goes away. Run periodically by the session reaper, so memories of
+    abandoned tabs do not leak.
     """
     now = time.time()
     stale_ids = []
     with _memories_lock:
         for session_id, mem in _memories.items():
             with mem._lock:
-                if not mem._messages:
+                if not mem._messages and not mem._summary:
                     stale_ids.append(session_id)
                     continue
-                last_msg = mem._messages[-1]
-                if now - last_msg.timestamp > max_age_seconds:
+                if now - mem._last_activity() > max_age_seconds:
                     stale_ids.append(session_id)
         for sid in stale_ids:
             _memories.pop(sid, None)
