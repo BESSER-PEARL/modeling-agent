@@ -397,8 +397,10 @@ class BaseDiagramHandler(ABC):
         'remove_method': ('Removed', 'method', 'from'),
         'modify_attribute_value': ('Updated', 'attribute', 'on'),  # User Profile
     }
-    # Target keys naming the element that owns the member, first match wins.
-    _MEMBER_OWNER_KEYS = ('className', 'objectName', 'profileName')
+    # Target keys naming the element that owns the member, first match wins. A
+    # User Profile target can also carry the class of its profile box, so its
+    # profile name comes first.
+    _MEMBER_OWNER_KEYS = ('profileName', 'className', 'objectName')
 
     @staticmethod
     def _sanitize_target_name(name: str) -> str:

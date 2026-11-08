@@ -60,3 +60,11 @@ def test_a_user_profile_attribute_value_names_attribute_and_profile():
     assert h._describe_modification("modify_attribute_value", target, {"target": target}) == (
         "Updated attribute **age** on **personal_information**."
     )
+
+
+def test_a_user_profile_target_with_a_class_still_names_the_profile():
+    h = UserProfileDiagramHandler(None)
+    target = {"profileName": "alice_profile", "className": "Personal_Information", "attributeName": "age"}
+    assert h._describe_modification("modify_attribute_value", target, {"target": target}) == (
+        "Updated attribute **age** on **alice_profile**."
+    )
