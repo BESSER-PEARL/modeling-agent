@@ -221,3 +221,25 @@ def test_screens_for_a_requested_web_app_still_ask_to_generate_it_once():
     assert not emit.called
     # Consumed: no later path repeats the prompt.
     assert not pending_dialogs.get(session, PENDING_WEBAPP_GENERATE)
+
+
+def test_the_greeting_leads_with_modeling():
+    """The greeting promised "the model, the screens, and the code" and listed app examples first."""
+    from app.state_bodies import GREETING_MESSAGE
+
+    opening, examples = GREETING_MESSAGE.split("\n\n")[:2]
+    assert "model" in opening.lower()
+    for pitch in ("code", "screens", " app"):
+        assert pitch not in opening.lower(), pitch
+        assert pitch not in examples.lower(), pitch
+    assert "When you ask for it, I generate code" in GREETING_MESSAGE
+    assert GREETING_MESSAGE.endswith("What would you like to model today?")
+
+
+def test_the_fallback_reply_does_not_offer_generation_unprompted():
+    from prompts.fallback import fallback_prompt
+
+    prompt = fallback_prompt("hello")
+    identity = prompt.split("The user said:")[0]
+    assert "code generation" not in identity.lower()
+    assert "do not offer it unprompted" in prompt
