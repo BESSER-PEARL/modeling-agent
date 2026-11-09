@@ -140,15 +140,53 @@ class TestModificationGuard:
         # "urls" named the part end; it must not land on the whole.
         assert "name" not in mod["changes"]
 
-    def test_uses_the_editor_defaults_for_a_missing_multiplicity(self, handler):
-        # The editor fills source "1" and target "*": a reversed composition.
+    def test_a_missing_multiplicity_is_no_evidence(self, handler):
+        # Stated part -> whole as the prompt asks: kept, and the whole end made
+        # single-valued instead of the editor's default "*".
         spec = {"modifications": [{
             "action": "add_relationship",
-            "target": {"sourceClass": "Order", "targetClass": "OrderLine"},
+            "target": {"sourceClass": "OrderLine", "targetClass": "Order"},
             "changes": {"relationshipType": "Composition"},
         }]}
         handler._fix_reversed_composition_mods(spec)
-        assert spec["modifications"][0]["target"]["targetClass"] == "Order"
+        mod = spec["modifications"][0]
+        assert mod["target"] == {"sourceClass": "OrderLine", "targetClass": "Order"}
+        assert mod["changes"]["targetMultiplicity"] == "1"
+        assert "sourceMultiplicity" not in mod["changes"]
+
+    def test_only_a_missing_source_multiplicity_keeps_the_ends(self, handler):
+        mod = {"action": "add_relationship",
+               "target": {"sourceClass": "OrderLine", "targetClass": "Order"},
+               "changes": {"relationshipType": "Composition", "targetMultiplicity": "*"}}
+        handler._fix_reversed_composition_mods({"modifications": [mod]})
+        assert mod["target"] == {"sourceClass": "OrderLine", "targetClass": "Order"}
+
+
+class TestModificationPipeline:
+    """The guard sees only what the LLM wrote, never what a refactoring synthesised."""
+
+    def test_extract_class_is_not_turned_round_a_second_time(self, handler):
+        spec = {"modification": {
+            "action": "extract_class",
+            "target": {"className": "User"},
+            "changes": {"className": "Address", "attributes": [{"name": "street"}],
+                        "relationshipType": "Composition",
+                        "sourceMultiplicity": "0..*", "targetMultiplicity": "1"},
+        }}
+        spec = handler._prepare_modification_spec(spec, None)
+        rel = next(m for m in spec["modifications"] if m["action"] == "add_relationship")
+        assert rel["target"] == {"sourceClass": "Address", "targetClass": "User"}
+        assert rel["changes"]["name"] == "user"
+
+    def test_an_llm_composition_is_still_guarded(self, handler):
+        spec = {"modifications": [{
+            "action": "add_relationship",
+            "target": {"sourceClass": "Brand", "targetClass": "BrandURL"},
+            "changes": {"relationshipType": "Composition", "sourceMultiplicity": "1",
+                        "targetMultiplicity": "0..*"},
+        }]}
+        spec = handler._prepare_modification_spec(spec, None)
+        assert spec["modifications"][0]["target"]["targetClass"] == "Brand"
 
     def test_keeps_a_part_to_whole_composition(self, handler):
         mod = {"action": "add_relationship",

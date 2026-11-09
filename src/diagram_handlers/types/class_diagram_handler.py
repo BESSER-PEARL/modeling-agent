@@ -519,6 +519,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
         source end after its class. The label the LLM gave belongs to the
         part end, which becomes the source, so it is dropped rather than
         moved onto the whole.
+
+        A missing multiplicity is no evidence of the direction, so it is never
+        swapped; a missing target (whole) multiplicity is set to ``1``, since the
+        editor would otherwise default the whole end to ``*``.
         """
         mods = spec.get("modifications")
         if not isinstance(mods, list):
@@ -532,10 +536,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 continue
             if whole_part_kind(changes.get("relationshipType")) != "composition":
                 continue
-            # The editor's defaults for a missing multiplicity: source 1, target *.
-            src_mult = changes.get("sourceMultiplicity") or "1"
-            tgt_mult = changes.get("targetMultiplicity") or "*"
-            if not is_reversed_composition(src_mult, tgt_mult):
+            src_mult = changes.get("sourceMultiplicity")
+            tgt_mult = changes.get("targetMultiplicity")
+            if not tgt_mult:
+                changes["targetMultiplicity"] = "1"
+                continue
+            if not src_mult or not is_reversed_composition(src_mult, tgt_mult):
                 continue
             target["sourceClass"], target["targetClass"] = (
                 target.get("targetClass"), target.get("sourceClass"))
@@ -3092,18 +3098,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             return deduped
 
         def _expand_refactoring(handler, spec):
-            """Expand refactoring actions into primitives, then guard against
-            any relationship whose endpoint is an enumeration."""
-            if handler._is_refactoring_action(spec):
-                logger.info("[ClassDiagram] Detected refactoring action, expanding into primitives")
-                spec = handler._expand_refactoring_actions(spec, current_model)
-            handler._rewrite_enum_relationship_mods(spec, current_model)
-            # Before the end-name guard, which reads the final orientation.
-            handler._fix_reversed_composition_mods(spec)
-            # Runs after the expansion, so ops synthesised by a
-            # refactoring are canonicalised too.
-            handler._normalise_modification_types(spec)
-            return spec
+            return handler._prepare_modification_spec(spec, current_model)
 
         # Up to TWO samples: when EVERY op targets something absent from
         # the model, the parse was almost certainly a sampling glitch
@@ -3355,6 +3350,24 @@ class ClassDiagramHandler(BaseDiagramHandler):
             if isinstance(m, dict) and m.get("action") in self._REFACTORING_ACTIONS:
                 return True
         return False
+
+    def _prepare_modification_spec(
+        self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Expand refactoring actions into primitives, then guard against
+        any relationship whose endpoint is an enumeration."""
+        # Before the expansion, so it sees only the relationships the LLM
+        # wrote: the ones a refactoring synthesises are already oriented
+        # and the ones a merge copies from the canvas are the user's.
+        self._fix_reversed_composition_mods(spec)
+        if self._is_refactoring_action(spec):
+            logger.info("[ClassDiagram] Detected refactoring action, expanding into primitives")
+            spec = self._expand_refactoring_actions(spec, current_model)
+        self._rewrite_enum_relationship_mods(spec, current_model)
+        # Runs after the expansion, so ops synthesised by a
+        # refactoring are canonicalised too.
+        self._normalise_modification_types(spec)
+        return spec
 
     def _expand_refactoring_actions(
         self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,

@@ -425,9 +425,9 @@ ClassDiagram Elements
    * - ``ClassInheritance``
      - Generalization
    * - ``ClassAggregation``
-     - Aggregation (hollow diamond)
+     - Aggregation (hollow diamond); the source is the part, the target the whole
    * - ``ClassComposition``
-     - Composition (filled diamond)
+     - Composition (filled diamond); the source is the part, the target the whole
    * - ``ClassDependency``
      - Dependency (dashed arrow)
    * - ``ClassRealization``
