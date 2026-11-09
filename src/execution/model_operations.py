@@ -19,6 +19,7 @@ from diagram_handlers.registry.metadata import get_diagram_type_info
 from orchestrator import determine_target_diagram_type, resolve_diagram_id
 from prompts import model_operations as operation_prompts
 from routing.generation_signals import detect_generator_type
+from routing.guards import auto_fix_issues
 from utilities.model_resolution import (
     resolve_target_model,
     resolve_object_reference_diagram,
@@ -32,7 +33,7 @@ from utilities.model_context import is_diagram_nontrivial
 from utilities.original_request import (
     current_target, original_request_for_project, remember_original_request, request_project_id,
 )
-from conversation.reply_copy import REFINE_MODEL_PROMPT, continue_generating_prompt
+from conversation.reply_copy import REFINE_MODEL_PROMPT, auto_fix_unfixed_reply, continue_generating_prompt
 from conversation.suggestions import get_suggested_actions, get_artifact_label, get_post_spec_suggestions
 from common.session_keys import (
     LAST_EXECUTED_DIAGRAM_TYPE,
@@ -819,6 +820,9 @@ def execute_model_operation(
         {"images": operation["images"]}
         if target_diagram_type == "GUINoCodeDiagram" and operation.get("images") else {}
     )
+    # The editor's validation repair: a reply that changes nothing lists the
+    # issues still open instead of asking its author, the editor, to rephrase.
+    auto_fix = auto_fix_issues(request.message or "") if operation_mode == "modify_model" else None
 
     try:
         if operation_mode == "modify_model":
@@ -963,6 +967,8 @@ def execute_model_operation(
                 "retryable": False,
                 "suggestedRecovery": "Try again shortly, or add your own API key",
             })
+        elif auto_fix is not None:
+            reply_message(session, auto_fix_unfixed_reply(auto_fix))
         else:
             reply_message(
                 session,
@@ -986,7 +992,10 @@ def execute_model_operation(
         return None
 
     if result.get("action") == Action.ASSISTANT_MESSAGE:
-        reply_message(session, result.get("message", "Something went wrong. Please try again."))
+        if auto_fix is not None:
+            reply_message(session, auto_fix_unfixed_reply(auto_fix))
+        else:
+            reply_message(session, result.get("message", "Something went wrong. Please try again."))
         return None
 
     # When a modify_model op was silently promoted to a full complete_system
