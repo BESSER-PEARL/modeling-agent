@@ -28,10 +28,12 @@ class TestClassDiagramCompleteSytem:
         assert len(actions) > 0
         _assert_valid_actions(actions)
 
-    def test_includes_generation_and_gui(self):
+    def test_offers_review_and_explain_not_generation(self):
+        # Modeling follow-ups only (BESSER-PEARL/BESSER#747).
         actions = get_suggested_actions("ClassDiagram", "complete_system")
         labels = [a["label"] for a in actions]
-        assert any("Generate" in l or "generate" in l for l in labels)
+        assert "Review the model" in labels and "Explain the specs" in labels
+        assert not any(label.lower().startswith("generate") for label in labels)
 
 
 # ------------------------------------------------------------------
@@ -88,8 +90,10 @@ class TestGUIWithClassDiagram:
         assert len(actions) > 0
         _assert_valid_actions(actions)
         labels = [a["label"] for a in actions]
-        # Should suggest web app / react generation, not "create backend"
-        assert any("web" in l.lower() or "react" in l.lower() or "Generate" in l for l in labels)
+        # A backend model exists, so no "create backend"; and no generation
+        # button on a modeling reply (BESSER-PEARL/BESSER#747).
+        assert not any("backend" in label.lower() for label in labels)
+        assert not any(label.lower().startswith("generate") for label in labels)
 
 
 # ------------------------------------------------------------------
@@ -206,8 +210,9 @@ class TestUnknownDiagramType:
         assert len(actions) > 0
         _assert_valid_actions(actions)
         labels = [a["label"] for a in actions]
-        # Fallback includes generic generation / describe
-        assert any("generate" in l.lower() or "describe" in l.lower() for l in labels)
+        # Fallback is generic modeling: describe / change
+        assert any("describe" in label.lower() for label in labels)
+        assert not any(label.lower().startswith("generate") for label in labels)
 
 
 # ------------------------------------------------------------------

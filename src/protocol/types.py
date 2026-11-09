@@ -113,6 +113,10 @@ class AssistantRequest:
     # Client-generated id of the user turn; echoed on every reply frame of the
     # turn and used to scope ``replay_last_response``. None for older clients.
     turn_id: Optional[str] = None
+    # The client's copy of the latest turns (``recentHistory``), oldest first,
+    # as ``{"role": "user" | "assistant", "content": str}``. Sent on the first
+    # message after a (re)connect; seeds a conversation memory the server lost.
+    recent_history: List[Dict[str, str]] = field(default_factory=list)
 
     @property
     def is_v2(self) -> bool:

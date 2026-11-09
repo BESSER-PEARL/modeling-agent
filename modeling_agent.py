@@ -324,7 +324,8 @@ def _start_cleanup_timer():
             except Exception as exc:
                 logger.warning(f"[Reaper] Session cleanup error: {exc}")
 
-            # Expire per-session stores (stale conversation memories); each
+            # Expire per-session stores (conversation memories idle for an
+            # hour: no message and no heartbeat from a connected tab); each
             # store's failure is logged at warning inside expire().
             sessions.expire(3600)
 

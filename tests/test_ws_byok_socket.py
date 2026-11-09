@@ -140,3 +140,24 @@ def test_other_variables_stay_on_the_session(platform):
     _run_socket(platform, _set_variable({**ARM, "_voice_context": "kept"}))
 
     assert platform._agent.session.get("_voice_context") == "kept"
+
+
+def test_a_heartbeat_keeps_the_tabs_conversation_in_use(platform):
+    """Issue #745: the heartbeat's ``user_id`` is the tab's memory key."""
+    from memory.conversation_memory import cleanup_stale_memories, get_memory, remove_memory
+
+    tab = "tab-session-745"
+    mem = get_memory(tab)
+    mem.add_user("my specification")
+    with mem._lock:
+        mem._messages[-1].timestamp -= 2 * 3600
+    try:
+        _run_socket(platform, {
+            "action": PayloadAction.USER_SET_VARIABLE.value,
+            "user_id": tab,
+            "message": {"__heartbeat": 1},
+        })
+        cleanup_stale_memories(3600)
+        assert get_memory(tab) is mem
+    finally:
+        remove_memory(tab)

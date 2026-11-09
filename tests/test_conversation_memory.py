@@ -4,10 +4,12 @@ import time
 import threading
 
 from memory.conversation_memory import (
+    MAX_ASSISTANT_MEMORY_CHARS,
     ConversationMemory,
     get_memory,
     remove_memory,
     cleanup_stale_memories,
+    touch_memory,
     _memories,
     _memories_lock,
     _SUMMARY_TRIGGER,
@@ -218,6 +220,40 @@ def test_cleanup_stale_memories():
     assert m2.message_count == 0
 
 
+def _age_last_message(mem, seconds):
+    with mem._lock:
+        mem._messages[-1].timestamp = time.time() - seconds
+
+
+def test_a_conversation_whose_tab_is_still_connected_is_not_reaped():
+    """Issue #745: a long silence while the tab stays open must not wipe memory."""
+    mem = get_memory("open-tab")
+    mem.add_user("Here is my detailed specification ...")
+    _age_last_message(mem, 2 * 3600)
+
+    assert touch_memory("open-tab") is True  # the tab's keep-alive heartbeat
+    assert cleanup_stale_memories(max_age_seconds=3600) == 0
+    assert get_memory("open-tab") is mem
+
+
+def test_an_abandoned_conversation_is_reaped_an_hour_after_its_last_heartbeat():
+    mem = get_memory("closed-tab")
+    mem.add_user("hello")
+    _age_last_message(mem, 3 * 3600)
+    touch_memory("closed-tab")
+    with mem._lock:
+        mem._last_seen = time.time() - 2 * 3600  # the tab went away 2 h ago
+
+    assert cleanup_stale_memories(max_age_seconds=3600) == 1
+    assert get_memory("closed-tab") is not mem
+
+
+def test_touch_never_creates_a_memory():
+    assert touch_memory("unknown-tab") is False
+    with _memories_lock:
+        assert "unknown-tab" not in _memories
+
+
 # ------------------------------------------------------------------
 # 12. Thread safety
 # ------------------------------------------------------------------
@@ -269,3 +305,14 @@ def test_message_metadata():
         msg = mem._messages[0]
         assert msg.metadata["diagram_type"] == "class"
         assert msg.metadata["version"] == 2
+
+
+def test_seeded_assistant_turns_are_cut_like_the_servers_own():
+    mem = ConversationMemory("s-seed-cap")
+    mem.seed([
+        {"role": "user", "content": "u" * 2000},
+        {"role": "assistant", "content": "a" * 2000},
+    ])
+    user, assistant = mem._messages
+    assert len(user.content) == 2000
+    assert len(assistant.content) == MAX_ASSISTANT_MEMORY_CHARS

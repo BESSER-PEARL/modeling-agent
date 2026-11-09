@@ -154,7 +154,7 @@ def test_src_never_reads_a_slot_as_a_session_key():
     """A slot read with ``session.get`` is always None: the slot is not a key."""
     names = [n for n in dir(pending_dialogs) if n.isupper() and n not in (
         "PRECEDENCE", "GUI_CHOICE", "SYSTEM_CONFIRMATION", "SMART_GEN", "GENERATOR",
-        "PLAN_GENERATION_CONFIRM_FLAG", "PENDING_DIALOGS")]
+        "PLAN_GENERATION_CONFIRM_FLAG", "PLAN_PAUSED_GENERATION_OP_KEY", "PENDING_DIALOGS")]
     pattern = re.compile(r"\.(get|set|delete)\(\s*(?:pending_dialogs\.)?(" + "|".join(names) + r")\b")
     assert pattern.search("session.get(PENDING_GUI_CHOICE)")
     assert pattern.search("session.set(pending_dialogs.PENDING_GUI_CHOICE, x)")

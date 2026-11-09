@@ -246,9 +246,9 @@ regex before or after the call:
   C++, C#, …) is forced onto the ``smart`` route. The LLM mapped
   "c classes" → ``java`` and "c++ classes" → ``python`` often enough that
   this had to become deterministic.
-- ``_generate_button_guard()`` — "generate the application", the prompt of
-  the "Generate the code" suggestion offered after the agent builds a class
-  diagram, goes to the ``smart`` route when the agent built this project's
+- ``_generate_button_guard()`` — "generate the application" (typed by the
+  user, or the prompt of the "Generate application" button offered when the
+  user's own request asked to generate) goes to the ``smart`` route when the agent built this project's
   class diagram from the user's request (``original_request_for_project``).
   gpt-6-luna sent it to the generator menu in 4 of 12 live runs, and a
   rulebook rule limited to "right after a build" also changed the

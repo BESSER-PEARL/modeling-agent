@@ -26,7 +26,8 @@ CLASS_DIAGRAM_SCHEMA = """{
       "targetMultiplicity": "*"
     }
   ]
-}"""
+}
+For inheritance, source is the subclass and target the superclass. For composition and aggregation, source is the PART and target the WHOLE (the class at the diamond: PlantUML "Brand *-- BrandURL" is source BrandURL, target Brand)."""
 
 STATE_MACHINE_SCHEMA = """{
   "diagramType": "StateMachineDiagram",

@@ -86,6 +86,30 @@ def _text_reply(llm: Any, prompt: str) -> str:
     )
 
 
+def _conversation_memory(session: Session, request: AssistantRequest):
+    """This conversation's memory (created with the summarizer), rebuilt from
+    the client's ``recentHistory`` when the server no longer holds it.
+
+    The client sends its latest turns on the first message after a
+    (re)connect. They seed only an EMPTY memory (a restart, a conversation
+    reaped while the tab was gone), before the new message is recorded and
+    before the classifier reads the history; a memory that already holds the
+    conversation keeps what the server recorded and ignores them.
+    """
+    key = memory_session_key(session, request)
+    summarizer = getattr(ctx, 'gpt_text', None)
+    summarize_fn = functools.partial(_text_reply, summarizer) if summarizer else None
+    mem = get_memory(key, summarizer=summarize_fn)
+    if request.recent_history:
+        seeded = mem.seed(request.recent_history)
+        if seeded:
+            logger.info(
+                "[Memory:%s] Rebuilt the conversation from the client's recent history (%d turn(s))",
+                key, seeded,
+            )
+    return mem
+
+
 # ------------------------------------------------------------------
 # Common preamble helper
 # ------------------------------------------------------------------
@@ -108,6 +132,12 @@ def _ensure_unified_classification(session: Session) -> bool:
     """
     try:
         request = parse_assistant_request(session)
+        if request.recent_history:
+            # Before the classifier reads the conversation history.
+            try:
+                _conversation_memory(session, request)
+            except Exception as exc:
+                logger.warning("Rebuilding conversation memory from the client failed: %s", exc)
         if guards.skips_classification(request):
             return False
         provider = _get_llm_provider() if _get_llm_provider else None
@@ -163,11 +193,7 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     # payload sessionId so memory survives WebSocket reconnects.
     if request.message:
         try:
-            session_id = memory_session_key(session, request)
-            summarizer = getattr(ctx, 'gpt_text', None)
-            summarize_fn = functools.partial(_text_reply, summarizer) if summarizer else None
-            mem = get_memory(session_id, summarizer=summarize_fn)
-            mem.add_user(request.message)
+            _conversation_memory(session, request).add_user(request.message)
         except Exception as exc:
             logger.debug(f"Recording user message in memory failed (best-effort): {exc}")
 
@@ -326,18 +352,18 @@ def global_fallback_body(session: Session):
 # ------------------------------------------------------------------
 
 GREETING_MESSAGE = (
-    "Hi! I'm your BESSER assistant. Tell me what you want to build in plain "
-    "words and I'll create the model, the screens, and the code for you.\n\n"
+    "Hi! I'm your BESSER modeling assistant. Describe your domain in plain "
+    "words and I'll build the model with you, then refine it as you go.\n\n"
     "Try something like:\n"
-    "- *\"a library app to track books and loans\"*\n"
-    "- *\"a mobile app to track my expenses\"*\n"
-    "- *\"a pizza-ordering chatbot\"*\n"
-    "- *\"a dashboard for my Product class\"*\n\n"
-    "I can also modify your diagrams, generate code (SQL, Django, FastAPI, "
-    "SQLAlchemy…) or a whole web, mobile or desktop app, describe a model, "
-    "design a quantum circuit, import a PlantUML / diagram image, or build a "
-    "GUI from a screenshot or mockup. I reply in the language you write in.\n\n"
-    "What would you like to create today?"
+    "- *\"a library with books, members and loans\"*\n"
+    "- *\"add a due date to Loan\"*\n"
+    "- *\"a state machine for an order's lifecycle\"*\n"
+    "- *\"a pizza-ordering chatbot\"*\n\n"
+    "I can also describe or review a model, design a quantum circuit, import a "
+    "PlantUML / diagram image, or build a GUI from a screenshot or mockup. When "
+    "you ask for it, I generate code too (SQL, Django, FastAPI, SQLAlchemy…) or "
+    "a whole web, mobile or desktop app. I reply in the language you write in.\n\n"
+    "What would you like to model today?"
 )
 
 

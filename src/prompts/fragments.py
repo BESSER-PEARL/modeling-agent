@@ -57,6 +57,15 @@ NAMING_PASCAL_RULE = (
     "\"OrderPayment\" should be \"User\", \"Payment\"."
 )
 
+WHOLE_PART_DIRECTION_RULE = (
+    "COMPOSITION AND AGGREGATION POINT FROM THE PART TO THE WHOLE: the SOURCE "
+    "is the PART and the TARGET is the WHOLE (the owner, where the diagram "
+    "draws the diamond), exactly like Inheritance points from the subclass to "
+    "the superclass. 'A Brand has many BrandURLs, each BrandURL belongs to one "
+    "Brand' is source=BrandURL (multiplicity 0..*), target=Brand (multiplicity "
+    "1). The whole end of a composition is always 1 or 0..1."
+)
+
 RENAME_CASCADES_RULE = (
     "RENAME: a single modify_class is enough — relationships update "
     "automatically by id and do not need accompanying modify_relationship "

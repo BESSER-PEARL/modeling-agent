@@ -521,11 +521,12 @@ def _sugiyama_build_graph(
             predecessors[src].add(tgt)
             directed_edges.append((tgt, src, 0))
         elif rtype in ("composition", "aggregation"):
-            # source = whole, target = part  => edge: whole -> part
-            owner_of[tgt] = src
-            successors[src].add(tgt)
-            predecessors[tgt].add(src)
-            directed_edges.append((src, tgt, 1))
+            # source = part, target = whole (the diamond end, as in the
+            # editor and BUML; BESSER-PEARL/BESSER#746) => edge: whole -> part
+            owner_of[src] = tgt
+            successors[tgt].add(src)
+            predecessors[src].add(tgt)
+            directed_edges.append((tgt, src, 1))
         else:
             # Association / other: higher-degree node above lower-degree node
             if degree[src] >= degree[tgt]:

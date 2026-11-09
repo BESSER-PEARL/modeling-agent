@@ -126,7 +126,10 @@ Shared Concrete Methods
      - Description
    * - ``_execute_modification()``
      - Structured modification call, ``modify_model`` envelope and friendly
-       message, shared by every ``_build_modification``
+       message, shared by every ``_build_modification``. A change to an
+       attribute or method names the member and its owner ("Updated attribute
+       **aliases** in **Brand**.", ``_describe_member_change``); any other
+       action names its target (``_build_mod_target_name``)
    * - ``predict_with_retry()``
      - Free-text LLM call with jittered exponential backoff. Routed through
        the user's BYOK client when one is active for this request.

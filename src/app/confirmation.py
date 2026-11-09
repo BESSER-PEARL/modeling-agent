@@ -106,7 +106,9 @@ _GUI_CHOICE_LABELS = {
 }
 
 
-def _build_auto_gui_message(request: Any, detected_gen: Optional[str] = None) -> str:
+def _build_auto_gui_message(
+    request: Any, detected_gen: Optional[str] = None, offer_generation: bool = True,
+) -> str:
     """Build the auto-generate GUI success message, naming the pages created.
 
     The deterministic ("auto") path builds one page per class on the frontend.
@@ -121,9 +123,14 @@ def _build_auto_gui_message(request: Any, detected_gen: Optional[str] = None) ->
 
     if detected_gen is None:
         detected_gen = detect_generator_type(getattr(request, "message", "") or "")
-    from conversation.reply_copy import continue_generating_prompt
-    _artifact = get_artifact_label(detected_gen)
-    _follow_up = "\n\n" + continue_generating_prompt(_artifact)
+    from conversation.reply_copy import REFINE_MODEL_PROMPT, continue_generating_prompt
+    # Offer generation only when the user's own request asked for the app (a
+    # web-app plan, PENDING_WEBAPP_GENERATE); screens laid out on their own get
+    # a modeling follow-up (BESSER-PEARL/BESSER#747).
+    if offer_generation:
+        _follow_up = "\n\n" + continue_generating_prompt(get_artifact_label(detected_gen))
+    else:
+        _follow_up = "\n\n" + REFINE_MODEL_PROMPT
 
     try:
         from utilities.model_resolution import resolve_class_diagram
@@ -246,7 +253,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
 
     if wants_auto:
         from routing.generation_signals import detect_generator_type
-        from conversation.suggestions import get_post_spec_suggestions
+        from conversation.suggestions import get_post_spec_suggestions, get_suggested_actions
 
         remaining_ops = pending.get('remaining_operations')
         pending_dialogs.put(session, PENDING_GUI_CHOICE, None)
@@ -255,14 +262,30 @@ def handle_pending_gui_choice(session: Session) -> bool:
         # detect_generator_type can see keywords like "web application" or "database".
         _original_msg = pending.get('operation_request', '') or getattr(request, "message", "") or ""
         _detected_gen = detect_generator_type(_original_msg)
+        # Generation is offered only for a web-app plan (the user asked for
+        # the app); the flag is consumed here because this message carries
+        # the prompt, so no later path repeats it.
+        _offer_generation = bool(pending_dialogs.get(session, PENDING_WEBAPP_GENERATE))
+        if _offer_generation:
+            pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, None)
+            _suggestions = get_post_spec_suggestions(_detected_gen or "web_app")
+        else:
+            _suggestions = get_suggested_actions(
+                diagram_type="GUINoCodeDiagram",
+                operation_mode="complete_system",
+                available_diagrams=["ClassDiagram"],
+            )
         reply_payload(session, {
             "action": Action.AUTO_GENERATE_GUI,
             "diagramType": "GUINoCodeDiagram",
             # Frontend builds one page per class via autoGenerateGUIFromClassDiagram.
             # The message CONFIRMS completion naming the pages that were created.
-            # suggestedActions give the user their next step (generate or review).
-            "message": _build_auto_gui_message(request, detected_gen=_detected_gen or "web_app"),
-            "suggestedActions": get_post_spec_suggestions(_detected_gen or "web_app"),
+            # suggestedActions give the user their next step.
+            "message": _build_auto_gui_message(
+                request, detected_gen=_detected_gen or "web_app",
+                offer_generation=_offer_generation,
+            ),
+            "suggestedActions": _suggestions,
         })
         # Resume any remaining operations from the original plan
         if isinstance(remaining_ops, list) and remaining_ops:
