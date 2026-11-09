@@ -191,6 +191,22 @@ class TestModificationPipeline:
         spec = handler._prepare_modification_spec(spec, None)
         assert spec["modifications"][0]["target"]["targetClass"] == "Brand"
 
+    def test_an_existing_canvas_composition_is_never_turned_round(self, handler):
+        # A diagram drawn before 8.1.1 with its diamond on the many-valued end:
+        # editing that relationship keeps the user's ends; only a NEW
+        # add_relationship is guarded.
+        old_canvas = _editor_model("Brand", "BrandURL", "1", "0..*")
+        mod = {"action": "modify_relationship",
+               "target": {"sourceClass": "Brand", "targetClass": "BrandURL"},
+               "changes": {"relationshipType": "Composition", "sourceMultiplicity": "1",
+                           "targetMultiplicity": "1..*"}}
+        spec = handler._prepare_modification_spec({"modifications": [mod]}, old_canvas)
+        out = spec["modifications"][0]
+        assert out["action"] == "modify_relationship"
+        assert out["target"] == {"sourceClass": "Brand", "targetClass": "BrandURL"}
+        assert (out["changes"]["sourceMultiplicity"], out["changes"]["targetMultiplicity"]) == ("1", "1..*")
+        assert old_canvas["relationships"]["r1"]["source"]["element"] == "c_Brand"
+
     def test_keeps_a_part_to_whole_composition(self, handler):
         mod = {"action": "add_relationship",
                "target": {"sourceClass": "BrandURL", "targetClass": "Brand"},

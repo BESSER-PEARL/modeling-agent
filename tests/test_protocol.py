@@ -151,6 +151,35 @@ class TestParseV2Payload:
         request = parse_v2_payload(raw)
         assert request.action == "frontend_event"
 
+    # Older editors: one diagram per type, or several tabs with the open one in
+    # currentDiagramIndices. The active model comes from the snapshot either way.
+    _OLD = {"type": "ClassDiagram", "elements": {"c1": {"name": "Old"}}, "relationships": {}}
+    _NEW = {"type": "ClassDiagram", "elements": {"c2": {"name": "New"}}, "relationships": {}}
+
+    def _parse(self, diagrams, indices=None):
+        raw = make_v2_payload("add a class", project_snapshot={"diagrams": diagrams})
+        if indices is not None:
+            inner = json.loads(raw["message"])
+            inner["context"]["currentDiagramIndices"] = indices
+            raw["message"] = json.dumps(inner)
+        return parse_v2_payload(raw)
+
+    def test_a_single_diagram_per_type_snapshot_gives_the_active_model(self):
+        request = self._parse({"ClassDiagram": {"id": "d1", "model": self._OLD}})
+        assert request.current_model == self._OLD
+        assert request.context.active_model == self._OLD
+
+    def test_the_open_tab_is_picked_by_current_diagram_indices(self):
+        tabs = [{"id": "d1", "model": self._OLD}, {"id": "d2", "model": self._NEW}]
+        request = self._parse({"ClassDiagram": tabs}, {"ClassDiagram": 1})
+        assert request.current_model == self._NEW
+        assert request.context.current_diagram_indices == {"ClassDiagram": 1}
+
+    def test_an_index_past_the_tabs_falls_back_to_the_first_model(self):
+        tabs = [{"id": "d1", "model": None}, {"id": "d2", "model": self._OLD}]
+        assert self._parse({"ClassDiagram": tabs}, {"ClassDiagram": 5}).current_model == self._OLD
+        assert self._parse({"ClassDiagram": tabs}).current_model == self._OLD
+
     def test_unknown_diagram_falls_back(self):
         inner = {
             "action": "user_message",
