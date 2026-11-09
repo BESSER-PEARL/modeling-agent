@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from diagram_handlers.types.bpmn_diagram_handler import (
+from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+from prompts.bpmn import (
     AGENTIC_DESIGN_RULES,
     MODIFY_SYSTEM_PROMPT_AGENTIC_BPMN,
     MODIFY_SYSTEM_PROMPT_BPMN,
-    BPMNDiagramHandler,
 )
 from protocol.types import AssistantRequest, WorkspaceContext
 from schemas import BPMNModificationResponse, SystemBPMNSpec

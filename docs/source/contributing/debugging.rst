@@ -38,7 +38,7 @@ Step 3: Check the pending-flow gate
 
 If the assistant had a question outstanding, look at ``pending_flow_action``.
 An ``"answer"`` verdict deliberately keeps the message in the current state so
-``_common_preamble()`` can hand it to the flow handler; only
+``_common_preamble()`` can hand it to the flow handler (``resume_pending``); only
 ``"new_request"`` lets it route away. A message that seems "stuck" in a state
 is usually this working as designed.
 
@@ -55,7 +55,7 @@ flows — it runs no LLM call and no text heuristics.
    The old keyword pre-filters and cross-validation safety nets
    (``_is_modeling_request()``, ``_is_diagram_creation_request()``, the
    ``json_intent_matches`` keyword override) **no longer exist**. Routing
-   rules now live in ``unified_classifier._SYSTEM_PROMPT``, which is the
+   rules now live in ``prompts.classifier.SYSTEM_PROMPT``, which is the
    single place to change routing behavior.
 
 Step 5: Check the deterministic guards
@@ -65,15 +65,15 @@ Two decisions override the LLM verdict and cannot be changed by prompting:
 
 .. code-block:: python
 
-   from unified_classifier import _names_unsupported_stack
-   from handlers.generation_handler import detect_generator_type
+   from routing.unified_classifier import _names_unsupported_stack
+   from routing.generation_signals import detect_generator_type
 
    msg = "your test message here"
    print(f"Generator keyword:  {detect_generator_type(msg)}")
    print(f"Unsupported stack:  {_names_unsupported_stack(msg)}")
 
 ``_names_unsupported_stack()`` forces the smart generation route; the
-GitHub-continue regexes in ``generation_handler`` force an import.
+GitHub-continue regexes in ``routing.generation_signals`` force an import.
 
 Step 6: Check Keyword Detection
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -107,14 +107,15 @@ Request Not Reaching the Right Handler
    - **Priority 3**: Text-event intent match (backward compatibility)
    - **Priority 4**: Fallback (``json_no_intent_matched``)
 
-2. Check if ``pending_generator_type`` or ``pending_complete_system`` is set on
-   the session — these **suppress** intent matching:
+2. Check whether a dialog is pending — an open dialog **suppresses** intent
+   matching unless the classifier said ``new_request``:
 
    .. code-block:: python
 
-      session.get("pending_generator_type")   # "_awaiting_selection" suppresses
-      session.get("pending_complete_system")   # Any truthy value suppresses
-      session.get("pending_gui_choice")        # Any truthy value suppresses
+      from common import pending_dialogs
+
+      pending_dialogs.current(session)   # first open dialog, or None
+      session.get("_pending_dialogs")    # every slot, as one dict
 
 
 Common Pitfalls
@@ -153,9 +154,10 @@ Common Pitfalls
 6. **Routing rules live in one place now**
 
    There is no keyword pre-filter layer to add a special case to. Routing
-   behavior changes belong in ``unified_classifier._SYSTEM_PROMPT``, or — for
-   decisions the LLM is unreliable at — in an explicit deterministic guard
-   like ``_names_unsupported_stack()``.
+   behavior changes belong in ``prompts.classifier.SYSTEM_PROMPT``, or — for
+   decisions the LLM is unreliable at — in an explicit deterministic guard:
+   inside the classifier (``_names_unsupported_stack()``) or, for every other
+   text rule, in ``src/routing/guards.py``.
 
 7. **Misclassification between non-generation intents**
 

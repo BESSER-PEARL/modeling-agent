@@ -6,12 +6,8 @@ Person <- Doctor/Patient/Staff each re-declaring id/createdAt/updatedAt).
 The guard strips the shadowed copies deterministically; method overrides are
 deliberately untouched (overriding is legitimate OO).
 """
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler  # noqa: E402
+from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 
 
 def _attr(name):

@@ -30,7 +30,8 @@ def _run(code: str) -> subprocess.CompletedProcess:
 def test_install_makes_the_agent_use_the_vendored_platform():
     proc = _run(
         """
-        import inspect, baf_patch
+        import inspect
+        from app import baf_patch
         baf_patch.install()
         from baf.core import agent
         baf_patch.verify()
@@ -49,7 +50,7 @@ def test_verify_refuses_an_unpatched_platform():
         if hasattr(agent.WebSocketPlatform, "_flush_outbox"):
             print("PREPATCHED")  # Docker image: stock file already replaced
         else:
-            import baf_patch
+            from app import baf_patch
             try:
                 baf_patch.verify()
             except RuntimeError:
@@ -63,7 +64,8 @@ def test_verify_refuses_an_unpatched_platform():
 def test_install_after_agent_import_is_an_error():
     proc = _run(
         """
-        import baf.core.agent, baf_patch
+        import baf.core.agent
+        from app import baf_patch
         try:
             baf_patch.install()
         except RuntimeError:

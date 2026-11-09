@@ -1,0 +1,1032 @@
+"""
+File Conversion Handler
+Converts uploaded files into diagram specifications that can be injected
+into the editor.  The handler automatically detects the best-fit diagram
+type from the file content.
+
+Supported file types:
+  - PlantUML (.puml, .plantuml, .pu, .txt containing @startuml)
+  - XMI / UML interchange (.xmi, .uml, .ecore — standard UML/EMF exchange formats)
+  - Knowledge Graph (.ttl, .rdf, .owl, .json with KG structure)
+  - Images (.png, .jpg, .jpeg, .gif, .webp — UML diagram photos/screenshots;
+    a UI screenshot or mockup is reported back as GUI_MOCKUP_ACTION so the
+    caller builds a GUI from it)
+  - PDF (.pdf — text-based or scanned/diagram PDFs)
+  - Generic text files — analyzed by the LLM to extract any diagram
+
+Supported target diagram types:
+  - ClassDiagram (classes, attributes, methods, relationships)
+  - StateMachineDiagram (states, transitions)
+  - ObjectDiagram (objects with attribute values, links)
+  - AgentDiagram (intents, states, transitions for chatbot agents)
+  - BPMN (business process narratives: steps/tasks, decisions, actors)
+"""
+
+import base64
+import io
+import json
+import logging
+from typing import Any, Dict, Optional
+
+from common.errors import ImagesNotSupported, ModelRefusal
+from conversation.session_helpers import user_key_reply
+from llm import byok
+from llm.model_config import MODEL_VISION
+from prompts import file_conversion as file_prompts
+from utilities.image_inputs import data_url
+from utilities.pdf import PDFIUM_LOCK, page_text
+from utilities.whole_part import orient_composition_spec
+from protocol.actions import Action, inject_complete_system
+
+logger = logging.getLogger(__name__)
+
+# ── File type detection ────────────────────────────────────────────────────────
+
+PLANTUML_EXTENSIONS = {".puml", ".plantuml", ".pu"}
+KG_EXTENSIONS = {".ttl", ".rdf", ".owl", ".n3", ".nt", ".nq", ".trig", ".jsonld"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+PDF_EXTENSIONS = {".pdf"}
+XMI_EXTENSIONS = {".xmi", ".uml", ".ecore"}
+IMAGE_MIME_MAP = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+}
+
+# Diagram types the file converter can produce
+CONVERTIBLE_DIAGRAM_TYPES = {
+    "ClassDiagram",
+    "StateMachineDiagram",
+    "ObjectDiagram",
+    "AgentDiagram",
+    "BPMN",
+}
+
+# Internal result (never sent to the frontend): the image is a UI screenshot
+# or mockup, not a diagram; the caller builds a GUI from it (#643).
+GUI_MOCKUP_ACTION = "gui_mockup"
+_GUI_DIAGRAM_TYPE = "GUINoCodeDiagram"
+
+def detect_file_type(filename: str, content_text: Optional[str] = None) -> str:
+    """Detect file type from extension and/or content.
+
+    Returns one of: 'plantuml', 'knowledge_graph', 'image', 'unknown'.
+    """
+    ext = ""
+    if filename:
+        dot_pos = filename.rfind(".")
+        if dot_pos >= 0:
+            ext = filename[dot_pos:].lower()
+
+    # Extension-based detection
+    if ext in PLANTUML_EXTENSIONS:
+        return "plantuml"
+    if ext in KG_EXTENSIONS:
+        return "knowledge_graph"
+    if ext in IMAGE_EXTENSIONS:
+        return "image"
+    if ext in PDF_EXTENSIONS:
+        return "pdf"
+    if ext in XMI_EXTENSIONS:
+        return "xmi"
+
+    # Content-based detection for .txt or extensionless files
+    if content_text:
+        stripped = content_text.strip()
+        if "@startuml" in stripped:
+            return "plantuml"
+        # Turtle/N3 detection
+        if stripped.startswith("@prefix") or stripped.startswith("@base"):
+            return "knowledge_graph"
+        # XMI/UML XML detection
+        if stripped.startswith("<?xml") and ("xmi:" in stripped or "uml:" in stripped or "XMI" in stripped):
+            return "xmi"
+        # RDF/XML detection
+        if stripped.startswith("<?xml") and ("rdf:RDF" in stripped or "owl:" in stripped):
+            return "knowledge_graph"
+        # JSON-LD or Neo4j JSON detection
+        if stripped.startswith("{") or stripped.startswith("["):
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, dict):
+                    if "@context" in parsed or "@graph" in parsed:
+                        return "knowledge_graph"
+                    if "nodes" in parsed or "relationships" in parsed:
+                        return "knowledge_graph"
+                elif isinstance(parsed, list) and len(parsed) > 0:
+                    first = parsed[0]
+                    if isinstance(first, dict) and ("type" in first or "@type" in first):
+                        return "knowledge_graph"
+            except json.JSONDecodeError:
+                pass
+
+    # .json files that aren't KG could be many things
+    if ext == ".json":
+        return "knowledge_graph"
+
+    return "unknown"
+
+
+def detect_plantuml_diagram_type(content: str) -> str:
+    """Detect the target diagram type from PlantUML syntax keywords.
+
+    Inspects the PlantUML text for diagram-type-specific keywords and returns
+    the best-fit diagram type string.
+    """
+    lower = content.lower()
+
+    # State machine indicators (check before class — `state` keyword is specific)
+    state_keywords = ["[*]", "state ", "-->", "<<fork>>", "<<join>>", "<<choice>>"]
+    class_keywords = ["class ", "interface ", "abstract ", "enum ", "<|--", "*--", "o--"]
+    object_keywords = ["object ", ":"]
+
+    has_state = any(kw in lower for kw in state_keywords)
+    has_class = any(kw in lower for kw in class_keywords)
+    has_object = any(kw in lower for kw in object_keywords)
+
+    # If it has class keywords, it's most likely a class diagram
+    if has_class and not has_state:
+        return "ClassDiagram"
+    # If it has state keywords but no class keywords
+    if has_state and not has_class:
+        return "StateMachineDiagram"
+    # If it has object keywords
+    if has_object and not has_class and not has_state:
+        return "ObjectDiagram"
+    # Both class and state → let LLM decide, but default to class
+    if has_class:
+        return "ClassDiagram"
+    if has_state:
+        return "StateMachineDiagram"
+
+    # No clear indicators — default to ClassDiagram
+    return "ClassDiagram"
+
+
+def image_mime_type(filename: str) -> str:
+    """Get MIME type for an image file."""
+    ext = ""
+    if filename:
+        dot_pos = filename.rfind(".")
+        if dot_pos >= 0:
+            ext = filename[dot_pos:].lower()
+    return IMAGE_MIME_MAP.get(ext, "image/png")
+
+
+# ── LLM conversion prompts ────────────────────────────────────────────────────
+
+def _build_image_prompt(
+    target_diagram_type: Optional[str] = None, detect_mockup: bool = False,
+) -> str:
+    """Build Vision API prompt for image-based conversion.
+
+    ``detect_mockup`` lets the auto-detect prompt answer that the image is a
+    user interface rather than a diagram (see ``GUI_MOCKUP_ACTION``).
+    """
+    if target_diagram_type and target_diagram_type in CONVERTIBLE_DIAGRAM_TYPES:
+        return file_prompts.image_prompt(target_diagram_type)
+    return file_prompts.auto_detect_image_prompt(detect_mockup, _GUI_DIAGRAM_TYPE)
+
+
+# ── Conversion logic ──────────────────────────────────────────────────────────
+
+def convert_file_to_diagram_spec(
+    file_content_b64: str,
+    filename: str,
+    llm_predict: callable,
+    llm_vision_predict: Optional[callable] = None,
+    target_diagram_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Convert an uploaded file to the best-fit diagram specification.
+
+    Automatically detects the file type AND the target diagram type from
+    the content, then produces the correctly-shaped system spec.
+
+    Args:
+        file_content_b64: Base64-encoded file content.
+        filename: Original filename (used for type detection).
+        llm_predict: LLM predict function for text-based conversions.
+        llm_vision_predict: ``(prompt, image_data_urls, timeout=) -> text``
+            for images and scanned PDFs (``LLMProvider.vision``), or None
+            when no key can serve a vision call.
+        target_diagram_type: The diagram type the user's message asked for,
+            if any; an image is then read as that type instead of detected.
+
+    Returns:
+        A dict with action='inject_complete_system' and the system spec,
+        action=GUI_MOCKUP_ACTION for a UI image, or action='agent_error'
+        on failure.
+    """
+    try:
+        raw_bytes = base64.b64decode(file_content_b64)
+    except Exception as e:
+        logger.error(f"[FileConversion] Failed to decode base64 content: {e}")
+        return _error_response("Could not decode the uploaded file. Please try again.")
+
+    # Attempt to decode as text for non-image files
+    content_text = None
+    try:
+        content_text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+
+    file_type = detect_file_type(filename, content_text)
+    logger.info(f"[FileConversion] Detected file type: {file_type} for file: {filename}")
+
+    if file_type == "plantuml":
+        return _convert_plantuml(content_text, filename, llm_predict)
+    elif file_type == "knowledge_graph":
+        return _convert_knowledge_graph(content_text, filename, llm_predict)
+    elif file_type == "image":
+        return _convert_image(
+            file_content_b64, filename, llm_vision_predict, target_diagram_type,
+        )
+    elif file_type == "pdf":
+        return _convert_pdf(raw_bytes, filename, llm_predict, llm_vision_predict)
+    elif file_type == "xmi":
+        return _convert_xmi(content_text, filename, llm_predict)
+    else:
+        # Try to convert as text if we have text content
+        if content_text:
+            return _convert_generic_text(content_text, filename, llm_predict)
+        return _error_response(
+            f"Could not determine the file type for '{filename}'. "
+            "Supported formats: PlantUML (.puml), XMI/UML (.xmi, .uml, .ecore), "
+            "Knowledge Graphs (.ttl, .rdf, .owl, .json), "
+            "PDF documents (.pdf), or images of UML diagrams (.png, .jpg)."
+        )
+
+
+def _convert_plantuml(
+    content: str, filename: str, llm_predict: callable,
+) -> Dict[str, Any]:
+    """Convert PlantUML text to the best-fit diagram spec via LLM."""
+    diagram_type = detect_plantuml_diagram_type(content)
+    prompt = file_prompts.conversion_prompt("PlantUML diagram", diagram_type)
+    prompt += f"\n\nPlantUML Code:\n```\n{content}\n```"
+    return _run_llm_conversion(prompt, filename, "PlantUML", diagram_type, llm_predict)
+
+
+def _convert_knowledge_graph(
+    content: str, filename: str, llm_predict: callable,
+) -> Dict[str, Any]:
+    """Convert a Knowledge Graph file to the best-fit diagram spec via LLM.
+
+    Knowledge graphs typically map to class diagrams, but the LLM may detect
+    state/process patterns and choose a different type.
+    """
+    if len(content) > 30_000:
+        content = content[:30_000] + "\n\n... [truncated — file too large, showing first 30KB]"
+    prompt = file_prompts.auto_detect_prompt("Knowledge Graph data")
+    prompt += f"\n\nKnowledge Graph Data:\n```\n{content}\n```"
+    return _run_llm_conversion(prompt, filename, "Knowledge Graph", None, llm_predict)
+
+
+def _convert_generic_text(
+    content: str, filename: str, llm_predict: callable,
+) -> Dict[str, Any]:
+    """Attempt to convert any text file to the best-fit diagram via LLM."""
+    if len(content) > 30_000:
+        content = content[:30_000] + "\n\n... [truncated]"
+    prompt = file_prompts.auto_detect_prompt(f"text file ('{filename}')")
+    prompt += f"\n\nFile Content:\n```\n{content}\n```"
+    return _run_llm_conversion(prompt, filename, "text file", None, llm_predict)
+
+
+def _convert_xmi(
+    content: str, filename: str, llm_predict: callable,
+) -> Dict[str, Any]:
+    """Convert an XMI/UML interchange file to the best-fit diagram spec via LLM."""
+    if len(content) > 30_000:
+        content = content[:30_000] + "\n\n... [truncated — file too large, showing first 30KB]"
+    prompt = file_prompts.auto_detect_prompt("XMI/UML interchange file")
+    prompt += f"\n\n{file_prompts.XMI_NOTE}XMI Content:\n```xml\n{content}\n```"
+    return _run_llm_conversion(prompt, filename, "XMI", None, llm_predict)
+
+
+def _page_png(doc, index: int) -> bytes:
+    """One page of an open document as a 200 dpi PNG (the caller holds PDFIUM_LOCK)."""
+    page = doc[index]
+    try:
+        bitmap = page.render(scale=200 / 72)
+        try:
+            png = io.BytesIO()
+            bitmap.to_pil().save(png, format="PNG")
+            return png.getvalue()
+        finally:
+            bitmap.close()
+    finally:
+        page.close()
+
+
+def _convert_pdf(
+    pdf_bytes: bytes,
+    filename: str,
+    llm_predict: callable,
+    llm_vision_predict: Optional[callable] = None,
+) -> Dict[str, Any]:
+    """Convert a PDF document to the best-fit diagram spec.
+
+    Strategy:
+      1. Extract text from all pages using pypdfium2.
+      2. If enough text is found (>50 chars), treat it as a text-based PDF
+         and run LLM auto-detect conversion on the extracted text.
+      3. If the PDF is mostly images/diagrams (little text), render the first
+         pages to images and run vision-based conversion.
+    """
+    try:
+        import pypdfium2
+    except ImportError:
+        return _error_response(
+            "PDF processing is not available. The pypdfium2 library is missing. "
+            "Please install it with: pip install pypdfium2"
+        )
+
+    with PDFIUM_LOCK:
+        try:
+            doc = pypdfium2.PdfDocument(pdf_bytes)
+        except Exception as e:
+            logger.error(f"[FileConversion] Failed to open PDF '{filename}': {e}")
+            return _error_response(
+                f"Could not open the PDF file '{filename}'. It may be corrupted or password-protected."
+            )
+
+        # Extract all content from the PDF upfront, then close the doc.
+        # Using try/finally ensures the doc is always closed even on unexpected errors.
+        full_text = ""
+        images_b64 = []
+        try:
+            page_count = len(doc)
+            if page_count == 0:
+                return _error_response(f"The PDF file '{filename}' has no pages.")
+
+            # Extract text from all pages (cap at 20 pages to stay within LLM limits)
+            text_parts = []
+            max_pages = min(page_count, 20)
+            for i in range(max_pages):
+                try:
+                    page = doc[i]
+                    try:
+                        text = page_text(page).strip()
+                    finally:
+                        page.close()
+                except Exception as e:  # PDFium counts pages a damaged file cannot load
+                    logger.warning(f"[FileConversion] Failed to read PDF page {i + 1}: {e}")
+                    continue
+                if text:
+                    text_parts.append(f"--- Page {i + 1} ---\n{text}")
+            full_text = "\n\n".join(text_parts)
+
+            # If low text, render pages to images for vision analysis
+            if len(full_text) <= 50 and llm_vision_predict:
+                render_pages = min(page_count, 3)
+                for i in range(render_pages):
+                    try:
+                        images_b64.append(base64.b64encode(_page_png(doc, i)).decode("ascii"))
+                    except Exception as e:
+                        logger.warning(f"[FileConversion] Failed to render PDF page {i + 1}: {e}")
+        finally:
+            doc.close()
+
+    # If we got meaningful text, use text-based conversion
+    if len(full_text) > 50:
+        if len(full_text) > 30_000:
+            full_text = full_text[:30_000] + "\n\n... [truncated — showing first 30KB]"
+        prompt = file_prompts.auto_detect_prompt(f"PDF document ('{filename}', {page_count} page(s))")
+        prompt += f"\n\nExtracted PDF Content:\n```\n{full_text}\n```"
+        return _run_llm_conversion(prompt, filename, "PDF", None, llm_predict)
+
+    # Low text content — PDF likely contains diagrams/images.
+    if not llm_vision_predict:
+        return _error_response(
+            f"The PDF '{filename}' appears to contain diagrams/images rather than text. "
+            "Image-based PDF conversion needs a model that can read images, and none is "
+            "available: add an OpenAI, Anthropic or Mistral API key in the assistant settings."
+        )
+
+    if not images_b64:
+        return _error_response(
+            f"Could not extract content from the PDF '{filename}'. "
+            "The file may be empty or in an unsupported format."
+        )
+
+    try:
+        raw_text = llm_vision_predict(
+            _build_image_prompt(),  # auto-detect from image
+            [data_url("image/png", img_b64) for img_b64 in images_b64],
+            timeout=90,
+        )
+    except (ModelRefusal, ImagesNotSupported) as e:
+        logger.warning(f"[FileConversion] Model declined the PDF images: {e}")
+        return _error_response(e.user_message())
+    except Exception as e:
+        logger.error(f"[FileConversion] Vision API call failed for PDF: {e}")
+        return _vision_user_key_reply(e) or _error_response(
+            f"Failed to process the diagram images from PDF '{filename}'. "
+            "Please make sure the PDF contains clear UML diagrams."
+        )
+
+    return _parse_llm_response(raw_text, filename, "PDF (image)", expected_type=None)
+
+
+def _vision_model() -> str:
+    """The model a vision call of this request runs on (``LLMProvider.vision``)."""
+    return byok.active_vision_model() or MODEL_VISION
+
+
+def _vision_user_key_reply(error: Exception) -> Optional[Dict[str, Any]]:
+    """Like ``user_key_reply``, except that a user's key that cannot read
+    images left the call to the server key, so the refusal is not theirs."""
+    return user_key_reply(error) if byok.active_vision_model() else None
+
+
+def _convert_image(
+    image_b64: str,
+    filename: str,
+    llm_vision_predict: Optional[callable] = None,
+    target_diagram_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Convert an image of a UML diagram to the best-fit diagram spec.
+
+    Without a target type the image's type is detected, and a UI screenshot
+    or mockup returns ``GUI_MOCKUP_ACTION``.
+    """
+    if not llm_vision_predict:
+        return _error_response(
+            "Image conversion needs a model that can read images, and none is "
+            "available: add an OpenAI, Anthropic or Mistral API key in the assistant settings."
+        )
+
+    vision_prompt = _build_image_prompt(target_diagram_type, detect_mockup=True)
+    image = data_url(image_mime_type(filename), image_b64)
+
+    # The vision model intermittently returns null content (a transient empty
+    # completion) even for a perfectly readable image, and the SAME image
+    # frequently succeeds on a retry, so an empty reply is retried. Transient
+    # API errors are already retried by the client.
+    raw_text = None
+    refusal = None
+    for attempt in range(3):
+        try:
+            raw_text = llm_vision_predict(vision_prompt, [image], timeout=60)
+        except ModelRefusal as e:
+            refusal = e  # a declined image is declined again on retry
+            break
+        except ImagesNotSupported as e:
+            logger.warning(f"[FileConversion] Vision rejected the image: {e}")
+            return _error_response(e.user_message())
+        except Exception as e:
+            logger.error(f"[FileConversion] Vision API call failed: {e}")
+            return _vision_user_key_reply(e) or _error_response(
+                "Failed to process the image. Please make sure the image contains "
+                "a clear UML diagram or UI mockup."
+            )
+        if raw_text:
+            break
+        logger.warning(
+            "[FileConversion] Vision returned null content (attempt %d/3, model=%s) for %s",
+            attempt + 1, _vision_model(), filename,
+        )
+
+    # A refusal (or a content-filter stop) is NOT the same as an empty reply:
+    # the model actively declined, and retrying the identical request won't help.
+    # Say so honestly instead of reporting "returned no content".
+    if refusal is not None:
+        logger.warning(
+            "[FileConversion] Vision declined the image (model=%s, category=%s) for %s",
+            _vision_model(), refusal.category, filename,
+        )
+        return _error_response(
+            "The AI model declined to read this image. This can happen with photos "
+            "or busy screenshots even when they're harmless. Try a clearer, cropped "
+            "image showing just the diagram or UI mockup — or describe the page you "
+            "want and I'll model it from your description."
+        )
+
+    return _parse_llm_response(
+        raw_text, filename, "image", expected_type=target_diagram_type, allow_mockup=True,
+    )
+
+
+def _run_llm_conversion(
+    prompt: str,
+    filename: str,
+    source_label: str,
+    expected_type: Optional[str],
+    llm_predict: callable,
+) -> Dict[str, Any]:
+    """Run LLM conversion for text-based files."""
+    try:
+        raw_response = llm_predict(prompt)
+    except ModelRefusal as e:
+        logger.warning(f"[FileConversion] Model declined the {source_label} file: {e}")
+        return _error_response(e.user_message())
+    except Exception as e:
+        logger.error(f"[FileConversion] LLM prediction failed for {source_label}: {e}")
+        return user_key_reply(e) or _error_response(
+            f"Failed to process the {source_label} file. The AI model encountered an error."
+        )
+    return _parse_llm_response(raw_response, filename, source_label, expected_type)
+
+
+def _parse_llm_response(
+    raw_response: str,
+    filename: str,
+    source_label: str,
+    expected_type: Optional[str] = None,
+    allow_mockup: bool = False,
+) -> Dict[str, Any]:
+    """Parse the LLM response, detect diagram type, and validate the spec.
+
+    With ``allow_mockup``, a ``GUINoCodeDiagram`` verdict (a UI image) returns
+    ``GUI_MOCKUP_ACTION``.
+    """
+    # A vision/LLM call can return None (empty content, a refusal, or a truncated
+    # response) — guard BEFORE .strip() so an intermittent empty reply becomes a
+    # clean, retryable message instead of an AttributeError crash.
+    if not isinstance(raw_response, str) or not raw_response.strip():
+        logger.error(
+            f"[FileConversion] Empty/None LLM response for {source_label} ({filename})"
+        )
+        return _error_response(
+            f"I couldn't read the {source_label} — the AI model returned no content. "
+            "Please try again, or describe the page you want instead."
+        )
+    # Clean markdown code fences if present
+    cleaned = raw_response.strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:]
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+
+    try:
+        spec = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        logger.error(f"[FileConversion] Failed to parse LLM JSON for {source_label}: {e}")
+        logger.debug(f"[FileConversion] Raw response: {raw_response[:500]!r}")
+        return _error_response(
+            f"The AI couldn't extract a valid model from the {source_label} file. "
+            "Please try again or simplify the input."
+        )
+
+    if not isinstance(spec, dict):
+        return _error_response(f"Unexpected response format from {source_label} conversion.")
+
+    if allow_mockup and spec.get("diagramType") == _GUI_DIAGRAM_TYPE:
+        logger.info(f"[FileConversion] {filename} is a UI screenshot or mockup")
+        return {"action": GUI_MOCKUP_ACTION}
+
+    # Determine the diagram type from the spec or the expected type
+    diagram_type = _resolve_diagram_type(spec, expected_type)
+    logger.info(f"[FileConversion] Resolved diagram type: {diagram_type} for {filename}")
+
+    # Validate and build the response based on diagram type
+    if diagram_type == "StateMachineDiagram":
+        return _validate_state_machine_spec(spec, filename, source_label)
+    elif diagram_type == "ObjectDiagram":
+        return _validate_object_diagram_spec(spec, filename, source_label)
+    elif diagram_type == "AgentDiagram":
+        return _validate_agent_diagram_spec(spec, filename, source_label)
+    elif diagram_type == "BPMN":
+        return _validate_bpmn_spec(spec, filename, source_label)
+    else:
+        return _validate_class_diagram_spec(spec, filename, source_label)
+
+
+def _resolve_diagram_type(spec: Dict[str, Any], expected_type: Optional[str]) -> str:
+    """Determine the diagram type from the LLM response and/or expected type."""
+    # If the LLM included a diagramType field, trust it
+    llm_type = spec.get("diagramType", "")
+    if isinstance(llm_type, str) and llm_type in CONVERTIBLE_DIAGRAM_TYPES:
+        return llm_type
+
+    # If we had an expected type from pre-detection (e.g., PlantUML keywords)
+    if expected_type and expected_type in CONVERTIBLE_DIAGRAM_TYPES:
+        return expected_type
+
+    # Infer from the shape of the spec
+    if "nodes" in spec and isinstance(spec["nodes"], list) and len(spec.get("nodes", [])) > 0:
+        first = spec["nodes"][0] if spec["nodes"] else {}
+        if isinstance(first, dict) and first.get("type") in (
+            "startEvent", "endEvent", "intermediateEvent", "task", "gateway",
+        ):
+            return "BPMN"
+
+    if "states" in spec and isinstance(spec["states"], list) and len(spec.get("states", [])) > 0:
+        first = spec["states"][0] if spec["states"] else {}
+        if isinstance(first, dict):
+            # Agent diagrams have states with "replies" or "type"
+            if "replies" in first or first.get("type") == "state":
+                if "intents" in spec:
+                    return "AgentDiagram"
+            # State machine states have "stateName" and "stateType"
+            if "stateName" in first or "stateType" in first:
+                return "StateMachineDiagram"
+
+    if "objects" in spec and isinstance(spec["objects"], list) and len(spec["objects"]) > 0:
+        return "ObjectDiagram"
+
+    if "intents" in spec and isinstance(spec["intents"], list) and len(spec["intents"]) > 0:
+        return "AgentDiagram"
+
+    # Default to ClassDiagram
+    return "ClassDiagram"
+
+
+# ── Per-type validators ───────────────────────────────────────────────────────
+
+def _validate_class_diagram_spec(
+    spec: Dict[str, Any], filename: str, source_label: str,
+) -> Dict[str, Any]:
+    """Validate and build a ClassDiagram inject_complete_system response."""
+    classes = spec.get("classes", [])
+    if not isinstance(classes, list) or len(classes) == 0:
+        return _error_response(
+            f"No classes could be extracted from the {source_label} file. "
+            "Please check that the file contains valid class/entity definitions."
+        )
+
+    relationships = spec.get("relationships", [])
+    if not isinstance(relationships, list):
+        relationships = []
+
+    validated_classes = []
+    for cls in classes:
+        if not isinstance(cls, dict):
+            continue
+        class_name = cls.get("className")
+        if not isinstance(class_name, str) or not class_name.strip():
+            continue
+        validated_classes.append({
+            "className": class_name.strip(),
+            "attributes": cls.get("attributes", []) if isinstance(cls.get("attributes"), list) else [],
+            "methods": cls.get("methods", []) if isinstance(cls.get("methods"), list) else [],
+        })
+
+    if not validated_classes:
+        return _error_response(f"No valid classes found in the {source_label} file.")
+
+    class_names = {c["className"] for c in validated_classes}
+    validated_rels = []
+    for rel in relationships:
+        if not isinstance(rel, dict):
+            continue
+        source = rel.get("source", "")
+        target = rel.get("target", "")
+        if source in class_names and target in class_names:
+            # The whole of a composition is its target end (BESSER-PEARL/BESSER#746).
+            if orient_composition_spec(rel):
+                logger.info(
+                    f"[FileConversion] Swapped composition {source}->{target}: "
+                    f"the whole is the target end"
+                )
+            validated_rels.append(rel)
+        else:
+            logger.warning(
+                f"[FileConversion] Dropping relationship {source}->{target}: "
+                f"class not found in extracted classes"
+            )
+
+    system_spec = {"classes": validated_classes, "relationships": validated_rels}
+    attr_count = sum(len(c.get("attributes", [])) for c in validated_classes)
+
+    return _success_response(
+        diagram_type="ClassDiagram",
+        system_spec=system_spec,
+        filename=filename,
+        source_label=source_label,
+        summary=f"{len(validated_classes)} class(es), {attr_count} attribute(s), "
+                f"and {len(validated_rels)} relationship(s)",
+    )
+
+
+def _validate_state_machine_spec(
+    spec: Dict[str, Any], filename: str, source_label: str,
+) -> Dict[str, Any]:
+    """Validate and build a StateMachineDiagram inject_complete_system response."""
+    states = spec.get("states", [])
+    if not isinstance(states, list) or len(states) == 0:
+        return _error_response(
+            f"No states could be extracted from the {source_label} file. "
+            "Please check that the file contains state/workflow definitions."
+        )
+
+    transitions = spec.get("transitions", [])
+    if not isinstance(transitions, list):
+        transitions = []
+
+    validated_states = []
+    for state in states:
+        if not isinstance(state, dict):
+            continue
+        state_name = state.get("stateName")
+        if not isinstance(state_name, str) or not state_name.strip():
+            continue
+        validated_states.append({
+            "stateName": state_name.strip(),
+            "stateType": state.get("stateType", "regular") if isinstance(state.get("stateType"), str) else "regular",
+            "entryAction": state.get("entryAction", "") if isinstance(state.get("entryAction"), str) else "",
+            "exitAction": state.get("exitAction", "") if isinstance(state.get("exitAction"), str) else "",
+            "doActivity": state.get("doActivity", "") if isinstance(state.get("doActivity"), str) else "",
+        })
+
+    if not validated_states:
+        return _error_response(f"No valid states found in the {source_label} file.")
+
+    state_names = {s["stateName"] for s in validated_states}
+    validated_trans = []
+    for trans in transitions:
+        if not isinstance(trans, dict):
+            continue
+        source = trans.get("source", "")
+        target = trans.get("target", "")
+        # Allow [*] and special initial/final references
+        source_ok = source in state_names or source in ("[*]", "initial", "Initial")
+        target_ok = target in state_names or target in ("[*]", "final", "Final")
+        if source_ok and target_ok:
+            validated_trans.append(trans)
+        else:
+            logger.warning(
+                f"[FileConversion] Dropping transition {source}->{target}: "
+                f"state not found in extracted states"
+            )
+
+    system_spec = {"states": validated_states, "transitions": validated_trans}
+
+    return _success_response(
+        diagram_type="StateMachineDiagram",
+        system_spec=system_spec,
+        filename=filename,
+        source_label=source_label,
+        summary=f"{len(validated_states)} state(s) and {len(validated_trans)} transition(s)",
+    )
+
+
+def _validate_object_diagram_spec(
+    spec: Dict[str, Any], filename: str, source_label: str,
+) -> Dict[str, Any]:
+    """Validate and build an ObjectDiagram inject_complete_system response."""
+    objects = spec.get("objects", [])
+    if not isinstance(objects, list) or len(objects) == 0:
+        return _error_response(
+            f"No objects could be extracted from the {source_label} file. "
+            "Please check that the file contains object/instance definitions."
+        )
+
+    links = spec.get("links", [])
+    if not isinstance(links, list):
+        links = []
+
+    validated_objects = []
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+        obj_name = obj.get("objectName")
+        if not isinstance(obj_name, str) or not obj_name.strip():
+            continue
+        validated_objects.append({
+            "objectName": obj_name.strip(),
+            "className": obj.get("className", "") if isinstance(obj.get("className"), str) else "",
+            "attributes": obj.get("attributes", []) if isinstance(obj.get("attributes"), list) else [],
+        })
+
+    if not validated_objects:
+        return _error_response(f"No valid objects found in the {source_label} file.")
+
+    obj_names = {o["objectName"] for o in validated_objects}
+    validated_links = []
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        source = link.get("source", "")
+        target = link.get("target", "")
+        if source in obj_names and target in obj_names:
+            validated_links.append(link)
+
+    system_spec = {"objects": validated_objects, "links": validated_links}
+
+    return _success_response(
+        diagram_type="ObjectDiagram",
+        system_spec=system_spec,
+        filename=filename,
+        source_label=source_label,
+        summary=f"{len(validated_objects)} object(s) and {len(validated_links)} link(s)",
+    )
+
+
+def _validate_agent_diagram_spec(
+    spec: Dict[str, Any], filename: str, source_label: str,
+) -> Dict[str, Any]:
+    """Validate and build an AgentDiagram inject_complete_system response."""
+    intents = spec.get("intents", [])
+    states = spec.get("states", [])
+    transitions = spec.get("transitions", [])
+
+    if not isinstance(intents, list):
+        intents = []
+    if not isinstance(states, list):
+        states = []
+    if not isinstance(transitions, list):
+        transitions = []
+
+    if len(intents) == 0 and len(states) == 0:
+        return _error_response(
+            f"No intents or states could be extracted from the {source_label} file. "
+            "Please check that the file describes a chatbot or agent flow."
+        )
+
+    validated_intents = []
+    for intent in intents:
+        if not isinstance(intent, dict):
+            continue
+        name = intent.get("intentName")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        validated_intents.append({
+            "intentName": name.strip(),
+            "trainingPhrases": intent.get("trainingPhrases", [])
+                if isinstance(intent.get("trainingPhrases"), list) else [],
+        })
+
+    validated_states = []
+    for state in states:
+        if not isinstance(state, dict):
+            continue
+        name = state.get("stateName")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        validated_states.append({
+            "stateName": name.strip(),
+            "type": state.get("type", "state") if isinstance(state.get("type"), str) else "state",
+            "replies": state.get("replies", []) if isinstance(state.get("replies"), list) else [],
+        })
+
+    system_spec = {
+        "intents": validated_intents,
+        "states": validated_states,
+        "transitions": transitions,  # Pass through — handler will validate
+    }
+
+    parts = []
+    if validated_intents:
+        parts.append(f"{len(validated_intents)} intent(s)")
+    if validated_states:
+        parts.append(f"{len(validated_states)} state(s)")
+    if transitions:
+        parts.append(f"{len(transitions)} transition(s)")
+
+    return _success_response(
+        diagram_type="AgentDiagram",
+        system_spec=system_spec,
+        filename=filename,
+        source_label=source_label,
+        summary=", ".join(parts) if parts else "agent specification",
+    )
+
+
+def _validate_bpmn_spec(
+    spec: Dict[str, Any], filename: str, source_label: str,
+) -> Dict[str, Any]:
+    """Validate and build a BPMN inject_complete_system response."""
+    nodes = spec.get("nodes", [])
+    if not isinstance(nodes, list) or len(nodes) == 0:
+        return _error_response(
+            f"No process steps could be extracted from the {source_label} file. "
+            "Please check that the file describes a business process (steps, decisions, actors)."
+        )
+
+    flows = spec.get("flows", [])
+    if not isinstance(flows, list):
+        flows = []
+    pools = spec.get("pools", [])
+    if not isinstance(pools, list):
+        pools = []
+
+    valid_node_types = ("startEvent", "endEvent", "intermediateEvent", "task", "gateway")
+    validated_nodes = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_id = node.get("id")
+        if not isinstance(node_id, str) or not node_id.strip():
+            continue
+        node_type = node.get("type")
+        if node_type not in valid_node_types:
+            continue
+        validated_nodes.append({
+            "id": node_id.strip(),
+            "name": node.get("name", "") if isinstance(node.get("name"), str) else "",
+            "type": node_type,
+            "taskType": node.get("taskType") if isinstance(node.get("taskType"), str) else None,
+            "gatewayType": node.get("gatewayType") if isinstance(node.get("gatewayType"), str) else None,
+            "poolId": node.get("poolId") if isinstance(node.get("poolId"), str) else None,
+            "laneId": node.get("laneId") if isinstance(node.get("laneId"), str) else None,
+        })
+
+    if not validated_nodes:
+        return _error_response(f"No valid process steps found in the {source_label} file.")
+
+    validated_pools = []
+    for pool in pools:
+        if not isinstance(pool, dict):
+            continue
+        pool_id = pool.get("id")
+        if not isinstance(pool_id, str) or not pool_id.strip():
+            continue
+        lanes = pool.get("lanes", [])
+        validated_lanes = [
+            {"id": lane["id"].strip(), "name": lane.get("name", "") if isinstance(lane.get("name"), str) else ""}
+            for lane in lanes
+            if isinstance(lanes, list) and isinstance(lane, dict)
+            and isinstance(lane.get("id"), str) and lane.get("id").strip()
+        ] if isinstance(lanes, list) else []
+        validated_pools.append({
+            "id": pool_id.strip(),
+            "name": pool.get("name", "") if isinstance(pool.get("name"), str) else "",
+            "lanes": validated_lanes,
+        })
+
+    node_ids = {n["id"] for n in validated_nodes}
+    validated_flows = []
+    for flow in flows:
+        if not isinstance(flow, dict):
+            continue
+        source = flow.get("source", "")
+        target = flow.get("target", "")
+        if source in node_ids and target in node_ids:
+            validated_flows.append({
+                "source": source,
+                "target": target,
+                "name": flow.get("name", "") if isinstance(flow.get("name"), str) else "",
+            })
+        else:
+            logger.warning(
+                f"[FileConversion] Dropping flow {source}->{target}: node not found in extracted nodes"
+            )
+
+    # Reuse the BPMN handler's own repair pass (start/end insertion, orphaned-node
+    # reconnection, dangling pool/lane ref cleanup) so file-converted specs get the
+    # same guarantees as agent-generated ones.
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    data_objects = spec.get("dataObjects")
+    data_associations = spec.get("dataAssociations")
+    system_spec = BPMNDiagramHandler(None)._validate_and_refine({
+        "nodes": validated_nodes, "flows": validated_flows, "pools": validated_pools,
+        "dataObjects": [
+            {"id": str(o["id"]), "name": str(o.get("name") or "")}
+            for o in (data_objects if isinstance(data_objects, list) else [])
+            if isinstance(o, dict) and o.get("id")
+        ],
+        "dataAssociations": [
+            {"dataObject": a.get("dataObject"), "node": a.get("node"),
+             "direction": "output" if a.get("direction") == "output" else "input"}
+            for a in (data_associations if isinstance(data_associations, list) else [])
+            if isinstance(a, dict)
+        ],
+    })
+
+    task_count = sum(1 for n in system_spec["nodes"] if n["type"] == "task")
+    gateway_count = sum(1 for n in system_spec["nodes"] if n["type"] == "gateway")
+    pool_note = f", {len(system_spec.get('pools') or [])} pool(s)" if system_spec.get("pools") else ""
+
+    return _success_response(
+        diagram_type="BPMN",
+        system_spec=system_spec,
+        filename=filename,
+        source_label=source_label,
+        summary=f"{task_count} task(s), {gateway_count} gateway(s), and "
+                f"{len(system_spec['flows'])} flow(s){pool_note}",
+    )
+
+
+# ── Response helpers ──────────────────────────────────────────────────────────
+
+def _success_response(
+    diagram_type: str,
+    system_spec: Dict[str, Any],
+    filename: str,
+    source_label: str,
+    summary: str,
+) -> Dict[str, Any]:
+    """Build a successful inject_complete_system response."""
+    type_label = file_prompts.diagram_type_label(diagram_type)
+    message = f"Converted {source_label} file '{filename}' into a {type_label} with {summary}."
+    logger.info(f"[FileConversion] {message}")
+
+    return inject_complete_system(system_spec, diagram_type, message)
+
+
+def _error_response(message: str) -> Dict[str, Any]:
+    """Build a standardized error response."""
+    return {
+        "action": Action.AGENT_ERROR,
+        "code": "file_conversion_error",
+        "message": message,
+        "retryable": True,
+    }

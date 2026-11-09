@@ -1,6 +1,6 @@
 import logging
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 from protocol.types import AssistantRequest, SUPPORTED_DIAGRAM_TYPES
 

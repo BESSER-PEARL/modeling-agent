@@ -5,17 +5,17 @@ from types import SimpleNamespace
 import pytest
 
 from protocol.types import AssistantRequest, WorkspaceContext
-from session_keys import (
+from common.session_keys import (
     UNIFIED_CLASSIFICATION,
     UNIFIED_CLASSIFICATION_EVENT_ID,
 )
-from unified_classifier import (
-    _SYSTEM_PROMPT,
+from prompts.classifier import SYSTEM_PROMPT
+from routing.unified_classifier import (
     UnifiedClassification,
     classify_message,
     get_or_classify,
 )
-from session_helpers import json_intent_matches, json_no_intent_matched
+from conversation.session_helpers import json_intent_matches, json_no_intent_matched
 
 from tests.conftest import FakeSession
 
@@ -417,7 +417,7 @@ class TestSmartGenFollowUpRouting:
     """
 
     def test_system_prompt_documents_smart_gen_followup(self):
-        prompt = _SYSTEM_PROMPT
+        prompt = SYSTEM_PROMPT
         # The dedicated rule block exists...
         assert "SMART-GEN FOLLOW-UP" in prompt
         # ...names the recency cues the classifier sees in history...
@@ -433,7 +433,7 @@ class TestSmartGenFollowUpRouting:
         """A bare 'generate a rest api' must stay deterministic even right
         after a smart run — the recency signal was pulling it to the smart
         route (flip-flop: smart/deterministic/smart on three sends)."""
-        prompt = _SYSTEM_PROMPT
+        prompt = SYSTEM_PROMPT
         assert "NAMES a BESSER built-in generator" in prompt
         assert "even minutes after a smart run" in prompt
         assert "NOT a follow-up to the smart app" in prompt
@@ -441,7 +441,7 @@ class TestSmartGenFollowUpRouting:
     def test_prompt_keeps_genuine_model_edits_on_modify(self):
         # The discriminator examples for real model edits must survive so
         # 'add a Payment class' etc. stay on modify_model_intent.
-        prompt = _SYSTEM_PROMPT
+        prompt = SYSTEM_PROMPT
         assert "add a Payment class" in prompt
         assert "stays modify_model_intent EVEN right" in prompt
 
@@ -466,7 +466,7 @@ class TestSmartGenFollowUpRouting:
             history=history,
         )
         # System prompt is our authoritative rule set.
-        assert provider.messages[0]["content"] == _SYSTEM_PROMPT
+        assert provider.messages[0]["content"] == SYSTEM_PROMPT
         user_block = provider.messages[1]["content"]
         # The smart-gen outcome + follow-up message are both visible to the
         # classifier so it can apply the SMART-GEN FOLLOW-UP rule.

@@ -29,6 +29,7 @@ Activate the environment for your shell:
 .. code-block:: console
 
    python -m pip install -r requirements.txt
+   python -m pip install -e .
 
 Copy ``config_example.yaml`` to ``config.yaml``. Set ``nlp.openai.api_key``
 to your server provider key and allow your editor origin under

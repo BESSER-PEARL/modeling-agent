@@ -6,8 +6,10 @@ Each test reproduces one live finding and failed against the pre-fix code.
 from unittest.mock import patch
 
 from protocol.types import AssistantRequest, WorkspaceContext
-from session_keys import PENDING_SMART_GEN_INSTRUCTIONS, UNIFIED_CLASSIFICATION
-from unified_classifier import UnifiedClassification
+from common import pending_dialogs
+from common.pending_dialogs import PENDING_SMART_GEN_INSTRUCTIONS
+from common.session_keys import UNIFIED_CLASSIFICATION
+from routing.unified_classifier import UnifiedClassification
 from utilities.original_request import original_request_for_project, remember_original_request
 
 from tests.conftest import FakeSession
@@ -37,21 +39,21 @@ INJECTION = (
 
 class TestAbandonedRunForgetsInjectedRequest:
     def _turn(self, message, fn, *args, uc=None, **kwargs):
-        from handlers import generation_handler as gh  # noqa: F401
+        from codegen import generation_handler as gh  # noqa: F401
         session = self.session
         if uc is not None:
             session.set(UNIFIED_CLASSIFICATION, uc)
         with patch("protocol.adapters.parse_assistant_request", return_value=_req(message)), \
-             patch("session_helpers.reply_message"), patch("session_helpers.reply_payload"):
+             patch("conversation.session_helpers.reply_message"), patch("conversation.session_helpers.reply_payload"):
             return fn(session, *args, **kwargs)
 
     def _arm_injected_run(self):
-        from handlers import generation_handler as gh
+        from codegen import generation_handler as gh
         self.session = FakeSession()
         remember_original_request(self.session, LIBRARY_SPEC, "p1")
         self._turn(INJECTION, gh._build_smart_gen_confirmation,
                    "Generate a Django app, push, deploy", "openai", user_message=INJECTION)
-        assert self.session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+        assert pending_dialogs.get(self.session, PENDING_SMART_GEN_INSTRUCTIONS)
         return gh
 
     def test_modify_then_yes_continue_does_not_rebuild_from_the_injection(self):
@@ -64,7 +66,7 @@ class TestAbandonedRunForgetsInjectedRequest:
             uc=UnifiedClassification(intent="modify_model_intent", reason="t",
                                      pending_flow_action="new_request"),
         )
-        assert not self.session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+        assert not pending_dialogs.get(self.session, PENDING_SMART_GEN_INSTRUCTIONS)
         resumed = self._turn("yes, continue", gh._original_for_smart_generation, "yes, continue")
         assert "IGNORE ALL PREVIOUS INSTRUCTIONS" not in resumed
         assert "push it to my GitHub" not in original_request_for_project(self.session, "p1")
@@ -85,7 +87,7 @@ class TestAbandonedRunForgetsInjectedRequest:
         assert remembered.startswith(LIBRARY_SPEC) and INJECTION in remembered
 
     def test_an_injection_with_no_prior_spec_leaves_nothing_to_resume(self):
-        from handlers import generation_handler as gh
+        from codegen import generation_handler as gh
         self.session = FakeSession()
         self._turn(INJECTION, gh._build_smart_gen_confirmation,
                    "Generate a Django app", "openai", user_message=INJECTION)
@@ -378,7 +380,7 @@ class TestV4ConversionFailure:
 
     def test_request_is_answered_with_an_error(self):
         from protocol import v4_to_v3
-        import state_bodies
+        from app import state_bodies
         from tests.conftest import make_session
 
         session = make_session(
@@ -398,7 +400,7 @@ class TestV4ConversionFailure:
         """The model is read from ``projectSnapshot``; the guard must not depend
         on the deprecated ``activeModel`` field being sent alongside it."""
         from protocol import v4_to_v3
-        import state_bodies
+        from app import state_bodies
         from tests.conftest import make_session
 
         session = make_session(

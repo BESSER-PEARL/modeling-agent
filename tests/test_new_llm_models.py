@@ -13,17 +13,13 @@ model, so every gpt-6 call sent a temperature (and the vision path
 ``max_tokens``) and got a 400. Unpriced models report placeholder costs.
 """
 
-import os
-import sys
 from types import SimpleNamespace
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-import byok  # noqa: E402
-import model_config  # noqa: E402
-from model_config import reasoning_effort_for, supports_custom_temperature  # noqa: E402
+from llm import byok
+from llm import model_config
+from llm.model_config import reasoning_effort_for, supports_custom_temperature
 
 GPT6 = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]
 CLAUDE_NO_SAMPLING = [
@@ -72,20 +68,18 @@ def test_an_openai_key_on_gpt6_sends_only_params_gpt6_accepts(model, monkeypatch
 
 
 @pytest.mark.parametrize("model", GPT6)
-def test_gpt6_vision_uses_max_completion_tokens(model, monkeypatch):
-    from handlers import file_conversion_handler
+def test_gpt6_vision_uses_max_completion_tokens(model):
+    from llm import provider
 
-    monkeypatch.setattr(file_conversion_handler, "MODEL_VISION", model)
-    params = file_conversion_handler._vision_sampling_params()
+    params = provider._vision_params(model)
     assert "max_tokens" not in params and "temperature" not in params
     assert params["max_completion_tokens"] > 0
 
 
 def test_gpt6_luna_streaming_uses_configured_low_effort(monkeypatch):
-    import session_helpers
+    from llm.provider import LLMProvider
 
     monkeypatch.setattr(model_config, "MODEL_REASONING_EFFORT", "low")
-    monkeypatch.setattr(session_helpers, "reply_stream_chunk", lambda *_: None)
     completions = _Completions()
 
     def create(**kwargs):
@@ -97,7 +91,8 @@ def test_gpt6_luna_streaming_uses_configured_low_effort(monkeypatch):
 
     completions.create = create
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
-    assert session_helpers._stream_openai(None, client, "describe", "", "stream", "gpt-6-luna") == "OK"
+    provider = LLMProvider(SimpleNamespace(name="gpt-4o-mini", client=client))
+    assert "".join(provider.stream("describe", model="gpt-6-luna")) == "OK"
     sent = completions.calls[0]
     assert sent["reasoning_effort"] == "low"
     assert "temperature" not in sent

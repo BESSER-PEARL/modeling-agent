@@ -8,8 +8,8 @@ import httpx
 import openai
 import pytest
 
-import agent_setup
-from utilities import llm_retry
+from app import agent_setup
+from llm import retry as llm_retry
 
 
 class _FakeLLMOpenAI:

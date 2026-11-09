@@ -1,15 +1,16 @@
 import json
 import logging
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from baf.core.session import Session
 from baf.library.transition.events.base_events import ReceiveJSONEvent
 
 from .types import AssistantRequest, FileAttachment, WorkspaceContext, SUPPORTED_DIAGRAM_TYPES
 from .v4_to_v3 import normalize_project_snapshot
-from session_keys import PARSED_ASSISTANT_REQUEST, PARSED_REQUEST_EVENT_ID, VOICE_CONTEXT
-from utilities.message_limits import validate_message_length
+from common.session_keys import PARSED_ASSISTANT_REQUEST, PARSED_REQUEST_EVENT_ID, VOICE_CONTEXT
+from .message_limits import validate_message_length
+from .actions import Action
 
 
 def _cap_user_message(msg: str) -> str:
@@ -25,12 +26,41 @@ DIAGRAM_PREFIX_PATTERN = re.compile(r"^\[DIAGRAM_TYPE:(\w+)\]\s*(.+)$", re.DOTAL
 PILOT_PARTICIPANT_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,16}$")
 
 
+# Well above what the editor sends; the client is not trusted to keep it small.
+MAX_REPO_RECAP_CHARS = 4_000
+# ``recentHistory`` caps, the same as the editor's (MAX_RECENT_HISTORY_TURNS /
+# _CHARS in AssistantClient.ts): enough turns to rebuild the conversation memory
+# (its window is 20 messages), enforced again here.
+MAX_RECENT_HISTORY_TURNS = 20
+MAX_RECENT_HISTORY_CHARS = 4_000
+_RECENT_HISTORY_ROLES = frozenset({"user", "assistant"})
+# GitHub's own limits: owner up to 39 characters, repository up to 100.
+REPO_FULL_NAME_PATTERN = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}")
+
+
 def _parse_pilot_participant(context_payload: Dict[str, Any]) -> Optional[str]:
     """Validate the optional ``context.pilotParticipant`` label (or drop it)."""
     candidate = context_payload.get("pilotParticipant")
     if isinstance(candidate, str) and PILOT_PARTICIPANT_PATTERN.match(candidate):
         return candidate
     return None
+
+
+def _parse_github_repo(context_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Validate the optional ``context.githubRepo`` (or drop it)."""
+    repo = context_payload.get("githubRepo")
+    if (
+        not isinstance(repo, dict)
+        or not isinstance(repo.get("fullName"), str)
+        or not REPO_FULL_NAME_PATTERN.fullmatch(repo["fullName"])
+    ):
+        return None
+    recap = repo.get("recap")
+    return {
+        "full_name": repo["fullName"],
+        "has_code": repo.get("hasCode") is True,
+        "recap": recap[:MAX_REPO_RECAP_CHARS] if isinstance(recap, str) else "",
+    }
 
 
 def safe_json_loads(value: Any) -> Optional[Dict[str, Any]]:
@@ -289,6 +319,7 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         diagram_summaries=diagram_summaries,
         current_diagram_indices=current_diagram_indices,
         pilot_participant=pilot_participant,
+        github_repo=_parse_github_repo(context_payload),
     )
 
     # ── Parse file attachments ──
@@ -306,7 +337,7 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
                 )
 
     return AssistantRequest(
-        action=raw_payload.get("action") if isinstance(raw_payload.get("action"), str) else "user_message",
+        action=raw_payload.get("action") if isinstance(raw_payload.get("action"), str) else Action.USER_MESSAGE,
         protocol_version="2.0",
         client_mode=raw_payload.get("clientMode") if isinstance(raw_payload.get("clientMode"), str) else "workspace",
         session_id=raw_payload.get("sessionId")
@@ -323,7 +354,29 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         attachments=attachments,
         pilot_participant=pilot_participant,
         turn_id=_parse_turn_id(raw_payload),
+        recent_history=_parse_recent_history(raw_payload),
     )
+
+
+def _parse_recent_history(raw_payload: Dict[str, Any]) -> List[Dict[str, str]]:
+    """The payload's ``recentHistory``, clamped: entries that are not a
+    ``{"role": "user" | "assistant", "content": <non-empty string>}`` are
+    dropped, each content is cut at ``MAX_RECENT_HISTORY_CHARS`` and only the
+    newest ``MAX_RECENT_HISTORY_TURNS`` are kept (oldest first)."""
+    raw = raw_payload.get("recentHistory")
+    if not isinstance(raw, list):
+        return []
+    turns: List[Dict[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        role, content = entry.get("role"), entry.get("content")
+        if not isinstance(role, str) or role not in _RECENT_HISTORY_ROLES:
+            continue
+        if not isinstance(content, str) or not content.strip():
+            continue
+        turns.append({"role": role, "content": content[:MAX_RECENT_HISTORY_CHARS]})
+    return turns[-MAX_RECENT_HISTORY_TURNS:]
 
 
 def _parse_turn_id(raw_payload: Dict[str, Any]) -> Optional[str]:
@@ -374,7 +427,7 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
             session.set(VOICE_CONTEXT, None)
             # Re-parse as if it were a v2 payload with the transcribed message
             synthetic_payload = {
-                "action": "user_message",
+                "action": Action.USER_MESSAGE,
                 "protocolVersion": "2.0",
                 "clientMode": "workspace",
                 "message": cleaned_message,
@@ -390,7 +443,7 @@ def parse_assistant_request(session: Session, default_diagram_type: str = "Class
 
         context = WorkspaceContext(active_diagram_type=diagram_type)
         request = AssistantRequest(
-            action="user_message",
+            action=Action.USER_MESSAGE,
             protocol_version="2.0",
             client_mode="workspace",
             message=cleaned_message,

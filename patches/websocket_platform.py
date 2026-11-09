@@ -49,26 +49,31 @@ _SENSITIVE_VAR_KEYS = {
     "user_api_key", "api_key", "apikey", "secret", "password", "token", "auth",
 }
 
+# USER_SET_VARIABLE keys that arm BYOK. They stay on the socket that sent them:
+# a session outlives its sockets, is shared by every tab of a browser, and is
+# written to BAF's monitoring database. Every (re)connect re-arms them.
+_BYOK_VARS = ("user_api_key", "user_api_provider", "user_api_model", "user_api_base")
 
-def _set_request_byok(session):
-    """Set the per-request BYOK context var from the session's stored key.
 
-    The frontend sends the user's key/provider/model via USER_SET_VARIABLE,
-    so they live on the session under ``user_api_key`` / ``user_api_provider``
-    / ``user_api_model``. ``byok`` is imported lazily because this file is
-    copied into the installed ``baf`` package at build time; ``src/`` is on
-    ``sys.path`` once the agent has started (and the handler only runs then).
+def _set_request_byok(socket_byok):
+    """Set the per-request BYOK context var from the key armed on this socket.
+
+    The frontend sends the user's key/provider/model via USER_SET_VARIABLE, and
+    the handler keeps them in ``socket_byok``. ``byok`` is imported lazily because this file is
+    copied into the installed ``baf`` package at build time; the agent's own
+    modules (``src/``, installed with ``pip install -e .``) are importable by
+    the time the handler runs.
 
     Returns a token to pass to :func:`_reset_request_byok`, or ``None`` if
     BYOK is unavailable for any reason (the request then uses the shared LLM).
     """
     try:
-        import byok
+        from llm import byok
         return byok.set_current(
-            session.get("user_api_provider"),
-            session.get("user_api_key"),
-            session.get("user_api_model"),
-            session.get("user_api_base"),
+            socket_byok.get("user_api_provider"),
+            socket_byok.get("user_api_key"),
+            socket_byok.get("user_api_model"),
+            socket_byok.get("user_api_base"),
         )
     except Exception as exc:  # never let BYOK wiring break message handling
         logger.warning(f"BYOK: could not set per-request key: {exc}")
@@ -80,10 +85,27 @@ def _reset_request_byok(token) -> None:
     if token is None:
         return
     try:
-        import byok
+        from llm import byok
         byok.reset_current(token)
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(f"BYOK: could not reset per-request key: {exc}")
+
+
+def _keep_conversation_alive(tab_id) -> None:
+    """Tell the conversation memory that this tab is still connected.
+
+    A heartbeat's ``user_id`` is the tab's payload ``sessionId``, the key its
+    conversation memory is stored under, so the reaper does not drop a
+    conversation while its tab is open (it expires idle memories). Imported
+    lazily, like ``byok`` above; best effort.
+    """
+    if not tab_id:
+        return
+    try:
+        from memory import touch_memory
+        touch_memory(tab_id)
+    except Exception as exc:  # never let it break the heartbeat
+        logger.warning(f"Could not mark conversation {tab_id!r} as in use: {exc}")
 
 
 def _tab_id_of(payload_str) -> str | None:
@@ -204,6 +226,7 @@ class WebSocketPlatform(Platform):
                 conn (ServerConnection): the user connection
             """
             session: Session = None
+            socket_byok: dict[str, str] = {}
             current_time = datetime.now()
             request = getattr(conn, "request", None)
             headers = getattr(request, "headers", {}) if request else {}
@@ -280,14 +303,14 @@ class WebSocketPlatform(Platform):
                             session=session,
                             human=True)
                         # BYOK request boundary: if the user supplied their own
-                        # API key (stored on the session by USER_SET_VARIABLE),
+                        # API key (kept in socket_byok by USER_SET_VARIABLE),
                         # set the per-request context var BEFORE receive_event.
                         # receive_event -> Session.call_manage_transition ->
                         # loop.call_soon_threadsafe captures a copy of THIS
                         # thread's context, so the value propagates into the
                         # session's event-loop thread for this turn. Reset after
                         # so the handler thread never leaks the key.
-                        _byok_token = _set_request_byok(session)
+                        _byok_token = _set_request_byok(socket_byok)
                         try:
                             self._agent.receive_event(event)
                         finally:
@@ -306,7 +329,7 @@ class WebSocketPlatform(Platform):
                             session=session,
                             human=True)
                         # BYOK request boundary (voice turn) — see USER_MESSAGE.
-                        _byok_token = _set_request_byok(session)
+                        _byok_token = _set_request_byok(socket_byok)
                         try:
                             self._agent.receive_event(event)
                         finally:
@@ -335,13 +358,17 @@ class WebSocketPlatform(Platform):
                         # the client currently holds -- even after reconnects. Then
                         # skip without setting a variable or spamming the logs.
                         if '__heartbeat' in payload.message:
+                            _keep_conversation_alive(tab_id)
                             if self._claim_slot(str(session_key), conn, tab_id, sender=False):
                                 # A heartbeat proves this socket is live -> flush any
                                 # replies buffered while the slot was stale/absent.
                                 self._flush_outbox(str(session_key), conn)
                             continue
                         for key, value in payload.message.items():
-                            session.set(key, value)
+                            if key in _BYOK_VARS:
+                                socket_byok[key] = value
+                            else:
+                                session.set(key, value)
                             # Never log sensitive values (e.g. the user's BYOK
                             # API key arrives here as ``user_api_key``).
                             safe_value = (
@@ -472,7 +499,7 @@ class WebSocketPlatform(Platform):
                 ])
 
             thread = threading.Thread(target=run_streamlit)
-            logger.info(f'Running Streamlit UI in another thread')
+            logger.info('Running Streamlit UI in another thread')
             thread.start()
             # To avoid re-running the streamlit process, set self._use_ui to False
             self._use_ui = False

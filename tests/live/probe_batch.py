@@ -1,7 +1,6 @@
 """Run the hotel prompt N times; dump each systemSpec for analysis."""
 import asyncio, json, os, sys, time, uuid
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
 from _agent_ws import connect  # noqa
 from test_nl_generation_scenarios import _unwrap, AGENT_WS_URL  # noqa
 

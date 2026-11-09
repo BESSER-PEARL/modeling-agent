@@ -316,9 +316,11 @@ BESSER built-in.
      "action": "trigger_smart_generator",
      "instructions": "Rails 7, PostgreSQL via Active Record, Devise auth",
      "provider": "anthropic",
-     "llmModel": "claude-sonnet-4-6",
      "message": "Generating your application from your specs…"
    }
+
+An optional ``mode`` (``"generate"``) forces a rebuild; see
+:doc:`websocket_protocol`.
 
 trigger_github_import
 ~~~~~~~~~~~~~~~~~~~~~
@@ -423,9 +425,9 @@ ClassDiagram Elements
    * - ``ClassInheritance``
      - Generalization
    * - ``ClassAggregation``
-     - Aggregation (hollow diamond)
+     - Aggregation (hollow diamond); the source is the part, the target the whole
    * - ``ClassComposition``
-     - Composition (filled diamond)
+     - Composition (filled diamond); the source is the part, the target the whole
    * - ``ClassDependency``
      - Dependency (dashed arrow)
    * - ``ClassRealization``
@@ -645,7 +647,7 @@ UnifiedClassification (Router Output)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The Pydantic object returned by the single per-message classification call
-(``src/unified_classifier.py``). Every downstream state body reads from it, so
+(``src/routing/unified_classifier.py``). Every downstream state body reads from it, so
 no second LLM call is ever needed to refine routing. See
 :doc:`intent_recognition` for the full field reference.
 
@@ -1043,7 +1045,7 @@ Supported Type Constants
        "UserDiagram",
    }
 
-   # src/handlers/generation_handler.py — keys only; each maps to a
+   # src/routing/generation_signals.py — keys only; each maps to a
    # keyword list. "export" and "deploy" are actions, not generators.
    GENERATOR_KEYWORDS.keys() == {
        "django", "web_app", "backend", "sqlalchemy", "sql", "python",

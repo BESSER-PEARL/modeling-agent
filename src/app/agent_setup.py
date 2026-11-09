@@ -1,0 +1,289 @@
+"""
+Agent Setup
+-----------
+Initialization functions for LLMs, RAG, and the diagram handler factory.
+
+Called once by ``modeling_agent.py`` during startup; returns the initialized
+objects so the entrypoint can populate :mod:`conversation.agent_context`.
+"""
+
+import logging
+import threading
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional, Tuple
+
+from baf import nlp
+from baf.core.agent import Agent
+from baf.nlp.intent_classifier.intent_classifier_configuration import SimpleIntentClassifierConfiguration
+from baf.nlp.llm.llm_openai_api import LLMOpenAI
+from baf.nlp.speech2text.openai_speech2text import OpenAISpeech2Text
+
+from common.agent_config import (
+    LLM_TEMPERATURE,
+    LLM_TEXT_TEMPERATURE,
+    LLM_MAX_TOKENS_LARGE,
+    LLM_MAX_TOKENS_TEXT,
+    CONVERSATION_HISTORY_DEPTH,
+)
+from common.settings import AgentSettings
+from llm.model_config import MODEL_CLASSIFIER, MODEL_EMBEDDINGS, sampling_params
+from llm.provider import LLMProvider
+from prompts import uml_rag as uml_prompts
+from utilities.pdf import PDFIUM_LOCK, page_text
+
+logger = logging.getLogger(__name__)
+
+UML_SPECS_DIR = Path(__file__).resolve().parents[2] / "uml_specs"
+UML_VECTOR_STORE_DIR = "uml_vector_store"
+# Written once the specification is fully embedded, so an interrupted run is
+# redone rather than leaving a partial index that looks loaded.
+_UML_INDEX_DONE = Path(UML_VECTOR_STORE_DIR) / ".indexed"
+
+
+def _enable_shared_llm_retry(llm_instance: LLMOpenAI, label: str) -> None:
+    """Make *llm_instance*'s shared OpenAI client retry transient failures.
+
+    ``LLMOpenAI.client`` is ``None`` until BESSER's ``NLPEngine.initialize()``
+    calls ``llm_instance.initialize()`` during agent startup — well after
+    this module runs — so we cannot patch the client here directly. Instead
+    we wrap ``initialize`` itself: once the real one has created the client,
+    we patch its network-call methods in place (see
+    ``llm.retry.patch_openai_client_for_retry``). Because the
+    client object is created once and reused for the LLM's lifetime, this
+    is a single choke point — BAF's ``predict``/``chat``/intent
+    classification and every ``llm.provider`` call on the shared key end
+    up calling through this same patched client.
+
+    Only ever applied to the shared server LLMs constructed in this
+    function. BYOK's per-request client (``byok.BYOKClient``) is a
+    separate object this function never touches, so the intentional
+    "shared limit reached / add your API key" messaging in
+    ``model_operations.py`` still fires once the (now bounded) retries here
+    are exhausted.
+    """
+    from llm.retry import patch_openai_client_for_retry
+
+    original_initialize = llm_instance.initialize
+
+    def _initialize_then_patch_for_retry() -> None:
+        original_initialize()
+        client = getattr(llm_instance, "client", None)
+        if client is not None:
+            # The wrapper is the only retry policy: the SDK's own default
+            # (2 retries) under its 4 attempts made up to 12 HTTP calls.
+            client.max_retries = 0
+            patch_openai_client_for_retry(client, label=label)
+
+    llm_instance.initialize = _initialize_then_patch_for_retry
+
+
+def init_llm(agent: Agent) -> Tuple[LLMOpenAI, LLMOpenAI, Callable[[str], str]]:
+    """Initialize the LLMs and return ``(gpt, gpt_text, gpt_predict_json)``."""
+    # NOTE: Do NOT put response_format in the global parameters dict.
+    # The BESSER framework's intent_classification() hardcodes
+    # response_format and then unpacks **parameters — having it in both
+    # causes "got multiple values for keyword argument 'response_format'".
+    # num_previous_messages is only used by BESSER's .chat() method, not
+    # by .predict() which is our main call path.  Keep at 1 (the minimum
+    # the framework validates) to avoid accidental context bloat if .chat()
+    # is ever invoked.  Conversation context is injected explicitly in
+    # execution.py via the ConversationMemory module.
+    #
+    # The default LLM is the CLASSIFIER tier (cheap routing/extraction);
+    # generation-quality calls override the model per call site via the
+    # ``model=`` plumbing in base_handler / llm.provider (see model_config).
+    # BAF's ``predict()`` sends the constructor ``parameters`` whenever a call
+    # passes none (UML RAG, memory summarizer, critique, stream fallback), so
+    # they follow the model's sampling rule too.
+    gpt = LLMOpenAI(
+        agent=agent,
+        name=MODEL_CLASSIFIER,
+        parameters={
+            **sampling_params(MODEL_CLASSIFIER, LLM_TEMPERATURE),
+            'max_completion_tokens': LLM_MAX_TOKENS_LARGE,
+        },
+        num_previous_messages=CONVERSATION_HISTORY_DEPTH,
+    )
+    # Retry transient upstream failures (429/5xx/timeouts) with backoff at
+    # the shared client's network-call layer — see _enable_shared_llm_retry.
+    _enable_shared_llm_retry(gpt, label="gpt")
+
+    json_llm = LLMProvider(gpt, model_name=MODEL_CLASSIFIER)
+
+    def gpt_predict_json(prompt: str, model: Optional[str] = None) -> str:
+        """A JSON-mode call; ``model`` optionally overrides the classifier
+        tier (e.g. the file-conversion text path)."""
+        return json_llm.complete(prompt, model=model, json_mode=True)
+
+    # Free-text LLM (help, greetings, RAG fallback) — JSON mode would break.
+    # IMPORTANT: The BESSER framework registers LLMs by name in a dict, and
+    # also uses name as the OpenAI model parameter.  Two LLMs with the same
+    # name would overwrite each other, leaving the first un-initialised.
+    # We register under a unique key ('<model>-text') and immediately
+    # correct the model name back to the real API model so OpenAI calls work.
+    gpt_text = LLMOpenAI(
+        agent=agent,
+        name=f'{MODEL_CLASSIFIER}-text',
+        parameters={
+            **sampling_params(MODEL_CLASSIFIER, LLM_TEXT_TEMPERATURE),
+            'max_completion_tokens': LLM_MAX_TOKENS_TEXT,
+        },
+        num_previous_messages=20,
+    )
+    # Fix the model name used in API calls (registry key stays '<model>-text')
+    gpt_text.name = MODEL_CLASSIFIER
+    _enable_shared_llm_retry(gpt_text, label="gpt_text")
+
+    if gpt is None:
+        raise RuntimeError("LLM initialization returned None")
+
+    # The shared provider (the intent classifier, file conversion).
+    try:
+        from llm import get_provider
+        get_provider(gpt, model_name=MODEL_CLASSIFIER)
+        logger.info("LLM provider abstraction initialized")
+    except Exception as exc:
+        logger.warning(f"LLM provider init failed (non-critical): {exc}")
+
+    logger.info(
+        f"LLMs initialized: {MODEL_CLASSIFIER} (json, t={LLM_TEMPERATURE}), "
+        f"{MODEL_CLASSIFIER} (text, t={LLM_TEXT_TEMPERATURE})"
+    )
+    return gpt, gpt_text, gpt_predict_json
+
+
+def init_rag(agent: Agent):
+    """Initialize the UML Specification RAG.  Returns *None* on failure."""
+    from langchain_openai import OpenAIEmbeddings
+    from langchain_chroma import Chroma
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    try:
+        from chromadb.config import Settings as ChromaSettings
+    except Exception:
+        ChromaSettings = None
+
+    from baf.nlp.rag.rag import RAG
+
+    try:
+        chroma_kwargs: Dict[str, Any] = {
+            # Embedding model pinned explicitly — a silent langchain/OpenAI
+            # default change would invalidate the persisted vector store.
+            'embedding_function': OpenAIEmbeddings(
+                openai_api_key=agent.get_property(nlp.OPENAI_API_KEY),
+                model=MODEL_EMBEDDINGS,
+            ),
+            'persist_directory': UML_VECTOR_STORE_DIR,
+        }
+        if ChromaSettings is not None:
+            chroma_kwargs['client_settings'] = ChromaSettings(anonymized_telemetry=False)
+
+        vector_store: Chroma = Chroma(**chroma_kwargs)
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+
+        uml_rag = RAG(
+            agent=agent,
+            vector_store=vector_store,
+            splitter=splitter,
+            # Context-grounded Q&A → classifier tier; must match the
+            # registry key of the ``gpt`` LLM created in init_llm.
+            llm_name=MODEL_CLASSIFIER,
+            k=4,
+            num_previous_messages=6,
+        )
+
+        uml_rag.llm_prompt = uml_prompts.RAG_PROMPT
+
+        logger.info("UML RAG initialized successfully")
+        _index_uml_specs_in_background(uml_rag)
+        return uml_rag
+    except Exception as exc:
+        logger.warning(f"Failed to initialize UML RAG: {exc}. RAG features will be disabled.")
+        return None
+
+
+def _read_uml_specs() -> list:
+    """One document per PDF page. pypdfium2, not BAF's pypdf loader, which took
+    4 minutes of GIL-holding parsing for the 796-page spec."""
+    import pypdfium2
+    from langchain_core.documents import Document
+
+    pages = []
+    for pdf in sorted(UML_SPECS_DIR.glob("*.pdf")):
+        with PDFIUM_LOCK, pypdfium2.PdfDocument(pdf) as doc:
+            for number, page in enumerate(doc):
+                pages.append(Document(page_content=page_text(page), metadata={"source": pdf.name, "page": number}))
+                page.close()
+    return pages
+
+
+def _index_uml_specs_in_background(uml_rag) -> Optional[threading.Thread]:
+    """Embed ``uml_specs/`` into the vector store unless a full index exists.
+
+    Runs off the boot path; until it finishes, UML questions are answered
+    from whatever the store holds (nothing on a first start).
+    """
+    if _UML_INDEX_DONE.exists():
+        return None
+
+    def _index():
+        try:
+            store = uml_rag.vector_store
+            partial = store.get()["ids"]  # from an interrupted run
+            if partial:
+                store.delete(partial)
+            chunks = uml_rag.splitter.split_documents(_read_uml_specs())
+            store.add_documents(chunks)
+            _UML_INDEX_DONE.parent.mkdir(parents=True, exist_ok=True)
+            _UML_INDEX_DONE.touch()
+            logger.info("UML RAG: indexed %d chunks from %s", len(chunks), UML_SPECS_DIR)
+        except Exception as exc:
+            logger.warning("UML RAG: indexing %s failed: %s", UML_SPECS_DIR, exc)
+
+    thread = threading.Thread(target=_index, name="uml-rag-index", daemon=True)
+    thread.start()
+    return thread
+
+
+def init_stt(agent: Agent) -> OpenAISpeech2Text:
+    """Initialize and return OpenAI speech-to-text for voice messages.
+
+    Language is auto-detected by default (a hard-pin to English
+    mis-transcribes non-English voice). Set ``BESSER_AGENT_STT_LANGUAGE`` (e.g. ``en``, ``fr``, ``de``) to
+    pin a specific language.
+    """
+    language = AgentSettings().stt_language
+    stt = OpenAISpeech2Text(
+        agent=agent,
+        model_name='whisper-1',
+        language=language,
+    )
+    logger.info(
+        "Speech-to-text initialized: whisper-1 (language=%s)",
+        language or "auto-detect",
+    )
+    return stt
+
+
+def init_diagram_factory(gpt: LLMOpenAI):
+    """Create and return the :class:`DiagramHandlerFactory`."""
+    from diagram_handlers.registry.factory import DiagramHandlerFactory
+
+    factory = DiagramHandlerFactory(gpt)
+    logger.info(f"Diagram handlers initialized: {', '.join(factory.get_supported_types())}")
+    return factory
+
+
+def init_intent_classifier_config() -> SimpleIntentClassifierConfiguration:
+    """Return the default intent-classifier configuration.
+
+    Local (free) Simple classifier instead of the LLM-based one: the
+    unified classifier (``unified_classifier.py``) is the authoritative
+    router via ``json_intent_matches``, so BAF's per-message prediction
+    is only an exception-path fallback (and the voice/text-event route)
+    — it must not cost an LLM round-trip on every message.
+
+    Requires every intent declared in ``modeling_agent.py`` to carry
+    training sentences (the Simple classifier trains on them at startup).
+    The tensorflow extra is part of the pinned BAF install.
+    """
+    return SimpleIntentClassifierConfiguration(framework='tensorflow')

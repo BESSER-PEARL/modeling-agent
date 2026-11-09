@@ -22,7 +22,8 @@ the new diagram's own tab never exercises routing or discoverability, because
    complete-system spec, modification actions with ``Literal`` action names)
    and re-export them from ``src/schemas/__init__.py``.
 
-1. **Create the handler** in ``src/diagram_handlers/types/``:
+1. **Create the handler** in ``src/diagram_handlers/types/``, with its prompt
+   text in ``src/prompts/<type>.py``:
 
    .. code-block:: python
 
@@ -31,11 +32,21 @@ the new diagram's own tab never exercises routing or discoverability, because
               return "MyDiagram"
 
           def get_system_prompt(self) -> str:
-              return "You are a MyDiagram expert..."
+              return my_prompts.SYSTEM_PROMPT  # src/prompts/my_diagram.py
 
-          def generate_single_element(self, user_request: str, existing_model=None, **kwargs) -> dict: ...
-          def generate_complete_system(self, user_request: str, existing_model=None) -> dict: ...
+          _SYSTEM_FAILURE_MESSAGE = "I couldn't generate that diagram. Please try again or rephrase your request."
+
+          # The base class's generate_* template methods call these: the
+          # optional _prepare_* hooks build the prompts (a crash there
+          # propagates), the _build_* hooks call the LLM, and their failures
+          # become replies. Build replies with protocol.actions.
+          def _prepare_system(self, user_request: str, existing_model=None, **kwargs): ...
+          def _build_single_element(self, user_request: str, existing_model=None, *, prepared=None, **kwargs) -> dict: ...
+          def _build_system(self, user_request: str, existing_model=None, *, prepared=None, **kwargs) -> dict: ...
+          def _build_modification(self, user_request: str, current_model=None, *, prepared=None, **kwargs) -> dict: ...
           def generate_fallback_element(self, request: str) -> dict: ...
+          def generate_fallback_system(self) -> dict: ...
+          def generate_fallback_modification(self, request: str) -> dict: ...
 
 2. **Register** in ``src/diagram_handlers/registry/factory.py`` — add your
    handler class to the ``HANDLER_CLASSES`` tuple at module level.
@@ -81,16 +92,16 @@ the new diagram's own tab never exercises routing or discoverability, because
    resolved from the project snapshot when nothing else matches.
 
 8. **Teach the classifier**: add the token to ``_TARGET_DIAGRAM_TYPES`` in
-   ``src/unified_classifier.py`` and add the type's vocabulary to
-   ``_SYSTEM_PROMPT``, so a request naming it reaches a modeling intent at
+   ``src/routing/unified_classifier.py`` and add the type's vocabulary to
+   ``SYSTEM_PROMPT`` in ``src/prompts/classifier.py``, so a request naming it reaches a modeling intent at
    all. Without this the message can fall through to the fallback body.
 
-9. **Update the capability copy** in ``src/state_bodies.py`` — the
-   ``_QUICK_RESPONSES`` capability text *and* ``global_fallback_body``'s
-   prompt both enumerate supported types independently. Grep for an existing
+9. **Update the capability copy** — the ``_QUICK_RESPONSES`` capability text
+   in ``src/app/state_bodies.py`` *and* the global fallback prompt in
+   ``src/prompts/fallback.py`` both enumerate supported types independently. Grep for an existing
    type's name (e.g. ``"quantum"``) to find every place.
 
-10. **Add suggestions** in ``src/suggestions.py`` and wire them into
+10. **Add suggestions** in ``src/conversation/suggestions.py`` and wire them into
     ``_DIAGRAM_SUGGESTION_HANDLERS``.
 
 11. **Add tests** in ``tests/test_diagram_handlers.py`` plus a dedicated
@@ -111,7 +122,7 @@ How to Add a New Generator
 --------------------------
 
 1. **Add keywords** to ``GENERATOR_KEYWORDS`` in
-   ``src/handlers/generation_handler.py``:
+   ``src/routing/generation_signals.py``:
 
    .. code-block:: python
 
@@ -125,7 +136,8 @@ How to Add a New Generator
       Dict ordering matters. If your keyword is a substring of another
       (e.g. ``"sql"`` vs ``"sqlalchemy"``), place the longer keyword first.
 
-2. **Add required fields** (if any) to ``GENERATOR_REQUIRED_FIELDS``:
+2. **Add required fields** (if any) to ``GENERATOR_REQUIRED_FIELDS`` in
+   ``src/codegen/generation_handler.py``:
 
    .. code-block:: python
 
@@ -134,7 +146,7 @@ How to Add a New Generator
 3. **Add inline config parsing** in ``parse_inline_generator_config()``
 
 4. **Add prerequisites** to ``GENERATOR_PREREQUISITES`` in
-   ``src/handlers/generation_handler.py`` (``request_planner.py`` imports it
+   ``src/routing/generation_signals.py`` (``request_planner.py`` imports it
    from there and injects it into the Tier-2 planner prompt):
 
    .. code-block:: python
@@ -145,8 +157,8 @@ How to Add a New Generator
    ``_normalize_defaults()``
 
 6. **Mirror the name** in the two ``_DETERMINISTIC_GENERATOR_TYPES``
-   ``Literal`` lists — ``src/unified_classifier.py`` and
-   ``src/handlers/smart_generation_handler.py``. A generator the classifier
+   ``Literal`` lists — ``src/routing/unified_classifier.py`` and
+   ``src/codegen/smart_generation_handler.py``. A generator the classifier
    cannot name is a generator it will never route to.
 
 7. **Add tests** in ``tests/test_generation_handler.py``
@@ -183,8 +195,8 @@ How to Add a New Intent
       :doc:`../intent_recognition`.
 
 2. **Mirror the name** in ``_INTENT_NAMES`` in
-   ``src/unified_classifier.py`` and write the real routing rule in
-   ``_SYSTEM_PROMPT``. This is the step that actually makes the intent
+   ``src/routing/unified_classifier.py`` and write the real routing rule in
+   ``SYSTEM_PROMPT`` (``src/prompts/classifier.py``). This is the step that actually makes the intent
    reachable — include positive examples, what it is *not*, and
    disambiguation against confusable intents.
 
@@ -194,7 +206,7 @@ How to Add a New Intent
 
       my_state = agent.new_state("my_state")
 
-4. **Write the state body** in ``src/state_bodies.py``:
+4. **Write the state body** in ``src/app/state_bodies.py``:
 
    .. code-block:: python
 
@@ -225,13 +237,13 @@ your change:
 Fixing a Misclassification for a Specific Phrase
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Edit the rule for that intent in ``_SYSTEM_PROMPT``
-(``src/unified_classifier.py``). This is the highest-impact, lowest-risk
+Edit the rule for that intent in ``SYSTEM_PROMPT``
+(``src/prompts/classifier.py``). This is the highest-impact, lowest-risk
 change, and it is the **only** place routing rules live.
 
 .. code-block:: python
 
-   _SYSTEM_PROMPT = (
+   SYSTEM_PROMPT = (
        ...
        "modify_model_intent: user wants to ADD / REMOVE / CHANGE "
        "elements in an existing diagram. ... "
@@ -254,26 +266,32 @@ Adding a Deterministic Guard (Zero Latency)
 The keyword pre-filter layer (``_is_modeling_request()``,
 ``_is_diagram_creation_request()``, and the ``json_intent_matches()``
 cross-validation) has been **removed**. Routing rules belong in
-``unified_classifier._SYSTEM_PROMPT``.
+``prompts.classifier.SYSTEM_PROMPT``.
 
 Reach for a deterministic guard only where the LLM is *measurably* unreliable
 and the decision must never be guessed. Existing examples:
 
-- ``_names_unsupported_stack()`` in ``src/unified_classifier.py`` — forces the
+- ``_names_unsupported_stack()`` in ``src/routing/unified_classifier.py`` — forces the
   smart generation route when a message names a language or framework BESSER
   has no generator for. Added because the classifier mapped "c classes" to
   ``java`` and "c++ classes" to ``python``.
 - ``_GITHUB_URL_RE`` + ``_GITHUB_CONTINUE_VERB_RE`` in
-  ``src/handlers/generation_handler.py`` — a continue-from-GitHub request must
+  ``src/routing/generation_signals.py`` — a continue-from-GitHub request must
   never be invented, missed, or swallowed.
 
 Both run in ``_post_validate()`` or at the handler boundary and *override* the
 LLM verdict, so keep them precision-first.
 
+A text rule that decides something in a state after routing (the injection
+guard, the classifier-outage net, the create-vagueness check, quick replies)
+goes into ``src/routing/guards.py`` as a pure function, with a row in the
+tables of ``tests/test_routing_guards.py``; the state body only maps the
+decision to its reply.
+
 Adding a Generator Keyword
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Add to ``GENERATOR_KEYWORDS`` in ``src/handlers/generation_handler.py``.
+Add to ``GENERATOR_KEYWORDS`` in ``src/routing/generation_signals.py``.
 
 If the keyword is short or ambiguous (≤6 chars), add it to
 ``_BOUNDARY_KEYWORDS`` for word-boundary matching to avoid substring collisions:
@@ -292,7 +310,7 @@ Adding a Diagram Type Keyword
 Changing Transition Routing
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Modify ``add_unified_transitions()`` in ``src/state_bodies.py``.
+Modify ``add_unified_transitions()`` in ``src/app/state_bodies.py``.
 
 .. warning::
 

@@ -6,15 +6,14 @@ Handles generation of QuantumCircuitDiagram models.
 from __future__ import annotations
 
 import copy
-import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..core.base_handler import BaseDiagramHandler, LLMPredictionError
-from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
+from ..core.base_handler import BaseDiagramHandler
+from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
+from prompts import quantum_circuit as quantum_prompts
 from schemas import SingleQuantumGateSpec, SystemQuantumCircuitSpec, QuantumModificationSpec
 from utilities.model_context import detailed_model_summary
-
-logger = logging.getLogger(__name__)
+from protocol.actions import Action, model_reply
 
 DEFAULT_QUBITS = 5
 MAX_QUBITS = 12
@@ -348,47 +347,15 @@ def _operation_to_placements(operation: Dict[str, Any]) -> Tuple[Optional[int], 
 class QuantumCircuitDiagramHandler(BaseDiagramHandler):
     """Handler for Quantum circuit diagram generation."""
 
+    _SYSTEM_FAILURE_MESSAGE = "I couldn't generate that quantum circuit. Please try again or rephrase your request."
+    _SINGLE_FAILURE_MESSAGE = "I couldn't generate that quantum gate. Please try again or rephrase your request."
+    _MODIFY_FAILURE_MESSAGE = "I couldn't process that circuit modification. Please try again or rephrase your request."
+
     def get_diagram_type(self) -> str:
         return "QuantumCircuitDiagram"
 
     def get_system_prompt(self) -> str:
-        return """You are an expert quantum computing assistant that builds quantum circuits.
-
-Return ONLY JSON with this shape:
-{
-  "operation": {
-    "gate": "<GATE_NAME>",
-    "row": 0,
-    "column": 0,
-    "controlRow": 0,
-    "targetRow": 1,
-    "label": "optional label for FUNCTION gates",
-    "height": 2
-  }
-}
-
-AVAILABLE GATES (use these exact names):
-  Probes: MEASURE, MEASURE_X, MEASURE_Y, CONTROL, ANTI_CONTROL
-  Half Turns: H, X, Y, Z, SWAP
-  Quarter Turns: S, S_DAG, V, V_DAG, SQRT_Y, SQRT_Y_DAG
-  Eighth Turns: T, T_DAG, SQRT_SQRT_X, SQRT_SQRT_X_DAG, SQRT_SQRT_Y, SQRT_SQRT_Y_DAG
-  Parametrized: X_POW, Y_POW, Z_POW, EXP_X, EXP_Y, EXP_Z
-  Spinning: Z_POW_T, Z_POW_NEG_T, Y_POW_T, Y_POW_NEG_T, X_POW_T, X_POW_NEG_T
-  Frequency: QFT, QFT_DAG, PHASE_GRADIENT, PHASE_GRADIENT_DAG
-  Arithmetic: INC, DEC, ADD, SUB, MUL, ADD_AB, SUB_AB, MUL_INV
-  Modular: MOD_ADD, MOD_SUB, MOD_MUL, MOD_INV_MUL, MOD_INC, MOD_DEC
-  Compare: COMPARE, GREATER_THAN, LESS_EQUAL, GREATER_EQUAL, EQUAL, NOT_EQUAL, XOR
-  Order: INTERLEAVE, DEINTERLEAVE, REVERSE_BITS, ROTATE_BITS_LEFT, ROTATE_BITS_RIGHT
-  Scalar: ONE, MINUS_ONE, PHASE_I, PHASE_MINUS_I, PHASE_SQRT_I, PHASE_SQRT_MINUS_I
-  Function: FUNCTION (custom, set "label"), ORACLE, UNITARY
-  Controlled: CNOT, CZ, CY (need controlRow + targetRow), TOFFOLI (needs controlRow, controlRow2, targetRow)
-
-Rules:
-1. Use controlRow/targetRow only for controlled gates (CNOT, CZ, CY, TOFFOLI) and SWAP.
-2. For FUNCTION/ORACLE/UNITARY gates, set "label" and optionally "height".
-3. For INTERLEAVE/DEINTERLEAVE, set "height" (default 6).
-4. Keep row and column indexes zero-based.
-5. Return JSON only."""
+        return quantum_prompts.SYSTEM_PROMPT
 
     def _apply_operations(
         self,
@@ -447,119 +414,40 @@ Rules:
         normalized["gateMetadata"] = gate_metadata
         return normalized
 
-    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        prompt = self.get_system_prompt()
+    def _prepare_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> str:
+        return self.get_system_prompt()
 
-        try:
-            # Single element → SMALL generation tier (latency-sensitive).
-            parsed = self.predict_structured(
-                user_request, SingleQuantumGateSpec, system_prompt=prompt,
-                model=MODEL_GENERATION_SMALL,
-            )
-            spec = parsed.model_dump()
+    def _build_single_element(
+        self, user_request: str, existing_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        prompt = prepared
 
-            operation = spec.get("operation")
-            model = self._apply_operations(_default_quantum_model(), [operation], append=False)
+        # Single element → SMALL generation tier (latency-sensitive).
+        parsed = self.predict_structured(
+            user_request, SingleQuantumGateSpec, system_prompt=prompt,
+            model=MODEL_GENERATION_SMALL,
+        )
+        spec = parsed.model_dump()
 
-            gate_name = _normalize_gate_name(operation.get("gate", "H"))
-            row = operation.get("row", 0)
-            gate_desc = gate_name
-            if gate_name in {"CNOT", "CZ", "CY"}:
-                ctrl = operation.get("controlRow", 0)
-                tgt = operation.get("targetRow", 1)
-                gate_desc = f"{gate_name} (control=q{ctrl}, target=q{tgt})"
-            else:
-                gate_desc = f"{gate_name} on q{row}"
+        operation = spec.get("operation")
+        model = self._apply_operations(_default_quantum_model(), [operation], append=False)
 
-            return {
-                "action": "inject_element",
-                "diagramType": self.get_diagram_type(),
-                "model": model,
-                "message": f"Added **{gate_desc}** to the circuit. Ask me to add more gates or build a complete algorithm!",
-            }
-        except LLMPredictionError:
-            logger.error("[QuantumCircuit] generate_single_element LLM FAILED", exc_info=True)
-            return self._error_response("I couldn't generate that quantum gate. Please try again or rephrase your request.")
-        except Exception:
-            logger.error("[QuantumCircuit] generate_single_element FAILED", exc_info=True)
-            return self.generate_fallback_element(user_request)
+        gate_name = _normalize_gate_name(operation.get("gate", "H"))
+        row = operation.get("row", 0)
+        gate_desc = gate_name
+        if gate_name in {"CNOT", "CZ", "CY"}:
+            ctrl = operation.get("controlRow", 0)
+            tgt = operation.get("targetRow", 1)
+            gate_desc = f"{gate_name} (control=q{ctrl}, target=q{tgt})"
+        else:
+            gate_desc = f"{gate_name} on q{row}"
 
-    # Algorithm templates — only the one matching the user request is
-    # injected into the prompt, saving ~800 tokens on average.
-    _ALGORITHM_TEMPLATES = {
-        "bell": (
-            "**Bell State** (2 qubits):\n"
-            "  Col 0: H on q0\n"
-            "  Col 1: CNOT control=q0 target=q1\n"
-            "  Col 2: MEASURE q0, q1"
-        ),
-        "ghz": (
-            "**GHZ State** (3+ qubits):\n"
-            "  Col 0: H on q0\n"
-            "  Col 1..N-1: CNOT control=q0 target=q1, q2, ... qN-1 (one per column)\n"
-            "  Last col: MEASURE all"
-        ),
-        "grover": (
-            "**Grover's Search** — uses CONTROL + Z pattern (NOT CNOT).\n"
-            "The oracle marks the target state with CZ; the diffusion operator is H-X-CZ-X-H.\n"
-            "For N qubits the 'multi-controlled Z' is built by placing CONTROL on all qubits\n"
-            "except the last target qubit, which gets Z.\n\n"
-            "IMPORTANT: Use 'CONTROL' (row placement) + CZ or direct Z. Do NOT use CNOT for the oracle or diffusion.\n\n"
-            "2-qubit Grover (searching |11>):\n"
-            "  Col 0: H q0, H q1\n"
-            "  Col 1: CZ control=q0 target=q1 (oracle)\n"
-            "  Col 2: H q0, H q1 (diffusion start)\n"
-            "  Col 3: X q0, X q1\n"
-            "  Col 4: CZ control=q0 target=q1\n"
-            "  Col 5: X q0, X q1\n"
-            "  Col 6: H q0, H q1 (diffusion end)\n"
-            "  Col 7: MEASURE q0, MEASURE q1\n\n"
-            "3-qubit Grover (searching |111>):\n"
-            "  Col 0: H q0, H q1, H q2\n"
-            "  Col 1: CONTROL q0, CONTROL q1, Z q2 (oracle)\n"
-            "  Col 2-6: H-X-CONTROL+Z-X-H diffusion\n"
-            "  Col 7: MEASURE all\n"
-            "  JSON for CONTROL+Z columns:\n"
-            '    {"column": 1, "row": 0, "gate": "CONTROL"},\n'
-            '    {"column": 1, "row": 1, "gate": "CONTROL"},\n'
-            '    {"column": 1, "row": 2, "gate": "Z"}\n\n'
-            "General pattern: N qubits (no ancilla). Oracle = CONTROL on q0..q(N-2) + Z on q(N-1).\n"
-            "Diffusion = H all, X all, same CONTROL+Z pattern, X all, H all. qubitCount = N."
-        ),
-        "qft": (
-            "**Quantum Fourier Transform (QFT)** (N qubits):\n"
-            "  For each qubit k (0 to N-1): H on k, then controlled phase rotations from j > k\n"
-            "  Then SWAP qubits to reverse order\n"
-            "  3-qubit QFT: H q0, CZ q1->q0, CZ q2->q0, H q1, CZ q2->q1, H q2, SWAP q0<->q2"
-        ),
-        "deutsch": (
-            "**Deutsch-Jozsa** (N+1 qubits, last is ancilla):\n"
-            "  Col 0: X on ancilla\n"
-            "  Col 1: H on ALL qubits\n"
-            "  Oracle: CNOT from each input qubit to ancilla\n"
-            "  Next: H on input qubits (not ancilla)\n"
-            "  Last: MEASURE input qubits"
-        ),
-        "teleportation": (
-            "**Quantum Teleportation** (3 qubits: q0=state, q1=Alice, q2=Bob):\n"
-            "  Col 0: H q1, Col 1: CNOT q1->q2, Col 2: CNOT q0->q1,\n"
-            "  Col 3: H q0, Col 4: MEASURE q0+q1, Col 5: CNOT q1->q2, Col 6: CZ q0->q2"
-        ),
-        "bernstein": (
-            "**Bernstein-Vazirani** (N+1 qubits, last is ancilla):\n"
-            "  X on ancilla, H on ALL, CNOT from secret-bit=1 qubits to ancilla,\n"
-            "  H on input qubits, MEASURE input qubits"
-        ),
-        "superdense": (
-            "**Superdense Coding** (2 qubits):\n"
-            "  H q0, CNOT q0->q1, encode (X/Z on q0), CNOT q0->q1, H q0, MEASURE both"
-        ),
-        "phase": (
-            "**Phase Estimation** (N+1 qubits):\n"
-            "  H on counting qubits, controlled-U from counting to target,\n"
-            "  Inverse QFT on counting qubits, MEASURE counting qubits"
-        ),
-    }
+        return model_reply(
+            Action.INJECT_ELEMENT,
+            self.get_diagram_type(),
+            model,
+            f"Added **{gate_desc}** to the circuit. Ask me to add more gates or build a complete algorithm!",
+        )
 
     _ALGORITHM_KEYWORDS = {
         "bell": ["bell state", "bell pair", "entangle two", "entangled pair"],
@@ -591,99 +479,58 @@ Rules:
 
         templates = []
         for key in matched:
-            if key in self._ALGORITHM_TEMPLATES:
-                templates.append(self._ALGORITHM_TEMPLATES[key])
+            if key in quantum_prompts.ALGORITHM_TEMPLATES:
+                templates.append(quantum_prompts.ALGORITHM_TEMPLATES[key])
 
-        header = "KNOWN QUANTUM ALGORITHMS — use these exact implementations when matching:\n\n"
+        header = quantum_prompts.ALGORITHM_TEMPLATES_HEADER
         return header + "\n\n".join(templates)
 
-    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _prepare_system(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> Tuple[str, str]:
         algorithm_section = self._select_algorithm_templates(user_request)
+        return quantum_prompts.complete_system_prompt(algorithm_section), f"User Request: {user_request}"
 
-        prompt = f"""You are an expert quantum computing assistant that designs quantum circuits.
+    def _build_system(
+        self, user_request: str, existing_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        system_prompt, user_prompt = prepared
 
-Before generating, think through:
-- What algorithm does the user want?
-- How many qubits are needed?
-- What is the correct gate sequence for this algorithm?
-- Are controlled gates (CNOT, CZ, TOFFOLI) placed correctly with control/target qubits?
-- Does the circuit end with measurements where appropriate?
+        # Complete-system generation → LARGE tier (see model_config).
+        parsed = self.predict_structured(
+            user_prompt, SystemQuantumCircuitSpec, system_prompt=system_prompt,
+            model=MODEL_GENERATION_LARGE,
+        )
+        spec = parsed.model_dump()
 
-AVAILABLE GATES (by category):
-  Probes: MEASURE, MEASURE_X, MEASURE_Y, CONTROL, ANTI_CONTROL
-  Half Turns: H (Hadamard), X (NOT/bit-flip), Y, Z (phase-flip), SWAP
-  Quarter Turns: S, S_DAG, V, V_DAG, SQRT_Y, SQRT_Y_DAG
-  Eighth Turns: T, T_DAG, SQRT_SQRT_X, SQRT_SQRT_X_DAG, SQRT_SQRT_Y, SQRT_SQRT_Y_DAG
-  Parametrized: X_POW, Y_POW, Z_POW, EXP_X, EXP_Y, EXP_Z
-  Multi-qubit: QFT, QFT_DAG, PHASE_GRADIENT, ADD, SUB, MUL, INC, DEC, MOD_ADD, MOD_SUB, MOD_MUL
-  Compare/Logic: COMPARE, GREATER_THAN, LESS_EQUAL, EQUAL, NOT_EQUAL, XOR
-  Order: INTERLEAVE, DEINTERLEAVE, REVERSE_BITS, ROTATE_BITS_LEFT, ROTATE_BITS_RIGHT
-  Function: FUNCTION (set "label" and "height"), ORACLE, UNITARY
-  Controlled: CNOT (controlRow + targetRow), CZ, CY, TOFFOLI (controlRow, controlRow2, targetRow)
+        operations = spec.get("operations") if isinstance(spec.get("operations"), list) else []
+        typed_operations = [op for op in operations if isinstance(op, dict)]
+        if not typed_operations:
+            raise ValueError("No operations generated")
 
-GATE USAGE RULES:
-- Controlled gates (CNOT, CZ, CY): use "controlRow" and "targetRow" (no "row")
-- TOFFOLI: use "controlRow", "controlRow2", and "targetRow"
-- SWAP: use "row" and "targetRow"
-- FUNCTION / ORACLE / UNITARY: set "label" and "height" (default 2)
-- Multi-qubit gates auto-span rows based on default height
-- Single-qubit gates: use "row"
-- All indexes are zero-based
+        algorithm_name = spec.get("algorithmName", "")
 
-{algorithm_section}
+        model = self._apply_operations(
+            _default_quantum_model(),
+            typed_operations,
+            append=False,
+            qubit_count_hint=spec.get("qubitCount"),
+        )
 
-Rules:
-1. Choose the correct algorithm based on the user's request.
-2. If the user asks for a specific algorithm, implement it faithfully.
-3. If the user is vague, create a Bell state or Grover's search as a demo.
-4. Keep qubit count minimal but sufficient."""
+        step_count = len(model.get('cols', []))
+        qubit_count = model.get('qubitCount', '?')
+        algo_label = f" ({algorithm_name})" if algorithm_name else ""
+        return model_reply(
+            Action.INJECT_COMPLETE_SYSTEM,
+            self.get_diagram_type(),
+            model,
+            (
+                f"Built a quantum circuit{algo_label} with "
+                f"**{step_count} column(s)** across **{qubit_count} qubit(s)**. "
+                f"You can ask me to modify it, add more gates, or explain how it works!"
+            ),
+        )
 
-        system_prompt = prompt
-        user_prompt = f"User Request: {user_request}"
-
-        try:
-            # Complete-system generation → LARGE tier (see model_config).
-            parsed = self.predict_structured(
-                user_prompt, SystemQuantumCircuitSpec, system_prompt=system_prompt,
-                model=MODEL_GENERATION_LARGE,
-            )
-            spec = parsed.model_dump()
-
-            operations = spec.get("operations") if isinstance(spec.get("operations"), list) else []
-            typed_operations = [op for op in operations if isinstance(op, dict)]
-            if not typed_operations:
-                raise ValueError("No operations generated")
-
-            algorithm_name = spec.get("algorithmName", "")
-
-            model = self._apply_operations(
-                _default_quantum_model(),
-                typed_operations,
-                append=False,
-                qubit_count_hint=spec.get("qubitCount"),
-            )
-
-            step_count = len(model.get('cols', []))
-            qubit_count = model.get('qubitCount', '?')
-            algo_label = f" ({algorithm_name})" if algorithm_name else ""
-            return {
-                "action": "inject_complete_system",
-                "diagramType": self.get_diagram_type(),
-                "model": model,
-                "message": (
-                    f"Built a quantum circuit{algo_label} with "
-                    f"**{step_count} column(s)** across **{qubit_count} qubit(s)**. "
-                    f"You can ask me to modify it, add more gates, or explain how it works!"
-                ),
-            }
-        except LLMPredictionError:
-            logger.error("[QuantumCircuit] generate_complete_system LLM FAILED", exc_info=True)
-            return self._error_response("I couldn't generate that quantum circuit. Please try again or rephrase your request.")
-        except Exception:
-            logger.error("[QuantumCircuit] generate_complete_system FAILED", exc_info=True)
-            return self.generate_fallback_system()
-
-    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _prepare_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Tuple[Dict[str, Any], str, str]:
+        """``(base_model, context_block, system_prompt)``."""
         base_model = _normalize_quantum_model(current_model)
 
         # Build context from current circuit using centralized helper
@@ -693,99 +540,49 @@ Rules:
             if summary:
                 context_block = f"\n\n{summary}"
 
-        prompt = """You are an expert quantum computing assistant that modifies quantum circuits.
+        return base_model, context_block, quantum_prompts.MODIFY_SYSTEM_PROMPT
 
-Return ONLY JSON with this shape:
-{
-  "mode": "append|replace",
-  "qubitCount": 3,
-  "operations": [
-    {"column": 0, "row": 0, "gate": "H"},
-    {"gate": "CNOT", "controlRow": 0, "targetRow": 1}
-  ]
-}
+    def _build_modification(
+        self, user_request: str, current_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        base_model, context_block, prompt = prepared
+        user_prompt = f"User Request: {user_request}{context_block}"
+        # Modification → SMALL generation tier (latency-sensitive).
+        parsed = self.predict_structured(
+            user_prompt, QuantumModificationSpec, system_prompt=prompt,
+            model=MODEL_GENERATION_SMALL,
+        )
+        spec = parsed.model_dump()
 
-AVAILABLE GATES (organised by category):
-  Probes: MEASURE, MEASURE_X, MEASURE_Y, CONTROL, ANTI_CONTROL
-  Half Turns: H, X, Y, Z, SWAP
-  Quarter Turns: S, S_DAG, V, V_DAG, SQRT_Y, SQRT_Y_DAG
-  Eighth Turns: T, T_DAG, SQRT_SQRT_X, SQRT_SQRT_X_DAG, SQRT_SQRT_Y, SQRT_SQRT_Y_DAG
-  Parametrized: X_POW, Y_POW, Z_POW, EXP_X, EXP_Y, EXP_Z
-  Spinning: Z_POW_T, Z_POW_NEG_T, Y_POW_T, Y_POW_NEG_T, X_POW_T, X_POW_NEG_T
-  Frequency: QFT, QFT_DAG, PHASE_GRADIENT, PHASE_GRADIENT_DAG
-  Arithmetic: INC, DEC, ADD, SUB, MUL, ADD_AB, SUB_AB, MUL_INV
-  Modular: MOD_ADD, MOD_SUB, MOD_MUL, MOD_INV_MUL, MOD_INC, MOD_DEC
-  Compare: COMPARE, GREATER_THAN, EQUAL, NOT_EQUAL, XOR, COUNT_1S
-  Order: INTERLEAVE, DEINTERLEAVE, REVERSE_BITS, ROTATE_BITS_LEFT, ROTATE_BITS_RIGHT
-  Scalar: ONE, MINUS_ONE, PHASE_I, PHASE_MINUS_I
-  Function: FUNCTION (set "label" + "height"), ORACLE, UNITARY
-  Controlled: CNOT, CZ, CY (controlRow + targetRow), TOFFOLI (controlRow, controlRow2, targetRow)
+        operations = spec.get("operations") if isinstance(spec.get("operations"), list) else []
+        typed_operations = [op for op in operations if isinstance(op, dict)]
+        if not typed_operations:
+            raise ValueError("No operations for modification")
 
-Modes:
-- "append": Add new gates/columns to the END of the existing circuit.
-  Use this for: "add a measurement", "extend with more gates", "add a CNOT".
-- "replace": Rebuild the entire circuit from scratch.
-  Use this for: "rebuild as Grover's", "replace with a Bell state",
-  "change the whole circuit", "start over with", "redo as",
-  "convert to", "implement Grover's algorithm".
+        mode = str(spec.get("mode", "append")).strip().lower()
+        append = mode != "replace"
+        model = self._apply_operations(
+            base_model,
+            typed_operations,
+            append=append,
+            qubit_count_hint=spec.get("qubitCount"),
+        )
+        action_label = "updated" if append else "replaced"
+        return model_reply(
+            Action.MODIFY_MODEL,
+            self.get_diagram_type(),
+            model,
+            f"Quantum circuit **{action_label}** with {len(typed_operations)} operation(s). You can add more gates or change the circuit layout!",
+        )
 
-When replacing, you can use any of the known quantum algorithms — build the full
-circuit from scratch. Key algorithm patterns:
-- **Grover (N qubits)**: H all → Oracle (CONTROL on q0..q(N-2) + Z on q(N-1)) →
-  Diffusion (H all, X all, CONTROL+Z, X all, H all) → MEASURE all.
-  Use CONTROL gate placements + Z target, NOT CNOT. qubitCount = N.
-- **Bell (2 qubits)**: H q0 → CNOT(q0→q1) → MEASURE
-- **QFT**: H + controlled rotations + SWAP to reverse order
-- **Teleportation (3 qubits)**: Bell pair → CNOT+H → Measure → corrections
-
-Rules:
-1. Use mode=append to add new operations after the existing circuit.
-2. Use mode=replace to rebuild the circuit entirely.
-3. When appending, omit "column" to auto-place after existing gates.
-4. When replacing, specify explicit column indexes starting from 0.
-5. For controlled gates use controlRow + targetRow; for single gates use row.
-6. For FUNCTION/ORACLE/UNITARY gates, set "label" and optionally "height".
-7. Return JSON only."""
-
-        try:
-            user_prompt = f"User Request: {user_request}{context_block}"
-            # Modification → SMALL generation tier (latency-sensitive).
-            parsed = self.predict_structured(
-                user_prompt, QuantumModificationSpec, system_prompt=prompt,
-                model=MODEL_GENERATION_SMALL,
-            )
-            spec = parsed.model_dump()
-
-            operations = spec.get("operations") if isinstance(spec.get("operations"), list) else []
-            typed_operations = [op for op in operations if isinstance(op, dict)]
-            if not typed_operations:
-                raise ValueError("No operations for modification")
-
-            mode = str(spec.get("mode", "append")).strip().lower()
-            append = mode != "replace"
-            model = self._apply_operations(
-                base_model,
-                typed_operations,
-                append=append,
-                qubit_count_hint=spec.get("qubitCount"),
-            )
-            action_label = "updated" if append else "replaced"
-            return {
-                "action": "modify_model",
-                "diagramType": self.get_diagram_type(),
-                "model": model,
-                "message": f"Quantum circuit **{action_label}** with {len(typed_operations)} operation(s). You can add more gates or change the circuit layout!",
-            }
-        except LLMPredictionError:
-            logger.error("[QuantumCircuit] generate_modification LLM FAILED", exc_info=True)
-            return self._error_response("I couldn't process that circuit modification. Please try again or rephrase your request.")
-        except Exception:
-            return {
-                "action": "modify_model",
-                "diagramType": self.get_diagram_type(),
-                "model": base_model,
-                "message": "I couldn't parse the requested modification, so the current circuit is unchanged. Try rephrasing, e.g. *'Add an X gate to qubit 1'*.",
-            }
+    def _modification_crash_reply(self, exc, user_request, current_model, *, prepared=None, **kwargs) -> Dict[str, Any]:
+        # Every reply carries the circuit being edited (here: unchanged).
+        return model_reply(
+            Action.MODIFY_MODEL,
+            self.get_diagram_type(),
+            prepared[0],
+            "I couldn't parse the requested modification, so the current circuit is unchanged. Try rephrasing, e.g. *'Add an X gate to qubit 1'*.",
+        )
 
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
         model = self._apply_operations(
@@ -793,12 +590,12 @@ Rules:
             [{"column": 0, "row": 0, "gate": "H"}],
             append=False,
         )
-        return {
-            "action": "inject_element",
-            "diagramType": self.get_diagram_type(),
-            "model": model,
-            "message": "I created a basic Hadamard gate as a starting point. Describe your circuit (e.g. *'Create a Bell state circuit'* or *'Apply H to qubit 0 then CNOT on qubits 0,1'*) for a more complex result!",
-        }
+        return model_reply(
+            Action.INJECT_ELEMENT,
+            self.get_diagram_type(),
+            model,
+            "I created a basic Hadamard gate as a starting point. Describe your circuit (e.g. *'Create a Bell state circuit'* or *'Apply H to qubit 0 then CNOT on qubits 0,1'*) for a more complex result!",
+        )
 
     def generate_fallback_system(self) -> Dict[str, Any]:
         model = self._apply_operations(
@@ -811,9 +608,9 @@ Rules:
             ],
             append=False,
         )
-        return {
-            "action": "inject_complete_system",
-            "diagramType": self.get_diagram_type(),
-            "model": model,
-            "message": "I created a basic Bell-state circuit as a starting point. Describe your quantum algorithm in more detail for a custom circuit!",
-        }
+        return model_reply(
+            Action.INJECT_COMPLETE_SYSTEM,
+            self.get_diagram_type(),
+            model,
+            "I created a basic Bell-state circuit as a starting point. Describe your quantum algorithm in more detail for a custom circuit!",
+        )

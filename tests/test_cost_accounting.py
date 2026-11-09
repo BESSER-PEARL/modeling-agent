@@ -16,10 +16,10 @@ from openai.types import CompletionUsage
 from openai.types.completion_usage import PromptTokensDetails
 from pydantic import BaseModel
 
-import byok
-import tracking
-from tracking import token_tracker
-from tracking.token_tracker import TokenTracker
+from llm import byok
+from llm import tracking
+from llm.tracking import token_tracker
+from llm.tracking.token_tracker import TokenTracker
 
 
 def _placeholder_cost(prompt, completion):
@@ -78,7 +78,8 @@ def test_anthropic_cache_reads_and_writes_are_billed_separately(tracker):
 
 @pytest.mark.parametrize("model, base", [
     ("claude-haiku-4-5-20251001", "claude-haiku-4-5"),
-    ("us.anthropic.claude-sonnet-5", "claude-sonnet-5"),
+    ("us.anthropic.claude-opus-5-5", "claude-opus-5-5"),
+    ("claude-opus-5-5-20261101", "claude-opus-5-5"),
     ("anthropic.claude-haiku-4-5-20251001-v1:0", "claude-haiku-4-5"),
     ("gpt-4o-mini-2024-07-18", "gpt-4o-mini"),
     ("text-embedding-3-small", "text-embedding-3-small"),
@@ -94,8 +95,21 @@ def test_dated_and_gateway_ids_price_as_their_base_model(model, base):
 
 def test_a_different_variant_does_not_inherit_its_base_price():
     variant = TokenTracker()
-    variant.record(prompt_tokens=10_000, completion_tokens=1_000, model="gpt-5.5-pro")
+    variant.record(prompt_tokens=10_000, completion_tokens=1_000, model="gpt-6-sol-pro")
     assert variant.summary()["estimated_cost_usd"] == _placeholder_cost(10_000, 1_000)
+
+
+def test_a_listed_variant_or_gateway_id_keeps_its_own_price():
+    # gpt-5.5-pro is $30/$180, not gpt-5.5's $5/$30; Bedrock's US endpoint
+    # bills Sonnet 5 at $2.20/$11, not the $2/$10 of Anthropic's API.
+    for model, prompt_rate, completion_rate in (
+        ("gpt-5.5-pro", 30e-6, 180e-6),
+        ("us.anthropic.claude-sonnet-5", 2.2e-6, 11e-6),
+    ):
+        t = TokenTracker()
+        t.record(prompt_tokens=10_000, completion_tokens=1_000, model=model)
+        expected = 10_000 * prompt_rate + 1_000 * completion_rate
+        assert t.summary()["estimated_cost_usd"] == pytest.approx(expected)
 
 
 class _FakeOpenAI:
@@ -140,7 +154,7 @@ def test_shared_free_text_call_records_real_usage(tracker):
 
 
 def test_truncated_classifier_parse_still_records_usage(tracker):
-    from llm.provider import LLMProvider
+    from llm.provider import LLMProvider, OutputTruncated
 
     class _Out(BaseModel):
         intent: str
@@ -154,8 +168,9 @@ def test_truncated_classifier_parse_still_records_usage(tracker):
     provider = LLMProvider(SimpleNamespace(client=client))
     provider.tracker = tracker
 
-    with pytest.raises(openai.LengthFinishReasonError):
+    with pytest.raises(OutputTruncated) as raised:
         provider.parse([{"role": "user", "content": "hi"}], _Out)
+    assert isinstance(raised.value.__cause__, openai.LengthFinishReasonError)
 
     assert tracker.summary()["completion_tokens"] == 512
 

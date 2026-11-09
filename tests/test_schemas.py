@@ -1,10 +1,5 @@
 """Tests for all Pydantic schemas -- validates constraints, defaults, and edge cases."""
 import pytest
-import sys
-import os
-
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from pydantic import ValidationError
 

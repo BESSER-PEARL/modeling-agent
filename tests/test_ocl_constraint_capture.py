@@ -15,8 +15,6 @@ Covers:
 """
 
 import json
-import os
-import sys
 
 import pytest
 
@@ -31,8 +29,6 @@ def _canonical_schema(monkeypatch):
     import diagram_handlers.types.class_diagram_handler as _m
     monkeypatch.setattr(_m, "COMPACT_SPEC_ENABLED", False, raising=True)
 
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from schemas import SystemClassSpec, OCLConstraintSpec
 from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler

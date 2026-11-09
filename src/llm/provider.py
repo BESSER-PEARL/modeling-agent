@@ -1,74 +1,153 @@
 """
-LLM Provider Abstraction
--------------------------
-Unified interface for accessing different LLM providers (OpenAI, Anthropic,
-local models).  Wraps the BESSER framework's LLMOpenAI instance while
-providing direct access to the underlying client for advanced features
-like structured outputs and streaming.
+LLM Provider
+------------
+The agent's one door to the model SDKs. Every LLM call outside BAF's own
+RAG / intent classification goes through :class:`LLMProvider`:
+
+* ``complete`` — free text or JSON mode, optionally with images,
+* ``parse`` — one structured-output attempt into a Pydantic model,
+* ``stream`` — a reply as text chunks,
+* ``vision`` — the file-conversion image / PDF call.
+
+Every method resolves the request's BYOK key first
+(``byok.get_active_client``) and otherwise uses the wrapped BAF ``LLMOpenAI``
+instance (its shared client, or BAF's ``predict`` with the instance's model
+and constructor parameters), whose network calls ``app.agent_setup`` patches
+with ``llm.retry`` (BYOK clients use the SDK's own retries). Sampling
+parameters come from ``model_config``, usage goes to the token tracker with
+the model actually called, and refusals raise ``ModelRefusal``.
 
 Usage::
 
-    from llm import get_provider
+    from llm import LLMProvider
 
-    provider = get_provider()
-    # Structured output
+    provider = LLMProvider(gpt)
+    text = provider.complete(prompt, model=MODEL_GENERATION_SMALL)
     result = provider.parse(messages, schema=MyPydanticModel)
-    # Streaming
-    for chunk in provider.stream(messages):
-        print(chunk, end="")
-    # Token tracking is automatic
-    print(provider.tracker.summary())
 """
 
 import json
 import logging
 import threading
-from typing import Any, Dict, Iterator, List, Optional, Type
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Type
 
 from openai import LengthFinishReasonError
 from pydantic import BaseModel
 
-from model_config import MODEL_CLASSIFIER, reasoning_effort_for, supports_custom_temperature
-from errors import raise_if_openai_refusal
-from tracking import get_tracker
+from common.agent_config import (
+    LLM_MAX_TOKENS_LARGE,
+    LLM_MAX_TOKENS_TEXT,
+    LLM_TEMPERATURE,
+    LLM_TEXT_TEMPERATURE,
+)
+from common.errors import ImagesNotSupported, LLMPredictionError, raise_if_openai_refusal
+from llm import byok, tracking
+from llm.byok_config import get_current
+from llm.model_config import (
+    MODEL_CLASSIFIER,
+    MODEL_VISION,
+    reasoning_effort_for,
+    sampling_params,
+    supports_custom_temperature,
+)
+from utilities.image_inputs import openai_content
 from utilities.json_repair import validate_llm_json
 
 logger = logging.getLogger(__name__)
 
+# Vision replies are whole diagram specs.
+_VISION_MAX_TOKENS = 8192
+_VISION_TEMPERATURE = 0.1
+
+
+class OutputTruncated(LLMPredictionError):
+    """A structured reply hit the completion cap (the call is still billed).
+    The SDK's ``LengthFinishReasonError`` is the ``__cause__``."""
+
+
+def _json_params(model: str) -> Dict[str, Any]:
+    """JSON-mode parameters for BAF's ``predict`` on *model*."""
+    return {
+        **sampling_params(model, LLM_TEMPERATURE),
+        "max_completion_tokens": LLM_MAX_TOKENS_LARGE,
+        "response_format": {"type": "json_object"},
+    }
+
+
+def _vision_params(model: str) -> Dict[str, Any]:
+    """Token cap and sampling for a vision *model*: older models (gpt-4o,
+    gpt-4.1) take ``max_tokens``, reasoning models ``max_completion_tokens``."""
+    cap = "max_tokens" if supports_custom_temperature(model) else "max_completion_tokens"
+    return {cap: _VISION_MAX_TOKENS, **sampling_params(model, _VISION_TEMPERATURE)}
+
+
+def _image_capable(byok_client: Optional["byok.BYOKClient"], images: Sequence[str]):
+    """*byok_client*, or None when it must not get *images*: its provider has no
+    image-capable model (Nebius, a gateway, a custom endpoint), so the call
+    runs on the server key."""
+    if byok_client is not None and images and byok_client.vision_model is None:
+        logger.warning(
+            "Images: no image-capable %s model for the user's key; using the server key",
+            byok_client.provider,
+        )
+        return None
+    return byok_client
+
+
+def _rejects_images(exc: Exception) -> bool:
+    """Whether *exc* is a provider's HTTP 400 about the image input. The SDK
+    error text carries the provider's message and code, which name the image
+    (OpenAI ``invalid_image*`` / "image_url is only supported by certain
+    models", Anthropic "image exceeds 5 MB maximum"); a context-length or
+    parameter 400 does not."""
+    return getattr(exc, "status_code", None) == 400 and "image" in str(exc).lower()
+
 
 class LLMProvider:
-    """Unified LLM provider wrapping a BESSER LLMOpenAI instance.
+    """The call machinery over one BAF ``LLMOpenAI`` instance (or a test
+    double exposing ``predict`` and optionally an OpenAI-shaped ``client``)."""
 
-    Provides three access levels:
-    1. ``predict(prompt)`` — Simple text prediction (uses BAF's predict)
-    2. ``parse(messages, schema)`` — Structured outputs via Pydantic
-    3. ``stream(messages)`` — Token-by-token streaming iterator
-
-    All calls are automatically tracked via the TokenTracker singleton.
-    """
-
-    def __init__(self, llm_instance: Any, model_name: str = MODEL_CLASSIFIER) -> None:
+    def __init__(self, llm_instance: Any, model_name: Optional[str] = None) -> None:
         self._llm = llm_instance
-        self._model = model_name
-        self.tracker = get_tracker()
+        self._model = model_name or getattr(llm_instance, "name", MODEL_CLASSIFIER)
+        self.tracker = tracking.get_tracker()
 
     @property
     def client(self) -> Any:
-        """Direct access to the underlying OpenAI client."""
+        """The shared OpenAI SDK client of the wrapped instance, or None."""
         return getattr(self._llm, 'client', None)
 
     @property
     def model_name(self) -> str:
         return self._model
 
+    def _record(self, usage: Any, model: str) -> None:
+        """Record a completion's real usage (best effort)."""
+        if usage is None:
+            return
+        try:
+            self.tracker.record_from_usage(usage, model=model)
+        except Exception as exc:
+            logger.debug(f"Token tracking failed (best-effort): {exc}")
+
+    def _create(self, client: Any, kwargs: Dict[str, Any]) -> str:
+        """One ``chat.completions.create`` call: track, check refusal, return the text."""
+        completion = client.chat.completions.create(**kwargs)
+        self._record(getattr(completion, "usage", None), kwargs["model"])
+        if not completion.choices:
+            return ""
+        raise_if_openai_refusal(completion.choices[0])
+        return completion.choices[0].message.content or ""
+
     # ------------------------------------------------------------------
-    # Level 1: Simple prediction
+    # Text and JSON
     # ------------------------------------------------------------------
 
-    def predict(self, prompt: str, **kwargs) -> str:
-        """Simple text prediction via BAF's predict method."""
+    def _predict(self, prompt: str, **kwargs) -> str:
+        """BAF's ``predict`` (the instance's model and constructor
+        parameters, never a BYOK key); BAF exposes no usage, so the tokens
+        are estimated. Callers go through :meth:`complete`."""
         response = self._llm.predict(prompt, **kwargs)
-        # Estimate tokens for tracking
         self.tracker.record(
             prompt_tokens=len(prompt) // 4,
             completion_tokens=len(response) // 4 if response else 0,
@@ -76,32 +155,132 @@ class LLMProvider:
         )
         return response
 
+    def complete(
+        self,
+        prompt: str,
+        *,
+        model: Optional[str] = None,
+        json_mode: bool = False,
+        temperature: float = LLM_TEMPERATURE,
+        max_tokens: Optional[int] = None,
+        images: Sequence[str] = (),
+    ) -> str:
+        """One free-text (or JSON-mode) call, returning the text.
+
+        ``model`` is a ``model_config`` tier; without one (and without
+        images) the server call goes through BAF's ``predict`` on the
+        instance. ``images`` are data URLs sent with the prompt, routed as
+        in :meth:`vision` (the server key when the user's cannot read them).
+        """
+        byok_client = _image_capable(byok.get_active_client(), images)
+        if byok_client is not None:
+            return byok_client.predict_raw(
+                prompt,
+                model=model,
+                json_mode=json_mode,
+                temperature=temperature,
+                reasoning_effort=reasoning_effort_for(model) if model else None,
+                max_tokens=max_tokens,
+                images=images,
+            )
+        client = self.client
+        if images and not model:
+            model = self._model
+        if model and client is not None and hasattr(client, 'chat'):
+            kwargs: Dict[str, Any] = {
+                "model": model,
+                "messages": [{"role": "user", "content": openai_content(prompt, images)}],
+                "max_completion_tokens": max_tokens or LLM_MAX_TOKENS_LARGE,
+                **sampling_params(model, temperature),
+            }
+            if json_mode:
+                kwargs["response_format"] = {"type": "json_object"}
+            return self._create(client, kwargs)
+        if images:
+            raise LLMPredictionError("This LLM client cannot send images")
+        if json_mode:
+            return self._predict(prompt, parameters=_json_params(self._model))
+        return self._predict(prompt)
+
+    def vision(self, prompt: str, images: Sequence[str], *, timeout: float) -> str:
+        """The file-conversion vision call (JSON mode).
+
+        A user's key runs it on ``BYOKClient.vision_model`` (the ``vision``
+        rule of the BYOK tier table): the official OpenAI endpoint gets the
+        request as is, other providers go through their own client. A key
+        that cannot read images (Nebius, a gateway, a custom endpoint) leaves
+        the call to the server key and ``MODEL_VISION``.
+
+        Raises:
+            ImagesNotSupported: the provider rejected the image input (an
+                HTTP 400 about the image); other errors propagate as is.
+        """
+        byok_client = _image_capable(byok.get_active_client(), images)
+        model = byok_client.vision_model if byok_client is not None else MODEL_VISION
+        try:
+            if byok_client is not None and byok_client.openai_client is None:
+                return byok_client.vision(
+                    prompt, images, temperature=_VISION_TEMPERATURE,
+                    max_tokens=_VISION_MAX_TOKENS, timeout=timeout,
+                )
+            client = byok_client.openai_client if byok_client is not None else self.client
+            if client is None:
+                raise LLMPredictionError("No LLM client is available for vision")
+            return self._create(client, {
+                "model": model,
+                "messages": [{"role": "user", "content": openai_content(prompt, images)}],
+                "response_format": {"type": "json_object"},
+                **_vision_params(model),
+                "timeout": timeout,
+            })
+        except Exception as exc:
+            if _rejects_images(exc):
+                raise ImagesNotSupported(model, str(exc)) from exc
+            raise
+
     # ------------------------------------------------------------------
-    # Level 2: Structured outputs
+    # Structured outputs
     # ------------------------------------------------------------------
+
+    def supports_structured_outputs(self) -> bool:
+        """Whether :meth:`parse` uses the OpenAI Structured Outputs API (else JSON mode)."""
+        byok_client = byok.get_active_client()
+        if byok_client is not None:
+            return byok_client.openai_client is not None
+        client = self.client
+        return client is not None and hasattr(client, 'beta') and hasattr(client.beta, 'chat')
+
+    def structured_model(self, model: Optional[str] = None) -> str:
+        """The model a Structured Outputs :meth:`parse` calls for *model*: a
+        user's OpenAI key maps it to their chosen model or BYOK tier."""
+        cfg = get_current()
+        if cfg is None:
+            return model or self._model
+        return byok.resolve_model("openai", model or self._model, cfg.model)
 
     def parse(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         schema: Type[BaseModel],
         *,
         temperature: float = 0.2,
         max_tokens: int = 8192,
         model: Optional[str] = None,
     ) -> BaseModel:
-        """Parse LLM response into a validated Pydantic model.
+        """One structured-output attempt, validated into *schema*.
 
-        Uses OpenAI's structured outputs API when available, falls back to
-        JSON mode + manual validation otherwise.
+        OpenAI's Structured Outputs API when available; otherwise JSON mode
+        plus validation (the schema rides in the prompt).
 
-        Args:
-            model: Optional per-call model override (see ``model_config``);
-                defaults to the provider's configured model.
+        Raises:
+            OutputTruncated: the reply hit ``max_tokens``.
+            ModelRefusal: the model declined.
+            LLMPredictionError: the reply parsed to nothing.
+            ValueError: the reply had no choices.
         """
         effective_model = model or self._model
         # BYOK: a user who saved a key pays for this call too.
-        from byok import _strip_code_fences, get_active_client, get_current, resolve_model
-        byok_client = get_active_client()
+        byok_client = byok.get_active_client()
         if byok_client is not None:
             client = byok_client.openai_client
             if client is None:
@@ -123,40 +302,39 @@ class LLMProvider:
                     prompt, model=effective_model, json_mode=True,
                     temperature=temperature, max_tokens=max_tokens, system=system,
                 )
-                return validate_llm_json(schema, _strip_code_fences(raw))
-            cfg = get_current()
-            effective_model = resolve_model("openai", effective_model, cfg.model if cfg else None)
+                return validate_llm_json(schema, byok._strip_code_fences(raw))
+            effective_model = self.structured_model(model)
         else:
             client = self.client
         if client is None or not hasattr(client, 'beta'):
-            # Fallback: predict + parse
             prompt = "\n".join(m["content"] for m in messages)
-            raw = self.predict(prompt)
-            return validate_llm_json(schema, raw)
+            return validate_llm_json(schema, self._predict(prompt))
 
         parse_kwargs: Dict[str, Any] = {
             "model": effective_model,
             "messages": messages,
             "response_format": schema,
             "max_completion_tokens": max_tokens,
+            **sampling_params(effective_model, temperature),
         }
-        # gpt-5* / o-series models 400 on an explicit non-default
-        # temperature — omit the parameter for them; cap their hidden
-        # reasoning instead (quality holds, latency drops ~40%).
-        if supports_custom_temperature(effective_model):
-            parse_kwargs["temperature"] = temperature
-        elif reasoning_effort_for(effective_model):
-            parse_kwargs["reasoning_effort"] = reasoning_effort_for(effective_model)
         try:
             completion = client.beta.chat.completions.parse(**parse_kwargs)
         except LengthFinishReasonError as exc:
             # A truncated parse is still billed.
-            if exc.completion.usage:
-                self.tracker.record_from_usage(exc.completion.usage, model=effective_model)
-            raise
+            self._record(exc.completion.usage, effective_model)
+            raise OutputTruncated(
+                f"Structured output truncated at max_tokens={max_tokens}"
+            ) from exc
 
-        if hasattr(completion, 'usage') and completion.usage:
-            self.tracker.record_from_usage(completion.usage, model=effective_model)
+        usage = getattr(completion, 'usage', None)
+        self._record(usage, effective_model)
+        if usage is not None:
+            logger.info(
+                "Structured call usage: model=%s prompt=%s completion=%s total=%s finish_reason=%s",
+                effective_model, getattr(usage, "prompt_tokens", None),
+                getattr(usage, "completion_tokens", None), getattr(usage, "total_tokens", None),
+                completion.choices[0].finish_reason if completion.choices else None,
+            )
 
         if not completion.choices:
             raise ValueError("LLM returned no choices (possible content filter)")
@@ -164,64 +342,83 @@ class LLMProvider:
         raise_if_openai_refusal(completion.choices[0])
         parsed = completion.choices[0].message.parsed
         if parsed is None:
-            raise ValueError("LLM returned empty structured output")
-
+            raise LLMPredictionError("LLM returned empty structured output")
         return parsed
 
     # ------------------------------------------------------------------
-    # Level 3: Streaming
+    # Streaming
     # ------------------------------------------------------------------
 
     def stream(
         self,
-        messages: List[Dict[str, str]],
+        prompt: str,
         *,
-        temperature: float = 0.4,
-        max_tokens: int = 4096,
+        system_prompt: str = "",
         model: Optional[str] = None,
+        temperature: float = LLM_TEXT_TEMPERATURE,
+        max_tokens: int = LLM_MAX_TOKENS_TEXT,
     ) -> Iterator[str]:
-        """Stream LLM response token by token.
+        """A reply as text chunks.
 
-        Yields content strings as they arrive. Tracks usage from the
-        final chunk's usage stats.
-
-        Args:
-            model: Optional per-call model override (see ``model_config``).
+        The request is sent before this returns, so a failed call raises
+        here, not mid-iteration. A BYOK reply (whose providers do not share
+        OpenAI's chunk shape) and a client-less instance come as one chunk.
+        Iteration raises ``ModelRefusal`` at the end when the model declined.
         """
-        effective_model = model or self._model
+        byok_client = byok.get_active_client()
+        if byok_client is not None:
+            # The free-text BYOK shape has no system/user split.
+            text = byok_client.predict_raw(
+                f"{system_prompt}\n\n{prompt}" if system_prompt else prompt,
+                model=model,
+                json_mode=False,
+                temperature=temperature,
+            )
+            return iter([text] if text else [])
         client = self.client
         if client is None or not hasattr(client, 'chat'):
-            # Fallback: predict and yield as single chunk
-            prompt = "\n".join(m["content"] for m in messages)
-            yield self.predict(prompt)
-            return
+            response = self._predict(prompt)
+            return iter([response if isinstance(response, str) else str(response)])
 
-        stream_kwargs: Dict[str, Any] = {
-            "model": effective_model,
-            "messages": messages,
-            "max_completion_tokens": max_tokens,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        }
-        # gpt-5* / o-series models 400 on an explicit non-default
-        # temperature — omit the parameter for them; cap their hidden
-        # reasoning instead (quality holds, latency drops ~40%).
-        if supports_custom_temperature(effective_model):
-            stream_kwargs["temperature"] = temperature
-        elif reasoning_effort_for(effective_model):
-            stream_kwargs["reasoning_effort"] = reasoning_effort_for(effective_model)
-        stream = client.chat.completions.create(**stream_kwargs)
+        effective_model = model or self._model
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        events = client.chat.completions.create(
+            model=effective_model,
+            messages=messages,
+            max_completion_tokens=max_tokens,
+            stream=True,
+            stream_options={"include_usage": True},
+            **sampling_params(effective_model, temperature),
+        )
+        return self._stream_chunks(events, effective_model)
 
-        for event in stream:
-            if hasattr(event, 'usage') and event.usage is not None:
-                self.tracker.record_from_usage(event.usage, model=effective_model)
-
-            if not event.choices:
-                continue
-
-            content = getattr(event.choices[0].delta, 'content', None)
-            if content:
-                yield content
+    def _stream_chunks(self, events: Any, model: str) -> Iterator[str]:
+        usage = None
+        refusal = ""
+        finish_reason = None
+        produced = False
+        try:
+            for event in events:
+                if getattr(event, 'usage', None) is not None:
+                    usage = event.usage
+                if not event.choices:
+                    continue
+                finish_reason = getattr(event.choices[0], 'finish_reason', None) or finish_reason
+                delta = event.choices[0].delta
+                delta_refusal = getattr(delta, 'refusal', None)
+                if isinstance(delta_refusal, str):
+                    refusal += delta_refusal
+                content = getattr(delta, 'content', None)
+                if content:
+                    produced = True
+                    yield content
+        finally:
+            self._record(usage, model)
+        if not produced:
+            raise_if_openai_refusal({"message": {"refusal": refusal}, "finish_reason": finish_reason})
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +433,7 @@ def get_provider(
     llm_instance: Any = None,
     model_name: str = MODEL_CLASSIFIER,
 ) -> Optional[LLMProvider]:
-    """Get or create the global LLMProvider singleton.
+    """Get or create the global LLMProvider singleton (the shared ``gpt``).
 
     On first call, pass the LLM instance to initialize.  Subsequent calls
     return the existing provider.

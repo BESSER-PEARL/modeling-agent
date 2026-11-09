@@ -3,13 +3,10 @@ machine-generated repair requests. They must route to the modify flow
 DETERMINISTICALLY — no classifier LLM call (works during an outage, costs
 nothing) and never interpreted as an answer to a pending question.
 """
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-from protocol.types import AssistantRequest, WorkspaceContext  # noqa: E402
-from unified_classifier import AUTO_FIX_PREFIX, classify_message  # noqa: E402
+from protocol.types import AssistantRequest, WorkspaceContext
+from routing.guards import AUTO_FIX_PREFIX
+from routing.unified_classifier import classify_message
 
 
 class _ExplodingProvider:

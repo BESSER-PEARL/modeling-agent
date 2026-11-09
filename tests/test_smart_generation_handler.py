@@ -13,19 +13,20 @@ comes from the UNIFIED classifier's single per-message call, adapted via
 
 import pytest
 
-from handlers.generation_handler import (
+from codegen.generation_handler import (
     handle_generation_request,
     should_route_to_generation,
 )
-from handlers.smart_generation_handler import (
+from codegen.smart_generation_handler import (
     GenerationClassification,
     build_trigger_smart_generator_payload,
 )
-from unified_classifier import UnifiedClassification
+from routing.unified_classifier import UnifiedClassification
 from protocol.types import AssistantRequest, WorkspaceContext
-from session_keys import PENDING_GENERATOR_TYPE
+from common.pending_dialogs import PENDING_GENERATOR_TYPE
 
 from tests.conftest import FakeSession
+from common import pending_dialogs
 
 
 _CLASS_MODEL = {
@@ -93,8 +94,8 @@ class TestClassificationFallback:
     def test_no_provider_returns_safe_route(self, monkeypatch):
         """With an empty cache and no LLM provider, the sub-router must
         return a safe classification (menu fallback), never crash."""
-        import handlers.generation_handler as gen_mod
-        from handlers.generation_handler import _get_classification_from_cache_or_classify
+        import codegen.generation_handler as gen_mod
+        from codegen.generation_handler import _get_classification_from_cache_or_classify
         monkeypatch.setattr(gen_mod, "_get_llm_provider", None, raising=False)
         session = FakeSession()
         result = _get_classification_from_cache_or_classify(
@@ -102,8 +103,8 @@ class TestClassificationFallback:
         assert result.route in ("deterministic", "smart", "modeling", "other")
 
     def test_provider_exception_returns_safe_route(self, monkeypatch):
-        import handlers.generation_handler as gen_mod
-        from handlers.generation_handler import _get_classification_from_cache_or_classify
+        import codegen.generation_handler as gen_mod
+        from codegen.generation_handler import _get_classification_from_cache_or_classify
         fake = _FakeProvider(None, raise_on_parse=True)
         monkeypatch.setattr(gen_mod, "_get_llm_provider", lambda: fake, raising=False)
         session = FakeSession()
@@ -128,20 +129,22 @@ class TestBuildPayload:
         payload = build_trigger_smart_generator_payload(cls)
         assert payload["action"] == "trigger_smart_generator"
         assert payload["provider"] == "anthropic"
-        assert payload["llmModel"] == "claude-sonnet-5"
         assert payload["instructions"].startswith("Build a FastAPI")
         assert "message" in payload
 
-    def test_payload_openai_provider_uses_openai_default_model(self):
+    @pytest.mark.parametrize("provider", ["anthropic", "openai"])
+    def test_payload_leaves_the_model_to_the_backend(self, provider):
+        """A hard-coded default here overrode the deployment's model catalog:
+        without ``llmModel`` BESSER picks its default for the provider."""
         cls = GenerationClassification(
             route="smart",
             refined_instructions="…",
-            provider="openai",
+            provider=provider,
             reason="…",
         )
         payload = build_trigger_smart_generator_payload(cls)
-        assert payload["provider"] == "openai"
-        assert payload["llmModel"] == "gpt-4o"
+        assert payload["provider"] == provider
+        assert "llmModel" not in payload
 
     def test_payload_has_no_api_key_fields(self):
         cls = GenerationClassification(
@@ -175,7 +178,7 @@ class TestHandleGenerationRequest:
     def _patch_provider(self, monkeypatch, decision):
         """Patch ``_get_llm_provider`` to return a fake provider whose
         ``parse`` yields the unified classifier's structured output."""
-        import handlers.generation_handler as gen_mod
+        import codegen.generation_handler as gen_mod
         fake = _FakeProvider(_wrap(decision))
         monkeypatch.setattr(gen_mod, "_get_llm_provider", lambda: fake, raising=False)
         return fake
@@ -201,8 +204,8 @@ class TestHandleGenerationRequest:
         # Cancel button removed (product decision) — only Run is offered;
         # the user can still cancel by typing.
         assert "cancel the generation" not in prompts
-        from session_keys import PENDING_SMART_GEN_INSTRUCTIONS
-        assert "Rails" in session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+        from common.pending_dialogs import PENDING_SMART_GEN_INSTRUCTIONS
+        assert "Rails" in pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
 
         # Confirm: now (and only now) the trigger payload is emitted.
         confirm = handle_generation_request(
@@ -274,7 +277,7 @@ class TestHandleGenerationRequest:
             reason="smart",
         ))
         session = FakeSession()
-        session.set(PENDING_GENERATOR_TYPE, "django")
+        pending_dialogs.put(session, PENDING_GENERATOR_TYPE, "django")
         request = _make_request("my_project")  # user is answering "what project name?"
         result = handle_generation_request(session, request)
         assert result["action"] != "trigger_smart_generator"
@@ -298,7 +301,7 @@ class TestShouldRouteToGeneration:
 
     def test_pending_generator_routes(self):
         session = FakeSession()
-        session.set(PENDING_GENERATOR_TYPE, "django")
+        pending_dialogs.put(session, PENDING_GENERATOR_TYPE, "django")
         request = _make_request("my_project")
         assert should_route_to_generation(session, request) is True
 

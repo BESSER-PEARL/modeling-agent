@@ -6,12 +6,8 @@ forces the expensive LLM-from-scratch fallback. The guard rewrites such an
 attribute into an Association owner->target (role = attribute name); a
 PascalCase type naming no class/enum in the spec is coerced to String.
 """
-import os
-import sys
 
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 
