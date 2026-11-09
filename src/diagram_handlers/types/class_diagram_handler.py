@@ -3622,7 +3622,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
         changes.className (the new class; defaults to the capitalised
         attribute name). The new class gets changes.attributes, or else the
         promoted attribute itself; the attribute leaves the source class, and
-        an Association links the source to the new class.
+        a Composition makes the new class a part of the source class, as the
+        editor's own promote_attribute does.
         """
         target = mod.get("target") or {}
         changes = mod.get("changes") or {}
@@ -3651,7 +3652,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             })
         if frozenset((source_class, new_class)) not in linked:
             primitives.append(self._refactor_relationship(
-                source_class, new_class, changes, "Association"))
+                source_class, new_class, changes, "Composition"))
 
         msg = (
             f"Promoted `{attribute}` from **{source_class}** into a new "
