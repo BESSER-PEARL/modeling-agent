@@ -1,0 +1,106 @@
+"""The UML-spec RAG must load its PDF: nothing used to, so every container's
+vector store stayed empty and "according to the UML spec" answers had no
+context. Indexing runs once in the background and survives an interrupted run.
+"""
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from app import agent_setup
+
+
+class _FakeStore:
+    """The LangChain VectorStore calls the indexer makes (Chroma's get())."""
+
+    def __init__(self, documents=()):
+        self.documents = list(documents)
+
+    def get(self):
+        return {"ids": [str(i) for i in range(len(self.documents))]}
+
+    def delete(self, ids):
+        self.documents = [d for i, d in enumerate(self.documents) if str(i) not in ids]
+
+    def add_documents(self, documents):
+        self.documents.extend(documents)
+
+
+class _FakeRAG:
+    def __init__(self, documents=()):
+        self.vector_store = _FakeStore(documents)
+        self.splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+
+
+def _point_marker_at(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_setup, "_UML_INDEX_DONE", tmp_path / "store" / ".indexed")
+
+
+def test_an_empty_store_gets_the_uml_specification(tmp_path, monkeypatch):
+    _point_marker_at(tmp_path, monkeypatch)
+    rag = _FakeRAG()
+
+    agent_setup._index_uml_specs_in_background(rag).join(timeout=60)
+
+    chunks = rag.vector_store.documents
+    assert len(chunks) > 2000  # the 796-page UML 2.5.1 specification
+    assert any("Association" in chunk.page_content for chunk in chunks)
+    assert agent_setup._UML_INDEX_DONE.exists()
+
+
+def test_a_finished_index_is_not_rebuilt(tmp_path, monkeypatch):
+    _point_marker_at(tmp_path, monkeypatch)
+    agent_setup._UML_INDEX_DONE.parent.mkdir()
+    agent_setup._UML_INDEX_DONE.touch()
+    rag = _FakeRAG(documents=["kept"])
+
+    assert agent_setup._index_uml_specs_in_background(rag) is None
+    assert rag.vector_store.documents == ["kept"]
+
+
+def test_a_partial_index_is_cleared_and_redone(tmp_path, monkeypatch):
+    _point_marker_at(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent_setup, "_read_uml_specs", lambda: [])
+    rag = _FakeRAG(documents=["partial"])  # interrupted run: chunks but no marker
+
+    agent_setup._index_uml_specs_in_background(rag).join(timeout=5)
+
+    assert rag.vector_store.documents == []
+    assert agent_setup._UML_INDEX_DONE.exists()
+
+
+def test_a_failed_index_is_retried_next_start(tmp_path, monkeypatch):
+    _point_marker_at(tmp_path, monkeypatch)
+
+    def no_key(documents):
+        raise RuntimeError("embedding failed")
+
+    rag = _FakeRAG()
+    rag.vector_store.add_documents = no_key
+
+    agent_setup._index_uml_specs_in_background(rag).join(timeout=60)
+
+    assert not agent_setup._UML_INDEX_DONE.exists()
+
+
+def test_spec_pages_come_out_one_document_each_under_the_pdfium_lock(tmp_path, monkeypatch):
+    import pypdfium2
+    from utilities.pdf import PDFIUM_LOCK
+
+    from tests.test_pdf_conversion import _pdf, _text
+
+    (tmp_path / "spec.pdf").write_bytes(_pdf(_text("First line.", "Second line."), _text("Other page.")))
+    monkeypatch.setattr(agent_setup, "UML_SPECS_DIR", tmp_path)
+    held = []
+    real_text = pypdfium2.PdfTextPage.get_text_bounded
+
+    def spy(self, *args, **kwargs):
+        held.append(PDFIUM_LOCK.locked())
+        return real_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(pypdfium2.PdfTextPage, "get_text_bounded", spy)
+
+    pages = agent_setup._read_uml_specs()
+
+    assert [page.metadata for page in pages] == [{"source": "spec.pdf", "page": 0}, {"source": "spec.pdf", "page": 1}]
+    assert pages[0].page_content == "First line.\nSecond line."
+    assert held == [True, True]
+    assert not PDFIUM_LOCK.locked()

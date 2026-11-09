@@ -1,0 +1,83 @@
+"""User-facing reply copy shared across modules.
+
+Detection of these situations is the unified classifier's job (LLM-first);
+this module only holds the words. It imports nothing, so both the state
+bodies and the generation handler can use it without layering cycles.
+"""
+
+# The product name for the LLM-augmented generation feature. Every
+# user-visible sentence uses THIS constant — the frontend already brands
+# the run card "Spec-Driven Agent"; the chat replies must match.
+SPEC_DRIVEN_NAME = "Spec-Driven Agent"
+
+
+def continue_generating_prompt(artifact: str = "web app") -> str:
+    """The single "continue with generation?" pause sentence.
+
+    Only for a generation the user ASKED for in the same request (a paused
+    "design X and generate Y" plan, a web-app build): it answers their own
+    request. Every pause goes through this one function so the wording stays
+    consistent across emit paths. A plain modeling reply uses
+    :data:`REFINE_MODEL_PROMPT` instead (BESSER-PEARL/BESSER#747).
+    """
+    return (
+        "You can now review or refine your model, or continue with "
+        f"generating your {artifact}. What would you like to do?"
+    )
+
+
+# Closing line of a plain modeling reply (a model built or a GUI laid out with
+# no generation asked for). The assistant helps with the modeling; it does not
+# propose generating the application (BESSER-PEARL/BESSER#747).
+REFINE_MODEL_PROMPT = (
+    "You can now review the model on the canvas or tell me what to refine."
+)
+
+
+DECLINE_ACK = (
+    "No problem — I'm here whenever you'd like to build or change something. "
+    "Just tell me what you have in mind."
+)
+
+OUT_OF_SCOPE_REDIRECT = (
+    "That's a bit outside what I do — I model **software systems** (class "
+    "diagrams, state machines, BPMN, component and deployment diagrams, agents, "
+    "and more) and generate code from "
+    "them. What would you like to model? For example: *Create a library "
+    "management system*."
+)
+
+# Editors the frontend has but the assistant cannot model in yet
+# (activeDiagramType outside protocol.types.SUPPORTED_DIAGRAM_TYPES).
+_UNSUPPORTED_EDITOR_LABELS = {"NNDiagram": "Neural Network"}
+
+
+def unsupported_editor_reply(active_diagram_type):
+    """Reply for a request typed in an editor the assistant doesn't support, else None."""
+    label = _UNSUPPORTED_EDITOR_LABELS.get(active_diagram_type)
+    if not label:
+        return None
+    return (
+        f"The assistant doesn't support the **{label}** editor yet, so please "
+        "build it directly on the canvas. I can help with class, object, state "
+        "machine, agent, BPMN, component, deployment, GUI, quantum and user "
+        "diagrams, and generate code from them."
+    )
+
+
+META_ANSWER = (
+    "Here's what I do: describe what you want in plain words and I turn it "
+    "into a real, editable **model** (a class diagram you can see and refine "
+    "on the canvas), then generate **consistent, runnable code** from it "
+    "with BESSER's generators — a full web app (React + FastAPI), SQL, "
+    "Django, Pydantic, SQLAlchemy, REST APIs, JSON Schema, and more — or any "
+    "other kind of app written by AI from the same model: a mobile or desktop "
+    "app, a CLI tool, a game. Unlike "
+    "a general chatbot, the model stays your single source of truth: evolve "
+    "it and regenerate any time instead of ending up with one-shot code "
+    "that drifts. I also modify and describe diagrams, design state "
+    "machines, BPMN processes (including agentic swarms), component and "
+    "deployment diagrams, agents, and quantum circuits, and import "
+    "PlantUML or diagram images. I reply in the language you write in."
+    "\n\nWhat would you like to model?"
+)

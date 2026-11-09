@@ -14,8 +14,8 @@ from openai.types import CompletionUsage
 from pydantic import BaseModel
 
 from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
-from errors import LLMPredictionError, non_recoverable_cause
-import tracking
+from common.errors import LLMPredictionError, non_recoverable_cause
+from llm import tracking
 
 
 class _Spec(BaseModel):

@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from src.diagram_handlers.registry.metadata import get_diagram_type_info
-from src.execution.model_operations import _complete_system_progress_steps
+from diagram_handlers.registry.metadata import get_diagram_type_info
+from execution.model_operations import _complete_system_progress_steps
 
 
 def _lines(diagram_type: str) -> list:

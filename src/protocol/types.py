@@ -1,11 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-
-# Streaming actions
-ACTION_STREAM_CHUNK = "stream_chunk"
-ACTION_STREAM_DONE = "stream_done"
-ACTION_PROGRESS = "progress"
+from .actions import Action
 
 
 SUPPORTED_DIAGRAM_TYPES = {
@@ -35,6 +31,10 @@ class WorkspaceContext:
     # Opt-in study participant label. Present only when the frontend tags
     # the session; drives the telemetry "prompt" events. Never a name or email.
     pilot_participant: Optional[str] = None
+    # The GitHub repo the project is linked to: ``full_name``, ``has_code``
+    # (it holds an app a run continues from) and ``recap`` (where that app
+    # stands, in chat markdown). None without a link.
+    github_repo: Optional[Dict[str, Any]] = None
 
     def get_active_index(self, diagram_type: str) -> int:
         """Return the active tab index for the given diagram type (default 0)."""
@@ -95,7 +95,7 @@ class FileAttachment:
 class AssistantRequest:
     """Canonical request object consumed by assistant states."""
 
-    action: str = "user_message"
+    action: str = Action.USER_MESSAGE
     protocol_version: str = "2.0"
     client_mode: str = "widget"
     session_id: Optional[str] = None
@@ -113,6 +113,10 @@ class AssistantRequest:
     # Client-generated id of the user turn; echoed on every reply frame of the
     # turn and used to scope ``replay_last_response``. None for older clients.
     turn_id: Optional[str] = None
+    # The client's copy of the latest turns (``recentHistory``), oldest first,
+    # as ``{"role": "user" | "assistant", "content": str}``. Sent on the first
+    # message after a (re)connect; seeds a conversation memory the server lost.
+    recent_history: List[Dict[str, str]] = field(default_factory=list)
 
     @property
     def is_v2(self) -> bool:

@@ -1,0 +1,44 @@
+Version 8.1.1
+=============
+
+This patch release goes with BESSER v8.9.3. The agent keeps a conversation
+while its tab is connected, stays with modeling, and reads compositions the
+way the editor draws them.
+
+What's new
+----------
+
+* **Conversation memory survives a long wait.** Every client heartbeat marks
+  the conversation's memory as in use, so the hourly reaper drops a memory
+  only after an hour with no message and no connected tab. Previously it was
+  dropped an hour after the last message, even while the tab was open
+  (BESSER #745).
+* **A lost memory is rebuilt from the editor.** The new optional
+  ``recentHistory`` field of a ``user_message`` (at most 20 turns of 4,000
+  characters) seeds an empty memory, for example after a restart. A memory
+  that already holds the conversation ignores it. See
+  :doc:`../websocket_protocol`.
+* **Clearer replies.** A partial class diagram says why it is partial (took
+  too long, answer cut off, incomplete answer, no answer from the AI service,
+  internal error), and modification replies name the member and its owner, for
+  example "Updated attribute **aliases** in **Brand**." (BESSER #744).
+
+Fixes
+-----
+
+* **Compositions point the right way.** The editor draws the diamond at the
+  target end, so the target is the whole. Prompts, schemas, ``extract_class``,
+  the layout and the model summary now use that direction, and a guard turns
+  round a generated or added composition whose whole end is many-valued
+  (BESSER #746).
+* **Modeling replies stay on modeling.** A built model or an edit no longer
+  ends with an offer to generate the application, the modeling suggestions
+  have no *Generate* chips, and the greeting and fallback reply lead with
+  modeling. Asking for generation still works (BESSER #747).
+
+Upgrade notes
+-------------
+
+Deploy with BESSER v8.9.3 and its editor. An older editor works with this
+agent (it does not send ``recentHistory``), but the memory rebuild needs the
+v8.9.3 editor.

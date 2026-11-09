@@ -3,7 +3,9 @@
 This package is organized in three layers:
 
 - `core/`: shared primitives used by all handlers.
-  - `base_handler.py`: abstract base class, JSON parsing, validation helpers.
+  - `base_handler.py`: abstract base class (template methods `generate_complete_system` /
+    `generate_single_element` / `generate_modification` over the `_prepare_*` / `_build_*` hooks), JSON parsing,
+    validation helpers.
   - `layout_engine.py`: deterministic post-generation layout logic.
 - `types/`: concrete handler implementations per diagram type.
   - `class_diagram_handler.py`
@@ -15,7 +17,3 @@ This package is organized in three layers:
 - `registry/`: assembly and metadata.
   - `factory.py`: handler instantiation and lookup.
   - `metadata.py`: supported diagram metadata and lookup helper.
-
-Backward compatibility is kept through module shims at package root
-(`base_handler.py`, `factory.py`, etc.), so existing imports continue to work.
-

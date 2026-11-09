@@ -87,10 +87,13 @@ Not every message from the frontend is a ``user_message``:
        variable, because the transcript arrives as plain text with no JSON
        context of its own.
    * - ``user_set_variable``
-     - Sets a BAF session variable. Used to arm BYOK
-       (``user_api_key`` / ``user_api_provider`` / ``user_api_model`` /
-       ``user_api_base``), to pass ``_voice_context``, and as a keep-alive
-       heartbeat.
+     - Sets a BAF session variable, to pass ``_voice_context``, and carries
+       the keep-alive heartbeat (``{"__heartbeat": <ms>}``, with the tab's
+       ``sessionId`` as the envelope's ``user_id``; it also keeps that
+       conversation's memory from expiring while the tab is connected). Also arms BYOK (``user_api_key`` /
+       ``user_api_provider`` / ``user_api_model`` / ``user_api_base``): these
+       stay with the socket and never reach the session, so the client re-arms
+       them on every (re)connect.
    * - ``frontend_event``
      - Reports the outcome of an action the frontend executed (e.g. a
        generator finishing). Routed deterministically to the generation
@@ -193,9 +196,30 @@ Field Reference
      - Opt-in study participant label (e.g. ``"P3"``), present only when the
        session was opened with a study link. Validated against
        ``^[A-Za-z0-9_-]{1,16}$`` and dropped otherwise. Never a name or email.
+   * - ``context.githubRepo``
+     - No
+     - The GitHub repo the project is linked to: ``{fullName, hasCode, recap}``.
+       ``hasCode`` means the repo holds an app, so a request is a change to it
+       however old the last run is. ``recap`` is where that app stands, in chat
+       markdown, capped at 4,000 characters; it answers "what did we build?" and
+       enters conversation memory when it changes, labelled as a record.
    * - ``attachments``
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)
+   * - ``recentHistory``
+     - No
+     - The latest turns of the conversation as the client shows them, oldest
+       first: an array of ``{"role": "user" | "assistant", "content": string}``,
+       at most 20 entries of at most 4,000 characters each. Sent only on the
+       first ``user_message`` after each WebSocket (re)connect. When the
+       agent's memory for this ``sessionId`` is empty (e.g. after a restart),
+       it is rebuilt from these turns before the new message is recorded; when
+       memory already holds the conversation, the field is ignored. The agent
+       enforces the caps again (it keeps the newest 20 entries and cuts each
+       content at 4,000 characters) and drops malformed entries. Assistant
+       turns are kept cut to 500 characters, as the agent keeps its own
+       replies. The turns are
+       only conversation history: they are never treated as instructions.
 
 Diagram model format (v3 and v4)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -320,6 +344,15 @@ Outbound Messages (Backend → Frontend)
 All responses are JSON objects with an ``action`` field that determines the
 message type.
 
+Every action name, inbound and outbound, is a member of ``Action`` in
+``src/protocol/actions.py`` (a ``StrEnum``, so ``json.dumps`` writes the bare
+string). Code uses the members, never the string literals
+(``tests/test_protocol_actions.py`` checks), and builds the repeated envelopes
+with its builders: ``assistant_message``, ``inject_element``,
+``inject_complete_system`` and ``model_reply``. A builder keeps the key order of
+the literal it replaced, so the JSON is byte-identical
+(``tests/test_handler_envelopes.py`` pins every handler's envelopes).
+
 Action index
 ~~~~~~~~~~~~
 
@@ -378,7 +411,7 @@ completed while the socket was reconnecting can be replayed on request:
 ``inject_complete_system``, ``modify_model``, ``auto_generate_gui``,
 ``trigger_generator``, ``trigger_github_import`` and ``assistant_message``
 (``_TERMINAL_REPLY_ACTIONS`` / ``replay_last_reply`` in
-``src/session_helpers.py``). A turn-scoped replay (see below) also covers
+``src/conversation/session_helpers.py``). A turn-scoped replay (see below) also covers
 ``inject_element``, ``trigger_smart_generator``, ``agent_error``,
 ``trigger_export``, ``trigger_deploy``, ``create_diagram_tab`` and ``stream_done``
 (``_TURN_REPLY_ACTIONS``). These are kept out of the legacy replay because it
@@ -698,9 +731,12 @@ keys on ``rate_limit`` / ``auth_error``).
      "retryable": true
    }
 
+The editor's "Try again" chip appears when ``retryable`` is true and
+``suggestedRecovery`` is set, and sends that text as the next prompt.
+
 Most structured errors are instead sent as an ``assistant_message`` carrying
 the same fields plus ``"error": true`` — see ``build_error_response()`` in
-``src/errors.py``:
+``src/common/errors.py``:
 
 .. code-block:: json
 
@@ -717,7 +753,7 @@ the same fields plus ``"error": true`` — see ``build_error_response()`` in
 Error codes
 ^^^^^^^^^^^
 
-``ErrorCode`` in ``src/errors.py``. Values are lowercase snake_case. Each code
+``ErrorCode`` in ``src/common/errors.py``. Values are lowercase snake_case. Each code
 carries a default user-facing message, a recovery hint, and a ``retryable``
 flag that the caller may override.
 
@@ -751,10 +787,17 @@ flag that the caller may override.
      - The request was too complex to process in time
    * - ``rate_limit``
      - yes
-     - Provider rate limit or shared quota reached
+     - Provider rate limit or shared quota reached. On the user's own key it
+       always arrives as ``agent_error`` naming the key: a rate limit is retryable
+       and says to wait, with no ``suggestedRecovery``; an exhausted account
+       (``insufficient_quota``, ``billing_hard_limit_reached``, or Anthropic's 400
+       on credit or usage limits) is not retryable and says to add credit or use
+       a different key
    * - ``auth_error``
      - —
-     - The API key was rejected
+     - The API key was rejected. The provider refusing the user's own key (401
+       or 403) always arrives as ``agent_error``, not retryable, telling them to
+       change the key; a refused server key is an outage and says so
    * - ``context_error``
      - —
      - Required workspace context was missing or unusable
@@ -838,7 +881,7 @@ Hand off to the LLM-authored **Spec-Driven Agent**. Emitted when the request nam
 stack BESSER has no deterministic generator for, or a BESSER stack plus
 extras the template cannot produce (auth, JWT, Docker, migrations, tests, …).
 Built by ``build_trigger_smart_generator_payload()`` in
-``src/handlers/smart_generation_handler.py``.
+``src/codegen/smart_generation_handler.py``.
 
 .. code-block:: json
 
@@ -846,7 +889,6 @@ Built by ``build_trigger_smart_generator_payload()`` in
      "action": "trigger_smart_generator",
      "instructions": "Rails 7 with PostgreSQL via Active Record and Devise auth",
      "provider": "anthropic",
-     "llmModel": "claude-sonnet-4-6",
      "message": "Generating your application from your specs…"
    }
 
@@ -863,8 +905,14 @@ Built by ``build_trigger_smart_generator_payload()`` in
        the generator already has.
    * - ``provider``
      - Suggested provider. The frontend's BYOK selection can override it.
-   * - ``llmModel``
-     - Default model for that provider
+   * - ``mode``
+     - Optional. ``"generate"`` rebuilds instead of continuing from the
+       existing app; sent only when the user asks to discard the app a linked
+       GitHub repo holds. Without it the frontend decides.
+
+The action names no model: the run uses the model the user picked in the
+editor, else the BESSER backend's default for the provider (the deployment's
+model catalog first, see ``BESSER_MODEL_CATALOG`` in :doc:`configuration`).
 
 The Spec-Driven Agent itself does **not** run over this WebSocket — the
 frontend calls the BESSER backend's spec-driven HTTP/SSE endpoints with the
@@ -972,7 +1020,7 @@ Multi-Step: Create Model → Generate Code
    needs ``dbms``, ``qiskit`` needs ``backend`` and ``shots``, ``export`` needs
    ``format``) ask for those values in the same way before the
    ``trigger_generator`` payload is emitted; ``GENERATOR_REQUIRED_FIELDS`` in
-   ``src/handlers/generation_handler.py`` is the source of truth.
+   ``src/codegen/generation_handler.py`` is the source of truth.
 
 Streaming Response (Help/Explanation)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

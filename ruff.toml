@@ -1,0 +1,7 @@
+# Lint rules CI enforces (ruff check src patches modeling_agent.py).
+[lint]
+select = ["F821", "F811", "F541", "E711", "E721", "E731", "E741"]
+
+[lint.per-file-ignores]
+# Single-letter field names are the compact wire format the LLM writes.
+"src/schemas/compact_class_diagram.py" = ["E741"]

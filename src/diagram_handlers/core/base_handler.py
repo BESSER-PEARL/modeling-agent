@@ -10,32 +10,29 @@ pixel coordinates.
 import copy
 import json
 import logging
-import os
 import random
 import sys
 import time
 import uuid
-from typing import Callable, Dict, Any, List, Optional, Sequence, Tuple, Type
+from typing import Callable, Dict, Any, List, NamedTuple, Optional, Sequence, Type
 from abc import ABC, abstractmethod
 
-from openai import LengthFinishReasonError
 from pydantic import BaseModel
 
-from agent_config import LLM_MAX_TOKENS_SMALL, LLM_MAX_TOKENS_LARGE, LLM_TEMPERATURE
-from model_config import (
-    MODEL_CLASSIFIER,
-    MODEL_GENERATION_SMALL,
-    reasoning_effort_for,
-    supports_custom_temperature,
-)
+from common.agent_config import LLM_MAX_TOKENS_SMALL, LLM_MAX_TOKENS_LARGE, LLM_TEMPERATURE
+from common.settings import AgentSettings
+from llm.byok import user_key_fault
+from llm.model_config import MODEL_CLASSIFIER, MODEL_GENERATION_SMALL
+from llm.provider import LLMProvider, OutputTruncated
 from .layout_engine import apply_layout
-from errors import (
-    ErrorCode, LLMPredictionError, ModelRefusal, build_error_response, classify_error,
-    non_recoverable_cause, raise_if_openai_refusal, _RECOVERY_HINTS,
+from common.errors import (
+    ErrorCode, LLMPredictionError, ModelRefusal, build_error_response,
+    non_recoverable_cause, _RECOVERY_HINTS,
 )
 
 from utilities.image_inputs import content_text, openai_content
 from utilities.json_repair import loads_tolerant, validate_llm_json
+from protocol.actions import Action, assistant_message
 
 logger = logging.getLogger(__name__)
 
@@ -43,19 +40,8 @@ logger = logging.getLogger(__name__)
 # conversation history and the user's model summaries, which must not land
 # in plaintext INFO logs (compliance + log volume). Set LOG_PROMPTS=1 to
 # restore INFO-level content logging for a debugging session.
-_LOG_PROMPTS = os.getenv("LOG_PROMPTS", "").strip().lower() in {"1", "true", "yes"}
+_LOG_PROMPTS = AgentSettings().log_prompts
 _log_content = logger.info if _LOG_PROMPTS else logger.debug
-
-
-def _track_usage(usage: Any, model: str) -> None:
-    """Record a completion's real usage (best effort)."""
-    if usage is None:
-        return
-    try:
-        from tracking import get_tracker
-        get_tracker().record_from_usage(usage, model=model)
-    except Exception as exc:
-        logger.debug(f"Token tracking failed (best-effort): {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -129,11 +115,24 @@ MODIFICATION_REQUIRED = {"modification": dict}
 MODIFICATION_INNER_REQUIRED = {"action": str, "target": dict}
 
 # ---------------------------------------------------------------------------
-# Error taxonomy — now delegated to the unified ``errors`` module.
+# Error taxonomy — now delegated to the unified ``common.errors`` module.
 # The module-level alias is kept so that existing references within this
 # file (e.g. _error_response) continue to resolve.
 # ---------------------------------------------------------------------------
 _ERROR_RECOVERY = _RECOVERY_HINTS
+
+
+def _raise_if_user_key_at_fault(error: Exception) -> None:
+    """A refused or limited user key is no case for "please rephrase" or a fallback
+    diagram: hand the provider's error to the caller, which says what to do."""
+    if user_key_fault(error) is not None:
+        raise non_recoverable_cause(error) from None
+
+
+class ReplyNow(NamedTuple):
+    """Returned by a ``_prepare_*`` hook to answer with ``reply`` and skip the LLM."""
+
+    reply: Dict[str, Any]
 
 
 class BaseDiagramHandler(ABC):
@@ -142,6 +141,11 @@ class BaseDiagramHandler(ABC):
     def __init__(self, llm):
         """Initialize handler with LLM instance"""
         self.llm = llm
+
+    @property
+    def llm_provider(self) -> LLMProvider:
+        """Every LLM call of the handler goes through this, over the injected LLM."""
+        return LLMProvider(self.llm)
 
     @abstractmethod
     def get_diagram_type(self) -> str:
@@ -154,19 +158,117 @@ class BaseDiagramHandler(ABC):
         pass
 
     @abstractmethod
-    def generate_single_element(self, user_request: str, existing_model: Optional[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
-        """Generate a single element for this diagram type."""
-        pass
-
-    @abstractmethod
-    def generate_complete_system(self, user_request: str, existing_model: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Generate a complete system/diagram with multiple elements."""
-        pass
-
-    @abstractmethod
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
-        """Generate a fallback element when AI generation fails"""
-        pass
+        """Starter element returned when single-element generation crashes.
+
+        It must not call ``generate_single_element``: this is that entry
+        point's crash reply.
+        """
+
+    # ------------------------------------------------------------------
+    # Generation template. Each public entry point runs the handler's
+    # ``_prepare_*`` hook (everything before the LLM call: prompts, model
+    # normalisation), then its ``_build_*`` hook (LLM call, repair, layout,
+    # reply) inside the failure handling. An exception from ``_prepare_*``
+    # propagates to the caller, whose error reply answers it; from
+    # ``_build_*``, an ``LLMPredictionError`` (refusals included) becomes the
+    # ``_*_failure_reply`` and any other exception the ``_*_crash_reply``.
+    # The hooks after ``_prepare_*`` get its result as ``prepared``.
+    # ------------------------------------------------------------------
+
+    #: Reply when the LLM call of ``generate_complete_system`` fails.
+    _SYSTEM_FAILURE_MESSAGE: str = "I couldn't generate that diagram. Please try again or rephrase your request."
+    #: Reply when the LLM call of ``generate_single_element`` fails.
+    _SINGLE_FAILURE_MESSAGE: str = "I couldn't generate that element. Please try again or rephrase your request."
+    #: ``errorCode`` of those replies; None keeps ``_error_response``'s default.
+    _LLM_FAILURE_CODE: Optional[str] = None
+
+    def generate_complete_system(
+        self, user_request: str, existing_model: Optional[Dict[str, Any]] = None, **kwargs,
+    ) -> Dict[str, Any]:
+        """Generate a complete diagram (template method around ``_build_system``)."""
+        tag = self.get_diagram_type()
+        logger.info(f"[{tag}] generate_complete_system called with: {user_request[:120]!r}")
+        prepared = self._prepare_system(user_request, existing_model, **kwargs)
+        if isinstance(prepared, ReplyNow):
+            return prepared.reply
+        try:
+            return self._build_system(user_request, existing_model, prepared=prepared, **kwargs)
+        except LLMPredictionError as exc:
+            _raise_if_user_key_at_fault(exc)
+            logger.error(f"[{tag}] generate_complete_system LLM FAILED: {exc}")
+            return self._system_failure_reply(exc, user_request, existing_model, prepared=prepared, **kwargs)
+        except Exception as exc:
+            _raise_if_user_key_at_fault(exc)
+            logger.error(f"[{tag}] generate_complete_system FAILED: {exc}", exc_info=True)
+            return self._system_crash_reply(exc, user_request, existing_model, prepared=prepared, **kwargs)
+
+    def _prepare_system(
+        self, user_request: str, existing_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Any:
+        """Work before the LLM call; a crash here propagates. May return ``ReplyNow``."""
+        return None
+
+    @abstractmethod
+    def _build_system(
+        self, user_request: str, existing_model: Optional[Dict[str, Any]], *, prepared: Any = None, **kwargs,
+    ) -> Dict[str, Any]:
+        """LLM → repair → layout → reply envelope for a complete diagram."""
+
+    def _system_failure_reply(
+        self, exc: Exception, user_request: str, existing_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Dict[str, Any]:
+        return self._error_response(self._SYSTEM_FAILURE_MESSAGE, code=self._LLM_FAILURE_CODE)
+
+    def _system_crash_reply(
+        self, exc: Exception, user_request: str, existing_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Dict[str, Any]:
+        return self.generate_fallback_system()
+
+    @abstractmethod
+    def generate_fallback_system(self) -> Dict[str, Any]:
+        """Starter diagram returned when complete-system generation crashes."""
+
+    def generate_single_element(
+        self, user_request: str, existing_model: Optional[Dict[str, Any]] = None, **kwargs,
+    ) -> Dict[str, Any]:
+        """Generate one element (template method around ``_build_single_element``)."""
+        tag = self.get_diagram_type()
+        prepared = self._prepare_single_element(user_request, existing_model, **kwargs)
+        if isinstance(prepared, ReplyNow):
+            return prepared.reply
+        try:
+            return self._build_single_element(user_request, existing_model, prepared=prepared, **kwargs)
+        except LLMPredictionError as exc:
+            _raise_if_user_key_at_fault(exc)
+            logger.error(f"[{tag}] generate_single_element LLM FAILED: {exc}")
+            return self._single_failure_reply(exc, user_request, existing_model, prepared=prepared, **kwargs)
+        except Exception as exc:
+            _raise_if_user_key_at_fault(exc)
+            logger.error(f"[{tag}] generate_single_element FAILED: {exc}", exc_info=True)
+            return self._single_crash_reply(exc, user_request, existing_model, prepared=prepared, **kwargs)
+
+    def _prepare_single_element(
+        self, user_request: str, existing_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Any:
+        """Work before the LLM call; a crash here propagates. May return ``ReplyNow``."""
+        return None
+
+    @abstractmethod
+    def _build_single_element(
+        self, user_request: str, existing_model: Optional[Dict[str, Any]], *, prepared: Any = None, **kwargs,
+    ) -> Dict[str, Any]:
+        """LLM → repair → layout → reply envelope for one element."""
+
+    def _single_failure_reply(
+        self, exc: Exception, user_request: str, existing_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Dict[str, Any]:
+        return self._error_response(self._SINGLE_FAILURE_MESSAGE, code=self._LLM_FAILURE_CODE)
+
+    def _single_crash_reply(
+        self, exc: Exception, user_request: str, existing_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Dict[str, Any]:
+        return self.generate_fallback_element(user_request)
 
     def _error_response(
         self,
@@ -179,7 +281,7 @@ class BaseDiagramHandler(ABC):
     ) -> Dict[str, Any]:
         """Return a structured error payload with recovery hints.
 
-        Delegates to :func:`errors.build_error_response` for the actual
+        Delegates to :func:`common.errors.build_error_response` for the actual
         payload construction.
 
         **Backward compatible**: existing callers that pass a human-readable
@@ -289,6 +391,23 @@ class BaseDiagramHandler(ABC):
         'remove_flow': 'Removed flow',
     }
 
+    # Actions on a member (attribute / method) of an element: verb, member kind
+    # and preposition, so the reply names both ("Updated attribute **aliases**
+    # in **Brand**."). ``remove_element`` on a member is resolved from the target.
+    _MEMBER_ACTIONS = {
+        'add_attribute': ('Added', 'attribute', 'to'),
+        'modify_attribute': ('Updated', 'attribute', 'in'),
+        'remove_attribute': ('Removed', 'attribute', 'from'),
+        'add_method': ('Added', 'method', 'to'),
+        'modify_method': ('Updated', 'method', 'in'),
+        'remove_method': ('Removed', 'method', 'from'),
+        'modify_attribute_value': ('Updated', 'attribute', 'on'),  # User Profile
+    }
+    # Target keys naming the element that owns the member, first match wins. A
+    # User Profile target can also carry the class of its profile box, so its
+    # profile name comes first.
+    _MEMBER_OWNER_KEYS = ('profileName', 'className', 'objectName')
+
     @staticmethod
     def _sanitize_target_name(name: str) -> str:
         """Strip JSON artifacts the LLM may leak into names."""
@@ -310,14 +429,65 @@ class BaseDiagramHandler(ABC):
         human = action.replace('_', ' ').capitalize()
         return f"{human} **{target_name}**."
 
+    @classmethod
+    def _describe_member_change(cls, action: str, target: dict, mod: Optional[dict] = None) -> Optional[str]:
+        """The reply for a change to an attribute or method, naming the member
+        and its owner (``"Updated attribute **aliases** in **Brand**."``), or
+        ``None`` when *action* is not a member change or a name is missing."""
+        owner = next((target.get(k) for k in cls._MEMBER_OWNER_KEYS if target.get(k)), None)
+        changes = (mod or {}).get('changes') if isinstance(mod, dict) else None
+        changes = changes if isinstance(changes, dict) else {}
+        if action == 'remove_element':
+            kind = 'attribute' if target.get('attributeName') else 'method' if target.get('methodName') else None
+            if kind is None:
+                return None
+            verb, prep = 'Removed', 'from'
+        elif action in cls._MEMBER_ACTIONS:
+            verb, kind, prep = cls._MEMBER_ACTIONS[action]
+        else:
+            return None
+        member = target.get(f'{kind}Name')
+        new_name = changes.get('name') if isinstance(changes.get('name'), str) else None
+        if not member and action.startswith('add_'):
+            member, new_name = new_name, None
+        if not owner or not member:
+            return None
+        owner, member = cls._sanitize_target_name(owner), cls._sanitize_target_name(member)
+        if action.startswith('modify_') and new_name and cls._sanitize_target_name(new_name) != member:
+            return (
+                f"Renamed {kind} **{member}** to **{cls._sanitize_target_name(new_name)}** "
+                f"in **{owner}**."
+            )
+        return f"{verb} {kind} **{member}** {prep} **{owner}**."
+
+    def _describe_modification(
+        self, action: str, target: dict, mod: Optional[dict] = None, elements: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """The reply sentence for one modification."""
+        member_change = self._describe_member_change(action, target, mod)
+        if member_change:
+            return member_change
+        name = self._build_mod_target_name(action, target, mod, elements=elements)
+        changes = (mod or {}).get('changes') if isinstance(mod, dict) else None
+        new_name = changes.get('name') if isinstance(changes, dict) else None
+        if (
+            action in self._RENAMING_ACTIONS
+            and isinstance(new_name, str) and new_name.strip()
+            and new_name.strip() != self._sanitize_target_name(name)
+        ):
+            return (
+                f"Renamed **{self._sanitize_target_name(name)}** to "
+                f"**{self._sanitize_target_name(new_name)}**."
+            )
+        return self._friendly_mod_message(action, name)
+
     def _build_mod_target_name(
         self, action: str, target: dict, mod: dict = None, elements: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Build a descriptive target name that includes sub-element context.
+        """Name the element a modification targets, for the reply message.
 
-        For remove_element / modify_attribute / etc., if both a class name and
-        an attribute/method name are present, return something like
-        ``"attribute gender from Shoe"`` instead of just ``"Shoe"``.
+        A change to a named attribute or method is described in full by
+        :meth:`_describe_member_change` before this is consulted.
 
         Subclasses may override to extend with diagram-specific resolution
         (e.g. BPMN flow endpoint lookup). The full ``mod`` dict is passed so
@@ -349,14 +519,6 @@ class BaseDiagramHandler(ABC):
         if src_obj and tgt_obj:
             return f"{src_obj} → {tgt_obj}"
 
-        # Sub-element (attribute or method) on a class
-        if class_name and attr_name and action == 'modify_attribute_value':
-            return f"{attr_name} of {class_name}"
-        if class_name and attr_name and action in ('remove_element', 'modify_attribute', 'remove_attribute'):
-            return f"attribute {attr_name} from {class_name}"
-        if class_name and method_name and action in ('remove_element', 'modify_method', 'remove_method'):
-            return f"method {method_name} from {class_name}"
-
         # Transition endpoints (agent: *StateName; state machine: sourceState/targetState)
         src_state = target.get('sourceStateName') or target.get('sourceState')
         tgt_state = target.get('targetStateName') or target.get('targetState')
@@ -385,20 +547,9 @@ class BaseDiagramHandler(ABC):
 
     def _describe_mod(self, mod: dict, elements: Optional[Dict[str, Any]] = None) -> str:
         """One friendly line for a single modification."""
-        act = mod.get('action', 'modification')
-        name = self._build_mod_target_name(act, mod.get('target', {}) or {}, mod, elements=elements)
-        changes = mod.get('changes') if isinstance(mod.get('changes'), dict) else {}
-        new_name = changes.get('name')
-        if (
-            act in self._RENAMING_ACTIONS
-            and isinstance(new_name, str) and new_name.strip()
-            and new_name.strip() != self._sanitize_target_name(name)
-        ):
-            return (
-                f"Renamed **{self._sanitize_target_name(name)}** to "
-                f"**{self._sanitize_target_name(new_name)}**."
-            )
-        return self._friendly_mod_message(act, name)
+        return self._describe_modification(
+            mod.get('action', 'modification'), mod.get('target', {}) or {}, mod, elements=elements,
+        )
 
     def _friendly_batch_message(self, mods: list, elements: Optional[Dict[str, Any]] = None) -> str:
         """Produce a friendly summary for a batch of modifications."""
@@ -418,14 +569,43 @@ class BaseDiagramHandler(ABC):
             return self._describe_mod(mod, elements=elements)
         return ''
 
-    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """
-        Generate modifications for existing diagram elements.
-        Override this method in subclasses to provide diagram-specific modification logic.
-        Default implementation returns a basic modification structure.
-        """
+    #: Reply when the LLM call of ``generate_modification`` fails, and its ``errorCode``.
+    _MODIFY_FAILURE_MESSAGE: str = "I couldn't process that modification. Please try again or rephrase your request."
+    _MODIFY_FAILURE_CODE: Optional[str] = None
+
+    def generate_modification(
+        self, user_request: str, current_model: Optional[Dict[str, Any]] = None, **kwargs,
+    ) -> Dict[str, Any]:
+        """Modify the current diagram (template method around ``_build_modification``)."""
+        tag = self.get_diagram_type()
+        logger.info(f"[{tag}] generate_modification called with: {user_request[:120]!r}")
+        prepared = self._prepare_modification(user_request, current_model, **kwargs)
+        if isinstance(prepared, ReplyNow):
+            return prepared.reply
+        try:
+            return self._build_modification(user_request, current_model, prepared=prepared, **kwargs)
+        except LLMPredictionError as exc:
+            _raise_if_user_key_at_fault(exc)
+            logger.error(f"[{tag}] generate_modification LLM FAILED: {exc}")
+            return self._modification_failure_reply(exc, user_request, current_model, prepared=prepared, **kwargs)
+        except Exception as exc:
+            _raise_if_user_key_at_fault(exc)
+            logger.error(f"[{tag}] generate_modification FAILED: {exc}", exc_info=True)
+            return self._modification_crash_reply(exc, user_request, current_model, prepared=prepared, **kwargs)
+
+    def _prepare_modification(
+        self, user_request: str, current_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Any:
+        """Work before the LLM call; a crash here propagates. May return ``ReplyNow``."""
+        return None
+
+    def _build_modification(
+        self, user_request: str, current_model: Optional[Dict[str, Any]], *, prepared: Any = None, **kwargs,
+    ) -> Dict[str, Any]:
+        """LLM → validate → ``modify_model`` envelope. The default is a
+        placeholder for diagram types without modification support."""
         return {
-            "action": "modify_model",
+            "action": Action.MODIFY_MODEL,
             "modification": {
                 "action": "modify_element",
                 "target": {"elementName": "unknown"},
@@ -434,6 +614,24 @@ class BaseDiagramHandler(ABC):
             "diagramType": self.get_diagram_type(),
             "message": "Modification not implemented for this diagram type."
         }
+
+    def _modification_failure_reply(
+        self, exc: Exception, user_request: str, current_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Dict[str, Any]:
+        return self._error_response(self._MODIFY_FAILURE_MESSAGE, code=self._MODIFY_FAILURE_CODE)
+
+    def _modification_crash_reply(
+        self, exc: Exception, user_request: str, current_model: Optional[Dict[str, Any]], **kwargs,
+    ) -> Dict[str, Any]:
+        return self.generate_fallback_modification(user_request)
+
+    def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
+        """Reply when ``_build_modification`` crashes; needed only while the
+        handler keeps the default ``_modification_crash_reply``."""
+        raise NotImplementedError(
+            f"{type(self).__name__} implements neither generate_fallback_modification "
+            "nor _modification_crash_reply"
+        )
 
     # ------------------------------------------------------------------
     # Shared modification response handling
@@ -485,10 +683,7 @@ class BaseDiagramHandler(ABC):
         # When the LLM signals the target element doesn't exist, surface its
         # explanation as a plain text reply rather than attempting an empty update.
         if not getattr(parsed, 'elementFound', True):
-            return {
-                "action": "assistant_message",
-                "message": getattr(parsed, 'message', 'The requested element was not found.'),
-            }
+            return assistant_message(getattr(parsed, 'message', 'The requested element was not found.'))
 
         mod_list = parsed.model_dump()["modifications"]
 
@@ -498,22 +693,22 @@ class BaseDiagramHandler(ABC):
 
         if len(mod_list) == 1:
             modification_spec: Dict[str, Any] = {
-                "action": "modify_model", "modification": mod_list[0],
+                "action": Action.MODIFY_MODEL, "modification": mod_list[0],
             }
         else:
             modification_spec = {
-                "action": "modify_model", "modifications": mod_list,
+                "action": Action.MODIFY_MODEL, "modifications": mod_list,
             }
 
         # Handler-specific spec-level transformation (e.g. refactoring expansion)
         if spec_processor is not None:
             modification_spec = spec_processor(self, modification_spec)
-            if modification_spec.get("action") == "assistant_message":
+            if modification_spec.get("action") == Action.ASSISTANT_MESSAGE:
                 return modification_spec  # nothing left to apply
 
         self.validate_modification_spec(modification_spec)
 
-        modification_spec.setdefault('action', 'modify_model')
+        modification_spec.setdefault('action', Action.MODIFY_MODEL)
         modification_spec.setdefault('diagramType', self.get_diagram_type())
 
         if 'message' not in modification_spec:
@@ -651,7 +846,7 @@ class BaseDiagramHandler(ABC):
         becomes an ``assistant_message`` so the user gets an explanation
         instead of a silent no-op.
         """
-        if not elements or result.get("action") != "modify_model":
+        if not elements or result.get("action") != Action.MODIFY_MODEL:
             return result
         tag = self.get_diagram_type()
 
@@ -667,13 +862,10 @@ class BaseDiagramHandler(ABC):
             if dropped:
                 logger.info(f"[{tag}] Dropped {dropped} modification(s) with unresolved element ref(s)")
             if not valid:
-                return {
-                    "action": "assistant_message",
-                    "message": (
-                        "I couldn't find the element(s) you described in the current diagram. "
-                        "Please check the names and try again."
-                    ),
-                }
+                return assistant_message(
+                    "I couldn't find the element(s) you described in the current diagram. "
+                    "Please check the names and try again.",
+                )
             result = dict(result)
             result["modifications"] = valid
             if dropped:
@@ -685,13 +877,10 @@ class BaseDiagramHandler(ABC):
 
         if "modification" in result and not self._ref_exists(result["modification"], elements):
             logger.info(f"[{tag}] Dropped modification with unresolved element ref")
-            return {
-                "action": "assistant_message",
-                "message": (
-                    "I couldn't find that element in the current diagram. "
-                    "Please check the name and try again."
-                ),
-            }
+            return assistant_message(
+                "I couldn't find that element in the current diagram. "
+                "Please check the name and try again.",
+            )
         return result
 
     # ------------------------------------------------------------------
@@ -720,73 +909,13 @@ class BaseDiagramHandler(ABC):
         self, prompt: str, model: Optional[str] = None, *, max_tokens: Optional[int] = None,
         images: Sequence[str] = (),
     ) -> str:
-        """Single free-text LLM call honoring a per-call model override.
-
-        BAF's ``LLMOpenAI.predict`` always sends ``self.llm.name`` as the
-        model, so per-call routing (see ``model_config``) must go through
-        the OpenAI client directly when an override is requested. Falls
-        back to the BAF path when no override is given or the client is
-        unavailable. Records the call's usage (a length estimate on the BAF
-        path, which exposes none; BYOK records its own).
-
-        BYOK: when the current request carries a user-supplied key (see
-        ``byok.current_byok``), this free-text generation call is routed
-        through the user's own per-request client instead of the shared
-        server LLM. SDK auth/rate-limit errors propagate so
-        ``predict_with_retry`` / ``errors.classify_error`` surface them.
-
-        ``images`` (data URLs) go with the prompt; the BAF path cannot send
-        them, so an image call uses the client with the instance model.
-        """
-        effective_max_tokens = max_tokens or LLM_MAX_TOKENS_LARGE
-
-        from byok import get_active_client  # local import: avoids import cycle
-        byok_client = get_active_client()
-        if byok_client is not None:
-            return byok_client.predict_raw(
-                prompt,
-                model=model,
-                temperature=LLM_TEMPERATURE,
-                reasoning_effort=reasoning_effort_for(model) if model else None,
-                max_tokens=effective_max_tokens,
-                images=images,
-            )
-
-        client = getattr(self.llm, 'client', None)
-        if images and not model:
-            model = getattr(self.llm, 'name', MODEL_CLASSIFIER)
-        if model and client is not None and hasattr(client, 'chat'):
-            raw_kwargs: Dict[str, Any] = {
-                "model": model,
-                "messages": [{"role": "user", "content": openai_content(prompt, images)}],
-                "max_completion_tokens": effective_max_tokens,
-            }
-            # gpt-5* / o-series models 400 on an explicit non-default
-            # temperature — omit the parameter for them; cap their hidden
-            # reasoning instead (quality holds, latency drops ~40%).
-            if supports_custom_temperature(model):
-                raw_kwargs["temperature"] = LLM_TEMPERATURE
-            elif reasoning_effort_for(model):
-                raw_kwargs["reasoning_effort"] = reasoning_effort_for(model)
-            completion = client.chat.completions.create(**raw_kwargs)
-            _track_usage(getattr(completion, "usage", None), model)
-            if not completion.choices:
-                return ""
-            raise_if_openai_refusal(completion.choices[0])
-            return completion.choices[0].message.content or ""
-        if images:
-            raise LLMPredictionError("This LLM client cannot send images")
-        response = self.llm.predict(prompt)
-        try:
-            from tracking import get_tracker
-            get_tracker().record(
-                prompt_tokens=len(prompt) // 4,
-                completion_tokens=len(response) // 4 if response else 0,
-                model=getattr(self.llm, 'name', MODEL_CLASSIFIER),
-            )
-        except Exception as exc:
-            logger.debug(f"Token tracking failed (best-effort): {exc}")
-        return response
+        """Single free-text LLM call honoring a per-call model override
+        (see ``model_config``) on the user's key when one is active.
+        ``images`` (data URLs) go with the prompt."""
+        return self.llm_provider.complete(
+            prompt, model=model, temperature=LLM_TEMPERATURE, max_tokens=max_tokens,
+            images=images,
+        )
 
     # NOTE: This adds an extra LLM round-trip (2–4s latency).
     def predict_with_retry(
@@ -942,34 +1071,10 @@ class BaseDiagramHandler(ABC):
         Raises:
             LLMPredictionError: If all attempts fail.
         """
-        effective_model = model or (
-            self.llm.name if hasattr(self.llm, 'name') else MODEL_CLASSIFIER
-        )
-        # BYOK: a user who saved a key pays for their own structured calls.
-        from byok import get_active_client, get_current, resolve_model
-        byok_client = get_active_client()
-        if byok_client is not None:
-            client = byok_client.openai_client
-            if client is None:
-                # Anthropic / Mistral / custom endpoint: JSON mode on the
-                # user's client (predict_with_retry is BYOK-routed).
-                return self._structured_fallback(
-                    prompt, response_schema, system_prompt, max_retries, model=model,
-                    images=images,
-                )
-            cfg = get_current()
-            effective_model = resolve_model("openai", effective_model, cfg.model if cfg else None)
-        else:
-            client = getattr(self.llm, 'client', None)
-        # --- Check if client supports .parse() ---
-        has_parse = (
-            client is not None
-            and hasattr(client, 'beta')
-            and hasattr(client.beta, 'chat')
-        )
-
-        if not has_parse:
-            # Fallback: predict_with_retry + manual parse
+        provider = self.llm_provider
+        # Anthropic / Mistral / custom endpoints and clients without
+        # ``.parse()``: JSON on the same provider (BYOK-routed).
+        if not provider.supports_structured_outputs():
             logger.info(
                 f"[{self.get_diagram_type()}] Structured outputs unavailable, "
                 "falling back to predict_with_retry"
@@ -978,10 +1083,7 @@ class BaseDiagramHandler(ABC):
                 prompt, response_schema, system_prompt, max_retries, model=model,
                 images=images,
             )
-
-        # --- Structured parse with retry ---
-        from tracking import get_tracker
-        tracker = get_tracker()
+        effective_model = provider.structured_model(model)
 
         messages = []
         if system_prompt:
@@ -989,7 +1091,6 @@ class BaseDiagramHandler(ABC):
         messages.append({"role": "user", "content": openai_content(prompt, images)})
 
         last_error: Optional[Exception] = None
-        raw_content: Optional[str] = None
         total_attempts = 1 + max_retries
         truncated = False
 
@@ -1043,56 +1144,20 @@ class BaseDiagramHandler(ABC):
                     _log_content(
                         f"📝 [{self.get_diagram_type()}] Prompt msg[{i}] content:\n{content}"
                     )
-                parse_kwargs: Dict[str, Any] = {
-                    "model": effective_model,
-                    "messages": messages,
-                    "response_format": response_schema,
-                    "max_completion_tokens": max_tokens,
-                }
-                # gpt-5* / o-series models 400 on an explicit non-default
-                # temperature — omit the parameter for them; cap their hidden
-                # reasoning instead (quality holds, latency drops ~40%).
-                if supports_custom_temperature(effective_model):
-                    parse_kwargs["temperature"] = temperature
-                elif reasoning_effort_for(effective_model):
-                    parse_kwargs["reasoning_effort"] = reasoning_effort_for(effective_model)
                 try:
-                    completion = client.beta.chat.completions.parse(**parse_kwargs)
-                except LengthFinishReasonError as exc:
-                    # parse() raises on finish_reason=length; the call is still billed.
-                    if exc.completion.usage:
-                        tracker.record_from_usage(exc.completion.usage, model=effective_model)
+                    parsed = provider.parse(
+                        messages, response_schema, temperature=temperature,
+                        max_tokens=max_tokens, model=model,
+                    )
+                except OutputTruncated as exc:
                     if truncated or attempt + 1 >= total_attempts:
-                        raise LLMPredictionError(
-                            f"Structured output truncated at max_tokens={max_tokens}"
-                        ) from exc
+                        raise LLMPredictionError(str(exc)) from exc
                     logger.warning(
                         f"⚠️ [{self.get_diagram_type()}] Response TRUNCATED "
                         f"(max_tokens={max_tokens}); retrying once with a concise instruction"
                     )
                     truncated = True
                     continue
-
-                # Track tokens
-                finish_reason = completion.choices[0].finish_reason if completion.choices else None
-                usage = completion.usage if hasattr(completion, 'usage') else None
-                raw_content = getattr(completion.choices[0].message, 'content', None) if completion.choices else None
-
-                if usage:
-                    tracker.record_from_usage(usage, model=effective_model)
-                    logger.info(
-                        f"📊 [{self.get_diagram_type()}] Token usage: "
-                        f"prompt={usage.prompt_tokens}, "
-                        f"completion={usage.completion_tokens}, "
-                        f"total={usage.total_tokens}, "
-                        f"finish_reason={finish_reason}"
-                    )
-
-                if completion.choices:
-                    raise_if_openai_refusal(completion.choices[0])
-                parsed = completion.choices[0].message.parsed
-                if parsed is None:
-                    raise LLMPredictionError("LLM returned empty structured output")
 
                 # Response content is DEBUG-only (LOG_PROMPTS=1 restores INFO)
                 # — it contains the user's generated model data.
@@ -1117,9 +1182,7 @@ class BaseDiagramHandler(ABC):
                 last_error = LLMPredictionError(f"Structured parse failed: {exc}")
                 logger.warning(
                     f"[{self.get_diagram_type()}] Structured parse attempt "
-                    f"{attempt + 1}/{total_attempts} failed: {exc}\n"
-                    f"  Raw response content (if available): "
-                    f"{raw_content[:2000] if raw_content else 'N/A'}"
+                    f"{attempt + 1}/{total_attempts} failed: {exc}"
                 )
 
         raise last_error or LLMPredictionError("Structured prediction failed after all retries")
@@ -1497,157 +1560,6 @@ class BaseDiagramHandler(ABC):
         )
 
         return self.predict_with_retry(structured_prompt, model=model, max_tokens=max_tokens)
-
-    # ------------------------------------------------------------------
-    # Validation-feedback loop (critique → fix)
-    # ------------------------------------------------------------------
-    def validate_and_refine(
-        self,
-        spec: Dict[str, Any],
-        user_request: str,
-        diagram_type: str,
-    ) -> Dict[str, Any]:
-        """Validate a generated spec and refine it if quality issues are found.
-
-        Sends the spec to the LLM for self-critique, asking it to check for:
-        - Missing obvious attributes
-        - Missing relationships between clearly related classes
-        - Wrong multiplicities
-        - Redundant or misplaced attributes
-        - Naming convention issues
-
-        Returns the refined spec (or the original if no issues found or
-        refinement fails).
-        """
-        if diagram_type not in ("ClassDiagram",):
-            # StateMachine validation is handled in StateMachineHandler._validate_and_refine_state_machine
-            return spec
-
-        classes = spec.get("classes", [])
-        relationships = spec.get("relationships", [])
-
-        # Skip validation for very small diagrams (1-3 classes) where the
-        # extra LLM round-trip rarely finds issues.  4+ classes benefit from
-        # relationship and attribute completeness checks.
-        if len(classes) <= 20:
-            return spec
-
-        # Build a compact representation for the critique prompt
-        class_summary = []
-        for cls in classes:
-            attrs = [a.get("name", "?") for a in cls.get("attributes", [])]
-            class_summary.append(f"{cls.get('className', '?')}: {', '.join(attrs)}")
-        rel_summary = []
-        for rel in relationships:
-            rel_summary.append(
-                f"{rel.get('source', '?')} -> {rel.get('target', '?')} "
-                f"({rel.get('type', '?')}, {rel.get('sourceMultiplicity', '?')}..{rel.get('targetMultiplicity', '?')})"
-            )
-
-        critique_prompt = f"""Review this UML class diagram for quality issues.
-
-Classes:
-{chr(10).join('- ' + s for s in class_summary)}
-
-Relationships:
-{chr(10).join('- ' + r for r in rel_summary) if rel_summary else '(none)'}
-
-User's original request: "{user_request}"
-
-Check for these issues:
-1. MISSING RELATIONSHIPS: Are there classes that should clearly be connected but aren't? (e.g., Order and Customer without a relationship)
-2. WRONG MULTIPLICITIES: Are any multiplicities incorrect? (e.g., Order-Product should typically be many-to-many via OrderItem, not one-to-one)
-3. MISSING KEY ATTRIBUTES: Are any classes missing obviously essential attributes? (e.g., User without email, Order without date)
-4. REDUNDANT ATTRIBUTES: Are any attributes duplicated across classes unnecessarily?
-
-If you find issues, return a JSON object with fixes:
-{{
-  "has_issues": true,
-  "add_relationships": [
-    {{"type": "Association", "source": "Class1", "target": "Class2", "sourceMultiplicity": "1", "targetMultiplicity": "*", "name": "relName"}}
-  ],
-  "fix_multiplicities": [
-    {{"source": "Class1", "target": "Class2", "sourceMultiplicity": "1", "targetMultiplicity": "*"}}
-  ],
-  "add_attributes": [
-    {{"className": "ClassName", "attributes": [{{"name": "attr", "type": "String", "visibility": "public"}}]}}
-  ]
-}}
-
-If the diagram looks good, return: {{"has_issues": false}}
-
-Return ONLY the JSON, no explanations."""
-
-        try:
-            response = self.llm.predict(critique_prompt)
-
-            if not response or not response.strip():
-                return spec
-
-            json_text = self.clean_json_response(response)
-            critique = self.parse_json_safely(json_text)
-            if not critique or not critique.get("has_issues"):
-                logger.info(f"[{self.get_diagram_type()}] Validation: no issues found")
-                return spec
-
-            logger.info(f"[{self.get_diagram_type()}] Validation: applying refinements")
-
-            # Apply relationship additions
-            for new_rel in critique.get("add_relationships", []):
-                if isinstance(new_rel, dict) and new_rel.get("source") and new_rel.get("target"):
-                    # Check it doesn't already exist
-                    exists = any(
-                        r.get("source") == new_rel["source"] and r.get("target") == new_rel["target"]
-                        for r in relationships
-                    )
-                    if not exists:
-                        relationships.append(new_rel)
-                        logger.info(
-                            f"[{self.get_diagram_type()}] Added missing relationship: "
-                            f"{new_rel['source']} -> {new_rel['target']}"
-                        )
-
-            # Apply multiplicity fixes
-            for fix in critique.get("fix_multiplicities", []):
-                if not isinstance(fix, dict):
-                    continue
-                for rel in relationships:
-                    if rel.get("source") == fix.get("source") and rel.get("target") == fix.get("target"):
-                        if "sourceMultiplicity" in fix:
-                            rel["sourceMultiplicity"] = fix["sourceMultiplicity"]
-                        if "targetMultiplicity" in fix:
-                            rel["targetMultiplicity"] = fix["targetMultiplicity"]
-                        logger.info(
-                            f"[{self.get_diagram_type()}] Fixed multiplicity: "
-                            f"{fix.get('source')} -> {fix.get('target')}"
-                        )
-
-            # Apply missing attributes
-            for attr_fix in critique.get("add_attributes", []):
-                if not isinstance(attr_fix, dict):
-                    continue
-                target_class = attr_fix.get("className")
-                new_attrs = attr_fix.get("attributes", [])
-                for cls in classes:
-                    if cls.get("className") == target_class:
-                        existing_names = {a.get("name") for a in cls.get("attributes", [])}
-                        for attr in new_attrs:
-                            if isinstance(attr, dict) and attr.get("name") not in existing_names:
-                                cls.setdefault("attributes", []).append(attr)
-                                logger.info(
-                                    f"[{self.get_diagram_type()}] Added missing attribute: "
-                                    f"{target_class}.{attr.get('name')}"
-                                )
-
-            spec["relationships"] = relationships
-            return spec
-
-        except Exception as exc:
-            logger.warning(
-                f"[{self.get_diagram_type()}] Validation-feedback failed ({exc}), "
-                "returning original spec"
-            )
-            return spec
 
     # ------------------------------------------------------------------
     # Error recovery: JSON repair

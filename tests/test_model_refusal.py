@@ -11,18 +11,14 @@ The assertions check behaviour (exception name, call counts, user text) rather
 than importing the new class, so they fail against the pre-fix code for the
 reason they exist, not with an ImportError.
 """
-import os
-import sys
 from types import SimpleNamespace
 
 import pytest
 from pydantic import BaseModel
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-import byok  # noqa: E402
-from diagram_handlers.core.base_handler import LLMPredictionError  # noqa: E402
-from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler  # noqa: E402
+from llm import byok
+from diagram_handlers.core.base_handler import LLMPredictionError
+from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 
 CYBER_MESSAGE = (
     "The AI model declined this request (safety category: cyber). Please try "
@@ -284,7 +280,7 @@ def _event(*, content=None, refusal=None, finish_reason=None):
     [_event(finish_reason="content_filter")],
 ], ids=["delta-refusal", "content-filter"])
 def test_streamed_refusal_tells_the_user_the_model_declined(events):
-    from session_helpers import stream_llm_response
+    from conversation.session_helpers import stream_llm_response
     from tests.conftest import FakeSession
 
     llm = SimpleNamespace(client=_stream_client(events), name="gpt-4o-mini")
@@ -295,7 +291,7 @@ def test_streamed_refusal_tells_the_user_the_model_declined(events):
 
 
 def test_streamed_normal_reply_is_unchanged():
-    from session_helpers import stream_llm_response
+    from conversation.session_helpers import stream_llm_response
     from tests.conftest import FakeSession
 
     events = [_event(content="Your model has "), _event(content="3 classes."), _event(finish_reason="stop")]
@@ -309,8 +305,8 @@ def test_streamed_normal_reply_is_unchanged():
 # ---------------------------------------------------------------------------
 
 def test_sdk_retry_wrapper_does_not_retry_a_refusal():
-    from errors import ModelRefusal
-    from utilities.llm_retry import with_retry
+    from common.errors import ModelRefusal
+    from llm.retry import with_retry
 
     calls = []
 
@@ -324,13 +320,13 @@ def test_sdk_retry_wrapper_does_not_retry_a_refusal():
 
 
 def test_classify_error_maps_a_refusal_to_its_own_code():
-    from errors import ErrorCode, ModelRefusal, classify_error
+    from common.errors import ErrorCode, ModelRefusal, classify_error
 
     assert classify_error(ModelRefusal("openai", "content_filter")) is ErrorCode.MODEL_REFUSAL
 
 
 def test_user_message_text():
-    from errors import ModelRefusal
+    from common.errors import ModelRefusal
 
     assert ModelRefusal("anthropic", "cyber").user_message() == CYBER_MESSAGE
     assert ModelRefusal("anthropic", "reasoning_extraction").user_message().startswith(
@@ -342,29 +338,24 @@ def test_user_message_text():
     )
 
 
-def test_vision_refusal_is_not_retried(monkeypatch):
-    import requests as http_requests
-    from handlers.file_conversion_handler import convert_file_to_class_spec
+def test_vision_refusal_is_not_retried():
+    from ingestion.file_conversion_handler import convert_file_to_diagram_spec
+    from llm.provider import LLMProvider
 
     posts = []
 
-    class _Resp:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"choices": [{"finish_reason": "stop",
-                                 "message": {"content": None, "refusal": "I can't help."}}]}
-
-    def _post(*_args, **_kwargs):
+    def create(**_kwargs):
         posts.append(1)
-        return _Resp()
+        message = SimpleNamespace(content=None, refusal="I can't help.")
+        return SimpleNamespace(choices=[SimpleNamespace(finish_reason="stop", message=message)], usage=None)
 
-    monkeypatch.setattr(http_requests, "post", _post)
+    server = SimpleNamespace(name="gpt-4o", client=SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+    ))
     png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
-    result = convert_file_to_class_spec(
+    result = convert_file_to_diagram_spec(
         file_content_b64=png, filename="mockup.png",
-        llm_predict=lambda _p: "{}", openai_api_key="test-key",
+        llm_predict=lambda _p: "{}", llm_vision_predict=LLMProvider(server).vision,
     )
 
     assert "declined" in result["message"].lower()
@@ -374,13 +365,13 @@ def test_vision_refusal_is_not_retried(monkeypatch):
 def test_file_text_refusal_reaches_the_user():
     import base64
 
-    from errors import ModelRefusal
-    from handlers.file_conversion_handler import convert_file_to_class_spec
+    from common.errors import ModelRefusal
+    from ingestion.file_conversion_handler import convert_file_to_diagram_spec
 
     def declined(_prompt):
         raise ModelRefusal("anthropic", "cyber")
 
-    result = convert_file_to_class_spec(
+    result = convert_file_to_diagram_spec(
         file_content_b64=base64.b64encode(b"class Exploit: pass").decode(),
         filename="model.py", llm_predict=declined,
     )

@@ -8,21 +8,12 @@ import re
 from typing import Dict, Any, List, Optional, Tuple
 from ..core.base_handler import (
     BaseDiagramHandler,
-    LLMPredictionError,
-    SINGLE_OBJECT_REQUIRED,
-    SINGLE_OBJECT_OPTIONAL,
-    SYSTEM_OBJECT_REQUIRED,
-    SYSTEM_OBJECT_OPTIONAL,
 )
-from ..core.prompt_fragments import (
-    EXACT_NAMES_RULE,
-    MULTI_MOD_ARRAY_RULE,
-    POSITION_DISCLAIMER,
-    REMOVE_ELEMENT_RULE,
-)
-from model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
+from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL
+from prompts import object_diagram as object_prompts
 from schemas import SingleObjectSpec, SystemObjectSpec, ObjectModificationResponse
 from utilities.model_context import detailed_model_summary
+from protocol.actions import Action, inject_complete_system, inject_element
 
 logger = logging.getLogger(__name__)
 
@@ -62,20 +53,11 @@ def _lineage(class_id: str, parents: Dict[str, List[str]]) -> List[str]:
     return order
 
 
-MODIFY_SYSTEM_PROMPT_OBJECT = f"""You are a UML modeling expert. The user wants to modify an object diagram.
-
-IMPORTANT RULES:
-1. Actions available: "add_object", "modify_object", "modify_attribute_value", "add_link", "remove_element"
-2. add_object: set target.objectName to a short lowercase instance identifier (e.g. "user2", "order1"), or the name the user gives (e.g. "a book foundation" -> "foundation"). NEVER include the class name or a colon in objectName. Put className, classId, and attributes (with concrete values) in "changes".
-3. {EXACT_NAMES_RULE}
-4. {REMOVE_ELEMENT_RULE}
-5. {MULTI_MOD_ARRAY_RULE}
-6. If a reference class diagram is provided, you MUST copy its classId and per-attribute attributeId verbatim into the modification — these ids are what the frontend uses to link the object back to its class definition.
-7. Example: "add an object user2 of class User" → add_object with target.objectName="user2", changes.className="User", changes.classId="<id from reference>", changes.attributes=[{{name:"id",attributeId:"<id>",value:"USR002"}},{{name:"name",attributeId:"<id>",value:"Bob"}}]"""
-
-
 class ObjectDiagramHandler(BaseDiagramHandler):
     """Handler for Object Diagram generation"""
+    _SYSTEM_FAILURE_MESSAGE = "I couldn't generate that object diagram. Please try again or rephrase your request."
+    _SINGLE_FAILURE_MESSAGE = "I couldn't generate that object. Please try again or rephrase your request."
+
     
     def get_diagram_type(self) -> str:
         return "ObjectDiagram"
@@ -90,12 +72,14 @@ class ObjectDiagramHandler(BaseDiagramHandler):
             base = f"obj{base}"
         return base[0].lower() + base[1:]
 
-    def _value_for_attribute(self, attr_name: str, attr_type: str, class_name: str, index: int) -> str:
+    def _value_for_attribute(
+        self, attr_name: str, attr_type: str, class_name: str, index: int,
+        enum_literals: Dict[str, List[str]],
+    ) -> str:
         normalized_type = (attr_type or "").strip().lower()
         key = (attr_name or "").strip().lower()
 
         # Check if the attribute type is an enumeration — pick a valid literal
-        enum_literals = getattr(self, '_enum_literals', {})
         if attr_type and attr_type in enum_literals and enum_literals[attr_type]:
             literals = enum_literals[attr_type]
             return literals[index % len(literals)]
@@ -142,25 +126,6 @@ class ObjectDiagramHandler(BaseDiagramHandler):
         relationships = reference_diagram.get("relationships")
         if not isinstance(elements, dict):
             return {}, []
-
-        # First pass: collect enumerations and their literals
-        self._enum_literals: Dict[str, List[str]] = {}  # enum_name -> [literal_names]
-        for el_id, element in elements.items():
-            if not isinstance(element, dict):
-                continue
-            if element.get("type") != "Enumeration":
-                continue
-            enum_name = (element.get("name") or "").strip()
-            if not enum_name:
-                continue
-            literals = []
-            for attr_id in element.get("attributes", []):
-                attr = elements.get(attr_id)
-                if isinstance(attr, dict):
-                    lit_name = (attr.get("name") or "").replace("+ ", "").replace("- ", "").replace("# ", "").split(":")[0].strip()
-                    if lit_name:
-                        literals.append(lit_name)
-            self._enum_literals[enum_name] = literals
 
         classes: Dict[str, Dict[str, Any]] = {}
         by_id: Dict[str, Dict[str, Any]] = {}
@@ -271,6 +236,7 @@ class ObjectDiagramHandler(BaseDiagramHandler):
         self,
         classes: Dict[str, Dict[str, Any]],
         relationships: List[Dict[str, str]],
+        enum_literals: Dict[str, List[str]],
     ) -> Dict[str, Any]:
         if not classes:
             return {
@@ -295,7 +261,7 @@ class ObjectDiagramHandler(BaseDiagramHandler):
                         "attributeId": attr["id"],
                         "type": attr.get("type", "str"),  # carry type through
                         "value": self._value_for_attribute(
-                            attr["name"], attr.get("type", "str"), class_name, index
+                            attr["name"], attr.get("type", "str"), class_name, index, enum_literals,
                         ),
                     }
                 )
@@ -334,13 +300,14 @@ class ObjectDiagramHandler(BaseDiagramHandler):
         system_spec: Dict[str, Any],
         classes: Dict[str, Dict[str, Any]],
         relationships: List[Dict[str, str]],
+        enum_literals: Dict[str, List[str]],
     ) -> Dict[str, Any]:
         if not isinstance(system_spec, dict):
-            return self._build_reference_fallback_system(classes, relationships)
+            return self._build_reference_fallback_system(classes, relationships, enum_literals)
 
         raw_objects = system_spec.get("objects")
         if not isinstance(raw_objects, list):
-            return self._build_reference_fallback_system(classes, relationships)
+            return self._build_reference_fallback_system(classes, relationships, enum_literals)
 
         normalized_objects: List[Dict[str, Any]] = []
         object_lookup: Dict[str, Dict[str, str]] = {}
@@ -383,7 +350,7 @@ class ObjectDiagramHandler(BaseDiagramHandler):
                 value = incoming_attr.get("value")
                 if not isinstance(value, str) or not value.strip():
                     value = self._value_for_attribute(
-                        ref_attr_name, ref_attr.get("type", "str"), class_name, object_index
+                        ref_attr_name, ref_attr.get("type", "str"), class_name, object_index, enum_literals,
                     )
                 normalized_attrs.append(
                     {
@@ -485,101 +452,62 @@ class ObjectDiagramHandler(BaseDiagramHandler):
         }
     
     def get_system_prompt(self) -> str:
-        return f"""You are a UML modeling expert. Create an object instance specification based on the user's request.
-
-CRITICAL RULES:
-1. If a REFERENCE CLASS DIAGRAM is provided below, you MUST use ONLY the attributes from that diagram
-2. DO NOT invent new attributes - use exactly what's defined in the reference class
-3. objectName must be a short lowercase instance identifier like "user1", "orderA", "task2". NEVER include the class name or a colon in objectName — just the instance identifier. If the user names the object (e.g. "a book dune"), use that name ("dune").
-4. ClassName and classId MUST match the reference diagram (if provided)
-5. ENUMERATIONS — STRICT RULE: If an attribute's type matches the name of an enumeration listed in the reference, the value MUST be one of that enumeration's valid literals (shown as "valid values: ..."). NEVER invent enum values like "Fiction" or "Active" if they are not in the listed literals. Pick the closest matching literal from the list.
-6. Each attribute MUST have:
-   - name: EXACT attribute name from the class definition (just the name, without type or visibility)
-   - attributeId: the EXACT id from the reference diagram
-   - value: an ACTUAL example value (not a type). For enum-typed attributes, this MUST be one of the valid literals from rule #5.
-7. Include ALL attributes from the referenced class with realistic example values
-8. Keep values realistic and coherent
-9. {POSITION_DISCLAIMER}"""
+        return object_prompts.SYSTEM_PROMPT
     
-    def generate_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
-                                reference_diagram: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate a single object instance with deterministic positioning."""
-        
+    def _prepare_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
+                                reference_diagram: Dict[str, Any] = None, **kwargs) -> Tuple[str, str]:
         system_prompt = self.get_system_prompt()
-        
+
         # Build user prompt with reference diagram context
         user_prompt = f"Create an object specification for: {user_request}"
-        
+
         if reference_diagram and reference_diagram.get('elements'):
             user_prompt += "\n\nREFERENCE CLASS DIAGRAM (use these exact class and attribute definitions):\n"
             user_prompt += self._format_reference_classes(
                 reference_diagram['elements'], reference_diagram.get('relationships'))
-        
-        try:
-            # Single element → SMALL generation tier (latency-sensitive).
-            parsed = self.predict_structured(
-                user_prompt, SingleObjectSpec, system_prompt=system_prompt,
-                model=MODEL_GENERATION_SMALL,
-            )
-            object_spec = parsed.model_dump()
+        return system_prompt, user_prompt
 
-            # Sanitize objectName: strip any ": ClassName" suffix the LLM may have included
-            raw_name = object_spec.get("objectName", "")
-            class_name = object_spec.get("className", "")
-            if class_name and ":" in raw_name:
-                raw_name = raw_name.split(":")[0].strip()
-            object_spec["objectName"] = self._sanitize_object_name(raw_name, default_name=f"{class_name[0].lower()}{class_name[1:]}1" if class_name else "object1")
+    def _build_single_element(self, user_request: str, existing_model: Dict[str, Any] = None,
+                                reference_diagram: Dict[str, Any] = None, *, prepared=None,
+                                **kwargs) -> Dict[str, Any]:
+        """Generate a single object instance with deterministic positioning."""
+        system_prompt, user_prompt = prepared
 
-            # Enrich each attribute with its type from the reference class diagram so the
-            # frontend ObjectAttribute element can carry the correct attributeType
-            # (otherwise it defaults to 'str' and breaks enum/int/date/float typing).
-            self._enrich_attribute_types(object_spec, reference_diagram)
+        # Single element → SMALL generation tier (latency-sensitive).
+        parsed = self.predict_structured(
+            user_prompt, SingleObjectSpec, system_prompt=system_prompt,
+            model=MODEL_GENERATION_SMALL,
+        )
+        object_spec = parsed.model_dump()
 
-            # Remove any hallucinated position and apply deterministic layout
-            object_spec.pop("position", None)
-            self.apply_single_layout(object_spec, existing_model)
+        # Sanitize objectName: strip any ": ClassName" suffix the LLM may have included
+        raw_name = object_spec.get("objectName", "")
+        class_name = object_spec.get("className", "")
+        if class_name and ":" in raw_name:
+            raw_name = raw_name.split(":")[0].strip()
+        object_spec["objectName"] = self._sanitize_object_name(raw_name, default_name=f"{class_name[0].lower()}{class_name[1:]}1" if class_name else "object1")
+
+        # Enrich each attribute with its type from the reference class diagram so the
+        # frontend ObjectAttribute element can carry the correct attributeType
+        # (otherwise it defaults to 'str' and breaks enum/int/date/float typing).
+        self._enrich_attribute_types(object_spec, reference_diagram)
+
+        # Remove any hallucinated position and apply deterministic layout
+        object_spec.pop("position", None)
+        self.apply_single_layout(object_spec, existing_model)
             
-            return {
-                "action": "inject_element",
-                "element": object_spec,
-                "diagramType": "ObjectDiagram",
-                "message": self._build_single_object_message(object_spec)
-            }
-            
-        except LLMPredictionError:
-            logger.error("[ObjectDiagram] generate_single_element LLM FAILED", exc_info=True)
-            return self._error_response("I couldn't generate that object. Please try again or rephrase your request.")
-        except Exception:
-            logger.error("[ObjectDiagram] generate_single_element FAILED", exc_info=True)
-            return self.generate_fallback_element(user_request)
+        return inject_element(
+            object_spec,
+            "ObjectDiagram",
+            self._build_single_object_message(object_spec),
+        )
     
-    def generate_complete_system(self, user_request: str, existing_model: Dict[str, Any] = None,
-                                reference_diagram: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate a complete object diagram with deterministic positioning."""
-
+    def _prepare_system(self, user_request: str, existing_model: Dict[str, Any] = None,
+                                reference_diagram: Dict[str, Any] = None, **kwargs) -> tuple:
+        """``(classes, class_relationships, enum_literals, system_prompt, user_prompt)``."""
         classes, class_relationships = self._extract_reference_catalog(reference_diagram)
-        system_prompt = f"""You are a UML modeling expert. Create a COMPLETE object diagram with multiple related object instances.
-
-Before generating, think through:
-- What object instances best illustrate this scenario?
-- What realistic attribute values make the example coherent?
-- What links between objects reflect the class diagram relationships?
-- If a reference class diagram is provided, which classes should be instantiated?
-
-IMPORTANT RULES:
-1. Create 3-6 related object instances
-2. Each object should have 2-4 attributes with ACTUAL VALUES
-3. Object names: when the user names an object (e.g. "a book dune, a patron alice"), use that name in lowercase ("dune", "alice"). Otherwise use lowercase instance name + number (user1, order1, product2). NEVER use the class name as the object name — "Order: Order" is WRONG, use "order1: Order".
-4. Include meaningful links between objects
-5. Values should be realistic and coherent
-6. {POSITION_DISCLAIMER}
-7. Keep the scenario focused
-8. If a REFERENCE CLASS DIAGRAM is provided, STRICTLY derive objects from it:
-   - Use ONLY class names from the reference classes, and NEVER instantiate a class marked ABSTRACT.
-   - Every object MUST include className + classId from reference.
-   - Every object attribute MUST include name + attributeId from reference.
-   - Do NOT invent classes such as User/Order/Product unless they exist in the reference.
-9. If the user asks "according to structural/class diagram", prioritise the reference model over generic examples."""
+        enum_literals = self._enum_literals(reference_diagram["elements"]) if classes else {}
+        system_prompt = object_prompts.COMPLETE_SYSTEM_PROMPT
 
         user_prompt = user_request
         if classes:
@@ -588,39 +516,37 @@ IMPORTANT RULES:
                 reference_diagram.get("elements", {}), reference_diagram.get("relationships"))
             user_prompt += "\n\nREFERENCE CLASS RELATIONSHIPS:\n"
             user_prompt += self._format_reference_relationships(class_relationships)
+        return classes, class_relationships, enum_literals, system_prompt, user_prompt
 
-        try:
-            # Complete-system generation → LARGE tier (see model_config).
-            parsed = self.predict_structured(
-                user_prompt, SystemObjectSpec, system_prompt=system_prompt,
-                model=MODEL_GENERATION_LARGE,
+    def _build_system(self, user_request: str, existing_model: Dict[str, Any] = None,
+                                reference_diagram: Dict[str, Any] = None, *, prepared=None,
+                                **kwargs) -> Dict[str, Any]:
+        """Generate a complete object diagram with deterministic positioning."""
+        classes, class_relationships, enum_literals, system_prompt, user_prompt = prepared
+
+        # Complete-system generation → LARGE tier (see model_config).
+        parsed = self.predict_structured(
+            user_prompt, SystemObjectSpec, system_prompt=system_prompt,
+            model=MODEL_GENERATION_LARGE,
+        )
+        system_spec = parsed.model_dump()
+
+        if classes:
+            system_spec = self._normalize_system_from_reference(
+                system_spec, classes, class_relationships, enum_literals,
             )
-            system_spec = parsed.model_dump()
-
-            if classes:
-                system_spec = self._normalize_system_from_reference(
-                    system_spec, classes, class_relationships
-                )
             
-            # Strip any hallucinated positions and apply deterministic layout
-            for obj in system_spec.get("objects", []):
-                obj.pop("position", None)
-            self.apply_system_layout(system_spec, existing_model)
+        # Strip any hallucinated positions and apply deterministic layout
+        for obj in system_spec.get("objects", []):
+            obj.pop("position", None)
+        self.apply_system_layout(system_spec, existing_model)
             
-            mode_note = " from structural model" if classes else ""
-            return {
-                "action": "inject_complete_system",
-                "systemSpec": system_spec,
-                "diagramType": "ObjectDiagram",
-                "message": self._build_object_system_message(system_spec, mode_note)
-            }
-            
-        except LLMPredictionError:
-            logger.error("[ObjectDiagram] generate_complete_system LLM FAILED", exc_info=True)
-            return self._error_response("I couldn't generate that object diagram. Please try again or rephrase your request.")
-        except Exception:
-            logger.error("[ObjectDiagram] generate_complete_system FAILED", exc_info=True)
-            return self.generate_fallback_system()
+        mode_note = " from structural model" if classes else ""
+        return inject_complete_system(
+            system_spec,
+            "ObjectDiagram",
+            self._build_object_system_message(system_spec, mode_note),
+        )
     
     def generate_fallback_element(self, request: str) -> Dict[str, Any]:
         """Generate a fallback object when AI generation fails"""
@@ -639,12 +565,11 @@ IMPORTANT RULES:
         # Apply deterministic layout so the fallback doesn't render at 0,0
         self.apply_single_layout(fallback_spec)
         
-        return {
-            "action": "inject_element",
-            "element": fallback_spec,
-            "diagramType": "ObjectDiagram",
-            "message": f"I created a starter **{object_name}** object (instance of {class_name}). Describe the scenario in more detail (e.g. which class it represents and its attribute values) for a more accurate result!"
-        }
+        return inject_element(
+            fallback_spec,
+            "ObjectDiagram",
+            f"I created a starter **{object_name}** object (instance of {class_name}). Describe the scenario in more detail (e.g. which class it represents and its attribute values) for a more accurate result!",
+        )
     
     def generate_fallback_system(self) -> Dict[str, Any]:
         """Generate a fallback object diagram"""
@@ -665,12 +590,11 @@ IMPORTANT RULES:
         # Apply deterministic layout so the fallback doesn't render at 0,0
         self.apply_system_layout(fallback_system)
 
-        return {
-            "action": "inject_complete_system",
-            "systemSpec": fallback_system,
-            "diagramType": "ObjectDiagram",
-            "message": "I created a starter object diagram. Describe your scenario in more detail (e.g. *'Create objects for a library with 2 books and 1 author'*) and I'll build a richer diagram!"
-        }
+        return inject_complete_system(
+            fallback_system,
+            "ObjectDiagram",
+            "I created a starter object diagram. Describe your scenario in more detail (e.g. *'Create objects for a library with 2 books and 1 author'*) and I'll build a richer diagram!",
+        )
     
     def _enrich_attribute_types(self, object_spec: Dict[str, Any], reference_diagram: Optional[Dict[str, Any]]) -> None:
         """Populate each attribute's 'type' field from the reference class diagram.
@@ -709,12 +633,9 @@ IMPORTANT RULES:
             attr_el = elements.get(attr.get('attributeId'))
             attr['type'] = (attr_el.get('attributeType') if isinstance(attr_el, dict) else None) or 'str'
 
-    def _format_reference_classes(self, elements: Dict[str, Any], relationships: Any = None) -> str:
-        """Format reference diagram classes for LLM context"""
-        formatted = []
-
-        # Extract enumeration literals on the fly (don't rely on _extract_reference_catalog
-        # being called first — generate_single_element calls this method directly).
+    @staticmethod
+    def _enum_literals(elements: Dict[str, Any]) -> Dict[str, List[str]]:
+        """``{enumeration name: [literal names]}`` of a class diagram's elements."""
         enum_literals: Dict[str, List[str]] = {}
         for el in elements.values():
             if not isinstance(el, dict) or el.get('type') != 'Enumeration':
@@ -730,9 +651,13 @@ IMPORTANT RULES:
                     if lit_name:
                         literals.append(lit_name)
             enum_literals[enum_name] = literals
+        return enum_literals
 
-        # Cache for any subsequent code path that reads self._enum_literals
-        self._enum_literals = enum_literals
+    def _format_reference_classes(self, elements: Dict[str, Any], relationships: Any = None) -> str:
+        """Format reference diagram classes for LLM context"""
+        formatted = []
+
+        enum_literals = self._enum_literals(elements)
 
         # List enumerations and their valid values
         for enum_name, literals in enum_literals.items():
@@ -827,9 +752,8 @@ IMPORTANT RULES:
             suffix = current.split(":", 1)[1].strip() if ":" in current and ":" not in new_name else ""
             changes["name"] = f"{new_name.strip()}: {suffix}" if suffix else new_name.strip()
 
-    def generate_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        """Generate modifications for existing object diagram elements."""
-
+    def _prepare_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> tuple:
+        """``(system_prompt, user_prompt, reference_classes)``."""
         # If a reference class diagram is available, include it for context
         reference_diagram = kwargs.get("reference_diagram")
         reference_context = ""
@@ -848,7 +772,7 @@ IMPORTANT RULES:
                 # attributeId — the LLM often omits them even when instructed.
                 reference_classes, _ = self._extract_reference_catalog(reference_diagram)
 
-        system_prompt = MODIFY_SYSTEM_PROMPT_OBJECT
+        system_prompt = object_prompts.MODIFY_SYSTEM_PROMPT_OBJECT
 
         # Build context from current model using centralized helper
         context_block = ''
@@ -858,8 +782,13 @@ IMPORTANT RULES:
                 context_block = f"\n\n{summary}"
 
         user_prompt = f"Modify the object diagram: {user_request}{context_block}{reference_context}"
+        return system_prompt, user_prompt, reference_classes
 
-        logger.info(f"[ObjectDiagram] generate_modification called with: {user_request!r}")
+    def _build_modification(
+        self, user_request: str, current_model: Dict[str, Any] = None, *, prepared=None, **kwargs,
+    ) -> Dict[str, Any]:
+        """Generate modifications for existing object diagram elements."""
+        system_prompt, user_prompt, reference_classes = prepared
 
         def _resolve_class_references(mod_list: list) -> list:
             """Set classId / attributeId for add_object mods from the reference catalog.
@@ -911,24 +840,19 @@ IMPORTANT RULES:
             self._mirror_object_rename(mod_list, elements or {})
             return mod_list
 
-        try:
-            return self._execute_modification(
-                user_prompt, system_prompt, ObjectModificationResponse,
-                post_processor=_post_process,
-            )
+        return self._execute_modification(
+            user_prompt, system_prompt, ObjectModificationResponse,
+            post_processor=_post_process,
+        )
 
-        except LLMPredictionError as exc:
-            logger.error(f"[ObjectDiagram] generate_modification LLM FAILED: {exc}")
-            return self._error_response("I couldn't process that modification. Please try again or rephrase your request.")
-        except Exception as exc:
-            logger.error(f"[ObjectDiagram] generate_modification FAILED: {exc}", exc_info=True)
-            return {
-                "action": "modify_model",
-                "modification": {
-                    "action": "modify_object",
-                    "target": {"objectName": "Unknown"},
-                    "changes": {"objectName": "ModifiedObject"}
-                },
-                "diagramType": self.get_diagram_type(),
-                "message": "I couldn't apply that modification automatically. Could you rephrase it? For example: *'Change the name of object X to Y'* or *'Add a link between obj1 and obj2'*."
-            }
+    def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
+        return {
+            "action": Action.MODIFY_MODEL,
+            "modification": {
+                "action": "modify_object",
+                "target": {"objectName": "Unknown"},
+                "changes": {"objectName": "ModifiedObject"}
+            },
+            "diagramType": self.get_diagram_type(),
+            "message": "I couldn't apply that modification automatically. Could you rephrase it? For example: *'Change the name of object X to Y'* or *'Add a link between obj1 and obj2'*."
+        }

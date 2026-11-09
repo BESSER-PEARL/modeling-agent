@@ -11,8 +11,6 @@ The fix threads the raw user message separately (``raw_request``) so the
 fast-path decision is based on what the user actually typed.
 """
 import json
-import os
-import sys
 
 import pytest
 
@@ -27,8 +25,6 @@ def _canonical_schema(monkeypatch):
     import diagram_handlers.types.class_diagram_handler as _m
     monkeypatch.setattr(_m, "COMPACT_SPEC_ENABLED", False, raising=True)
 
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 from schemas import SystemClassSpec

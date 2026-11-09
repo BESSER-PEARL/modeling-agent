@@ -13,9 +13,13 @@ Requirements
 
 - Python 3.11 (3.10 minimum)
 - An OpenAI API key
-- ``besser-agentic-framework[extras,llms,tensorflow] == 4.3.2`` — the version
+- ``besser-agentic-framework[tensorflow] == 4.5.3`` — the version
   is pinned because ``patches/websocket_platform.py`` is vendored over it
-  (see `Vendored BAF patch`_)
+  (see `Vendored BAF patch`_). Only the ``tensorflow`` extra: what the agent
+  uses from BAF's ``llms`` and ``extras`` sets (the OpenAI and Anthropic SDKs,
+  LangChain, ChromaDB) is listed in ``requirements.txt`` with the same bounds,
+  and the rest of those sets (transformers, spaCy, OpenCV, librosa,
+  scikit-learn, ...) is never imported.
 
 Local Development
 -----------------
@@ -34,6 +38,7 @@ Local Development
    # Install dependencies
    pip install --upgrade pip
    pip install -r requirements.txt
+   pip install -e .
 
    # Configure
    cp config_example.yaml config.yaml
@@ -55,8 +60,9 @@ Docker
    # Run
    docker run -p 8765:8765 --env-file .env modeling-agent
 
-The image is ``python:3.11-slim``. Its entrypoint **generates
-``config.yaml`` from the environment** at container start, so no config file
+The image is ``python:3.11-slim``. Its entrypoint
+(``python -m app.container_config``) **generates ``config.yaml`` from the
+environment** at container start, so no config file
 needs to be baked in or mounted. It prints the generated config for
 debugging but redacts the ``api_key`` line, so the key never reaches the
 container logs.
@@ -83,14 +89,14 @@ pip-installed framework file:
    COPY patches/websocket_platform.py \
        /usr/local/lib/python3.11/site-packages/baf/platforms/websocket/websocket_platform.py
 
-Stock BAF 4.3.2 deletes the ``_connections`` slot unconditionally when a
+Stock BAF (checked up to 4.5.3) deletes the ``_connections`` slot unconditionally when a
 WebSocket closes. Because the frontend appends a stable ``?user_id=``
 parameter (so conversation memory survives reconnects), the two sockets a
 browser tab opens — the assistant widget and the workspace drawer — share one
 session key, and a closing socket would evict the live one, silently dropping
 the agent's replies. The vendored file adds an ownership-guarded delete plus
-reply-route-to-sender, and is also where the per-request BYOK context var is
-set and reset.
+reply-route-to-sender, and is also where the BYOK variables are kept with their
+socket and the per-request BYOK context var is set and reset.
 
 **Re-vendor this file if the pinned BAF version changes.**
 
@@ -251,7 +257,7 @@ Scaling Considerations
 ----------------------
 
 - **Rate limiting:** handled by the provider API. The shared LLM client is
-  patched once at its network-call layer (``src/utilities/llm_retry.py``) to
+  patched once at its network-call layer (``src/llm/retry.py``) to
   retry 429 and 5xx with bounded backoff — ``MAX_ATTEMPTS = 4``, ~5 s of
   backoff sleep per call, with the SDK's own retries off so they do not
   multiply. Non-429 4xx responses fail fast rather than
@@ -269,8 +275,11 @@ Scaling Considerations
   (``RuntimeError: can't start new thread``). A reaper thread started by
   ``modeling_agent.py`` runs every 10 minutes and closes any session with no
   tracked connection that has been disconnected for longer than
-  ``GRACE_PERIOD_SECONDS`` (300 s). It also reaps conversation memories older
-  than an hour.
+  ``GRACE_PERIOD_SECONDS`` (300 s). It also runs the expiry of the
+  per-session stores registered in ``src/common/session_store.py``, which reaps
+  conversation memories idle for more than an hour. A connected tab's keep-alive
+  heartbeat keeps its conversation in use, so the hour only starts once the tab
+  is gone.
 - **Session continuity:** conversation memory is keyed on the v2 payload's
   ``sessionId``, which survives reconnects — see :doc:`architecture`.
 

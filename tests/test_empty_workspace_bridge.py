@@ -19,14 +19,14 @@ from execution.model_operations import (
     _record_created_model_in_snapshot,
     _elements_from_result,
 )
-from handlers.generation_handler import (
+from codegen.generation_handler import (
     _missing_generator_prerequisites,
     _project_has_any_model,
     handle_generation_request,
 )
-from handlers.smart_generation_handler import GenerationClassification
+from codegen.smart_generation_handler import GenerationClassification
 from protocol.types import AssistantRequest, WorkspaceContext
-from utilities.request_builders import build_generation_request
+from orchestrator.request_builders import build_generation_request
 
 from tests.conftest import FakeSession
 
@@ -156,8 +156,8 @@ class TestSnapshotBridgeHelper:
 # ---------------------------------------------------------------------------
 
 def _patch_classifier(monkeypatch, decision: GenerationClassification):
-    import handlers.generation_handler as gen_mod
-    from unified_classifier import UnifiedClassification
+    import codegen.generation_handler as gen_mod
+    from routing.unified_classifier import UnifiedClassification
 
     unified = UnifiedClassification(
         intent="generation_intent",

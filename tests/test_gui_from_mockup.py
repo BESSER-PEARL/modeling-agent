@@ -13,21 +13,22 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import BaseModel
 
-import execution.file_handling as fh
+import ingestion.file_handling as fh
 import execution.model_operations as modeling
-from byok import BYOKClient
+from llm.byok import BYOKClient
 from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 from diagram_handlers.types.gui_nocode_diagram_handler import GUINoCodeDiagramHandler
-from handlers.file_conversion_handler import (
+from ingestion.file_conversion_handler import (
     GUI_MOCKUP_ACTION,
     _build_image_prompt,
     _parse_llm_response,
 )
 from protocol.types import AssistantRequest, FileAttachment, WorkspaceContext
 from schemas import AuthoredSystemGUISpec
-from session_keys import PENDING_GUI_CHOICE
+from common.pending_dialogs import PENDING_GUI_CHOICE
 from tests.conftest import MINIMAL_CLASS_MODEL, FakeSession
 from utilities.image_inputs import anthropic_content, content_text, openai_content
+from common import pending_dialogs
 
 PNG = "data:image/png;base64,iVBORw0KGgo="
 
@@ -212,7 +213,7 @@ def attach(monkeypatch):
     replies, operations, conversions = [], [], []
     monkeypatch.setattr(llm.provider, "get_provider", lambda: None)
     monkeypatch.setattr(fh, "reply_payload", lambda session, payload: replies.append(payload))
-    monkeypatch.setattr(fh, "user_openai_key", lambda: "sk-test")
+    monkeypatch.setattr(fh, "_vision_predict", lambda: lambda *a, **k: "{}")
     monkeypatch.setattr(fh.ctx, "gpt_predict_json", lambda *a, **k: "{}", raising=False)
     monkeypatch.setattr(
         fh, "execute_model_operation", lambda **kwargs: operations.append(kwargs),
@@ -306,7 +307,7 @@ def test_a_mockup_skips_the_crud_or_ai_question_and_reaches_the_handler(gui_op):
         "request": "Build the GUI shown in the attached mockup.", "images": [PNG],
     })
 
-    assert session.get(PENDING_GUI_CHOICE) is None
+    assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is None
     assert handler.generate_complete_system.call_args.kwargs["images"] == [PNG]
     assert handler.generate_complete_system.call_args.kwargs["class_metadata"]
 
@@ -316,5 +317,5 @@ def test_a_typed_gui_request_still_asks_crud_or_ai(gui_op):
         "diagramType": "GUINoCodeDiagram", "mode": "complete_system", "request": "Build screens",
     })
 
-    assert session.get(PENDING_GUI_CHOICE) is not None
+    assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is not None
     handler.generate_complete_system.assert_not_called()

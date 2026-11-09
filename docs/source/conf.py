@@ -1,9 +1,8 @@
 # Configuration file for the Sphinx documentation builder.
 from pathlib import Path
-import sys
+import tomllib
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 
 # -- Project information
 
@@ -11,8 +10,9 @@ project = 'Modeling Agent'
 copyright = '2026, BESSER-PEARL'
 author = 'BESSER-PEARL'
 
-release = '8.0.0'
-version = '8.0'
+# The one version lives in pyproject.toml.
+release = tomllib.loads((REPO_ROOT / 'pyproject.toml').read_text(encoding='utf-8'))['project']['version']
+version = '.'.join(release.split('.')[:2])
 html_title = 'BESSER Modeling Agent'
 
 # -- General configuration

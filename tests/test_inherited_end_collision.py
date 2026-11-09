@@ -21,7 +21,7 @@ import copy
 
 import pytest
 
-from src.diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
+from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 
 
 def _hotel_spec():

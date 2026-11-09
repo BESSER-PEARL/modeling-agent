@@ -17,17 +17,19 @@ import time
 import pytest
 
 from protocol.types import AssistantRequest, WorkspaceContext
-from session_keys import (
+from common.session_keys import (
     APP_TARGET,
+    REPLY_LANGUAGE,
+    UNIFIED_CLASSIFICATION,
+)
+from common.pending_dialogs import (
     PENDING_SMART_GEN_INSTRUCTIONS,
     PENDING_SMART_GEN_ORIGINAL_REQUEST,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
-    REPLY_LANGUAGE,
-    UNIFIED_CLASSIFICATION,
 )
-from unified_classifier import (
-    _SYSTEM_PROMPT,
+from prompts.classifier import SYSTEM_PROMPT
+from routing.unified_classifier import (
     UnifiedClassification,
     _post_validate,
     classify_message,
@@ -35,6 +37,7 @@ from unified_classifier import (
 )
 
 from tests.conftest import FakeSession, make_session
+from common import pending_dialogs
 
 _MODEL = {"elements": {"c1": {"type": "Class", "name": "Product", "owner": None}},
           "relationships": {}}
@@ -88,8 +91,8 @@ class _EventSession(FakeSession):
 
 
 def _classify(session, decision, monkeypatch):
-    import handlers.generation_handler as generation
-    monkeypatch.setattr(generation, "recent_smart_gen_for_project", lambda s, w: False)
+    from routing import unified_classifier
+    monkeypatch.setattr(unified_classifier, "recent_smart_gen_for_project", lambda s, w: False)
     provider = _Provider(decision)
     result = get_or_classify(session, session.request, provider)
     return result, provider
@@ -119,8 +122,8 @@ class TestClassifierCarriesTheTarget:
                        # screen added to a generated native app became a web GUI edit.
                        "never a target", "never the REMEMBERED one",
                        "'añade una pantalla de ajustes'"):
-            assert phrase in _SYSTEM_PROMPT, phrase
-        assert "FIRST state the target explicitly" in _SYSTEM_PROMPT
+            assert phrase in SYSTEM_PROMPT, phrase
+        assert "FIRST state the target explicitly" in SYSTEM_PROMPT
 
     def test_classifier_sees_the_remembered_target_and_language(self):
         provider = _Provider(_uc(generation_route="smart", refined_instructions="x"))
@@ -179,14 +182,14 @@ class TestNoInsteadIsACorrection:
         assert result.intent == "decline_intent"
 
     def test_correction_at_the_confirmation_reissues_it_with_the_new_target(self, monkeypatch):
-        import handlers.generation_handler as generation
+        import codegen.generation_handler as generation
         session = make_session("no, una app nativa, no una web app",
                                active_model=_MODEL, project_snapshot=_SNAPSHOT)
         monkeypatch.setattr(generation, "_active_project_id", lambda s: "shop-1")
         generation.remember_original_request(session, "quiero una app para mi tienda", "shop-1")
-        session.set(PENDING_SMART_GEN_INSTRUCTIONS, "Build a web app for the shop")
-        session.set(PENDING_SMART_GEN_PROVIDER, "anthropic")
-        session.set(PENDING_SMART_GEN_TIMESTAMP, time.time())
+        pending_dialogs.put(session, PENDING_SMART_GEN_INSTRUCTIONS, "Build a web app for the shop")
+        pending_dialogs.put(session, PENDING_SMART_GEN_PROVIDER, "anthropic")
+        pending_dialogs.put(session, PENDING_SMART_GEN_TIMESTAMP, time.time())
         verdict = _post_validate(UnifiedClassification(
             intent="decline_intent", target_kind="other", target_description="native mobile app",
             reason="stub"), "no, una app nativa, no una web app")
@@ -199,8 +202,8 @@ class TestNoInsteadIsACorrection:
 
         assert "cancelled" not in result["message"].lower()
         assert "**native mobile app**" in result["message"]
-        assert "Target: native mobile app" in session.get(PENDING_SMART_GEN_INSTRUCTIONS)
-        original = session.get(PENDING_SMART_GEN_ORIGINAL_REQUEST)
+        assert "Target: native mobile app" in pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
+        original = pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST)
         assert "quiero una app para mi tienda" in original
         assert "no, una app nativa, no una web app" in original
 
@@ -245,7 +248,7 @@ class TestTargetMemory:
         assert "REMEMBERED TARGET" not in other.messages[1]["content"]
 
     def test_quick_action_click_keeps_the_conversation_language(self, monkeypatch):
-        from session_keys import LAST_SUGGESTED_PROMPTS
+        from common.session_keys import LAST_SUGGESTED_PROMPTS
         session = _EventSession("quiero una app de windows 11")
         session.set(REPLY_LANGUAGE, "es")
         session.set(LAST_SUGGESTED_PROMPTS, ["generate the application"])
@@ -332,8 +335,8 @@ class TestPlannerForNonWebTargets:
                 ("GUINoCodeDiagram", "complete_system")]
 
     def test_flutter_generator_is_never_offered(self):
-        from handlers.generation_handler import GENERATOR_PREREQUISITES
-        from suggestions import GENERATOR_ARTIFACT_LABELS
+        from routing.generation_signals import GENERATOR_PREREQUISITES
+        from conversation.suggestions import GENERATOR_ARTIFACT_LABELS
         assert "flutter" not in GENERATOR_PREREQUISITES
         assert "flutter" not in GENERATOR_ARTIFACT_LABELS
 
@@ -344,7 +347,7 @@ class TestPlannerForNonWebTargets:
 
 class TestConfirmationNamesTheTarget:
     def _confirm(self, monkeypatch, **target):
-        import handlers.generation_handler as generation
+        import codegen.generation_handler as generation
         session = make_session("generate the application", active_model=_MODEL, project_snapshot=_SNAPSHOT)
         monkeypatch.setattr(generation, "_active_project_id", lambda s: "shop-1")
         session.set(UNIFIED_CLASSIFICATION, _uc(generation_route="smart", **target))
@@ -359,14 +362,14 @@ class TestConfirmationNamesTheTarget:
         assert "**Windows 11 desktop app**" in payload["message"]
         assert "no built-in generator" in payload["message"]
         assert "can't compile" in payload["message"]
-        assert session.get(PENDING_SMART_GEN_INSTRUCTIONS).startswith(
+        assert pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS).startswith(
             "Target: Windows 11 desktop app (not a web app).")
         assert payload["suggestedActions"][0]["prompt"] == "generate anyway with my current model"
 
     def test_target_line_reaches_the_spec_driven_agent_in_its_parsed_format(self, monkeypatch):
         # Cross-repo contract: BESSER's spec-driven agent reads this line with
         # TARGET_LINE_RE in besser/spec_driven_agent/planning/target.py.
-        from handlers.smart_generation_handler import (
+        from codegen.smart_generation_handler import (
             GenerationClassification,
             build_trigger_smart_generator_payload,
         )
@@ -378,7 +381,7 @@ class TestConfirmationNamesTheTarget:
         payload = build_trigger_smart_generator_payload(
             GenerationClassification(
                 route="smart", provider="anthropic", reason="confirmed",
-                refined_instructions=session.get(PENDING_SMART_GEN_INSTRUCTIONS)),
+                refined_instructions=pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)),
             original_request="quiero una app de Windows 11 para mi tienda",
         )
         lines = payload["instructions"].splitlines()
@@ -389,16 +392,16 @@ class TestConfirmationNamesTheTarget:
     def test_named_architecture_is_acknowledged(self, monkeypatch):
         session, payload = self._confirm(monkeypatch, architecture="MVC")
         assert "**MVC** architecture" in payload["message"]
-        assert "Architecture: MVC." in session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+        assert "Architecture: MVC." in pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
 
     @pytest.mark.parametrize("target", [{}, {"target_kind": "web_app", "target_description": "web app"}])
     def test_web_wording_is_unchanged(self, monkeypatch, target):
         session, payload = self._confirm(monkeypatch, **target)
         assert payload["message"].startswith(_WEB_CONFIRMATION_START)
-        assert session.get(PENDING_SMART_GEN_INSTRUCTIONS) == "Build the inventory application."
+        assert pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS) == "Build the inventory application."
 
     def test_post_spec_button_names_the_target(self):
-        from suggestions import get_post_spec_suggestions
+        from conversation.suggestions import get_post_spec_suggestions
         first = get_post_spec_suggestions(None, label="native mobile app")[0]
         assert first == {"label": "Generate native mobile app", "prompt": "generate the application"}
 
@@ -422,7 +425,7 @@ class _Translator:
 
 @pytest.fixture
 def translator(monkeypatch):
-    import reply_language
+    from conversation import reply_language
     fake = _Translator()
     monkeypatch.setattr(reply_language, "_predict_json", fake)
     reply_language._reset_state()
@@ -439,7 +442,7 @@ def _spanish_session():
 class TestReplyTranslation:
     def test_payload_message_and_labels_translated_in_one_call(self, translator):
         # A message plus three labels used to cost four sequential calls.
-        from session_helpers import reply_payload
+        from conversation.session_helpers import reply_payload
         session = _spanish_session()
         model = {"elements": {"c1": {"name": "Book"}}}
         actions = [{"label": label, "prompt": prompt} for label, prompt in (
@@ -459,18 +462,18 @@ class TestReplyTranslation:
         assert len(translator.calls) == 1  # the same reply again comes from the cache
 
     def test_a_users_own_key_translates_a_reply_in_one_call(self, translator):
-        import byok
-        from reply_language import translate_texts
-        token = byok.current_byok.set(byok.BYOKConfig(provider="openai", api_key="sk-test"))
+        from llm import byok_config
+        from conversation.reply_language import translate_texts
+        token = byok_config.current_byok.set(byok_config.BYOKConfig(provider="openai", api_key="sk-test"))
         try:
             out = translate_texts(["Do you want to continue?", "Continue", "Cancel"], "es")
         finally:
-            byok.current_byok.reset(token)
+            byok_config.current_byok.reset(token)
         assert out == ["ES<Do you want to continue?>", "ES<Continue>", "ES<Cancel>"]
         assert len(translator.calls) == 1
 
     def test_message_and_progress_translated_and_cached(self, translator):
-        from session_helpers import reply_message, reply_progress
+        from conversation.session_helpers import reply_message, reply_progress
         session = _spanish_session()
         reply_message(session, "Cancelled. Your model is unchanged.")
         reply_message(session, "Cancelled. Your model is unchanged.")
@@ -481,15 +484,15 @@ class TestReplyTranslation:
         assert len(translator.calls) == 2  # the repeated reply came from the cache
 
     def test_english_is_never_translated(self, translator):
-        from session_helpers import reply_message
+        from conversation.session_helpers import reply_message
         session = make_session("hello")
         reply_message(session, "Hello!")
         assert session.last_reply_json()["message"] == "Hello!"
         assert translator.calls == []
 
     def test_failure_sends_english(self, monkeypatch, caplog):
-        import reply_language
-        from session_helpers import reply_message
+        from conversation import reply_language
+        from conversation.session_helpers import reply_message
         monkeypatch.setattr(reply_language, "_predict_json", _Translator(fail=True))
         reply_language._reset_state()
         session = _spanish_session()
@@ -498,7 +501,7 @@ class TestReplyTranslation:
         assert "Reply translation to es failed" in caplog.text
 
     def test_translation_that_breaks_a_link_keeps_english(self, monkeypatch):
-        import reply_language
+        from conversation import reply_language
         reply_language._reset_state()
         monkeypatch.setattr(reply_language, "_predict_json",
                             lambda p: json.dumps({"texts": ["[configura tu clave](wme:clave)"]}))
@@ -506,7 +509,7 @@ class TestReplyTranslation:
         assert reply_language.translate_texts([source], "es") == [source]
 
     def test_llm_replies_are_asked_for_the_users_language(self):
-        from session_helpers import stream_llm_response
+        from conversation.session_helpers import stream_llm_response
         captured = {}
 
         class _Completions:
@@ -548,7 +551,7 @@ class _SteerableTranslator:
 
 @pytest.fixture
 def clean_translation_state():
-    import reply_language
+    from conversation import reply_language
     reply_language._reset_state()
     yield reply_language
     reply_language._reset_state()
@@ -571,15 +574,15 @@ class TestTranslationIsolation:
         assert other_user["suggestedActions"][0]["label"] == "ES<Continue>"
 
     def test_a_users_own_key_never_fills_the_shared_cache(self, monkeypatch, clean_translation_state):
-        import byok
+        from llm import byok_config
         reply_language = clean_translation_state
         fake = _SteerableTranslator()
         monkeypatch.setattr(reply_language, "_predict_json", fake)
-        token = byok.current_byok.set(byok.BYOKConfig(provider="openai", api_key="sk-test"))
+        token = byok_config.current_byok.set(byok_config.BYOKConfig(provider="openai", api_key="sk-test"))
         try:
             reply_language.translate_texts(["Continue"], "es")
         finally:
-            byok.current_byok.reset(token)
+            byok_config.current_byok.reset(token)
         reply_language.translate_texts(["Continue"], "es")
         assert len(fake.calls) == 2  # the shared call did not reuse the user's output
 
@@ -595,7 +598,7 @@ class TestTranslationIsolation:
         assert reply_language.translate_texts(["Continue"], "es") == ["Continue"]
 
     def test_error_replies_are_not_sent_through_the_translator(self, monkeypatch, clean_translation_state):
-        from session_helpers import reply_payload
+        from conversation.session_helpers import reply_payload
         reply_language = clean_translation_state
         fake = _SteerableTranslator()
         monkeypatch.setattr(reply_language, "_predict_json", fake)
@@ -636,7 +639,7 @@ class TestCorrectionGuardIsNarrow:
         assert result.target_description == "native Android app"
 
     def test_the_rulebook_keeps_a_refusal_target_free(self):
-        assert "I don't want the mobile app anymore" in _SYSTEM_PROMPT
+        assert "I don't want the mobile app anymore" in SYSTEM_PROMPT
 
 
 class TestNonWebFollowUpWiring:
@@ -685,8 +688,8 @@ class TestCapabilityCopyNamesEveryTarget:
 
     @staticmethod
     def _texts():
-        import state_bodies
-        from reply_copy import META_ANSWER
+        from app import state_bodies
+        from conversation.reply_copy import META_ANSWER
         quick = state_bodies._QUICK_RESPONSES
         return {"what_can_you_do": quick["what_can_you_do"], "help": quick["help"],
                 "what_is_besser": quick["what_is_besser"], "meta": META_ANSWER,

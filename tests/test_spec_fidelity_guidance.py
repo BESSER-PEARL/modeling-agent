@@ -29,10 +29,10 @@ caused a specific failure.
 """
 import inspect
 
-from src.diagram_handlers.types import class_diagram_handler
-from src.diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
+from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
+from prompts import class_diagram as class_prompts
 
-SOURCE = inspect.getsource(class_diagram_handler)
+SOURCE = inspect.getsource(class_prompts)
 PROMPT = ClassDiagramHandler(None)._get_system_generation_prompt()
 
 

@@ -1,0 +1,130 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "modeling-agent"
+# The one version: docs/source/conf.py reads it from here.
+version = "8.1.1"
+description = "Conversational modeling assistant for the BESSER Web Modeling Editor"
+readme = "README.md"
+requires-python = ">=3.11"
+# Pinned for the Docker image in requirements.txt; installed from there.
+dynamic = ["dependencies"]
+
+[project.urls]
+Repository = "https://github.com/BESSER-PEARL/modeling-agent"
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+# src/ is the import root: its packages are top-level names (``import protocol``,
+# ``from common.session_keys import ...``). Every module lives in a package; the
+# entrypoint modeling_agent.py stays at the repo root. Install editable
+# (``pip install -e .``): the code reads uml_specs/ next to it.
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = false
+
+# Data files read from a data/ directory next to their module: the vendor
+# price file and the bundled user-profile metamodel.
+[tool.setuptools.package-data]
+"llm.tracking" = ["data/*.json"]
+"utilities" = ["data/*.json"]
+
+# Import layering (CLAUDE.md, "Import layering"): each top-level package
+# is one layer and imports only the layers below it. tests/test_packaging.py
+# checks that every package in src/ is listed here.
+[tool.importlinter]
+root_packages = [
+    "app",
+    "codegen",
+    "common",
+    "conversation",
+    "diagram_handlers",
+    "execution",
+    "ingestion",
+    "llm",
+    "memory",
+    "orchestrator",
+    "prompts",
+    "protocol",
+    "routing",
+    "schemas",
+    "utilities",
+]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Agent packages: a layer imports only the layers below it"
+type = "layers"
+layers = [
+    "app",
+    "ingestion",
+    "execution",
+    "codegen | orchestrator",
+    "conversation",
+    "routing",
+    "memory | diagram_handlers",
+    "prompts",
+    "llm",
+    "utilities",
+    "protocol",
+    "common | schemas",
+]
+ignore_imports = [
+    # Known cycle: a confirmed generation re-runs the planned operations.
+    "codegen.generation_handler -> execution",
+]
+
+[[tool.importlinter.contracts]]
+name = "app: the state bodies and bootstrap sit above the confirmation flows"
+type = "layers"
+containers = ["app"]
+layers = ["state_bodies | agent_setup", "confirmation"]
+
+[[tool.importlinter.contracts]]
+name = "conversation: reply helpers above reply language above the leaves"
+type = "layers"
+containers = ["conversation"]
+layers = ["session_helpers", "reply_language", "agent_context | reply_copy | suggestions | telemetry"]
+
+[[tool.importlinter.contracts]]
+name = "routing: the classifier above its deterministic guards above its signals"
+type = "layers"
+containers = ["routing"]
+layers = ["unified_classifier", "guards", "generation_signals | intents"]
+
+[[tool.importlinter.contracts]]
+name = "llm: provider above BYOK above tracking above the per-request config"
+type = "layers"
+containers = ["llm"]
+layers = ["provider", "byok", "tracking", "byok_config | model_catalog | model_config | retry"]
+
+# Every LLM call goes through llm.provider (CLAUDE.md, "LLM Pitfalls"), so it
+# gets BYOK, retry, tracking and the sampling rules in one place.
+[[tool.importlinter.contracts]]
+name = "Only llm talks to the model SDKs"
+type = "forbidden"
+source_modules = [
+    "app",
+    "codegen",
+    "common",
+    "conversation",
+    "diagram_handlers",
+    "execution",
+    "ingestion",
+    "memory",
+    "orchestrator",
+    "prompts",
+    "protocol",
+    "routing",
+    "schemas",
+    "utilities",
+]
+forbidden_modules = ["openai", "anthropic"]
+# Only direct imports: going through llm is the point.
+allow_indirect_imports = true

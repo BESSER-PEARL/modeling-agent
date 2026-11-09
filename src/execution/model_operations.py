@@ -6,17 +6,19 @@ GUI-choice prompts, handler dispatch, progress threads, and result enrichment.
 
 import logging
 import threading
-from typing import Any, Dict, Optional
+from typing import Any, Dict, NamedTuple, Optional
 
 from baf.core.session import Session
 
-import agent_context as ctx
-from agent_config import MAX_TABS, CONVERSATION_HISTORY_DEPTH
+from conversation import agent_context as ctx
+from common.agent_config import MAX_TABS, CONVERSATION_HISTORY_DEPTH
 from protocol.types import AssistantRequest
-from session_helpers import reply_message, reply_payload, reply_progress
-from model_utils import model_has_elements
+from conversation.session_helpers import reply_message, reply_payload, reply_progress, user_key_reply
+from utilities.model_utils import model_has_elements
 from diagram_handlers.registry.metadata import get_diagram_type_info
 from orchestrator import determine_target_diagram_type, resolve_diagram_id
+from prompts import model_operations as operation_prompts
+from routing.generation_signals import detect_generator_type
 from utilities.model_resolution import (
     resolve_target_model,
     resolve_object_reference_diagram,
@@ -30,21 +32,44 @@ from utilities.model_context import is_diagram_nontrivial
 from utilities.original_request import (
     current_target, original_request_for_project, remember_original_request, request_project_id,
 )
-from suggestions import get_suggested_actions, get_artifact_label, get_post_spec_suggestions
-from session_keys import (
+from conversation.reply_copy import REFINE_MODEL_PROMPT, continue_generating_prompt
+from conversation.suggestions import get_suggested_actions, get_artifact_label, get_post_spec_suggestions
+from common.session_keys import (
     LAST_EXECUTED_DIAGRAM_TYPE,
     LAST_MATCHED_INTENT,
+    UNIFIED_CLASSIFICATION,
+)
+from common import pending_dialogs
+from common.pending_dialogs import (
     MISMATCH_REGEN_PENDING,
     PENDING_COMPLETE_SYSTEM,
+    PENDING_GENERATOR_CONFIG,
+    PENDING_GENERATOR_TYPE,
     PENDING_GUI_CHOICE,
+    PLAN_GENERATION_CONFIRM_FLAG,
+    PLAN_PAUSED_GENERATION_OP_KEY,
     PENDING_SMART_GEN_INSTRUCTIONS,
     PENDING_SMART_GEN_PRIOR_ORIGINAL,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
-    UNIFIED_CLASSIFICATION,
 )
+from protocol.actions import Action, assistant_message
 
 logger = logging.getLogger(__name__)
+
+
+class Deferred(NamedTuple):
+    """execute_model_operation's result when its question waits behind another
+    dialog of the same parallel plan (pending_dialogs.one_per_plan).
+
+    *operation* is what to queue; a destructive modify carries its computed
+    change under :data:`_QUEUED_DESTRUCTIVE` so asking later costs no LLM call.
+    """
+    operation: Dict[str, Any]
+
+
+_QUEUED_DESTRUCTIVE = "_queued_destructive_confirmation"
+
 
 def _non_web_target_label(session, request):
     """The non-web app the user asked for ("native mobile app"), or None."""
@@ -52,6 +77,25 @@ def _non_web_target_label(session, request):
     if target.get("kind") == "other" and target.get("description"):
         return target["description"]
     return None
+
+
+def _paused_generator(session, operation) -> Optional[str]:
+    """The generator this request asked for and its plan paused, or None.
+
+    A mixed "design X and generate Y" plan pauses its generation op before the
+    model step runs (``execution.planning``): it stashes the generator, marks
+    the stash with ``PLAN_GENERATION_CONFIRM_FLAG`` and marks that plan's model
+    operations with ``PLAN_PAUSED_GENERATION_OP_KEY``. Only such an operation's
+    reply may ask whether to continue with generation; a later modeling turn,
+    while the pause is still stashed, may not (BESSER-PEARL/BESSER#747).
+    """
+    if not (isinstance(operation, dict) and operation.get(PLAN_PAUSED_GENERATION_OP_KEY)):
+        return None
+    config = pending_dialogs.get(session, PENDING_GENERATOR_CONFIG)
+    if not (isinstance(config, dict) and config.get(PLAN_GENERATION_CONFIRM_FLAG)):
+        return None
+    generator = pending_dialogs.get(session, PENDING_GENERATOR_TYPE)
+    return generator if isinstance(generator, str) and generator else None
 
 
 def original_request_to_stash(request, operation_mode, target_diagram_type):
@@ -223,7 +267,7 @@ def _record_created_model_in_snapshot(
 
 def _matches_regen_prompt(session: Session, request: AssistantRequest) -> bool:
     """True when this message IS the stashed mismatch rebuild prompt."""
-    _regen_prompt = session.get(MISMATCH_REGEN_PENDING)
+    _regen_prompt = pending_dialogs.get(session, MISMATCH_REGEN_PENDING)
     if not isinstance(_regen_prompt, str) or not _regen_prompt.strip():
         return False
     msg = " ".join((getattr(request, "message", "") or "").strip().lower().split())
@@ -274,7 +318,7 @@ def _build_existing_model_confirmation(
 
     # Store pending state
     pending_data['can_add_tab'] = can_add_tab
-    session.set(PENDING_COMPLETE_SYSTEM, pending_data)
+    pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, pending_data)
 
     # Build message
     if can_add_tab:
@@ -289,11 +333,7 @@ def _build_existing_model_confirmation(
         + (f", or create it in a **new diagram tab**? {tab_info}" if can_add_tab else f"? {tab_info}")
     )
 
-    reply_payload(session, {
-        "action": "assistant_message",
-        "message": confirmation_msg,
-        "suggestedActions": confirmation_actions,
-    })
+    reply_payload(session, assistant_message(confirmation_msg, suggestedActions=confirmation_actions))
 
 
 # ------------------------------------------------------------------
@@ -446,7 +486,7 @@ def _build_destructive_modify_confirmation(
         "diagram_type": target_diagram_type,
         "precomputed_payload": result,
     }
-    session.set(PENDING_COMPLETE_SYSTEM, pending_data)
+    pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, pending_data)
 
     if existing_count > 0:
         detail = f"remove {removed_count} of your {existing_count} existing element(s)"
@@ -459,14 +499,13 @@ def _build_destructive_modify_confirmation(
         "confirm before applying such a large change. **Confirm** to go "
         "ahead, or **cancel** to keep your model as is."
     )
-    reply_payload(session, {
-        "action": "assistant_message",
-        "message": message,
-        "suggestedActions": [
+    reply_payload(session, assistant_message(
+        message,
+        suggestedActions=[
             {"label": "Confirm — apply the change", "prompt": "confirm"},
             {"label": "Cancel — keep my model", "prompt": "cancel"},
         ],
-    })
+    ))
 
 
 # ------------------------------------------------------------------
@@ -509,12 +548,21 @@ def execute_model_operation(
     _replace_existing: Optional[bool] = None,
     _skip_gui_choice: bool = False,
     _create_new_tab: bool = False,
-) -> Optional[str]:
+) -> Any:
     """Execute a single model operation (create, modify, etc.).
 
     Returns the target diagram type on success, ``None`` if a confirmation
-    prompt was stored (existing-model guard or GUI-choice prompt) or on failure.
+    prompt was stored (existing-model guard or GUI-choice prompt) or on failure,
+    and :class:`Deferred` when that prompt must wait for another dialog of the
+    same parallel plan.
     """
+    queued_destructive = operation.get(_QUEUED_DESTRUCTIVE)
+    if isinstance(queued_destructive, dict):
+        if not pending_dialogs.may_open(PENDING_COMPLETE_SYSTEM):
+            return Deferred(operation)
+        _build_destructive_modify_confirmation(session=session, **queued_destructive)
+        return None
+
     target_diagram_type = operation.get("diagramType")
     if not isinstance(target_diagram_type, str) or not target_diagram_type:
         target_diagram_type = determine_target_diagram_type(
@@ -575,9 +623,8 @@ def execute_model_operation(
         # Resume requests may contain only the planner summary or the mismatch
         # button's synthesized prompt. Reuse only a proven same-project source.
         spec_to_stash = original_request_for_project(session, request_project_id(request)) or operation_request
-        if session.get(PENDING_SMART_GEN_PRIOR_ORIGINAL):
-            # The model is rebuilt from the pending spec: abandoning the run no longer reverts it.
-            session.delete(PENDING_SMART_GEN_PRIOR_ORIGINAL)
+        # The model is rebuilt from the pending spec: abandoning the run no longer reverts it.
+        pending_dialogs.clear(session, PENDING_SMART_GEN_PRIOR_ORIGINAL)
     elif spec_to_stash and not resuming_spec:
         # Confirmation resumes and mismatch buttons can carry synthesized
         # sub-prompts. They must not overwrite the original create request.
@@ -615,6 +662,8 @@ def execute_model_operation(
             elif model_has_elements(existing_model):
                 from utilities.model_context import compact_model_summary
 
+                if not pending_dialogs.may_open(PENDING_COMPLETE_SYSTEM):
+                    return Deferred(operation)
                 summary = compact_model_summary(existing_model, target_diagram_type)
                 stored_operation = {**operation, 'mode': operation_mode}
 
@@ -651,7 +700,9 @@ def execute_model_operation(
         # A mockup (operation["images"]) is reproduced by the AI design path;
         # Basic CRUD pages would ignore it, so there is nothing to choose.
         if _has_class_diagram and not _skip_gui_choice and not operation.get("images"):
-            session.set(PENDING_GUI_CHOICE, {
+            if not pending_dialogs.may_open(PENDING_GUI_CHOICE):
+                return Deferred(operation)
+            pending_dialogs.put(session, PENDING_GUI_CHOICE, {
                 'operation_request': operation_request,
                 'operation': operation,
                 'default_mode': default_mode,
@@ -659,7 +710,7 @@ def execute_model_operation(
                 '_replace_existing': _replace_existing,
             })
             reply_payload(session, {
-                "action": "assistant_message",
+                "action": Action.ASSISTANT_MESSAGE,
                 "message": (
                     "How would you like me to create your screens?\n\n"
                     "1️⃣ **Basic CRUD pages** — one page per class to list, "
@@ -693,7 +744,7 @@ def execute_model_operation(
     if operation_mode == "complete_system":
         reply_progress(session, f"Thinking about your {diagram_label} design...")
     elif operation_mode == "modify_model":
-        reply_progress(session, f"Analyzing changes...")
+        reply_progress(session, "Analyzing changes...")
 
     target_model = resolve_target_model(request, target_diagram_type)
 
@@ -743,16 +794,7 @@ def execute_model_operation(
     # loses the described enums, named actions and constraints.
     spec_block = ""
     if spec_to_stash and spec_to_stash not in operation_request:
-        spec_block = (
-            "## The user's request, verbatim - THIS IS THE AUTHORITY\n\n"
-            "Model exactly what it states: every status value it lists, every "
-            "action it names, every rule it gives, every attribute it "
-            "describes. The focused instruction that follows is a planner "
-            "summary of this text, not a replacement for it - where they "
-            "differ, this wins.\n\n"
-            f"{spec_to_stash}\n\n"
-            "## Focused instruction\n\n"
-        )
+        spec_block = operation_prompts.spec_block(spec_to_stash)
 
     modeling_prompt = (
         f"{conversation_context}"
@@ -802,7 +844,7 @@ def execute_model_operation(
         {"agent_diagram_refs": resolve_agent_diagram_refs(request)}
         if target_diagram_type == "BPMN" else {}
     )
-    # Screenshots / mockups the GUI reproduces (see execution/file_handling.py).
+    # Screenshots / mockups the GUI reproduces (see ingestion/file_handling.py).
     mockup_kwargs: Dict[str, Any] = (
         {"images": operation["images"]}
         if target_diagram_type == "GUINoCodeDiagram" and operation.get("images") else {}
@@ -891,32 +933,37 @@ def execute_model_operation(
         # own key, prompt them to add one (BYOK); when the user's OWN key
         # fails, tell them to check it. errorCode (rate_limit / auth_error) is
         # carried so the frontend can offer "Add your API key".
-        from errors import classify_error, ErrorCode
+        from common.errors import classify_error, ErrorCode
         try:
             _code = classify_error(exc)
         except Exception:
             _code = ErrorCode.UNKNOWN
         try:
-            import byok
+            from llm import byok
             _byok_active = byok.is_active()
         except Exception:
             _byok_active = False
         # Emit action='agent_error' with errorCode so the frontend surfaces an
         # inline "Add your API key" button (it keys on rate_limit/auth_error).
-        if _byok_active and _code in (ErrorCode.RATE_LIMIT, ErrorCode.AUTH_ERROR):
+        _key_reply = user_key_reply(exc)
+        if _key_reply is not None:
+            reply_payload(session, _key_reply)
+        elif _byok_active and _code in (ErrorCode.RATE_LIMIT, ErrorCode.AUTH_ERROR):
+            # No SDK error to go by. Not retryable: the "Try again" chip would
+            # send suggestedRecovery as the prompt.
             reply_payload(session, {
-                "action": "agent_error",
+                "action": Action.AGENT_ERROR,
                 "errorCode": "auth_error",
                 "message": (
                     "Your API key was rejected or hit its rate limit. Check the "
                     "key (the key icon in the assistant) and try again."
                 ),
-                "retryable": True,
+                "retryable": False,
                 "suggestedRecovery": "Check your API key",
             })
         elif _code == ErrorCode.RATE_LIMIT:
             reply_payload(session, {
-                "action": "agent_error",
+                "action": Action.AGENT_ERROR,
                 "errorCode": "rate_limit",
                 "message": (
                     "We've hit the shared free usage limit for the AI service. "
@@ -929,7 +976,7 @@ def execute_model_operation(
             })
         elif _code == ErrorCode.MODEL_REFUSAL:
             reply_payload(session, {
-                "action": "agent_error",
+                "action": Action.AGENT_ERROR,
                 "errorCode": "model_refusal",
                 "message": exc.user_message(),
                 "retryable": False,
@@ -937,7 +984,7 @@ def execute_model_operation(
             })
         elif _code == ErrorCode.AUTH_ERROR:
             reply_payload(session, {
-                "action": "agent_error",
+                "action": Action.AGENT_ERROR,
                 "errorCode": "auth_error",
                 "message": (
                     "The AI service is temporarily unavailable. Please try again "
@@ -968,7 +1015,7 @@ def execute_model_operation(
         reply_message(session, f"I could not create a valid {target_diagram_type} response.")
         return None
 
-    if result.get("action") == "assistant_message":
+    if result.get("action") == Action.ASSISTANT_MESSAGE:
         reply_message(session, result.get("message", "Something went wrong. Please try again."))
         return None
 
@@ -1004,40 +1051,33 @@ def execute_model_operation(
     if suggestions:
         result["suggestedActions"] = suggestions
 
-    # For complete-system creations, detect the intended artifact type from the
-    # original user message and append an artifact-aware follow-up sentence +
-    # replace the generic buttons with artifact-specific ones.
-    # Skip for web_app: the GUI-choice flow runs next and emit_webapp_generate_prompt
-    # shows its own artifact-aware follow-up after the screens are built.
-    if operation_mode == "complete_system" and isinstance(result.get("message"), str):
-        from handlers.generation_handler import detect_generator_type  # lazy to avoid circular import
-        _detected_gen = detect_generator_type(request.message)
+    # Closing line and quick actions. The assistant lives in the modeling
+    # editor, so a modeling reply offers modeling next steps only — never
+    # "continue with generating your application?" nor a "Generate ..." button
+    # (BESSER-PEARL/BESSER#747). The one exception is a request that itself
+    # asked to generate ("design X and generate Y"): planning paused that
+    # generation (PLAN_GENERATION_CONFIRM_FLAG) and this reply is where the
+    # user confirms it, so it names the artifact and offers the button.
+    # web_app is left to the GUI-choice flow's own prompt.
+    if operation_mode in ("complete_system", "modify_model") and isinstance(result.get("message"), str):
+        _paused_gen = _paused_generator(session, operation)
+        # The paused generator names the artifact and the button, not a guess from the wording.
+        _detected_gen = _paused_gen or detect_generator_type(request.message)
         if _detected_gen != "web_app":
-            _artifact = _non_web_target_label(session, request) or get_artifact_label(_detected_gen)
-            result["message"] += (
-                f"\n\nYou can now review or refine your model, or continue "
-                f"with generating your {_artifact}. What would you like to do?"
-            )
-            result["suggestedActions"] = get_post_spec_suggestions(
-                _detected_gen, label=_non_web_target_label(session, request),
-            )
-
-    # After a MODIFY, keep the conversation flowing toward generation instead of
-    # showing the generic "Generate Python code / Describe my diagram" buttons:
-    # acknowledge the change and offer to continue generating, mirroring the
-    # create flow above. (web_app is left to the GUI-choice flow's own prompt.)
-    if operation_mode == "modify_model" and isinstance(result.get("message"), str):
-        from handlers.generation_handler import detect_generator_type  # lazy import
-        _detected_gen = detect_generator_type(request.message)
-        if _detected_gen != "web_app":
-            _artifact = _non_web_target_label(session, request) or get_artifact_label(_detected_gen)
-            result["message"] += (
-                f"\n\nWant to keep refining, or continue with generating your "
-                f"{_artifact}?"
-            )
-            result["suggestedActions"] = get_post_spec_suggestions(
-                _detected_gen, label=_non_web_target_label(session, request),
-            )
+            if _paused_gen:
+                _artifact = _non_web_target_label(session, request) or get_artifact_label(_detected_gen)
+                if operation_mode == "complete_system":
+                    result["message"] += "\n\n" + continue_generating_prompt(_artifact)
+                else:
+                    result["message"] += (
+                        f"\n\nWant to keep refining, or continue with generating your "
+                        f"{_artifact}?"
+                    )
+                result["suggestedActions"] = get_post_spec_suggestions(
+                    _detected_gen, label=_non_web_target_label(session, request),
+                )
+            elif operation_mode == "complete_system":
+                result["message"] += "\n\n" + REFINE_MODEL_PROMPT
 
     # ── Destructive modify-model guard ───────────────────────────────────
     # Block a modify_model plan whose net effect would delete most/all of
@@ -1054,13 +1094,15 @@ def execute_model_operation(
                     f"(existing={_existing_count}) — asking for confirmation "
                     "instead of applying silently."
                 )
-                _build_destructive_modify_confirmation(
-                    session=session,
-                    target_diagram_type=target_diagram_type,
-                    removed_count=_removed_count,
-                    existing_count=_existing_count,
-                    result=result,
-                )
+                confirmation = {
+                    "target_diagram_type": target_diagram_type,
+                    "removed_count": _removed_count,
+                    "existing_count": _existing_count,
+                    "result": result,
+                }
+                if not pending_dialogs.may_open(PENDING_COMPLETE_SYSTEM):
+                    return Deferred({**operation, _QUEUED_DESTRUCTIVE: confirmation})
+                _build_destructive_modify_confirmation(session=session, **confirmation)
                 return None
 
     logger.info(
@@ -1075,7 +1117,7 @@ def execute_model_operation(
     # (empty) snapshot and wrongly refuse with "your workspace looks empty".
     # Only genuine creations (not modify_model, which implies a pre-existing
     # model) update the snapshot here.
-    if result.get("action") in ("inject_complete_system", "inject_element"):
+    if result.get("action") in (Action.INJECT_COMPLETE_SYSTEM, Action.INJECT_ELEMENT):
         _record_created_model_in_snapshot(
             getattr(request, "context", None), target_diagram_type, result,
         )
@@ -1090,7 +1132,7 @@ def execute_model_operation(
     # over-promises). Gated on the incoming message EQUALLING the exact rebuild
     # prompt stashed in MISMATCH_REGEN_PENDING, so a different create typed
     # after a mismatch never triggers this. Skipped on an explicit "keep".
-    _regen_prompt = session.get(MISMATCH_REGEN_PENDING)
+    _regen_prompt = pending_dialogs.get(session, MISMATCH_REGEN_PENDING)
     _regen_msg = " ".join((getattr(request, "message", "") or "").strip().lower().split())
     _regen_expect = (
         " ".join(_regen_prompt.strip().lower().split())
@@ -1098,26 +1140,26 @@ def execute_model_operation(
     )
     if (
         operation_mode == "complete_system"
-        and result.get("action") == "inject_complete_system"
+        and result.get("action") == Action.INJECT_COMPLETE_SYSTEM
         and _replace_existing is not False
         and _regen_expect is not None
         and _regen_msg == _regen_expect
     ):
-        session.delete(MISMATCH_REGEN_PENDING)  # consume once
+        pending_dialogs.clear(session, MISMATCH_REGEN_PENDING)  # consume once
         try:
-            from handlers.generation_handler import (
+            from codegen.generation_handler import (
                 _build_smart_gen_confirmation,
                 _smart_gen_stash_is_fresh,
             )
 
-            _stash = session.get(PENDING_SMART_GEN_INSTRUCTIONS)
-            _fresh = _smart_gen_stash_is_fresh(session.get(PENDING_SMART_GEN_TIMESTAMP))
+            _stash = pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
+            _fresh = _smart_gen_stash_is_fresh(pending_dialogs.get(session, PENDING_SMART_GEN_TIMESTAMP))
             if isinstance(_stash, str) and _stash.strip() and _fresh:
                 logger.info("[ModelOp] Resuming stashed smart-gen after mismatch rebuild")
                 _payload = _build_smart_gen_confirmation(
                     session,
                     _stash,
-                    session.get(PENDING_SMART_GEN_PROVIDER) or "anthropic",
+                    pending_dialogs.get(session, PENDING_SMART_GEN_PROVIDER) or "anthropic",
                     reason_prefix="Model rebuilt and ready.",
                 )
                 if isinstance(_payload, dict):

@@ -18,23 +18,18 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from collections import deque
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-_METAMODEL_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "resources", "user_metamodel.json"
-)
+# Package data (pyproject.toml), next to this module.
+_METAMODEL_PATH = Path(__file__).with_name("data") / "user_metamodel.json"
 
 # Human-readable descriptions of the metamodel elements (the bundled metamodel
 # itself carries no prose). Distilled from the User-Modeling-Language READMEs.
-_SEMANTICS_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)),
-    "resources",
-    "user_metamodel_semantics.json",
-)
+_SEMANTICS_PATH = Path(__file__).with_name("data") / "user_metamodel_semantics.json"
 
 _ROOT_CLASS = "User"
 
@@ -274,7 +269,7 @@ def format_user_metamodel_guide() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Help-question detection & prompt building
+# Help-question detection
 # ---------------------------------------------------------------------------
 
 # Explicit phrases that mark a help question as being about the user-profile
@@ -301,42 +296,3 @@ def is_user_profile_help(message: Optional[str]) -> bool:
         return False
     lowered = message.lower()
     return any(marker in lowered for marker in _USER_PROFILE_HELP_MARKERS)
-
-
-def build_user_profile_help_prompt(message: str) -> str:
-    """Build a grounded prompt for explaining the user-profile environment.
-
-    Answers questions like "what is the Accessibility element?" or "which
-    elements are necessary to model an old user with sight issues?" strictly
-    against the bundled metamodel and its curated semantics.
-    """
-    guide = format_user_metamodel_guide()
-    return (
-        "You are an expert on the BESSER User Profile modeling language. A user "
-        "profile describes a target group of users as boxes drawn from a fixed "
-        "metamodel, and the user is asking about that modeling environment.\n\n"
-        f'The user asked: "{message}"\n\n'
-        "Use ONLY the metamodel below as your source of truth — its elements "
-        "(classes), their attributes and value types, the enumeration values, "
-        "and how the elements connect. Do not invent elements, attributes, or "
-        "enumeration values that are not listed.\n\n"
-        f"{guide}\n\n"
-        "Answer the user's question based on this metamodel and the semantics of "
-        "the element and attribute names:\n"
-        "- If they ask what an element or attribute IS, explain what it "
-        "represents, list its attributes and allowed values, and say how it "
-        "connects to the rest (e.g. Accessibility groups the user's accessibility "
-        "needs and sits between User and Disability).\n"
-        "- If they ask WHICH elements are needed to model a described user, name "
-        "the specific classes and the exact attributes / enumeration values to "
-        "use, with an example criterion and operator (e.g. an old user → "
-        "Personal_Information with age using '>' or '>='; sight issues → a "
-        "Disability with affects == 'Sight'). Mention the grouping/root elements "
-        "the boxes attach through (here, Disability attaches under Accessibility, "
-        "which attaches under User).\n"
-        "- Remember attribute rows are matching CRITERIA with a comparison "
-        "operator, not fixed values.\n\n"
-        "Keep the answer concise and well-formatted in Markdown. Where useful, "
-        "tell them they can ask you to build it (e.g. \"create a profile for a "
-        "user older than 65 with a sight disability\")."
-    )

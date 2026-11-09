@@ -11,6 +11,14 @@ the test infrastructure (fakes and fixtures), and how to write new tests.
 Running Tests
 -------------
 
+The tests import the agent by top-level name (``from protocol.types import ...``),
+so install it once, editable, next to the test tools:
+
+.. code-block:: bash
+
+   pip install -r requirements-dev.txt
+   pip install -e .
+
 .. code-block:: bash
 
    # Full suite
@@ -145,7 +153,8 @@ Writing New Tests
 Guidelines
 ~~~~~~~~~~
 
-1. Import from the module under test and ``tests.conftest``
+1. Import from the module under test by its top-level name (never ``src.``,
+   never a ``sys.path`` insert) and from ``tests.conftest``
 2. Use ``_make_request()`` helpers for creating ``AssistantRequest`` objects
 3. Use ``FakeSession`` for session state
 4. **Test both positive and negative cases** — every ``is True`` needs a

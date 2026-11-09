@@ -1,10 +1,5 @@
 def test_bpmn_guardrail_keeps_flows_to_task_added_earlier_in_same_batch(monkeypatch):
-    import sys
-    from pathlib import Path
 
-    _SRC = Path(__file__).resolve().parent.parent / "src"
-    if str(_SRC) not in sys.path:
-        sys.path.insert(0, str(_SRC))
 
     from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
     from schemas.bpmn import (
@@ -67,12 +62,7 @@ def test_bpmn_guardrail_keeps_flows_to_task_added_earlier_in_same_batch(monkeypa
 
 
 def test_bpmn_normalizes_embedded_task_connections_and_synthetic_ids(monkeypatch):
-    import sys
-    from pathlib import Path
 
-    _SRC = Path(__file__).resolve().parent.parent / "src"
-    if str(_SRC) not in sys.path:
-        sys.path.insert(0, str(_SRC))
 
     from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
     from schemas.bpmn import (

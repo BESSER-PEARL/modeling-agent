@@ -1,20 +1,16 @@
 """Tests for the LLM provider abstraction."""
 import pytest
-import sys
-import os
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-
-from llm.provider import LLMProvider
-from agent_config import LLM_MODEL_DEFAULT
+from llm.provider import LLMProvider, _json_params
+from llm.model_config import MODEL_CLASSIFIER
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_mock_llm(name: str = LLM_MODEL_DEFAULT, has_client: bool = True) -> MagicMock:
+def _make_mock_llm(name: str = MODEL_CLASSIFIER, has_client: bool = True) -> MagicMock:
     """Build a MagicMock that looks like a BESSER LLMOpenAI instance."""
     mock_llm = MagicMock()
     mock_llm.predict.return_value = "test response"
@@ -42,7 +38,7 @@ class TestConstructor:
     def test_default_model_name(self):
         # The provider default follows the routing table's classifier tier
         # (env-overridable) instead of a hard-coded literal.
-        from model_config import MODEL_CLASSIFIER
+        from llm.model_config import MODEL_CLASSIFIER
         mock_llm = _make_mock_llm()
         provider = LLMProvider(mock_llm)
         assert provider.model_name == MODEL_CLASSIFIER
@@ -54,28 +50,30 @@ class TestConstructor:
 
 
 # ---------------------------------------------------------------------------
-# 2. predict() – happy path
+# 2. complete() without a model – BAF's predict on the server key
 # ---------------------------------------------------------------------------
 
 class TestPredict:
-    """predict() delegates to the underlying LLM's predict method."""
+    """complete() without a model delegates to the underlying LLM's predict method."""
 
     def test_returns_llm_response(self):
         mock_llm = _make_mock_llm()
         mock_llm.predict.return_value = "hello"
         provider = LLMProvider(mock_llm)
 
-        result = provider.predict("test")
+        result = provider.complete("test")
         assert result == "hello"
         mock_llm.predict.assert_called_once_with("test")
 
-    def test_passes_kwargs_through(self):
+    def test_json_mode_passes_the_json_parameters(self):
         mock_llm = _make_mock_llm()
         mock_llm.predict.return_value = "ok"
         provider = LLMProvider(mock_llm)
 
-        provider.predict("prompt", temperature=0.5)
-        mock_llm.predict.assert_called_once_with("prompt", temperature=0.5)
+        provider.complete("prompt", json_mode=True)
+        mock_llm.predict.assert_called_once_with(
+            "prompt", parameters=_json_params(MODEL_CLASSIFIER),
+        )
 
     def test_records_token_usage(self):
         mock_llm = _make_mock_llm()
@@ -83,17 +81,17 @@ class TestPredict:
         provider = LLMProvider(mock_llm)
 
         initial_count = provider.tracker.summary()["call_count"]
-        provider.predict("some prompt text here")
+        provider.complete("some prompt text here")
         after_count = provider.tracker.summary()["call_count"]
         assert after_count > initial_count
 
 
 # ---------------------------------------------------------------------------
-# 3. predict() – error handling
+# 3. complete() without a model – error handling
 # ---------------------------------------------------------------------------
 
 class TestPredictErrors:
-    """Exceptions from the underlying LLM propagate through predict()."""
+    """Exceptions from the underlying LLM propagate through complete()."""
 
     def test_exception_propagates(self):
         mock_llm = _make_mock_llm()
@@ -101,7 +99,7 @@ class TestPredictErrors:
         provider = LLMProvider(mock_llm)
 
         with pytest.raises(RuntimeError, match="API is down"):
-            provider.predict("test")
+            provider.complete("test")
 
     def test_connection_error_propagates(self):
         mock_llm = _make_mock_llm()
@@ -109,7 +107,7 @@ class TestPredictErrors:
         provider = LLMProvider(mock_llm)
 
         with pytest.raises(ConnectionError, match="timeout"):
-            provider.predict("test")
+            provider.complete("test")
 
 
 # ---------------------------------------------------------------------------
@@ -221,8 +219,7 @@ class TestStreamFallback:
         mock_llm.predict.return_value = "streamed response"
         provider = LLMProvider(mock_llm)
 
-        messages = [{"role": "user", "content": "hello"}]
-        chunks = list(provider.stream(messages))
+        chunks = list(provider.stream("hello"))
         assert chunks == ["streamed response"]
 
     def test_fallback_when_client_has_no_chat(self):
@@ -232,20 +229,14 @@ class TestStreamFallback:
         mock_llm.predict.return_value = "fallback stream"
         provider = LLMProvider(mock_llm)
 
-        messages = [{"role": "user", "content": "test"}]
-        chunks = list(provider.stream(messages))
+        chunks = list(provider.stream("test"))
         assert chunks == ["fallback stream"]
 
-    def test_fallback_predict_receives_concatenated_messages(self):
+    def test_fallback_predict_receives_the_prompt(self):
+        """BAF's ``predict`` has its own system context; the prompt alone goes."""
         mock_llm = _make_mock_llm(has_client=False)
         mock_llm.predict.return_value = "ok"
         provider = LLMProvider(mock_llm)
 
-        messages = [
-            {"role": "system", "content": "sys"},
-            {"role": "user", "content": "usr"},
-        ]
-        list(provider.stream(messages))
-        call_args = mock_llm.predict.call_args[0][0]
-        assert "sys" in call_args
-        assert "usr" in call_args
+        list(provider.stream("usr", system_prompt="sys"))
+        mock_llm.predict.assert_called_once_with("usr")
