@@ -5,7 +5,7 @@ Handles generation of UML Class Diagrams
 
 import logging
 import re
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Sequence, Tuple
 
 from ..core.base_handler import (
     BaseDiagramHandler,
@@ -286,7 +286,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # neither. Relax one end per cycle and keep the rule as an OCL
         # invariant. Runs after the orientation/naming guards so the
         # invariant navigates the end by its final name.
-        self._break_mandatory_cycles(system_spec)
+        relaxations = self._break_mandatory_cycles(system_spec)
 
         # Drop any OCL constraint whose context isn't a real class in the
         # spec (the LLM occasionally references a class it didn't create).
@@ -303,7 +303,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             cls.pop("position", None)
         self.apply_system_layout(system_spec, existing_model)
 
-        message = self._build_system_message(system_spec)
+        message = self._build_system_message(system_spec, relaxations)
 
         # The matching frontend converter persists constraints as OCL
         # boxes/links and associationClass attachments as ClassLinkRel.
@@ -1650,7 +1650,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 "%d -> String", converted, coerced,
             )
 
-    def _break_mandatory_cycles(self, system_spec: Dict[str, Any]) -> None:
+    def _break_mandatory_cycles(self, system_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Relax one end of every mandatory creation cycle, keeping the rule as OCL.
 
         The LLM renders "a booking covers at least one room" as
@@ -1678,11 +1678,13 @@ class ClassDiagramHandler(BaseDiagramHandler):
         ``sourceRole`` on a source end, else the lowercased endpoint class)
         because B-OCL resolves it against the context class.
 
-        Mutates *system_spec* in place; no-op when nothing cycles.
+        Mutates *system_spec* in place and returns one ``{"constraint",
+        "context", "end", "min"}`` record per relaxed end (empty when nothing
+        cycles), so the reply can tell these invariants from the user's.
         """
         relationships = system_spec.get("relationships")
         if not isinstance(relationships, list) or not relationships:
-            return
+            return []
         order = {id(rel): i for i, rel in enumerate(relationships)}
 
         def _mandatory_ends() -> List[Dict[str, Any]]:
@@ -1741,7 +1743,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             if match:
                 taken_names.add(match.group(1))
 
-        relaxed = 0
+        relaxations: List[Dict[str, Any]] = []
         for _ in range(2 * len(relationships)):  # each pass drops one mandatory end
             cycle = _find_cycle(_mandatory_ends())
             if not cycle:
@@ -1759,15 +1761,19 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 name = f"{base}_{counter}"
                 counter += 1
             taken_names.add(name)
-            constraints.append({
+            constraint = {
                 "context": victim["needer"],
                 "expression": (
                     f"context {victim['needer']} inv {name}: "
                     f"self.{end_name}->size() >= {victim['min']}"
                 ),
                 "name": name,
+            }
+            constraints.append(constraint)
+            relaxations.append({
+                "constraint": constraint, "context": victim["needer"],
+                "end": end_name, "min": victim["min"],
             })
-            relaxed += 1
             logger.info(
                 "[ClassDiagram] Relaxed the %s end of %s-%s from %s to %s to break "
                 "the mandatory creation cycle %s; kept the rule as OCL invariant '%s'",
@@ -1777,9 +1783,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 name,
             )
 
-        if relaxed:
+        if relaxations:
             system_spec["constraints"] = constraints
-            logger.info("[ClassDiagram] Broke %d mandatory creation cycle(s)", relaxed)
+            logger.info("[ClassDiagram] Broke %d mandatory creation cycle(s)", len(relaxations))
+        return relaxations
 
     def _validate_constraints(self, system_spec: Dict[str, Any]) -> None:
         """Drop OCL constraints whose context isn't a real class in the spec.
@@ -2231,8 +2238,13 @@ class ClassDiagramHandler(BaseDiagramHandler):
         parts.append(". Want to add more details or connect it to something else?")
         return "".join(parts)
 
-    def _build_system_message(self, spec: Dict[str, Any]) -> str:
-        """Build a descriptive message for a complete class diagram spec."""
+    def _build_system_message(
+        self, spec: Dict[str, Any], relaxations: Sequence[Dict[str, Any]] = (),
+    ) -> str:
+        """Build a descriptive message for a complete class diagram spec.
+
+        *relaxations* are the ends ``_break_mandatory_cycles`` made optional;
+        their invariants are the agent's, not rules the user stated."""
         system_name = spec.get("systemName", "System")
         classes = spec.get("classes", [])
         rels = spec.get("relationships", [])
@@ -2246,16 +2258,22 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 msg += f", with {len(rels)} relationship(s) linking them"
         elif rels:
             msg += f", with {len(rels)} relationship(s) between them"
-        constraints = spec.get("constraints") or []
-        if constraints:
-            # Honest message: the business rules are understood but the editor
-            # has no slot to display/store them yet, so don't claim they're
-            # shown on the canvas.
-            msg += (
-                f". I also noted {len(constraints)} rule(s) you mentioned, though "
-                "they aren't shown on the canvas yet"
-            )
         msg += "."
+        # The editor draws every constraint as an OCL box on its class.
+        constraints = [c for c in spec.get("constraints") or [] if isinstance(c, dict)]
+        agent_made = [r for r in relaxations if any(r["constraint"] is c for c in constraints)]
+        user_rules = len(constraints) - len(agent_made)
+        if user_rules == 1:
+            msg += " I also added the rule you stated as an OCL constraint."
+        elif user_rules > 1:
+            msg += f" I also added the {user_rules} rules you stated as OCL constraints."
+        if agent_made:
+            ends = " and ".join(f"**{r['context']}.{r['end']}**" for r in agent_made)
+            if len(agent_made) == 1:
+                kept = f"is optional in the diagram and its minimum of {agent_made[0]['min']} is kept as an OCL rule"
+            else:
+                kept = "are optional in the diagram and their minimums are kept as OCL rules"
+            msg += f" {ends} {kept}, so no class needs another to exist before it can be created."
         return msg
 
     # ------------------------------------------------------------------
