@@ -115,7 +115,7 @@ EXPECTED = {
     "describe_model.qa_prompt": "d316e3ecf54f18c7",
     "describe_model.repo_recap_section": "d5744268cb9c3cdb",
     "describe_model.user_guide_block": "93891995a77c7844",
-    "fallback.fallback_prompt": "dd14e0eb85cf0311",
+    "fallback.fallback_prompt": "e400c887faf5875d",
     "file_conversion.AGENT_DIAGRAM_SCHEMA": "a8d3b3c7f6ef6186",
     "file_conversion.ALL_SCHEMAS": "f9d2a36a80ebed12",
     "file_conversion.BPMN_SCHEMA": "d1c16e3b099c8681",

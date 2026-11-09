@@ -135,6 +135,8 @@ class TestMixedPlanPause:
         assert pending_dialogs.get(session, PENDING_GENERATOR_TYPE) == "pydantic"
         stash = pending_dialogs.get(session, PENDING_GENERATOR_CONFIG)
         assert stash.get(PLAN_GENERATION_CONFIRM_FLAG) is True
+        # Only this plan's modeling reply may ask to continue with generation (#747).
+        assert plan[0].get(pending_dialogs.PLAN_PAUSED_GENERATION_OP_KEY) is True
 
     def test_paused_stash_preserves_planned_config(self):
         plan = [

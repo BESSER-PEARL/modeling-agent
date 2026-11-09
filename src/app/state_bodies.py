@@ -352,18 +352,18 @@ def global_fallback_body(session: Session):
 # ------------------------------------------------------------------
 
 GREETING_MESSAGE = (
-    "Hi! I'm your BESSER assistant. Tell me what you want to build in plain "
-    "words and I'll create the model, the screens, and the code for you.\n\n"
+    "Hi! I'm your BESSER modeling assistant. Describe your domain in plain "
+    "words and I'll build the model with you, then refine it as you go.\n\n"
     "Try something like:\n"
-    "- *\"a library app to track books and loans\"*\n"
-    "- *\"a mobile app to track my expenses\"*\n"
-    "- *\"a pizza-ordering chatbot\"*\n"
-    "- *\"a dashboard for my Product class\"*\n\n"
-    "I can also modify your diagrams, generate code (SQL, Django, FastAPI, "
-    "SQLAlchemy…) or a whole web, mobile or desktop app, describe a model, "
-    "design a quantum circuit, import a PlantUML / diagram image, or build a "
-    "GUI from a screenshot or mockup. I reply in the language you write in.\n\n"
-    "What would you like to create today?"
+    "- *\"a library with books, members and loans\"*\n"
+    "- *\"add a due date to Loan\"*\n"
+    "- *\"a state machine for an order's lifecycle\"*\n"
+    "- *\"a pizza-ordering chatbot\"*\n\n"
+    "I can also describe or review a model, design a quantum circuit, import a "
+    "PlantUML / diagram image, or build a GUI from a screenshot or mockup. When "
+    "you ask for it, I generate code too (SQL, Django, FastAPI, SQLAlchemy…) or "
+    "a whole web, mobile or desktop app. I reply in the language you write in.\n\n"
+    "What would you like to model today?"
 )
 
 
