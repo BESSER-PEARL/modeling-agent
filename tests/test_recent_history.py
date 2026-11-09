@@ -109,6 +109,14 @@ def test_the_classifier_sees_the_rebuilt_history(monkeypatch, chat):
     assert seen == [SPEC, REPLY]
 
 
+@pytest.mark.parametrize("history", [None, []])
+def test_an_older_editor_without_recent_history_records_only_the_new_message(monkeypatch, chat, history):
+    # Editors before 8.9.3 send no recentHistory (and no turnId): the message
+    # is still recorded and nothing is seeded.
+    assert _preamble(monkeypatch, _session(history, session_id=chat)) is not None
+    assert get_memory(chat).get_last_n(5) == [{"role": "user", "content": "now add a Payment class"}]
+
+
 def test_seeding_is_logged(monkeypatch, chat, caplog):
     with caplog.at_level("INFO", logger=state_bodies.logger.name):
         _preamble(monkeypatch, _session([SPEC], session_id=chat))
