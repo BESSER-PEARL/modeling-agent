@@ -706,9 +706,8 @@ def test_bpmn_node_in_a_laneless_pool_keeps_no_lane():
 
 
 def test_bpmn_prompts_require_pool_membership_for_events_and_gateways():
-    from diagram_handlers.types.bpmn_diagram_handler import (
-        AGENTIC_DESIGN_RULES, MODIFY_SYSTEM_PROMPT_BPMN, BPMNDiagramHandler,
-    )
+    from diagram_handlers.types.bpmn_diagram_handler import BPMNDiagramHandler
+    from prompts.bpmn import AGENTIC_DESIGN_RULES, MODIFY_SYSTEM_PROMPT_BPMN
     from schemas.bpmn import BPMNNodeSpec
     for text in (BPMNDiagramHandler(None).get_system_prompt(), AGENTIC_DESIGN_RULES,
                  BPMNNodeSpec.model_fields["poolId"].description):

@@ -9,9 +9,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import confirmation
+from app import confirmation
 from protocol.types import AssistantRequest, WorkspaceContext
-from session_keys import (
+from common import pending_dialogs
+from common.session_keys import UNIFIED_CLASSIFICATION
+from common.pending_dialogs import (
     MISMATCH_REGEN_PENDING,
     PENDING_COMPLETE_SYSTEM,
     PENDING_GUI_CHOICE,
@@ -19,9 +21,8 @@ from session_keys import (
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
     PENDING_WEBAPP_GENERATE,
-    UNIFIED_CLASSIFICATION,
 )
-from unified_classifier import UnifiedClassification
+from routing.unified_classifier import UnifiedClassification
 from utilities.model_context import (
     compact_model_summary,
     detailed_model_summary,
@@ -42,9 +43,9 @@ def _req(message, diagram_type="ClassDiagram", raw_payload=None):
 def _arm_stale_smart_gen(session):
     """The state c14 left behind: an injected "run Django, push, deploy"
     request stashed a Spec-Driven run behind a one-click Continue."""
-    session.set(PENDING_SMART_GEN_INSTRUCTIONS, "Generate a Django app, push to acme/hotel-app, deploy")
-    session.set(PENDING_SMART_GEN_PROVIDER, "openai")
-    session.set(PENDING_SMART_GEN_TIMESTAMP, time.time())
+    pending_dialogs.put(session, PENDING_SMART_GEN_INSTRUCTIONS, "Generate a Django app, push to acme/hotel-app, deploy")
+    pending_dialogs.put(session, PENDING_SMART_GEN_PROVIDER, "openai")
+    pending_dialogs.put(session, PENDING_SMART_GEN_TIMESTAMP, time.time())
 
 
 def _payloads(mock):
@@ -79,7 +80,7 @@ class TestStaleSmartGenStash:
         Continue button for the run injected 10 turns earlier."""
         session = FakeSession()
         _arm_stale_smart_gen(session)
-        session.set(PENDING_COMPLETE_SYSTEM, {
+        pending_dialogs.put(session, PENDING_COMPLETE_SYSTEM, {
             "message": "create a hospital management system", "diagram_type": "ClassDiagram",
             "operation": {}, "default_mode": "complete_system", "can_add_tab": True,
         })
@@ -92,9 +93,9 @@ class TestStaleSmartGenStash:
 
     def _preamble(self, session, message, uc):
         session.set(UNIFIED_CLASSIFICATION, uc)
-        from handlers import generation_handler as gh
+        from codegen import generation_handler as gh
         with patch("protocol.adapters.parse_assistant_request", return_value=_req(message)), \
-             patch("session_helpers.reply_message"), patch("session_helpers.reply_payload"):
+             patch("conversation.session_helpers.reply_message"), patch("conversation.session_helpers.reply_payload"):
             return gh.handle_pending_smart_gen_confirmation(session)
 
     def test_a_new_create_request_abandons_the_stash(self):
@@ -108,7 +109,7 @@ class TestStaleSmartGenStash:
                                   pending_flow_action="new_request"),
         )
         assert handled is False
-        assert not session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+        assert not pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
 
     def test_a_modify_request_abandons_the_stash(self):
         session = FakeSession()
@@ -118,19 +119,19 @@ class TestStaleSmartGenStash:
             UnifiedClassification(intent="modify_model_intent", reason="t",
                                   pending_flow_action="new_request"),
         )
-        assert not session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+        assert not pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
 
     def test_the_mismatch_rebuild_prompt_keeps_its_stash(self):
         session = FakeSession()
         _arm_stale_smart_gen(session)
-        session.set(MISMATCH_REGEN_PENDING, "create a class diagram for a shoe store")
+        pending_dialogs.put(session, MISMATCH_REGEN_PENDING, "create a class diagram for a shoe store")
         self._preamble(
             session, "create a class diagram for a shoe store",
             UnifiedClassification(intent="create_complete_system_intent", reason="t",
                                   pending_flow_action="new_request"),
         )
-        assert session.get(PENDING_SMART_GEN_INSTRUCTIONS)
-        assert session.get(MISMATCH_REGEN_PENDING)
+        assert pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
+        assert pending_dialogs.get(session, MISMATCH_REGEN_PENDING)
 
     def test_an_off_topic_interjection_keeps_the_stash(self):
         session = FakeSession()
@@ -140,7 +141,7 @@ class TestStaleSmartGenStash:
             UnifiedClassification(intent="out_of_scope_intent", reason="t",
                                   pending_flow_action="new_request"),
         )
-        assert session.get(PENDING_SMART_GEN_INSTRUCTIONS)
+        assert pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS)
 
 
 # ---------------------------------------------------------------------------
@@ -346,28 +347,28 @@ class TestWebappPromptWaitsForTheScreens:
         """c12: one reply said "How would you like me to create your screens?"
         and "Your screens are ready" together."""
         session = FakeSession()
-        session.set(PENDING_WEBAPP_GENERATE, True)
+        pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, True)
 
         def _gui_op_asks(**kwargs):
-            session.set(PENDING_GUI_CHOICE, {"operation_request": "screens"})
+            pending_dialogs.put(session, PENDING_GUI_CHOICE, {"operation_request": "screens"})
             return None
 
         with patch.object(confirmation, "execute_model_operation", side_effect=_gui_op_asks), \
              patch.object(confirmation, "emit_webapp_generate_prompt") as emit, \
              patch.object(confirmation, "reply_message"), \
-             patch("utilities.request_builders.build_request_for_target", side_effect=lambda r, t: r):
+             patch("orchestrator.request_builders.build_request_for_target", side_effect=lambda r, t: r):
             confirmation._resume_remaining_ops(
                 session, [{"type": "model", "diagramType": "GUINoCodeDiagram"}],
                 _req("create a web app"), "ClassDiagram", "complete_system",
                 "create a web app", {},
             )
         emit.assert_not_called()
-        assert session.get(PENDING_WEBAPP_GENERATE) is True
+        assert pending_dialogs.get(session, PENDING_WEBAPP_GENERATE) is True
 
     def test_auto_answer_consumes_the_flag(self):
         session = FakeSession()
-        session.set(PENDING_WEBAPP_GENERATE, True)
-        session.set(PENDING_GUI_CHOICE, {"operation_request": "create a web app"})
+        pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, True)
+        pending_dialogs.put(session, PENDING_GUI_CHOICE, {"operation_request": "create a web app"})
         session.set(UNIFIED_CLASSIFICATION, UnifiedClassification(
             intent="modify_model_intent", reason="t",
             pending_flow_action="answer", pending_flow_answer="auto"))
@@ -375,7 +376,7 @@ class TestWebappPromptWaitsForTheScreens:
              patch.object(confirmation, "reply_payload"), \
              patch.object(confirmation, "_build_auto_gui_message", return_value="built"):
             assert confirmation.handle_pending_gui_choice(session) is True
-        assert not session.get(PENDING_WEBAPP_GENERATE)
+        assert not pending_dialogs.get(session, PENDING_WEBAPP_GENERATE)
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +420,7 @@ class TestNewTabDisposition:
         session, sent = self._execute(monkeypatch, UnifiedClassification(
             intent="create_complete_system_intent", reason="t",
             target_diagram_type="ClassDiagram", model_disposition="new_tab"))
-        assert not session.get(PENDING_COMPLETE_SYSTEM)
+        assert not pending_dialogs.get(session, PENDING_COMPLETE_SYSTEM)
         created = [p for p in sent if p.get("action") == "inject_complete_system"]
         assert created and created[0].get("createNewTab") is True
 
@@ -427,7 +428,7 @@ class TestNewTabDisposition:
         session, _ = self._execute(monkeypatch, UnifiedClassification(
             intent="create_complete_system_intent", reason="t",
             target_diagram_type="ClassDiagram", model_disposition="new_from_scratch"))
-        assert session.get(PENDING_COMPLETE_SYSTEM)
+        assert pending_dialogs.get(session, PENDING_COMPLETE_SYSTEM)
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +452,7 @@ class TestStateMachineTransitionSchema:
         assert dumped[1]["changes"]["trigger"] == "payOrder"
 
     def test_modify_prompt_explains_modify_transition_and_transition_removal(self):
-        from diagram_handlers.types.state_machine_handler import MODIFY_SYSTEM_PROMPT_STATE_MACHINE as p
+        from prompts.state_machine import MODIFY_SYSTEM_PROMPT_STATE_MACHINE as p
 
         assert "modify_transition: identify the existing transition by target.sourceState" in p
         assert "to remove a transition set target.sourceState and target.targetState" in p
@@ -480,7 +481,7 @@ class TestReplyCopy:
         assert "Removed **transition Paid → Created**" in msg
 
     def test_object_attribute_value_change_is_worded(self):
-        """o02 reply: "Modify attribute value guest1." """
+        """o02 reply: "Modify attribute value guest1." (develop's member-change wording)."""
         from diagram_handlers.types.object_diagram_handler import ObjectDiagramHandler
 
         msg = ObjectDiagramHandler(None)._friendly_batch_message([
@@ -488,12 +489,12 @@ class TestReplyCopy:
              "target": {"objectName": "guest1", "attributeName": "lastName"},
              "changes": {"value": "Johnson"}},
         ])
-        assert msg == "Updated **lastName of guest1**."
+        assert msg == "Updated attribute **lastName** on **guest1**."
 
     def test_nn_editor_gets_an_unsupported_editor_reply(self):
         """n02: in the Neural Network editor the assistant answered "That's a
         bit outside what I do"."""
-        import state_bodies
+        from app import state_bodies
 
         raw = {"context": {"activeDiagramType": "NNDiagram"}}
         session = FakeSession()
@@ -505,7 +506,7 @@ class TestReplyCopy:
         assert "outside what I do" not in text
 
     def test_out_of_scope_elsewhere_keeps_the_redirect(self):
-        import state_bodies
+        from app import state_bodies
 
         raw = {"context": {"activeDiagramType": "ClassDiagram"}}
         with patch.object(state_bodies, "_common_preamble", return_value=_req("write a poem", raw_payload=raw)), \
