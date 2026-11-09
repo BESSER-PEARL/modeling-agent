@@ -214,8 +214,16 @@ def _clean_name(value: str | None) -> str | None:
 
 class ClassModificationTarget(BaseModel):
     className: Optional[str] = Field(default=None, description="Target class name")
-    attributeName: Optional[str] = Field(default=None, description="Target attribute name within the class")
-    methodName: Optional[str] = Field(default=None, description="Target method name within the class")
+    attributeName: Optional[str] = Field(default=None, description=(
+        "Name of an EXISTING attribute of the class, copied exactly from the current model "
+        "(the name only, without its type). Set for modify_attribute, remove_element of an "
+        "attribute and promote_attribute; null for add_attribute, whose new name goes in changes.name."
+    ))
+    methodName: Optional[str] = Field(default=None, description=(
+        "Name of an EXISTING method of the class, copied exactly from the current model "
+        "(the name only, without parameters or return type). Set for modify_method and "
+        "remove_element of a method; null for add_method, whose new name goes in changes.name."
+    ))
     sourceClass: Optional[str] = Field(default=None, description="Source class for relationship modifications")
     targetClass: Optional[str] = Field(default=None, description="Target class for relationship modifications")
 
@@ -231,7 +239,13 @@ class ClassModificationTarget(BaseModel):
 
 
 class ClassModificationChanges(BaseModel):
-    name: Optional[str] = Field(default=None, max_length=30, description="New name for rename operations (PascalCase, ONE word only)")
+    name: Optional[str] = Field(default=None, max_length=50, description=(
+        "The name being set: for add_attribute / add_method the new member's name, for "
+        "modify_attribute / modify_method / modify_class the new name when renaming (null "
+        "otherwise), for modify_relationship the new relationship label, for merge_classes the "
+        "class that remains. A bare identifier: camelCase for attributes and methods, PascalCase "
+        "for classes."
+    ))
     type: Optional[str] = Field(default=None, description="New type for attribute/parameter changes")
     visibility: Optional[Literal["public", "private", "protected", "package"]] = None
     returnType: Optional[str] = None
@@ -270,7 +284,7 @@ class ClassModificationChanges(BaseModel):
     def _null_placeholder_names(cls, v):
         """Null a hallucinated placeholder name BEFORE length validation.
 
-        These fields cap at 30 chars; a long leak like
+        These fields are length-capped (className at 30 chars); a long leak like
         "ChatbotHandlerClassNamePlaceholder" (34 chars) would otherwise raise a
         max_length ValidationError and fail the whole modification. Running in
         ``mode='before'`` nulls it first so the constraint never sees the junk.

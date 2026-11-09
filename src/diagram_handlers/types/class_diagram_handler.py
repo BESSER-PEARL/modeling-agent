@@ -2369,15 +2369,28 @@ class ClassDiagramHandler(BaseDiagramHandler):
         src = (target.get("sourceClass") or "").strip()
         tgt = (target.get("targetClass") or "").strip()
 
+        def _unclear(kind: str) -> str:
+            # The member name is missing or not a name (prose, garbled
+            # tokens): ask instead of quoting it.
+            owner = self._member_name(cn)
+            of_owner = f" of **{owner}**" if owner else ""
+            return f"I couldn't tell which {kind}{of_owner} to {verb}. Which one did you mean?"
+
         # 1) Attribute target — missing only when absent everywhere.
-        if attr:
-            if attr.lower() not in attr_names:
-                return f"I couldn't find a **{attr}** field to {verb}."
+        if attr or action == "modify_attribute":
+            name = self._member_name(attr)
+            if not name:
+                return _unclear("attribute")
+            if name.lower() not in attr_names:
+                return f"I couldn't find a **{name}** field to {verb}."
             return None
         # 2) Method target.
-        if meth:
-            if meth.lower() not in method_names:
-                return f"I couldn't find a **{meth}** method to {verb}."
+        if meth or action == "modify_method":
+            name = self._member_name(meth)
+            if not name:
+                return _unclear("method")
+            if name.lower() not in method_names:
+                return f"I couldn't find a **{name}** method to {verb}."
             return None
         # 3) Relationship target (by endpoints) — missing when a named endpoint
         #    class doesn't exist.

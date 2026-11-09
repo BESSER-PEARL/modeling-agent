@@ -50,7 +50,8 @@ CLASS_KEY_RULES_BLOCK = f"""KEY RULES:
 
 CLASS_EXAMPLES_BLOCK = """Examples:
 - "rename User to Customer" → ONE modify_class (no relationship changes needed)
-- "add email to User" → add_attribute target.className="User", changes.name="email", changes.type="String"
+- "add email to User" → add_attribute target.className="User", changes.name="email", changes.type="String" (target.attributeName stays null: the attribute does not exist yet)
+- "rename aliases in Brand to altNames" → modify_attribute target.className="Brand", target.attributeName="aliases", changes.name="altNames"
 - "add name, age, email to Person" → modifications array with 3 add_attribute entries
 - "connect Order to Customer" → add_relationship (Association)
 - "change multiplicity to many" → modify_relationship

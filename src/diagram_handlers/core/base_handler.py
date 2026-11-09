@@ -424,6 +424,16 @@ class BaseDiagramHandler(ABC):
         return f"{human} **{target_name}**."
 
     @classmethod
+    def _member_name(cls, value: Any) -> Optional[str]:
+        """*value*, JSON artifacts stripped, when it is a member name a reply
+        may quote (an identifier), else ``None``. The model sometimes writes
+        prose, garbled tokens or the prompt itself into a member-name field."""
+        if not isinstance(value, str) or not value.strip():
+            return None
+        value = cls._sanitize_target_name(value)
+        return value if value.isidentifier() else None
+
+    @classmethod
     def _describe_member_change(cls, action: str, target: dict, mod: Optional[dict] = None) -> Optional[str]:
         """The reply for a change to an attribute or method, naming the member
         and its owner (``"Updated attribute **aliases** in **Brand**."``), or
@@ -440,18 +450,19 @@ class BaseDiagramHandler(ABC):
             verb, kind, prep = cls._MEMBER_ACTIONS[action]
         else:
             return None
-        member = target.get(f'{kind}Name')
-        new_name = changes.get('name') if isinstance(changes.get('name'), str) else None
-        if not member and action.startswith('add_'):
-            member, new_name = new_name, None
+        target_member = cls._member_name(target.get(f'{kind}Name'))
+        new_name = cls._member_name(changes.get('name'))
+        # An add names its new member in changes.name; target.<kind>Name names
+        # an existing one and is null for an add.
+        if action.startswith('add_'):
+            member, new_name = new_name or target_member, None
+        else:
+            member = target_member
         if not owner or not member:
             return None
-        owner, member = cls._sanitize_target_name(owner), cls._sanitize_target_name(member)
-        if action.startswith('modify_') and new_name and cls._sanitize_target_name(new_name) != member:
-            return (
-                f"Renamed {kind} **{member}** to **{cls._sanitize_target_name(new_name)}** "
-                f"in **{owner}**."
-            )
+        owner = cls._sanitize_target_name(owner)
+        if action.startswith('modify_') and new_name and new_name != member:
+            return f"Renamed {kind} **{member}** to **{new_name}** in **{owner}**."
         return f"{verb} {kind} **{member}** {prep} **{owner}**."
 
     def _describe_modification(
@@ -490,8 +501,8 @@ class BaseDiagramHandler(ABC):
             el = (elements or {}).get(eid)
             class_name = (el.get('name') if isinstance(el, dict) else None) or eid
 
-        attr_name = target.get('attributeName')
-        method_name = target.get('methodName')
+        attr_name = self._member_name(target.get('attributeName'))
+        method_name = self._member_name(target.get('methodName'))
         rel_source = target.get('sourceClass')
         rel_target = target.get('targetClass')
 
