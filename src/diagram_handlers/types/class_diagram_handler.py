@@ -520,9 +520,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
         part end, which becomes the source, so it is dropped rather than
         moved onto the whole.
 
-        A missing multiplicity is no evidence of the direction, so it is never
-        swapped; a missing target (whole) multiplicity is set to ``1``, since the
-        editor would otherwise default the whole end to ``*``.
+        A missing target (whole) multiplicity is no evidence of the direction:
+        the ends are kept and it is set to ``1``, since the editor would
+        otherwise default the whole end to ``*``. A missing source multiplicity
+        is the editor's default ``1``, so a many-valued whole is still evidence.
         """
         mods = spec.get("modifications")
         if not isinstance(mods, list):
@@ -541,7 +542,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
             if not tgt_mult:
                 changes["targetMultiplicity"] = "1"
                 continue
-            if not src_mult or not is_reversed_composition(src_mult, tgt_mult):
+            src_mult = src_mult or "1"  # the editor's default for the source end
+            if not is_reversed_composition(src_mult, tgt_mult):
                 continue
             target["sourceClass"], target["targetClass"] = (
                 target.get("targetClass"), target.get("sourceClass"))

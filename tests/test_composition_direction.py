@@ -154,12 +154,15 @@ class TestModificationGuard:
         assert mod["changes"]["targetMultiplicity"] == "1"
         assert "sourceMultiplicity" not in mod["changes"]
 
-    def test_only_a_missing_source_multiplicity_keeps_the_ends(self, handler):
+    def test_a_missing_source_multiplicity_is_the_editor_default(self, handler):
+        # Source defaults to "1" on the canvas, so a many-valued whole end is reversed.
         mod = {"action": "add_relationship",
-               "target": {"sourceClass": "OrderLine", "targetClass": "Order"},
-               "changes": {"relationshipType": "Composition", "targetMultiplicity": "*"}}
+               "target": {"sourceClass": "Brand", "targetClass": "BrandURL"},
+               "changes": {"relationshipType": "Composition", "targetMultiplicity": "0..*"}}
         handler._fix_reversed_composition_mods({"modifications": [mod]})
-        assert mod["target"] == {"sourceClass": "OrderLine", "targetClass": "Order"}
+        assert mod["target"] == {"sourceClass": "BrandURL", "targetClass": "Brand"}
+        assert mod["changes"]["sourceMultiplicity"] == "0..*"
+        assert mod["changes"]["targetMultiplicity"] == "1"
 
 
 class TestModificationPipeline:
