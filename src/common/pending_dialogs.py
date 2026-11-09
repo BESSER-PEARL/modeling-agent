@@ -57,6 +57,10 @@ CONFIG_PROMPT_ATTEMPTS = "_config_prompt_attempts"
 # trigger_generator config payload. Generalizes the web-app pause
 # (PENDING_WEBAPP_GENERATE) to every generator type.
 PLAN_GENERATION_CONFIRM_FLAG = "_awaiting_generation_confirmation"
+# Set on each model operation of the plan that paused its generation, so only
+# that plan's modeling reply asks whether to continue with it; a later turn,
+# while the pause is still stashed, offers modeling only (BESSER-PEARL/BESSER#747).
+PLAN_PAUSED_GENERATION_OP_KEY = "_plan_paused_generation"
 
 # Spec-Driven Agent confirmation gate: every path that would run the
 # Spec-Driven Agent (which spends the USER'S OWN API key) stashes

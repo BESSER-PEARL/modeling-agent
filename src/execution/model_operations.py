@@ -43,8 +43,10 @@ from common.pending_dialogs import (
     MISMATCH_REGEN_PENDING,
     PENDING_COMPLETE_SYSTEM,
     PENDING_GENERATOR_CONFIG,
+    PENDING_GENERATOR_TYPE,
     PENDING_GUI_CHOICE,
     PLAN_GENERATION_CONFIRM_FLAG,
+    PLAN_PAUSED_GENERATION_OP_KEY,
     PENDING_SMART_GEN_INSTRUCTIONS,
     PENDING_SMART_GEN_PROVIDER,
     PENDING_SMART_GEN_TIMESTAMP,
@@ -75,16 +77,23 @@ def _non_web_target_label(session, request):
     return None
 
 
-def _user_asked_generation(session) -> bool:
-    """True when this request itself asked to generate code.
+def _paused_generator(session, operation) -> Optional[str]:
+    """The generator this request asked for and its plan paused, or None.
 
     A mixed "design X and generate Y" plan pauses its generation op before the
-    model step runs (``execution.planning``) and marks the stash with
-    ``PLAN_GENERATION_CONFIRM_FLAG``; only then may a modeling reply ask
-    whether to continue with generation (BESSER-PEARL/BESSER#747).
+    model step runs (``execution.planning``): it stashes the generator, marks
+    the stash with ``PLAN_GENERATION_CONFIRM_FLAG`` and marks that plan's model
+    operations with ``PLAN_PAUSED_GENERATION_OP_KEY``. Only such an operation's
+    reply may ask whether to continue with generation; a later modeling turn,
+    while the pause is still stashed, may not (BESSER-PEARL/BESSER#747).
     """
+    if not (isinstance(operation, dict) and operation.get(PLAN_PAUSED_GENERATION_OP_KEY)):
+        return None
     config = pending_dialogs.get(session, PENDING_GENERATOR_CONFIG)
-    return isinstance(config, dict) and bool(config.get(PLAN_GENERATION_CONFIRM_FLAG))
+    if not (isinstance(config, dict) and config.get(PLAN_GENERATION_CONFIRM_FLAG)):
+        return None
+    generator = pending_dialogs.get(session, PENDING_GENERATOR_TYPE)
+    return generator if isinstance(generator, str) and generator else None
 
 
 def original_request_to_stash(request, operation_mode, target_diagram_type):
@@ -1021,9 +1030,11 @@ def execute_model_operation(
     # user confirms it, so it names the artifact and offers the button.
     # web_app is left to the GUI-choice flow's own prompt.
     if operation_mode in ("complete_system", "modify_model") and isinstance(result.get("message"), str):
-        _detected_gen = detect_generator_type(request.message)
+        _paused_gen = _paused_generator(session, operation)
+        # The paused generator names the artifact and the button, not a guess from the wording.
+        _detected_gen = _paused_gen or detect_generator_type(request.message)
         if _detected_gen != "web_app":
-            if _user_asked_generation(session):
+            if _paused_gen:
                 _artifact = _non_web_target_label(session, request) or get_artifact_label(_detected_gen)
                 if operation_mode == "complete_system":
                     result["message"] += "\n\n" + continue_generating_prompt(_artifact)

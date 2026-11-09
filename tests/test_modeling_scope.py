@@ -48,7 +48,7 @@ def _offers_generation(payload):
     return False
 
 
-def _run(monkeypatch, message, mode, diagram_type="ClassDiagram", session=None):
+def _run(monkeypatch, message, mode, diagram_type="ClassDiagram", session=None, paused=False):
     """Run execute_model_operation with a stub handler; return the sent payload."""
     session = session or FakeSession()
     handler = MagicMock()
@@ -80,11 +80,10 @@ def _run(monkeypatch, message, mode, diagram_type="ClassDiagram", session=None):
         message=message,
         context=WorkspaceContext(active_diagram_type=diagram_type),
     )
-    mo.execute_model_operation(
-        session, request,
-        {"diagramType": diagram_type, "mode": mode, "request": message},
-        mode, _skip_existing_check=True,
-    )
+    operation = {"diagramType": diagram_type, "mode": mode, "request": message}
+    if paused:  # as execution.planning marks the plan that paused its generation
+        operation[pending_dialogs.PLAN_PAUSED_GENERATION_OP_KEY] = True
+    mo.execute_model_operation(session, request, operation, mode, _skip_existing_check=True)
     assert sent, "no reply was sent"
     return sent[-1]
 
@@ -132,7 +131,7 @@ def test_a_request_that_asked_to_generate_still_gets_its_question(monkeypatch):
     pending_dialogs.put(session, PENDING_GENERATOR_CONFIG, {PLAN_GENERATION_CONFIRM_FLAG: True})
     payload = _run(
         monkeypatch, "create a database for a library and generate the sql",
-        "complete_system", session=session,
+        "complete_system", session=session, paused=True,
     )
     assert payload["message"].endswith(continue_generating_prompt("database"))
     assert payload["suggestedActions"][0] == {"label": "Generate database", "prompt": "generate sql"}
@@ -142,8 +141,32 @@ def test_an_edit_inside_a_generate_request_keeps_its_question(monkeypatch):
     session = FakeSession()
     pending_dialogs.put(session, PENDING_GENERATOR_TYPE, "django")
     pending_dialogs.put(session, PENDING_GENERATOR_CONFIG, {PLAN_GENERATION_CONFIRM_FLAG: True})
-    payload = _run(monkeypatch, "rename User to Member and generate django", "modify_model", session=session)
+    payload = _run(monkeypatch, "rename User to Member and generate django", "modify_model",
+                   session=session, paused=True)
     assert "continue with generating your Django app?" in payload["message"]
+
+
+@pytest.mark.parametrize("message, mode", [
+    ("add a class Foo", "modify_model"),
+    ("create a hotel model", "complete_system"),
+])
+def test_a_later_modeling_turn_does_not_inherit_a_paused_generation(monkeypatch, message, mode):
+    """A plan paused SQL generation; the user went on modeling instead of answering.
+    The pause is still stashed, but this turn did not ask to generate."""
+    session = FakeSession()
+    pending_dialogs.put(session, PENDING_GENERATOR_TYPE, "sql")
+    pending_dialogs.put(session, PENDING_GENERATOR_CONFIG, {PLAN_GENERATION_CONFIRM_FLAG: True})
+    payload = _run(monkeypatch, message, mode, session=session)
+    assert not _offers_generation(payload)
+
+
+def test_the_button_follows_the_paused_generator_not_the_wording(monkeypatch):
+    session = FakeSession()
+    pending_dialogs.put(session, PENDING_GENERATOR_TYPE, "sql")
+    pending_dialogs.put(session, PENDING_GENERATOR_CONFIG, {PLAN_GENERATION_CONFIRM_FLAG: True})
+    payload = _run(monkeypatch, "create a library and generate the application", "complete_system",
+                   session=session, paused=True)
+    assert payload["suggestedActions"][0] == {"label": "Generate database", "prompt": "generate sql"}
 
 
 # ----------------------------------------------------------------------

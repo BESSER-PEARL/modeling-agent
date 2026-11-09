@@ -61,5 +61,5 @@ META_ANSWER = (
     "machines, BPMN processes (including agentic swarms), component and "
     "deployment diagrams, agents, and quantum circuits, and import "
     "PlantUML or diagram images. I reply in the language you write in."
-    "\n\nWhat would you like to build?"
+    "\n\nWhat would you like to model?"
 )

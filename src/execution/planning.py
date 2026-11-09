@@ -28,6 +28,7 @@ from common.pending_dialogs import (
     PENDING_GUI_CHOICE,
     PENDING_WEBAPP_GENERATE,
     PLAN_GENERATION_CONFIRM_FLAG,
+    PLAN_PAUSED_GENERATION_OP_KEY,
 )
 
 from .model_operations import Deferred, execute_model_operation, _collect_available_diagrams
@@ -202,6 +203,9 @@ def execute_planned_operations(
                 PENDING_GENERATOR_CONFIG, {**_paused_config, PLAN_GENERATION_CONFIRM_FLAG: True},
             )
             gen_ops = []  # nothing auto-runs
+            for group in model_groups:
+                for model_op in group:
+                    model_op[PLAN_PAUSED_GENERATION_OP_KEY] = True
             logger.info(
                 "⏸️ [PlannedOps] Mixed modeling+generation plan — paused '%s' "
                 "generation until the user confirms",
