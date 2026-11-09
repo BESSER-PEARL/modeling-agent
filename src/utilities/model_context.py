@@ -9,6 +9,8 @@ share the same logic.
 
 from typing import Any, Dict, List, Tuple
 
+from .whole_part import whole_part_kind
+
 # ---------------------------------------------------------------------------
 # Compact (one-line) model summary
 # ---------------------------------------------------------------------------
@@ -222,9 +224,18 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
                 gens.append(f"{src_name} extends {tgt_name}")
             else:
                 label = _REL_LABEL.get(rtype, "association")
-                src_mult = source.get("multiplicity", "")
-                tgt_mult = target.get("multiplicity", "")
-                mult = f" [{src_mult}..{tgt_mult}]" if (src_mult or tgt_mult) else ""
+                if whole_part_kind(rtype):
+                    # The editor draws the diamond at the TARGET end, which is
+                    # the whole (BESSER-PEARL/BESSER#746). Say so in words: a
+                    # bare "Brand -> BrandURL (composition)" was read as Brand
+                    # owning BrandURL whatever the drawing showed.
+                    label = (f"{label}: {tgt_name} is the whole, {src_name} its part, "
+                             f"diamond at {tgt_name}")
+                # One multiplicity per END, each tagged with its class: the old
+                # "[1..0..*]" read as a single range.
+                ends = [f"{n} {m}" for n, m in ((src_name, source.get("multiplicity", "")),
+                                                (tgt_name, target.get("multiplicity", ""))) if m]
+                mult = f" [{', '.join(ends)}]" if ends else ""
                 rel_name = rel.get("name", "")
                 name_str = f' "{rel_name}"' if rel_name else ""
                 assocs.append(f"{src_name} -> {tgt_name} ({label}){mult}{name_str}")

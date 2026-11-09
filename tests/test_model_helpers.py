@@ -285,8 +285,10 @@ class TestDetailedModelSummaryClassDiagram:
         assert "User" in result and "Order" in result
 
     def test_includes_multiplicities(self):
+        # One multiplicity per end, tagged with its class: "[User 1, Order *]",
+        # not the old "[1..*]" that read as a single range.
         result = detailed_model_summary(CLASS_MODEL_FULL, "ClassDiagram")
-        assert "1..*" in result
+        assert "[User 1, Order *]" in result
 
     def test_includes_relationship_name(self):
         result = detailed_model_summary(CLASS_MODEL_FULL, "ClassDiagram")

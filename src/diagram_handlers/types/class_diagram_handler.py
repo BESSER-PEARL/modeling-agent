@@ -26,6 +26,7 @@ from schemas.compact_class_diagram import (
     expand_compact_spec,
 )
 from utilities.model_context import detailed_model_summary
+from utilities.whole_part import is_reversed_composition, orient_composition_spec, whole_part_kind
 from protocol.actions import Action, assistant_message, inject_complete_system, inject_element
 
 logger = logging.getLogger(__name__)
@@ -211,6 +212,13 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # Must run before the merge, which uses the recovered source role
         # to spot one fact stated from both sides.
         self._split_dual_role_names(system_spec)
+
+        # Guard: the whole of a composition is its TARGET end (the editor's
+        # diamond end, BUML's composite end). A composition stated whole ->
+        # part ("Brand -> BrandURL", BrandURL 0..*) drew the diamond on the
+        # part and generated the ownership backwards (BESSER-PEARL/BESSER#746).
+        # Runs before the naming guards, which read the final orientation.
+        self._fix_reversed_compositions(system_spec)
 
         # Guard: an association class is attached to ONE association; it
         # must not ALSO be joined to that association's endpoints by
@@ -475,6 +483,77 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 "[ClassDiagram] Flipped %d inverted inheritance link(s) "
                 "(one class declared as the subclass of several): %s",
                 len(flipped), ", ".join(flipped)[:200],
+            )
+
+    def _fix_reversed_compositions(self, system_spec: Dict[str, Any]) -> None:
+        """Swap the ends of a Composition stated with its whole as the SOURCE.
+
+        The target is the whole (see ``utilities.whole_part``). A whole end is
+        single-valued, so a target end allowing several instances opposite a
+        single-valued source end means the ends were written the wrong way
+        round: ``Brand -> BrandURL`` with ``Brand 1`` and ``BrandURL 0..*``.
+        Every per-end field moves with its end, so the roles and
+        multiplicities keep their meaning; the relationship name follows the
+        target end's role, as everywhere in this spec.
+
+        A composition whose ends are both single-valued gives no evidence and
+        is left alone, as is an Aggregation (a shared whole may be many).
+        """
+        swapped = [
+            f"{rel.get('source')}->{rel.get('target')}"
+            for rel in system_spec.get("relationships", []) or []
+            if orient_composition_spec(rel)
+        ]
+
+        if swapped:
+            logger.info(
+                "[ClassDiagram] Swapped %d composition(s) stated whole -> part "
+                "(the whole is the target end): now %s",
+                len(swapped), ", ".join(swapped)[:200],
+            )
+
+    def _fix_reversed_composition_mods(self, spec: Dict[str, Any]) -> None:
+        """``_fix_reversed_compositions`` for ``add_relationship`` modifications.
+
+        The modification carries no source-end role: the editor names the
+        source end after its class. The label the LLM gave belongs to the
+        part end, which becomes the source, so it is dropped rather than
+        moved onto the whole.
+
+        A missing target (whole) multiplicity is no evidence of the direction:
+        the ends are kept and it is set to ``1``, since the editor would
+        otherwise default the whole end to ``*``. A missing source multiplicity
+        is the editor's default ``1``, so a many-valued whole is still evidence.
+        """
+        mods = spec.get("modifications")
+        if not isinstance(mods, list):
+            mods = [spec.get("modification")]
+        for mod in mods:
+            if not isinstance(mod, dict) or mod.get("action") != "add_relationship":
+                continue
+            target = mod.get("target")
+            changes = mod.get("changes")
+            if not isinstance(target, dict) or not isinstance(changes, dict):
+                continue
+            if whole_part_kind(changes.get("relationshipType")) != "composition":
+                continue
+            src_mult = changes.get("sourceMultiplicity")
+            tgt_mult = changes.get("targetMultiplicity")
+            if not tgt_mult:
+                changes["targetMultiplicity"] = "1"
+                continue
+            src_mult = src_mult or "1"  # the editor's default for the source end
+            if not is_reversed_composition(src_mult, tgt_mult):
+                continue
+            target["sourceClass"], target["targetClass"] = (
+                target.get("targetClass"), target.get("sourceClass"))
+            changes["sourceMultiplicity"], changes["targetMultiplicity"] = tgt_mult, src_mult
+            for key in ("name", "roleName"):
+                changes.pop(key, None)
+            target.pop("relationshipName", None)
+            logger.info(
+                "[ClassDiagram] Swapped a new composition stated whole -> part: "
+                "now %s -> %s", target["sourceClass"], target["targetClass"],
             )
 
     def _fix_misplaced_abstract(self, system_spec: Dict[str, Any]) -> None:
@@ -3021,16 +3100,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             return deduped
 
         def _expand_refactoring(handler, spec):
-            """Expand refactoring actions into primitives, then guard against
-            any relationship whose endpoint is an enumeration."""
-            if handler._is_refactoring_action(spec):
-                logger.info("[ClassDiagram] Detected refactoring action, expanding into primitives")
-                spec = handler._expand_refactoring_actions(spec, current_model)
-            handler._rewrite_enum_relationship_mods(spec, current_model)
-            # Runs after the expansion, so ops synthesised by a
-            # refactoring are canonicalised too.
-            handler._normalise_modification_types(spec)
-            return spec
+            return handler._prepare_modification_spec(spec, current_model)
 
         # Up to TWO samples: when EVERY op targets something absent from
         # the model, the parse was almost certainly a sampling glitch
@@ -3283,6 +3353,24 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 return True
         return False
 
+    def _prepare_modification_spec(
+        self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Expand refactoring actions into primitives, then guard against
+        any relationship whose endpoint is an enumeration."""
+        # Before the expansion, so it sees only the relationships the LLM
+        # wrote: the ones a refactoring synthesises are already oriented
+        # and the ones a merge copies from the canvas are the user's.
+        self._fix_reversed_composition_mods(spec)
+        if self._is_refactoring_action(spec):
+            logger.info("[ClassDiagram] Detected refactoring action, expanding into primitives")
+            spec = self._expand_refactoring_actions(spec, current_model)
+        self._rewrite_enum_relationship_mods(spec, current_model)
+        # Runs after the expansion, so ops synthesised by a
+        # refactoring are canonicalised too.
+        self._normalise_modification_types(spec)
+        return spec
+
     def _expand_refactoring_actions(
         self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
@@ -3358,19 +3446,29 @@ class ClassDiagramHandler(BaseDiagramHandler):
     ) -> Dict[str, Any]:
         """The link a refactor adds from the source class to the class it created.
 
-        Inheritance runs the other way: the created class is the subclass.
+        Inheritance runs the other way: the created class is the subclass. So
+        do a Composition and an Aggregation, whose target is the whole: the
+        created class is the part of the class it came from, and the target
+        end is named after that class.
         """
         rel_type = changes.get("relationshipType") or default_type
+        name = changes.get("roleName") or f"has{target}"
+        source_mult = changes.get("sourceMultiplicity") or "1"
+        target_mult = changes.get("targetMultiplicity") or "1"
         if rel_type == "Inheritance":
             source, target = target, source
+        elif whole_part_kind(rel_type):
+            source, target = target, source
+            source_mult, target_mult = target_mult, source_mult
+            name = target[:1].lower() + target[1:]
         return {
             "action": "add_relationship",
             "target": {"sourceClass": source, "targetClass": target},
             "changes": {
                 "relationshipType": rel_type,
-                "sourceMultiplicity": changes.get("sourceMultiplicity") or "1",
-                "targetMultiplicity": changes.get("targetMultiplicity") or "1",
-                "name": changes.get("roleName") or f"has{target}",
+                "sourceMultiplicity": source_mult,
+                "targetMultiplicity": target_mult,
+                "name": name,
             },
         }
 

@@ -60,8 +60,8 @@ class CompactClassSpec(BaseModel):
 
 
 class CompactRelationshipSpec(BaseModel):
-    f: str = Field(description="Source class name (for inheritance: the SUBCLASS)")
-    t: str = Field(description="Target class name (for inheritance: the SUPERCLASS)")
+    f: str = Field(description="Source class name (for inheritance: the SUBCLASS; for comp/aggr: the PART)")
+    t: str = Field(description="Target class name (for inheritance: the SUPERCLASS; for comp/aggr: the WHOLE that owns the part)")
     k: Literal["assoc", "comp", "aggr", "inher", "real", "dep"] = Field(
         description="Kind: assoc=Association, comp=Composition, "
                     "aggr=Aggregation, inher=Inheritance, real=Realization, "
@@ -133,7 +133,8 @@ COMPACT_ENCODING_RULES = (
     "ONE identifier — never two names, never a slash, never a space; the "
     "second name goes in ls, never inside l. Leave an end '' only for "
     "inheritance or when it genuinely has no name. For inheritance f is the "
-    "SUBCLASS and t the SUPERCLASS. ac: association-class name or ''; when "
+    "SUBCLASS and t the SUPERCLASS; for comp and aggr f is the PART and t the "
+    "WHOLE (Brand has many BrandURLs: f=BrandURL, t=Brand). ac: association-class name or ''; when "
     "values belong to a "
     "pairing, declare their class in classes and attach it with ac on the "
     "direct assoc between the paired classes. Do not add two ordinary "

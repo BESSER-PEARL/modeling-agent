@@ -57,8 +57,8 @@ class RelationshipSpec(BaseModel):
         "Association", "Inheritance", "Composition", "Aggregation",
         "Realization", "Dependency",
     ] = Field(default="Association", description="Relationship type (e.g. Association, Inheritance, Composition, Aggregation).")
-    source: str = Field(description="Source class name")
-    target: str = Field(description="Target class name")
+    source: str = Field(description="Source class name (Inheritance: the SUBCLASS; Composition/Aggregation: the PART)")
+    target: str = Field(description="Target class name (Inheritance: the SUPERCLASS; Composition/Aggregation: the WHOLE that owns the part, where the diamond is drawn)")
     sourceMultiplicity: str = Field(default="1", description="Source multiplicity: 1, 0..1, 0..*, or 1..*")
     targetMultiplicity: str = Field(default="*", description="Target multiplicity: 1, 0..1, 0..*, or 1..*")
     name: Optional[str] = Field(default=None, description="Name of the TARGET end (the role the source class navigates by), also used as the relationship name")
@@ -309,7 +309,9 @@ class ClassModification(BaseModel):
     ] = Field(description=(
         "Action to perform. Choose carefully:\n"
         "- add_relationship: CONNECT TWO EXISTING classes. Set target.sourceClass "
-        "+ target.targetClass + changes.relationshipType. Use for 'add a "
+        "+ target.targetClass + changes.relationshipType. For a Composition or "
+        "Aggregation the sourceClass is the PART and the targetClass the WHOLE "
+        "('X contains many Y' => sourceClass=Y, targetClass=X). Use for 'add a "
         "composition/aggregation/association between X and Y', 'connect X and Y', "
         "'X has/owns/contains/references/knows a Y' when Y is a CLASS; and for "
         "INHERITANCE: 'X extends Y', 'X is a subclass of Y', 'make X inherit from "
