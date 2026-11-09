@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "modeling-agent"
 # The one version: docs/source/conf.py reads it from here.
-version = "8.1.0"
+version = "8.1.1"
 description = "Conversational modeling assistant for the BESSER Web Modeling Editor"
 readme = "README.md"
 requires-python = ">=3.11"
