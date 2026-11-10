@@ -12,6 +12,7 @@ from baf.core.session import Session
 
 from conversation import agent_context as ctx
 from common.agent_config import MAX_TABS, CONVERSATION_HISTORY_DEPTH
+from common.errors import ErrorCode
 from protocol.types import AssistantRequest
 from conversation.session_helpers import reply_message, reply_payload, reply_progress, user_key_reply
 from utilities.model_utils import model_has_elements
@@ -19,6 +20,7 @@ from diagram_handlers.registry.metadata import get_diagram_type_info
 from orchestrator import determine_target_diagram_type, resolve_diagram_id
 from prompts import model_operations as operation_prompts
 from routing.generation_signals import detect_generator_type
+from routing.guards import auto_fix_verdict
 from utilities.model_resolution import (
     resolve_target_model,
     resolve_object_reference_diagram,
@@ -32,7 +34,7 @@ from utilities.model_context import is_diagram_nontrivial
 from utilities.original_request import (
     current_target, original_request_for_project, remember_original_request, request_project_id,
 )
-from conversation.reply_copy import REFINE_MODEL_PROMPT, continue_generating_prompt
+from conversation.reply_copy import AUTO_FIX_UNFIXED, REFINE_MODEL_PROMPT, continue_generating_prompt
 from conversation.suggestions import get_suggested_actions, get_artifact_label, get_post_spec_suggestions
 from common.session_keys import (
     LAST_EXECUTED_DIAGRAM_TYPE,
@@ -67,6 +69,10 @@ class Deferred(NamedTuple):
 
 
 _QUEUED_DESTRUCTIVE = "_queued_destructive_confirmation"
+
+# Handler replies that ask the user to rephrase: the LLM call failed, or the
+# handler crashed (generate_fallback_modification).
+_REPHRASE_ERROR_CODES = frozenset({ErrorCode.LLM_FAILURE.value, ErrorCode.GENERATION_ERROR.value})
 
 
 def _non_web_target_label(session, request):
@@ -819,6 +825,9 @@ def execute_model_operation(
         {"images": operation["images"]}
         if target_diagram_type == "GUINoCodeDiagram" and operation.get("images") else {}
     )
+    # The editor's validation repair: a failure reply must not ask its author,
+    # the editor, to rephrase. The editor lists the open issues.
+    auto_fix = operation_mode == "modify_model" and auto_fix_verdict(request.message or "") is not None
 
     try:
         if operation_mode == "modify_model":
@@ -963,6 +972,8 @@ def execute_model_operation(
                 "retryable": False,
                 "suggestedRecovery": "Try again shortly, or add your own API key",
             })
+        elif auto_fix:
+            reply_message(session, AUTO_FIX_UNFIXED)
         else:
             reply_message(
                 session,
@@ -986,7 +997,12 @@ def execute_model_operation(
         return None
 
     if result.get("action") == Action.ASSISTANT_MESSAGE:
-        reply_message(session, result.get("message", "Something went wrong. Please try again."))
+        # Only the "rephrase" failures; a refusal or a handler's own guidance
+        # (a duplicate-end note, a member it could not find) is kept.
+        if auto_fix and result.get("errorCode") in _REPHRASE_ERROR_CODES:
+            reply_message(session, AUTO_FIX_UNFIXED)
+        else:
+            reply_message(session, result.get("message", "Something went wrong. Please try again."))
         return None
 
     # When a modify_model op was silently promoted to a full complete_system
