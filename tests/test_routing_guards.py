@@ -13,7 +13,7 @@ from app import state_bodies as sb
 from common.session_keys import UNIFIED_CLASSIFICATION
 from protocol.types import AssistantRequest, WorkspaceContext
 from routing import guards
-from routing.guards import AUTO_FIX_PREFIX, auto_fix_issues
+from routing.guards import AUTO_FIX_PREFIX
 from routing.unified_classifier import (
     UnifiedClassification,
     classify_message,
@@ -298,22 +298,3 @@ def test_transition_order_keeps_the_local_classifier_routes():
         ("json", "json_no_intent_matched", None),
         ("text", "no_intent", None),
     ]
-
-
-_AUTO_FIX = (
-    f"{AUTO_FIX_PREFIX} The last change left the diagram with validation errors. "
-    "Fix exactly these, changing only what is necessary:\n"
-    "- Class 'Brand' defines attribute 'name' which already exists in a parent class.\n"
-    "- Class 'Brand' defines attribute 'id' which already exists in a parent class."
-)
-
-
-@pytest.mark.parametrize("message,issues", [
-    (_AUTO_FIX, ["Class 'Brand' defines attribute 'name' which already exists in a parent class.",
-                 "Class 'Brand' defines attribute 'id' which already exists in a parent class."]),
-    (f"{AUTO_FIX_PREFIX} Fix: x", []),
-    ("remove the duplicate name from Brand", None),
-    ("please fix:\n- Class 'A' is broken", None),
-])
-def test_auto_fix_issues_are_the_listed_lines(message, issues):
-    assert auto_fix_issues(message) == issues

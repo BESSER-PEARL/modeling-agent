@@ -94,9 +94,10 @@ Messages the editor itself sends to repair a validation error start with
 ``pending_flow_action="new_request"``, so a machine repair is never
 mistaken for an answer to a question the assistant happened to be asking.
 When the repair changes nothing (the model's output is rejected or names no
-existing member), ``model_operations`` replies with the issues still open,
-read from the request by ``guards.auto_fix_issues()``, rather than asking the
-user to rephrase a message the editor wrote.
+existing member, or the handler crashes), ``model_operations`` replies that
+the diagram is unchanged (``reply_copy.AUTO_FIX_UNFIXED``) rather than asking
+the user to rephrase a message the editor wrote. The editor lists the issues
+still open in its own status line, so the reply does not repeat them.
 
 
 Stage 2: The Unified Classifier

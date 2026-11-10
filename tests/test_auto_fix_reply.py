@@ -1,4 +1,4 @@
-"""An editor repair request that changes nothing says which issues remain.
+"""An editor repair request that changes nothing says the diagram is unchanged.
 
 After a model fails backend validation the editor sends one ``[auto-fix]``
 request listing the issues (BESSER-PEARL/BESSER#744). Live on
@@ -8,7 +8,8 @@ process that modification. Please try again or rephrase your request." (1 of
 model wrote junk into ``target.attributeName`` (3 of 8 timed runs), and two
 runs took ~60 s instead of ~4 s, the signature of a run-on generation. The
 user never wrote that message, so "rephrase your request" is wrong and junk
-must not be quoted; the reply names the issues that are still open.
+must not be quoted. The editor's own status line lists the issues still open
+(BESSER-Web-Modeling-Editor#276), so the reply does not repeat them.
 
 The fake model below returns the two failing shapes: an output the parser
 rejects (a run-on cut off at the token limit) and a garbled member name.
@@ -19,6 +20,7 @@ import json
 import pytest
 
 import execution.model_operations as mo
+from conversation.reply_copy import AUTO_FIX_UNFIXED
 from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 from protocol.types import AssistantRequest, WorkspaceContext
 from tests.conftest import FakeLLM, FakeSession
@@ -85,14 +87,20 @@ def _send(monkeypatch, message: str, llm_output: str) -> dict:
 
 
 @pytest.mark.parametrize("llm_output", [RUN_ON, GARBLED], ids=["run-on", "garbled-name"])
-def test_a_failed_repair_names_the_open_issues(monkeypatch, llm_output):
+def test_a_failed_repair_says_the_diagram_is_unchanged(monkeypatch, llm_output):
     reply = _send(monkeypatch, AUTO_FIX, llm_output)
-    assert reply["action"] == "assistant_message"
-    text = reply["message"]
-    assert ISSUE in text
-    assert "rephrase" not in text.lower()
-    assert "try again" not in text.lower()
-    assert "name wall?" not in text
+    assert reply == {"action": "assistant_message", "message": AUTO_FIX_UNFIXED}
+    # The editor lists the open issues in its own status line; not twice.
+    assert ISSUE not in reply["message"]
+    assert "rephrase" not in reply["message"].lower()
+
+
+def test_a_repair_that_crashes_is_not_asked_to_rephrase(monkeypatch):
+    def _crash(*_a, **_k):
+        raise RuntimeError("handler bug")
+    monkeypatch.setattr(ClassDiagramHandler, "generate_modification", _crash)
+    reply = _send(monkeypatch, AUTO_FIX, FIXED)
+    assert reply == {"action": "assistant_message", "message": AUTO_FIX_UNFIXED}
 
 
 def test_a_successful_repair_is_applied(monkeypatch):

@@ -2363,6 +2363,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         return class_names, attr_names, method_names
 
+    def _known_member_names(self, elements: Optional[Dict[str, Any]]) -> frozenset:
+        if not isinstance(elements, dict):
+            return frozenset()
+        _, attr_names, method_names = self._build_model_index({"elements": elements})
+        return frozenset(attr_names | method_names)
+
     def _phantom_note_for_mod(
         self, mod: Dict[str, Any], class_names: set, attr_names: set, method_names: set,
     ) -> Optional[str]:
@@ -2387,29 +2393,33 @@ class ClassDiagramHandler(BaseDiagramHandler):
         src = (target.get("sourceClass") or "").strip()
         tgt = (target.get("targetClass") or "").strip()
 
-        def _unclear(kind: str) -> str:
-            # The member name is missing or not a name (prose, garbled
-            # tokens): ask instead of quoting it.
-            owner = self._member_name(cn)
-            of_owner = f" of **{owner}**" if owner else ""
-            return f"I couldn't tell which {kind}{of_owner} to {verb}. Which one did you mean?"
+        def _member_note(kind: str, noun: str, named: str, known: set) -> Optional[str]:
+            # The editor finds the member by target.<kind>Name, then
+            # changes.previousName, then changes.name (ClassDiagramModifier
+            # modifyAttribute / modifyMethod); a removal only by its target.
+            changes = mod.get("changes") if isinstance(mod.get("changes"), dict) else {}
+            candidates = [named] if action == "remove_element" else [
+                named, changes.get("previousName"), changes.get("name"),
+            ]
+            candidates = [c.strip() for c in candidates if isinstance(c, str) and c.strip()]
+            # A real member is kept whatever it is called: "first-name" is
+            # exactly what a hyphen-error repair renames.
+            if any(self._clean_member_name(c).lower() in known for c in candidates):
+                return None
+            # Missing, or not a name (prose, garbled tokens): ask instead of quoting it.
+            quoted = self._member_name(named)
+            if not quoted:
+                owner = self._member_name(cn)
+                of_owner = f" of **{owner}**" if owner else ""
+                return f"I couldn't tell which {kind}{of_owner} to {verb}. Which one did you mean?"
+            return f"I couldn't find a **{quoted}** {noun} to {verb}."
 
         # 1) Attribute target — missing only when absent everywhere.
         if attr or action == "modify_attribute":
-            name = self._member_name(attr)
-            if not name:
-                return _unclear("attribute")
-            if name.lower() not in attr_names:
-                return f"I couldn't find a **{name}** field to {verb}."
-            return None
+            return _member_note("attribute", "field", attr, attr_names)
         # 2) Method target.
         if meth or action == "modify_method":
-            name = self._member_name(meth)
-            if not name:
-                return _unclear("method")
-            if name.lower() not in method_names:
-                return f"I couldn't find a **{name}** method to {verb}."
-            return None
+            return _member_note("method", "method", meth, method_names)
         # 3) Relationship target (by endpoints) — missing when a named endpoint
         #    class doesn't exist.
         if src or tgt:
@@ -3148,6 +3158,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 user_prompt, system_prompt, ClassModificationResponse,
                 post_processor=_strip_spurious_relationship_mods,
                 spec_processor=_expand_refactoring,
+                elements=current_model.get("elements") if isinstance(current_model, dict) else None,
             )
             if modification_spec.get("action") != Action.MODIFY_MODEL:
                 break  # element-not-found short-circuit etc. — not a whiff

@@ -343,6 +343,15 @@ class ClassModification(BaseModel):
     changes: Optional[ClassModificationChanges] = Field(default=None, description="Changes to apply. Required for all actions except remove_element.")
 
     @model_validator(mode='after')
+    def cap_class_renames(self) -> 'ClassModification':
+        """changes.name allows a member's 50 characters; a name it gives a
+        class keeps the class cap of 30 (ClassSpec.className)."""
+        name = self.changes.name if self.changes else None
+        if self.action in ("modify_class", "merge_classes") and name and len(name) > 30:
+            raise ValueError(f"class name {name!r} is longer than 30 characters")
+        return self
+
+    @model_validator(mode='after')
     def resolve_add_class_name(self) -> 'ClassModification':
         """For add_class, source the real class name and clear junk target.
 

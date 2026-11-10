@@ -65,12 +65,10 @@ META_ANSWER = (
 )
 
 
-def auto_fix_unfixed_reply(issues: list[str]) -> str:
-    """Reply to an editor ``[auto-fix]`` request that changed nothing. The
-    editor wrote that request, so the user is not asked to rephrase it."""
-    listed = "\n".join(f"- {issue}" for issue in issues)
-    return (
-        "I couldn't fix these validation issues automatically, so the diagram "
-        f"is unchanged:\n{listed}\n\nYou can fix them on the canvas, or tell me "
-        "how you'd like them resolved."
-    )
+# Reply to an editor ``[auto-fix]`` request that changed nothing. The editor
+# wrote that request and lists the open issues itself, so this neither repeats
+# them nor asks the user to rephrase.
+AUTO_FIX_UNFIXED = (
+    "The diagram is unchanged. You can fix these issues on the canvas, or tell "
+    "me how you'd like them resolved."
+)

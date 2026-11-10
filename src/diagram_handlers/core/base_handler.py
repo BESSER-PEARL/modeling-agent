@@ -424,20 +424,29 @@ class BaseDiagramHandler(ABC):
         return f"{human} **{target_name}**."
 
     @classmethod
-    def _member_name(cls, value: Any) -> Optional[str]:
+    def _member_name(cls, value: Any, known: frozenset = frozenset()) -> Optional[str]:
         """*value*, JSON artifacts stripped, when it is a member name a reply
-        may quote (an identifier), else ``None``. The model sometimes writes
+        may quote (an identifier, or a member of the model: *known* holds their
+        lowercased bare names), else ``None``. The model sometimes writes
         prose, garbled tokens or the prompt itself into a member-name field."""
         if not isinstance(value, str) or not value.strip():
             return None
         value = cls._sanitize_target_name(value)
-        return value if value.isidentifier() else None
+        return value if value.isidentifier() or value.lower() in known else None
+
+    def _known_member_names(self, elements: Optional[Dict[str, Any]]) -> frozenset:
+        """Lowercased bare names of the members in *elements*, which a reply may
+        quote even when they are not identifiers ("first-name" is what a
+        validation repair renames). Diagram types with members override this."""
+        return frozenset()
 
     @classmethod
-    def _describe_member_change(cls, action: str, target: dict, mod: Optional[dict] = None) -> Optional[str]:
+    def _describe_member_change(
+        cls, action: str, target: dict, mod: Optional[dict] = None, known: frozenset = frozenset(),
+    ) -> Optional[str]:
         """The reply for a change to an attribute or method, naming the member
         and its owner (``"Updated attribute **aliases** in **Brand**."``), or
-        ``None`` when *action* is not a member change or a name is missing."""
+        ``None`` when *action* is not a member change or has no owner."""
         owner = next((target.get(k) for k in cls._MEMBER_OWNER_KEYS if target.get(k)), None)
         changes = (mod or {}).get('changes') if isinstance(mod, dict) else None
         changes = changes if isinstance(changes, dict) else {}
@@ -450,17 +459,24 @@ class BaseDiagramHandler(ABC):
             verb, kind, prep = cls._MEMBER_ACTIONS[action]
         else:
             return None
-        target_member = cls._member_name(target.get(f'{kind}Name'))
-        new_name = cls._member_name(changes.get('name'))
+        target_member = cls._member_name(target.get(f'{kind}Name'), known)
+        new_name = cls._member_name(changes.get('name'), known)
         # An add names its new member in changes.name; target.<kind>Name names
         # an existing one and is null for an add.
         if action.startswith('add_'):
             member, new_name = new_name or target_member, None
+        elif not target.get(f'{kind}Name') and new_name and new_name.lower() in known:
+            # No target name: the editor finds the member by changes.name.
+            member, new_name = new_name, None
         else:
             member = target_member
-        if not owner or not member:
+        if not owner:
             return None
         owner = cls._sanitize_target_name(owner)
+        if not member:
+            # Never fall back to the owner's name: "Removed **Person**." reads
+            # as the class being removed.
+            return f"{verb} {'an' if kind == 'attribute' else 'a'} {kind} {prep} **{owner}**."
         if action.startswith('modify_') and new_name and new_name != member:
             return f"Renamed {kind} **{member}** to **{new_name}** in **{owner}**."
         return f"{verb} {kind} **{member}** {prep} **{owner}**."
@@ -469,7 +485,7 @@ class BaseDiagramHandler(ABC):
         self, action: str, target: dict, mod: Optional[dict] = None, elements: Optional[Dict[str, Any]] = None,
     ) -> str:
         """The reply sentence for one modification."""
-        member_change = self._describe_member_change(action, target, mod)
+        member_change = self._describe_member_change(action, target, mod, self._known_member_names(elements))
         if member_change:
             return member_change
         name = self._build_mod_target_name(action, target, mod, elements=elements)

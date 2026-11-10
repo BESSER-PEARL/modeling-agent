@@ -31,7 +31,11 @@ def _say(action, target, changes=None):
     ("remove_element", {"className": "Car", "methodName": "drive"}, None,
      "Removed method **drive** from **Car**."),
     ("remove_element", {"className": "Car"}, None, "Removed **Car**."),
-    ("add_attribute", {"className": "Brand"}, None, "Added attribute to **Brand**."),
+    ("add_attribute", {"className": "Brand"}, None, "Added an attribute to **Brand**."),
+    # A member name the reply may not quote never falls back to the owner:
+    # "Removed **Brand**." would read as the class being removed.
+    ("remove_element", {"className": "Brand", "attributeName": "name wall?"}, None,
+     "Removed an attribute from **Brand**."),
 ])
 def test_the_message_reads_naturally(action, target, changes, message):
     assert _say(action, target, changes) == message

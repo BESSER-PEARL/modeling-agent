@@ -22,7 +22,9 @@ import pytest
 
 from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
 from prompts import class_diagram as class_prompts
-from schemas.class_diagram import ClassModificationChanges, ClassModificationResponse
+from pydantic import ValidationError
+
+from schemas.class_diagram import ClassModification, ClassModificationChanges, ClassModificationResponse
 
 from tests.conftest import FakeLLM
 
@@ -135,6 +137,63 @@ def test_an_added_member_may_use_the_member_name_length():
     the class-name cap of 30 failed the whole modification."""
     name = "preferredCommunicationChannel"  # 29
     assert ClassModificationChanges(name=name + "Code").name == name + "Code"  # 33
+
+
+@pytest.mark.parametrize("action", ["modify_class", "merge_classes"])
+def test_a_class_name_keeps_the_class_name_length(action):
+    with pytest.raises(ValidationError, match="longer than 30"):
+        ClassModification(action=action, target={"className": "Brand"},
+                          changes={"name": "PreferredCommunicationChannelCode"})
+    assert ClassModification(action=action, target={"className": "Brand"},
+                             changes={"name": "PreferredChannel"}).changes.name == "PreferredChannel"
+
+
+PERSON_MODEL = {
+    "version": "3.0.0", "type": "ClassDiagram",
+    "elements": {
+        "c1": {"id": "c1", "name": "Person", "type": "Class", "owner": None,
+               "attributes": ["a1", "a2", "a3"], "methods": ["m1"]},
+        "a1": {"id": "a1", "name": "+ first-name: str", "type": "ClassAttribute", "owner": "c1"},
+        "a2": {"id": "a2", "name": "+ last name: str", "type": "ClassAttribute", "owner": "c1"},
+        "a3": {"id": "a3", "name": "+ price: int", "type": "ClassAttribute", "owner": "c1"},
+        "m1": {"id": "m1", "name": "+ get-age(): int", "type": "ClassMethod", "owner": "c1"},
+    },
+    "relationships": {},
+}
+
+
+def _modify_person(mod: dict) -> dict:
+    llm = FakeLLM(json.dumps({"modifications": [mod]}))
+    return ClassDiagramHandler(llm).generate_modification("edit the model", copy.deepcopy(PERSON_MODEL))
+
+
+# BESSER rejects "first-name" ("Hyphens are not allowed") and "last name"; the
+# editor's [auto-fix] repair renames exactly these, so they must reach it.
+@pytest.mark.parametrize("mod, reply", [
+    ({"action": "modify_attribute", "target": {"className": "Person", "attributeName": "first-name"},
+      "changes": {"name": "first_name"}},
+     "Renamed attribute **first-name** to **first_name** in **Person**."),
+    ({"action": "modify_attribute", "target": {"className": "Person", "attributeName": "last name"},
+      "changes": {"name": "lastName"}},
+     "Renamed attribute **last name** to **lastName** in **Person**."),
+    ({"action": "modify_method", "target": {"className": "Person", "methodName": "get-age"},
+      "changes": {"name": "getAge"}},
+     "Renamed method **get-age** to **getAge** in **Person**."),
+    ({"action": "remove_element", "target": {"className": "Person", "attributeName": "first-name"}},
+     "Removed attribute **first-name** from **Person**."),
+], ids=["hyphen-rename", "space-rename", "hyphen-method-rename", "hyphen-remove"])
+def test_a_real_member_with_an_invalid_name_is_kept(mod, reply):
+    result = _modify_person(mod)
+    assert result["action"] == "modify_model"
+    assert result["message"] == reply
+
+
+def test_a_type_change_naming_the_attribute_only_in_changes_name_is_kept():
+    """The editor falls back to changes.name to find the attribute."""
+    result = _modify_person({"action": "modify_attribute", "target": {"className": "Person"},
+                             "changes": {"name": "price", "type": "float"}})
+    assert result["action"] == "modify_model"
+    assert result["message"] == "Updated attribute **price** in **Person**."
 
 
 def test_the_prompt_shows_an_attribute_rename():

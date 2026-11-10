@@ -11,7 +11,6 @@ Before the classifier (``unified_classifier``):
   skips_classification   reconnect replays and blank text are never classified
   frontend_event_verdict generator callbacks, routed by their ``action``
   auto_fix_verdict       the editor's ``[auto-fix]`` repair requests
-  auto_fix_issues        the validation issues such a request lists
 
 After routing, in the state that received the message:
   reconcile_intent       create vs modify: the verdict over the state default
@@ -23,7 +22,7 @@ After routing, in the state that received the message:
 """
 
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from routing.generation_signals import detect_generator_type
 from protocol.actions import Action
@@ -72,14 +71,6 @@ def auto_fix_verdict(message: str) -> Optional[Dict[str, Any]]:
         "pending_flow_action": "new_request",
         "reason": "Editor validation repair ([auto-fix] marker) — deterministic modify route",
     }
-
-
-def auto_fix_issues(message: str) -> Optional[List[str]]:
-    """The issues an ``[auto-fix]`` request lists (its ``- `` lines, as the
-    editor's ``useAssistantLogic`` builds it), or None for any other message."""
-    if not message.startswith(AUTO_FIX_PREFIX):
-        return None
-    return [line[2:].strip() for line in message.splitlines() if line.startswith("- ") and line[2:].strip()]
 
 
 # ---------------------------------------------------------------------------
