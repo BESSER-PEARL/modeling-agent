@@ -14,7 +14,7 @@ import random
 import sys
 import time
 import uuid
-from typing import Callable, Dict, Any, List, NamedTuple, Optional, Sequence, Type
+from typing import Callable, Dict, Any, FrozenSet, List, NamedTuple, Optional, Sequence, Type
 from abc import ABC, abstractmethod
 
 from pydantic import BaseModel
@@ -42,6 +42,9 @@ logger = logging.getLogger(__name__)
 # restore INFO-level content logging for a debugging session.
 _LOG_PROMPTS = AgentSettings().log_prompts
 _log_content = logger.info if _LOG_PROMPTS else logger.debug
+
+# Longest new member name a rename reply quotes: the schemas' member-name cap.
+_MAX_QUOTED_NAME = 50
 
 
 # ---------------------------------------------------------------------------
@@ -423,26 +426,37 @@ class BaseDiagramHandler(ABC):
         human = action.replace('_', ' ').capitalize()
         return f"{human} **{target_name}**."
 
+    @staticmethod
+    def _clean_member_name(raw: Optional[str]) -> str:
+        """A displayed member reduced to its bare name; types whose members
+        carry a type or parameters ("email: str") override this."""
+        return (raw or "").strip()
+
     @classmethod
-    def _member_name(cls, value: Any, known: frozenset = frozenset()) -> Optional[str]:
-        """*value*, JSON artifacts stripped, when it is a member name a reply
-        may quote (an identifier, or a member of the model: *known* holds their
-        lowercased bare names), else ``None``. The model sometimes writes
-        prose, garbled tokens or the prompt itself into a member-name field."""
+    def _member_name(cls, value: Any, known: Optional[FrozenSet[str]] = frozenset()) -> Optional[str]:
+        """The bare member name in *value* when a reply may quote it, else
+        ``None``. The model sometimes writes prose, garbled tokens or the prompt
+        itself into a member-name field, so a name is quoted only when it is an
+        identifier or a member of the model (*known*: lowercased bare names).
+        ``known=None``: the handler keeps no member index, quote it as written."""
         if not isinstance(value, str) or not value.strip():
             return None
         value = cls._sanitize_target_name(value)
-        return value if value.isidentifier() or value.lower() in known else None
+        if known is None:
+            return value
+        bare = cls._clean_member_name(value)
+        return bare if bare.isidentifier() or bare.lower() in known else None
 
-    def _known_member_names(self, elements: Optional[Dict[str, Any]]) -> frozenset:
+    def _known_member_names(self, elements: Optional[Dict[str, Any]]) -> Optional[FrozenSet[str]]:
         """Lowercased bare names of the members in *elements*, which a reply may
         quote even when they are not identifiers ("first-name" is what a
-        validation repair renames). Diagram types with members override this."""
-        return frozenset()
+        validation repair renames), or ``None`` when the handler keeps no such
+        index (its replies quote member names as written)."""
+        return None
 
     @classmethod
     def _describe_member_change(
-        cls, action: str, target: dict, mod: Optional[dict] = None, known: frozenset = frozenset(),
+        cls, action: str, target: dict, mod: Optional[dict] = None, known: Optional[FrozenSet[str]] = None,
     ) -> Optional[str]:
         """The reply for a change to an attribute or method, naming the member
         and its owner (``"Updated attribute **aliases** in **Brand**."``), or
@@ -460,16 +474,21 @@ class BaseDiagramHandler(ABC):
         else:
             return None
         target_member = cls._member_name(target.get(f'{kind}Name'), known)
-        new_name = cls._member_name(changes.get('name'), known)
+        named = cls._member_name(changes.get('name'), known)
+        new_name = None
         # An add names its new member in changes.name; target.<kind>Name names
         # an existing one and is null for an add.
         if action.startswith('add_'):
-            member, new_name = new_name or target_member, None
-        elif not target.get(f'{kind}Name') and new_name and new_name.lower() in known:
+            member = named or target_member
+        elif not target.get(f'{kind}Name') and named and known and named.lower() in known:
             # No target name: the editor finds the member by changes.name.
-            member, new_name = new_name, None
+            member = named
         else:
             member = target_member
+            # A rename quotes the name the editor sets, even one that is not an identifier.
+            raw = changes.get('name')
+            if isinstance(raw, str) and raw.strip() and '\n' not in raw and len(raw) <= _MAX_QUOTED_NAME:
+                new_name = cls._sanitize_target_name(raw)
         if not owner:
             return None
         owner = cls._sanitize_target_name(owner)

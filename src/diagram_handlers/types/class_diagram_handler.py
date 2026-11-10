@@ -5,7 +5,7 @@ Handles generation of UML Class Diagrams
 
 import logging
 import re
-from typing import Dict, Any, List, Optional, Sequence, Tuple
+from typing import Dict, Any, FrozenSet, List, Optional, Sequence, Tuple
 
 from ..core.base_handler import (
     BaseDiagramHandler,
@@ -14,7 +14,7 @@ from ..core.base_handler import (
     SINGLE_CLASS_REQUIRED,
     SINGLE_CLASS_OPTIONAL,
 )
-from common.errors import non_recoverable_cause, partial_result_reason
+from common.errors import ErrorCode, non_recoverable_cause, partial_result_reason
 from common.settings import AgentSettings
 from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
 from prompts import class_diagram as class_prompts
@@ -2363,7 +2363,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         return class_names, attr_names, method_names
 
-    def _known_member_names(self, elements: Optional[Dict[str, Any]]) -> frozenset:
+    def _known_member_names(self, elements: Optional[Dict[str, Any]]) -> FrozenSet[str]:
         if not isinstance(elements, dict):
             return frozenset()
         _, attr_names, method_names = self._build_model_index({"elements": elements})
@@ -2394,20 +2394,18 @@ class ClassDiagramHandler(BaseDiagramHandler):
         tgt = (target.get("targetClass") or "").strip()
 
         def _member_note(kind: str, noun: str, named: str, known: set) -> Optional[str]:
-            # The editor finds the member by target.<kind>Name, then
-            # changes.previousName, then changes.name (ClassDiagramModifier
-            # modifyAttribute / modifyMethod); a removal only by its target.
+            # The editor finds the member by target.<kind>Name, then changes.name
+            # (ClassDiagramModifier modifyAttribute / modifyMethod); a removal
+            # only by its target.
             changes = mod.get("changes") if isinstance(mod.get("changes"), dict) else {}
-            candidates = [named] if action == "remove_element" else [
-                named, changes.get("previousName"), changes.get("name"),
-            ]
+            candidates = [named] if action == "remove_element" else [named, changes.get("name")]
             candidates = [c.strip() for c in candidates if isinstance(c, str) and c.strip()]
             # A real member is kept whatever it is called: "first-name" is
             # exactly what a hyphen-error repair renames.
             if any(self._clean_member_name(c).lower() in known for c in candidates):
                 return None
             # Missing, or not a name (prose, garbled tokens): ask instead of quoting it.
-            quoted = self._member_name(named)
+            quoted = self._member_name(named, frozenset(known))
             if not quoted:
                 owner = self._member_name(cn)
                 of_owner = f" of **{owner}**" if owner else ""
@@ -3236,17 +3234,15 @@ class ClassDiagramHandler(BaseDiagramHandler):
         return modification_spec
     
     def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
-        """Generate a fallback modification when AI generation fails"""
-        return {
-            "action": Action.MODIFY_MODEL,
-            "modification": {
-                "action": "modify_class",
-                "target": {"className": "Unknown"},
-                "changes": {"name": "ModifiedClass"}
-            },
-            "diagramType": self.get_diagram_type(),
-            "message": "I couldn't apply that modification automatically. Could you rephrase your request? For example: *'Add a phone attribute to User'* or *'Create a relationship between Order and Product'*."
-        }
+        """The reply when ``_build_modification`` crashes. It applies nothing:
+        a placeholder op (``modify_class Unknown``) only made the editor report
+        a second failure."""
+        return self._error_response(
+            "I couldn't apply that modification automatically. Could you rephrase your request? "
+            "For example: *'Add a phone attribute to User'* or *'Create a relationship between "
+            "Order and Product'*.",
+            code=ErrorCode.GENERATION_ERROR.value, retryable=False,
+        )
 
     # ------------------------------------------------------------------
     # Modification message building

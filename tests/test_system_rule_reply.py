@@ -67,7 +67,18 @@ def test_user_rules_are_counted_alone_and_not_called_hidden(monkeypatch):
     reply = _create(monkeypatch, canned)
     assert len(reply["systemSpec"]["constraints"]) == 2
     assert "I also added the rule you stated as an OCL constraint." in reply["message"]
+    assert "**Hotel.rooms** is optional in the diagram" in reply["message"]
     assert "aren't shown on the canvas" not in reply["message"]
+
+
+def test_two_relaxed_cycles_are_named_together(monkeypatch):
+    canned = dict(HOTEL, classes=HOTEL["classes"] + [{"n": "Guest", "a": ["name: str"], "m": [], "k": ""}],
+                  rels=HOTEL["rels"] + [
+                      {"f": "Guest", "t": "Hotel", "k": "comp", "how_many_TARGET_for_one_SOURCE": "1",
+                       "how_many_SOURCE_for_one_TARGET": "1..*", "l": "hotel", "ls": "guests"},
+                  ])
+    message = _create(monkeypatch, canned)["message"]
+    assert "**Hotel.rooms** and **Hotel.guests** are optional in the diagram and their minimums are kept as OCL rules" in message
 
 
 @pytest.mark.parametrize("ocl,expected", [

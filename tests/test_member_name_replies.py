@@ -188,6 +188,25 @@ def test_a_real_member_with_an_invalid_name_is_kept(mod, reply):
     assert result["message"] == reply
 
 
+@pytest.mark.parametrize("mod, reply", [
+    ({"action": "remove_element", "target": {"className": "Person", "methodName": "get-age()"}},
+     "Removed method **get-age** from **Person**."),
+    ({"action": "modify_attribute", "target": {"className": "Person", "attributeName": "price: int"},
+      "changes": {"type": "float"}},
+     "Updated attribute **price** in **Person**."),
+], ids=["method-with-parens", "attribute-with-type"])
+def test_a_member_written_with_its_signature_is_named_bare(mod, reply):
+    assert _modify_person(mod)["message"] == reply
+
+
+def test_a_rename_to_a_name_that_is_not_an_identifier_is_still_reported():
+    """The editor sets changes.name as written; hiding it reported "Updated"."""
+    result = _modify_person({"action": "modify_attribute",
+                             "target": {"className": "Person", "attributeName": "price"},
+                             "changes": {"name": "unit-price"}})
+    assert result["message"] == "Renamed attribute **price** to **unit-price** in **Person**."
+
+
 def test_a_type_change_naming_the_attribute_only_in_changes_name_is_kept():
     """The editor falls back to changes.name to find the attribute."""
     result = _modify_person({"action": "modify_attribute", "target": {"className": "Person"},

@@ -66,6 +66,16 @@ def test_a_user_profile_attribute_value_names_attribute_and_profile():
     )
 
 
+def test_a_type_without_a_member_index_quotes_member_names_as_written():
+    """Only the class diagram checks names against its model; an object or
+    user-profile attribute such as "first-name" is quoted as before."""
+    h = UserProfileDiagramHandler(None)
+    target = {"profileName": "alice", "attributeName": "first-name"}
+    assert h._describe_modification("modify_attribute_value", target, {"target": target}) == (
+        "Updated attribute **first-name** on **alice**."
+    )
+
+
 def test_a_user_profile_target_with_a_class_still_names_the_profile():
     h = UserProfileDiagramHandler(None)
     target = {"profileName": "alice_profile", "className": "Personal_Information", "attributeName": "age"}

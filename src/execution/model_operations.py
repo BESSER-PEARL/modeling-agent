@@ -12,6 +12,7 @@ from baf.core.session import Session
 
 from conversation import agent_context as ctx
 from common.agent_config import MAX_TABS, CONVERSATION_HISTORY_DEPTH
+from common.errors import ErrorCode
 from protocol.types import AssistantRequest
 from conversation.session_helpers import reply_message, reply_payload, reply_progress, user_key_reply
 from utilities.model_utils import model_has_elements
@@ -68,6 +69,10 @@ class Deferred(NamedTuple):
 
 
 _QUEUED_DESTRUCTIVE = "_queued_destructive_confirmation"
+
+# Handler replies that ask the user to rephrase: the LLM call failed, or the
+# handler crashed (generate_fallback_modification).
+_REPHRASE_ERROR_CODES = frozenset({ErrorCode.LLM_FAILURE.value, ErrorCode.GENERATION_ERROR.value})
 
 
 def _non_web_target_label(session, request):
@@ -820,8 +825,8 @@ def execute_model_operation(
         {"images": operation["images"]}
         if target_diagram_type == "GUINoCodeDiagram" and operation.get("images") else {}
     )
-    # The editor's validation repair: a reply that changes nothing must not ask
-    # its author, the editor, to rephrase. The editor lists the open issues.
+    # The editor's validation repair: a failure reply must not ask its author,
+    # the editor, to rephrase. The editor lists the open issues.
     auto_fix = operation_mode == "modify_model" and auto_fix_verdict(request.message or "") is not None
 
     try:
@@ -992,7 +997,9 @@ def execute_model_operation(
         return None
 
     if result.get("action") == Action.ASSISTANT_MESSAGE:
-        if auto_fix:
+        # Only the "rephrase" failures; a refusal or a handler's own guidance
+        # (a duplicate-end note, a member it could not find) is kept.
+        if auto_fix and result.get("errorCode") in _REPHRASE_ERROR_CODES:
             reply_message(session, AUTO_FIX_UNFIXED)
         else:
             reply_message(session, result.get("message", "Something went wrong. Please try again."))
