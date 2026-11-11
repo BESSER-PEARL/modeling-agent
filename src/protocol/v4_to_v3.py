@@ -23,9 +23,9 @@ Rules:
   A node or edge that is not an object or has no id is dropped with a warning.
   A model whose ``nodes`` / ``edges`` is not a list, or whose nodes are all
   unusable, raises ``ModelConversionError`` instead of reading as empty.
-* Only UML models are converted. ``GUINoCodeDiagram`` (GrapesJS) and
-  ``QuantumCircuitDiagram`` (Quirk columns) are passed through untouched, as
-  are models that are already v3.
+* Only UML models are converted. ``GUINoCodeDiagram`` (GrapesJS),
+  ``QuantumCircuitDiagram`` (Quirk columns) and ``KnowledgeGraphDiagram`` are
+  passed through untouched, as are models that are already v3.
 * Only the agent's INPUT is converted. Its output payloads are format-agnostic
   semantic specs that the frontend converts itself.
 """
@@ -52,7 +52,10 @@ __all__ = [
 ]
 
 # Diagram types whose models are not Apollon/React-Flow UML models.
-NON_UML_DIAGRAM_TYPES = frozenset({"GUINoCodeDiagram", "QuantumCircuitDiagram"})
+NON_UML_DIAGRAM_TYPES = frozenset(
+    # A knowledge graph has its own ``nodes`` / ``edges`` lists (KnowledgeGraphData).
+    {"GUINoCodeDiagram", "QuantumCircuitDiagram", "KnowledgeGraphDiagram"}
+)
 
 V3_VERSION = "3.0.0"
 
@@ -180,17 +183,22 @@ _ZERO_BOUNDS = {"x": 0, "y": 0, "width": 0, "height": 0}
 def is_v4_model(model: Any) -> bool:
     """True when *model* is a v4 (React Flow) diagram model.
 
-    A model counts as v4 when its ``version`` starts with ``"4."`` or it
-    carries a ``nodes`` list. A model that already has a v3 ``elements`` dict
-    and no ``nodes`` list is never treated as v4.
+    The version decides first, as in the editor's ``isV4Format`` /
+    ``isV3Format``: a ``"4."`` model is v4 when ``nodes`` is a list or it has
+    no ``elements`` dict, and a ``"3."`` model with an ``elements`` dict is
+    v3. Otherwise the shape decides: a model with an ``elements`` dict and an
+    empty or missing ``nodes`` is v3, and a model with ``nodes`` is v4.
     """
     if not isinstance(model, dict):
         return False
-    has_nodes = isinstance(model.get("nodes"), list)
-    if isinstance(model.get("elements"), dict) and not has_nodes:
+    version = model.get("version") if isinstance(model.get("version"), str) else ""
+    nodes = model.get("nodes")
+    has_elements = isinstance(model.get("elements"), dict)
+    if version.startswith("4."):
+        return isinstance(nodes, list) or not has_elements
+    if has_elements and (version.startswith("3.") or not isinstance(nodes, list) or not nodes):
         return False
-    version = model.get("version")
-    return has_nodes or (isinstance(version, str) and version.startswith("4."))
+    return nodes is not None
 
 
 # ---------------------------------------------------------------------------
@@ -969,7 +977,8 @@ def normalize_project_snapshot(
 
     Handles both the multi-tab (``diagrams[T] = [tab, ...]``) and the legacy
     single-dict (``diagrams[T] = tab``) layouts. v3 models and the non-UML
-    ``GUINoCodeDiagram`` / ``QuantumCircuitDiagram`` buckets are left untouched.
+    ``GUINoCodeDiagram`` / ``QuantumCircuitDiagram`` / ``KnowledgeGraphDiagram``
+    buckets are left untouched.
     Returns the input object itself when nothing needed converting, otherwise a
     new snapshot (the input is never mutated).
 

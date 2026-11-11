@@ -229,6 +229,39 @@ class TestDetection:
         assert convert_v4_model_to_v3(V3_CLASS) is V3_CLASS
         assert normalize_model(V3_CLASS, "ClassDiagram") is V3_CLASS
 
+    def test_v3_model_with_an_empty_nodes_list_keeps_its_elements(self):
+        """A v3 model carrying a stray ``nodes: []`` was converted to an empty diagram."""
+        model = {**V3_CLASS, "nodes": [], "edges": []}
+        assert not is_v4_model(model)
+        assert normalize_model(model, "ClassDiagram") is model
+        unversioned = {k: v for k, v in model.items() if k != "version"}
+        assert not is_v4_model(unversioned)
+        snapshot = {"diagrams": {"ClassDiagram": [{"id": "c", "model": model}]}}
+        request = parse_v2_payload(make_v2_payload("hi", "ClassDiagram", project_snapshot=snapshot))
+        assert request.current_model["elements"] == V3_CLASS["elements"]
+
+    def test_version_decides_before_shape(self):
+        # The editor's isV4Format: version 4.x and a nodes list.
+        assert is_v4_model({"version": "4.0.0", "nodes": [], "edges": [], "elements": {"a": {}}})
+        # A 3.x model with elements is v3 whatever else it carries.
+        assert not is_v4_model({"version": "3.0.0", "elements": {"a": {}}, "relationships": {},
+                                "nodes": [{"id": "n"}]})
+        # No elements dict: the nodes list is all there is to read.
+        assert is_v4_model({"version": "3.0.0", "nodes": [{"id": "n"}], "edges": []})
+        assert is_v4_model({"nodes": "oops"})
+        # Unversioned with both shapes populated: nodes win, as before.
+        assert is_v4_model({"elements": {"a": {}}, "nodes": [{"id": "n"}]})
+
+    def test_knowledge_graph_model_passes_through(self):
+        """A KG model has its own ``nodes`` / ``edges`` lists; it is not a v4 UML model."""
+        kg = {"nodes": [{"id": "k1", "type": "class", "label": "Person"}],
+              "edges": [{"id": "e1", "source": "k1", "target": "k1"}]}
+        assert normalize_model(kg, "KnowledgeGraphDiagram") is kg
+        typed = {**kg, "type": "KnowledgeGraphDiagram"}
+        assert convert_v4_model_to_v3(typed) is typed
+        snapshot = {"diagrams": {"KnowledgeGraphDiagram": [{"id": "k", "title": "KG", "model": kg}]}}
+        assert normalize_project_snapshot(snapshot, "KnowledgeGraphDiagram") is snapshot
+
 
 # ---------------------------------------------------------------------------
 # ClassDiagram

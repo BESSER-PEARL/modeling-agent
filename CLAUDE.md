@@ -227,7 +227,7 @@ Full reference: `docs/source/websocket_protocol.rst`. The traps:
   legacy `activeModel` is ignored). If the active tab fails to convert, the request fails with
   `ModelConversionError`; a failed background tab gets `model: None`. This inverts the frontend's `versionConverter.ts`; the mapping lives in BESSER's
   `docs/source/migrations/uml-v4-shape.md`. All downstream code reads v3 only; never add a v4 branch downstream.
-  GUI and Quantum models pass through.
+  GUI, Quantum and Knowledge Graph models pass through.
 - **Outbound specs must work in both editors**: the production v3 editor and the v4 (React Flow) editor apply
   them with their own modifiers, and the agent ships first. Changed specs (state-machine `remove_transition` by
   `transitionId` and `add_transition` endpoints in `changes`, BPMN `governanceDsl` generated from `governancePolicy`,
