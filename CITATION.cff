@@ -24,7 +24,7 @@ keywords:
   - Conversational modeling
   - LLM agent
 license: MIT
-version: 8.1.1
+version: 8.1.2
 preferred-citation:
   type: conference-paper
   authors:
