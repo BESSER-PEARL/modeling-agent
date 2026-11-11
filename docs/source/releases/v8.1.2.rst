@@ -1,0 +1,39 @@
+Version 8.1.2
+=============
+
+This patch release goes with BESSER v8.9.4. Promoting an attribute to a class
+now gives the same model as the editor, and modification and repair replies
+say what actually happened.
+
+Fixes
+-----
+
+* **Promote attribute makes the new class a part.** The agent linked the
+  original class to the promoted one with a plain association, while the
+  editor's own *promote attribute* makes a composition with the original class
+  as the whole. The agent now makes the same composition: the promoted class
+  is the part (the source), the original class the whole (the target), and the
+  end is named after the whole, as *extract class* does. A relationship type
+  the request names is still used
+  (`#71 <https://github.com/BESSER-PEARL/modeling-agent/pull/71>`_).
+* **Modification replies name the real member.** A reply could quote whatever
+  the model wrote as the member name: prose ("stock quantity (int) in
+  Product."), garbled tokens or internal context, and a rename that changed
+  nothing replied "Updated attribute in Brand". The schema now asks for an
+  existing member (null for an add) and the new name in ``changes.name``, a
+  rename example is in the prompt, and a reply quotes a member only when it is
+  an identifier or a member of the model. A change whose member is in no class
+  is dropped and the reply asks which member was meant
+  (`#70 <https://github.com/BESSER-PEARL/modeling-agent/pull/70>`_).
+* **No phantom rules in the create reply.** "I also noted 1 rule(s) you
+  mentioned" appeared on prompts with no rules, because the invariant the
+  mandatory-cycle guard adds was counted as the user's. The reply now counts
+  only the user's rules and says which end became optional
+  (`#70 <https://github.com/BESSER-PEARL/modeling-agent/pull/70>`_).
+* **A failed auto-fix no longer asks the user to rephrase.** The editor's
+  repair request could be answered "I couldn't process that modification.
+  Please try again or rephrase your request.", for a message the user never
+  wrote. Such a reply is now one status line, "The diagram is unchanged…", and
+  the editor lists the open issues (BESSER-PEARL/BESSER-Web-Modeling-Editor#276).
+  A refusal and the duplicate-end repair's guidance are kept
+  (`#70 <https://github.com/BESSER-PEARL/modeling-agent/pull/70>`_).

@@ -173,11 +173,11 @@ class TestConstraintCaptureEndToEnd:
         assert len(constraints) == 1
         assert constraints[0]["context"] == "Speaker"
         assert "forAll" in constraints[0]["expression"]
-        # The success message tells the user the stated rule was noted (worded
-        # in plain, non-technical language). Constraints are drawn on the canvas.
+        # The success message says the stated rule was added; the editor draws
+        # it as an OCL box, so it is not called hidden.
         msg = result["message"].lower()
-        assert "rule" in msg
-        assert "aren't shown" not in msg and "not shown" not in msg
+        assert "the rule you stated as an ocl constraint" in msg
+        assert "not shown" not in msg and "aren't shown" not in msg
 
     def test_no_constraint_stated_yields_empty(self):
         """When the spec carries no constraints, the systemSpec constraints

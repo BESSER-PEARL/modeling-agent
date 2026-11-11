@@ -128,8 +128,12 @@ Shared Concrete Methods
      - Structured modification call, ``modify_model`` envelope and friendly
        message, shared by every ``_build_modification``. A change to an
        attribute or method names the member and its owner ("Updated attribute
-       **aliases** in **Brand**.", ``_describe_member_change``); any other
-       action names its target (``_build_mod_target_name``)
+       **aliases** in **Brand**.", ``_describe_member_change``). A handler
+       whose ``_known_member_names`` indexes the model (the class diagram)
+       quotes a member name only when it is an identifier or a member of the
+       model, so prose or garbled tokens the model wrote into a name field are
+       never repeated; other handlers quote names as written. Any other action
+       names its target (``_build_mod_target_name``)
    * - ``predict_with_retry()``
      - Free-text LLM call with jittered exponential backoff. Routed through
        the user's BYOK client when one is active for this request.
@@ -185,7 +189,13 @@ Features
 - **Impact Analysis:** For modifications, analyzes which elements are affected.
 - **Incremental Fallback:** If full generation fails, generates class-by-class.
 - **Schema-Enforced Naming:** Class names capped at 30 chars, attribute/method names
-  at 50 chars via Pydantic ``max_length``. Prevents runaway LLM names.
+  at 50 chars via Pydantic ``max_length``; a class rename through ``changes.name``
+  (member-sized) keeps the class cap via ``cap_class_renames``. Prevents runaway LLM names.
+- **Missing Targets:** An edit whose attribute or method is in no class is dropped
+  (``_drop_phantom_target_ops``). The member is looked up as the editor does: by
+  ``target.attributeName`` / ``methodName``, then ``changes.name`` (a removal: the
+  target only). The reply is "I couldn't find a **x** field to …", or "I couldn't
+  tell which attribute of **Class** to …" when the name is not a name.
 - **Literal Action Types:** Modification actions (``add_class``, ``modify_attribute``,
   etc.) are ``Literal`` types — the LLM cannot hallucinate invalid actions.
 - **Enum Type Safety:** The LLM prompt requires every referenced enum type

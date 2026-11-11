@@ -81,3 +81,12 @@ META_ANSWER = (
     "PlantUML or diagram images. I reply in the language you write in."
     "\n\nWhat would you like to model?"
 )
+
+
+# Reply to an editor ``[auto-fix]`` request that changed nothing. The editor
+# wrote that request and lists the open issues itself, so this neither repeats
+# them nor asks the user to rephrase.
+AUTO_FIX_UNFIXED = (
+    "The diagram is unchanged. You can fix these issues on the canvas, or tell "
+    "me how you'd like them resolved."
+)

@@ -321,9 +321,10 @@ class TestReplyQuality:
         from diagram_handlers.types.class_diagram_handler import ClassDiagramHandler
         msg = ClassDiagramHandler(None)._build_system_message({
             "systemName": "Library", "classes": [{"className": "Item"}], "relationships": [],
-            "constraints": ["context Item inv notEmptyTitle: not self.title.isEmpty()"]})
-        assert "aren't shown on the canvas" not in msg
-        assert "1 rule(s) you stated" in msg
+            "constraints": [{"context": "Item", "name": "notEmptyTitle",
+                             "expression": "not self.title.isEmpty()"}]})
+        assert "aren't shown" not in msg and "not shown" not in msg
+        assert "I also added the rule you stated as an OCL constraint." in msg
 
     def test_link_message_names_both_ends(self):
         """ws-A A6: "Added link to element." for each add_link."""

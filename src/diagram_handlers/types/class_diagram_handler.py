@@ -5,7 +5,7 @@ Handles generation of UML Class Diagrams
 
 import logging
 import re
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, FrozenSet, List, Optional, Sequence, Tuple
 
 from ..core.base_handler import (
     SKIPPED_PARTS_NOTE,
@@ -15,7 +15,7 @@ from ..core.base_handler import (
     SINGLE_CLASS_REQUIRED,
     SINGLE_CLASS_OPTIONAL,
 )
-from common.errors import non_recoverable_cause, partial_result_reason
+from common.errors import ErrorCode, non_recoverable_cause, partial_result_reason
 from common.settings import AgentSettings
 from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
 from prompts import class_diagram as class_prompts
@@ -287,7 +287,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # neither. Relax one end per cycle and keep the rule as an OCL
         # invariant. Runs after the orientation/naming guards so the
         # invariant navigates the end by its final name.
-        self._break_mandatory_cycles(system_spec)
+        relaxations = self._break_mandatory_cycles(system_spec)
 
         # Drop any OCL constraint whose context isn't a real class in the
         # spec (the LLM occasionally references a class it didn't create).
@@ -304,7 +304,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             cls.pop("position", None)
         self.apply_system_layout(system_spec, existing_model)
 
-        message = self._build_system_message(system_spec)
+        message = self._build_system_message(system_spec, relaxations)
 
         # The matching frontend converter persists constraints as OCL
         # boxes/links and associationClass attachments as ClassLinkRel.
@@ -1651,7 +1651,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 "%d -> String", converted, coerced,
             )
 
-    def _break_mandatory_cycles(self, system_spec: Dict[str, Any]) -> None:
+    def _break_mandatory_cycles(self, system_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Relax one end of every mandatory creation cycle, keeping the rule as OCL.
 
         The LLM renders "a booking covers at least one room" as
@@ -1679,11 +1679,13 @@ class ClassDiagramHandler(BaseDiagramHandler):
         ``sourceRole`` on a source end, else the lowercased endpoint class)
         because B-OCL resolves it against the context class.
 
-        Mutates *system_spec* in place; no-op when nothing cycles.
+        Mutates *system_spec* in place and returns one ``{"constraint",
+        "context", "end", "min"}`` record per relaxed end (empty when nothing
+        cycles), so the reply can tell these invariants from the user's.
         """
         relationships = system_spec.get("relationships")
         if not isinstance(relationships, list) or not relationships:
-            return
+            return []
         order = {id(rel): i for i, rel in enumerate(relationships)}
 
         def _mandatory_ends() -> List[Dict[str, Any]]:
@@ -1742,7 +1744,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             if match:
                 taken_names.add(match.group(1))
 
-        relaxed = 0
+        relaxations: List[Dict[str, Any]] = []
         for _ in range(2 * len(relationships)):  # each pass drops one mandatory end
             cycle = _find_cycle(_mandatory_ends())
             if not cycle:
@@ -1760,15 +1762,19 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 name = f"{base}_{counter}"
                 counter += 1
             taken_names.add(name)
-            constraints.append({
+            constraint = {
                 "context": victim["needer"],
                 "expression": (
                     f"context {victim['needer']} inv {name}: "
                     f"self.{end_name}->size() >= {victim['min']}"
                 ),
                 "name": name,
+            }
+            constraints.append(constraint)
+            relaxations.append({
+                "constraint": constraint, "context": victim["needer"],
+                "end": end_name, "min": victim["min"],
             })
-            relaxed += 1
             logger.info(
                 "[ClassDiagram] Relaxed the %s end of %s-%s from %s to %s to break "
                 "the mandatory creation cycle %s; kept the rule as OCL invariant '%s'",
@@ -1778,9 +1784,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 name,
             )
 
-        if relaxed:
+        if relaxations:
             system_spec["constraints"] = constraints
-            logger.info("[ClassDiagram] Broke %d mandatory creation cycle(s)", relaxed)
+            logger.info("[ClassDiagram] Broke %d mandatory creation cycle(s)", len(relaxations))
+        return relaxations
 
     def _validate_constraints(self, system_spec: Dict[str, Any]) -> None:
         """Drop OCL constraints whose context isn't a real class in the spec.
@@ -2232,8 +2239,13 @@ class ClassDiagramHandler(BaseDiagramHandler):
         parts.append(". Want to add more details or connect it to something else?")
         return "".join(parts)
 
-    def _build_system_message(self, spec: Dict[str, Any]) -> str:
-        """Build a descriptive message for a complete class diagram spec."""
+    def _build_system_message(
+        self, spec: Dict[str, Any], relaxations: Sequence[Dict[str, Any]] = (),
+    ) -> str:
+        """Build a descriptive message for a complete class diagram spec.
+
+        *relaxations* are the ends ``_break_mandatory_cycles`` made optional;
+        their invariants are the agent's, not rules the user stated."""
         system_name = spec.get("systemName", "System")
         classes = spec.get("classes", [])
         rels = spec.get("relationships", [])
@@ -2247,10 +2259,22 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 msg += f", with {len(rels)} relationship(s) linking them"
         elif rels:
             msg += f", with {len(rels)} relationship(s) between them"
-        constraints = spec.get("constraints") or []
-        if constraints:
-            msg += f", and {len(constraints)} rule(s) you stated"
         msg += "."
+        # The editor draws every constraint as an OCL box on its class.
+        constraints = [c for c in spec.get("constraints") or [] if isinstance(c, dict)]
+        agent_made = [r for r in relaxations if any(r["constraint"] is c for c in constraints)]
+        user_rules = len(constraints) - len(agent_made)
+        if user_rules == 1:
+            msg += " I also added the rule you stated as an OCL constraint."
+        elif user_rules > 1:
+            msg += f" I also added the {user_rules} rules you stated as OCL constraints."
+        if agent_made:
+            ends = " and ".join(f"**{r['context']}.{r['end']}**" for r in agent_made)
+            if len(agent_made) == 1:
+                kept = f"is optional in the diagram and its minimum of {agent_made[0]['min']} is kept as an OCL rule"
+            else:
+                kept = "are optional in the diagram and their minimums are kept as OCL rules"
+            msg += f" {ends} {kept}, so no class needs another to exist before it can be created."
         return msg
 
     # ------------------------------------------------------------------
@@ -2340,6 +2364,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         return class_names, attr_names, method_names
 
+    def _known_member_names(self, elements: Optional[Dict[str, Any]]) -> FrozenSet[str]:
+        if not isinstance(elements, dict):
+            return frozenset()
+        _, attr_names, method_names = self._build_model_index({"elements": elements})
+        return frozenset(attr_names | method_names)
+
     def _phantom_note_for_mod(
         self, mod: Dict[str, Any], class_names: set, attr_names: set, method_names: set,
     ) -> Optional[str]:
@@ -2364,16 +2394,31 @@ class ClassDiagramHandler(BaseDiagramHandler):
         src = (target.get("sourceClass") or "").strip()
         tgt = (target.get("targetClass") or "").strip()
 
+        def _member_note(kind: str, noun: str, named: str, known: set) -> Optional[str]:
+            # The editor finds the member by target.<kind>Name, then changes.name
+            # (ClassDiagramModifier modifyAttribute / modifyMethod); a removal
+            # only by its target.
+            changes = mod.get("changes") if isinstance(mod.get("changes"), dict) else {}
+            candidates = [named] if action == "remove_element" else [named, changes.get("name")]
+            candidates = [c.strip() for c in candidates if isinstance(c, str) and c.strip()]
+            # A real member is kept whatever it is called: "first-name" is
+            # exactly what a hyphen-error repair renames.
+            if any(self._clean_member_name(c).lower() in known for c in candidates):
+                return None
+            # Missing, or not a name (prose, garbled tokens): ask instead of quoting it.
+            quoted = self._member_name(named, frozenset(known))
+            if not quoted:
+                owner = self._member_name(cn)
+                of_owner = f" of **{owner}**" if owner else ""
+                return f"I couldn't tell which {kind}{of_owner} to {verb}. Which one did you mean?"
+            return f"I couldn't find a **{quoted}** {noun} to {verb}."
+
         # 1) Attribute target — missing only when absent everywhere.
-        if attr:
-            if attr.lower() not in attr_names:
-                return f"I couldn't find a **{attr}** field to {verb}."
-            return None
+        if attr or action == "modify_attribute":
+            return _member_note("attribute", "field", attr, attr_names)
         # 2) Method target.
-        if meth:
-            if meth.lower() not in method_names:
-                return f"I couldn't find a **{meth}** method to {verb}."
-            return None
+        if meth or action == "modify_method":
+            return _member_note("method", "method", meth, method_names)
         # 3) Relationship target (by endpoints) — missing when a named endpoint
         #    class doesn't exist.
         if src or tgt:
@@ -3172,6 +3217,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 user_prompt, system_prompt, ClassModificationResponse,
                 post_processor=_strip_spurious_relationship_mods,
                 spec_processor=_expand_refactoring,
+                elements=current_model.get("elements") if isinstance(current_model, dict) else None,
             )
             if modification_spec.get("action") != Action.MODIFY_MODEL:
                 break  # element-not-found short-circuit etc. — not a whiff
@@ -3249,17 +3295,15 @@ class ClassDiagramHandler(BaseDiagramHandler):
         return modification_spec
     
     def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
-        """Generate a fallback modification when AI generation fails"""
-        return {
-            "action": Action.MODIFY_MODEL,
-            "modification": {
-                "action": "modify_class",
-                "target": {"className": "Unknown"},
-                "changes": {"name": "ModifiedClass"}
-            },
-            "diagramType": self.get_diagram_type(),
-            "message": "I couldn't apply that modification automatically. Could you rephrase your request? For example: *'Add a phone attribute to User'* or *'Create a relationship between Order and Product'*."
-        }
+        """The reply when ``_build_modification`` crashes. It applies nothing:
+        a placeholder op (``modify_class Unknown``) only made the editor report
+        a second failure."""
+        return self._error_response(
+            "I couldn't apply that modification automatically. Could you rephrase your request? "
+            "For example: *'Add a phone attribute to User'* or *'Create a relationship between "
+            "Order and Product'*.",
+            code=ErrorCode.GENERATION_ERROR.value, retryable=False,
+        )
 
     # ------------------------------------------------------------------
     # Modification message building
