@@ -29,7 +29,7 @@ Usage::
 import json
 import logging
 import threading
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Type
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Type
 
 from openai import LengthFinishReasonError
 from pydantic import BaseModel
@@ -250,13 +250,15 @@ class LLMProvider:
         client = self.client
         return client is not None and hasattr(client, 'beta') and hasattr(client.beta, 'chat')
 
-    def structured_model(self, model: Optional[str] = None) -> str:
-        """The model a Structured Outputs :meth:`parse` calls for *model*: a
-        user's OpenAI key maps it to their chosen model or BYOK tier."""
+    def model_for(self, model: Optional[str] = None) -> Tuple[str, str]:
+        """``(provider, model)`` a call requesting the tier *model* runs on: the
+        user's key's provider and the model it maps the tier to (their chosen
+        model, else the provider's tier default), else the server's OpenAI model."""
+        requested = model or self._model
         cfg = get_current()
         if cfg is None:
-            return model or self._model
-        return byok.resolve_model("openai", model or self._model, cfg.model)
+            return "openai", requested
+        return cfg.provider, byok.resolve_model(cfg.provider, requested, cfg.model)
 
     def parse(
         self,
@@ -303,7 +305,7 @@ class LLMProvider:
                     temperature=temperature, max_tokens=max_tokens, system=system,
                 )
                 return validate_llm_json(schema, byok._strip_code_fences(raw))
-            effective_model = self.structured_model(model)
+            effective_model = self.model_for(model)[1]
         else:
             client = self.client
         if client is None or not hasattr(client, 'beta'):

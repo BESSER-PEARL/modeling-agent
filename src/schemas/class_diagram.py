@@ -11,6 +11,8 @@ import re
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from schemas.requirements import RealizationSpec
+
 
 class MethodParameterSpec(BaseModel):
     name: str = Field(min_length=1, max_length=50, description="Parameter name in camelCase")
@@ -133,6 +135,11 @@ class SystemClassSpec(BaseModel):
         description="OCL invariants for business rules the user EXPLICITLY stated "
                     "(uniqueness, multiplicity-beyond-cardinality, value ranges). "
                     "Leave EMPTY when the user stated no such rule — never invent constraints.",
+    )
+    realizations: List[RealizationSpec] = Field(
+        default_factory=list,
+        description="For each listed requirement the diagram realizes, the elements that realize it. "
+                    "EMPTY when no requirements are listed.",
     )
 
     @model_validator(mode="after")
