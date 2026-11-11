@@ -182,9 +182,10 @@ class TestExpansion:
         assert c.expression.startswith("context Book inv")
 
     def test_dump_shape_matches_downstream_expectations(self):
-        # The guards in generate_complete_system operate on this dict shape.
+        # The guards in generate_complete_system operate on this dict shape
+        # (it pops "realizations" first: they are resolved after the guards).
         d = expand_compact_spec(_compact_sample()).model_dump()
-        assert set(d.keys()) == {"systemName", "classes", "relationships", "constraints"}
+        assert set(d.keys()) == {"systemName", "classes", "relationships", "constraints", "realizations"}
         assert d["classes"][0]["attributes"][0]["name"] == "title"
 
 

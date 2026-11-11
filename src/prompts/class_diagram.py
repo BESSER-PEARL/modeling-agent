@@ -174,6 +174,39 @@ def reasoning_prompt(user_request: str) -> str:
     )
 
 
+def requirements_block(requirements: list) -> str:
+    """The extracted requirements a class diagram can realize, appended to the structured pass's request.
+
+    ``requirements`` are ``{"id", "text", "kind", ...}`` dicts, in order. Per-request,
+    so never part of the (cached) system prompt.
+    """
+    listing = "\n".join(f"{r['id']} [{r['kind']}]. {r['text']}" for r in requirements)
+    return (
+        "\n\n## Requirements extracted from the request\n\n"
+        f"{listing}\n\n"
+        "The request above stays the authority: this list is an index of it, not a "
+        "replacement. Model the request as the rules say, then fill \"realizations\": "
+        "one entry per requirement the class diagram realizes, with the requirement's id "
+        "and EVERY element you modeled because of it, written as 'Class' (a class or "
+        "enumeration), 'Class.member' (an attribute, an enumeration literal or an "
+        "association end), 'Class.method()' (a method) or 'inv name' (an OCL invariant: "
+        "give every invariant a name). By kind, list:\n"
+        "- data: the class or enumeration, each attribute or literal the requirement "
+        "names, and each association end it states;\n"
+        "- uniqueness, validation: the attribute it constrains and the invariant "
+        "enforcing it;\n"
+        "- rule: the attributes and association ends it limits and the invariant;\n"
+        "- computed: the attribute holding the value, the attributes it is computed from "
+        "and the method computing it;\n"
+        "- transition: the status attribute, the literals it names and the method "
+        "changing the status;\n"
+        "- action: the method, and the attributes it changes.\n"
+        "An element no requirement led to (an identifier you added) is in no entry. "
+        "Leave out a requirement no element realizes. Never add an element only to "
+        "cover a requirement."
+    )
+
+
 def enumeration_recovery_prompt(wanted: str, request_text: str) -> str:
     return (
         "These attribute types are referenced by the model of this "

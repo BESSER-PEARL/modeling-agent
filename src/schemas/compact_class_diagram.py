@@ -34,6 +34,7 @@ from schemas.class_diagram import (
     SingleClassSpec,
     SystemClassSpec,
 )
+from schemas.requirements import RealizationSpec
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +100,10 @@ class CompactSystemClassSpec(BaseModel):
     ocl: List[str] = Field(description=(
         "Full B-OCL invariants ('context X inv name: expr') ONLY for business "
         "rules the user EXPLICITLY stated; [] otherwise — never invent rules."))
+    realizations: List[RealizationSpec] = Field(
+        default_factory=list,
+        description="For each listed requirement the diagram realizes, the elements that realize it; "
+                    "[] when no requirements are listed.")
 
 
 # Appended to the system generation prompt when the compact schema is active.
@@ -369,4 +374,5 @@ def expand_compact_spec(compact: CompactSystemClassSpec) -> SystemClassSpec:
         classes=classes,
         relationships=relationships,
         constraints=constraints,
+        realizations=compact.realizations,
     )

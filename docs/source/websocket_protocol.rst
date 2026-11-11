@@ -415,6 +415,35 @@ Injects a full diagram (all elements + relationships) at once.
    * - ``suggestedActions``
      - Optional list of ``{label, prompt}`` follow-up buttons. Clicking one
        sends its ``prompt`` as the next user message.
+   * - ``requirements``
+     - Class diagram only, and only when the request states requirements: the
+       requirements extracted from the user's message, in order, each
+       ``{"id": "R1", "text", "quote", "kind"}``. ``quote`` is the words of the
+       message that state it (checked to be in the message); ``kind`` is a
+       BESSER ``RequirementKind`` value (``data``, ``uniqueness``,
+       ``validation``, ``rule``, ``computed``, ``transition``, ``action``,
+       ``ui``, ``integration``, ``quality``, ``technical``). The editor records
+       each as a ``RequirementArtifact`` in the project trace.
+   * - ``realizations``
+     - Sent with ``requirements``: the elements of ``systemSpec`` that realize
+       each requirement, ``[{"requirement": "R2", "elements": [{"type":
+       "Property", "name": "number", "owner": "Room"}]}]``. ``type`` is the
+       B-UML metaclass (``Class``, ``Enumeration``, ``Property``,
+       ``EnumerationLiteral``, ``Method``, ``BinaryAssociation``,
+       ``Constraint``) and ``owner`` the class holding the element (an
+       invariant's context, an association's source). Every element is
+       resolved against the final ``systemSpec``; a requirement no element
+       realizes has no entry, nor has one of a kind no class realizes
+       (``ui``, ``integration``, ``quality``, ``technical``).
+       An enumeration named whole comes with its literals; when some of its
+       literals are named, only those are sent. The editor links each requirement to those
+       elements in the project trace.
+   * - ``requirementsModel``
+     - Sent with ``requirements``: the LLM that extracted them,
+       ``{"name": "gpt-...", "provider": "openai"}`` (with a user's own key,
+       that key's provider and the model it maps the extraction's tier to).
+       The editor records the extraction as a ``RequirementExtraction``
+       calling it.
 
 .. note::
 

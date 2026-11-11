@@ -162,6 +162,7 @@ class TestTwoPassContextDeduplication:
 
     def test_reasoning_pass_gets_raw_request_structured_pass_gets_context_once(self):
         llm = RecordingFakeLLM([
+            json.dumps({"requirements": []}),  # the requirements extraction
             "Reasoning: model Patient, Doctor, Appointment and related entities.",
             VALID_SYSTEM_SPEC_JSON,
         ])
@@ -173,8 +174,12 @@ class TestTwoPassContextDeduplication:
             enriched, raw_request=self.LONG_RAW_REQUEST,
         )
 
-        assert len(llm.call_log) == 2
-        reasoning_prompt, structured_prompt = llm.call_log
+        assert len(llm.call_log) == 3
+        extraction_prompt, reasoning_prompt, structured_prompt = llm.call_log
+
+        # The requirements are extracted from the user's own words only.
+        assert self.LONG_RAW_REQUEST in extraction_prompt
+        assert "Workspace context:" not in extraction_prompt
 
         # Pass 1 reasons over the raw request only — the enriched context
         # (history + workspace block) must not be duplicated into it.

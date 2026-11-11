@@ -959,6 +959,7 @@ class BaseDiagramHandler(ABC):
         temperature: float = LLM_TEMPERATURE,
         model: Optional[str] = None,
         images: Sequence[str] = (),
+        max_tokens: Optional[int] = None,
     ) -> BaseModel:
         """Call the LLM with OpenAI Structured Outputs, returning a validated Pydantic model.
 
@@ -978,6 +979,8 @@ class BaseDiagramHandler(ABC):
             model: Optional per-call model override (see ``model_config``);
                 defaults to the handler's LLM instance model.
             images: Optional image data URLs sent with the prompt.
+            max_tokens: Completion budget; defaults to the schema's
+                (``_structured_max_tokens``).
 
         Returns:
             Validated Pydantic model instance.
@@ -995,9 +998,10 @@ class BaseDiagramHandler(ABC):
             )
             return self._structured_fallback(
                 prompt, response_schema, system_prompt, max_retries, model=model,
-                images=images,
+                images=images, max_tokens=max_tokens,
             )
-        effective_model = provider.structured_model(model)
+        effective_model = provider.model_for(model)[1]
+        max_tokens = max_tokens or self._structured_max_tokens(response_schema)
 
         messages = []
         if system_prompt:
@@ -1038,7 +1042,6 @@ class BaseDiagramHandler(ABC):
                             break
 
             try:
-                max_tokens = self._structured_max_tokens(response_schema)
                 logger.info(
                     f"🤖 [{self.get_diagram_type()}] Structured LLM call started "
                     f"(attempt {attempt + 1}/{total_attempts}, "
@@ -1109,6 +1112,7 @@ class BaseDiagramHandler(ABC):
         max_retries: int,
         model: Optional[str] = None,
         images: Sequence[str] = (),
+        max_tokens: Optional[int] = None,
     ) -> BaseModel:
         """Fallback path when structured outputs API is unavailable.
 
@@ -1130,7 +1134,7 @@ class BaseDiagramHandler(ABC):
         )
 
         response = self.predict_with_retry(
-            full_prompt, max_retries=max_retries, model=model, images=images,
+            full_prompt, max_retries=max_retries, model=model, images=images, max_tokens=max_tokens,
         )
         json_text = self.clean_json_response(response)
 
@@ -1160,6 +1164,7 @@ class BaseDiagramHandler(ABC):
         model: Optional[str] = None,
         reasoning_model: Optional[str] = None,
         images: Sequence[str] = (),
+        max_tokens: Optional[int] = None,
     ) -> BaseModel:
         """Two-pass generation with structured output for pass 2.
 
@@ -1187,6 +1192,8 @@ class BaseDiagramHandler(ABC):
             reasoning_model: Optional per-call model override for the
                 free-text reasoning pass (see ``model_config``).
             images: Optional image data URLs sent with both passes.
+            max_tokens: Completion budget of the structured pass; defaults to
+                the schema's (``_structured_max_tokens``).
         """
         # Fast path: simple requests don't need a reasoning pass.
         # Judge "simple" by the raw user message length when the caller
@@ -1205,6 +1212,7 @@ class BaseDiagramHandler(ABC):
                 temperature=temperature,
                 model=model,
                 images=images,
+                max_tokens=max_tokens,
             )
 
         # Pass 1: Design reasoning (free-text)
@@ -1229,6 +1237,7 @@ class BaseDiagramHandler(ABC):
                 temperature=temperature,
                 model=model,
                 images=images,
+                max_tokens=max_tokens,
             )
 
         if not reasoning or not reasoning.strip():
@@ -1240,6 +1249,7 @@ class BaseDiagramHandler(ABC):
                 temperature=temperature,
                 model=model,
                 images=images,
+                max_tokens=max_tokens,
             )
 
         logger.info(
@@ -1267,6 +1277,7 @@ class BaseDiagramHandler(ABC):
             temperature=temperature,
             model=model,
             images=images,
+            max_tokens=max_tokens,
         )
 
     # ------------------------------------------------------------------

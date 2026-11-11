@@ -187,6 +187,23 @@ Features
   etc.) are ``Literal`` types — the LLM cannot hallucinate invalid actions.
 - **Enum Type Safety:** The LLM prompt requires every referenced enum type
   (e.g. ``OrderStatus``) to be created as an Enumeration in the same response.
+- **Requirements and their realizations:** a complete system built from the
+  user's own message (``raw_request``) first extracts the requirements that
+  message states, one call on the ``MODEL_GENERATION_SMALL`` tier
+  (``diagram_handlers/types/class_diagram_requirements.py``, prompt in
+  ``prompts/requirements.py``). An item whose ``quote`` is not in the message, or
+  is longer than ``MAX_REQUIREMENT_CHARS``, is dropped; the list is then capped at
+  ``MAX_REQUIREMENTS``. The requirements of a kind a class diagram can realize
+  (``data`` to ``action``) are appended, numbered, to the structured pass's
+  request, never to the cached system prompt, and the model reports in
+  ``realizations`` which elements realize each one (``'Room.number'``,
+  ``'Booking.checkOut()'``, ``'inv guestsWithinCapacity'``); each listed one adds
+  ``REALIZATION_TOKENS_PER_REQUIREMENT`` to that pass's completion budget. Those
+  references are resolved against the final spec after every guard, and both
+  lists ride on the ``inject_complete_system`` reply for the editor's trace, with
+  the extraction's LLM in ``requirementsModel`` (see :doc:`websocket_protocol`).
+  A failed extraction, a reply cut off at the token cap included, only logs a
+  warning: the diagram is built without requirements.
 
 StateMachineHandler
 -------------------

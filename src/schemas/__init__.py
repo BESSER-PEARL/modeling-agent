@@ -116,6 +116,12 @@ from .deployment_diagram import (
     DeploymentModification,
     DeploymentModificationResponse,
 )
+from .requirements import (
+    RequirementKind,
+    ExtractedRequirementSpec,
+    RequirementsExtractionSpec,
+    RealizationSpec,
+)
 
 __all__ = [
     # Class Diagram
@@ -165,4 +171,6 @@ __all__ = [
     "DeploymentDependencySpec", "SystemDeploymentSpec",
     "DeploymentModificationTarget", "DeploymentModificationChanges",
     "DeploymentModification", "DeploymentModificationResponse",
+    # Requirements
+    "RequirementKind", "ExtractedRequirementSpec", "RequirementsExtractionSpec", "RealizationSpec",
 ]

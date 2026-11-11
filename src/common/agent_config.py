@@ -10,6 +10,13 @@ MAX_TABS = 5
 # ── Message handling ──────────────────────────────────────────────────────
 MAX_USER_MESSAGE_CHARS = 64_000
 
+# ── Requirements extraction ──────────────────────────────────────────────
+# BESSER's MAX_REQUIREMENTS and MAX_REQUIREMENT_CHARS
+# (spec_driven_agent/planning/specification.py): the Spec-Driven Agent rejects
+# a request carrying more requirements, or a longer one.
+MAX_REQUIREMENTS = 128
+MAX_REQUIREMENT_CHARS = 1_000
+
 # ── Session cleanup ──────────────────────────────────────────────────────
 GRACE_PERIOD_SECONDS = 300
 
