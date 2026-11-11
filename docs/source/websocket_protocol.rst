@@ -249,6 +249,9 @@ BESSER's ``docs/source/migrations/uml-v4-shape.md``. The conversion rules:
   with ``ModelConversionError`` (a readable reply, never an edit against an
   apparently empty diagram). A background tab that fails keeps its ``id`` and
   ``title`` with ``model: null``.
+* A model whose ``nodes`` or ``edges`` is not a list, or whose nodes are all
+  unusable, fails to convert. A single node or edge that is not an object or has
+  no ``id`` is dropped and logged as a warning; the rest of the model is converted.
 * ``class`` + ``data.stereotype`` (``Abstract`` / ``Interface`` / ``Enumeration``,
   case-insensitive) become ``AbstractClass`` / ``Interface`` / ``Enumeration``.
   Inline ``attributes`` / ``methods`` / ``oclConstraints`` rows become owned

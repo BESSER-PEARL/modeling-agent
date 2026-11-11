@@ -15,6 +15,7 @@ import pytest
 
 from protocol.adapters import parse_v2_payload
 from protocol.v4_to_v3 import (
+    ModelConversionError,
     convert_v4_model_to_v3,
     is_v4_model,
     normalize_model,
@@ -1126,3 +1127,83 @@ class TestAdapterBoundary:
         request = parse_v2_payload(make_v2_payload("hi", "ClassDiagram", project_snapshot=snapshot))
         assert request.current_model == MINIMAL_CLASS_MODEL
         assert request.context.project_snapshot == snapshot
+
+
+# ---------------------------------------------------------------------------
+# Malformed v4 payloads: never read as an empty diagram
+# ---------------------------------------------------------------------------
+
+_LOGGER = "protocol.v4_to_v3"
+_GOOD_NODE = {"id": "n1", "type": "class", "position": {"x": 0, "y": 0},
+              "data": {"name": "Book", "attributes": [], "methods": []}}
+
+
+def _v4(nodes, edges=None):
+    model = {"version": "4.0.0", "type": "ClassDiagram", "nodes": nodes}
+    if edges is not None:
+        model["edges"] = edges
+    return model
+
+
+def _class_snapshot_payload(model, active="ClassDiagram"):
+    return make_v2_payload("create a complete library system", active, project_snapshot={
+        "id": "p1", "diagrams": {
+            "ClassDiagram": [{"id": "t1", "title": "Library", "model": model}],
+            "StateMachineDiagram": [{"id": "s1", "title": "States", "model": {
+                "version": "3.0.0", "type": "StateMachineDiagram", "elements": {}, "relationships": {}}}],
+        }})
+
+
+class TestMalformedV4:
+    @pytest.mark.parametrize("model", [
+        _v4("oops"),
+        _v4({"n1": _GOOD_NODE}),
+        _v4([_GOOD_NODE], edges="oops"),
+        _v4([{"type": "class", "data": {"name": "Book"}}]),
+        _v4([{"id": 7, "type": "class"}, {"id": "", "type": "class"}]),
+        _v4(["n1", None, 3]),
+    ], ids=["nodes-string", "nodes-dict", "edges-string", "no-id", "bad-ids", "non-dict-nodes"])
+    def test_an_unreadable_model_raises(self, model, caplog):
+        with caplog.at_level("WARNING", logger=_LOGGER):
+            with pytest.raises(ModelConversionError) as error:
+                normalize_model(model, "ClassDiagram")
+        assert "class diagram" in str(error.value).lower()
+        assert any("ClassDiagram" in r.getMessage() for r in caplog.records)
+        with pytest.raises(ModelConversionError):
+            convert_v4_model_to_v3(model, "ClassDiagram")
+
+    def test_an_unusable_node_or_edge_is_dropped_with_a_warning(self, caplog):
+        model = _v4(
+            [_GOOD_NODE, "junk", {"type": "class", "data": {"name": "NoId"}}],
+            edges=[{"id": "e1", "source": "n1", "target": "n1", "type": "ClassBidirectional"},
+                   {"source": "n1", "target": "n1"}, 5],
+        )
+        with caplog.at_level("WARNING", logger=_LOGGER):
+            out = normalize_model(model, "ClassDiagram")
+        assert list(out["elements"]) == ["n1"]
+        assert list(out["relationships"]) == ["e1"]
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 4
+        assert all("ClassDiagram" in w for w in warnings)
+        assert any("nodes[1]" in w and "not an object" in w for w in warnings)
+        assert any("nodes[2]" in w and "no id" in w for w in warnings)
+        assert any("edges[1]" in w and "no id" in w for w in warnings)
+
+    def test_an_empty_v4_model_is_an_empty_diagram(self):
+        out = normalize_model(_v4([], edges=[]), "ClassDiagram")
+        assert out["elements"] == {} and out["relationships"] == {}
+        assert normalize_model({"version": "4.0.0", "type": "ClassDiagram"}, "ClassDiagram")["elements"] == {}
+
+    def test_the_active_diagram_fails_the_request(self):
+        with pytest.raises(ModelConversionError):
+            parse_v2_payload(_class_snapshot_payload(_v4("oops")))
+
+    def test_a_background_diagram_is_skipped_with_a_warning(self, caplog):
+        with caplog.at_level("WARNING", logger=_LOGGER):
+            request = parse_v2_payload(_class_snapshot_payload(_v4("oops"), active="StateMachineDiagram"))
+        tab = request.context.project_snapshot["diagrams"]["ClassDiagram"][0]
+        assert tab == {"id": "t1", "title": "Library", "model": None}
+        assert request.current_model["type"] == "StateMachineDiagram"
+        skipped = [r for r in caplog.records if "Skipped" in r.getMessage()]
+        assert len(skipped) == 1 and skipped[0].levelname == "WARNING"
+        assert "ClassDiagram" in skipped[0].getMessage() and "Library" in skipped[0].getMessage()

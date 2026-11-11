@@ -20,6 +20,9 @@ Rules:
 
 * Pure functions — the input is never mutated (every output container is new).
 * Tolerant — missing or partial fields fall back to empty values; no KeyError.
+  A node or edge that is not an object or has no id is dropped with a warning.
+  A model whose ``nodes`` / ``edges`` is not a list, or whose nodes are all
+  unusable, raises ``ModelConversionError`` instead of reading as empty.
 * Only UML models are converted. ``GUINoCodeDiagram`` (GrapesJS) and
   ``QuantumCircuitDiagram`` (Quirk columns) are passed through untouched, as
   are models that are already v3.
@@ -221,6 +224,46 @@ def _num(value: Any, default: float = 0) -> float:
 
 def _str(value: Any, default: str = "") -> str:
     return value if isinstance(value, str) else default
+
+
+def _kind_label(kind: str) -> str:
+    return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", kind)
+
+
+def _conversion_error(kind: str) -> ModelConversionError:
+    return ModelConversionError(
+        f"I couldn't read your {_kind_label(kind)}, so I stopped rather than risk changing it. "
+        "Please reload the editor and try again."
+    )
+
+
+def _usable_rows(model: Dict[str, Any], key: str, kind: str) -> List[Dict[str, Any]]:
+    """The ``nodes`` / ``edges`` rows that can be converted.
+
+    A row that is not an object or has no string id is dropped with a warning.
+    Raises ``ModelConversionError`` when the value is not a list, or when the
+    diagram has nodes and none of them is usable.
+    """
+    raw = model.get(key)
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        logger.warning("[v4_to_v3] %s: '%s' is %s, not a list", kind, key, type(raw).__name__)
+        raise _conversion_error(kind)
+    rows: List[Dict[str, Any]] = []
+    for index, row in enumerate(raw):
+        if not isinstance(row, dict):
+            reason = f"is {type(row).__name__}, not an object"
+        elif not isinstance(row.get("id"), str) or not row["id"]:
+            reason = "has no id"
+        else:
+            rows.append(row)
+            continue
+        logger.warning("[v4_to_v3] %s: dropped %s[%d]: it %s", kind, key, index, reason)
+    if key == "nodes" and raw and not rows:
+        logger.warning("[v4_to_v3] %s: none of its %d node(s) is usable", kind, len(raw))
+        raise _conversion_error(kind)
+    return rows
 
 
 def _copy(value: Any) -> Any:
@@ -809,6 +852,7 @@ def convert_v4_model_to_v3(model: Dict[str, Any], diagram_type: Optional[str] = 
     *diagram_type* is the project-snapshot bucket key (``"BPMN"``,
     ``"ClassDiagram"``…); it only matters when the model has no ``type``.
     Non-v4 input and non-UML models (GUI / Quantum) are returned unchanged.
+    Raises ``ModelConversionError`` for an unreadable model (see ``_usable_rows``).
     """
     if not is_v4_model(model):
         return model
@@ -816,8 +860,9 @@ def convert_v4_model_to_v3(model: Dict[str, Any], diagram_type: Optional[str] = 
     if model_type in NON_UML_DIAGRAM_TYPES or diagram_type in NON_UML_DIAGRAM_TYPES:
         return model
 
-    nodes = [n for n in _as_list(model.get("nodes")) if isinstance(n, dict) and isinstance(n.get("id"), str)]
-    edges = [e for e in _as_list(model.get("edges")) if isinstance(e, dict) and isinstance(e.get("id"), str)]
+    kind = str(diagram_type or model_type or "diagram")
+    nodes = _usable_rows(model, "nodes", kind)
+    edges = _usable_rows(model, "edges", kind)
 
     abs_positions = _absolute_positions(nodes)
     elements: Dict[str, Any] = {}
@@ -879,14 +924,12 @@ def normalize_model(model: Any, diagram_type: Optional[str] = None) -> Any:
         ref = model.get("referenceDiagramData")
         if is_v4_model(ref):
             return {**model, "referenceDiagramData": convert_v4_model_to_v3(ref)}
+    except ModelConversionError:
+        raise
     except Exception as error:
         kind = str(diagram_type or model.get("type") or "diagram")
         logger.error("[v4_to_v3] Could not convert %s model", kind, exc_info=True)
-        label = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", kind)
-        raise ModelConversionError(
-            f"I couldn't read your {label}, so I stopped rather than risk changing it. "
-            "Please reload the editor and try again."
-        ) from error
+        raise _conversion_error(kind) from error
     return model
 
 
@@ -909,6 +952,10 @@ def _normalize_entry(entry: Any, diagram_type: str, is_active: bool = False) -> 
     except ModelConversionError:
         if is_active:
             raise
+        logger.warning(
+            "[v4_to_v3] Skipped unreadable background %s tab %r; its model is not sent on",
+            diagram_type, entry.get("title") or entry.get("id"),
+        )
         return {**entry, "model": None} if isinstance(entry.get("model"), dict) else None
     return entry
 
