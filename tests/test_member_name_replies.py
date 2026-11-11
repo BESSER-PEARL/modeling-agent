@@ -188,6 +188,19 @@ def test_a_real_member_with_an_invalid_name_is_kept(mod, reply):
     assert result["message"] == reply
 
 
+def test_a_kept_rename_is_still_named_after_another_op_is_dropped():
+    """Dropping a phantom op rebuilds the reply; it must still see the model's members."""
+    llm = FakeLLM(json.dumps({"modifications": [
+        {"action": "modify_attribute", "target": {"className": "Person", "attributeName": "first-name"},
+         "changes": {"name": "first_name"}},
+        {"action": "remove_element", "target": {"className": "Ghost"}},
+    ]}))
+    result = ClassDiagramHandler(llm).generate_modification("edit the model", copy.deepcopy(PERSON_MODEL))
+    assert result["action"] == "modify_model"
+    assert result["modification"]["target"]["attributeName"] == "first-name"
+    assert result["message"].startswith("Renamed attribute **first-name** to **first_name** in **Person**.")
+
+
 @pytest.mark.parametrize("mod, reply", [
     ({"action": "remove_element", "target": {"className": "Person", "methodName": "get-age()"}},
      "Removed method **get-age** from **Person**."),

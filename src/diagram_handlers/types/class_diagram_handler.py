@@ -2548,7 +2548,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             previous = spec.get("message") or ""
             marker = SKIPPED_PARTS_NOTE
             skip_note = previous[previous.find(marker):] if marker in previous else ""
-            spec["message"] = self._default_modification_message(spec) + skip_note
+            spec["message"] = self._default_modification_message(spec, elements=elements) + skip_note
         return notes
 
     # ------------------------------------------------------------------
