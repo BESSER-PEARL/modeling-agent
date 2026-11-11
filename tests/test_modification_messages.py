@@ -31,7 +31,11 @@ def _say(action, target, changes=None):
     ("remove_element", {"className": "Car", "methodName": "drive"}, None,
      "Removed method **drive** from **Car**."),
     ("remove_element", {"className": "Car"}, None, "Removed **Car**."),
-    ("add_attribute", {"className": "Brand"}, None, "Added attribute to **Brand**."),
+    ("add_attribute", {"className": "Brand"}, None, "Added an attribute to **Brand**."),
+    # A member name the reply may not quote never falls back to the owner:
+    # "Removed **Brand**." would read as the class being removed.
+    ("remove_element", {"className": "Brand", "attributeName": "name wall?"}, None,
+     "Removed an attribute from **Brand**."),
 ])
 def test_the_message_reads_naturally(action, target, changes, message):
     assert _say(action, target, changes) == message
@@ -59,6 +63,16 @@ def test_a_user_profile_attribute_value_names_attribute_and_profile():
     target = {"profileName": "personal_information", "attributeName": "age"}
     assert h._describe_modification("modify_attribute_value", target, {"target": target}) == (
         "Updated attribute **age** on **personal_information**."
+    )
+
+
+def test_a_type_without_a_member_index_quotes_member_names_as_written():
+    """Only the class diagram checks names against its model; an object or
+    user-profile attribute such as "first-name" is quoted as before."""
+    h = UserProfileDiagramHandler(None)
+    target = {"profileName": "alice", "attributeName": "first-name"}
+    assert h._describe_modification("modify_attribute_value", target, {"target": target}) == (
+        "Updated attribute **first-name** on **alice**."
     )
 
 

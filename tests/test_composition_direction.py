@@ -230,6 +230,19 @@ class TestRefactorings:
         assert rel["target"] == {"sourceClass": "Address", "targetClass": "User"}
         assert rel["changes"]["name"] == "user"
 
+    def test_promote_attribute_makes_the_new_class_the_part(self, handler):
+        # The editor's promoteAttribute links the two with a ClassComposition
+        # whose whole (target) is the original class; the agent must match.
+        primitives, _ = handler._expand_promote_attribute({
+            "action": "promote_attribute",
+            "target": {"className": "User", "attributeName": "address"},
+            "changes": {"className": "Address"},
+        })
+        rel = next(p for p in primitives if p["action"] == "add_relationship")
+        assert rel["changes"]["relationshipType"] == "Composition"
+        assert rel["target"] == {"sourceClass": "Address", "targetClass": "User"}
+        assert rel["changes"]["name"] == "user"
+
     def test_extract_class_swaps_given_multiplicities_with_the_ends(self, handler):
         rel = handler._refactor_relationship(
             "User", "Address", {"sourceMultiplicity": "1", "targetMultiplicity": "0..*"},

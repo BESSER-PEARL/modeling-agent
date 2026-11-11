@@ -93,6 +93,14 @@ Messages the editor itself sends to repair a validation error start with
 ``model_disposition="extend_existing"`` and
 ``pending_flow_action="new_request"``, so a machine repair is never
 mistaken for an answer to a question the assistant happened to be asking.
+When the repair fails with a reply that asks to rephrase (the LLM call
+failed, ``llm_failure``, or the handler crashed, ``generation_error``, or an
+exception escaped it), ``model_operations`` replies that the diagram is
+unchanged (``reply_copy.AUTO_FIX_UNFIXED``) instead, since the editor wrote
+that message. Any other reply is kept: a model refusal, a key or rate-limit
+error, the duplicate-end repair's guidance and the class handler's
+"couldn't find" notes. The editor lists the issues still open in its own
+status line, so the reply does not repeat them.
 
 
 Stage 2: The Unified Classifier
