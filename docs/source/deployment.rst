@@ -98,7 +98,9 @@ the agent's replies. The vendored file adds an ownership-guarded delete plus
 reply-route-to-sender, and is also where the BYOK variables are kept with their
 socket and the per-request BYOK context var is set and reset.
 
-**Re-vendor this file if the pinned BAF version changes.**
+**Re-vendor this file if the pinned BAF version changes.** At startup
+``app.baf_patch.install()`` refuses to run when the installed BAF is not the
+version pinned in ``requirements.txt``.
 
 Production Architecture
 -----------------------
