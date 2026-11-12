@@ -223,14 +223,89 @@ class TestAgenticModification:
         assert changes[1]["reflectionReviewerLaneId"] is None
 
 
+_AGENT_MODEL = {"elements": {"s-1": {"id": "s-1", "type": "AgentState", "name": "Greet"}}, "relationships": {}}
+
+
 def test_resolve_agent_diagram_refs_reads_the_project_snapshot():
     request = AssistantRequest(message="x", context=WorkspaceContext(project_snapshot={"diagrams": {
         "AgentDiagram": [
-            {"id": "a-1", "title": "Writer Agent", "model": {}},
-            {"id": "a-2", "model": {}},
-            {"title": "no id"},
+            {"id": "a-1", "title": "Writer Agent", "model": _AGENT_MODEL},
+            {"id": "a-2", "model": _AGENT_MODEL},
+            {"title": "no id", "model": _AGENT_MODEL},
         ],
         "ClassDiagram": [{"id": "c-1", "title": "Domain"}],
     }}))
     assert resolve_agent_diagram_refs(request) == {"a-1": "Writer Agent", "a-2": ""}
     assert resolve_agent_diagram_refs(AssistantRequest(message="x", context=WorkspaceContext())) == {}
+
+
+def test_empty_agent_diagrams_are_not_offered_as_refs():
+    """Every project starts with an empty default Agent diagram; offering it made
+    the agent link every agentic lane and task to that empty diagram."""
+    empty = {"elements": {}, "relationships": {}}
+    request = AssistantRequest(message="x", context=WorkspaceContext(project_snapshot={"diagrams": {
+        "AgentDiagram": [
+            {"id": "default", "title": "Agent Diagram", "model": empty},
+            {"id": "broken", "title": "Unreadable", "model": None},
+            {"id": "writer", "title": "Writer Agent", "model": _AGENT_MODEL},
+        ],
+    }}))
+    assert resolve_agent_diagram_refs(request) == {"writer": "Writer Agent"}
+
+
+class TestSameRequestReviewerLaneAndPolicy:
+    def _modify(self, monkeypatch, mods):
+        return TestAgenticModification._modify(self, monkeypatch, AGENTIC_MODEL, mods)
+
+    def test_reviewer_lane_added_earlier_in_the_same_request_is_kept(self, monkeypatch):
+        """The editor applies the batch in order, so a lane added before the
+        modify_node resolves by name; it must not be cleared as unknown."""
+        mods = [
+            {"action": "add_swimlane", "target": {"nodeName": "Fact Checker"},
+             "changes": {"poolName": "Review Swarm", "isAgentic": True, "role": "solution"}},
+            {"action": "modify_node", "target": {"nodeName": "Draft Answer"},
+             "changes": {"reflectionMode": "cross", "reflectionReviewerLaneId": "fact checker"}},
+        ]
+        result, _seen = self._modify(monkeypatch, mods)
+        assert result["modifications"][1]["changes"]["reflectionReviewerLaneId"] == "Fact Checker"
+
+    def test_reviewer_lane_added_after_the_reference_is_cleared(self, monkeypatch):
+        mods = [
+            {"action": "modify_node", "target": {"nodeName": "Draft Answer"},
+             "changes": {"reflectionMode": "cross", "reflectionReviewerLaneId": "Fact Checker"}},
+            {"action": "add_swimlane", "target": {"nodeName": "Fact Checker"},
+             "changes": {"poolName": "Review Swarm", "isAgentic": True}},
+        ]
+        result, _seen = self._modify(monkeypatch, mods)
+        assert result["modifications"][0]["changes"]["reflectionReviewerLaneId"] is None
+
+    def test_policy_request_yields_a_policy_keyword(self, monkeypatch):
+        mods = [{"action": "modify_node", "target": {"nodeName": "Draft Answer"},
+                 "changes": {"governancePolicy": "ConsensusPolicy"}}]
+        result, _seen = self._modify(monkeypatch, mods)
+        changes = result["modification"]["changes"]
+        assert changes["governancePolicy"] == "ConsensusPolicy"
+        # Never the bare keyword as DSL text: the Governance DSL parser rejects it.
+        # (Draft Answer is a task; gateways get a generated document, see
+        # tests/test_dual_editor_compat.py.)
+        assert "governanceDsl" not in changes
+
+    def test_no_policy_sets_no_governance_dsl(self, monkeypatch):
+        mods = [{"action": "modify_node", "target": {"nodeName": "Draft Answer"},
+                 "changes": {"trustScore": 40}}]
+        result, _seen = self._modify(monkeypatch, mods)
+        assert "governanceDsl" not in result["modification"]["changes"]
+
+    def test_free_text_policy_is_rejected_by_the_schema(self):
+        with pytest.raises(ValueError):
+            BPMNModificationResponse.model_validate({"modifications": [
+                {"action": "modify_node", "target": {"nodeName": "Merge"},
+                 "changes": {"governancePolicy": "consensus"}}], "message": "ok"})
+
+    def test_prompts_ask_for_a_policy_keyword_not_dsl_text(self):
+        for prompt in (MODIFY_SYSTEM_PROMPT_AGENTIC_BPMN, AGENTIC_DESIGN_RULES):
+            assert "governancePolicy" in prompt
+            # The context legend may still show the stored state (governanceDsl=set/unset).
+            assert "governanceDsl" not in prompt.replace("governanceDsl=set/unset", "")
+            for keyword in ("MajorityPolicy", "AbsoluteMajorityPolicy", "LeaderDrivenPolicy", "ConsensusPolicy"):
+                assert keyword in prompt

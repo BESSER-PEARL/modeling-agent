@@ -90,6 +90,10 @@ def validate_spec(
     return errors
 
 
+# Start of the partial-validation note; handlers that rebuild the message keep it.
+SKIPPED_PARTS_NOTE = "\n\nNote: I skipped"
+
+
 # Reusable required-key dicts for the most common specs -----------------
 
 SINGLE_CLASS_REQUIRED = {"className": str}
@@ -368,9 +372,10 @@ class BaseDiagramHandler(ABC):
         'modify_state': 'Updated',
         'add_state': 'Added',
         'remove_state': 'Removed',
-        'add_transition': 'Added transition to',
-        'modify_transition': 'Updated transition in',
-        'remove_transition': 'Removed transition from',
+        'add_transition': 'Added transition',
+        'modify_transition': 'Updated transition',
+        'remove_transition': 'Removed transition',
+        'add_code_block': 'Added code block',
         'modify_intent': 'Updated',
         'add_intent': 'Added',
         'add_rag_element': 'Added knowledge base',
@@ -378,14 +383,15 @@ class BaseDiagramHandler(ABC):
         'add_intent_training_phrase': 'Added training phrase to',
         'modify_object': 'Updated',
         'add_object': 'Added',
-        'add_link': 'Added link to',
+        'modify_attribute_value': 'Updated',
+        'add_link': 'Added link',
         'add_ocl_constraint': 'Added OCL constraint on',
         'add_task': 'Added',
         'add_gateway': 'Added',
         'add_event': 'Added',
-        'add_flow': 'Added flow to',
+        'add_flow': 'Added flow',
         'modify_node': 'Updated',
-        'remove_flow': 'Removed flow from',
+        'remove_flow': 'Removed flow',
     }
 
     # Actions on a member (attribute / method) of an element: verb, member kind
@@ -508,6 +514,17 @@ class BaseDiagramHandler(ABC):
         if member_change:
             return member_change
         name = self._build_mod_target_name(action, target, mod, elements=elements)
+        changes = (mod or {}).get('changes') if isinstance(mod, dict) else None
+        new_name = changes.get('name') if isinstance(changes, dict) else None
+        if (
+            action in self._RENAMING_ACTIONS
+            and isinstance(new_name, str) and new_name.strip()
+            and new_name.strip() != self._sanitize_target_name(name)
+        ):
+            return (
+                f"Renamed **{self._sanitize_target_name(name)}** to "
+                f"**{self._sanitize_target_name(new_name)}**."
+            )
         return self._friendly_mod_message(action, name)
 
     def _build_mod_target_name(
@@ -544,11 +561,16 @@ class BaseDiagramHandler(ABC):
         # Relationship target
         if rel_source and rel_target:
             return f"{rel_source} → {rel_target}"
+        src_obj, tgt_obj = target.get('sourceObject'), target.get('targetObject')
+        if src_obj and tgt_obj:
+            return f"{src_obj} → {tgt_obj}"
 
-        # Agent transition endpoints (source → target state)
-        src_state = target.get('sourceStateName')
-        tgt_state = target.get('targetStateName')
+        # Transition endpoints (agent: *StateName; state machine: sourceState/targetState)
+        src_state = target.get('sourceStateName') or target.get('sourceState')
+        tgt_state = target.get('targetStateName') or target.get('targetState')
         if src_state and tgt_state:
+            if action == 'remove_element':
+                return f"transition {src_state} → {tgt_state}"
             return f"{src_state} → {tgt_state}"
         if src_state or tgt_state:
             return src_state or tgt_state
@@ -563,16 +585,35 @@ class BaseDiagramHandler(ABC):
         return (class_name or attr_name or method_name or intent_name
                 or rag_name or changes_name or 'element')
 
+    # Element edits whose changes.name is a rename of the element itself.
+    _RENAMING_ACTIONS = frozenset({
+        'modify_class', 'modify_state', 'modify_node', 'modify_object', 'modify_intent',
+        'modify_element',
+    })
+
+    def _describe_mod(self, mod: dict, elements: Optional[Dict[str, Any]] = None) -> str:
+        """One friendly line for a single modification."""
+        return self._describe_modification(
+            mod.get('action', 'modification'), mod.get('target', {}) or {}, mod, elements=elements,
+        )
+
     def _friendly_batch_message(self, mods: list, elements: Optional[Dict[str, Any]] = None) -> str:
         """Produce a friendly summary for a batch of modifications."""
-        parts = []
-        for m in mods:
-            act = m.get('action', 'modification')
-            t = m.get('target', {})
-            parts.append(self._describe_modification(act, t, m, elements=elements))
+        parts = [self._describe_mod(m, elements=elements) for m in mods if isinstance(m, dict)]
         if len(parts) == 1:
             return parts[0]
         return f"Applied {len(parts)} changes:\n" + "\n".join(f"- {p}" for p in parts)
+
+    def _default_modification_message(
+        self, spec: Dict[str, Any], elements: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Friendly summary built from the ops actually in *spec* ('' if none)."""
+        if isinstance(spec.get('modifications'), list):
+            return self._friendly_batch_message(spec['modifications'], elements=elements)
+        mod = spec.get('modification')
+        if isinstance(mod, dict):
+            return self._describe_mod(mod, elements=elements)
+        return ''
 
     #: Reply when the LLM call of ``generate_modification`` fails, and its ``errorCode``.
     _MODIFY_FAILURE_MESSAGE: str = "I couldn't process that modification. Please try again or rephrase your request."
@@ -717,15 +758,9 @@ class BaseDiagramHandler(ABC):
         modification_spec.setdefault('diagramType', self.get_diagram_type())
 
         if 'message' not in modification_spec:
-            if 'modifications' in modification_spec and isinstance(modification_spec['modifications'], list):
-                modification_spec['message'] = self._friendly_batch_message(
-                    modification_spec['modifications'], elements=elements,
-                )
-            elif 'modification' in modification_spec and isinstance(modification_spec['modification'], dict):
-                mod = modification_spec['modification']
-                act = mod.get('action', 'modification')
-                target = mod.get('target', {})
-                modification_spec['message'] = self._describe_modification(act, target, mod, elements=elements)
+            message = self._default_modification_message(modification_spec, elements=elements)
+            if message:
+                modification_spec['message'] = message
 
         # Surface partial-validation skips so the user knows something was
         # dropped (otherwise a 4-of-5 batch silently looks like a 4-of-4).
@@ -733,7 +768,7 @@ class BaseDiagramHandler(ABC):
         if skipped:
             existing = modification_spec.get('message') or ''
             note = (
-                f"\n\nNote: I skipped {len(skipped)} part(s) I couldn't "
+                f"{SKIPPED_PARTS_NOTE} {len(skipped)} part(s) I couldn't "
                 f"parse — the rest were applied."
             )
             modification_spec['message'] = (existing + note).strip()
@@ -880,7 +915,10 @@ class BaseDiagramHandler(ABC):
             result = dict(result)
             result["modifications"] = valid
             if dropped:
-                result["message"] = self._friendly_batch_message(valid, elements=elements)
+                result["message"] = (
+                    self._friendly_batch_message(valid, elements=elements)
+                    + f"\n\nI skipped {dropped} change(s) that referred to elements I couldn't find."
+                )
             return result
 
         if "modification" in result and not self._ref_exists(result["modification"], elements):

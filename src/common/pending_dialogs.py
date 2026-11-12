@@ -75,6 +75,9 @@ PENDING_SMART_GEN_PROVIDER = "_pending_smart_gen_provider"
 # later, unrelated request.
 PENDING_SMART_GEN_TIMESTAMP = "_pending_smart_gen_timestamp"
 PENDING_SMART_GEN_ORIGINAL_REQUEST = "_pending_smart_gen_original_request"
+# ORIGINAL_APP_REQUEST as it was before the pending run was armed; restored
+# when that run is abandoned so its request cannot resurface later.
+PENDING_SMART_GEN_PRIOR_ORIGINAL = "_pending_smart_gen_prior_original"
 # The run mode to force on the editor; unset leaves the choice to the editor.
 PENDING_SMART_GEN_MODE = "_pending_smart_gen_mode"
 # Set to the EXACT rebuild prompt ("create a class diagram for X") when the

@@ -13,9 +13,16 @@ import logging
 import os
 import threading
 
+# Vendored BAF WebSocket fix (BYOK key redaction + use, reply outbox, slot
+# reclaim). The Docker image bakes it in; this makes non-Docker runs match.
+from app import baf_patch
+baf_patch.install()
+
 from baf.core.agent import Agent
 from baf import nlp
 from baf.exceptions.logger import logger
+
+baf_patch.verify()
 
 from conversation import agent_context as ctx
 from app.agent_setup import (

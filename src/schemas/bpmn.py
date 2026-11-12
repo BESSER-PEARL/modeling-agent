@@ -36,6 +36,14 @@ _REFLECTION_MODE = Literal["none", "self", "cross", "human"]
 # Editor ``BPMNGatewayRole``.
 GATEWAY_ROLE_VALUES = ("diverging", "merging")
 _GATEWAY_ROLE = Literal["diverging", "merging"]
+# Editor ``GOV_POLICY_TYPES``: the policy keyword the editor expands into the
+# merging gateway's Governance DSL text.
+_GOV_POLICY = Literal["MajorityPolicy", "AbsoluteMajorityPolicy", "LeaderDrivenPolicy", "ConsensusPolicy"]
+_GOV_POLICY_DESCRIPTION = (
+    "Agentic merging gateway only: how the merged agent results are accepted. "
+    "'MajorityPolicy', 'AbsoluteMajorityPolicy', 'LeaderDrivenPolicy' (the supervising "
+    "agents decide) or 'ConsensusPolicy'. The editor writes the Governance DSL from it."
+)
 
 _TRUST_SCORE_DESCRIPTION = (
     "Agentic only: trust in this agent's output as a 0-100 percentage. "
@@ -94,16 +102,17 @@ class BPMNNodeSpec(BaseModel):
         default=None,
         description=(
             "Id of the pool (participant) this node belongs to, matching one of the "
-            "top-level pools[].id. Leave null for a flat process with no pools (the "
-            "common case)."
+            "top-level pools[].id. When pools are declared, EVERY node sets it — "
+            "start/end events and gateways included. Leave null only for a flat "
+            "process with no pools (the common case)."
         ),
     )
     laneId: Optional[str] = Field(
         default=None,
         description=(
             "Id of the lane (role/department) within poolId this node belongs to, "
-            "matching one of that pool's lanes[].id. Only set when that pool declares "
-            "lanes; leave null otherwise."
+            "matching one of that pool's lanes[].id. Required on every node of a pool "
+            "that declares lanes, start/end events and gateways included; null otherwise."
         ),
     )
     owner: Optional[str] = Field(
@@ -151,13 +160,8 @@ class BPMNNodeSpec(BaseModel):
             "'merging' when it combines their results."
         ),
     )
-    governanceDsl: Optional[str] = Field(
-        default=None,
-        description=(
-            "Agentic merging gateway only: the Governance DSL policy that decides how "
-            "the merged agent results are accepted (e.g. 'Policy: MajorityPolicy'). "
-            "Null on every other node."
-        ),
+    governancePolicy: Optional[_GOV_POLICY] = Field(
+        default=None, description=_GOV_POLICY_DESCRIPTION + " Null on every other node.",
     )
 
 
@@ -296,9 +300,9 @@ class SystemBPMNSpec(BaseModel):
         description=(
             "Participants/organizations — only when the request involves 2+ "
             "distinct actors communicating (e.g. customer/vendor, system A/system B) "
-            "or explicit roles within one organization. Each node with a non-null "
-            "poolId must reference one of these pool ids. Leave empty for a "
-            "single-actor flat process (the common case)."
+            "or explicit roles within one organization. Once pools are declared, "
+            "every node's poolId must reference one of these pool ids. Leave empty "
+            "for a single-actor flat process (the common case)."
         ),
     )
     dataObjects: List[BPMNDataObjectSpec] = Field(
@@ -423,16 +427,16 @@ class BPMNModificationChanges(BaseModel):
         default=None,
         description=(
             "modify_node on an agentic task with reflectionMode='cross': the [id] of "
-            "the existing reviewer lane from the context."
+            "the existing reviewer lane from the context, or the name of a lane an "
+            "earlier add_swimlane of this response creates."
         ),
     )
     gatewayRole: Optional[_GATEWAY_ROLE] = Field(
         default=None,
         description="modify_node on an agentic gateway: 'diverging' or 'merging'.",
     )
-    governanceDsl: Optional[str] = Field(
-        default=None,
-        description="modify_node on an agentic MERGING gateway: the Governance DSL policy text.",
+    governancePolicy: Optional[_GOV_POLICY] = Field(
+        default=None, description="modify_node: " + _GOV_POLICY_DESCRIPTION,
     )
     poolName: Optional[str] = Field(
         default=None,
@@ -442,7 +446,7 @@ class BPMNModificationChanges(BaseModel):
         default=None,
         description=(
             "add_task / add_gateway / add_event / add_data_object: existing lane name or [id] "
-            "to place the new node in."
+            "to place the new node in. Set it whenever the process has lanes."
         ),
     )
 

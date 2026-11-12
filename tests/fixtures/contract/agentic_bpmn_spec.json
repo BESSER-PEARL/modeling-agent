@@ -17,7 +17,7 @@
     {"id": "draft", "name": "Draft Summary", "type": "task", "taskType": "service", "poolId": "swarm", "laneId": "writer", "owner": "writer", "isAgentic": true, "reflectionMode": "cross", "reflectionReviewerLaneId": "supervisor", "trustScore": 75},
     {"id": "fan_out", "name": "", "type": "gateway", "gatewayType": "parallel", "poolId": "swarm", "laneId": "writer", "owner": "writer", "isAgentic": true, "gatewayRole": "diverging"},
     {"id": "review", "name": "Review Summary", "type": "task", "taskType": "service", "poolId": "swarm", "laneId": "reviewers", "owner": "reviewers", "isAgentic": true, "reflectionMode": "self"},
-    {"id": "merge", "name": "", "type": "gateway", "gatewayType": "parallel", "poolId": "swarm", "laneId": "supervisor", "owner": "supervisor", "isAgentic": true, "gatewayRole": "merging", "governanceDsl": "Policy: MajorityPolicy"},
+    {"id": "merge", "name": "", "type": "gateway", "gatewayType": "parallel", "poolId": "swarm", "laneId": "supervisor", "owner": "supervisor", "isAgentic": true, "gatewayRole": "merging", "governancePolicy": "MajorityPolicy"},
     {"id": "approve", "name": "Approve Summary", "type": "task", "taskType": "user", "poolId": "swarm", "laneId": "supervisor", "owner": "supervisor", "isAgentic": true, "reflectionMode": "human"},
     {"id": "published", "name": "Summary published", "type": "endEvent", "poolId": "author", "laneId": null}
   ],

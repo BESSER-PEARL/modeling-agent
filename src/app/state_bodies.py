@@ -25,6 +25,7 @@ from llm.provider import LLMProvider
 from protocol.adapters import parse_assistant_request
 from protocol.types import AssistantRequest
 from protocol.message_limits import UserMessageTooLong
+from protocol.v4_to_v3 import ModelConversionError
 from memory import get_memory, memory_session_key
 from routing.generation_signals import remember_repo_recap
 from conversation.session_helpers import (
@@ -66,6 +67,7 @@ from conversation.reply_copy import (
     DECLINE_ACK as _DECLINE_ACK,
     META_ANSWER as _META_ANSWER,
     OUT_OF_SCOPE_REDIRECT as _OUT_OF_SCOPE_REDIRECT,
+    unsupported_editor_reply,
 )
 from routing.unified_classifier import get_or_classify
 from protocol.actions import Action
@@ -149,7 +151,7 @@ def _ensure_unified_classification(session: Session) -> bool:
             classification.generator_type,
             classification.reason,
         )
-    except UserMessageTooLong:
+    except (UserMessageTooLong, ModelConversionError):
         return True
     except Exception:
         logger.exception("unified classifier hook failed; falling back to BAF")
@@ -168,7 +170,7 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     # and stop — never re-run generation or consume a pending flow.
     try:
         _replay_req = parse_assistant_request(session)
-    except UserMessageTooLong as error:
+    except (UserMessageTooLong, ModelConversionError) as error:
         # reply_message parses the request again; use the wire envelope here
         # so rejection itself cannot recurse into the same parsing error.
         session.reply(json.dumps({"action": Action.ASSISTANT_MESSAGE, "message": str(error), "isError": True}))
@@ -951,7 +953,11 @@ def out_of_scope_body(session: Session):
     if request is None:
         return
     session.set(LAST_MATCHED_INTENT, 'out_of_scope_intent')
-    reply_message(session, _OUT_OF_SCOPE_REDIRECT)
+    # In an editor the assistant can't model yet (e.g. the NN editor) the
+    # request is in scope for BESSER, just not for the assistant: say so.
+    _raw_context = (request.raw_payload or {}).get("context")
+    _raw_active = _raw_context.get("activeDiagramType") if isinstance(_raw_context, dict) else None
+    reply_message(session, unsupported_editor_reply(_raw_active) or _OUT_OF_SCOPE_REDIRECT)
 
 
 def meta_question_body(session: Session):
