@@ -39,6 +39,9 @@ class WorkspaceContext:
     # | "none"), ``provider`` and ``model`` (None when not given). Never the key.
     # None when the editor does not say (older editors).
     generation_key: Optional[Dict[str, Any]] = None
+    # The editor's last Spec-Driven run of this project: ``request`` (the text
+    # it was started with, or None). None when the editor does not say.
+    last_generation: Optional[Dict[str, Any]] = None
 
     def get_active_index(self, diagram_type: str) -> int:
         """Return the active tab index for the given diagram type (default 0)."""

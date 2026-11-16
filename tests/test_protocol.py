@@ -225,6 +225,20 @@ class TestGenerationKey:
         assert key == {"tier": "own", "provider": None, "model": None}
 
 
+class TestLastGeneration:
+    def test_request_is_read_and_capped(self):
+        last = _with_context(lastGeneration={
+            "runId": "ab12", "at": 1794836873000, "request": "  " + "x" * 5000,
+        }).context.last_generation
+        assert last == {"request": "x" * 4000}
+
+    @pytest.mark.parametrize("value", [None, "x", [], {"request": 3}, {"request": "   "}])
+    def test_absent_or_malformed_request_is_none(self, value):
+        extra = {} if value is None else {"lastGeneration": value}
+        last = _with_context(**extra).context.last_generation
+        assert last is None or last["request"] is None
+
+
 def test_full_spec_limit_is_preserved_or_explicitly_rejected_for_both_transports(monkeypatch):
     from types import SimpleNamespace
     from common.agent_config import MAX_USER_MESSAGE_CHARS

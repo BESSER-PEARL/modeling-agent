@@ -211,6 +211,15 @@ Field Reference
        and no free tier). Never contains the key. The run confirmation names
        the user's key, or the free model, from it; without it the agent reads
        the key armed on the socket. Malformed values are ignored.
+   * - ``context.lastGeneration``
+     - No
+     - The editor's last Spec-Driven run of this project:
+       ``{runId, at, expired, request}``, where ``request`` is the text the run
+       was started with (read up to 4,000 characters). A content-free
+       follow-up ("regenerate with fixes", "try again", "fix it") re-runs the
+       request remembered for the project, else this ``request``, else the
+       user's earlier requests in the conversation; with none of them the
+       agent asks the user to describe the application again.
    * - ``attachments``
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)

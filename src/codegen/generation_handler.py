@@ -8,6 +8,7 @@ from baf.core.session import Session
 from codegen.smart_generation_handler import (
     build_trigger_smart_generator_payload,
 )
+from common.agent_config import MAX_USER_MESSAGE_CHARS
 from llm import byok_config
 from llm.byok import PROVIDER_NAMES
 from protocol.types import AssistantRequest
@@ -47,7 +48,7 @@ from routing.generation_signals import (
     repo_holds_app,
 )
 from conversation.session_helpers import reply_message, reply_payload
-from routing.guards import generation_route, is_past_generation_question
+from routing.guards import AUTO_FIX_PREFIX, generation_route, is_past_generation_question
 from routing.unified_classifier import (
     UnifiedClassification,
     classify_message as _unified_classify_message,
@@ -128,32 +129,134 @@ def _stash_smart_gen(
     session.set(SMART_GEN_ARMED_PROJECT_ID, _active_project_id(session))
 
 
-# A bare "generate the app" command (lowercased, punctuation dropped): it names
-# nothing to build, so it is not a requirement of the run.
-_BARE_GENERATE_RE = re.compile(
-    r"(?:(?:can|could) you )?(?:please )?"
-    r"(?:generate|build|create) "
-    r"(?:it|(?:(?:the|my|this|a|an) )?(?:web ?)?(?:app|application|code))"
-    r"(?: now)?(?: please)?"
+# Vocabulary of the matchers below, which read a lowercased message with
+# punctuation dropped.
+_POLITE_PREFIX = r"(?:(?:can|could) you )?(?:please )?"
+_POLITE_SUFFIX = r"(?: now)?(?: please)?"
+_APP_OBJECT = r"(?:it|(?:(?:the|my|this|a|an) )?(?:web ?)?(?:app|application|code))"
+
+# A bare "generate the app" command: it names nothing to build, so it is not
+# a requirement of the run.
+_BARE_GENERATE_RE = re.compile(_POLITE_PREFIX + r"(?:generate|build|create) " + _APP_OBJECT + _POLITE_SUFFIX)
+
+# A content-free follow-up about the previous generation ("regenerate with
+# fixes", "try again", "fix the errors"): it re-runs the earlier request and
+# names nothing new to build.
+_APP_PART = r"(?:(?:web ?)?(?:app|application)|code|project|generation|build|run|result|output|frontend|front[- ]end|backend|back[- ]end|ui|api)"
+_FOLLOW_UP_OBJECT = (
+    rf"(?:{_APP_OBJECT}|that|them|everything|(?:both )?(?:(?:the|my|this|that) )?"
+    rf"(?:(?:app|application)'s )?{_APP_PART}(?: and (?:the )?{_APP_PART})?)"
 )
+_FIX_OBJECT = (
+    r"(?:it|that|them|everything|(?:the |all (?:the )?)?(?:(?:remaining|reported|open|same) )?"
+    r"(?:errors?|issues?|problems?|bugs?|blockers?|failures?))"
+)
+_REDO = (
+    rf"(?:(?:re-?generate|re-?build|re-?do|re-?run|re-?try)(?: {_FOLLOW_UP_OBJECT})?(?: again)?"
+    rf"|(?:try|run|generate|build|do) (?:{_FOLLOW_UP_OBJECT} )?again)"
+)
+_FIX = rf"fix {_FIX_OBJECT}"
+_CONTENT_FREE_FOLLOW_UP_RE = re.compile(
+    r"(?:(?:ok|okay|yes|so) )?" + _POLITE_PREFIX
+    + rf"(?:{_REDO}(?: (?:with|including) (?:the )?fix(?:es)?| and fix {_FIX_OBJECT})?"
+    + rf"|{_FIX}(?: and {_REDO})?)"
+    + _POLITE_SUFFIX
+)
+_FIX_FOLLOW_UP_NOTE = "The user asked to fix the issues of the previous result."
+_NO_EARLIER_REQUEST_MESSAGE = (
+    "I no longer have your earlier request here, so I can't tell what to generate again. "
+    "Please describe again what the application should do."
+)
+# A user turn shorter than this many words is not taken for a description of the app.
+_MIN_REQUEST_WORDS = 3
+
+
+def _normalized_message(message: str) -> str:
+    return _norm_prompt(re.sub(r"[,.!?]+", " ", message or ""))
+
+
+def _is_content_free_follow_up(message: str) -> bool:
+    return bool(_CONTENT_FREE_FOLLOW_UP_RE.fullmatch(_normalized_message(message)))
+
+
+def _names_nothing_to_build(normalized: str) -> bool:
+    """A confirmation, a bare generate command or a content-free follow-up."""
+    return (
+        normalized in _SMART_GEN_CONFIRM_PHRASES | _PLAN_GEN_CONFIRM_PHRASES
+        or bool(_BARE_GENERATE_RE.fullmatch(normalized))
+        or bool(_CONTENT_FREE_FOLLOW_UP_RE.fullmatch(normalized))
+    )
+
+
+def _with_subsequent_request(previous: str, message: str) -> str:
+    return (
+        f"{previous}\n\n## Subsequent user request, verbatim\n\n"
+        "This later request takes precedence where it changes earlier requirements.\n\n"
+        f"{message}"
+    )
+
+
+def _request_from_conversation(session) -> str:
+    """The user's requests in this conversation's memory, oldest first,
+    without the turns that name nothing to build; empty when there are none."""
+    from memory import get_memory, memory_session_key
+
+    try:
+        turns = get_memory(memory_session_key(session)).build_context()
+    except Exception:  # pragma: no cover — copy must never crash
+        logger.debug("Could not read the conversation", exc_info=True)
+        return ""
+    requests = []
+    for turn in turns:
+        text = turn["content"].strip() if turn["role"] == "user" else ""
+        normalized = _normalized_message(text)
+        if (
+            len(normalized.split()) >= _MIN_REQUEST_WORDS
+            and not text.startswith(AUTO_FIX_PREFIX)
+            and normalized not in _SMART_GEN_CANCEL_PHRASES | _CONFIG_CANCEL_PHRASES
+            and not _names_nothing_to_build(normalized)
+        ):
+            requests.append(text)
+    combined = requests[0] if requests else ""
+    for text in requests[1:]:
+        longer = _with_subsequent_request(combined, text)
+        if len(longer) > MAX_USER_MESSAGE_CHARS:
+            break
+        combined = longer
+    return combined
+
+
+def _original_for_follow_up(session, project_id, previous, asks_fix):
+    """The request a content-free follow-up re-runs: the remembered one, else
+    the editor's last run's, else this conversation's; None when none exists."""
+    original = previous
+    if not original:
+        last_generation = getattr(_request_context(session), "last_generation", None) or {}
+        original = last_generation.get("request") or _request_from_conversation(session)
+        if not original:
+            return None
+        remember_original_request(session, original, project_id)
+    if asks_fix:
+        original = f"{original}\n\n## Subsequent user request\n\n{_FIX_FOLLOW_UP_NOTE}"
+    return original
 
 
 def _original_for_smart_generation(session, user_message, *, replace=False):
+    """The user's own request for the run, or None for a content-free
+    follow-up with no earlier request to re-run."""
     project_id = _active_project_id(session)
     previous = original_request_for_project(session, project_id)
     message = (user_message or "").strip()
-    normalized = _norm_prompt(re.sub(r"[,.!?]+", " ", message))
+    normalized = _normalized_message(message)
     generic = _SMART_GEN_CONFIRM_PHRASES | _PLAN_GEN_CONFIRM_PHRASES
     if not message or normalized in generic or _BARE_GENERATE_RE.fullmatch(normalized):
         return previous
+    if _CONTENT_FREE_FOLLOW_UP_RE.fullmatch(normalized):
+        return _original_for_follow_up(session, project_id, previous, bool(re.search(r"\bfix", normalized)))
     if previous and not replace and (message == previous or previous.endswith("\n" + message)):
         return previous
     if previous and not replace:
-        message = (
-            f"{previous}\n\n## Subsequent user request, verbatim\n\n"
-            "This later request takes precedence where it changes earlier requirements.\n\n"
-            f"{message}"
-        )
+        message = _with_subsequent_request(previous, message)
     remember_original_request(session, message, project_id)
     return message
 
@@ -416,6 +519,11 @@ def _build_smart_gen_confirmation(
     # call wrote.
     project_id = _active_project_id(session)
     original = _original_for_smart_generation(session, user_message)
+    if original is None:
+        if not reason_prefix:
+            _clear_pending_smart_gen(session)
+            return {"action": Action.ASSISTANT_MESSAGE, "message": _NO_EARLIER_REQUEST_MESSAGE}
+        original = ""
     starting_over = None if reason_prefix else _starting_over_on_linked_repo(session)
     replaces_repo_app = starting_over == "replace_existing"
     _stash_smart_gen(
@@ -583,6 +691,9 @@ def _build_mismatch_confirmation(
     provider = classification.provider or "anthropic"
     rebuild_prompt = f"create a class diagram for {suggested}"
     original = _original_for_smart_generation(session, user_message, replace=True)
+    if original is None:
+        _clear_pending_smart_gen(session)
+        return {"action": Action.ASSISTANT_MESSAGE, "message": _NO_EARLIER_REQUEST_MESSAGE}
     _stash_smart_gen(session, refined, provider, original_request=original)
     # Arm the one-shot resume with the EXACT rebuild prompt the button sends.
     # The guard below and the create choke point
