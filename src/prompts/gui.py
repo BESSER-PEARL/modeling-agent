@@ -162,6 +162,7 @@ Each section is EXACTLY ONE of these two shapes:
     "title": "Specific widget title, e.g. 'Overdue loans'",
     "labelField": "chart: category attribute", "valueField": "chart/metric: numeric attribute",
     "aggregation": "chart/metric: count|sum|avg|min|max",
+    "filter": {{"field": "metric: attribute", "operator": "==|!=|>|>=|<|<=", "value": "fixed value"}},
     "columns": ["Column", "headers"],
     "rows": [{{"cells": ["cell A1", "cell A2"]}}, {{"cells": ["cell B1", "cell B2"]}}],
     "series": ["series names"],
@@ -172,7 +173,7 @@ Each section is EXACTLY ONE of these two shapes:
    - Put a <!--WIDGET:kind--> comment inside the chrome where the widget belongs; the server splices the real, data-bound widget there.
    - The "html" chrome is OPTIONAL — omit it and the widget is card-wrapped automatically — but authoring chrome around it gives a far nicer result.
    - Whatever widget you place, populate it or it renders empty: a table needs "columns" + "rows" ("cells" aligned 1:1 to "columns"); a chart needs "sampleData" (name + numeric value; pie adds a "color" hex). On a table bound to a class, "columns" are the exact attribute names of that class (or the name of a related class) to show, in display order — only those columns appear, so list every one the screen needs and leave out the technical id.
-   - Give every widget a specific "title" (never 'Data Table' / 'Bar Chart'). With a class diagram, set a chart's "labelField" (category attribute) and its "aggregation": the chart groups records by labelField and shows per label the "count" of records (no valueField needed) or the "sum"/"avg"/"min"/"max" of "valueField" (numeric attribute) — e.g. count of books by genre, sum of amount by month; omit "aggregation" only to plot valueField of each record, labelled by a unique field. A metric_card shows the "count" of records (no valueField), or the "sum"/"avg"/"min"/"max" of its "valueField" — set its "aggregation" to match its title (e.g. 'Active members' = count, 'Average fine' = avg of fine).
+   - Give every widget a specific "title" (never 'Data Table' / 'Bar Chart'). With a class diagram, set a chart's "labelField" (category attribute) and its "aggregation": the chart groups records by labelField and shows per label the "count" of records (no valueField needed) or the "sum"/"avg"/"min"/"max" of "valueField" (numeric attribute) — e.g. count of books by genre, sum of amount by month; omit "aggregation" only to plot valueField of each record, labelled by a unique field. A metric_card shows the "count" of records (no valueField), or the "sum"/"avg"/"min"/"max" of its "valueField" — set its "aggregation" to match its title (e.g. 'Members' = count, 'Average fine' = avg of fine). A metric over only SOME records ('Active members', 'Open orders', 'Paid invoices') MUST carry a "filter": one attribute of its class compared with a fixed value — an enumeration literal, true/false, a number or an ISO date (status == active, paid == true, amount > 0); without it the card shows the figure for ALL records. When the condition cannot be written that way (it depends on today's date, on another class or on a calculation), leave that card out.
    - Pick the widget that fits the content: a table suits tabular records (orders, bookings, transactions, inventory); a card grid (below) usually reads better for listings of people / products / profiles / features. Use your judgment.
 
 Utility classes, pre-styled for the {domain} theme (OPTIONAL helpers — reach for them for speed and widget chrome, not as your design ceiling):
@@ -231,7 +232,9 @@ CHART_RULE_FOR_CLASSES = (
     "A chart groups records by one attribute (labelField) and "
     "shows per group the count of records or the sum/avg/min/max "
     "of ONE numeric attribute (valueField); a metric card shows a "
-    "count, sum, average, minimum or maximum over all records."
+    "count, sum, average, minimum or maximum over all records, or "
+    "over the records where one attribute has a fixed value "
+    "(filter: status == active)."
 )
 
 

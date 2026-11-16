@@ -1487,6 +1487,82 @@ def _metric_binding(
     return None, "count"
 
 
+_FILTER_OPERATORS = ("==", "!=", ">", ">=", "<", "<=")
+_NUMBER_RE = re.compile(r"-?\d+(\.\d+)?")
+_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?")
+_FILTER_TEXT_RE = re.compile(r"\w[\w .\-/]*")
+# Words the generated app's filter parser reads as syntax.
+_FILTER_SYNTAX_RE = re.compile(r"\b(and|in|contains)\b", re.IGNORECASE)
+
+
+def _bind_filter(bind: Any) -> Optional[Dict[str, Any]]:
+    """The filter a bind states, or ``None`` (a blank one states nothing)."""
+    spec = bind.get("filter") if isinstance(bind, dict) else None
+    if not isinstance(spec, dict):
+        return None
+    return spec if _clean_text(spec.get("field")) or _clean_text(spec.get("value")) else None
+
+
+def _filter_expression(
+    cls: Dict[str, Any], spec: Dict[str, Any], classes: List[Dict[str, Any]],
+) -> Optional[str]:
+    """The filter BESSER reads off a widget (``status == active``), or
+    ``None`` when *spec* is not a condition the class model can evaluate.
+
+    One attribute of *cls* against a fixed value of its type: a literal of its
+    enumeration, a boolean, a number, an ISO date or a plain text.
+    """
+    attr = next(
+        (a for a in _all_attributes(cls, classes) if _names_match(a["name"], spec.get("field"))),
+        None,
+    )
+    value = _clean_text(spec.get("value"))
+    operator = _clean_text(spec.get("operator"), fallback="==")
+    if not attr or not value or operator not in _FILTER_OPERATORS or _FILTER_SYNTAX_RE.search(value):
+        return None
+    equality = operator in ("==", "!=")
+    attr_type = str(attr.get("type", "")).lower()
+    if attr.get("enumLiterals"):
+        literal = next((lit for lit in attr["enumLiterals"] if lit.lower() == value.lower()), None)
+        if not (literal and equality):
+            return None
+        value = literal
+    elif attr_type in ("bool", "boolean"):
+        if not (equality and value.lower() in ("true", "false")):
+            return None
+        value = value.lower()
+    elif attr.get("isNumeric"):
+        if not _NUMBER_RE.fullmatch(value):
+            return None
+    elif attr_type in ("date", "datetime"):
+        if not _ISO_DATE_RE.fullmatch(value):
+            return None
+    elif attr.get("isString"):
+        if not (equality and _FILTER_TEXT_RE.fullmatch(value)):
+            return None
+        value = f"'{value}'"
+    else:
+        return None
+    return f"{attr['name']} {operator} {value}"
+
+
+def _has_unusable_filter(bind: Any, class_metadata: Optional[List[Dict[str, Any]]]) -> bool:
+    """Whether *bind* is a class-bound metric card stating a filter the class
+    model cannot evaluate: built without it, the card shows the wrong figure."""
+    spec = _bind_filter(bind)
+    if not spec or _clean_text(bind.get("kind")).lower() != "metric_card":
+        return False
+    cls = _resolve_class_binding({"className": bind.get("className")}, class_metadata)
+    return bool(cls) and _filter_expression(cls, spec, class_metadata or [cls]) is None
+
+
+_UNUSABLE_FILTER_MESSAGE = (
+    "I couldn't add that metric: its condition does not match an attribute and "
+    "a value of the class diagram, so the card would show the wrong number. "
+    "Your GUI is unchanged."
+)
+
+
 def _metric_card_component(
     section_spec: Dict[str, Any],
     class_metadata: Optional[List[Dict[str, Any]]],
@@ -1514,6 +1590,10 @@ def _metric_card_component(
         if data_attr:
             card_attrs["data-field"] = data_attr["id"]
         card_attrs["aggregation"] = aggregation
+        filter_spec = _bind_filter(section_spec)
+        expression = _filter_expression(cls, filter_spec, class_metadata or [cls]) if filter_spec else None
+        if expression:
+            card_attrs["filter"] = expression
 
     return {
         "type": "metric-card",
@@ -2387,6 +2467,7 @@ def _build_bind_widget(
         "labelField": _clean_text(bind.get("labelField")),
         "valueField": value_field,
         "aggregation": _clean_text(bind.get("aggregation")),
+        "filter": bind.get("filter"),
     }
 
     if kind in _BIND_CHART_KINDS:
@@ -3555,6 +3636,8 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
 
         page_name = _sanitize_page_name(spec.get("pageName"), fallback="Home")
         section_spec = spec.get("section") if isinstance(spec.get("section"), dict) else {}
+        if _has_unusable_filter(section_spec.get("bind"), class_metadata):
+            return self._error_response(_UNUSABLE_FILTER_MESSAGE)
         section_component = _build_section_component(section_spec, class_metadata)
 
         model = _default_gui_model()
@@ -3637,9 +3720,10 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
         )
         spec = parsed.model_dump()
         # Schema enforcement replaces the old clean/parse/salvage chain.
-        # Drop any section carrying neither authored html nor a binding.
+        # Drop any section carrying neither authored html nor a binding, and
+        # a metric whose filter the class model cannot evaluate.
         for page in spec.get("pages", []):
-            page["sections"] = [
+            sections = [
                 sc for sc in page.get("sections", [])
                 if isinstance(sc, dict)
                 and (
@@ -3650,6 +3734,14 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
                     )
                 )
             ]
+            page["sections"] = [
+                sc for sc in sections if not _has_unusable_filter(sc.get("bind"), class_metadata)
+            ]
+            if len(page["sections"]) < len(sections):
+                logger.warning(
+                    "[GUINoCode] %d metric card(s) left out of page %r: filter not on the class diagram",
+                    len(sections) - len(page["sections"]), page.get("name"),
+                )
 
         pages_spec = spec.get("pages") if isinstance(spec.get("pages"), list) else []
         project_name = spec.get("projectName", "App")
@@ -4088,6 +4180,9 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
         operation = _clean_text(spec.get("operation"), fallback="append_section")
         default_page = page_names[0] if page_names else "Home"
         page_name = _sanitize_page_name(spec.get("pageName"), fallback=default_page)
+        authored = spec.get("section") if isinstance(spec.get("section"), dict) else {}
+        if _has_unusable_filter(authored.get("bind"), class_metadata):
+            return model, _UNUSABLE_FILTER_MESSAGE
 
         if operation == "rename_page":
             new_page_name = _sanitize_page_name(spec.get("newPageName"), fallback=page_name)

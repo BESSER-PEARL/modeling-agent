@@ -57,6 +57,31 @@ class GUITableRow(BaseModel):
     )
 
 
+class GUIBindFilter(BaseModel):
+    """One condition on an attribute of the bound class.
+
+    Concrete-typed (the value is text) so it survives OpenAI strict
+    structured output; see the ``GUISampleDataPoint`` note above.
+    """
+    field: str = Field(
+        description="Attribute of className the condition tests.",
+    )
+    operator: Literal["==", "!=", ">", ">=", "<", "<="] = Field(
+        default="==",
+        description=(
+            "Comparison. Enumeration, boolean and text attributes take only "
+            "'==' and '!='; numbers and dates take all six."
+        ),
+    )
+    value: str = Field(
+        description=(
+            "Fixed value to compare with, as text: an enumeration literal of "
+            "the attribute, 'true' / 'false', a number, or an ISO date "
+            "(2026-01-31)."
+        ),
+    )
+
+
 class GUIBindSpec(BaseModel):
     """Data-binding spec for a DATA section (Phase 3).
 
@@ -104,6 +129,14 @@ class GUIBindSpec(BaseModel):
             "'sum'/'avg'/'min'/'max' = of valueField per label. A metric_card "
             "shows the count of records, or sum/avg/min/max of valueField. Omit "
             "on a chart only to plot valueField of each record."
+        ),
+    )
+    filter: Optional[GUIBindFilter] = Field(
+        default=None,
+        description=(
+            "metric_card only: count or aggregate only the records that match "
+            "this condition ('Active loans' = count with status == active). "
+            "Omit for a figure over all records."
         ),
     )
     columns: List[str] = Field(
