@@ -333,6 +333,7 @@ def _new_request_verdict(intent="modify_model_intent"):
     return SimpleNamespace(pending_flow_action="new_request", pending_flow_answer=None, intent=intent)
 
 
+@pytest.mark.parametrize("verdict", [_new_request_verdict(), None])   # None: classifier outage
 @pytest.mark.parametrize("after_failed_ai_design", [True, False])
 @pytest.mark.parametrize("message", [
     "design a state machine for orders instead",       # "design" is an AI-design keyword
@@ -340,8 +341,10 @@ def _new_request_verdict(intent="modify_model_intent"):
     "set the default currency of Order to EUR",        # "default" is a basic-pages keyword
     "ok forget the screens for now and add a Payment class",   # "forget" is a cancel keyword
     "what went wrong?",
+    "design a Payment class",                          # short, but a request
+    "add an AI agent",
 ])
-def test_new_request_leaves_the_screen_question(message, after_failed_ai_design):
+def test_new_request_leaves_the_screen_question(message, after_failed_ai_design, verdict):
     session = _open_webapp_gui_choice()
     if after_failed_ai_design:
         _answer_gui_choice(session, "Experimental AI design", MagicMock(return_value=None))
@@ -349,7 +352,7 @@ def test_new_request_leaves_the_screen_question(message, after_failed_ai_design)
 
     execute = MagicMock(return_value="GUINoCodeDiagram")
     handled, emit, payloads, messages = _answer_gui_choice(
-        session, message, execute, verdict=_new_request_verdict(),
+        session, message, execute, verdict=verdict,
     )
     assert not handled              # normal routing takes the message
     assert not execute.called       # no screen build
@@ -382,6 +385,60 @@ def test_retry_words_after_a_failed_ai_design_run_it_again(answer, verdict):
     assert all(p.get("action") != "auto_generate_gui" for p in payloads)
     assert emit.call_count == 1
     assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is None
+
+
+def _choice_made(handled, execute, payloads, messages):
+    """Which answer the screen question took: llm, auto, cancel or None."""
+    if not handled:
+        return None
+    if execute.called:
+        return "llm"
+    if [p.get("action") for p in payloads] == ["auto_generate_gui"]:
+        return "auto"
+    if messages == ["Cancelled. No GUI was generated."]:
+        return "cancel"
+    return "other"
+
+
+@pytest.mark.parametrize("verdict", [_new_request_verdict(), None])
+@pytest.mark.parametrize("after_failed_ai_design", [False, True])
+@pytest.mark.parametrize("message, expected", [
+    ("Experimental AI design please", "llm"),
+    ("Basic CRUD pages, thanks", "auto"),
+    ("AI please", "llm"),
+    ("ai", "llm"),
+    ("basic is fine", "auto"),
+    ("go with the default", "auto"),
+    ("the basic ones", "auto"),
+    ("1", "auto"),
+    ("2", "llm"),
+    ("option 2", "llm"),
+    ("crud", "auto"),
+    ("cancel", "cancel"),
+    ("never mind", "cancel"),
+])
+def test_a_short_answer_is_an_answer_whatever_the_classifier_says(
+    message, expected, after_failed_ai_design, verdict,
+):
+    session = _open_webapp_gui_choice()
+    if after_failed_ai_design:
+        _answer_gui_choice(session, "Experimental AI design", MagicMock(return_value=None))
+
+    execute = MagicMock(return_value="GUINoCodeDiagram")
+    handled, _emit, payloads, messages = _answer_gui_choice(session, message, execute, verdict=verdict)
+    assert _choice_made(handled, execute, payloads, messages) == expected
+    assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is None
+
+
+@pytest.mark.parametrize("verdict", [_new_request_verdict(), None])
+@pytest.mark.parametrize("message", ["try again please", "retry the AI design"])
+def test_a_short_retry_after_a_failed_ai_design_runs_it_again(message, verdict):
+    session = _open_webapp_gui_choice()
+    _answer_gui_choice(session, "Experimental AI design", MagicMock(return_value=None))
+
+    execute = MagicMock(return_value="GUINoCodeDiagram")
+    handled, _emit, payloads, messages = _answer_gui_choice(session, message, execute, verdict=verdict)
+    assert _choice_made(handled, execute, payloads, messages) == "llm"
 
 
 def test_retry_words_mean_nothing_before_a_failed_ai_design():

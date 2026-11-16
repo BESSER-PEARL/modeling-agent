@@ -14,7 +14,7 @@ top of every state body and hands the message to the open dialog's handler.
 import logging
 import re
 from dataclasses import replace
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from baf.core.session import Session
 
@@ -182,7 +182,30 @@ def _maybe_emit_webapp_prompt(session: Session) -> None:
 # Set on the open screen question once the AI design has failed: from then on
 # a typed "try again" means the AI design.
 _AI_DESIGN_FAILED = "ai_design_failed"
-_RETRY_TOKENS = {"try again", "try it again", "retry", "again"}
+_RETRY_KEYWORDS = ['try again', 'try it again', 'retry', 'again']
+
+# The keywords also occur in ordinary requests ("set the default currency ...",
+# "design a Payment class"), so they answer the screen question only in a short
+# message that does not start like a request. Up to _GUI_ANSWER_MAX_WORDS words
+# such a message is an answer even when the classifier judged it a new request;
+# without a usable verdict, up to _GUI_KEYWORD_ANSWER_MAX_WORDS.
+_GUI_ANSWER_KEYWORDS = _AUTO_KEYWORDS + _LLM_KEYWORDS + CANCEL_KEYWORDS
+_GUI_ANSWER_MAX_WORDS = 4
+_GUI_KEYWORD_ANSWER_MAX_WORDS = 6
+_REQUEST_START_RE = re.compile(
+    r"(?:add|create|design|build|make|generate|model|draw|set|rename|delete|remove|change|update)\s+"
+    r"(?!(?:it|them|these|those)\b)"
+)
+
+
+def _is_gui_answer(user_msg: str, keywords: List[str], max_words: int) -> bool:
+    """True when *user_msg* is shaped like an answer that uses one of *keywords*."""
+    token = _normalize_flow_token(user_msg)
+    return (
+        len(token.split()) <= max_words
+        and not _REQUEST_START_RE.match(token)
+        and any(keyword_matches(w, user_msg) for w in keywords)
+    )
 
 
 def _reoffer_gui_choice(session: Session, pending: dict, lead: str = "") -> None:
@@ -233,24 +256,31 @@ def handle_pending_gui_choice(session: Session) -> bool:
     _verdict_usable = _flow_action == "answer" and _flow_answer in (
         "auto", "llm", "cancel")
 
+    # A message that starts with a button label ("Basic CRUD pages, thanks")
+    # is that answer.
     _token = _normalize_flow_token(user_msg)
-    _label_answer = _GUI_CHOICE_LABELS.get(_token)
-    if not _label_answer and pending.get(_AI_DESIGN_FAILED) and _token in _RETRY_TOKENS:
+    _label_answer = next(
+        (answer for label, answer in _GUI_CHOICE_LABELS.items()
+         if _token == label or _token.startswith(label + " ")),
+        None,
+    )
+    if (not _label_answer and pending.get(_AI_DESIGN_FAILED)
+            and _is_gui_answer(user_msg, _RETRY_KEYWORDS, _GUI_ANSWER_MAX_WORDS)):
         _label_answer = "llm"
     if _label_answer:
         _verdict_usable, _flow_answer = True, _label_answer
-    elif _flow_action == "new_request":
-        # Before the keyword fallback, whose words ("design", "default",
-        # "forget") also occur in ordinary requests.
+    elif (_flow_action == "new_request"
+          and not _is_gui_answer(user_msg, _GUI_ANSWER_KEYWORDS, _GUI_ANSWER_MAX_WORDS)):
         logger.info("[GUIChoice] Classifier: message is a NEW REQUEST — abandoning the screen question")
         pending_dialogs.put(session, PENDING_GUI_CHOICE, None)
         pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, None)
         return False
+    _keyword_answer = _is_gui_answer(user_msg, _GUI_ANSWER_KEYWORDS, _GUI_KEYWORD_ANSWER_MAX_WORDS)
 
     if _verdict_usable:
         wants_cancel = _flow_answer == "cancel"
     else:
-        wants_cancel = any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
+        wants_cancel = _keyword_answer and any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
     if wants_cancel:
         pending_dialogs.put(session, PENDING_GUI_CHOICE, None)
         # No screens: the web-app plan that asked for them ends here too.
@@ -262,8 +292,8 @@ def handle_pending_gui_choice(session: Session) -> bool:
         wants_auto = _flow_answer == "auto"
         wants_llm = _flow_answer == "llm"
     else:
-        wants_auto = any(keyword_matches(w, user_msg) for w in _AUTO_KEYWORDS)
-        wants_llm = any(keyword_matches(w, user_msg) for w in _LLM_KEYWORDS)
+        wants_auto = _keyword_answer and any(keyword_matches(w, user_msg) for w in _AUTO_KEYWORDS)
+        wants_llm = _keyword_answer and any(keyword_matches(w, user_msg) for w in _LLM_KEYWORDS)
 
     if not wants_auto and not wants_llm:
         # The user's message doesn't look like a GUI choice answer.
