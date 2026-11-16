@@ -203,7 +203,7 @@ def _original_for_smart_generation(session, user_message, *, replace=False):
     if _CONTENT_FREE_FOLLOW_UP_RE.fullmatch(normalized):
         if not previous:
             return None
-        if re.search(r"\bfix", normalized):
+        if re.search(r"\bfix", normalized) and not _previous_result_gone(session):
             return f"{previous}\n\n## Subsequent user request\n\n{_FIX_FOLLOW_UP_NOTE}"
         return previous
     if previous and not replace and (message == previous or previous.endswith("\n" + message)):
@@ -483,9 +483,8 @@ def _build_smart_gen_confirmation(
         session, refined, provider, original_request=original, mode="generate" if replaces_repo_app else None,
     )
 
-    # Without the last result (and no repo holding the app) the run builds the
-    # app again, so it is not an update of the existing one.
-    result_expired = _last_result_expired(session) and not repo_holds_app(session)
+    # Without the previous result the run is not an update of the existing app.
+    result_expired = _previous_result_gone(session)
     prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
     if result_expired:
         sources = "your model and your original request" if original else "your model"
@@ -580,10 +579,11 @@ def _request_context(session: Session):
         return None
 
 
-def _last_result_expired(session: Session) -> bool:
-    """True when the editor says its last run's result has expired."""
+def _previous_result_gone(session: Session) -> bool:
+    """True when the editor says its last run's result has expired and no
+    linked repo holds the app: the run builds the app again."""
     last_generation = getattr(_request_context(session), "last_generation", None) or {}
-    return last_generation.get("expired") is True
+    return last_generation.get("expired") is True and not repo_holds_app(session)
 
 
 _DISPLAYABLE_MODEL_RE = re.compile(r"[\w.:/@+-]{1,100}")

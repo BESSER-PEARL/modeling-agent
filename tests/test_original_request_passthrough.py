@@ -739,3 +739,18 @@ def test_nothing_to_go_on_asks_again_and_arms_nothing(monkeypatch):
     assert pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS) is None
     assert _generation_turn(session, "continue with the generation", monkeypatch)["action"] != (
         "trigger_smart_generator")
+
+
+@pytest.mark.parametrize("last_generation, note", [
+    ({"request": _LAST_RUN_SPEC, "expired": True}, False),
+    ({"request": _LAST_RUN_SPEC, "expired": False}, True),
+    ({"request": _LAST_RUN_SPEC}, True),
+])
+def test_no_fix_note_when_the_previous_result_is_gone(last_generation, note):
+    from codegen import generation_handler as generation
+
+    session = _follow_up_session("regenerate with fixes.", last_generation=last_generation)
+
+    original = generation._original_for_smart_generation(session, "regenerate with fixes.")
+    assert original.startswith(_LAST_RUN_SPEC)
+    assert (_FIX_NOTE in original) is note
