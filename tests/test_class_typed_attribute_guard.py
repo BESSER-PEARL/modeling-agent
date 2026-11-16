@@ -225,6 +225,7 @@ class TestCollectionOfAClass:
         assert spec["relationships"] == [{
             "type": "Association", "source": "Cart", "target": "Item",
             "sourceMultiplicity": "0..*", "targetMultiplicity": "0..*", "name": "items",
+            "sourceRole": None, "associationClass": None,
         }]
 
     def test_collection_restating_an_existing_link_adds_nothing(self, handler):

@@ -431,6 +431,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
                         "name": attr_name,
                         "type": enum_name,
                         "visibility": "public",
+                        "isDerived": False,
+                        "defaultValue": None,
+                        "isOptional": False,
+                        "isExternalId": False,
                     })
                 rewritten += 1
                 logger.info(
@@ -1056,6 +1060,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
             label = rel.get("name")
             if not isinstance(label, str) or not label.strip():
                 continue
+            if _VALID_IDENTIFIER_RE.match(label.strip()):
+                continue  # one valid name already ('rooms', 'room_1'): nothing to split
             target_role, _, source_role = label.partition("/")
             target_ident = self._to_identifier(target_role, pascal=False)
             if target_ident:
@@ -1698,6 +1704,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
             "targetMultiplicity": (
                 "0..*" if many else "0..1" if attr.get("isOptional") else "1"),
             "name": role,
+            "sourceRole": None,
+            "associationClass": None,
         })
         logger.info(
             "[ClassDiagram] Rewrote attribute %s.%s into an Association to %s",

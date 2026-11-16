@@ -142,6 +142,7 @@ class TestUnlinkedClass:
         assert spec["relationships"] == [{
             "type": "Association", "source": "Order", "target": "Customer",
             "sourceMultiplicity": "0..*", "targetMultiplicity": "1", "name": "customer",
+            "sourceRole": None, "associationClass": None,
         }]
 
     def test_optional_id_becomes_an_optional_end(self, handler):

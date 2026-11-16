@@ -201,6 +201,55 @@ Features
 - **Enum Type Safety:** The LLM prompt requires every referenced enum type
   (e.g. ``OrderStatus``) to be created as an Enumeration in the same response.
 
+Guards after generation
+~~~~~~~~~~~~~~~~~~~~~~~
+
+``_build_system`` runs deterministic guards on the structured output before it
+is sent to the editor. Each one repairs a model that would fail validation or
+break code generation; none decides what the user wanted modeled. Three rules
+hold for the guards below:
+
+- an id attribute the request names as written (``customerId``,
+  ``customer_id``) is the user's field and is left alone;
+- a member an OCL constraint or a method body reads is neither removed nor
+  renamed;
+- running the guards on their own output changes nothing
+  (``tests/test_class_pipeline_idempotence.py``).
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 66
+
+   * - Guard
+     - What it does
+   * - ``_rewrite_class_typed_attributes``
+     - An attribute typed as a class, or as a collection of it
+       (``List[Item]``), becomes an association, unless the owner already
+       reaches that class through an end of that name. A type naming
+       nothing becomes ``String``.
+   * - ``_fix_inverted_inheritance``
+     - Turns round a hierarchy stated backwards. Runs before the guards
+       that read the direction of the hierarchy.
+   * - ``_rewrite_foreign_key_attributes``
+     - ``<x>Id`` is removed when ``<x>`` is an end or a class the owner (or
+       an ancestor) is linked to, and becomes an association when ``<x>``
+       is a class it is not linked to. Never for the class's own id or the
+       id of a class in its own hierarchy, nor for an ``isExternalId``
+       attribute or an identifier naming no class.
+   * - ``_ensure_unique_association_ends``
+     - One member per name: duplicate ends, and an end named like an
+       attribute, get a ``_1`` suffix. An integer attribute named like a
+       to-one end is dropped instead.
+   * - ``_strip_surrogate_ids``
+     - Removes an attribute named ``id`` unless the request asks for an id:
+       the generators create the primary key, and the spec cannot mark an
+       identifier. Also applied to a single class and to ``add_class``
+       modifications.
+
+The reply (``_build_system_message``) says what the user can see of this: an
+id attribute that became an association and an association end that was
+renamed.
+
 StateMachineHandler
 -------------------
 

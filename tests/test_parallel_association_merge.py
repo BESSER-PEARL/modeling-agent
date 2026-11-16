@@ -415,6 +415,18 @@ def test_plain_label_is_untouched(handler):
     assert "sourceRole" not in rel
 
 
+@pytest.mark.parametrize("name", ["guests_1", "guest_list", "_guests"])
+def test_a_valid_name_with_an_underscore_is_untouched(handler, name):
+    """``guests_1`` is the uniqueness guard's own suffix: re-coercing it to
+    ``guests1`` made a second pass differ from the first."""
+    spec = {"relationships": [
+        {"type": "Association", "source": "A", "target": "B",
+         "sourceMultiplicity": "1", "targetMultiplicity": "1", "name": name},
+    ]}
+    handler._split_dual_role_names(spec)
+    assert _rels(spec)[0]["name"] == name
+
+
 def test_label_with_spaces_but_no_slash_is_coerced(handler):
     spec = {"relationships": [
         {"type": "Association", "source": "A", "target": "B",

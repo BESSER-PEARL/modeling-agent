@@ -242,6 +242,29 @@ _COMPONENT_MODEL = {
 }
 
 
+# A canned output for one case only, picked by a phrase of that case's request.
+# This one is what the class-diagram guards exist for: a surrogate id, an id
+# attribute naming another class, and an association end named like an attribute.
+CANNED_FOR_REQUEST: Dict[str, Dict[str, Dict[str, Any]]] = {
+    "CompactSystemClassSpec": {
+        "a shop with orders": {
+            "name": "Shop",
+            "classes": [
+                {"n": "Order", "k": "", "m": [],
+                 "a": ["id: str", "placedOn: date", "customerId: str", "labels: str"]},
+                {"n": "Customer", "a": ["id: str", "name: str"], "m": [], "k": ""},
+                {"n": "Label", "a": ["text: str"], "m": [], "k": ""},
+            ],
+            "rels": [
+                {"f": "Order", "t": "Label", "k": "assoc", "how_many_TARGET_for_one_SOURCE": "0..*",
+                 "how_many_SOURCE_for_one_TARGET": "0..*", "l": "labels", "ls": "orders"},
+            ],
+            "ocl": [],
+        },
+    },
+}
+
+
 class _Exploding:
     """A parse result whose dump crashes: drives a handler's generic-error path."""
 
@@ -273,6 +296,9 @@ class FakeProvider:
             raise ModelRefusal("openai", "violence")
         if self.mode == "crash":
             return _Exploding()
+        for phrase, canned in CANNED_FOR_REQUEST.get(schema.__name__, {}).items():
+            if phrase in str(messages):
+                return schema.model_validate(canned)
         return schema.model_validate(CANNED[schema.__name__])
 
     def complete(self, prompt, **kwargs) -> str:
@@ -289,6 +315,9 @@ _SPECS: List[tuple] = [
     ("class.system", "ClassDiagram", "generate_complete_system", "Create a library with books and authors", {}, _ALL),
     ("class.system_long", "ClassDiagram", "generate_complete_system",
      "Create a library with books and authors." + _LONG, {"raw_request": "Create a library." + _LONG}, ("ok",)),
+    # Through the class-diagram guards (CANNED_FOR_REQUEST).
+    ("class.system_guards", "ClassDiagram", "generate_complete_system",
+     "Create a shop with orders, the people who place them and the labels on them", {}, ("ok",)),
     ("class.single", "ClassDiagram", "generate_single_element", "Create a Book class", {}, _ALL),
     ("object.system", "ObjectDiagram", "generate_complete_system", "Create two library objects", {}, _ALL),
     ("object.system_ref", "ObjectDiagram", "generate_complete_system", "Create two library objects",
