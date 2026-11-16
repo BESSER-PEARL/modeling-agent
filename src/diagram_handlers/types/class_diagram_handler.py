@@ -1270,6 +1270,11 @@ class ClassDiagramHandler(BaseDiagramHandler):
         ``sourceRole`` for a source end. New target names also stay unique
         among relationship labels.
 
+        An attribute of the class holds its name against every end: generated
+        code gives a class one member per name, so the end is the one renamed.
+        An integer attribute named like a to-one end is that end's reference
+        kept by hand and is dropped instead.
+
         Endpoints are NEVER swapped: the wire format carries the target role
         in ``name`` and the source role in ``sourceRole``, so a swap moves
         each name to the opposite end. Both ends being nameable, naming is
@@ -1324,10 +1329,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
         }
 
         class_order: List[str] = []
+        class_by_name: Dict[str, Dict[str, Any]] = {}
         if isinstance(classes, list):
             for cls in classes:
                 if isinstance(cls, dict) and isinstance(cls.get("className"), str):
                     class_order.append(cls["className"])
+                    class_by_name[cls["className"]] = cls
         for entry in _collect_entries():
             if entry["owner"] not in class_order:
                 class_order.append(entry["owner"])
@@ -1337,15 +1344,29 @@ class ClassDiagramHandler(BaseDiagramHandler):
             entries = _collect_entries()  # recompute after prior mutations
             chain = self._reach_over_edges(inheritance_edges, {cls_name})
             owned = [e for e in entries if e["owner"] in chain]
-            taken_ends = {e["name"] for e in owned}
+            own_attrs = {
+                a["name"]: a
+                for a in class_by_name.get(cls_name, {}).get("attributes") or []
+                if isinstance(a, dict) and isinstance(a.get("name"), str)
+            }
+            taken_ends = {e["name"] for e in owned} | set(own_attrs)
             by_name: Dict[str, List[Dict[str, Any]]] = {}
             for e in owned:
                 by_name.setdefault(e["name"], []).append(e)
             for end_name, group in by_name.items():
-                if len(group) < 2:
+                attr = own_attrs.get(end_name)
+                if attr is not None and self._is_reference_to_end(attr, group):
+                    class_by_name[cls_name]["attributes"].remove(attr)
+                    attr = None
+                    logger.info(
+                        "[ClassDiagram] Dropped attribute %s.%s: the association "
+                        "end of that name already holds the reference",
+                        cls_name, end_name,
+                    )
+                if len(group) < 2 and attr is None:
                     continue
                 explicit = [e for e in group if e["explicit"]]
-                kept = (explicit or group)[0]
+                kept = None if attr is not None else (explicit or group)[0]
                 for e in group:
                     if e is kept:
                         continue
@@ -1374,7 +1395,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
                     renamed += 1
                     logger.info(
                         "[ClassDiagram] Named the %s end of the %s-%s "
-                        "association '%s' so '%s' has no duplicate '%s' end",
+                        "association '%s' so '%s' has a single '%s' member",
                         side, rel["source"], rel["target"], unique, cls_name,
                         end_name,
                     )
@@ -1384,6 +1405,21 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 "[ClassDiagram] Assigned %d unique association-end name(s)",
                 renamed,
             )
+
+    _INTEGER_ATTR_TYPES = frozenset({"int", "integer", "long", "short"})
+
+    @classmethod
+    def _is_reference_to_end(cls, attr: Dict[str, Any], ends: List[Dict[str, Any]]) -> bool:
+        """True when *attr* is an integer and every end of its name is to-one:
+        the attribute then stores the id of the object the end points to. Beside
+        a to-many end an integer of that name is a count and is kept."""
+        return (
+            str(attr.get("type") or "").strip().lower() in cls._INTEGER_ATTR_TYPES
+            and all(
+                cls._parse_multiplicity(e["rel"].get(f"{e['side']}Multiplicity"))[1] <= 1
+                for e in ends
+            )
+        )
 
     # Attribute types the deterministic generators accept without an association.
     _PRIMITIVE_ATTR_TYPES = frozenset({
@@ -1575,11 +1611,13 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
     def _link_attribute_to_class(
         self, relationships: List[Any], owner: str, attr: Dict[str, Any], target: str,
+        *, many: bool = False,
     ) -> bool:
         """Add the Association ``owner -> target`` that *attr* stands for,
         unless the two classes are already linked for that role.
 
-        Returns whether an association was added.
+        *many*: the attribute holds a collection of the target. Returns whether
+        an association was added.
         """
         role = attr.get("name") or self._to_camel_case(target)
         if self._reaches_through_role(relationships, owner, target, role):
@@ -1593,7 +1631,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
             "source": owner,
             "target": target,
             "sourceMultiplicity": "0..*",
-            "targetMultiplicity": "0..1" if attr.get("isOptional") else "1",
+            "targetMultiplicity": (
+                "0..*" if many else "0..1" if attr.get("isOptional") else "1"),
             "name": role,
         })
         logger.info(
@@ -1601,6 +1640,13 @@ class ClassDiagramHandler(BaseDiagramHandler):
             owner, attr.get("name"), target,
         )
         return True
+
+    # 'List[Item]', 'Set<Item>', 'Item[]': a collection of one named type.
+    _COLLECTION_TYPE_RE = re.compile(
+        r"^(?:(?:list|set|sequence|collection|array|iterable)\s*[\[<]\s*(\w+)\s*[\]>]"
+        r"|(\w+)\s*\[\s*\])$",
+        re.IGNORECASE,
+    )
 
     def _rewrite_class_typed_attributes(self, system_spec: Dict[str, Any]) -> None:
         """Convert an attribute TYPED as another class into an Association.
@@ -1611,7 +1657,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
         type" and forces the expensive LLM-from-scratch rebuild. This guard
         rewrites such an attribute into an ``Association`` owner->target (role
         = the attribute name, so ``startLocation``/``endLocation`` stay
-        distinct). No association is added when the owner already reaches the
+        distinct); a collection of a class (``items : List[Item]``) becomes a
+        to-many one. No association is added when the owner already reaches the
         target through that role (:meth:`_reaches_through_role`); the attribute
         is dropped either way. A PascalCase type naming no class/enum in the
         spec is a hallucinated reference and is coerced to ``String``.
@@ -1672,10 +1719,13 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 if tt.lower() in self._PRIMITIVE_ATTR_TYPES or tt in enum_names:
                     kept.append(a)  # primitive or valid enum-typed attribute
                     continue
-                if tt in non_enum_classes:
+                collection = self._COLLECTION_TYPE_RE.match(tt)
+                element = collection.group(1) or collection.group(2) if collection else tt
+                if element in non_enum_classes:
                     # class-typed attribute -> association owner -> target;
                     # the attribute is dropped either way
-                    if self._link_attribute_to_class(relationships, owner, a, tt):
+                    if self._link_attribute_to_class(
+                            relationships, owner, a, element, many=bool(collection)):
                         converted += 1
                 else:
                     # PascalCase but not a known class/enum/primitive -> a

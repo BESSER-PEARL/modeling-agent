@@ -185,3 +185,46 @@ class TestExistingLinkIsNotDuplicated:
         handler._rewrite_class_typed_attributes(spec)
         assert [r["type"] for r in _between(spec, "Manager", "Employee")] == [
             "Inheritance", "Association"]
+
+
+class TestCollectionOfAClass:
+    """``List[Item]`` is a to-many link to Item, in every spelling."""
+
+    @pytest.mark.parametrize("type_", [
+        "List[Item]", "list[Item]", "List<Item>", "Set[Item]", "Item[]", "Array<Item>",
+    ])
+    def test_collection_of_a_class_becomes_a_to_many_association(self, handler, type_):
+        spec = _spec([_cls("Cart", [{"name": "items", "type": type_}]), _cls("Item")])
+        handler._rewrite_class_typed_attributes(spec)
+        assert spec["classes"][0]["attributes"] == []
+        assert spec["relationships"] == [{
+            "type": "Association", "source": "Cart", "target": "Item",
+            "sourceMultiplicity": "0..*", "targetMultiplicity": "0..*", "name": "items",
+        }]
+
+    def test_collection_restating_an_existing_link_adds_nothing(self, handler):
+        spec = _spec(
+            [_cls("Cart", [{"name": "items", "type": "List[Item]"}]), _cls("Item")],
+            [{"type": "Composition", "source": "Item", "target": "Cart",
+              "sourceMultiplicity": "0..*", "targetMultiplicity": "1",
+              "name": "cart", "sourceRole": "items"}],
+        )
+        handler._rewrite_class_typed_attributes(spec)
+        assert spec["classes"][0]["attributes"] == []
+        assert [r["type"] for r in spec["relationships"]] == ["Composition"]
+
+    @pytest.mark.parametrize("type_", ["List[str]", "List[Unknown]", "Item[5]"])
+    def test_other_bracketed_types_are_still_coerced_to_string(self, handler, type_):
+        spec = _spec([_cls("Cart", [{"name": "labels", "type": type_}]), _cls("Item")])
+        handler._rewrite_class_typed_attributes(spec)
+        assert spec["classes"][0]["attributes"] == [{"name": "labels", "type": "String"}]
+        assert spec["relationships"] == []
+
+    def test_collection_of_an_enumeration_is_not_a_link(self, handler):
+        spec = _spec([
+            _cls("Cart", [{"name": "flags", "type": "List[Flag]"}]),
+            {"className": "Flag", "isEnumeration": True, "attributes": [{"name": "GIFT"}]},
+        ])
+        handler._rewrite_class_typed_attributes(spec)
+        assert spec["classes"][0]["attributes"] == [{"name": "flags", "type": "String"}]
+        assert spec["relationships"] == []
