@@ -1271,8 +1271,8 @@ def _table_columns(
 
     The *designed* columns that name an attribute or a related class, in the
     designed order, when at least half of them do; otherwise (headers written
-    as free labels) every attribute and related class. The surrogate ``id``
-    is a column only when the design asks for it.
+    as free labels) every attribute, inherited ones included, and related
+    class. The surrogate ``id`` is a column only when the design asks for it.
     """
     by_id = {c["id"]: c for c in classes}
 
@@ -1322,8 +1322,7 @@ def _table_columns(
             "[GUINoCode] table of %s: %d of %d designed columns name an attribute, showing all",
             cls["name"], len(designed) - len(unknown), len(designed),
         )
-    own = cls.get("attributes", [])
-    shown_attrs = [a for a in own if a.get("isId") or a.get("name") != "id"] or own
+    shown_attrs = [a for a in attrs if a.get("isId") or a.get("name") != "id"] or attrs
     return [field(a) for a in shown_attrs] + [lookup(e) for e in ends]
 
 

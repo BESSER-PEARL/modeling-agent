@@ -284,6 +284,25 @@ def test_modification_prompt_asks_for_attribute_names_as_columns():
     assert "exact attribute names" in gui_prompts.TABLE_COLUMNS_RULE
 
 
+SUBCLASS_METADATA = [
+    {"id": "cls-asset", "name": "Asset", "methods": [],
+     "attributes": [_attr("as-id", "id"), _attr("as-name", "name"), _attr("as-bought", "boughtOn", "date")]},
+    {"id": "cls-laptop", "name": "Laptop", "methods": [], "inheritsFrom": ["Asset"],
+     "attributes": [_attr("l-ram", "ramGb", "int"), _attr("l-os", "os")]},
+]
+
+
+@pytest.mark.parametrize("designed", [[], ["Name", "Specs", "Owner", "Status"]])
+def test_table_of_a_subclass_falls_back_to_its_inherited_attributes_too(designed):
+    # The fallback listed the class's own attributes only, so a subclass table
+    # lost the inherited ones the design asked for (here 'Name').
+    model = _generate([{"name": "Laptops", "sections": [
+        {"bind": {"kind": "table", "className": "Laptop", "columns": designed}},
+    ]}], SUBCLASS_METADATA)
+    columns = json.loads(_table(_nodes(model, "Laptops"), "cls-laptop")["attributes"]["columns"])
+    assert [c["field"] for c in columns] == ["ramGb", "os", "name", "boughtOn"]
+
+
 @pytest.mark.parametrize("name, label", [
     ("targetDate", "Target date"), ("unit_price", "Unit price"), ("xCoordinate", "X coordinate"),
     ("mp3File", "Mp3 file"), ("sha256Hash", "Sha256 hash"),
