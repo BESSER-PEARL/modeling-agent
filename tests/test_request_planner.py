@@ -397,6 +397,54 @@ class TestGuiNeedsClassDiagram:
         assert ("model", "ClassDiagram") not in self._shape(ops)
 
 
+class TestBareGenerateCommandAddsNoModelStep:
+    """"generate django code" names nothing to model: the planner adds no
+    diagram step for it, and the generation handler says what is missing."""
+
+    @pytest.mark.parametrize("message, intent, generator", [
+        ("generate django code", "create_complete_system_intent", "django"),
+        ("generate sql", "modify_model_intent", "sql"),
+        ("generate the web app", "create_complete_system_intent", "web_app"),
+        ("Generate the web app.", "create_complete_system_intent", "web_app"),
+        ("generate qiskit code", "create_complete_system_intent", "qiskit"),
+        ("generate the django code from my model", "create_complete_system_intent", "django"),
+    ])
+    @pytest.mark.parametrize("classes", [False, True])
+    def test_only_the_generation_is_planned(self, message, intent, generator, classes):
+        ops = plan_assistant_operations(
+            _editor_request(message, classes=classes), "complete_system", intent, _noop_predict,
+        )
+        assert _plan_shape(ops) == [("generation", generator)]
+
+    def test_generate_request_with_a_domain_still_gets_its_diagrams(self):
+        ops = plan_assistant_operations(
+            _editor_request("generate a web app for a bookshop"), "complete_system",
+            "create_complete_system_intent", _noop_predict,
+        )
+        assert _plan_shape(ops) == _WEB_APP_PLAN
+        assert "bookshop" in ops[0]["request"]
+
+    def test_a_planned_model_step_still_gets_its_prerequisite(self):
+        # The plan has something to model, so the missing class diagram is added.
+        request = _editor_request("generate the web app")
+        ops = _validate_and_fix_plan(
+            [{"type": "model", "diagramType": "GUINoCodeDiagram", "mode": "complete_system",
+              "request": "create a GUI for a bookshop"},
+             {"type": "generation", "generatorType": "web_app", "config": {}}],
+            request,
+        )
+        assert _plan_shape(ops) == _WEB_APP_PLAN
+
+    def test_generation_with_an_existing_small_circuit_plans_no_rebuild(self):
+        request = _editor_request("generate qiskit code for my circuit")
+        circuit = request.context.project_snapshot["diagrams"]["QuantumCircuitDiagram"][0]["model"]
+        circuit["cols"] = [["H", 1], [1, "X"], ["Z", 1]]
+        ops = _validate_and_fix_plan(
+            [{"type": "generation", "generatorType": "qiskit", "config": {}}], request,
+        )
+        assert _plan_shape(ops) == [("generation", "qiskit")]
+
+
 class TestFromScratchRouteIsForAppRequests:
     """On a new editor project, the class diagram + screens + generate plan is
     for a request that asks for an app with an interface. A request for another
@@ -508,6 +556,32 @@ class TestWorkspaceDiagramTypes:
         tabs = request.context.project_snapshot["diagrams"]["ClassDiagram"]
         tabs.append({"id": "second", "title": "Second", "model": {"elements": {"c1": dict(_BOOK_CLASS)}}})
         assert _get_workspace_diagram_types(request) == {"ClassDiagram"}
+
+    @pytest.mark.parametrize("diagram_type, content", [
+        # Small real diagrams: nothing in them is a "typical" element.
+        ("ClassDiagram", {"elements": {
+            "c1": {"id": "c1", "name": "Shape", "type": "AbstractClass"},
+            "e1": {"id": "e1", "name": "Colour", "type": "Enumeration"},
+        }}),
+        ("QuantumCircuitDiagram", {"cols": [["H", 1], [1, "X"], ["Z", 1]]}),
+        ("QuantumCircuitDiagram", {"cols": [[1, "H"]]}),
+        ("StateMachineDiagram", {"elements": {"i1": {"id": "i1", "name": "", "type": "StateInitialNode"}}}),
+    ])
+    def test_a_small_diagram_is_present(self, diagram_type, content):
+        request = _editor_request("hello")
+        request.context.project_snapshot["diagrams"][diagram_type][0]["model"].update(content)
+        assert _get_workspace_diagram_types(request) == {diagram_type}
+
+    def test_a_quantum_circuit_of_empty_cells_is_absent(self):
+        request = _editor_request("hello")
+        request.context.project_snapshot["diagrams"]["QuantumCircuitDiagram"][0]["model"]["cols"] = [[1, 1], [1]]
+        assert _get_workspace_diagram_types(request) == set()
+
+    @pytest.mark.parametrize("diagram_type", sorted(_EDITOR_DEFAULT_PROJECT["diagrams"]))
+    def test_a_tab_without_a_model_is_absent(self, diagram_type):
+        request = _editor_request("hello")
+        request.context.project_snapshot["diagrams"][diagram_type][0]["model"] = None
+        assert _get_workspace_diagram_types(request) == set()
 
     def test_summaries_stand_in_when_no_snapshot_was_sent(self):
         request = _make_request("hello")

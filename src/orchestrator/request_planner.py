@@ -11,7 +11,6 @@ from routing.generation_signals import (
     detect_generator_type,
 )
 from routing.unified_classifier import EXPLICIT_SCREEN_VOCAB_RE
-from utilities.model_context import is_diagram_nontrivial
 
 from .workspace_orchestrator import determine_target_diagram_types, keyword_target_hits
 
@@ -595,20 +594,22 @@ def _try_heuristic_decomposition(
 # Post-planning validation: ensure prerequisites and remove duplicates.
 # ---------------------------------------------------------------------------
 
-def _tab_has_content(tab: Any, diagram_type: str) -> bool:
+def _tab_has_content(tab: Any) -> bool:
     """True when a diagram tab holds something the user or the assistant made.
 
     A new editor project sends every tab with a model that is a non-empty dict
-    without content, so a non-empty dict proves nothing.
+    without content, so a non-empty dict proves nothing. Any element counts:
+    this is not ``is_diagram_nontrivial``, which skips small diagrams.
     """
     if not isinstance(tab, dict):
         return False
-    model = tab.get("model") if isinstance(tab.get("model"), dict) else tab
-    if not is_diagram_nontrivial(model, diagram_type):
+    # A legacy entry is the model itself; an entry with a "model" key is judged by it.
+    model = tab["model"] if "model" in tab else tab
+    if not isinstance(model, dict) or not model:
         return False
-    if diagram_type == "GUINoCodeDiagram":
-        # Stricter than is_diagram_nontrivial: the editor's default GUI tab is
-        # one page with no components, and its screens are still to be built.
+    if "pages" in model:
+        # GUI: the editor's default tab is one page with no components, and
+        # its screens are still to be built.
         return any(
             isinstance(frame, dict)
             and isinstance(frame.get("component"), dict)
@@ -617,7 +618,13 @@ def _tab_has_content(tab: Any, diagram_type: str) -> bool:
             if isinstance(page, dict)
             for frame in page.get("frames") or []
         )
-    # Types is_diagram_nontrivial has no rule for (BPMN, component, ...).
+    if "cols" in model:
+        # Quantum circuit: any gate counts; 1 marks an empty cell.
+        return any(
+            not isinstance(column, list) or any(cell not in (1, None) for cell in column)
+            for column in model.get("cols") or []
+        )
+    # UML-family models and the knowledge graph: any element counts.
     content = [model[key] for key in ("elements", "relationships", "nodes", "edges") if key in model]
     return any(content) if content else True
 
@@ -636,7 +643,7 @@ def _get_workspace_diagram_types(request: AssistantRequest) -> Set[str]:
             diagram_type
             for diagram_type, payload in diagrams.items()
             if any(
-                _tab_has_content(tab, diagram_type)
+                _tab_has_content(tab)
                 for tab in (payload if isinstance(payload, list) else [payload])
             )
         }
@@ -647,6 +654,16 @@ def _get_workspace_diagram_types(request: AssistantRequest) -> Set[str]:
             if isinstance(dt, str):
                 existing.add(dt)
     return existing
+
+
+# Words that introduce what a generate command is about ("... for a bookshop").
+_GENERATE_SUBJECT_RE = re.compile(r"\b(?:for|of|about|to|that|which|where|with)\b", re.IGNORECASE)
+
+
+def _is_bare_generate_command(message: str) -> bool:
+    """True for "generate django code": a generate command with no subject."""
+    stripped = message.strip()
+    return bool(_HEURISTIC_GENERATE_ONLY.match(stripped)) and not _GENERATE_SUBJECT_RE.search(stripped)
 
 
 def _validate_and_fix_plan(
@@ -669,13 +686,17 @@ def _validate_and_fix_plan(
             if isinstance(dt, str):
                 planned_diagrams.add(dt)
 
+    # A bare "generate django code" with no model step names nothing to model:
+    # no step is added for it, and the generation handler says what is missing.
+    nothing_to_model = not planned_diagrams and _is_bare_generate_command(request.message or "")
+
     # Check each generation op (and each GUI build) for missing prerequisites
     # and inject them
     injected: List[Dict[str, Any]] = []
     for op in operations:
         if op.get("type") == "generation":
             gen_type = op.get("generatorType")
-            if not isinstance(gen_type, str):
+            if not isinstance(gen_type, str) or nothing_to_model:
                 continue
             prereqs = GENERATOR_PREREQUISITES.get(gen_type, [])
         elif op.get("type") == "model":
