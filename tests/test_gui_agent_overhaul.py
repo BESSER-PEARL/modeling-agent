@@ -293,3 +293,11 @@ class TestFreeAuthorship:
             (".app-note", None),
         ]
 
+
+
+def test_stylesheet_over_the_rule_cap_is_cut_with_a_warning(caplog):
+    css = "".join(f".app-r{i}{{color:red}}" for i in range(170))
+    with caplog.at_level("WARNING"):
+        rules = _parse_llm_css(css)
+    assert len(rules) == 160
+    assert "10 rule(s)" in caplog.text

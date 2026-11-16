@@ -262,3 +262,98 @@ def test_prompt_offers_the_metric_filter():
     assert '"filter"' in captured["system_prompt"]
     assert "status (loanstatus: active | returned | overdue)" in captured["system_prompt"]
     assert "filter: status == active" in captured["reasoning_prompt"]
+
+
+# -- a filter never costs more than its own card -------------------------------
+
+STAGES = ["DRAFT", "IN_REVIEW", "In", "on hold"]
+STAGE_META = [{
+    "id": "cls-paper", "name": "Paper",
+    "attributes": [
+        _attr("p-stage", "stage", "stage", enumLiterals=STAGES),
+        _attr("p-open", "open", "bool"),
+        _attr("p-pages", "pages", "int"),
+        _attr("p-sent", "sentAt", "datetime"),
+        _attr("p-author", "author", "str"),
+    ],
+    "methods": [],
+}]
+
+
+def _paper(field, value, operator="==", title="Some papers"):
+    return {"kind": "metric_card", "className": "Paper", "title": title,
+            "filter": {"field": field, "operator": operator, "value": value}}
+
+
+def _paper_filters(*binds):
+    model = _generate(_dashboard(*binds), STAGE_META)
+    return [n["attributes"].get("filter") for n in _nodes(model, "Dashboard")
+            if n.get("type") == "metric-card"]
+
+
+def test_filter_values_and_operators_as_models_write_them():
+    # A true/0 value or '=' used to fail schema validation, and with it the
+    # whole design.
+    assert _paper_filters(
+        _paper("open", True, "="),
+        _paper("open", 0),
+        _paper("pages", 0, "gt"),
+        _paper("pages", 12.5, "<>"),
+        _paper("stage", "draft", "eq"),
+    ) == ["open == true", "open == false", "pages > 0", "pages != 12.5", "stage == DRAFT"]
+
+
+def test_filter_given_as_text_or_without_its_parts_does_not_void_the_design():
+    assert _paper_filters(
+        {"kind": "metric_card", "className": "Paper", "title": "Open", "filter": "open == true"},
+        {"kind": "metric_card", "className": "Paper", "title": "All", "filter": {}},
+        {"kind": "metric_card", "className": "Paper", "title": "Odd", "filter": {"field": "pages"}},
+        _paper("author", "Ann", "contains"),
+    ) == ["open == true", None]
+
+
+def test_filter_values_the_generated_app_reads_are_accepted():
+    assert _paper_filters(
+        _paper("stage", "In"),
+        _paper("stage", "in review"),
+        _paper("stage", "'DRAFT'"),
+        _paper("stage", "on hold"),
+        _paper("pages", "1e3", ">="),
+        _paper("pages", "1,000", "<"),
+        _paper("sentAt", "2030-01-31T08:00:00Z", ">="),
+        _paper("author", "O'Neil"),
+        _paper("author", "R&D"),
+        _paper("open", "yes"),
+    ) == [
+        "stage == In", "stage == IN_REVIEW", "stage == DRAFT", "stage == on hold",
+        "pages >= 1000", "pages < 1000", "sentAt >= 2030-01-31T08:00:00Z",
+        "author == 'O'Neil'", "author == 'R&D'", "open == true",
+    ]
+
+
+def test_filter_values_the_generated_app_would_misread_are_not():
+    # 'and', ',' and ';' split the expression; a leading 'in' reads as the operator.
+    assert _paper_filters(
+        _paper("author", "Rock and roll"),
+        _paper("author", "Acme, Inc."),
+        _paper("author", "checked in today"),
+        _paper("stage", "in review 2"),
+        _paper("pages", "many", ">"),
+        _paper("sentAt", "last week", ">"),
+    ) == []
+
+
+def test_reply_names_a_metric_card_that_was_left_out():
+    handler = GUINoCodeDiagramHandler.__new__(GUINoCodeDiagramHandler)
+    handler.predict_two_pass_structured = lambda **kw: AuthoredSystemGUISpec(
+        projectName="L", pages=_dashboard(
+            {"kind": "table", "className": "Paper"},
+            _paper("stage", "lost", title="Lost papers"),
+        ))
+    res = handler.generate_complete_system("papers", class_metadata=STAGE_META)
+    assert res["action"] == "inject_complete_system"
+    assert "**Lost papers**" in res["message"] and "left out" in res["message"]
+    # Nothing to say when every card was built.
+    handler.predict_two_pass_structured = lambda **kw: AuthoredSystemGUISpec(
+        projectName="L", pages=_dashboard(_paper("stage", "draft")))
+    assert "left out" not in handler.generate_complete_system("papers", class_metadata=STAGE_META)["message"]

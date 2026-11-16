@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import re
 import logging
+from datetime import datetime
 from html import escape as _html_escape
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -147,6 +149,7 @@ def _parse_llm_css(css: Any) -> List[Dict[str, Any]]:
     are silently dropped, never raised.
     """
     rules: List[Dict[str, Any]] = []
+    over_cap = 0
     if not isinstance(css, str) or not css.strip():
         return rules
     text = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
@@ -170,7 +173,11 @@ def _parse_llm_css(css: Any) -> List[Dict[str, Any]]:
         if not selector or not _SAFE_SELECTOR_RE.match(selector):
             return
         style = parse_decls(body)
-        if not style or len(rules) >= _MAX_LLM_CSS_RULES:
+        if not style:
+            return
+        if len(rules) >= _MAX_LLM_CSS_RULES:
+            nonlocal over_cap
+            over_cap += 1
             return
         rule: Dict[str, Any] = {"selectors": [], "selectorsAdd": selector, "style": style}
         if media:
@@ -187,6 +194,11 @@ def _parse_llm_css(css: Any) -> List[Dict[str, Any]]:
                 add_rule(sel, body, media=media_text)
         elif not match.group("selector").strip().startswith("@"):
             add_rule(match.group("selector"), match.group("body"))
+    if over_cap:
+        logger.warning(
+            "[GUINoCode] LLM stylesheet cut at %d rules: the last %d rule(s) are not applied",
+            _MAX_LLM_CSS_RULES, over_cap,
+        )
     return rules
 
 
@@ -1487,12 +1499,20 @@ def _metric_binding(
     return None, "count"
 
 
-_FILTER_OPERATORS = ("==", "!=", ">", ">=", "<", "<=")
-_NUMBER_RE = re.compile(r"-?\d+(\.\d+)?")
-_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?")
-_FILTER_TEXT_RE = re.compile(r"\w[\w .\-/]*")
-# Words the generated app's filter parser reads as syntax.
-_FILTER_SYNTAX_RE = re.compile(r"\b(and|in|contains)\b", re.IGNORECASE)
+# Spellings of a comparison -> the operator the generated app's filter reads.
+_FILTER_OPERATORS = {
+    "==": "==", "=": "==", "eq": "==", "equals": "==", "is": "==",
+    "!=": "!=", "<>": "!=", "ne": "!=", "neq": "!=", "not": "!=",
+    ">": ">", "gt": ">", ">=": ">=", "gte": ">=", "ge": ">=",
+    "<": "<", "lt": "<", "<=": "<=", "lte": "<=", "le": "<=",
+}
+_FILTER_TRUTH = {
+    "true": "true", "yes": "true", "1": "true", "false": "false", "no": "false", "0": "false",
+}
+_ISO_DATE_START_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# What the generated app's filter parser reads as syntax in a value: a
+# separator anywhere, or the word 'in' / 'contains' followed by more text.
+_FILTER_SYNTAX_RE = re.compile(r"&&|[;,]|\band\b|(?:^|\s)(?:in|contains)\s+\S", re.IGNORECASE)
 
 
 def _bind_filter(bind: Any) -> Optional[Dict[str, Any]]:
@@ -1500,48 +1520,71 @@ def _bind_filter(bind: Any) -> Optional[Dict[str, Any]]:
     spec = bind.get("filter") if isinstance(bind, dict) else None
     if not isinstance(spec, dict):
         return None
-    return spec if _clean_text(spec.get("field")) or _clean_text(spec.get("value")) else None
+    value = spec.get("value")
+    stated = _clean_text(spec.get("field")) or (value is not None and str(value).strip())
+    return spec if stated else None
+
+
+def _filter_value(attr: Dict[str, Any], raw: Any, equality: bool) -> Optional[str]:
+    """*raw* as the generated app's filter reads a value of *attr*'s type: a
+    literal of its enumeration, true / false, a plain number, an ISO date or
+    quoted text. ``None`` when it is no such value, or the comparison is an
+    ordering the type does not have."""
+    if isinstance(raw, bool):
+        text = "true" if raw else "false"
+    elif isinstance(raw, (int, float)):
+        text = str(raw)
+    else:
+        text = _clean_text(raw)
+        if len(text) > 1 and text[0] == text[-1] and text[0] in "'\"":
+            text = text[1:-1].strip()
+    if not text:
+        return None
+    attr_type = str(attr.get("type", "")).lower()
+    if attr.get("enumLiterals"):
+        def key(name: str) -> str:
+            return re.sub(r"[^a-z0-9]", "", name.lower())
+
+        literals = attr["enumLiterals"]
+        hits = [lit for lit in literals if lit.lower() == text.lower()] or [
+            lit for lit in literals if key(lit) == key(text)
+        ]
+        return hits[0] if equality and len(hits) == 1 else None
+    if attr_type in ("bool", "boolean"):
+        return _FILTER_TRUTH.get(text.lower()) if equality else None
+    if attr.get("isNumeric"):
+        number = _coerce_numeric(text)
+        if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number):
+            return None
+        return f"{number:f}".rstrip("0").rstrip(".") if isinstance(number, float) else str(number)
+    if attr_type in ("date", "datetime"):
+        stamp = text.replace(" ", "T")
+        try:
+            datetime.fromisoformat(stamp)
+        except ValueError:
+            return None
+        return stamp if _ISO_DATE_START_RE.match(stamp) else None
+    if attr.get("isString"):
+        return f"'{text}'" if equality and "\n" not in text else None
+    return None
 
 
 def _filter_expression(
     cls: Dict[str, Any], spec: Dict[str, Any], classes: List[Dict[str, Any]],
 ) -> Optional[str]:
     """The filter BESSER reads off a widget (``status == active``), or
-    ``None`` when *spec* is not a condition the class model can evaluate.
-
-    One attribute of *cls* against a fixed value of its type: a literal of its
-    enumeration, a boolean, a number, an ISO date or a plain text.
+    ``None`` when *spec* is not a condition the class model can evaluate:
+    one attribute of *cls* compared with a fixed value of its type.
     """
     attr = next(
         (a for a in _all_attributes(cls, classes) if _names_match(a["name"], spec.get("field"))),
         None,
     )
-    value = _clean_text(spec.get("value"))
-    operator = _clean_text(spec.get("operator"), fallback="==")
-    if not attr or not value or operator not in _FILTER_OPERATORS or _FILTER_SYNTAX_RE.search(value):
+    operator = _FILTER_OPERATORS.get(_clean_text(spec.get("operator"), fallback="==").lower())
+    if not attr or not operator:
         return None
-    equality = operator in ("==", "!=")
-    attr_type = str(attr.get("type", "")).lower()
-    if attr.get("enumLiterals"):
-        literal = next((lit for lit in attr["enumLiterals"] if lit.lower() == value.lower()), None)
-        if not (literal and equality):
-            return None
-        value = literal
-    elif attr_type in ("bool", "boolean"):
-        if not (equality and value.lower() in ("true", "false")):
-            return None
-        value = value.lower()
-    elif attr.get("isNumeric"):
-        if not _NUMBER_RE.fullmatch(value):
-            return None
-    elif attr_type in ("date", "datetime"):
-        if not _ISO_DATE_RE.fullmatch(value):
-            return None
-    elif attr.get("isString"):
-        if not (equality and _FILTER_TEXT_RE.fullmatch(value)):
-            return None
-        value = f"'{value}'"
-    else:
+    value = _filter_value(attr, spec.get("value"), operator in ("==", "!="))
+    if value is None or _FILTER_SYNTAX_RE.search(value):
         return None
     return f"{attr['name']} {operator} {value}"
 
@@ -3601,15 +3644,25 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
     # Message Builders
     # ------------------------------------------------------------------
 
-    def _build_gui_system_message(self, pages: list) -> str:
-        """Build a descriptive message for a complete GUI model."""
+    def _build_gui_system_message(self, pages: list, left_out: Optional[List[str]] = None) -> str:
+        """Build a descriptive message for a complete GUI model.
+
+        *left_out* names the metric cards that were not built.
+        """
         page_names = [p.get("name", "Page") for p in pages[:5] if isinstance(p, dict)]
         msg = f"I built **{len(pages)}** screen(s) for your app"
         if page_names:
             msg += f": {', '.join(f'**{n}**' for n in page_names)}"
             if len(pages) > 5:
                 msg += f" (+{len(pages) - 5} more)"
-        msg += ". Want me to add more screens or change the layout?"
+        msg += "."
+        if left_out:
+            cards = ", ".join(f"**{title}**" for title in left_out)
+            msg += (
+                f" I left out the metric card{'s' if len(left_out) > 1 else ''} {cards}: "
+                "the condition cannot be computed from the class diagram."
+            )
+        msg += " Want me to add more screens or change the layout?"
         return msg
 
     def _prepare_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> str:
@@ -3725,6 +3778,7 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
         # Schema enforcement replaces the old clean/parse/salvage chain.
         # Drop any section carrying neither authored html nor a binding, and
         # a metric whose filter the class model cannot evaluate.
+        left_out: List[str] = []
         for page in spec.get("pages", []):
             sections = [
                 sc for sc in page.get("sections", [])
@@ -3740,10 +3794,14 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
             page["sections"] = [
                 sc for sc in sections if not _has_unusable_filter(sc.get("bind"), class_metadata)
             ]
-            if len(page["sections"]) < len(sections):
+            dropped = [sc for sc in sections if sc not in page["sections"]]
+            if dropped:
+                left_out += [
+                    _clean_text(sc["bind"].get("title"), fallback="untitled") for sc in dropped
+                ]
                 logger.warning(
                     "[GUINoCode] %d metric card(s) left out of page %r: filter not on the class diagram",
-                    len(sections) - len(page["sections"]), page.get("name"),
+                    len(dropped), page.get("name"),
                 )
 
         pages_spec = spec.get("pages") if isinstance(spec.get("pages"), list) else []
@@ -3819,7 +3877,7 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
             Action.INJECT_COMPLETE_SYSTEM,
             self.get_diagram_type(),
             model,
-            self._build_gui_system_message(pages),
+            self._build_gui_system_message(pages, left_out),
         )
 
     def _system_failure_reply(self, exc, user_request, existing_model, **kwargs) -> Dict[str, Any]:
