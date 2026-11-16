@@ -1083,23 +1083,24 @@ def _normalize_defaults(generator_type: str, request: AssistantRequest, config: 
 # browser already shows a result card (generator, "0 tokens", Download), so the
 # agent's reply is just one confirming sentence under it — worded for what was
 # actually built rather than a generic "generation completed".
+# Keyed by the generator token of the ``trigger_generator`` reply, which the
+# editor echoes back as ``metadata.generatorType``.
 _GENERATOR_DONE_MESSAGES: Dict[str, str] = {
-    "generate_sql": "Your database schema is generated and ready to download.",
-    "generate_sqlalchemy": "Your SQLAlchemy models are generated and ready to download.",
-    "generate_django": "Your Django project is generated and ready to download.",
-    "generate_fastapi_backend": "Your FastAPI backend is generated and ready to download.",
-    "generate_backend": "Your backend is generated and ready to download.",
-    "generate_web_app": "Your web app is generated and ready to download.",
-    "generate_python": "Your Python classes are generated and ready to download.",
-    "generate_java": "Your Java classes are generated and ready to download.",
-    "generate_pydantic": "Your Pydantic models are generated and ready to download.",
-    "generate_json_object": "Your JSON objects are generated and ready to download.",
-    "generate_json_schema": "Your JSON Schema is generated and ready to download.",
-    "generate_pytorch": "Your PyTorch model is generated and ready to download.",
-    "generate_tensorflow": "Your TensorFlow model is generated and ready to download.",
-    "generate_bpmn": "Your BPMN process is generated and ready to download.",
-    "generate_qiskit": "Your quantum circuit code is generated and ready to download.",
-    "generate_supabase": "Your Supabase schema is generated and ready to download.",
+    "sql": "Your database schema is generated and ready to download.",
+    "sqlalchemy": "Your SQLAlchemy models are generated and ready to download.",
+    "django": "Your Django project is generated and ready to download.",
+    "backend": "Your backend is generated and ready to download.",
+    "web_app": "Your web app is generated and ready to download.",
+    "python": "Your Python classes are generated and ready to download.",
+    "java": "Your Java classes are generated and ready to download.",
+    "pydantic": "Your Pydantic models are generated and ready to download.",
+    "jsonobject": "Your JSON objects are generated and ready to download.",
+    "jsonschema": "Your JSON Schema is generated and ready to download.",
+    "pytorch": "Your PyTorch model is generated and ready to download.",
+    "tensorflow": "Your TensorFlow model is generated and ready to download.",
+    "bpmn": "Your BPMN process is generated and ready to download.",
+    "qiskit": "Your quantum circuit code is generated and ready to download.",
+    "supabase": "Your Supabase schema is generated and ready to download.",
 }
 
 
