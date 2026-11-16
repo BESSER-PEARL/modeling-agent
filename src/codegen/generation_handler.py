@@ -530,9 +530,17 @@ def _build_smart_gen_confirmation(
         session, refined, provider, original_request=original, mode="generate" if replaces_repo_app else None,
     )
 
+    # Without the last result (and no repo holding the app) the run builds the
+    # app again, so it is not an update of the existing one.
+    result_expired = _last_result_expired(session) and not repo_holds_app(session)
     prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
+    if result_expired:
+        prefix += (
+            "Your previous result is no longer available, so I'll build the application again "
+            "from your model and your original request.\n\n"
+        )
 
-    is_fix = (not reason_prefix) and (not starting_over) and _looks_like_fix_request(
+    is_fix = (not reason_prefix) and (not starting_over) and (not result_expired) and _looks_like_fix_request(
         session, user_message, project_id,
     )
 
@@ -616,6 +624,12 @@ def _request_context(session: Session):
     except Exception:  # pragma: no cover — copy must never crash
         logger.debug("Could not read the request context", exc_info=True)
         return None
+
+
+def _last_result_expired(session: Session) -> bool:
+    """True when the editor says its last run's result has expired."""
+    last_generation = getattr(_request_context(session), "last_generation", None) or {}
+    return last_generation.get("expired") is True
 
 
 _DISPLAYABLE_MODEL_RE = re.compile(r"[\w.:/@+-]{1,100}")

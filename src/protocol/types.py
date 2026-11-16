@@ -40,7 +40,8 @@ class WorkspaceContext:
     # None when the editor does not say (older editors).
     generation_key: Optional[Dict[str, Any]] = None
     # The editor's last Spec-Driven run of this project: ``request`` (the text
-    # it was started with, or None). None when the editor does not say.
+    # it was started with, or None) and ``expired`` (its download lifetime has
+    # passed). None when the editor does not say.
     last_generation: Optional[Dict[str, Any]] = None
 
     def get_active_index(self, diagram_type: str) -> int:

@@ -230,7 +230,12 @@ class TestLastGeneration:
         last = _with_context(lastGeneration={
             "runId": "ab12", "at": 1794836873000, "request": "  " + "x" * 5000,
         }).context.last_generation
-        assert last == {"request": "x" * 4000}
+        assert last == {"request": "x" * 4000, "expired": False}
+
+    @pytest.mark.parametrize("expired, read", [(True, True), (False, False), ("true", False), (1, False)])
+    def test_only_a_true_expired_counts(self, expired, read):
+        last = _with_context(lastGeneration={"expired": expired}).context.last_generation
+        assert last == {"request": None, "expired": read}
 
     @pytest.mark.parametrize("value", [None, "x", [], {"request": 3}, {"request": "   "}])
     def test_absent_or_malformed_request_is_none(self, value):

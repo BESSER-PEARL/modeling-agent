@@ -681,3 +681,69 @@ def test_every_supported_provider_has_a_public_name():
     from llm.byok import PROVIDER_NAMES, SUPPORTED_PROVIDERS
 
     assert set(PROVIDER_NAMES) == set(SUPPORTED_PROVIDERS)
+
+
+# ---------------------------------------------------------------------------
+# An expired previous result is said, not hidden behind "update your app"
+# ---------------------------------------------------------------------------
+
+_EXPIRED_NOTE = (
+    "Your previous result is no longer available, so I'll build the application again "
+    "from your model and your original request."
+)
+
+
+@pytest.mark.parametrize("branch", ["default", "other"])
+def test_expired_previous_result_is_announced(branch):
+    message = _branch_confirmation(branch, last_generation={"request": "An order app.", "expired": True})
+    assert message.startswith(_EXPIRED_NOTE + "\n\n")
+
+
+@pytest.mark.parametrize("last_generation", [_ABSENT, {"request": "An order app."}, {"expired": False}])
+@pytest.mark.parametrize("branch", list(_BRANCHES))
+def test_no_expiry_note_unless_the_editor_says_so(branch, last_generation):
+    assert _EXPIRED_NOTE not in _branch_confirmation(branch, last_generation=last_generation)
+
+
+def test_linked_repo_rebuild_needs_no_expiry_note():
+    # The repo still holds the code, whatever happened to the last download.
+    message = _branch_confirmation("rebuild", last_generation={"expired": True})
+    assert _EXPIRED_NOTE not in message
+
+
+def test_an_expired_result_is_not_offered_as_an_update():
+    session, message = _branch_session("fix", last_generation={"request": "An order app.", "expired": True})
+    payload = _build_smart_gen_confirmation(session, "Fix the order form.", "anthropic", user_message=message)
+    assert payload["suggestedActions"][0]["label"] == "Continue"
+    assert "update your existing app" not in payload["message"]
+    assert payload["message"].startswith(_EXPIRED_NOTE)
+
+
+def test_a_repo_with_the_app_is_still_updated_after_the_download_expired():
+    import uuid
+
+    session = FakeSession({
+        "action": "user_message", "protocolVersion": "2.0", "message": "add a search bar",
+        "sessionId": uuid.uuid4().hex,
+        "context": {
+            "activeDiagramType": "ClassDiagram", "projectSnapshot": {"id": _PROJECT_ID, "diagrams": {}},
+            "githubRepo": {"fullName": "acme/orders", "hasCode": True},
+            "lastGeneration": {"expired": True},
+        },
+    })
+    payload = _build_smart_gen_confirmation(session, "Add a search bar.", "anthropic", user_message="add a search bar")
+    assert payload["suggestedActions"][0]["label"] == "Fix it"
+    assert _EXPIRED_NOTE not in payload["message"]
+
+
+def test_regenerating_after_expiry_rebuilds_from_the_last_runs_request():
+    from common.pending_dialogs import PENDING_SMART_GEN_ORIGINAL_REQUEST
+
+    follow_up = "Can you regenerate the application's frontend and the backend?"
+    session, _ = _branch_session("default", last_generation={"request": "An order app with customers.", "expired": True})
+    _record_generated_app(session, _PROJECT_ID, minutes_ago=40)
+    payload = _build_smart_gen_confirmation(session, "Regenerate the app.", "anthropic", user_message=follow_up)
+
+    assert payload["suggestedActions"][0]["label"] == "Continue"
+    assert payload["message"].startswith(_EXPIRED_NOTE)
+    assert pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) == "An order app with customers."

@@ -219,7 +219,10 @@ Field Reference
        follow-up ("regenerate with fixes", "try again", "fix it") re-runs the
        request remembered for the project, else this ``request``, else the
        user's earlier requests in the conversation; with none of them the
-       agent asks the user to describe the application again.
+       agent asks the user to describe the application again. When
+       ``expired`` is true (and no linked repo holds the app), the run
+       confirmation says the previous result is no longer available and the
+       application will be built again, instead of offering to update it.
    * - ``attachments``
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)

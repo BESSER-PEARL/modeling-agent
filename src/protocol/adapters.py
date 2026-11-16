@@ -86,7 +86,7 @@ def _parse_last_generation(context_payload: Dict[str, Any]) -> Optional[Dict[str
         return None
     request = last.get("request")
     request = request.strip()[:MAX_LAST_GENERATION_REQUEST_CHARS] if isinstance(request, str) else ""
-    return {"request": request or None}
+    return {"request": request or None, "expired": last.get("expired") is True}
 
 
 def safe_json_loads(value: Any) -> Optional[Dict[str, Any]]:
