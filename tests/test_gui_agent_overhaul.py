@@ -262,3 +262,18 @@ class TestFreeAuthorship:
         )
         kinds = sorted(r.get("atRuleType", "plain") for r in rules)
         assert kinds == ["media", "plain"]
+
+    def test_parse_llm_css_keeps_source_order(self):
+        # A media rule placed after its base rule must stay after it, or the
+        # base rule (equal specificity) overrides the responsive one.
+        rules = _parse_llm_css(
+            ".app-grid { display: grid; grid-template-columns: 1fr 1fr; } "
+            "@media (max-width: 600px) { .app-grid { grid-template-columns: 1fr; } } "
+            ".app-note { color: gray; }"
+        )
+        assert [(r["selectorsAdd"], r.get("mediaText")) for r in rules] == [
+            (".app-grid", None),
+            (".app-grid", "(max-width: 600px)"),
+            (".app-note", None),
+        ]
+

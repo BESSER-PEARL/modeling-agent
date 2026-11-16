@@ -119,6 +119,12 @@ def _main_container(children: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 _CSS_BLOCK_RE = re.compile(r"([^{}]+)\{([^{}]*)\}")
+# One top-level block: a single-level @media block, or a plain rule.
+_CSS_TOP_LEVEL_RE = re.compile(
+    r"@media(?P<media>[^{]+)\{(?P<rules>(?:[^{}]*\{[^{}]*\})*)\s*\}"
+    r"|(?P<selector>[^{}]+)\{(?P<body>[^{}]*)\}",
+    re.DOTALL,
+)
 _SAFE_SELECTOR_RE = re.compile(r"^[.#a-zA-Z][-\w\s.,:#>()\[\]='\"*+~^$|]*$")
 _MAX_LLM_CSS_RULES = 160
 
@@ -164,19 +170,15 @@ def _parse_llm_css(css: Any) -> List[Dict[str, Any]]:
             rule["mediaText"] = media
         rules.append(rule)
 
-    media_re = re.compile(r"@media([^{]+)\{((?:[^{}]*\{[^{}]*\})*)\s*\}", re.DOTALL)
-
-    def handle_media(match: "re.Match") -> str:
-        media_text = match.group(1).strip()
-        for sel, body in _CSS_BLOCK_RE.findall(match.group(2)):
-            add_rule(sel, body, media=media_text)
-        return ""
-
-    text = media_re.sub(handle_media, text)
-    for sel, body in _CSS_BLOCK_RE.findall(text):
-        if sel.strip().startswith("@"):
-            continue
-        add_rule(sel, body)
+    # Source order is kept: a media rule only wins over the base rule it
+    # refines (equal specificity) when it comes after it.
+    for match in _CSS_TOP_LEVEL_RE.finditer(text):
+        if match.group("media") is not None:
+            media_text = match.group("media").strip()
+            for sel, body in _CSS_BLOCK_RE.findall(match.group("rules")):
+                add_rule(sel, body, media=media_text)
+        elif not match.group("selector").strip().startswith("@"):
+            add_rule(match.group("selector"), match.group("body"))
     return rules
 
 
