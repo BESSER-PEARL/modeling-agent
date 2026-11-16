@@ -99,7 +99,7 @@ EXPECTED = {
     "class_diagram.CLASS_KEY_RULES_BLOCK": "f5b13d2cb92db953",
     "class_diagram.ENUMERATION_RECOVERY_SYSTEM_PROMPT": "e97ad44fb611a1e0",
     "class_diagram.MODIFY_SYSTEM_PROMPT_CLASS": "529c0cb735b10909",
-    "class_diagram.SYSTEM_GENERATION_PROMPT": "1020e0eee144ef5b",
+    "class_diagram.SYSTEM_GENERATION_PROMPT": "c07c5db3b424af10",
     "class_diagram.SYSTEM_PROMPT": "70b5da254f7d69b1",
     "class_diagram.enumeration_recovery_prompt": "448eb48877bbbbc8",
     "class_diagram.reasoning_prompt": "58edcf90f5bbd4e4",

@@ -206,6 +206,11 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # association (or coerce an unknown type to String).
         self._rewrite_class_typed_attributes(system_spec)
 
+        # Guard: a link kept as an id attribute (Order.customerId). Beside the
+        # association the generated backend defines the foreign key twice;
+        # without one the link is missing from the model.
+        self._rewrite_foreign_key_attributes(system_spec)
+
         # Guard: a label naming BOTH ends ("contact / bookingsAsContact")
         # becomes a name plus a sourceRole. A name with a space fails the
         # editor's class-diagram quality check and blocks GUI generation.
@@ -1743,6 +1748,125 @@ class ClassDiagramHandler(BaseDiagramHandler):
             logger.info(
                 "[ClassDiagram] Class-typed-attribute guard: %d -> association, "
                 "%d -> String", converted, coerced,
+            )
+
+    # 'customerId', 'customer_id', 'customerID': a name ending in an id marker.
+    _FK_ATTR_NAME_RE = re.compile(r"^(\w+?)(?:_[iI][dD]|(?<=[a-z0-9])I[dD])$")
+    _FK_ATTR_TYPES = frozenset({"str", "string"}) | _INTEGER_ATTR_TYPES
+
+    def _rewrite_foreign_key_attributes(self, system_spec: Dict[str, Any]) -> None:
+        """Remove or convert an attribute that holds another class's id.
+
+        A string or integer attribute named ``<x>Id`` / ``<x>_id`` is a foreign
+        key kept by hand when ``<x>`` names:
+
+        * an association end the owner has, or a class it is linked to (also
+          by the last word of its name: ``agentId`` for ``SupportAgent``) -
+          the association already stores the reference, so the attribute is
+          removed;
+        * another class of the model the owner is not linked to - the
+          attribute becomes that association, as a class-typed attribute does.
+
+        Links of the owner's generalization chain and of the association it is
+        the association class of count. Anything else is left alone: an
+        attribute flagged ``isExternalId``, the class's own ``<Class>Id``, and
+        identifiers naming no class (``isbn``, ``externalId``, ``trackingId``).
+
+        Mutates *system_spec* in place.
+        """
+        classes = system_spec.get("classes")
+        if not isinstance(classes, list):
+            return
+        relationships = system_spec.get("relationships")
+        if not isinstance(relationships, list):
+            relationships = []
+            system_spec["relationships"] = relationships
+
+        class_by_key = {
+            cls["className"].replace("_", "").lower(): cls["className"]
+            for cls in classes
+            if isinstance(cls, dict) and isinstance(cls.get("className"), str)
+            and cls["className"] and not cls.get("isEnumeration")
+        }
+        inheritance_edges = [
+            (rel.get("source"), rel.get("target"))
+            for rel in relationships
+            if isinstance(rel, dict)
+            and self._spec_rel_type(rel) in self._SPEC_NON_END_REL_TYPES
+        ]
+
+        def _key(name: str) -> str:
+            return name.replace("_", "").lower()
+
+        def _links(owner: str) -> Tuple[set, set]:
+            """(end names, classes) *owner* reaches; end names as keys."""
+            chain = self._reach_over_edges(inheritance_edges, {owner})
+            roles: set = set()
+            linked: set = set()
+            for rel in relationships:
+                if (not isinstance(rel, dict)
+                        or self._spec_rel_type(rel) in self._SPEC_NON_END_REL_TYPES):
+                    continue
+                source, target = rel.get("source"), rel.get("target")
+                if not isinstance(source, str) or not isinstance(target, str):
+                    continue
+                if rel.get("associationClass") in chain:
+                    linked.update((source, target))
+                for near, far, side in ((source, target, "target"),
+                                        (target, source, "source")):
+                    if near in chain:
+                        linked.add(far)
+                        roles.add(_key(self._spec_role(rel, side) or far))
+            return roles, linked
+
+        removed = converted = 0
+        for cls in classes:
+            if not isinstance(cls, dict) or cls.get("isEnumeration"):
+                continue
+            owner = cls.get("className")
+            attrs = cls.get("attributes")
+            if not isinstance(owner, str) or not owner or not isinstance(attrs, list):
+                continue
+            roles, linked = _links(owner)
+            kept: List[Any] = []
+            for a in attrs:
+                name = a.get("name") if isinstance(a, dict) else None
+                match = self._FK_ATTR_NAME_RE.match(name) if isinstance(name, str) else None
+                if (match is None or a.get("isExternalId")
+                        or str(a.get("type") or "").strip().lower() not in self._FK_ATTR_TYPES):
+                    kept.append(a)
+                    continue
+                stem = match.group(1)
+                key = _key(stem)
+                target = class_by_key.get(key)
+                by_last_word = [
+                    c for c in linked
+                    if len(c) > len(key) and c.lower().endswith(key)
+                    and c[-len(key)].isupper()
+                ]
+                if target == owner:
+                    kept.append(a)  # the class's own identifier
+                elif key in roles or target in linked or (
+                        target is None and len(by_last_word) == 1):
+                    removed += 1
+                    logger.info(
+                        "[ClassDiagram] Dropped foreign-key attribute %s.%s: "
+                        "the association already holds that reference", owner, name,
+                    )
+                elif target is None:
+                    kept.append(a)
+                else:
+                    role = self._to_camel_case(self._to_identifier(stem, pascal=False))
+                    self._link_attribute_to_class(
+                        relationships, owner, {**a, "name": role}, target)
+                    converted += 1
+                    roles, linked = _links(owner)
+            cls["attributes"] = kept
+
+        if removed or converted:
+            logger.info(
+                "[ClassDiagram] Foreign-key-attribute guard: %d removed, "
+                "%d -> association", removed, converted,
             )
 
     def _break_mandatory_cycles(self, system_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
