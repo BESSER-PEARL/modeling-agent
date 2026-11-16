@@ -11,6 +11,7 @@ from routing.generation_signals import (
     detect_generator_type,
 )
 from routing.unified_classifier import EXPLICIT_SCREEN_VOCAB_RE
+from utilities.model_context import is_diagram_nontrivial
 
 from .workspace_orchestrator import determine_target_diagram_types, keyword_target_hits
 
@@ -594,27 +595,52 @@ def _try_heuristic_decomposition(
 # Post-planning validation: ensure prerequisites and remove duplicates.
 # ---------------------------------------------------------------------------
 
+def _tab_has_content(tab: Any, diagram_type: str) -> bool:
+    """True when a diagram tab holds something the user or the assistant made.
+
+    A new editor project sends every tab with a model that is a non-empty dict
+    without content, so a non-empty dict proves nothing.
+    """
+    if not isinstance(tab, dict):
+        return False
+    model = tab.get("model") if isinstance(tab.get("model"), dict) else tab
+    if not is_diagram_nontrivial(model, diagram_type):
+        return False
+    if diagram_type == "GUINoCodeDiagram":
+        # Stricter than is_diagram_nontrivial: the editor's default GUI tab is
+        # one page with no components, and its screens are still to be built.
+        return any(
+            isinstance(frame, dict)
+            and isinstance(frame.get("component"), dict)
+            and bool(frame["component"].get("components"))
+            for page in model.get("pages") or []
+            if isinstance(page, dict)
+            for frame in page.get("frames") or []
+        )
+    # Types is_diagram_nontrivial has no rule for (BPMN, component, ...).
+    content = [model[key] for key in ("elements", "relationships", "nodes", "edges") if key in model]
+    return any(content) if content else True
+
+
 def _get_workspace_diagram_types(request: AssistantRequest) -> Set[str]:
     """Return the set of diagram types already present (with content) in the workspace.
 
-    For multi-tab arrays, a type is considered present only when at least one
-    tab contains a non-empty model dict.  This prevents spurious prerequisite
-    satisfaction when the frontend sends an empty placeholder tab.
+    Judged from the project snapshot: a type is present when one of its tabs
+    has content. Diagram summaries carry no content, so they stand in only
+    when no snapshot was sent.
     """
-    existing: Set[str] = set()
     snapshot = request.context.project_snapshot
-    if isinstance(snapshot, dict):
-        diagrams = snapshot.get("diagrams")
-        if isinstance(diagrams, dict):
-            for diagram_type, payload in diagrams.items():
-                if isinstance(payload, list):
-                    # Multi-tab: type is present only when ≥1 tab has a model
-                    for tab in payload:
-                        if isinstance(tab, dict) and isinstance(tab.get("model"), dict) and tab["model"]:
-                            existing.add(diagram_type)
-                            break
-                elif isinstance(payload, dict):
-                    existing.add(diagram_type)
+    diagrams = snapshot.get("diagrams") if isinstance(snapshot, dict) else None
+    if isinstance(diagrams, dict):
+        return {
+            diagram_type
+            for diagram_type, payload in diagrams.items()
+            if any(
+                _tab_has_content(tab, diagram_type)
+                for tab in (payload if isinstance(payload, list) else [payload])
+            )
+        }
+    existing: Set[str] = set()
     for summary in (request.context.diagram_summaries or []):
         if isinstance(summary, dict):
             dt = summary.get("diagramType")
