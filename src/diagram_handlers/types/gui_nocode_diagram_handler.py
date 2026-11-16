@@ -3663,7 +3663,10 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
         class_metadata: Optional[List[Dict[str, Any]]] = kwargs.get("class_metadata")
         class_block = ""
         if class_metadata:
-            class_block = "\n\n" + format_class_metadata_for_prompt(class_metadata)
+            class_block = (
+                "\n\n" + format_class_metadata_for_prompt(class_metadata)
+                + "\n\n" + gui_prompts.STATIC_COPY_RULES
+            )
         # Screenshots / mockups to reproduce, as data URLs (#643).
         images = kwargs.get("images") or ()
         mockup_block = f"\n\n{gui_prompts.mockup_block(len(images))}" if images else ""
@@ -3844,7 +3847,10 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
         class_metadata: Optional[List[Dict[str, Any]]] = kwargs.get("class_metadata")
         class_block = ""
         if class_metadata:
-            class_block = "\n\n" + format_class_metadata_for_prompt(class_metadata)
+            class_block = (
+                "\n\n" + format_class_metadata_for_prompt(class_metadata)
+                + "\n\n" + gui_prompts.STATIC_COPY_RULES
+            )
 
         model = _normalize_gui_model(current_model)
         page_names = [

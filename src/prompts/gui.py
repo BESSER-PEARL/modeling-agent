@@ -218,6 +218,23 @@ Design judgment — build what THIS request actually needs; do not pad or force 
 9. Return JSON only.{class_block}{mockup_block}"""
 
 
+# Appended to the class block: these only hold for an app built on a class diagram.
+STATIC_COPY_RULES = (
+    "STATIC COPY — this app runs on the class diagram above and shows its real records, "
+    "so the text you write in html is fixed wording. These rules override the realism "
+    "directives:\n"
+    "- Never write a model path, attribute name or class name as text ('Invoice.amount', "
+    "'issuedOn', 'InvoiceItem'): word it as a user would ('Amount', 'Issued on', "
+    "'invoice items').\n"
+    "- Never invent record values, counts, dates, times or 'last updated' stamps, and "
+    "never show sample figures as if they were live. Whatever shows data is a DATA "
+    "section (table, chart, metric_card); its \"rows\" and \"sampleData\" are editor "
+    "previews and stay.\n"
+    "- Never promise behaviour ('refreshes every minute', 'sends a reminder the day "
+    "before'): describe only what the user sees and can do on the page."
+)
+
+
 def data_model_step_for_classes(class_metadata_text: str) -> str:
     return (
         "1. DATA MODEL (fixed). The app is built on this class diagram — "

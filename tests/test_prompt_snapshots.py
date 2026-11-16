@@ -162,6 +162,7 @@ EXPECTED = {
     "gui.CHART_RULE_FOR_CLASSES": "9a16bcaccf90c453",
     "gui.DATA_MODEL_STEP": "033f9d7024a9501b",
     "gui.MOCKUP_REASONING_ADDENDUM": "c2b3920b4a068408",
+    "gui.STATIC_COPY_RULES": "dbd07abd5d52b46b",
     "gui.SVG_THUMB_HINT": "d940d49684416059",
     "gui.complete_system_prompt": "31de561bfd2d1237",
     "gui.data_model_step_for_classes": "0133afd5b613e683",
