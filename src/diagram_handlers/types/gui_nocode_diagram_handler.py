@@ -1270,8 +1270,9 @@ def _table_columns(
     """The columns of a table bound to *cls*.
 
     The *designed* columns that name an attribute or a related class, in the
-    designed order; every attribute and related class when the design names
-    none. The surrogate ``id`` is a column only when the design asks for it.
+    designed order, when at least half of them do; otherwise (headers written
+    as free labels) every attribute and related class. The surrogate ``id``
+    is a column only when the design asks for it.
     """
     by_id = {c["id"]: c for c in classes}
 
@@ -1298,16 +1299,29 @@ def _table_columns(
     attrs = _all_attributes(cls, classes)
     ends = cls.get("associationEnds", [])
     columns: List[Dict[str, Any]] = []
+    unknown: List[str] = []
     for name in designed:
         attr = next((a for a in attrs if _names_match(a["name"], name)), None)
         end = None if attr else next(
             (e for e in ends if _names_match(e.get("targetClassName"), name)), None
         )
         column = field(attr) if attr else lookup(end) if end else None
-        if column and column not in columns:
+        if column is None:
+            unknown.append(str(name))
+        elif column not in columns:
             columns.append(column)
-    if columns:
+    if columns and len(unknown) <= len(designed) / 2:
+        if unknown:
+            logger.info(
+                "[GUINoCode] table of %s: designed column(s) %s name no attribute, left out",
+                cls["name"], unknown,
+            )
         return columns
+    if designed:
+        logger.info(
+            "[GUINoCode] table of %s: %d of %d designed columns name an attribute, showing all",
+            cls["name"], len(designed) - len(unknown), len(designed),
+        )
     own = cls.get("attributes", [])
     shown_attrs = [a for a in own if a.get("isId") or a.get("name") != "id"] or own
     return [field(a) for a in shown_attrs] + [lookup(e) for e in ends]

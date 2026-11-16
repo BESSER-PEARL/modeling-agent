@@ -258,6 +258,32 @@ def test_form_and_chart_labels_split_camel_case():
     assert metric["attributes"]["metric-title"] == "Order total amount"
 
 
+def test_table_with_mostly_unknown_columns_shows_all_attributes(caplog):
+    # Headers written as labels: keeping the one that happens to match would
+    # show fewer columns than naming none at all.
+    with caplog.at_level("INFO"):
+        columns = _columns({"kind": "table", "className": "Order",
+                            "columns": ["Reference", "Due date", "Amount", "Buyer", "State"]})
+    assert [c["field"] for c in columns] == ["orderNumber", "dueDate", "total_amount", "Customer"]
+    assert "1 of 5" in caplog.text
+
+
+def test_table_with_half_of_its_columns_known_keeps_them(caplog):
+    with caplog.at_level("INFO"):
+        columns = _columns({"kind": "table", "className": "Order",
+                            "columns": ["Due date", "Buyer", "orderNumber", "State"]})
+    assert [c["field"] for c in columns] == ["dueDate", "orderNumber"]
+    assert "Buyer" in caplog.text and "State" in caplog.text
+
+
+def test_modification_prompt_asks_for_attribute_names_as_columns():
+    from prompts import gui as gui_prompts
+
+    prompt = gui_prompts.modification_prompt("- Home: hero", ORDER_METADATA, "")
+    assert gui_prompts.TABLE_COLUMNS_RULE in prompt
+    assert "exact attribute names" in gui_prompts.TABLE_COLUMNS_RULE
+
+
 @pytest.mark.parametrize("name, label", [
     ("targetDate", "Target date"), ("unit_price", "Unit price"), ("xCoordinate", "X coordinate"),
     ("mp3File", "Mp3 file"), ("sha256Hash", "Sha256 hash"),

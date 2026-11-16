@@ -16,6 +16,15 @@ SVG_THUMB_HINT = (
 )
 
 
+# How a table bound to a class names its columns; shared by the design and
+# the modification prompt.
+TABLE_COLUMNS_RULE = (
+    "On a table bound to a class, \"columns\" are the exact attribute names of that "
+    "class (or the name of a related class) to show, in display order — only those "
+    "columns appear, so list every one the screen needs and leave out the technical id."
+)
+
+
 def interactions_block(has_classes: bool) -> str:
     """How authored markup states link, navigation and method intent."""
     method_rule = (
@@ -172,7 +181,7 @@ Each section is EXACTLY ONE of these two shapes:
 }}
    - Put a <!--WIDGET:kind--> comment inside the chrome where the widget belongs; the server splices the real, data-bound widget there.
    - The "html" chrome is OPTIONAL — omit it and the widget is card-wrapped automatically — but authoring chrome around it gives a far nicer result.
-   - Whatever widget you place, populate it or it renders empty: a table needs "columns" + "rows" ("cells" aligned 1:1 to "columns"); a chart needs "sampleData" (name + numeric value; pie adds a "color" hex). On a table bound to a class, "columns" are the exact attribute names of that class (or the name of a related class) to show, in display order — only those columns appear, so list every one the screen needs and leave out the technical id.
+   - Whatever widget you place, populate it or it renders empty: a table needs "columns" + "rows" ("cells" aligned 1:1 to "columns"); a chart needs "sampleData" (name + numeric value; pie adds a "color" hex). {TABLE_COLUMNS_RULE}
    - Give every widget a specific "title" (never 'Data Table' / 'Bar Chart'). With a class diagram, set a chart's "labelField" (category attribute) and its "aggregation": the chart groups records by labelField and shows per label the "count" of records (no valueField needed) or the "sum"/"avg"/"min"/"max" of "valueField" (numeric attribute) — e.g. count of books by genre, sum of amount by month; omit "aggregation" only to plot valueField of each record, labelled by a unique field. A metric_card shows the "count" of records (no valueField), or the "sum"/"avg"/"min"/"max" of its "valueField" — set its "aggregation" to match its title (e.g. 'Members' = count, 'Average fine' = avg of fine). A metric over only SOME records ('Active members', 'Open orders', 'Paid invoices') MUST carry a "filter": one attribute of its class compared with a fixed value — an enumeration literal, true/false, a number or an ISO date (status == active, paid == true, amount > 0); without it the card shows the figure for ALL records. When the condition cannot be written that way (it depends on today's date, on another class or on a calculation), leave that card out.
    - Pick the widget that fits the content: a table suits tabular records (orders, bookings, transactions, inventory); a card grid (below) usually reads better for listings of people / products / profiles / features. Use your judgment.
 
@@ -324,7 +333,7 @@ For append_section / edit_section / add_page, author "section" in the app's desi
   PREFERRED — rich themed HTML: {{"html": "<section class='ds-section'><h2 class='ds-heading'>Title</h2> ...concrete content... </section>"}}
    - Root element carries a stable class; use ONLY .ds-* classes + semantic tags (h1-h6, p, span, a, ul, li, button, svg, plain tables). No scripts/styles/external URLs. Real copy, never placeholders.
   DATA — a live bound widget: {{"bind": {{"kind": "table|bar_chart|pie_chart|line_chart|radar_chart|metric_card|form|dashboard", "className": "Entity from the class diagram", "columns": [...], "rows": [{{"cells": [...]}}], "sampleData": [{{"name": "...", "value": 42}}]}}, "html": "<section class='ds-section'><h3 class='ds-heading'>Title</h3><div class='ds-card'><!--WIDGET:kind--></div></section>"}}
-   - Populate the widget (columns+rows for tables, sampleData for charts) or it renders empty.
+   - Populate the widget (columns+rows for tables, sampleData for charts) or it renders empty. {TABLE_COLUMNS_RULE}
 Design-system classes: ds-section, ds-hero, ds-heading, ds-card, ds-grid-2, ds-grid-3, ds-kpi, ds-kpi-value, ds-kpi-label, ds-table-wrap, ds-btn, ds-btn-primary, ds-notice, ds-badge, ds-field, ds-label, ds-input, ds-container, ds-footer.
 
 {interactions_block(bool(class_metadata))}
