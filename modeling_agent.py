@@ -83,6 +83,7 @@ generation_state = agent.new_state("generation_state")
 decline_state = agent.new_state("decline_state")
 out_of_scope_state = agent.new_state("out_of_scope_state")
 meta_question_state = agent.new_state("meta_question_state")
+trace_question_state = agent.new_state("trace_question_state")
 
 # ── Intents ──────────────────────────────────────────────────────────────
 #
@@ -227,6 +228,19 @@ generation_intent = agent.new_intent(
         "deploy the app to render",
     ],
 )
+traceability_question_intent = agent.new_intent(
+    name="traceability_question_intent",
+    description="User asks about the project's history or provenance (trace record).",
+    training_sentences=[
+        "which code was generated from class book",
+        "why does this class exist",
+        "which requirement does this class realize",
+        "what is out of date since the last generation",
+        "who created this attribute and when",
+        "which requirements are not covered by the model",
+        "summarize the history of this project",
+    ],
+)
 # ── Wire state bodies & transitions ─────────────────────────────────────
 register_all(
     agent=agent,
@@ -241,6 +255,7 @@ register_all(
         "decline": decline_state,
         "out_of_scope": out_of_scope_state,
         "meta_question": meta_question_state,
+        "trace_question": trace_question_state,
     },
     intents={
         "hello": hello_intent,
@@ -253,6 +268,7 @@ register_all(
         "describe_model": describe_model_intent,
         "uml_spec": uml_spec_intent,
         "generation": generation_intent,
+        "traceability_question": traceability_question_intent,
     },
 )
 

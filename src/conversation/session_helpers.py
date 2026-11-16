@@ -152,9 +152,12 @@ _TERMINAL_REPLY_ACTIONS = frozenset({
 # Kept out of the legacy replay above, which has no dedupe (a paid run could
 # start twice). create_diagram_tab precedes an injection with replaceExisting,
 # so it must replay with it; stream_done carries the assembled streamed text.
+# show_trace follows a stream_done: replayed alone, without a turn, it would
+# stand in for the answer it belongs to.
 _TURN_REPLY_ACTIONS = _TERMINAL_REPLY_ACTIONS | frozenset({
     Action.INJECT_ELEMENT, Action.TRIGGER_SMART_GENERATOR, Action.AGENT_ERROR,
     Action.TRIGGER_EXPORT, Action.TRIGGER_DEPLOY, Action.CREATE_DIAGRAM_TAB, Action.STREAM_DONE,
+    Action.SHOW_TRACE,
 })
 _REPLY_BUFFER_MAX = 200
 _last_reply_buffer: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
@@ -351,6 +354,18 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
     action = payload.get('action')
     if isinstance(action, str) and action != Action.PROGRESS:
         _emit_prompt_telemetry(session, action)
+
+
+def reply_show_trace(session: Session, payload: Dict[str, Any]) -> None:
+    """Send a ``show_trace`` button after a streamed trace answer.
+
+    Its label is translated like any reply message, but it is neither recorded
+    in the conversation memory (the streamed answer already was) nor counted
+    as the turn's telemetry reply (``stream_done`` was)."""
+    try:
+        _buffer_terminal_reply(session, _send_to_session(session, localize_payload(session, payload)))
+    except Exception as exc:
+        logger.error(f"❌ [Reply] Failed to send show_trace: {exc}", exc_info=True)
 
 
 def _remember_suggested_prompts(session: Session, payload: Dict[str, Any]) -> None:

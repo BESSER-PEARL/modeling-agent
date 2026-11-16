@@ -18,7 +18,7 @@ from baf.core.session import Session
 from baf.library.transition.events.base_events import ReceiveJSONEvent
 from baf.nlp.rag.rag import RAGMessage
 
-from common.agent_config import LLM_MAX_TOKENS_TEXT, LLM_TEXT_TEMPERATURE
+from common.agent_config import LLM_MAX_TOKENS_TEXT, LLM_TEXT_TEMPERATURE, TRACE_QA_PROJECT_SUMMARY_MAX_CHARS
 from conversation import agent_context as ctx
 from llm.model_config import MODEL_GENERATION_SMALL
 from llm.provider import LLMProvider
@@ -32,6 +32,7 @@ from conversation.session_helpers import (
     reply_message,
     reply_payload,
     replay_last_reply,
+    reply_show_trace,
     stream_llm_response,
     user_key_reply,
     json_intent_matches,
@@ -50,8 +51,10 @@ from orchestrator import determine_target_diagram_type
 from prompts import describe_model as describe_prompts
 from prompts import fallback as fallback_prompts
 from prompts import modeling_help as help_prompts
+from prompts import traceability as trace_prompts
 from prompts import uml_rag as uml_prompts
 from utilities.model_context import detailed_model_summary, is_diagram_nontrivial
+from utilities.trace_digest import pick_focus_artifact, render_trace_digest
 from utilities.user_metamodel import format_user_metamodel_guide, is_user_profile_help
 from routing import guards
 from routing.intents import GENERATION_INTENT_NAME
@@ -66,9 +69,12 @@ from conversation.reply_copy import (
     DECLINE_ACK as _DECLINE_ACK,
     META_ANSWER as _META_ANSWER,
     OUT_OF_SCOPE_REDIRECT as _OUT_OF_SCOPE_REDIRECT,
+    TRACE_NOT_AVAILABLE as _TRACE_NOT_AVAILABLE,
+    TRACE_QUESTION_EMPTY as _TRACE_QUESTION_EMPTY,
+    show_trace_label,
 )
 from routing.unified_classifier import get_or_classify
-from protocol.actions import Action
+from protocol.actions import Action, show_trace
 
 try:
     from llm.provider import get_provider as _get_llm_provider
@@ -265,6 +271,8 @@ _QUICK_RESPONSES = {
         "**Other:**\n"
         "- *\"Describe my diagram\"* — I'll analyze what you've built\n"
         "- *\"What is an association class?\"* — I can explain UML concepts\n"
+        "- *\"Which code was generated from Book?\"*, *\"What is out of date?\"* — I answer "
+        "questions about your project's history when trace recording is on\n"
         "- Attach a **PlantUML file** or **diagram image** and I'll convert it\n"
         "- Attach a **screenshot or mockup** of a page and I'll build it as a GUI\n"
         "- I reply in the language you write in\n\n"
@@ -792,6 +800,70 @@ def describe_model_body(session: Session):
 
 
 # ------------------------------------------------------------------
+# Trace questions
+# ------------------------------------------------------------------
+
+def trace_question_body(session: Session):
+    """Answer a question about the project's history and provenance from the
+    editor's trace record (``context.traceDigest``)."""
+    request = _common_preamble(session)
+    if request is None:
+        return
+
+    session.set(LAST_MATCHED_INTENT, 'traceability_question_intent')
+
+    if not request.message:
+        reply_message(session, _TRACE_QUESTION_EMPTY)
+        return
+
+    # No record, nothing to answer from: a fixed reply, no LLM call.
+    if guards.trace_question_guard(request) == "no_trace":
+        logger.info("[Trace] Trace question without a trace record — explaining how to record")
+        reply_message(session, _TRACE_NOT_AVAILABLE)
+        return
+
+    digest = request.context.trace_digest
+    history_block = _recent_conversation_block(session, request)
+    history_section = trace_prompts.history_section(history_block) if history_block else ""
+    # The current model, for coverage questions; cut so the record stays the subject.
+    project_summary = _build_full_project_summary(request)[:TRACE_QA_PROJECT_SUMMARY_MAX_CHARS]
+    prompt = trace_prompts.trace_qa_prompt(
+        render_trace_digest(digest), project_summary, history_section, request.message,
+    )
+
+    try:
+        answer = stream_llm_response(
+            session, ctx.gpt_text, prompt,
+            system_prompt=trace_prompts.SYSTEM_PROMPT, model=MODEL_GENERATION_SMALL,
+        )
+    except Exception as e:
+        logger.error(f"❌ Error in trace_question_body: {e}", exc_info=True)
+        reply_message(
+            session,
+            "I had trouble reading your project's history. Could you try rephrasing your question?",
+        )
+        return
+    if answer:
+        _offer_trace_view(session, request)
+
+
+def _offer_trace_view(session: Session, request: AssistantRequest) -> None:
+    """After the answer, a ``show_trace`` button when it centres on one view
+    (the classifier's ``trace_view``) or one artifact of the digest's focus.
+    The artifact id is only ever the digest's own, never the model's."""
+    artifact = pick_focus_artifact(request.context.trace_digest, request.message)
+    view = getattr(session.get(UNIFIED_CLASSIFICATION), "trace_view", None)
+    if view is None and artifact is not None:
+        view = "lineage"
+    if view is None:
+        return
+    name = artifact["name"] if artifact else ""
+    reply_show_trace(session, show_trace(
+        view, show_trace_label(view, name), artifact["artifactId"] if artifact else None,
+    ))
+
+
+# ------------------------------------------------------------------
 # Code generation (continued)
 # ------------------------------------------------------------------
 
@@ -1038,6 +1110,7 @@ def register_all(*, agent, states, intents):
     states['decline'].set_body(decline_body)
     states['out_of_scope'].set_body(out_of_scope_body)
     states['meta_question'].set_body(meta_question_body)
+    states['trace_question'].set_body(trace_question_body)
 
     # -- Wire transitions --
     intent_map = {
@@ -1051,6 +1124,7 @@ def register_all(*, agent, states, intents):
         intents['decline']: states['decline'],
         intents['out_of_scope']: states['out_of_scope'],
         intents['meta_question']: states['meta_question'],
+        intents['traceability_question']: states['trace_question'],
     }
 
     generation_st = states['generation']
@@ -1066,6 +1140,7 @@ def register_all(*, agent, states, intents):
         ('decline', 'greetings'),
         ('out_of_scope', 'greetings'),
         ('meta_question', 'greetings'),
+        ('trace_question', 'greetings'),
     ]:
         add_unified_transitions(
             states[state_name], intent_map, states[fallback_name], generation_st,

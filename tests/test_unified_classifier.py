@@ -237,7 +237,9 @@ class TestClassifyMessage:
             "hello_intent", "create_complete_system_intent",
             "modify_model_intent", "modeling_help_intent",
             "describe_model_intent", "uml_spec_intent",
-            "generation_intent", "fallback_intent",
+            "generation_intent", "decline_intent", "out_of_scope_intent",
+            "meta_question_intent", "traceability_question_intent",
+            "fallback_intent",
         ]
         for name in intents:
             cls = UnifiedClassification(

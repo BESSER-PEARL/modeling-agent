@@ -228,6 +228,17 @@ def test_is_past_generation_question(message, past):
     assert guards.is_past_generation_question(message) is past
 
 
+@pytest.mark.parametrize("trace_digest,decision", [
+    (None, "no_trace"),          # recording off, nothing recorded, or an older editor
+    ({}, None),                  # a record, even an empty one, is answered from
+    ({"schemaVersion": 1, "recording": True}, None),
+])
+def test_trace_question_guard(trace_digest, decision):
+    request = AssistantRequest(message="which code came from Book?",
+                               context=WorkspaceContext(trace_digest=trace_digest))
+    assert guards.trace_question_guard(request) == decision
+
+
 @pytest.mark.parametrize("intent,route,reason,expected", [
     ("generation_intent", "smart", "r", "smart"),
     ("generation_intent", "deterministic", "r", "deterministic"),

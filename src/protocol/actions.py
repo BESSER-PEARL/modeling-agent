@@ -10,7 +10,7 @@ order of the literals they replace (``json.dumps`` keeps insertion order).
 """
 
 from enum import StrEnum
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 class Action(StrEnum):
@@ -34,6 +34,9 @@ class Action(StrEnum):
     TRIGGER_EXPORT = "trigger_export"
     TRIGGER_DEPLOY = "trigger_deploy"
     AUTO_GENERATE_GUI = "auto_generate_gui"
+    # After a streamed answer to a trace question: a button opening the
+    # editor's Traceability page on a view (and an artifact of the digest).
+    SHOW_TRACE = "show_trace"
 
     # Outbound, non-terminal
     PROGRESS = "progress"
@@ -48,6 +51,25 @@ class Action(StrEnum):
 def assistant_message(message: Any, **fields: Any) -> Dict[str, Any]:
     """``{"action": "assistant_message", "message": ..., **fields}``."""
     return {"action": Action.ASSISTANT_MESSAGE, "message": message, **fields}
+
+
+# The views of the editor's Traceability page a ``show_trace`` can open.
+TRACE_VIEWS = ("lineage", "coverage", "timeline")
+
+
+def show_trace(view: str, message: str, artifact_id: Optional[str] = None) -> Dict[str, Any]:
+    """``{"action": "show_trace", "view": ..., ["artifactId": ...,] "message": ...}``.
+
+    *artifact_id* must come from the request's ``traceDigest.focus``; it is
+    left out when None.
+    """
+    if view not in TRACE_VIEWS:
+        raise ValueError(f"unknown trace view {view!r}")
+    payload: Dict[str, Any] = {"action": Action.SHOW_TRACE, "view": view}
+    if artifact_id:
+        payload["artifactId"] = artifact_id
+    payload["message"] = message
+    return payload
 
 
 def inject_element(element: Dict[str, Any], diagram_type: str, message: str) -> Dict[str, Any]:

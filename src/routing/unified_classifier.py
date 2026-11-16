@@ -88,6 +88,11 @@ _INTENT_NAMES = Literal[
     # websites?", "what can you do") or value ("why use you instead of
     # Claude/GPT?") — answer the pitch, do NOT build anything.
     "meta_question_intent",
+    # User asks about the project's HISTORY / PROVENANCE (who created or
+    # changed what and when, which code came from which element, which
+    # requirement an element realizes, what is out of date, requirement
+    # coverage) — answered from the editor's trace record, never builds.
+    "traceability_question_intent",
     # Catch-all — BAF's own fallback state body runs when nothing
     # matches. Routed to whatever state fallback the current state
     # has (typically modeling_help_state).
@@ -196,7 +201,11 @@ class UnifiedClassification(BaseModel):
             "export / deploy; decline_intent = user opts out ('nothing', 'no "
             "thanks'); out_of_scope_intent = wants a non-software artifact "
             "(picture/poem/joke); meta_question_intent = asks what the "
-            "assistant can do or why to use it; fallback_intent = none fit."
+            "assistant can do or why to use it; "
+            "traceability_question_intent = asks about the project's history "
+            "or provenance (who/when, which code came from an element, which "
+            "requirement it realizes, what is out of date, requirement "
+            "coverage); fallback_intent = none fit."
         ),
     )
 
@@ -244,6 +253,20 @@ class UnifiedClassification(BaseModel):
         description=(
             "Suggested LLM provider when generation_route='smart'. Ignored "
             "for other routes. The frontend's BYOK dropdown can override."
+        ),
+    )
+
+    # --- Trace-question field (populated when intent == 'traceability_question_intent') ---
+
+    trace_view: Optional[Literal["lineage", "coverage", "timeline"]] = Field(
+        default=None,
+        description=(
+            "ONLY for traceability_question_intent: the view of the editor's "
+            "Traceability page the question is about. 'lineage' = where an "
+            "element comes from or what was derived / generated from it, and "
+            "out-of-date links; 'coverage' = which requirements the model "
+            "covers or not; 'timeline' = who did what and when, the history "
+            "of an element or of the project. NULL for every other intent."
         ),
     )
 
@@ -887,6 +910,16 @@ def _build_user_block(
     if class_names:
         summary_lines.append(
             "- all class names: " + ", ".join(class_names[:30])
+        )
+
+    # Whether the editor sent its trace record (see traceability_question_intent).
+    trace_digest = getattr(ctx, "trace_digest", None)
+    if isinstance(trace_digest, dict):
+        counts = trace_digest.get("counts") or {}
+        summary_lines.append(
+            "- traceability record: sent "
+            f"({counts.get('artifacts', '?')} artifacts, "
+            f"{counts.get('outOfDateLinks', '?')} out-of-date links)"
         )
 
     if summary_lines:

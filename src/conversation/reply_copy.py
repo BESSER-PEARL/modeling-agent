@@ -72,3 +72,40 @@ AUTO_FIX_UNFIXED = (
     "The diagram is unchanged. You can fix these issues on the canvas, or tell "
     "me how you'd like them resolved."
 )
+
+
+# Reply to a question about the project's history when the editor sent no
+# trace record (``context.traceDigest``): recording is off, or nothing has been
+# recorded yet. Deterministic, no LLM call.
+TRACE_NOT_AVAILABLE = (
+    "I can't answer that from the project's history: the editor sent me no "
+    "trace record, so trace recording is off for this project or nothing has "
+    "been recorded yet.\n\n"
+    "To turn it on, open the **Traceability** page of the editor and enable "
+    "recording. From then on your edits, my changes, code generations and the "
+    "requirements I extract are recorded, and you can ask me where an element "
+    "comes from, which code was generated from it, what is out of date or "
+    "which requirements the model does not cover."
+)
+
+TRACE_QUESTION_EMPTY = (
+    "What would you like to know about the project's history? For example: "
+    "*\"which code was generated from Book?\"*, *\"which requirement does this "
+    "class realize?\"* or *\"what is out of date since the last generation?\"*."
+)
+
+# The label of the ``show_trace`` button, by view; ``{name}`` is the artifact's.
+_SHOW_TRACE_LABELS = {
+    "lineage": ("Open the lineage of {name}", "Open the trace lineage"),
+    "coverage": ("Open the requirement coverage of {name}", "Open the requirement coverage"),
+    "timeline": ("Open the history of {name}", "Open the project timeline"),
+}
+# An element name longer than this is cut in the label.
+_SHOW_TRACE_LABEL_NAME_CHARS = 60
+
+
+def show_trace_label(view: str, name: str = "") -> str:
+    """The short label of the button opening the Traceability page on *view*."""
+    with_name, without = _SHOW_TRACE_LABELS[view]
+    name = " ".join((name or "").split())[:_SHOW_TRACE_LABEL_NAME_CHARS]
+    return with_name.format(name=name) if name else without

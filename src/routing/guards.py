@@ -18,6 +18,7 @@ After routing, in the state that received the message:
   quick_response_key     fallback, greetings and modeling-help states
   is_mixed_modeling_and_generation   generation state
   is_past_generation_question        generation handler
+  trace_question_guard   trace-question state
   generation_route       the dispatch route of a verdict in the generation handler
 """
 
@@ -239,6 +240,21 @@ def quick_response_key(message: str) -> Optional[str]:
     for patterns, key in QUICK_PATTERNS:
         if any(p in msg_lower for p in patterns):
             return key
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Trace-question state
+# ---------------------------------------------------------------------------
+
+def trace_question_guard(request: Any) -> Optional[str]:
+    """``"no_trace"`` when a trace question arrives without the editor's trace
+    record (``context.traceDigest``: recording is off, or nothing is recorded
+    yet, or an older editor), else None. Without the record there is nothing
+    to answer from, so the reply is fixed and no LLM is called."""
+    context = getattr(request, "context", None)
+    if not isinstance(getattr(context, "trace_digest", None), dict):
+        return "no_trace"
     return None
 
 

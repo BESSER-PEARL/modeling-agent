@@ -264,6 +264,7 @@ _MODELING_INTENTS = {
     "modify_model_intent",
     "modeling_help_intent",
     "describe_model_intent",
+    "traceability_question_intent",
 }
 
 
