@@ -397,6 +397,83 @@ class TestGuiNeedsClassDiagram:
         assert ("model", "ClassDiagram") not in self._shape(ops)
 
 
+class TestFromScratchRouteIsForAppRequests:
+    """On a new editor project, the class diagram + screens + generate plan is
+    for a request that asks for an app with an interface. A request for another
+    diagram, or one that only uses a screen word, keeps its own plan."""
+
+    @staticmethod
+    def _plan(message, target, request=None):
+        return plan_assistant_operations(
+            request or _editor_request(message), "complete_system",
+            "create_complete_system_intent", _noop_predict, llm_target_type=target,
+        )
+
+    @pytest.mark.parametrize("message, target", [
+        ("Model the invoice lifecycle as a state machine, from the payment page to archiving",
+         "StateMachineDiagram"),
+        ("I need a state machine that follows a parcel from the tracking screen to delivery",
+         "StateMachineDiagram"),
+        ("an agent that answers questions about the pages of the staff manual", "AgentDiagram"),
+        ("Draw the BPMN of how a refund moves from the returns page to the bank", "BPMN"),
+        ("draw the deployment of the frontend, the API and the database", "DeploymentDiagram"),
+        ("a user profile for people who prefer high contrast in the UI", "UserDiagram"),
+        ("a quantum circuit that prepares a bell state and fits on the start page",
+         "QuantumCircuitDiagram"),
+    ])
+    def test_request_for_another_diagram_builds_that_diagram(self, message, target):
+        ops = self._plan(message, target)
+        assert _plan_shape(ops) == [("model", target)]
+
+    @pytest.mark.parametrize("message, expected", [
+        ("I need a state machine that follows a parcel from the tracking screen to delivery",
+         "StateMachineDiagram"),
+        ("Draw the BPMN of how a refund moves from the returns page to the bank", "BPMN"),
+        ("a user profile for people who prefer high contrast in the UI", "UserDiagram"),
+    ])
+    @pytest.mark.parametrize("target", [None, "ClassDiagram"])
+    def test_a_named_diagram_is_not_replaced_by_the_web_app_plan(self, message, expected, target):
+        # No usable classifier target: the diagram the message names still wins.
+        shape = _plan_shape(self._plan(message, target))
+        assert ("model", expected) in shape
+        assert ("generation", "web_app") not in shape
+        assert ("model", "GUINoCodeDiagram") not in shape
+
+    @pytest.mark.parametrize("extra", ["AgentDiagram", "StateMachineDiagram"])
+    def test_project_with_another_diagram_and_no_classes(self, extra):
+        request = _editor_request("Build a second agent that explains the UI of the product")
+        elements = {"AgentDiagram": {"a1": {"id": "a1", "name": "greet", "type": "AgentState"}},
+                    "StateMachineDiagram": {"s1": {"id": "s1", "name": "Open", "type": "State"}}}
+        request.context.project_snapshot["diagrams"][extra][0]["model"]["elements"] = elements[extra]
+        assert _plan_shape(self._plan(request.message, "AgentDiagram", request)) == [("model", "AgentDiagram")]
+
+    @pytest.mark.parametrize("message", [
+        "a library catalogue: each book has a title, an author and a number of pages",
+        "Design a class diagram that covers books, their pages and their authors",
+        "Design a CMS data model: Site, Page, Block, Author. A page has many blocks.",
+        "a cinema booking model: each cinema has several screens and each screen has seats",
+        "a shop that sells screens and keyboards, with stock per warehouse",
+        "a notebook model where every page belongs to one section",
+    ])
+    def test_screen_word_as_a_domain_noun_stays_a_class_diagram(self, message):
+        assert _plan_shape(self._plan(message, "ClassDiagram")) == [("model", "ClassDiagram")]
+
+    @pytest.mark.parametrize("message", [
+        "Build an order tracker with models and a UI",
+        "Build an inventory system with a frontend",
+        "a booking system with a GUI",
+        "Build a task tracker with screens for adding and listing tasks",
+        "Build a task tracker and some screens",
+        "an order tracker with a list page and a detail page",
+        "a ticketing system with pages to list and edit tickets",
+        "a course catalogue with a page for each course",
+        "Build a bookshop with a landing page and a catalogue",
+    ])
+    @pytest.mark.parametrize("target", ["ClassDiagram", "GUINoCodeDiagram", None])
+    def test_app_request_that_asks_for_an_interface_gets_the_web_app_plan(self, message, target):
+        assert _plan_shape(self._plan(message, target)) == _WEB_APP_PLAN
+
+
 # ---------------------------------------------------------------------------
 # Which diagram types the workspace already has
 # ---------------------------------------------------------------------------

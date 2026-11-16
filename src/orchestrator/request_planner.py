@@ -725,6 +725,36 @@ def _validate_and_fix_plan(
 # ---------------------------------------------------------------------------
 
 
+# Classifier targets the from-scratch web-app route may replace (None: no verdict).
+_WEB_APP_ROUTE_TARGETS = (None, "ClassDiagram", "GUINoCodeDiagram")
+
+# "pages" and "screens" are also domain nouns (a book's pages, a cinema's
+# screens). They ask for an interface only when requested as one: "with
+# screens", "pages to list ...", "a page for each ...", "a detail page".
+_SCREENS_AS_INTERFACE_RE = re.compile(
+    r"\b(?:with|and|plus|including|design|build|create|make|add|need|want)\s+"
+    r"(?:(?:a|an|the|some|few|several|simple|basic|\d+|two|three|four|five)\s+){0,2}screens\b"
+    r"(?!\s+(?:and|or)\b)"
+    r"|\b(?:screens?|pages?)\s+(?:"
+    r"for\s+(?:\w+ing|each|every|all)\b"
+    r"|to\s+(?:list|add|edit|view|show|manage|create|display|browse|search|see|enter|update|delete)\b"
+    r"|that\s+(?:list|show|display|let)s?\b)"
+    r"|\b(?:home|landing|login|sign-?up|dashboard|detail|list|overview|admin|settings|main|start|search)"
+    r"\s+(?:screens?|pages?)\b",
+    re.IGNORECASE,
+)
+
+
+def _asks_for_an_interface(message: str) -> bool:
+    """True when the message asks for screens, not merely uses a screen word."""
+    if any(
+        not match.group(1).lower().startswith(("page", "screen"))
+        for match in EXPLICIT_SCREEN_VOCAB_RE.finditer(message)
+    ):
+        return True
+    return bool(_SCREENS_AS_INTERFACE_RE.search(message))
+
+
 def _without_web_gui_plan(
     operations: List[Dict[str, Any]], request: AssistantRequest, default_mode: str,
     keep_gui: bool,
@@ -803,11 +833,16 @@ def _plan_operations(
     # "Build a library platform with models and UI" takes the same route as
     # "create a web app for X". Left to the classifier, the target flips
     # between ClassDiagram (no screens) and GUINoCodeDiagram (screens on no
-    # model).
+    # model). A request for any other diagram keeps its own plan.
     if (
         matched_intent == "create_complete_system_intent"
         and app_target_kind != "other"
-        and EXPLICIT_SCREEN_VOCAB_RE.search(request.message or "")
+        and llm_target_type in _WEB_APP_ROUTE_TARGETS
+        and _asks_for_an_interface(request.message or "")
+        and all(
+            diagram_type in _WEB_APP_ROUTE_TARGETS
+            for _, diagram_type in keyword_target_hits((request.message or "").lower())
+        )
         and not {"ClassDiagram", "GUINoCodeDiagram"} & _get_workspace_diagram_types(request)
     ):
         message = request.message.strip()
