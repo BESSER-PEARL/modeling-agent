@@ -90,10 +90,11 @@ RULES:
 4. If the user just says "create X class", generate relevant attributes and typically NO methods.
 5. Use proper naming: PascalCase for classes, camelCase for attributes/methods.
 6. {POSITION_DISCLAIMER}
+7. No surrogate id attribute: every class gets a generated key. Model an identifier only when the user names one (isbn, sku, room number).
 
 Examples of expected richness:
-- "create User class" → id, username, email, password (4 attributes, 0-1 method)
-- "create Product with inventory" → id, name, price, stockQuantity, supplier (5+ attributes)
+- "create User class" → username, email, password (3 attributes, 0-1 method)
+- "create Product with inventory" → name, price, stockQuantity, supplier (4+ attributes)
 - "create BankAccount with deposit method" → accountNumber, balance, owner + methods: deposit, withdraw"""
 
 
@@ -101,13 +102,13 @@ SYSTEM_GENERATION_PROMPT = f"""You are a UML modeling expert. Create a COMPLETE,
 
 Before generating, think through:
 - What are the core domain entities (classes) needed?
-- What attributes does each class need? When the user listed them, use THEIR list and stop there. When they did not, be thorough — include IDs, timestamps, and a status field only if that entity actually has states.
+- What attributes does each class need? When the user listed them, use THEIR list and stop there. When they did not, be thorough — include timestamps, and a status field only if that entity actually has states.
 - What relationships connect them? What type and what multiplicities?
 - Is there an inheritance hierarchy that makes sense?
 - Are relationships complete? They are the most commonly missed element.
 
 RULES:
-1. Include all the classes, relationships, and concepts the user asks for. Where the user SPECIFIED a class's attributes, use exactly those plus an id — do not add status, timestamps or anything else they did not name. Where they only named the class, flesh it out with thorough domain attributes (IDs, timestamps, and a status field only if that entity has states).
+1. Include all the classes, relationships, and concepts the user asks for. Where the user SPECIFIED a class's attributes, use exactly those — do not add status, timestamps or anything else they did not name. Where they only named the class, flesh it out with thorough domain attributes (timestamps, and a status field only if that entity has states). NO SURROGATE ID: never add an id attribute, every class gets a generated primary key; model an identifier only when the user names one (isbn, sku, room number), flagged as rule 13 says.
 2. SCOPE: match the diagram size to the request. A plain request ("create a library model") gets the CORE domain only: 6-10 classes. Do NOT add peripheral subsystems (notifications, audit logs, reporting, staffing, fines, reservations, branches...) unless the user names them. Only exceed 12 classes when the user explicitly asks for a "complete", "comprehensive", "detailed" or "enterprise" system, or lists that many entities themselves. A focused diagram the user can extend beats an overwhelming one.
 3. A class the user described gets exactly what they described — never padded to hit a count. A class they only named should have 3-5+ attributes rather than being a stub.
 4. When creating Enumerations (isEnumeration=true), list enum values as attributes (name only, no type needed). When another class has an attribute whose type is that enumeration, set the attribute's type to the enum's PascalCase name (e.g., type="OrderStatus", NOT "str" or "String"). An enumeration is used ONLY as an attribute type — NEVER create a relationship (Association, Composition, Aggregation, etc.) whose source or target is an enumeration. For example, for a Task with a status, add an attribute Task.status of type TaskStatus; do NOT add a relationship from Task to the TaskStatus enum.

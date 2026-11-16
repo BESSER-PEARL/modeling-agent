@@ -109,6 +109,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             model=MODEL_GENERATION_SMALL,
         )
         simple_spec = parsed.model_dump()
+        self._strip_surrogate_ids([simple_spec], kwargs.get("raw_request") or user_request)
 
         # Remove any position the LLM might have hallucinated, then apply layout engine
         simple_spec.pop("position", None)
@@ -276,6 +277,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # copies deterministically. Method OVERRIDES are left alone —
         # overriding is legitimate OO.
         self._strip_shadowed_attributes(system_spec)
+
+        # Guard: no surrogate id attribute. The generators give every class
+        # its own primary key, and the spec cannot mark an identifier.
+        self._strip_surrogate_ids(system_spec.get("classes"), raw_request or user_request)
 
         # Guard: BUML rejects decorated type tokens the LLM sometimes
         # emits ('str?', 'int?'). Normalize them: on an attribute the '?'
@@ -664,6 +669,40 @@ class ClassDiagramHandler(BaseDiagramHandler):
                     len(attributes) - len(kept), name,
                 )
                 cls["attributes"] = kept
+
+    # The request itself asks for an id ("each product has an id and a name").
+    _ID_REQUEST_RE = re.compile(r"\b(?:ids?|identifiers?)\b", re.IGNORECASE)
+
+    def _strip_surrogate_ids(self, classes: Any, request_text: Optional[str]) -> None:
+        """Remove the attribute named ``id`` from every class in *classes*.
+
+        The generators create a primary key for a class that declares no
+        identifier, and an ``id`` attribute that is not the identifier is
+        rejected by Django and reported by the validator on every class. Kept
+        when *request_text* asks for an id; identifiers the user names
+        (``isbn``, ``sku``) are other attributes and are never touched.
+        """
+        if not isinstance(classes, list) or self._ID_REQUEST_RE.search(request_text or ""):
+            return
+        stripped = []
+        for cls in classes:
+            if not isinstance(cls, dict) or cls.get("isEnumeration"):
+                continue
+            attributes = cls.get("attributes")
+            if not isinstance(attributes, list):
+                continue
+            kept = [
+                a for a in attributes
+                if not (isinstance(a, dict) and str(a.get("name") or "").lower() == "id")
+            ]
+            if len(kept) != len(attributes):
+                cls["attributes"] = kept
+                stripped.append(str(cls.get("className")))
+        if stripped:
+            logger.info(
+                "[ClassDiagram] Stripped the surrogate id attribute from %d "
+                "class(es): %s", len(stripped), ", ".join(stripped)[:200],
+            )
 
     @staticmethod
     def _to_identifier(raw: str, *, pascal: bool) -> str:
@@ -2355,13 +2394,14 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 classes.append({
                     "className": name,
                     "attributes": [
-                        {"name": "id", "type": "String", "visibility": "public"},
+                        {"name": "name", "type": "String", "visibility": "public"},
                     ],
                     "methods": [],
                 })
 
         if not classes:
             return self.generate_fallback_system()
+        self._strip_surrogate_ids(classes, raw_request or user_request)
 
         system_spec = {
             "systemName": "System",
@@ -2397,7 +2437,6 @@ class ClassDiagramHandler(BaseDiagramHandler):
         fallback_spec = {
             "className": class_name,
             "attributes": [
-                {"name": "id", "type": "String", "visibility": "public"},
                 {"name": "name", "type": "String", "visibility": "private"}
             ],
             "methods": []
@@ -2420,7 +2459,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 {
                     "className": "Entity",
                     "attributes": [
-                        {"name": "id", "type": "String", "visibility": "public"}
+                        {"name": "name", "type": "String", "visibility": "public"}
                     ],
                     "methods": []
                 }
