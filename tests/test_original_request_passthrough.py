@@ -463,8 +463,8 @@ _FOLLOW_UPS = [
     "generate the app again",
     "build it again",
     "do it again",
-    "regenerate the backend",
     "regenerate both the frontend and the backend",
+    "rebuild the backend and the frontend",
     "regenerate the code with the fixes",
     "regenerate and fix the problems",
     "fix all the errors",
@@ -472,6 +472,13 @@ _FOLLOW_UPS = [
     "please fix the bugs",
     "fix the errors and regenerate",
     "retry with fixes",
+    # The whole-app fix and repeat forms.
+    "fix the app",
+    "fix my app",
+    "can you fix the code?",
+    "fix it again",
+    "try once more",
+    "try it one more time",
 ]
 
 _CONTENT_REQUESTS = [
@@ -506,6 +513,13 @@ _CONTENT_REQUESTS = [
     "please regenerate the app and include an admin page",
     "rebuild it with two roles: author and reader",
     "create an order tracking app",
+    # One part of the app names what to rebuild.
+    "regenerate the backend",
+    "regenerate the frontend",
+    "regenerate the ui",
+    "regenerate the api",
+    "regenerate the app's backend",
+    "fix the frontend",
 ]
 
 
@@ -754,3 +768,16 @@ def test_no_fix_note_when_the_previous_result_is_gone(last_generation, note):
     original = generation._original_for_smart_generation(session, "regenerate with fixes.")
     assert original.startswith(_LAST_RUN_SPEC)
     assert (_FIX_NOTE in original) is note
+
+
+@pytest.mark.parametrize("message", ["regenerate the backend", "regenerate the ui"])
+def test_a_part_scoped_redo_keeps_its_scope(message):
+    from codegen import generation_handler as generation
+    from utilities.original_request import remember_original_request
+
+    session = _follow_up_session(message)
+    remember_original_request(session, _ORDER_SPEC, "proj-1")
+
+    original = generation._original_for_smart_generation(session, message)
+    assert original.startswith(_ORDER_SPEC)
+    assert original.endswith(message)

@@ -141,20 +141,23 @@ _BARE_GENERATE_RE = re.compile(_POLITE_PREFIX + r"(?:generate|build|create) " + 
 # A content-free follow-up about the previous generation ("regenerate with
 # fixes", "try again", "fix the errors"): it re-runs the earlier request and
 # names nothing new to build.
-_APP_PART = r"(?:(?:web ?)?(?:app|application)|code|project|generation|build|run|result|output|frontend|front[- ]end|backend|back[- ]end|ui|api)"
+# Only the whole app: a single part ("regenerate the backend") names what to rebuild.
+_WHOLE_APP = r"(?:(?:web ?)?(?:app|application)|code|project|generation|build|run|result|output)"
+_APP_SIDE = r"(?:frontend|front[- ]end|backend|back[- ]end)"
 _FOLLOW_UP_OBJECT = (
-    rf"(?:{_APP_OBJECT}|that|them|everything|(?:both )?(?:(?:the|my|this|that) )?"
-    rf"(?:(?:app|application)'s )?{_APP_PART}(?: and (?:the )?{_APP_PART})?)"
+    rf"(?:{_APP_OBJECT}|that|them|everything|(?:(?:the|my|this|that) )?{_WHOLE_APP}"
+    rf"|(?:both )?(?:the )?(?:(?:app|application)'s )?{_APP_SIDE} and (?:the )?{_APP_SIDE})"
 )
 _FIX_OBJECT = (
-    r"(?:it|that|them|everything|(?:the |all (?:the )?)?(?:(?:remaining|reported|open|same) )?"
+    rf"(?:{_APP_OBJECT}|that|them|everything|(?:the |all (?:the )?)?(?:(?:remaining|reported|open|same) )?"
     r"(?:errors?|issues?|problems?|bugs?|blockers?|failures?))"
 )
+_AGAIN = r"(?:again|once more|one more time)"
 _REDO = (
-    rf"(?:(?:re-?generate|re-?build|re-?do|re-?run|re-?try)(?: {_FOLLOW_UP_OBJECT})?(?: again)?"
-    rf"|(?:try|run|generate|build|do) (?:{_FOLLOW_UP_OBJECT} )?again)"
+    rf"(?:(?:re-?generate|re-?build|re-?do|re-?run|re-?try)(?: {_FOLLOW_UP_OBJECT})?(?: {_AGAIN})?"
+    rf"|(?:try|run|generate|build|do) (?:{_FOLLOW_UP_OBJECT} )?{_AGAIN})"
 )
-_FIX = rf"fix {_FIX_OBJECT}"
+_FIX = rf"fix {_FIX_OBJECT}(?: {_AGAIN})?"
 _CONTENT_FREE_FOLLOW_UP_RE = re.compile(
     r"(?:(?:ok|okay|yes|so) )?" + _POLITE_PREFIX
     + rf"(?:{_REDO}(?: (?:with|including) (?:the )?fix(?:es)?| and fix {_FIX_OBJECT})?"
