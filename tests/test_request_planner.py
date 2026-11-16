@@ -5,6 +5,7 @@ import pytest
 from orchestrator.request_planner import (
     GENERATOR_PREREQUISITES,
     plan_assistant_operations,
+    _try_heuristic_decomposition,
     _split_message_segments,
     _match_segment_target,
     _should_use_llm_planner,
@@ -194,6 +195,70 @@ class TestPlanAssistantOperations:
         ops = plan_assistant_operations(request, "complete_system", None, _noop_predict)
         # Even with empty message, should produce at least a fallback
         assert len(ops) >= 1
+
+
+# ---------------------------------------------------------------------------
+# "create a web app ..." → class diagram, screens, paused web_app generation
+# ---------------------------------------------------------------------------
+
+_WEB_APP_PLAN = [
+    ("model", "ClassDiagram"),
+    ("model", "GUINoCodeDiagram"),
+    ("generation", "web_app"),
+]
+
+
+def _plan_shape(ops):
+    return [(o["type"], o.get("diagramType") or o.get("generatorType")) for o in ops or []]
+
+
+class TestWebAppPlan:
+    @pytest.mark.parametrize("message", [
+        "create a web app for a bookshop",
+        "Build a web application for tracking orders and customers",
+        "Build me a web app to manage orders and customers",
+        "Create me a web application that lets customers place orders",
+        "Make us a web app for a bookshop",
+        "I want a web app to manage tasks and their deadlines",
+        "I need a web application for a bookshop",
+        "I'd like a web app where authors publish books",
+        "I would like a web app for a bookshop",
+        "I want to build a web app for a bookshop",
+        "I need you to create a web app for a bookshop",
+        "Can you build a web app for a bookshop?",
+        "Could you please make me a webapp to manage tasks",
+        "Please create a web app for a bookshop.",
+    ])
+    def test_common_openings_get_the_web_app_plan(self, message):
+        ops = _try_heuristic_decomposition(message, _make_request(message), "complete_system")
+        assert _plan_shape(ops) == _WEB_APP_PLAN
+
+    @pytest.mark.parametrize("message, subject", [
+        ("create a web app for a bookshop", "a bookshop"),
+        ("Can you build a web app for a bookshop?", "a bookshop"),
+        ("Build me a web app to manage orders", "a web app to manage orders"),
+        ("I need a web app where authors publish books", "a web app where authors publish books"),
+        ("Create me a web application that lets customers place orders",
+         "a web app that lets customers place orders"),
+    ])
+    def test_step_requests_read_as_sentences(self, message, subject):
+        ops = _try_heuristic_decomposition(message, _make_request(message), "complete_system")
+        assert ops[0]["request"] == f"create a class diagram for {subject}"
+        assert ops[1]["request"] == f"create a GUI for {subject}"
+
+    @pytest.mark.parametrize("message", [
+        "build a web app",
+        "what is a web app for a bookshop?",
+        "we built a web app for a bookshop last year",
+        "I want to rename the web app class to Portal",
+        "can you explain what a web app is",
+        "add a page to the web app for orders",
+        "I need the web app to show a list of orders",
+        "a web app for a bookshop",
+    ])
+    def test_other_messages_do_not_get_the_web_app_plan(self, message):
+        ops = _try_heuristic_decomposition(message, _make_request(message), "complete_system")
+        assert _plan_shape(ops) != _WEB_APP_PLAN
 
 
 # ---------------------------------------------------------------------------
