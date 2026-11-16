@@ -44,8 +44,8 @@ def interactions_block(has_classes: bool) -> str:
     return (
         "INTERACTIONS — every link and button must DO something in the generated app:\n"
         "- Page links: <a href='/route'> where route is the target page's name lowercased "
-        "with spaces replaced by hyphens (page 'Front Desk' -> '/front-desk'). Never "
-        "href='#' and never an external URL.\n"
+        "with each run of spaces or punctuation as one hyphen (page 'Front Desk' -> "
+        "'/front-desk'). Never href='#' and never an external URL.\n"
         "- Navigation buttons: <button data-page='Page Name'>."
         f"{method_rule}\n"
         "- Create / edit / delete buttons act through X's data table: 'Add X' / 'New X' "

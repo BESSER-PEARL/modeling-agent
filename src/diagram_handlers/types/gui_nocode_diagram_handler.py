@@ -2012,14 +2012,13 @@ def _nav_header_component(
         active_bg = "transparent"
 
     nav_links: List[Dict[str, Any]] = []
-    for name in page_names:
-        route = _page_route(name)
+    for name, route in zip(page_names, _page_routes(page_names)):
         is_active = name.lower() == active_page.lower()
         nav_links.append({
             "type": "link",
             "attributes": {
                 "href": route,
-                "data-navigate-to": name.lower().replace(" ", "-"),
+                "data-navigate-to": route.strip("/"),
             },
             "style": {
                 "color": primary if is_active else palette.get("muted", "#64748b"),
@@ -2675,9 +2674,28 @@ def _build_section_component(
 # buttons, like a Basic CRUD page.
 
 def _page_route(name: Any) -> str:
-    """The route BESSER's GUI processor gives a page: ``/`` + lowercased name,
-    spaces as hyphens. Any other spelling is redirected to the start page."""
-    return "/" + _clean_text(name).lower().replace(" ", "-")
+    """The route BESSER derives from a page name: ``/`` and the name in lower
+    case, each run of characters that are not letters, digits or ``_`` as one
+    ``-`` (``Q&A / Help`` -> ``/q-a-help``). Any other spelling of a route is
+    redirected to the start page."""
+    return "/" + re.sub(r"[^\w]+", "-", _clean_text(name).lower()).strip("-")
+
+
+def _page_routes(names: List[Any]) -> List[str]:
+    """The route of each page, in page order, numbered as BESSER numbers
+    them: a name that leaves no route gets ``/page-<position>``, a route
+    already taken gets ``-2``, ``-3``, ..."""
+    routes: List[str] = []
+    for position, name in enumerate(names, 1):
+        route = _page_route(name)
+        if route == "/":
+            route = f"/page-{position}"
+        base, suffix = route, 1
+        while route in routes:
+            suffix += 1
+            route = f"{base}-{suffix}"
+        routes.append(route)
+    return routes
 
 
 def _slug(text: Any) -> str:
@@ -2688,13 +2706,13 @@ def _build_page_index(page_names: List[str]) -> List[Dict[str, str]]:
     """Stable ``{name, id, route}`` per page; ids are unique and name-derived."""
     index: List[Dict[str, str]] = []
     used: set = set()
-    for name in page_names:
+    for name, route in zip(page_names, _page_routes(page_names)):
         base = f"page-{_slug(name) or 'page'}"
         page_id, n = base, 2
         while page_id in used:
             page_id, n = f"{base}-{n}", n + 1
         used.add(page_id)
-        index.append({"name": name, "id": page_id, "route": _page_route(name)})
+        index.append({"name": name, "id": page_id, "route": route})
     return index
 
 
@@ -3191,7 +3209,9 @@ def _wire_model_actions(
             used.add(page_id)
             new_ids.add(page_id)
             page["id"] = page_id
-        page_index.append({"name": name, "id": page["id"], "route": _page_route(name)})
+        page_index.append({"name": name, "id": page["id"]})
+    for entry, route in zip(page_index, _page_routes([p["name"] for p in page_index])):
+        entry["route"] = route
 
     classes_by_id = {c["id"]: c for c in (class_metadata or [])}
     wrappers = [_ensure_page_wrapper(p) for p in pages]
@@ -3230,7 +3250,7 @@ def _point_link(link: Dict[str, Any], page: Dict[str, str], relabel: bool = True
     attrs = link.setdefault("attributes", {})
     attrs["href"] = page["route"]
     if "data-navigate-to" in attrs:
-        attrs["data-navigate-to"] = page["name"].lower().replace(" ", "-")
+        attrs["data-navigate-to"] = page["route"].strip("/")
     if not relabel:
         return
 
