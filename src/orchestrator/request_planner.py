@@ -399,13 +399,30 @@ _WEB_APP_VERB = r"(?:create|build|design|make)"
 _HEURISTIC_WEB_APP = re.compile(
     r"^(?:"
     rf"(?:please\s+)?(?:(?:can|could)\s+you\s+(?:please\s+)?)?{_WEB_APP_VERB}(?:\s+(?:me|us))?"
-    r"|i(?:\s+(?:want|need|would\s+like)|['’]d\s+like)"
-    rf"(?:\s+(?:you\s+)?to\s+{_WEB_APP_VERB}(?:\s+(?:me|us))?)?"
-    r")\s+(?:a\s+)?web\s*app(?:lication)?\s+(?:for\s+)?(?P<domain>.+)$",
+    r"|(?P<wish>i(?:\s+(?:want|need|would\s+like)|['’]d\s+like)"
+    rf"(?:\s+(?:you\s+)?to\s+{_WEB_APP_VERB}(?:\s+(?:me|us))?)?)"
+    r")\s+(?:a\s+)?web\s*app(?:lication)?\s+(?P<for>for\s+)?(?P<domain>.+)$",
     re.IGNORECASE,
 )
 # A domain given as a clause ("to manage orders", "that lets ...") rather than a noun.
 _WEB_APP_CLAUSE = re.compile(r"(?:to|that|which|where|with)\b", re.IGNORECASE)
+# Words after "web app" that say where it comes from or what it replaces.
+_WEB_APP_NOT_A_DOMAIN = re.compile(r"(?:from|using|based\s+on|generated|like|instead)\b", re.IGNORECASE)
+_TRAILING_PLEASE = re.compile(r"[\s,]*\bplease[\s.?!]*$", re.IGNORECASE)
+
+
+def _web_app_domain(match: "re.Match") -> Optional[str]:
+    """What a matched "create a web app ..." request is about, or None when
+    the words after "web app" name no domain."""
+    domain = _TRAILING_PLEASE.sub("", match.group("domain")).strip().rstrip(".?!").strip()
+    if not domain or domain.lower() in ("me", "us", "it") or _WEB_APP_NOT_A_DOMAIN.match(domain):
+        return None
+    if _WEB_APP_CLAUSE.match(domain):
+        return f"a web app {domain}"
+    if match.group("wish") and not match.group("for"):
+        # "I need a web application firewall ...": the name of something else.
+        return None
+    return domain
 
 _HEURISTIC_MODEL_AND_GENERATE = re.compile(
     r"^(?P<model_part>(?:create|build|design|make)\s+.+?)"
@@ -525,10 +542,8 @@ def _try_heuristic_decomposition(
 
     # Pattern 1: "create/build a web app for X"
     match = _HEURISTIC_WEB_APP.match(stripped)
-    if match:
-        domain = match.group("domain").strip().rstrip(".?!")
-        if _WEB_APP_CLAUSE.match(domain):
-            domain = f"a web app {domain}"
+    domain = _web_app_domain(match) if match else None
+    if domain:
         return [
             {"type": "model", "diagramType": "ClassDiagram", "mode": "complete_system",
              "request": f"create a class diagram for {domain}"},

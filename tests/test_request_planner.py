@@ -300,6 +300,33 @@ class TestWebAppPlan:
         ops = _try_heuristic_decomposition(message, _make_request(message), "complete_system")
         assert _plan_shape(ops) != _WEB_APP_PLAN
 
+    @pytest.mark.parametrize("message", [
+        # The words after "web app" say where it comes from, not what it is for.
+        "I need a web app generated from my class diagram",
+        "could you create a web app from this model",
+        "create a web app using my class diagram",
+        "build a web app based on this model",
+        "I want a web app like the one we discussed",
+        "I'd like a web application instead of a mobile app",
+        # Nothing but filler.
+        "Can you build a web app for me?",
+        "make us a web app for us",
+        "I want a web app for it",
+        "build me a web app please",
+        "Can you build a web app for me, please?",
+        # "web application" is the start of a longer name.
+        "I need a web application firewall rule model",
+        "I want a web app store listing model",
+    ])
+    def test_web_app_without_a_domain_does_not_get_the_plan(self, message):
+        ops = _try_heuristic_decomposition(message, _make_request(message), "complete_system")
+        assert _plan_shape(ops) != _WEB_APP_PLAN
+
+    def test_trailing_please_is_not_part_of_the_domain(self):
+        message = "Create a web app for a bookshop, please."
+        ops = _try_heuristic_decomposition(message, _make_request(message), "complete_system")
+        assert ops[0]["request"] == "create a class diagram for a bookshop"
+
 
 # ---------------------------------------------------------------------------
 # GUI builds need a class diagram first
