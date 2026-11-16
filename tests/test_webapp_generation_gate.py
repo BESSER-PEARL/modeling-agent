@@ -13,6 +13,8 @@ rare auto-generation slip through).
 """
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import execution.planning as planning
 from common import pending_dialogs
 from common.pending_dialogs import PENDING_GUI_CHOICE, PENDING_WEBAPP_GENERATE
@@ -172,3 +174,165 @@ def test_gui_choice_llm_still_shows_generate_prompt():
     assert handled
     assert _nudges_generation(payloads, emit)
     assert not _auto_ran_generation(payloads)
+
+
+# ---------------------------------------------------------------------------
+# A screen build that fails must not be announced as ready.
+#
+# execute_model_operation returns None after it has sent the failure text (the
+# handler produced no diagram), and may raise before the handler runs.
+# ---------------------------------------------------------------------------
+
+_WEBAPP_PLAN = [
+    {"type": "model", "diagramType": "ClassDiagram",
+     "mode": "complete_system", "request": "create a class diagram"},
+    {"type": "model", "diagramType": "GUINoCodeDiagram",
+     "mode": "complete_system", "request": "create a GUI"},
+    {"type": "generation", "generatorType": "web_app", "config": {}},
+]
+
+
+def _run_plan(plan, execute, session=None):
+    """Drive execute_planned_operations; *execute* stands in for
+    execute_model_operation. Returns (prompt mock, session)."""
+    prompt = MagicMock()
+    session = session or _FakeSession()
+    with patch.object(planning, "plan_assistant_operations", return_value=plan), \
+         patch.object(planning, "execute_model_operation", side_effect=execute), \
+         patch.object(planning, "reply_payload"), \
+         patch.object(planning, "reply_message"), \
+         patch.object(planning, "emit_webapp_generate_prompt", prompt), \
+         patch.object(planning, "handle_generation_request", MagicMock()), \
+         patch.object(planning, "_report_progress"), \
+         patch.object(planning, "build_request_for_target", side_effect=lambda r, t: r):
+        planning.execute_planned_operations(
+            session, MagicMock(), "complete_system", "create_complete_system_intent"
+        )
+    return prompt, session
+
+
+def _built(session, request, operation, default_mode):
+    return operation["diagramType"]
+
+
+def test_screens_ready_prompt_needs_a_built_screen_step():
+    def execute(session, request, operation, default_mode):
+        if operation["diagramType"] == "GUINoCodeDiagram":
+            raise RuntimeError("screen build crashed")
+        return operation["diagramType"]
+
+    prompt, session = _run_plan(_WEBAPP_PLAN, execute)
+    assert not prompt.called
+    assert pending_dialogs.get(session, PENDING_WEBAPP_GENERATE) is None
+
+
+def test_webapp_plan_with_built_screens_shows_the_prompt_once():
+    prompt, session = _run_plan(_WEBAPP_PLAN, _built)
+    assert prompt.call_count == 1
+    assert pending_dialogs.get(session, PENDING_WEBAPP_GENERATE) is None
+
+
+def test_failed_webapp_plan_is_not_announced_by_a_later_plan():
+    # The class diagram step fails: the failure text is sent, None comes back
+    # and no question is open.
+    prompt, session = _run_plan(_WEBAPP_PLAN, lambda *a, **k: None)
+    assert not prompt.called
+
+    later_plan = [{"type": "model", "diagramType": "ClassDiagram",
+                   "mode": "complete_system", "request": "create a class diagram"}]
+    prompt, session = _run_plan(later_plan, _built, session)
+    assert not prompt.called
+    assert pending_dialogs.get(session, PENDING_WEBAPP_GENERATE) is None
+
+
+def _answer_gui_choice(session, answer, execute):
+    """Answer the open screen question on *session*; *execute* stands in for
+    execute_model_operation. Returns (handled, emit mock, reply payloads,
+    reply messages)."""
+    req = MagicMock()
+    req.message = answer
+    emit = MagicMock()
+    payloads, messages = [], []
+    with patch.object(confirmation, "parse_assistant_request", return_value=req), \
+         patch.object(confirmation, "reply_payload", side_effect=lambda _s, p: payloads.append(p)), \
+         patch.object(confirmation, "reply_message", side_effect=lambda _s, m: messages.append(m)), \
+         patch.object(confirmation, "replace", lambda obj, **kw: obj), \
+         patch.object(confirmation, "execute_model_operation", execute), \
+         patch.object(confirmation, "_build_auto_gui_message", return_value="screens ready"), \
+         patch.object(confirmation, "emit_webapp_generate_prompt", emit):
+        handled = confirmation.handle_pending_gui_choice(session)
+    return handled, emit, payloads, messages
+
+
+def _open_webapp_gui_choice():
+    session = _FakeSession()
+    pending_dialogs.put(session, PENDING_GUI_CHOICE, {
+        "remaining_operations": [], "operation_request": "create a web app",
+        "operation": {"diagramType": "GUINoCodeDiagram"}, "default_mode": "complete_system",
+    })
+    pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, True)
+    return session
+
+
+def _choice_labels(payloads):
+    return [
+        [a.get("label") for a in (p.get("suggestedActions") or [])]
+        for p in payloads
+    ]
+
+
+@pytest.mark.parametrize("execute", [
+    MagicMock(return_value=None),                      # handler produced no diagram
+    MagicMock(side_effect=RuntimeError("crashed")),    # crashed before the handler
+])
+def test_failed_ai_design_keeps_the_screen_question_open(execute):
+    session = _open_webapp_gui_choice()
+    handled, emit, payloads, _ = _answer_gui_choice(session, "Experimental AI design", execute)
+
+    assert handled
+    assert not emit.called                                           # no "screens are ready"
+    assert pending_dialogs.get(session, PENDING_GUI_CHOICE)          # still answerable
+    assert pending_dialogs.get(session, PENDING_WEBAPP_GENERATE)     # the plan is still on
+    # The two choices are offered again, and nothing else.
+    assert _choice_labels(payloads) == [["Basic CRUD pages", "Experimental AI design"]]
+    assert payloads[0]["action"] == "assistant_message"
+
+
+def test_ai_design_can_be_retried_after_a_failure():
+    session = _open_webapp_gui_choice()
+    _answer_gui_choice(session, "Experimental AI design", MagicMock(return_value=None))
+
+    handled, emit, payloads, _ = _answer_gui_choice(
+        session, "Experimental AI design", MagicMock(return_value="GUINoCodeDiagram"),
+    )
+    assert handled
+    assert emit.call_count == 1
+    assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is None
+    assert pending_dialogs.get(session, PENDING_WEBAPP_GENERATE) is None
+
+
+def test_basic_pages_can_be_picked_after_a_failed_ai_design():
+    session = _open_webapp_gui_choice()
+    _answer_gui_choice(session, "Experimental AI design", MagicMock(return_value=None))
+
+    handled, emit, payloads, _ = _answer_gui_choice(session, "Basic CRUD pages", MagicMock())
+    assert handled
+    assert [p["action"] for p in payloads] == ["auto_generate_gui"]
+    assert _nudges_generation(payloads, emit)
+    assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is None
+
+
+def test_cancelling_the_screen_question_ends_the_webapp_plan():
+    session = _open_webapp_gui_choice()
+    handled, emit, payloads, messages = _answer_gui_choice(session, "cancel", MagicMock())
+
+    assert handled
+    assert not emit.called
+    assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is None
+    assert pending_dialogs.get(session, PENDING_WEBAPP_GENERATE) is None
+
+    # A later plan on the same session does not announce screens.
+    later_plan = [{"type": "model", "diagramType": "ClassDiagram",
+                   "mode": "complete_system", "request": "create a class diagram"}]
+    prompt, _ = _run_plan(later_plan, _built, session)
+    assert not prompt.called

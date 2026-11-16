@@ -30,11 +30,12 @@ from common.pending_dialogs import (
     PENDING_WEBAPP_GENERATE,
 )
 from execution import execute_model_operation
+from execution.model_operations import gui_choice_actions
 from codegen.generation_handler import (
     handle_pending_plan_generation_confirmation,
     handle_pending_smart_gen_confirmation,
 )
-from protocol.actions import Action
+from protocol.actions import Action, assistant_message
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +179,15 @@ def _maybe_emit_webapp_prompt(session: Session) -> None:
         emit_webapp_generate_prompt(session)
 
 
+def _reoffer_gui_choice(session: Session, lead: str = "") -> None:
+    """After a failed AI screen build: the question stays open, so the user can
+    retry or take the other option from the same two buttons."""
+    reply_payload(session, assistant_message(
+        f"{lead}You can try the AI design again, or use basic CRUD pages instead.",
+        suggestedActions=gui_choice_actions(),
+    ))
+
+
 # Bare flow-control tokens a user types (or a quick-action button sends) to
 # ANSWER a pending confirmation. A message that normalizes to one of these
 # is always an answer — never a pivot — regardless of the intent label the
@@ -226,6 +236,8 @@ def handle_pending_gui_choice(session: Session) -> bool:
         wants_cancel = any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
     if wants_cancel:
         pending_dialogs.put(session, PENDING_GUI_CHOICE, None)
+        # No screens: the web-app plan that asked for them ends here too.
+        pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, None)
         reply_message(session, "Cancelled. No GUI was generated.")
         return True
 
@@ -313,7 +325,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
     working_request = replace(request, message=pending.get('operation_request', request.message))
 
     try:
-        execute_model_operation(
+        built = execute_model_operation(
             session=session,
             request=working_request,
             operation=stored_operation,
@@ -322,15 +334,15 @@ def handle_pending_gui_choice(session: Session) -> bool:
             _replace_existing=stored_replace,
             _skip_gui_choice=True,
         )
-        pending_dialogs.put(session, PENDING_GUI_CHOICE, None)  # Clear only on success
     except Exception as exc:
         logger.error(f"❌ [GUIChoice] Error executing LLM GUI generation: {exc}", exc_info=True)
-        reply_message(
-            session,
-            "Something went wrong. You can try again by saying **auto** or **llm**, or **cancel** to abort.",
-        )
-        pending_dialogs.put(session, PENDING_GUI_CHOICE, None)
+        _reoffer_gui_choice(session, "Something went wrong while creating your screens. ")
         return True
+    if not isinstance(built, str):
+        # No screens came back and the failure text is already sent.
+        _reoffer_gui_choice(session)
+        return True
+    pending_dialogs.put(session, PENDING_GUI_CHOICE, None)  # Clear only on success
 
     # Resume any remaining operations from the original plan
     if isinstance(remaining_ops, list) and remaining_ops:

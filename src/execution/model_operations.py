@@ -75,6 +75,19 @@ _QUEUED_DESTRUCTIVE = "_queued_destructive_confirmation"
 _REPHRASE_ERROR_CODES = frozenset({ErrorCode.LLM_FAILURE.value, ErrorCode.GENERATION_ERROR.value})
 
 
+def gui_choice_actions() -> list:
+    """The two buttons of the screen-creation question.
+
+    Neither is pre-selected. Each sends its own label, which
+    confirmation.handle_pending_gui_choice routes by keyword
+    ("basic"/"crud" vs "experimental"/"ai"/"design").
+    """
+    return [
+        {"label": "Basic CRUD pages", "prompt": "Basic CRUD pages"},
+        {"label": "Experimental AI design", "prompt": "Experimental AI design"},
+    ]
+
+
 def _non_web_target_label(session, request):
     """The non-web app the user asked for ("native mobile app"), or None."""
     target = current_target(session, request) or {}
@@ -694,13 +707,7 @@ def execute_model_operation(
                     "2️⃣ **Experimental AI design** — custom-designed screens "
                     "with navigation, styling and realistic content."
                 ),
-                # Neither option is pre-selected. Each button sends its own label,
-                # which confirmation.handle_pending_gui_choice routes by keyword
-                # ("basic"/"crud" vs "experimental"/"ai"/"design").
-                "suggestedActions": [
-                    {"label": "Basic CRUD pages", "prompt": "Basic CRUD pages"},
-                    {"label": "Experimental AI design", "prompt": "Experimental AI design"},
-                ],
+                "suggestedActions": gui_choice_actions(),
             })
             logger.info("[ModelOp] Asked user to choose GUI generation mode")
             return None
