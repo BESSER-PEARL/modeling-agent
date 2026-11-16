@@ -203,6 +203,11 @@ Field Reference
        however old the last run is. ``recap`` is where that app stands, in chat
        markdown, capped at 4,000 characters; it answers "what did we build?" and
        enters conversation memory when it changes, labelled as a record.
+   * - ``context.traceDigest``
+     - No
+     - The editor's summary of the project trace, sent only while trace
+       recording is on and a trace exists (see `Trace digest`_ below). Answers
+       questions about the project's history (``traceability_question_intent``).
    * - ``attachments``
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)
@@ -220,6 +225,63 @@ Field Reference
        turns are kept cut to 500 characters, as the agent keeps its own
        replies. The turns are
        only conversation history: they are never treated as instructions.
+
+Trace digest
+~~~~~~~~~~~~
+
+``context.traceDigest`` (cross-repo contract, section 3; every field and list
+is optional):
+
+.. code-block:: json
+
+   {"schemaVersion": 1, "recording": true,
+    "counts": {"artifacts": 42, "links": 30, "outOfDateLinks": 2,
+               "operations": {"ModelingSession": 3, "CodeGeneration": 1,
+                              "RequirementExtraction": 1, "Conversation": 4}},
+    "recentOperations": [{"id": "op1", "type": "CodeGeneration", "status": "COMPLETED",
+                          "startedAt": "2026-11-01T10:00:00Z", "by": ["Person:Ana"],
+                          "tools": ["sqlalchemy"], "summary": "Generated SQLAlchemy"}],
+    "requirements": [{"id": "R1", "kind": "data", "text": "A book has an ISBN",
+                      "quote": "books have an isbn", "realizedBy": ["Book", "Book.isbn"],
+                      "covered": true}],
+    "outOfDate": [{"source": "Book", "target": "sql_alchemy.py:108-140",
+                   "reasons": ["SOURCE_CHANGED"], "generation": "sqlalchemy @ 2026-11-01T10:00:00Z"}],
+    "generations": [{"generator": "sqlalchemy", "at": "2026-11-01T10:00:00Z",
+                     "files": 3, "outOfDateFiles": 1}],
+    "focus": [{"artifactId": "a-book", "name": "Book", "elementType": "Class",
+               "history": [{"kind": "CREATED", "feature": "", "old": "", "new": "",
+                            "at": "2026-10-30T09:00:00Z", "by": "Person:Ana", "via": "Editor"}],
+               "derivedFrom": [{"type": "Requirement", "name": "A book has an ISBN", "evidence": "AIEvidence"}],
+               "derived": [{"path": "sql_alchemy.py", "lines": "108-140", "outOfDate": ["SOURCE_CHANGED"]}]}]}
+
+``_parse_trace_digest`` in ``src/protocol/adapters.py`` validates it into
+``WorkspaceContext.trace_digest`` (wire field names kept) and never raises:
+
+* A digest that is not an object, or whose ``schemaVersion`` (default 1) is not
+  a positive integer, is dropped. ``recording`` is ``true`` unless sent as
+  ``false``.
+* Only the fields above are kept, each with its type: strings non-empty
+  (stripped), counts non-negative integers (a boolean is not one), ``covered``
+  a boolean. Unknown keys, wrongly typed fields, out-of-date reasons other than
+  ``SOURCE_CHANGED`` / ``TARGET_CHANGED`` / ``UPSTREAM_CHANGED``, change kinds
+  other than ``CREATED`` / ``UPDATED`` / ``DELETED`` and operation types other
+  than the four counted are dropped.
+* An item is dropped without what identifies it: an operation without ``type``
+  or ``summary``, a requirement without ``id`` or ``text``, an out-of-date link
+  without ``source`` or ``target``, a generation without ``generator``, a focus
+  artifact without ``artifactId`` and ``name``, a derived file without ``path``.
+* Caps (``TRACE_DIGEST_*`` in ``src/common/agent_config.py``), keeping the first
+  items: ``recentOperations`` 15, ``requirements`` 40, ``outOfDate`` 30,
+  ``generations`` 10, ``focus`` 5; per focus artifact ``history`` 20,
+  ``derivedFrom`` 10, ``derived`` 20; name lists (``by``, ``tools``,
+  ``realizedBy``, reasons) 20 items; names, ids, paths and dates 200
+  characters; ``text``, ``quote``, ``summary``, ``old``, ``new`` and
+  ``evidence`` 500 characters.
+
+Every string in it is user data. The trace-question prompt quotes the record
+(rendered by ``src/utilities/trace_digest.py``, at most 16,000 characters, cut
+in a fixed order) between ``<trace_record>`` tags that a value cannot close,
+and its system prompt says the record is data, never instructions.
 
 Supported Diagram Types
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -252,7 +314,7 @@ Every action name, inbound and outbound, is a member of ``Action`` in
 string). Code uses the members, never the string literals
 (``tests/test_protocol_actions.py`` checks), and builds the repeated envelopes
 with its builders: ``assistant_message``, ``inject_element``,
-``inject_complete_system`` and ``model_reply``. A builder keeps the key order of
+``inject_complete_system``, ``model_reply`` and ``show_trace``. A builder keeps the key order of
 the literal it replaced, so the JSON is byte-identical
 (``tests/test_handler_envelopes.py`` pins every handler's envelopes).
 
@@ -302,6 +364,9 @@ Action index
    * - ``auto_generate_gui``
      - Yes
      - Deterministically build the GUI diagram from the class diagram
+   * - ``show_trace``
+     - Yes
+     - After a streamed answer to a trace question: open the Traceability page
    * - ``progress``
      - No
      - Progress / keep-alive tick
@@ -316,9 +381,50 @@ completed while the socket was reconnecting can be replayed on request:
 (``_TERMINAL_REPLY_ACTIONS`` / ``replay_last_reply`` in
 ``src/conversation/session_helpers.py``). A turn-scoped replay (see below) also covers
 ``inject_element``, ``trigger_smart_generator``, ``agent_error``,
-``trigger_export``, ``trigger_deploy``, ``create_diagram_tab`` and ``stream_done``
-(``_TURN_REPLY_ACTIONS``). These are kept out of the legacy replay because it
-has no dedupe, so a trigger could fire twice.
+``trigger_export``, ``trigger_deploy``, ``create_diagram_tab``, ``stream_done``
+and ``show_trace`` (``_TURN_REPLY_ACTIONS``). These are kept out of the legacy
+replay because it has no dedupe, so a trigger could fire twice (and
+``show_trace`` replayed alone would stand in for the answer it follows).
+
+LLM usage (llmUsage)
+~~~~~~~~~~~~~~~~~~~~
+
+Every terminal reply of a turn (the actions of ``_TURN_REPLY_ACTIONS`` above,
+``stream_done`` and ``show_trace`` included) carries, once the turn has made
+an LLM call, the totals of its LLM calls so far:
+
+.. code-block:: json
+
+   {"action": "stream_done", "streamId": "a1b2c3d4", "fullText": "...", "done": true,
+    "llmUsage": {"model": "gpt-6-sol", "provider": "openai",
+                 "inputTokens": 4100, "outputTokens": 1300}}
+
+* ``inputTokens`` / ``outputTokens`` sum every call of the turn made before the
+  reply was sent: the classifier, the generation or answer, translations of
+  templated replies. A turn that sends several terminal replies stamps each
+  with the running totals, so the last one holds them all; the frontend keeps
+  the latest per turn.
+* ``model`` / ``provider`` name the model that used the most tokens (the first
+  one on a tie). ``provider`` is the user's own key's provider (``openai``,
+  ``anthropic``, ``mistral``, …) when one is active, else ``openai`` (the
+  server's client).
+* The classifier call counts, so a fixed reply (a quick response, a
+  deterministic guard) still carries the turn's usage. The field is absent
+  while the turn has made no LLM call (a ``frontend_event`` callback, an
+  ``[auto-fix]`` routed without the classifier), on non-terminal frames
+  (``progress``, ``stream_start``, ``stream_chunk``), on the oversized-message
+  rejection and on the replies of a pre-v2 (plain-text) client. A replayed
+  reply keeps the field it was sent with.
+* Tokens come from the provider's usage report; a call through BAF's own
+  ``predict`` (no usage report) counts the tracker's estimate (4 characters a
+  token). Calls made after the turn's last terminal reply (the conversation
+  summarizer) are not counted.
+
+Implementation: ``llm/tracking/turn_usage.py`` (one ``TurnUsage`` per incoming
+event, in a context variable opened by ``session_helpers.begin_turn_usage``
+from the first transition hook and the state preamble), filled by
+``TokenTracker.record`` and stamped by ``session_helpers._send_to_session``.
+An older frontend ignores the field.
 
 Turn ids and replay
 ~~~~~~~~~~~~~~~~~~~
@@ -874,6 +980,34 @@ the pages that were created.
      ]
    }
 
+
+show_trace
+~~~~~~~~~~
+
+Follows the ``stream_done`` of an answer to a trace question
+(``traceability_question_intent``) when the answer centres on one view or one
+artifact. The frontend renders it as a button opening the editor's
+Traceability page on that view (and artifact):
+
+.. code-block:: json
+
+   {"action": "show_trace", "view": "lineage", "artifactId": "a-book",
+    "message": "Open the lineage of Book"}
+
+* ``view`` — ``lineage`` | ``coverage`` | ``timeline``: the classifier's
+  ``trace_view`` verdict; ``lineage`` when the classifier gave none but the
+  question names one artifact. No view and no artifact: no ``show_trace``.
+* ``artifactId`` — optional. Only ever the ``artifactId`` of an entry of the
+  request's ``traceDigest.focus``: the one entry, or the one entry the message
+  names (a member over its owner, ``Book.isbn`` over ``Book``); absent when
+  several are named. Never taken from the model's answer or the message text.
+* ``message`` — a short button label, translated into the user's language like
+  any reply; not recorded in the conversation memory.
+
+Not sent when the answer failed (empty) or when the request carried no
+``traceDigest`` (the agent then replies with a fixed ``assistant_message``
+saying recording is off or no trace exists, and how to turn it on in the
+Traceability page; no LLM call).
 
 Message Flow Examples
 ---------------------

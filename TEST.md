@@ -98,6 +98,7 @@ four files that import `patches.websocket_platform` are skipped at import, leavi
 | `test_orchestrator.py` | 20 | `orchestrator/workspace_orchestrator.py` target resolution — explicit/implicit targets, `determine_target_diagram_type(s)`, `resolve_diagram_id`. |
 | `test_request_planner.py` | 30 | `orchestrator/request_planner.py` — segment splitting, target matching, operation normalization/fallback, `plan_assistant_operations` (no-op fake LLM). |
 | `test_two_pass_fast_path.py` | 4 | `base_handler.predict_two_pass_structured` fast-path — trivial (<250-char) requests skip the reasoning pass (one LLM call), keyed on `raw_request`. |
+| `test_trace_question.py` | 27 | Trace questions (`traceability_question_intent`): the classifier schema, rulebook tie-breaks and workspace line, wiring, the no-record reply without an LLM call, the prompt quoting the record, and `show_trace` (view, an `artifactId` only from the digest's focus, turn-scoped replay, label translated and kept out of memory). |
 
 ### Diagram handlers — class diagram, guards & constraints
 
@@ -156,6 +157,8 @@ four files that import `patches.websocket_platform` are skipped at import, leavi
 | File | Tests | Markers | What it verifies |
 | --- | --- | --- | --- |
 | `test_protocol.py` | 32 | — | v2 wire-payload parsing (`protocol/adapters.py`). |
+| `test_trace_digest.py` | 53 | — | `context.traceDigest`: validated, capped and stripped of unknown keys, malformed input dropped without raising; the rendered record (content, defused delimiter, deterministic cut to a budget) and `pick_focus_artifact`. |
+| `test_llm_usage.py` | 21 | — | `llmUsage`: the turn's LLM totals (per-event turn, pool threads, BYOK provider) stamped on terminal replies only, running totals, absent without a call or a turn, kept on replay. |
 | `test_conversation_memory.py` | 14 | — | `ConversationMemory` sliding window, summarizer trigger, `build_context`, the global registry, and thread safety. |
 | `test_memory_session_key.py` | 5 | — | `memory_session_key` derivation chain — `request.session_id` → payload `sessionId` → BAF `session.id` → `id(session)`. |
 | `test_llm_provider.py` | 17 | — | `LLMProvider` — construction, `complete`/`parse`/`stream` delegation, token recording, error propagation, no-client fallbacks. |

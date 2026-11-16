@@ -75,7 +75,7 @@ WebSocket message
   → protocol/adapters.py + protocol/types.py        parse wire payload → AssistantRequest
   → routing/unified_classifier.py                    LAYER 1: THE ROUTER
       classify_message() → UnifiedClassification, cached per BAF event by get_or_classify().
-      Returns the intent (which of the 10 states) AND every sub-routing field downstream code
+      Returns the intent (which of the 11 states) AND every sub-routing field downstream code
       needs (generation_route, generator_type, target_diagram_type, model_disposition,
       pending_flow_action, …) — no second prompt. Rules live in prompts/classifier.py.
   → app/state_bodies.py                              state body; modeling bodies funnel through
@@ -197,7 +197,7 @@ generation are inherited. Details: `docs/source/diagram_handlers.rst`.
 ## Prompts
 
 All prompt text lives in `src/prompts/`, one module per diagram type or state (`classifier`, `class_diagram`,
-`bpmn`, `gui`, …, `fragments` for rules several handlers share, `planner`, `modeling_help`, `describe_model`,
+`bpmn`, `gui`, …, `fragments` for rules several handlers share, `planner`, `modeling_help`, `describe_model`, `traceability`,
 `fallback`, `uml_rag`, `file_conversion`, `reply_language`, `spec_driven`, `model_operations`,
 `conversation_memory`). A static prompt is a constant (`MODIFY_SYSTEM_PROMPT_CLASS`); a prompt built from the
 request is a function of exactly those values (`reasoning_prompt(user_request)`). Call sites import the module
@@ -230,17 +230,20 @@ Full reference: `docs/source/websocket_protocol.rst`. The traps:
   `replay_last_response` (after a reconnect: with `turnId` + `appliedSeqs`, re-send only that turn's unacknowledged terminal replies; without, the session's last terminal reply).
 - Emitted actions — terminal: `inject_element`, `inject_complete_system`, `modify_model`, `assistant_message`,
   `agent_error`, `create_diagram_tab`, `trigger_generator`, `trigger_smart_generator`, `trigger_github_import`,
-  `trigger_export`, `trigger_deploy`, `auto_generate_gui`; non-terminal: `progress`, `stream_start`,
-  `stream_chunk`, `stream_done`. There is **no `switch_diagram` action**.
+  `trigger_export`, `trigger_deploy`, `auto_generate_gui`, `show_trace` (after a trace answer; its `artifactId`
+  only ever from `context.traceDigest.focus`); non-terminal: `progress`, `stream_start`, `stream_chunk`,
+  `stream_done`. There is **no `switch_diagram` action**. Terminal replies (`_TURN_REPLY_ACTIONS`) carry the turn's
+  `llmUsage` once it made an LLM call, stamped in `_send_to_session`.
 - **Every action name is `protocol.actions.Action`** (a `StrEnum`: equal to its string, serialized as it): never
   write an action literal (`tests/test_protocol_actions.py` fails on one outside `protocol/`). Build the repeated
-  envelopes with its builders (`assistant_message`, `inject_element`, `inject_complete_system`, `model_reply`);
+  envelopes with its builders (`assistant_message`, `inject_element`, `inject_complete_system`, `model_reply`,
+  `show_trace`);
   they keep the key order, and `tests/test_handler_envelopes.py` pins every handler's JSON byte for byte.
 
 ## Where Things Live
 
 ```text
-modeling_agent.py                 Entrypoint: BAF agent, 10 states/intents, wiring
+modeling_agent.py                 Entrypoint: BAF agent, 11 states/intents, wiring
 pyproject.toml                    Package (src/ as import root, editable install), version, import-linter contracts
 config_example.yaml               Template for the gitignored config.yaml
 Dockerfile                        Image; its entrypoint is app.container_config (config.yaml from env)

@@ -16,6 +16,14 @@ that the editor applies to the canvas or hands to a generator.
   **Spec-Driven Agent** for stacks BESSER has no built-in generator for.
 - Routes generation and conversation through a user-supplied API key (BYOK) when one is set.
 - Answers UML specification questions using RAG over the OMG UML 2.5.1 specification.
+- Answers questions about a project's history and provenance from the editor's trace record
+  (`context.traceDigest`, sent while trace recording is on): which code was generated from an
+  element, which requirement it realizes, who changed what and when, what is out of date,
+  which requirements the model does not cover; then offers to open the Traceability page
+  (`show_trace`).
+- Extracts the requirements of a complete-system request and the class-diagram elements that
+  realize them (`requirements`, `realizations` on `inject_complete_system`).
+- Reports the tokens of each turn's LLM calls (`llmUsage` on its terminal replies).
 - Converts uploaded files (PlantUML, knowledge graphs, XMI, PDFs, images, text) into
   diagram specifications.
 - Accepts voice messages via OpenAI speech-to-text.
