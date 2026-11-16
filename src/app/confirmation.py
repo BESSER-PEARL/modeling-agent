@@ -179,9 +179,16 @@ def _maybe_emit_webapp_prompt(session: Session) -> None:
         emit_webapp_generate_prompt(session)
 
 
-def _reoffer_gui_choice(session: Session, lead: str = "") -> None:
+# Set on the open screen question once the AI design has failed: from then on
+# a typed "try again" means the AI design.
+_AI_DESIGN_FAILED = "ai_design_failed"
+_RETRY_TOKENS = {"try again", "try it again", "retry", "again"}
+
+
+def _reoffer_gui_choice(session: Session, pending: dict, lead: str = "") -> None:
     """After a failed AI screen build: the question stays open, so the user can
     retry or take the other option from the same two buttons."""
+    pending_dialogs.put(session, PENDING_GUI_CHOICE, {**pending, _AI_DESIGN_FAILED: True})
     reply_payload(session, assistant_message(
         f"{lead}You can try the AI design again, or use basic CRUD pages instead.",
         suggestedActions=gui_choice_actions(),
@@ -226,9 +233,19 @@ def handle_pending_gui_choice(session: Session) -> bool:
     _verdict_usable = _flow_action == "answer" and _flow_answer in (
         "auto", "llm", "cancel")
 
-    _label_answer = _GUI_CHOICE_LABELS.get(_normalize_flow_token(user_msg))
+    _token = _normalize_flow_token(user_msg)
+    _label_answer = _GUI_CHOICE_LABELS.get(_token)
+    if not _label_answer and pending.get(_AI_DESIGN_FAILED) and _token in _RETRY_TOKENS:
+        _label_answer = "llm"
     if _label_answer:
         _verdict_usable, _flow_answer = True, _label_answer
+    elif _flow_action == "new_request":
+        # Before the keyword fallback, whose words ("design", "default",
+        # "forget") also occur in ordinary requests.
+        logger.info("[GUIChoice] Classifier: message is a NEW REQUEST — abandoning the screen question")
+        pending_dialogs.put(session, PENDING_GUI_CHOICE, None)
+        pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, None)
+        return False
 
     if _verdict_usable:
         wants_cancel = _flow_answer == "cancel"
@@ -336,11 +353,11 @@ def handle_pending_gui_choice(session: Session) -> bool:
         )
     except Exception as exc:
         logger.error(f"❌ [GUIChoice] Error executing LLM GUI generation: {exc}", exc_info=True)
-        _reoffer_gui_choice(session, "Something went wrong while creating your screens. ")
+        _reoffer_gui_choice(session, pending, "Something went wrong while creating your screens. ")
         return True
     if not isinstance(built, str):
         # No screens came back and the failure text is already sent.
-        _reoffer_gui_choice(session)
+        _reoffer_gui_choice(session, pending)
         return True
     pending_dialogs.put(session, PENDING_GUI_CHOICE, None)  # Clear only on success
 

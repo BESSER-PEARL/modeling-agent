@@ -11,6 +11,7 @@ for that flow); only DIRECT generation-only plans still run immediately.
 These tests exercise the strip + prompt directly (the path that previously let a
 rare auto-generation slip through).
 """
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,6 +19,7 @@ import pytest
 import execution.planning as planning
 from common import pending_dialogs
 from common.pending_dialogs import PENDING_GUI_CHOICE, PENDING_WEBAPP_GENERATE
+from common.session_keys import UNIFIED_CLASSIFICATION
 
 
 class _FakeSession:
@@ -245,12 +247,13 @@ def test_failed_webapp_plan_is_not_announced_by_a_later_plan():
     assert pending_dialogs.get(session, PENDING_WEBAPP_GENERATE) is None
 
 
-def _answer_gui_choice(session, answer, execute):
+def _answer_gui_choice(session, answer, execute, verdict=None):
     """Answer the open screen question on *session*; *execute* stands in for
-    execute_model_operation. Returns (handled, emit mock, reply payloads,
-    reply messages)."""
+    execute_model_operation and *verdict* for the classifier's verdict on the
+    message. Returns (handled, emit mock, reply payloads, reply messages)."""
     req = MagicMock()
     req.message = answer
+    session.set(UNIFIED_CLASSIFICATION, verdict)
     emit = MagicMock()
     payloads, messages = [], []
     with patch.object(confirmation, "parse_assistant_request", return_value=req), \
@@ -320,6 +323,73 @@ def test_basic_pages_can_be_picked_after_a_failed_ai_design():
     assert [p["action"] for p in payloads] == ["auto_generate_gui"]
     assert _nudges_generation(payloads, emit)
     assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is None
+
+
+# ---------------------------------------------------------------------------
+# The open screen question does not swallow the user's next request.
+# ---------------------------------------------------------------------------
+
+def _new_request_verdict(intent="modify_model_intent"):
+    return SimpleNamespace(pending_flow_action="new_request", pending_flow_answer=None, intent=intent)
+
+
+@pytest.mark.parametrize("after_failed_ai_design", [True, False])
+@pytest.mark.parametrize("message", [
+    "design a state machine for orders instead",       # "design" is an AI-design keyword
+    "add a custom domain attribute to Shop",           # so is "custom"
+    "set the default currency of Order to EUR",        # "default" is a basic-pages keyword
+    "ok forget the screens for now and add a Payment class",   # "forget" is a cancel keyword
+    "what went wrong?",
+])
+def test_new_request_leaves_the_screen_question(message, after_failed_ai_design):
+    session = _open_webapp_gui_choice()
+    if after_failed_ai_design:
+        _answer_gui_choice(session, "Experimental AI design", MagicMock(return_value=None))
+        assert pending_dialogs.get(session, PENDING_GUI_CHOICE)
+
+    execute = MagicMock(return_value="GUINoCodeDiagram")
+    handled, emit, payloads, messages = _answer_gui_choice(
+        session, message, execute, verdict=_new_request_verdict(),
+    )
+    assert not handled              # normal routing takes the message
+    assert not execute.called       # no screen build
+    assert payloads == [] and messages == []
+    assert not emit.called
+    assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is None
+    assert pending_dialogs.get(session, PENDING_WEBAPP_GENERATE) is None
+
+
+@pytest.mark.parametrize("label", ["Experimental AI design", "Basic CRUD pages"])
+def test_a_choice_button_is_an_answer_whatever_the_classifier_says(label):
+    session = _open_webapp_gui_choice()
+    handled, _emit, _payloads, _messages = _answer_gui_choice(
+        session, label, MagicMock(return_value="GUINoCodeDiagram"), verdict=_new_request_verdict(),
+    )
+    assert handled
+    assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is None
+
+
+@pytest.mark.parametrize("verdict", [None, _new_request_verdict()])
+@pytest.mark.parametrize("answer", ["try again", "Retry", "again", "Try again."])
+def test_retry_words_after_a_failed_ai_design_run_it_again(answer, verdict):
+    session = _open_webapp_gui_choice()
+    _answer_gui_choice(session, "Experimental AI design", MagicMock(return_value=None))
+
+    execute = MagicMock(return_value="GUINoCodeDiagram")
+    handled, emit, payloads, _ = _answer_gui_choice(session, answer, execute, verdict=verdict)
+    assert handled
+    assert execute.called and execute.call_args.kwargs.get("_skip_gui_choice") is True
+    assert all(p.get("action") != "auto_generate_gui" for p in payloads)
+    assert emit.call_count == 1
+    assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is None
+
+
+def test_retry_words_mean_nothing_before_a_failed_ai_design():
+    session = _open_webapp_gui_choice()
+    execute = MagicMock(return_value="GUINoCodeDiagram")
+    handled, _emit, _payloads, _messages = _answer_gui_choice(session, "try again", execute)
+    assert not handled
+    assert not execute.called
 
 
 _GUI_OP = {"type": "model", "diagramType": "GUINoCodeDiagram",
