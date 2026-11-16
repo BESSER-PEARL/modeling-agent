@@ -28,6 +28,7 @@ from protocol.message_limits import UserMessageTooLong
 from memory import get_memory, memory_session_key
 from routing.generation_signals import remember_repo_recap
 from conversation.session_helpers import (
+    begin_turn_usage,
     get_user_message,
     reply_message,
     reply_payload,
@@ -135,7 +136,11 @@ def _ensure_unified_classification(session: Session) -> bool:
     — that verdict is what lets ``json_intent_matches`` route a pivot
     normally instead of trapping it in the asking state. Skips only when
     the session already has a cached classification for this event id.
+
+    It also opens the event's LLM-usage totals (``llmUsage``) before the
+    classifier call, the turn's first.
     """
+    begin_turn_usage(session)
     try:
         request = parse_assistant_request(session)
         if request.recent_history:
@@ -169,6 +174,9 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     handled normally, or ``None`` if a pending flow or file attachment
     already consumed it.
     """
+    # The same totals the transition hook opened; a voice or plain-text event,
+    # which never passes that hook, opens them here.
+    begin_turn_usage(session)
     # Reconnect recovery: the frontend re-requests its last completed reply after
     # a mid-generation WebSocket reconnect dropped it. Re-send the buffered reply
     # and stop — never re-run generation or consume a pending flow.

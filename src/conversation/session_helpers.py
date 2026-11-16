@@ -22,6 +22,7 @@ from common.errors import (
     EXHAUSTED_KEY_MESSAGE, ErrorCode, ModelRefusal, RATE_LIMITED_KEY_MESSAGE, REJECTED_KEY_MESSAGE,
 )
 from llm import byok
+from llm import tracking
 from llm.provider import LLMProvider
 from memory import MAX_ASSISTANT_MEMORY_CHARS, get_memory, memory_session_key
 from common.session_keys import (
@@ -428,13 +429,37 @@ def user_key_reply(error: Optional[BaseException]) -> Optional[Dict[str, Any]]:
     return {"action": Action.AGENT_ERROR, **_USER_KEY_REPLIES[fault]}
 
 
+def begin_turn_usage(session: Session) -> None:
+    """Open the LLM-usage totals of the event being handled (once per event:
+    the transition hook and the state preamble both call it). Best-effort."""
+    try:
+        event = getattr(session, "event", None)
+        if event is not None:
+            tracking.begin_turn(id(event))
+    except Exception as exc:
+        logger.debug(f"[Usage] turn start skipped (best-effort): {exc}")
+
+
+def _stamp_llm_usage(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of a terminal reply (``_TURN_REPLY_ACTIONS``) with the
+    turn's running LLM totals as ``llmUsage``, or *payload* unchanged: another
+    action, no open turn, or no LLM call yet. A turn sending several terminal
+    replies stamps each with the totals so far; the last one holds them all."""
+    if payload.get("action") not in _TURN_REPLY_ACTIONS:
+        return payload
+    usage = tracking.current_turn()
+    snapshot = usage.snapshot() if usage is not None else None
+    return {**payload, "llmUsage": snapshot} if snapshot else payload
+
+
 def _send_to_session(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Low-level helper: stamp *payload* with the turn (if any), serialize it as
-    JSON and send it via the session. Every reply helper sends through here, so
-    streaming and progress frames take the same WebSocket path as terminal
-    replies. Returns the payload as sent.
+    """Low-level helper: stamp *payload* with the turn (if any) and, on a
+    terminal reply, the turn's LLM usage, serialize it as JSON and send it via
+    the session. Every reply helper sends through here, so streaming and
+    progress frames take the same WebSocket path as terminal replies. Returns
+    the payload as sent.
     """
-    payload = _stamp_turn(session, payload)
+    payload = _stamp_llm_usage(_stamp_turn(session, payload))
     session.reply(json.dumps(payload))
     return payload
 

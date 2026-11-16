@@ -28,6 +28,7 @@ from typing import Dict, Optional
 from common.settings import AgentSettings
 from llm.byok_config import get_current
 from llm.model_catalog import load_model_catalog
+from llm.tracking.turn_usage import record_call
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +246,12 @@ class TokenTracker:
         )
 
         now = time.time()
+
+        # The turn's totals, reported to the editor as llmUsage.
+        try:
+            record_call(prompt_tokens, completion_tokens, model)
+        except Exception as exc:  # pragma: no cover - tracking is best effort
+            logger.debug("Turn usage tracking failed (best-effort): %s", exc)
 
         with self._lock:
             # Global bucket
