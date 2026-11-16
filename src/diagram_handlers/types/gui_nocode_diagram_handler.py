@@ -71,6 +71,14 @@ def _clean_text(value: Any, fallback: str = "") -> str:
     return fallback
 
 
+def _human_label(name: Any) -> str:
+    """A reader's label for a model name: ``dueDate`` / ``due_date`` -> ``Due date``."""
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", " ", str(name or ""))
+    words = re.sub(r"[_\-\s]+", " ", spaced).split()
+    text = " ".join(w if w.isupper() and len(w) > 1 else w.lower() for w in words)
+    return text[:1].upper() + text[1:]
+
+
 def _coerce_numeric(value: Any) -> Any:
     """Best-effort convert a chart ``value`` to a number.
 
@@ -674,7 +682,7 @@ def _create_form_attributes(
 def _labelled_input(attr: Dict[str, Any], form_key: str, input_style: Dict[str, str]) -> Dict[str, Any]:
     """A ``<label>`` + ``<input name=attribute>`` pair for a create form."""
     input_id = f"{form_key}-{_slug(attr['name'])}"
-    label = attr["name"].replace("_", " ").strip().capitalize()
+    label = _human_label(attr["name"])
     input_type = _INPUT_TYPES.get(str(attr.get("type", "")).lower(), "text")
     input_attrs = {"type": input_type, "name": attr["name"], "id": input_id}
     if input_type != "checkbox":
@@ -1056,7 +1064,7 @@ def _build_series(
                     table_rows, chart_type, cls, value_attr_name=num_attr["name"],
                 )
             s = {
-                "name": num_attr["name"].replace("_", " ").title(),
+                "name": _human_label(num_attr["name"]),
                 "data-source": cls["id"],
                 "color": _CHART_COLORS[idx % len(_CHART_COLORS)],
                 "data": per_attr_data or fallback_data,
@@ -1227,6 +1235,72 @@ def _html_data_table_node(columns: List[str], rows: List[List[str]]) -> Dict[str
     return nodes[0] if nodes else {"tagName": "table", "attributes": {"class": "ds-table"}}
 
 
+def _display_attribute(cls: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The attribute that names a record of *cls* to a reader: ``name`` /
+    ``title`` / ``label``, else its first text attribute, else its natural
+    key. The surrogate id only when the class has nothing else."""
+    attrs = cls.get("attributes", [])
+    for wanted in ("name", "title", "label"):
+        named = next((a for a in attrs if str(a.get("name", "")).lower() == wanted), None)
+        if named:
+            return named
+    candidates = [a for a in attrs if not _is_server_owned(a)]
+    return (
+        next((a for a in candidates if a.get("isString")), None)
+        or next((a for a in candidates if a.get("isId") or a.get("isExternalId")), None)
+        or _pick_label_field(cls)
+    )
+
+
+def _table_columns(
+    cls: Dict[str, Any], designed: List[Any], classes: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """The columns of a table bound to *cls*.
+
+    The *designed* columns that name an attribute or a related class, in the
+    designed order; every attribute and related class when the design names
+    none. The surrogate ``id`` is a column only when the design asks for it.
+    """
+    by_id = {c["id"]: c for c in classes}
+
+    def field(attr: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "field": attr["name"],
+            "label": _human_label(attr["name"]),
+            "columnType": "field",
+            "_expanded": False,
+        }
+
+    def lookup(end: Dict[str, Any]) -> Dict[str, Any]:
+        target = by_id.get(end.get("targetClassId"))
+        shown = _display_attribute(target) if target else None
+        return {
+            "field": end.get("targetClassName", end.get("targetClassId", "")),
+            "label": _human_label(end.get("targetClassName", "Related")),
+            "columnType": "lookup",
+            "lookupEntity": end.get("targetClassId", ""),
+            "lookupField": shown["name"] if shown else end.get("displayAttributeName", ""),
+            "_expanded": False,
+        }
+
+    attrs = _all_attributes(cls, classes)
+    ends = cls.get("associationEnds", [])
+    columns: List[Dict[str, Any]] = []
+    for name in designed:
+        attr = next((a for a in attrs if _names_match(a["name"], name)), None)
+        end = None if attr else next(
+            (e for e in ends if _names_match(e.get("targetClassName"), name)), None
+        )
+        column = field(attr) if attr else lookup(end) if end else None
+        if column and column not in columns:
+            columns.append(column)
+    if columns:
+        return columns
+    own = cls.get("attributes", [])
+    shown_attrs = [a for a in own if a.get("isId") or a.get("name") != "id"] or own
+    return [field(a) for a in shown_attrs] + [lookup(e) for e in ends]
+
+
 def _table_component(
     section_spec: Dict[str, Any],
     class_metadata: Optional[List[Dict[str, Any]]],
@@ -1259,31 +1333,9 @@ def _table_component(
 
     if cls:
         table_attrs["data-source"] = cls["id"]
-        # Build auto-generated columns (field columns + lookup columns)
-        auto_columns: List[Dict[str, Any]] = []
-
-        # Field columns from attributes
-        for attr in cls.get("attributes", []):
-            auto_columns.append({
-                "field": attr["name"],
-                "label": attr["name"].replace("_", " ").title(),
-                "columnType": "field",
-                "_expanded": False,
-            })
-
-        # Lookup columns from association ends
-        for end in cls.get("associationEnds", []):
-            auto_columns.append({
-                "field": end.get("targetClassName", end.get("targetClassId", "")),
-                "label": end.get("targetClassName", "Related").replace("_", " ").title(),
-                "columnType": "lookup",
-                "lookupEntity": end.get("targetClassId", ""),
-                "lookupField": end.get("displayAttributeName", ""),
-                "_expanded": False,
-            })
-
-        if auto_columns:
-            table_attrs["columns"] = json.dumps(auto_columns)
+        columns = _table_columns(cls, section_spec.get("fields") or [], class_metadata or [cls])
+        if columns:
+            table_attrs["columns"] = json.dumps(columns)
 
     return {
         "type": "table",
@@ -2293,7 +2345,7 @@ def _widget_fallback_title(
     if kind == "metric_card":
         attr, _ = _metric_binding(cls, value_field, aggregation)
         if attr:
-            return f"{name} {attr['name'].replace('_', ' ')}".title()
+            return _human_label(f"{name} {attr['name']}")
         return f"{name} Count"
     return f"{name} Overview"
 

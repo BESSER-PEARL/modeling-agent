@@ -163,7 +163,7 @@ EXPECTED = {
     "gui.DATA_MODEL_STEP": "033f9d7024a9501b",
     "gui.MOCKUP_REASONING_ADDENDUM": "c2b3920b4a068408",
     "gui.SVG_THUMB_HINT": "d940d49684416059",
-    "gui.complete_system_prompt": "45a7f77797f57a04",
+    "gui.complete_system_prompt": "3b1a81a995c6fa9b",
     "gui.data_model_step_for_classes": "0133afd5b613e683",
     "gui.interactions_block": "42710b03fa350131",
     "gui.interactions_block[has_classes=False]": "42c93b6ba660efb1",

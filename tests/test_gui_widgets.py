@@ -147,3 +147,122 @@ def test_surplus_widget_markers_leave_no_unloadable_node():
     # One bind, one widget: a repeated marker does not duplicate the table.
     tables = [n for n in _nodes(model, "Tasks") if n.get("type") == "table"]
     assert len(tables) == 1
+
+
+# -- class-bound table columns ------------------------------------------------
+
+def _attr(attr_id, name, type_="str", **flags):
+    return {"id": attr_id, "name": name, "type": type_,
+            "isNumeric": type_ in ("int", "float"), "isString": type_ == "str", **flags}
+
+
+ORDER_METADATA = [
+    {
+        "id": "cls-order",
+        "name": "Order",
+        "attributes": [
+            _attr("o-id", "id"),
+            _attr("o-number", "orderNumber"),
+            _attr("o-due", "dueDate", "date"),
+            _attr("o-total", "total_amount", "float"),
+        ],
+        "methods": [],
+        "associationEnds": [{
+            "relationshipId": "r-1", "targetClassId": "cls-customer",
+            "targetClassName": "Customer",
+            "displayAttributeId": "c-id", "displayAttributeName": "id",
+        }],
+    },
+    {
+        "id": "cls-customer",
+        "name": "Customer",
+        "attributes": [_attr("c-id", "id"), _attr("c-email", "email"), _attr("c-name", "name")],
+        "methods": [],
+    },
+    {
+        "id": "cls-room",
+        "name": "Room",
+        "attributes": [_attr("r-id", "id"), _attr("r-number", "number", "int", isExternalId=True),
+                       _attr("r-floor", "floor", "int")],
+        "methods": [],
+    },
+    {
+        "id": "cls-booking",
+        "name": "Booking",
+        "attributes": [_attr("b-id", "id"), _attr("b-nights", "nights", "int")],
+        "methods": [],
+        "associationEnds": [{
+            "relationshipId": "r-2", "targetClassId": "cls-room", "targetClassName": "Room",
+            "displayAttributeId": "r-id", "displayAttributeName": "id",
+        }],
+    },
+]
+
+
+def _columns(bind, page="Orders", class_id="cls-order"):
+    model = _generate([{"name": page, "sections": [{"bind": bind}]}], ORDER_METADATA)
+    return json.loads(_table(_nodes(model, page), class_id)["attributes"]["columns"])
+
+
+def test_table_keeps_the_designed_columns_in_order():
+    columns = _columns({"kind": "table", "className": "Order",
+                        "columns": ["Due date", "orderNumber", "Customer"]})
+    assert [(c["columnType"], c["field"]) for c in columns] == [
+        ("field", "dueDate"), ("field", "orderNumber"), ("lookup", "Customer"),
+    ]
+
+
+def test_table_without_designed_columns_hides_the_surrogate_id():
+    columns = _columns({"kind": "table", "className": "Order"})
+    assert [c["field"] for c in columns] == ["orderNumber", "dueDate", "total_amount", "Customer"]
+
+
+def test_table_columns_that_name_no_attribute_fall_back_to_all():
+    columns = _columns({"kind": "table", "className": "Order", "columns": ["Reference", "When"]})
+    assert [c["field"] for c in columns] == ["orderNumber", "dueDate", "total_amount", "Customer"]
+
+
+def test_table_shows_the_id_when_the_design_asks_for_it():
+    columns = _columns({"kind": "table", "className": "Order", "columns": ["ID", "orderNumber"]})
+    assert [c["field"] for c in columns] == ["id", "orderNumber"]
+
+
+def test_table_labels_read_as_words():
+    labels = {c["field"]: c["label"] for c in _columns({"kind": "table", "className": "Order"})}
+    assert labels == {
+        "orderNumber": "Order number", "dueDate": "Due date",
+        "total_amount": "Total amount", "Customer": "Customer",
+    }
+
+
+def test_related_record_is_shown_by_a_readable_attribute():
+    customer = _columns({"kind": "table", "className": "Order"})[-1]
+    assert (customer["lookupEntity"], customer["lookupField"]) == ("cls-customer", "name")
+    # No text attribute: the natural key, never the surrogate id.
+    room = _columns({"kind": "table", "className": "Booking"}, "Bookings", "cls-booking")[-1]
+    assert room["lookupField"] == "number"
+
+
+def test_form_and_chart_labels_split_camel_case():
+    model = _generate([{"name": "Orders", "sections": [
+        {"bind": {"kind": "form", "className": "Order"}},
+        {"bind": {"kind": "bar_chart", "className": "Order", "labelField": "orderNumber"}},
+        {"bind": {"kind": "metric_card", "className": "Order", "valueField": "total_amount",
+                  "aggregation": "sum"}},
+    ]}], ORDER_METADATA)
+    nodes = _nodes(model, "Orders")
+    assert "Order number" in [n.get("content") for n in nodes if n.get("tagName") == "label"]
+    chart = next(n for n in nodes if n.get("type") == "bar-chart")
+    assert [s["name"] for s in json.loads(chart["attributes"]["series"])] == ["Total amount"]
+    metric = next(n for n in nodes if n.get("type") == "metric-card")
+    assert metric["attributes"]["metric-title"] == "Order total amount"
+
+
+@pytest.mark.parametrize("name, label", [
+    ("targetDate", "Target date"), ("unit_price", "Unit price"), ("xCoordinate", "X coordinate"),
+    ("mp3File", "Mp3 file"), ("sha256Hash", "Sha256 hash"),
+])
+def test_label_of_a_model_name(name, label):
+    from diagram_handlers.types.gui_nocode_diagram_handler import _human_label
+
+    assert _human_label(name) == label

@@ -153,6 +153,7 @@ def extract_class_metadata(model: Optional[Dict[str, Any]]) -> List[Dict[str, An
             "isString": attr_type in _STRING_TYPES,
             # Which attributes a create form must supply
             "isId": bool(element.get("isId")),
+            "isExternalId": bool(element.get("isExternalId")),
             "isOptional": bool(element.get("isOptional")),
             "isDerived": bool(element.get("isDerived")),
             "hasDefault": element.get("defaultValue") not in (None, ""),
