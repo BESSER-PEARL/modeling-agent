@@ -75,10 +75,9 @@ from conversation.reply_copy import (
     OUT_OF_SCOPE_REDIRECT as _OUT_OF_SCOPE_REDIRECT,
     TRACE_NOT_AVAILABLE as _TRACE_NOT_AVAILABLE,
     TRACE_QUESTION_EMPTY as _TRACE_QUESTION_EMPTY,
-    show_trace_label,
 )
 from routing.unified_classifier import get_or_classify
-from protocol.actions import Action, show_trace
+from protocol.actions import Action
 
 try:
     from llm.provider import get_provider as _get_llm_provider
@@ -876,10 +875,10 @@ def _offer_trace_view(session: Session, request: AssistantRequest) -> None:
         view = "lineage"
     if view is None:
         return
-    name = artifact["name"] if artifact else ""
-    reply_show_trace(session, show_trace(
-        view, show_trace_label(view, name), artifact["artifactId"] if artifact else None,
-    ))
+    reply_show_trace(
+        session, view,
+        artifact["name"] if artifact else "", artifact["artifactId"] if artifact else None,
+    )
 
 
 # ------------------------------------------------------------------

@@ -298,7 +298,7 @@ def test_show_trace_builder_keeps_the_key_order_and_rejects_unknown_views():
 
 def test_show_trace_is_replayed_within_its_turn_only():
     session = _session(turn_id="t-1")
-    session_helpers.reply_show_trace(session, show_trace("lineage", "Open", "a-book"))
+    session_helpers.reply_show_trace(session, "lineage", "Book", "a-book")
     frame = _frames(session)[0]
     assert frame["turnId"] == "t-1" and frame["replySeq"] == 1
     assert Action.SHOW_TRACE in session_helpers._TURN_REPLY_ACTIONS
@@ -311,15 +311,70 @@ def test_show_trace_is_replayed_within_its_turn_only():
 def test_the_button_label_is_not_recorded_as_a_conversation_turn(monkeypatch):
     recorded = []
     monkeypatch.setattr(session_helpers, "_record_assistant_response", lambda s, m: recorded.append(m))
-    session_helpers.reply_show_trace(_session(), show_trace("lineage", "Open the lineage of Book", "a-book"))
+    session_helpers.reply_show_trace(_session(), "lineage", "Book", "a-book")
     assert recorded == []
 
 
-def test_the_button_label_is_translated_like_a_reply(monkeypatch):
-    monkeypatch.setattr(session_helpers, "localize_payload", lambda s, p: {**p, "message": "Abrir"})
+@pytest.fixture
+def spanish(monkeypatch):
+    """A Spanish session whose translations are recorded (every call's texts)."""
+    from common.session_keys import REPLY_LANGUAGE
+    from conversation import reply_language
+
+    calls = []
+    words = {"Open the lineage of ⟦name⟧": "Abrir el linaje de ⟦name⟧",
+             "Open the trace lineage": "Abrir el linaje de la traza",
+             "Open the history of ⟦name⟧": "Abrir el historial de ⟦name⟧"}
+
+    def predict(prompt):
+        texts = json.loads(prompt[prompt.rindex('{"texts"'):])["texts"]
+        calls.append(texts)
+        return json.dumps({"texts": [words.get(t, t) for t in texts]})
+
+    monkeypatch.setattr(reply_language, "_predict_json", predict)
+    reply_language._reset_state()
+
+    def session(**kw):
+        s = _session(**kw)
+        s.set(REPLY_LANGUAGE, "es")
+        return s
+    yield session, calls, words
+    reply_language._reset_state()
+
+
+def test_the_label_template_is_translated_and_the_name_put_in_after(spanish):
+    session_for, calls, _ = spanish
+    first, second = session_for(), session_for()
+    session_helpers.reply_show_trace(first, "lineage", "Book", "a-book")
+    session_helpers.reply_show_trace(second, "lineage", "Library Member", "a-member")
+    assert _frames(first)[0]["message"] == "Abrir el linaje de Book"          # never "de Libro"
+    assert _frames(second)[0]["message"] == "Abrir el linaje de Library Member"
+    # One translation of the template, cached for every other name; no name ever reaches it.
+    assert calls == [["Open the lineage of ⟦name⟧"]]
+
+
+def test_a_translation_that_loses_the_slot_falls_back_to_the_label_without_a_name(spanish):
+    session_for, calls, words = spanish
+    words["Open the lineage of ⟦name⟧"] = "Abrir el linaje de nombre"
+    session = session_for()
+    session_helpers.reply_show_trace(session, "lineage", "Book", "a-book")
+    frame = _frames(session)[0]
+    assert frame["message"] == "Abrir el linaje de la traza" and frame["artifactId"] == "a-book"
+
+
+def test_an_english_label_needs_no_translation(spanish):
+    _, calls, _ = spanish
     session = _session()
-    session_helpers.reply_show_trace(session, show_trace("lineage", "Open the lineage of Book", "a-book"))
-    assert _frames(session)[0]["message"] == "Abrir"
+    session_helpers.reply_show_trace(session, "timeline", "Book", "a-book")
+    assert _frames(session)[0]["message"] == "Open the history of Book" and calls == []
+
+
+def test_the_body_sends_the_translated_label(streamed, spanish):
+    session_for, _, _ = spanish
+    session = session_for()
+    session.set(UNIFIED_CLASSIFICATION, _verdict("lineage"))
+    state_bodies.trace_question_body(session)
+    assert _frames(session)[-1]["message"] == "Abrir el linaje de Book"
 
 
 def test_a_long_name_is_cut_in_the_label():

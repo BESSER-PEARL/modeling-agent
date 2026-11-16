@@ -1016,8 +1016,10 @@ Traceability page on that view (and artifact):
   request's ``traceDigest.focus``: the one entry, or the one entry the message
   names (a member over its owner, ``Book.isbn`` over ``Book``); absent when
   several are named. Never taken from the model's answer or the message text.
-* ``message`` — a short button label, translated into the user's language like
-  any reply; not recorded in the conversation memory.
+* ``message`` — a short button label in the user's language; not recorded in
+  the conversation memory. Its template is translated with a slot for the
+  element name, which is put in afterwards (never translated; one cached
+  translation per view and language).
 
 Not sent when the answer failed (the provider raised, refused, was cut off or returned
 nothing; the stream then carries the error text) or when the request carried no

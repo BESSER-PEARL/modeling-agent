@@ -96,18 +96,34 @@ TRACE_QUESTION_EMPTY = (
     "class realize?\"* or *\"what is out of date since the last generation?\"*."
 )
 
-# The label of the ``show_trace`` button, by view; ``{name}`` is the artifact's.
+# The label of the ``show_trace`` button, by view: with the artifact's name
+# (in SHOW_TRACE_NAME_SLOT) and without one. The template is translated with
+# the slot in it and the name put in afterwards, so a translation is cached
+# per view and language, and an element name is never translated.
+SHOW_TRACE_NAME_SLOT = "⟦name⟧"
 _SHOW_TRACE_LABELS = {
-    "lineage": ("Open the lineage of {name}", "Open the trace lineage"),
-    "coverage": ("Open the requirement coverage of {name}", "Open the requirement coverage"),
-    "timeline": ("Open the history of {name}", "Open the project timeline"),
+    "lineage": ("Open the lineage of ⟦name⟧", "Open the trace lineage"),
+    "coverage": ("Open the requirement coverage of ⟦name⟧", "Open the requirement coverage"),
+    "timeline": ("Open the history of ⟦name⟧", "Open the project timeline"),
 }
 # An element name longer than this is cut in the label.
 _SHOW_TRACE_LABEL_NAME_CHARS = 60
 
 
-def show_trace_label(view: str, name: str = "") -> str:
-    """The short label of the button opening the Traceability page on *view*."""
-    with_name, without = _SHOW_TRACE_LABELS[view]
+def show_trace_label_template(view: str, with_name: bool) -> str:
+    """The English label of the button opening the Traceability page on
+    *view*; *with_name*: the one holding SHOW_TRACE_NAME_SLOT."""
+    with_slot, without = _SHOW_TRACE_LABELS[view]
+    return with_slot if with_name else without
+
+
+def fill_show_trace_label(template: str, name: str) -> str:
+    """*template* (English or translated) with the element *name* in its slot."""
     name = " ".join((name or "").split())[:_SHOW_TRACE_LABEL_NAME_CHARS]
-    return with_name.format(name=name) if name else without
+    return template.replace(SHOW_TRACE_NAME_SLOT, name)
+
+
+def show_trace_label(view: str, name: str = "") -> str:
+    """The English label of the button, with *name* when there is one."""
+    name = " ".join((name or "").split())
+    return fill_show_trace_label(show_trace_label_template(view, bool(name)), name)

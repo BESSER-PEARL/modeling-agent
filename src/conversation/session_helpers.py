@@ -33,7 +33,10 @@ from common.session_keys import (
 from conversation.reply_language import language_instruction, localize_payload, translate_text
 from conversation.telemetry import emit_prompt_event
 from routing.unified_classifier import _pending_flow_context
-from protocol.actions import Action, assistant_message
+from protocol.actions import Action, assistant_message, show_trace
+from conversation.reply_copy import (
+    SHOW_TRACE_NAME_SLOT, fill_show_trace_label, show_trace_label_template,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -357,14 +360,24 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
         _emit_prompt_telemetry(session, action)
 
 
-def reply_show_trace(session: Session, payload: Dict[str, Any]) -> None:
-    """Send a ``show_trace`` button after a streamed trace answer.
+def reply_show_trace(session: Session, view: str, name: str = "", artifact_id: Optional[str] = None) -> None:
+    """Send a ``show_trace`` button after a streamed trace answer, opening
+    the Traceability page on *view* (and the artifact *artifact_id*, named
+    *name*, when there is one).
 
-    Its label is translated like any reply message, but it is neither recorded
-    in the conversation memory (the streamed answer already was) nor counted
-    as the turn's telemetry reply (``stream_done`` was)."""
+    The label's template is translated with the name's slot in it and the
+    element name put in afterwards, so a name is never translated and the
+    translation is cached per view and language; a translation that lost the
+    slot falls back to the label without a name. The label is neither
+    recorded in the conversation memory (the streamed answer already was)
+    nor counted as the turn's telemetry reply (``stream_done`` was)."""
     try:
-        _buffer_terminal_reply(session, _send_to_session(session, localize_payload(session, payload)))
+        name = " ".join((name or "").split())
+        label = translate_text(session, show_trace_label_template(view, bool(name)))
+        if name and label.count(SHOW_TRACE_NAME_SLOT) != 1:
+            label = translate_text(session, show_trace_label_template(view, False))
+        payload = show_trace(view, fill_show_trace_label(label, name), artifact_id)
+        _buffer_terminal_reply(session, _send_to_session(session, payload))
     except Exception as exc:
         logger.error(f"❌ [Reply] Failed to send show_trace: {exc}", exc_info=True)
 
