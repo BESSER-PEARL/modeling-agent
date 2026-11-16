@@ -453,6 +453,13 @@ class TestBareGenerateCommandAddsNoModelStep:
         ("Generate the web app.", "create_complete_system_intent", "web_app"),
         ("generate qiskit code", "create_complete_system_intent", "qiskit"),
         ("generate the django code from my model", "create_complete_system_intent", "django"),
+        # Only the model, a pronoun or filler after the generator.
+        ("generate django code for my model", "create_complete_system_intent", "django"),
+        ("generate sql for it", "create_complete_system_intent", "sql"),
+        ("generate the sql of this diagram", "create_complete_system_intent", "sql"),
+        ("export to sql", "create_complete_system_intent", "sql"),
+        ("generate python code to download", "create_complete_system_intent", "python"),
+        ("generate the web app with my current model", "create_complete_system_intent", "web_app"),
     ])
     @pytest.mark.parametrize("classes", [False, True])
     def test_only_the_generation_is_planned(self, message, intent, generator, classes):
@@ -461,13 +468,16 @@ class TestBareGenerateCommandAddsNoModelStep:
         )
         assert _plan_shape(ops) == [("generation", generator)]
 
-    def test_generate_request_with_a_domain_still_gets_its_diagrams(self):
+    @pytest.mark.parametrize("message, subject", [
+        ("generate a web app for a bookshop", "bookshop"),
+        ("generate a library management web app", "library management"),
+    ])
+    def test_generate_request_with_a_domain_still_gets_its_diagrams(self, message, subject):
         ops = plan_assistant_operations(
-            _editor_request("generate a web app for a bookshop"), "complete_system",
-            "create_complete_system_intent", _noop_predict,
+            _editor_request(message), "complete_system", "create_complete_system_intent", _noop_predict,
         )
         assert _plan_shape(ops) == _WEB_APP_PLAN
-        assert "bookshop" in ops[0]["request"]
+        assert subject in ops[0]["request"]
 
     def test_a_planned_model_step_still_gets_its_prerequisite(self):
         # The plan has something to model, so the missing class diagram is added.

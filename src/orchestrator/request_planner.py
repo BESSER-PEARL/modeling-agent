@@ -683,14 +683,31 @@ def _get_workspace_diagram_types(request: AssistantRequest) -> Set[str]:
     return existing
 
 
-# Words that introduce what a generate command is about ("... for a bookshop").
-_GENERATE_SUBJECT_RE = re.compile(r"\b(?:for|of|about|to|that|which|where|with)\b", re.IGNORECASE)
+# Words of a generate command that name no subject: the generators and their
+# targets, the user's model, pronouns and filler.
+_GENERATE_COMMAND_WORDS = frozenset(
+    word
+    for phrase in [
+        *GENERATOR_PREREQUISITES, *GENERATOR_KEYWORDS,
+        *(keyword for keywords in GENERATOR_KEYWORDS.values() for keyword in keywords),
+    ]
+    for word in re.findall(r"[a-z0-9]+", phrase.lower())
+) | {
+    "a", "an", "the", "my", "our", "this", "that", "these", "those", "it", "them", "its",
+    "current", "existing", "same", "whole", "full", "complete", "new",
+    "for", "of", "to", "from", "with", "in", "into", "as", "on", "and", "based", "using",
+    "model", "models", "diagram", "diagrams", "class", "classes", "uml",
+    "code", "source", "files", "file", "download", "now", "again", "please", "me", "us",
+}
 
 
 def _is_bare_generate_command(message: str) -> bool:
-    """True for "generate django code": a generate command with no subject."""
-    stripped = message.strip()
-    return bool(_HEURISTIC_GENERATE_ONLY.match(stripped)) and not _GENERATE_SUBJECT_RE.search(stripped)
+    """True for "generate django code for my model": a generate command whose
+    words after the verb name only the generator, the user's model or filler."""
+    match = _HEURISTIC_GENERATE_ONLY.match(message.strip())
+    return bool(match) and set(
+        re.findall(r"[a-z0-9]+", match.group("gen_part").lower())
+    ) <= _GENERATE_COMMAND_WORDS
 
 
 def _validate_and_fix_plan(
