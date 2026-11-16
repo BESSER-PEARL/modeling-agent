@@ -280,7 +280,9 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         # Guard: no surrogate id attribute. The generators give every class
         # its own primary key, and the spec cannot mark an identifier.
-        self._strip_surrogate_ids(system_spec.get("classes"), raw_request or user_request)
+        self._strip_surrogate_ids(
+            system_spec.get("classes"), raw_request or user_request,
+            self._member_references(system_spec))
 
         # Guard: BUML rejects decorated type tokens the LLM sometimes
         # emits ('str?', 'int?'). Normalize them: on an attribute the '?'
@@ -673,19 +675,23 @@ class ClassDiagramHandler(BaseDiagramHandler):
     # The request itself asks for an id ("each product has an id and a name").
     _ID_REQUEST_RE = re.compile(r"\b(?:ids?|identifiers?)\b", re.IGNORECASE)
 
-    def _strip_surrogate_ids(self, classes: Any, request_text: Optional[str]) -> None:
+    def _strip_surrogate_ids(
+        self, classes: Any, request_text: Optional[str], references: str = "",
+    ) -> None:
         """Remove the attribute named ``id`` from every class in *classes*.
 
         The generators create a primary key for a class that declares no
         identifier, and an ``id`` attribute that is not the identifier is
         rejected by Django and reported by the validator on every class. Kept
-        when *request_text* asks for an id; identifiers the user names
-        (``isbn``, ``sku``) are other attributes and are never touched.
-        *classes* may also be the ``changes`` of ``add_class`` modifications,
-        which carry the same keys.
+        when *request_text* asks for an id, and when a constraint or a method
+        body reads it (*references* plus the code of *classes*); identifiers
+        the user names (``isbn``, ``sku``) are other attributes and are never
+        touched. *classes* may also be the ``changes`` of ``add_class``
+        modifications, which carry the same keys.
         """
         if not isinstance(classes, list) or self._ID_REQUEST_RE.search(request_text or ""):
             return
+        references = references + " " + self._member_references({"classes": classes})
         stripped = []
         for cls in classes:
             if not isinstance(cls, dict) or cls.get("isEnumeration"):
@@ -695,7 +701,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 continue
             kept = [
                 a for a in attributes
-                if not (isinstance(a, dict) and str(a.get("name") or "").lower() == "id")
+                if not (isinstance(a, dict) and str(a.get("name") or "").lower() == "id"
+                        and not self._is_referenced(a.get("name"), references))
             ]
             if len(kept) != len(attributes):
                 cls["attributes"] = kept
@@ -1301,7 +1308,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         return _reach(True) | _reach(False)
 
-    def _ensure_unique_association_ends(self, system_spec: Dict[str, Any]) -> None:
+    def _ensure_unique_association_ends(self, system_spec: Dict[str, Any]) -> List[str]:
         """Make every class's association-end names unique in the spec.
 
         Computes each class's navigable end names with the same derivation
@@ -1319,7 +1326,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
         An attribute of the class holds its name against every end: generated
         code gives a class one member per name, so the end is the one renamed.
         An integer attribute named like a to-one end is that end's reference
-        kept by hand and is dropped instead.
+        kept by hand and is dropped instead. A name a constraint or a method
+        body reads is left on both, so the rule keeps reading what it read.
 
         Endpoints are NEVER swapped: the wire format carries the target role
         in ``name`` and the source role in ``sourceRole``, so a swap moves
@@ -1327,10 +1335,11 @@ class ClassDiagramHandler(BaseDiagramHandler):
         always enough.
 
         Mutates *system_spec* in place; no-op for already-clean specs.
+        Returns the new end names, for the reply.
         """
         relationships = system_spec.get("relationships")
         if not isinstance(relationships, list) or not relationships:
-            return
+            return []
         classes = system_spec.get("classes")
 
         def _is_end_creating(rel: Any) -> bool:
@@ -1374,6 +1383,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             and rel["name"].strip()
         }
 
+        references = self._member_references(system_spec)
         class_order: List[str] = []
         class_by_name: Dict[str, Dict[str, Any]] = {}
         if isinstance(classes, list):
@@ -1385,7 +1395,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             if entry["owner"] not in class_order:
                 class_order.append(entry["owner"])
 
-        renamed = 0
+        renamed: List[str] = []
         for cls_name in class_order:
             entries = _collect_entries()  # recompute after prior mutations
             chain = self._reach_over_edges(inheritance_edges, {cls_name})
@@ -1400,7 +1410,9 @@ class ClassDiagramHandler(BaseDiagramHandler):
             for e in owned:
                 by_name.setdefault(e["name"], []).append(e)
             for end_name, group in by_name.items():
-                attr = own_attrs.get(end_name)
+                # A name a rule or a method body reads keeps meaning what it
+                # meant: neither the attribute nor the end is touched.
+                attr = None if self._is_referenced(end_name, references) else own_attrs.get(end_name)
                 if attr is not None and self._is_reference_to_end(attr, group):
                     class_by_name[cls_name]["attributes"].remove(attr)
                     attr = None
@@ -1438,7 +1450,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
                     taken_ends.add(unique)
                     if side == "target":
                         taken_labels.add(unique.lower())
-                    renamed += 1
+                    renamed.append(unique)
                     logger.info(
                         "[ClassDiagram] Named the %s end of the %s-%s "
                         "association '%s' so '%s' has a single '%s' member",
@@ -1449,8 +1461,9 @@ class ClassDiagramHandler(BaseDiagramHandler):
         if renamed:
             logger.info(
                 "[ClassDiagram] Assigned %d unique association-end name(s)",
-                renamed,
+                len(renamed),
             )
+        return renamed
 
     _INTEGER_ATTR_TYPES = frozenset({"int", "integer", "long", "short"})
 
@@ -1632,17 +1645,19 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
     def _reaches_through_role(
         self, relationships: List[Any], owner: str, target: str, role: str,
+        *, exact: bool = False,
     ) -> bool:
         """True when *owner* already has an association end to *target* that
         states the link *role* names.
 
         That is an end of that name (an unnamed end is named after its class),
-        or any end when *role* itself only repeats the target class. Two
-        differently named roles between one pair (``billingAddress`` /
-        ``shippingAddress``) are different links.
+        or, unless *exact*, an end named after the target class when *role*
+        is too (``book`` beside ``books``). An end with a role of its own is a
+        different link: ``referredBy`` beside ``customer``, ``billingAddress``
+        beside ``shippingAddress``.
         """
         wanted = (role or "").strip().lower()
-        any_end = not wanted or self._is_default_end_name(wanted, target)
+        plain = not exact and (not wanted or self._is_default_end_name(wanted, target))
         for rel in relationships:
             if (not isinstance(rel, dict)
                     or self._spec_rel_type(rel) in self._SPEC_NON_END_REL_TYPES):
@@ -1651,22 +1666,23 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 if rel.get(near) != owner or rel.get(far) != target:
                     continue
                 end = self._spec_role(rel, far) or target.lower()
-                if any_end or end.lower() == wanted:
+                if end.lower() == wanted or (plain and self._is_default_end_name(end, target)):
                     return True
         return False
 
     def _link_attribute_to_class(
         self, relationships: List[Any], owner: str, attr: Dict[str, Any], target: str,
-        *, many: bool = False,
+        *, many: bool = False, in_use: bool = False,
     ) -> bool:
         """Add the Association ``owner -> target`` that *attr* stands for,
         unless the two classes are already linked for that role.
 
-        *many*: the attribute holds a collection of the target. Returns whether
-        an association was added.
+        *many*: the attribute holds a collection of the target. *in_use*: a
+        rule or a method body reads the attribute, so an end of exactly its
+        name must exist afterwards. Returns whether an association was added.
         """
         role = attr.get("name") or self._to_camel_case(target)
-        if self._reaches_through_role(relationships, owner, target, role):
+        if self._reaches_through_role(relationships, owner, target, role, exact=in_use):
             logger.info(
                 "[ClassDiagram] Dropped attribute %s.%s: %s is already linked "
                 "to %s for that role", owner, attr.get("name"), owner, target,
@@ -1733,6 +1749,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         if not isinstance(relationships, list):
             relationships = []
             system_spec["relationships"] = relationships
+        references = self._member_references(system_spec)
 
         converted = 0
         coerced = 0
@@ -1771,7 +1788,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
                     # class-typed attribute -> association owner -> target;
                     # the attribute is dropped either way
                     if self._link_attribute_to_class(
-                            relationships, owner, a, element, many=bool(collection)):
+                            relationships, owner, a, element, many=bool(collection),
+                            in_use=self._is_referenced(a.get("name"), references)):
                         converted += 1
                 else:
                     # PascalCase but not a known class/enum/primitive -> a
@@ -3463,10 +3481,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
             mods = spec.get("modifications")
             if not isinstance(mods, list):
                 mods = [spec.get("modification")]
+            mods = [m for m in mods if isinstance(m, dict)]
             handler._strip_surrogate_ids(
-                [m.get("changes") for m in mods
-                 if isinstance(m, dict) and m.get("action") == "add_class"],
+                [m.get("changes") for m in mods if m.get("action") == "add_class"],
                 kwargs.get("raw_request") or user_request,
+                # an OCL rule added in the same request may read the id
+                " ".join(str((m.get("changes") or {}).get("constraint") or "") for m in mods),
             )
             return spec
 

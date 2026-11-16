@@ -313,6 +313,34 @@ class TestAttributeEndNameClash:
         assert _attr_names(spec, "Cart") == ["items"]
         assert spec["relationships"][0]["name"] == "items_1"
 
+    def test_a_name_a_rule_reads_is_left_on_both(self):
+        """Renaming the end would silently point ``self.keywords->size()`` at
+        the text attribute."""
+        spec = _attr_spec(
+            {"Article": [{"name": "keywords", "type": "str"}]},
+            [dict(_assoc("Article", "Keyword", name="keywords", sm="0..*", tm="0..*"),
+                  sourceRole="articles")],
+        )
+        spec["constraints"] = [{
+            "context": "Article", "name": "tagged",
+            "expression": "context Article inv tagged: self.keywords->size() >= 1"}]
+        before = copy.deepcopy(spec)
+        _handler()._ensure_unique_association_ends(spec)
+        assert spec == before
+
+    def test_an_integer_a_method_body_reads_is_kept(self):
+        spec = _attr_spec(
+            {"Booking": [{"name": "room", "type": "int"}]},
+            [dict(_assoc("Booking", "Room", name="room", sm="0..*", tm="1"),
+                  sourceRole="bookings")],
+            classes=("Booking", "Room"),
+        )
+        spec["classes"][0]["methods"] = [
+            {"name": "door", "code": "def door(self): return self.room + 100"}]
+        before = copy.deepcopy(spec)
+        _handler()._ensure_unique_association_ends(spec)
+        assert spec == before
+
     def test_no_clash_is_untouched(self):
         spec = _attr_spec(
             {"Article": [{"name": "title", "type": "str"}]},

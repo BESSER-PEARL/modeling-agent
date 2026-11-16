@@ -141,15 +141,40 @@ class TestExistingLinkIsNotDuplicated:
         assert spec["classes"][0]["attributes"] == []
         assert [r["type"] for r in _between(spec, "Chapter", "Book")] == ["Aggregation"]
 
-    def test_attribute_named_after_the_class_adds_no_second_link(self, handler):
+    def test_plural_and_singular_of_the_class_name_are_one_link(self, handler):
         spec = _spec(
-            [_cls("Chapter", [{"name": "book", "type": "Book"}]), _cls("Book")],
+            [_cls("Book", [{"name": "chapter", "type": "Chapter"}]), _cls("Chapter")],
             [{"type": "Composition", "source": "Chapter", "target": "Book",
               "sourceMultiplicity": "0..*", "targetMultiplicity": "1",
-              "name": "parentBook", "sourceRole": "chapters"}],
+              "name": "book", "sourceRole": "chapters"}],
         )
         handler._rewrite_class_typed_attributes(spec)
         assert len(_between(spec, "Chapter", "Book")) == 1
+
+    def test_an_end_with_its_own_role_is_another_link(self, handler):
+        """``customer`` beside an existing ``referredBy``: the purchaser is not the
+        referrer, so the attribute still becomes its own association."""
+        spec = _spec(
+            [_cls("Order", [{"name": "customer", "type": "Customer"}]), _cls("Customer")],
+            [{"type": "Association", "source": "Order", "target": "Customer",
+              "sourceMultiplicity": "0..*", "targetMultiplicity": "0..1",
+              "name": "referredBy"}],
+        )
+        handler._rewrite_class_typed_attributes(spec)
+        roles = sorted(r["name"] for r in _between(spec, "Order", "Customer"))
+        assert roles == ["customer", "referredBy"]
+
+    def test_an_attribute_a_rule_reads_keeps_an_end_of_its_name(self, handler):
+        spec = _spec(
+            [_cls("Book", [{"name": "chapter", "type": "Chapter"}]), _cls("Chapter")],
+            [{"type": "Composition", "source": "Chapter", "target": "Book",
+              "sourceMultiplicity": "0..*", "targetMultiplicity": "1",
+              "name": "book", "sourceRole": "chapters"}],
+        )
+        spec["constraints"] = [{"context": "Book", "name": "opens",
+                                "expression": "context Book inv opens: self.chapter.title <> ''"}]
+        handler._rewrite_class_typed_attributes(spec)
+        assert "chapter" in [r["name"] for r in _between(spec, "Book", "Chapter")]
 
     def test_a_second_role_between_the_same_classes_survives(self, handler):
         spec = _spec(

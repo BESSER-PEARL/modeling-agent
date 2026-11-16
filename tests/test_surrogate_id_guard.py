@@ -178,6 +178,43 @@ class TestAddClassModification:
         assert added["Award"] == ["id", "edition"]
 
 
+class TestAnIdInUse:
+    """An id a constraint or a method body reads is part of the model."""
+
+    def test_an_id_a_rule_reads_is_kept(self, handler):
+        classes = [_cls("Parcel", ["id", "weight"])]
+        handler._strip_surrogate_ids(
+            classes, "parcels", "context Parcel inv positive: self.id > 0")
+        assert _names(classes, "Parcel") == ["id", "weight"]
+
+    def test_an_id_a_method_body_reads_is_kept(self, handler):
+        classes = [_cls("Parcel", ["id", "weight"])]
+        classes[0]["methods"] = [{"name": "tagline", "code": "def tagline(self): return 'P' + self.id"}]
+        handler._strip_surrogate_ids(classes, "parcels")
+        assert _names(classes, "Parcel") == ["id", "weight"]
+
+    def test_other_words_containing_id_are_not_a_reference(self, handler):
+        classes = [_cls("Parcel", ["id", "width"])]
+        handler._strip_surrogate_ids(
+            classes, "parcels", "context Parcel inv wide: self.width > 0 and self.valid")
+        assert _names(classes, "Parcel") == ["width"]
+
+    def test_generated_model_keeps_an_id_the_users_rule_reads(self, monkeypatch):
+        compact = CompactSystemClassSpec(
+            name="Parcels",
+            classes=[CompactClassSpec(n="Parcel", a=["id: int", "weight: float"], m=[], k=""),
+                     CompactClassSpec(n="Depot", a=["id: int", "town: str"], m=[], k="")],
+            rels=[], ocl=["context Parcel inv positive: self.id > 0"],
+        )
+        monkeypatch.setattr(handler_mod, "COMPACT_SPEC_ENABLED", True, raising=True)
+        handler = ClassDiagramHandler(None)
+        monkeypatch.setattr(handler, "predict_two_pass_structured", lambda **_: compact)
+        result = handler.generate_complete_system("parcels in depots; parcel numbers are positive")
+        classes = result["systemSpec"]["classes"]
+        assert _names(classes, "Parcel") == ["id", "weight"]
+        assert "I also added the rule you stated" in result["message"]
+
+
 class TestStarterClasses:
     def test_fallback_class_has_no_id(self, handler):
         spec = handler.generate_fallback_element("create a Product class")["element"]
