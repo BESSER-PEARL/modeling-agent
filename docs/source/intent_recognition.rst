@@ -183,10 +183,13 @@ means mirroring it here.
      - A question about the project's history or provenance, answered from
        the editor's trace record (``context.traceDigest``): which code came
        from an element, which requirement it realizes, who changed what and
-       when, what is out of date, requirement coverage, a history summary.
-       What the model *is* stays ``describe_model_intent``; the outcome of
-       the last generation run ("what did you generate?") and re-running it
-       stay ``generation_intent``. Never plans a generation
+       when, what is out of date, requirement coverage, a history summary;
+       design-rationale questions ("why does the Loan class exist?") only
+       when WORKSPACE CONTEXT lists the record, else they stay
+       ``describe_model_intent``. What the model *is* stays
+       ``describe_model_intent``; the outcome of the last generation run
+       ("what did you generate?") and re-running it stay
+       ``generation_intent``. Never plans a generation
    * - ``fallback_intent``
      - (state's own fallback)
      - Nothing fits; BAF's fallback body runs
@@ -446,9 +449,12 @@ or handler only maps the decision to a reply. The tables in
      - "what did you generate?" after a run is answered from its outcome
    * - ``trace_question_guard()``
      - trace-question state
-     - ``no_trace`` when the request carries no trace record: a fixed reply
-       (recording is off or nothing recorded yet; turn it on in the
-       Traceability page), no LLM call
+     - Without a trace record in the request: ``no_trace`` for an explicit
+       trace question (``is_explicit_trace_question()``: generated code, out
+       of date, requirement coverage, who / when, the project's history), a
+       fixed reply (no record arrived; check or turn recording on in the
+       Traceability page), no LLM call; ``describe_model`` for a rationale or
+       summary question about the model, answered by the describe-model body
    * - ``generation_route()``
      - generation handler
      - The dispatch route of a verdict: ``generation_route`` on generation

@@ -74,18 +74,20 @@ AUTO_FIX_UNFIXED = (
 )
 
 
-# Reply to a question about the project's history when the editor sent no
-# trace record (``context.traceDigest``): recording is off, or nothing has been
-# recorded yet. Deterministic, no LLM call.
+# Reply to an explicit question about the project's history when the editor
+# sent no trace record (``context.traceDigest``): recording may be off, on with
+# nothing recorded yet, or the record not loaded yet; the agent cannot tell
+# which. Deterministic, no LLM call.
 TRACE_NOT_AVAILABLE = (
-    "I can't answer that from the project's history: the editor sent me no "
-    "trace record, so trace recording is off for this project or nothing has "
-    "been recorded yet.\n\n"
-    "To turn it on, open the **Traceability** page of the editor and enable "
-    "recording. From then on your edits, my changes, code generations and the "
-    "requirements I extract are recorded, and you can ask me where an element "
-    "comes from, which code was generated from it, what is out of date or "
-    "which requirements the model does not cover."
+    "I can't answer that from the project's history: I didn't receive a "
+    "trace record with your message. Either trace recording is off for this "
+    "project, nothing has been recorded yet, or the editor hasn't loaded the "
+    "record yet.\n\n"
+    "You can check on the **Traceability** page of the editor, and turn "
+    "recording on there if it is off. While it is on, your edits, my changes, "
+    "code generations and the requirements I extract are recorded, and you "
+    "can ask me where an element comes from, which code was generated from "
+    "it, what is out of date or which requirements the model does not cover."
 )
 
 TRACE_QUESTION_EMPTY = (

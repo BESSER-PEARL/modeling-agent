@@ -1004,10 +1004,15 @@ Traceability page on that view (and artifact):
 * ``message`` — a short button label, translated into the user's language like
   any reply; not recorded in the conversation memory.
 
-Not sent when the answer failed (empty) or when the request carried no
-``traceDigest`` (the agent then replies with a fixed ``assistant_message``
-saying recording is off or no trace exists, and how to turn it on in the
-Traceability page; no LLM call).
+Not sent when the answer failed (the provider raised, refused or returned
+nothing; the stream then carries the error text) or when the request carried no
+``traceDigest``. Without a ``traceDigest``, an explicit trace question (generated
+code, out of date, requirement coverage, who / when, the project's history) gets
+a fixed ``assistant_message`` (no trace record arrived: recording is off, nothing
+is recorded yet or the record is not loaded yet; check or turn it on in the
+Traceability page; no LLM call), and a design-rationale or summary question
+about the model ("why does Book have an Author association?") the describe-model
+answer, from the current model.
 
 Message Flow Examples
 ---------------------

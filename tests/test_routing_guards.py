@@ -228,15 +228,44 @@ def test_is_past_generation_question(message, past):
     assert guards.is_past_generation_question(message) is past
 
 
-@pytest.mark.parametrize("trace_digest,decision", [
-    (None, "no_trace"),          # recording off, nothing recorded, or an older editor
-    ({}, None),                  # a record, even an empty one, is answered from
-    ({"schemaVersion": 1, "recording": True}, None),
+@pytest.mark.parametrize("message,trace_digest,decision", [
+    # No record (recording off, nothing recorded, not loaded yet, an older editor):
+    ("which code came from Book?", None, "no_trace"),                 # explicit: fixed reply
+    ("what is out of date since the last generation?", None, "no_trace"),
+    ("which requirements are not covered?", None, "no_trace"),
+    ("who added the isbn attribute?", None, "no_trace"),
+    ("what happened in this project?", None, "no_trace"),
+    ("why does Book have an Author association?", None, "describe_model"),  # rationale: a real answer
+    ("why does the Loan class exist?", None, "describe_model"),
+    ("summarize my model", None, "describe_model"),
+    # A record, even an empty one, is answered from, whatever the question:
+    ("which code came from Book?", {}, None),
+    ("why does the Loan class exist?", {"schemaVersion": 1, "recording": True}, None),
 ])
-def test_trace_question_guard(trace_digest, decision):
-    request = AssistantRequest(message="which code came from Book?",
-                               context=WorkspaceContext(trace_digest=trace_digest))
+def test_trace_question_guard(message, trace_digest, decision):
+    request = AssistantRequest(message=message, context=WorkspaceContext(trace_digest=trace_digest))
     assert guards.trace_question_guard(request) == decision
+
+
+@pytest.mark.parametrize("message,explicit", [
+    ("which code was generated from class Book?", True),
+    ("where is Order in the generated code?", True),
+    ("which files came from Book?", True),
+    ("does Order need regeneration?", True),
+    ("which requirement does Book realize?", True),
+    ("when was Member renamed?", True),
+    ("summarize the history", True),
+    ("show me the trace of Book", True),
+    ("¿qué código se generó a partir de Book?", True),
+    ("Welche Anforderungen sind nicht abgedeckt?", True),
+    ("where does Book come from?", False),
+    ("what is the Loan class for?", False),
+    ("why does the File class exist?", False),     # a class named like a trace word
+    ("when should Loan be used?", False),
+    ("", False),
+])
+def test_is_explicit_trace_question(message, explicit):
+    assert guards.is_explicit_trace_question(message) is explicit
 
 
 @pytest.mark.parametrize("intent,route,reason,expected", [

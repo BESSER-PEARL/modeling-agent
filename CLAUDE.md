@@ -62,8 +62,8 @@ layers (`tests/test_packaging.py` checks). Its `version` is the agent's only ver
   `tests/live/` (`probe_smoke.py`, `probe_full_agentic.py`, `wme_release_sweep.py`, …) run against a running
   agent (`AGENT_WS_URL` required) and speak the real double-encoded envelope. Run the same prompt N times and diff
   the specs — a single manual browser test often lands in the "looks fine" bucket even when the failure rate is
-  high. `probe_smoke.py` is fast enough for a post-deploy gate. `tests/live/test_nl_generation_scenarios.py` is
-  skipped unless `RUN_LIVE_AGENT_TESTS=1`.
+  high. `probe_smoke.py` is fast enough for a post-deploy gate. `tests/live/test_nl_generation_scenarios.py` and
+  `test_trace_routing_scenarios.py` are skipped unless `RUN_LIVE_AGENT_TESTS=1`.
 
 ## Request Flow
 

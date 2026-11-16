@@ -739,6 +739,13 @@ def describe_model_body(session: Session):
     if request is None:
         return
 
+    _answer_model_question(session, request)
+
+
+def _answer_model_question(session: Session, request: AssistantRequest) -> None:
+    """The describe-model answer: a question about the current project,
+    answered from its summary (also a trace question the trace cannot answer,
+    see ``guards.trace_question_guard``)."""
     session.set(LAST_MATCHED_INTENT, 'describe_model_intent')
 
     if not request.message:
@@ -824,10 +831,17 @@ def trace_question_body(session: Session):
         reply_message(session, _TRACE_QUESTION_EMPTY)
         return
 
-    # No record, nothing to answer from: a fixed reply, no LLM call.
-    if guards.trace_question_guard(request) == "no_trace":
+    # No record, nothing to answer from: a fixed reply for an explicit trace
+    # question (no LLM call); a rationale or summary question about the model
+    # gets the describe-model answer instead.
+    decision = guards.trace_question_guard(request)
+    if decision == "no_trace":
         logger.info("[Trace] Trace question without a trace record — explaining how to record")
         reply_message(session, _TRACE_NOT_AVAILABLE)
+        return
+    if decision == "describe_model":
+        logger.info("[Trace] Model question without a trace record — answering from the model")
+        _answer_model_question(session, request)
         return
 
     digest = request.context.trace_digest

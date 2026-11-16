@@ -52,8 +52,9 @@ harnesses in `tests/live/` are never run in CI.
 
 The `tests/live/` harnesses are **run by hand** (usually before a release) and print a
 categorized `ok / FLAW / FAIL` report to stdout. They are `__main__` scripts, not pytest
-tests (the one exception is the pytest wrapper in `test_nl_generation_scenarios.py`, which
-is **skipped unless `RUN_LIVE_AGENT_TESTS=1`**). Every harness requires `AGENT_WS_URL`;
+tests (the exceptions are the pytest wrappers in `test_nl_generation_scenarios.py` and
+`test_trace_routing_scenarios.py`, which are
+**skipped unless `RUN_LIVE_AGENT_TESTS=1`**). Every harness requires `AGENT_WS_URL`;
 the WebSocket `Origin` header is derived from it (`wss://host` → `https://host`, otherwise
 `http://localhost:8080`) and can be overridden with `AGENT_WS_ORIGIN`.
 
@@ -78,8 +79,8 @@ Environment knobs (defaults in parentheses):
 | `GEN_TIMEOUT` | `wme_100_sweep`, `wme_release_sweep` (150) | Per-reply timeout, seconds. |
 | `ONLY` | `wme_100_sweep`, `wme_release_sweep` | CSV filter of scenario categories (`system,webapp,other,modify,generate,vague,edge,meta`). |
 | `REPEAT` | `wme_release_sweep` (1) | Repeat the whole scenario set N times. |
-| `REPEATS` | `test_nl_generation_scenarios` (2) | Probes per scenario (classifier is non-deterministic; a pass threshold applies). |
-| `RUN_LIVE_AGENT_TESTS` | `test_nl_generation_scenarios` (unset) | Gate for the pytest wrapper — unset ⇒ skipped. |
+| `REPEATS` | `test_nl_generation_scenarios`, `test_trace_routing_scenarios` (2) | Probes per scenario (classifier is non-deterministic; a pass threshold applies). |
+| `RUN_LIVE_AGENT_TESTS` | `test_nl_generation_scenarios`, `test_trace_routing_scenarios` (unset) | Gate for the pytest wrapper — unset ⇒ skipped. |
 
 ## Inventory
 
@@ -93,12 +94,12 @@ four files that import `patches.websocket_platform` are skipped at import, leavi
 | --- | --- | --- |
 | `test_non_modeling_guard.py` | 2 | `routing.guards.is_non_modeling` — injection / persona-hijack / shell-command text is declined; real (even non-English) modeling requests pass. |
 | `test_create_vagueness_guard.py` | 2 | `routing.guards.is_too_vague_create` — pure-filler creates ("create", "make an app") flagged vague; a real domain noun proceeds. |
-| `test_routing_guards.py` | 73 | `routing.guards` tables: classification skips and the `frontend_event` / `[auto-fix]` verdicts, `modeling_guard` precedence (and the reply each decision gets in the modeling state), quick-response keys, mixed and past-generation checks, `generation_route`, and the transition order that keeps BAF's local classifier as the voice route and outage net. |
+| `test_routing_guards.py` | 113 | `routing.guards` tables: classification skips and the `frontend_event` / `[auto-fix]` verdicts, `modeling_guard` precedence (and the reply each decision gets in the modeling state), quick-response keys, mixed and past-generation checks, the trace-question guard and its explicit-trace vocabulary, `generation_route`, and the transition order that keeps BAF's local classifier as the voice route and outage net. |
 | `test_unified_classifier.py` | 26 | `unified_classifier` — `classify_message`, `get_or_classify` event-id caching, schema literals, `prompts.classifier.SYSTEM_PROMPT` content, fallback/demotion, and smart-gen follow-up routing. |
 | `test_orchestrator.py` | 20 | `orchestrator/workspace_orchestrator.py` target resolution — explicit/implicit targets, `determine_target_diagram_type(s)`, `resolve_diagram_id`. |
 | `test_request_planner.py` | 30 | `orchestrator/request_planner.py` — segment splitting, target matching, operation normalization/fallback, `plan_assistant_operations` (no-op fake LLM). |
 | `test_two_pass_fast_path.py` | 4 | `base_handler.predict_two_pass_structured` fast-path — trivial (<250-char) requests skip the reasoning pass (one LLM call), keyed on `raw_request`. |
-| `test_trace_question.py` | 27 | Trace questions (`traceability_question_intent`): the classifier schema, rulebook tie-breaks and workspace line, wiring, the no-record reply without an LLM call, the prompt quoting the record, and `show_trace` (view, an `artifactId` only from the digest's focus, turn-scoped replay, label translated and kept out of memory). |
+| `test_trace_question.py` | 32 | Trace questions (`traceability_question_intent`): the classifier schema, rulebook tie-breaks (rationale only with a record) and workspace line, wiring, the no-record reply without an LLM call (explicit trace questions) or the describe-model answer (rationale questions), the prompt quoting the record, and `show_trace` (view, an `artifactId` only from the digest's focus, turn-scoped replay, label translated and kept out of memory). |
 
 ### Diagram handlers — class diagram, guards & constraints
 
@@ -264,6 +265,7 @@ four files that import `patches.websocket_platform` are skipped at import, leavi
 
 | File | What it does | Notes |
 | --- | --- | --- |
-| `test_nl_generation_scenarios.py` | NL→generator **routing matrix** — drives real phrasings ("generate a database", …) and asserts each lands on an acceptable generator and never a forbidden one (e.g. database requests must never hit `django`). | Hosts the shared `_send` / `_wait_meaningful` WebSocket helpers imported by both sweeps. Only pytest-collected live test (1 test, skipped unless `RUN_LIVE_AGENT_TESTS=1`). |
+| `test_nl_generation_scenarios.py` | NL→generator **routing matrix** — drives real phrasings ("generate a database", …) and asserts each lands on an acceptable generator and never a forbidden one (e.g. database requests must never hit `django`). | Hosts the shared `_send` / `_wait_meaningful` WebSocket helpers imported by both sweeps. pytest-collected live test (1 test, skipped unless `RUN_LIVE_AGENT_TESTS=1`). |
+| `test_trace_routing_scenarios.py` | The **describe_model / trace-question tie-break**, with and without `context.traceDigest`: without one, a rationale question ("why does Book have an Author association?") gets a real describe answer and only an explicit trace question the fixed no-record reply; with one, rationale and provenance are answered from the trace (a `show_trace` follows) and "what classes do I have?" stays describe. | Reuses `_unwrap` from `test_nl_generation_scenarios.py`; 1 test, skipped unless `RUN_LIVE_AGENT_TESTS=1`. |
 | `wme_100_sweep.py` | Comprehensive ~97-scenario sweep: `system / webapp / other / modify / generate / vague / edge / meta`, classified ok/FLAW/FAIL. | Consolidates the earlier sweeps (its `edge` category replaces the old standalone edge-case script). **Imports `_flaws_for_system` from `wme_release_sweep.py`.** |
 | `wme_release_sweep.py` | 28-scenario fidelity sweep (`system / webapp / other`) checking the "useless model" flaws — isolated classes, dup names, dangling/enum endpoints, web-app auto-run. | **Hosts `_flaws_for_system`**, the fidelity checker reused by `wme_100_sweep.py`. |

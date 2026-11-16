@@ -102,7 +102,7 @@ def test_a_huge_project_summary_is_cut(streamed, monkeypatch):
 # --- No record: a fixed reply, no LLM ----------------------------------------
 
 def test_no_digest_says_how_to_turn_recording_on_without_an_llm_call(streamed):
-    session = _session(digest=None)
+    session = _session(digest=None)  # "which code was generated from Book?": explicit
     session.set(UNIFIED_CLASSIFICATION, _verdict("lineage"))
     state_bodies.trace_question_body(session)
     assert streamed == []
@@ -110,6 +110,40 @@ def test_no_digest_says_how_to_turn_recording_on_without_an_llm_call(streamed):
     assert [f["action"] for f in frames] == [Action.ASSISTANT_MESSAGE]
     assert frames[0]["message"] == TRACE_NOT_AVAILABLE
     assert "Traceability" in TRACE_NOT_AVAILABLE and "recording" in TRACE_NOT_AVAILABLE
+
+
+def test_the_fixed_reply_does_not_claim_recording_is_off():
+    # Recording may be on with nothing recorded yet, or the record not loaded yet.
+    text = TRACE_NOT_AVAILABLE.lower()
+    assert "nothing has been recorded yet" in text and "hasn't loaded" in text
+    assert "recording is off for this project or" not in text
+    assert "either trace recording is off" in text
+
+
+@pytest.mark.parametrize("message", [
+    "why does Book have an Author association?",
+    "why does the Loan class exist?",
+    "summarize my model",
+])
+def test_a_model_question_without_a_record_gets_a_real_answer(monkeypatch, message):
+    # The classifier sent a rationale question here although no record came:
+    # the describe-model answer runs, never the fixed "turn recording on" reply.
+    calls = []
+
+    def stream(session, llm, prompt, system_prompt="", model=None):
+        calls.append(prompt)
+        return "Book has an Author association because each book is written by authors."
+
+    monkeypatch.setattr(state_bodies, "_common_preamble", lambda s: parse_assistant_request(s))
+    monkeypatch.setattr(state_bodies, "stream_llm_response", stream)
+    session = _session(message, digest=None)
+    session.set(UNIFIED_CLASSIFICATION, _verdict("lineage"))
+    state_bodies.trace_question_body(session)
+    assert len(calls) == 1
+    assert "<trace_record>" not in calls[0] and "Book" in calls[0]   # the describe-model prompt
+    assert session.get(state_bodies.LAST_MATCHED_INTENT) == "describe_model_intent"
+    assert all(json.loads(r).get("message") != TRACE_NOT_AVAILABLE for r in session.replies)
+    assert all(json.loads(r)["action"] != Action.SHOW_TRACE for r in session.replies)
 
 
 def test_a_malformed_digest_counts_as_none(streamed):
@@ -122,6 +156,8 @@ def test_a_malformed_digest_counts_as_none(streamed):
 def test_a_parsed_request_without_a_record_hits_the_guard():
     # Table rows: tests/test_routing_guards.py::test_trace_question_guard.
     assert guards.trace_question_guard(parse_assistant_request(_session(digest="nonsense"))) == "no_trace"
+    assert guards.trace_question_guard(
+        parse_assistant_request(_session("why does Book exist?", digest=None))) == "describe_model"
     assert guards.trace_question_guard(parse_assistant_request(_session())) is None
 
 
@@ -256,6 +292,20 @@ def test_the_rulebook_routes_history_questions_and_breaks_the_ties():
                   "requirements the model covers or does NOT cover", "summarize the", "trace_view",
                   "stays describe_model_intent", "stays generation_intent", "modeling_help_intent"):
         assert words in rule, words
+
+
+def test_the_rulebook_keeps_rationale_questions_on_describe_model_without_a_record():
+    rule = " ".join(CLASSIFIER_PROMPT.split("traceability_question_intent:")[1]
+                    .split("fallback_intent:")[0].split())
+    assert "Classify the same whether or not" not in rule
+    assert "EXPLICIT trace questions are this intent whether or not WORKSPACE CONTEXT lists" in rule
+    rationale = rule.split("DESIGN-RATIONALE")[1].split("Set trace_view")[0]
+    assert "'why does the Loan class exist?'" in rationale
+    assert "ONLY when WORKSPACE CONTEXT lists a traceability record" in rationale
+    assert "without one they stay describe_model_intent" in rationale
+    # The explicit examples never include a rationale question.
+    explicit = rule.split("DESIGN-RATIONALE")[0]
+    assert "why does" not in explicit
 
 
 def test_the_classifier_is_told_when_the_record_was_sent():
