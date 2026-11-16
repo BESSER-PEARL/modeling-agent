@@ -424,14 +424,20 @@ an LLM call, the totals of its LLM calls so far:
   (``progress``, ``stream_start``, ``stream_chunk``), on the oversized-message
   rejection and on the replies of a pre-v2 (plain-text) client. A replayed
   reply keeps the field it was sent with.
-* Tokens come from the provider's usage report; a call through BAF's own
-  ``predict`` (no usage report) counts the tracker's estimate (4 characters a
-  token). Calls made after the turn's last terminal reply (the conversation
-  summarizer) are not counted.
+* Tokens come from the provider's usage report, with two estimates (about
+  4 characters a token, ``TokenTracker.record_estimate``) where none exists: a
+  call through BAF's own ``predict``, and the UML-spec answer of BAF's RAG
+  engine (``uml_spec_intent``), which calls its LLM outside ``LLMProvider`` on
+  the server key (``provider`` ``openai`` even under a user's key; its
+  prompt is re-built without the chat history the engine may add, so the
+  estimate is a lower bound). Not counted at all: Whisper speech-to-text
+  (``user_voice``), the RAG query embedding, and calls made after the turn's
+  last terminal reply (the conversation summarizer).
 
 Implementation: ``llm/tracking/turn_usage.py`` (one ``TurnUsage`` per incoming
-event, in a context variable opened by ``session_helpers.begin_turn_usage``
-from the first transition hook and the state preamble), filled by
+event object, matched by identity, in a context variable opened by
+``session_helpers.begin_turn_usage`` from the first transition hook and the
+state preamble), filled by
 ``TokenTracker.record`` and stamped by ``session_helpers._send_to_session``.
 An older frontend ignores the field.
 

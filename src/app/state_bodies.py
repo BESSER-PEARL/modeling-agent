@@ -22,6 +22,8 @@ from common.agent_config import LLM_MAX_TOKENS_TEXT, LLM_TEXT_TEMPERATURE, TRACE
 from conversation import agent_context as ctx
 from llm.model_config import MODEL_GENERATION_SMALL
 from llm.provider import LLMProvider
+from llm.tracking import get_tracker
+from llm.tracking.turn_usage import SERVER_PROVIDER
 from protocol.adapters import parse_assistant_request
 from protocol.types import AssistantRequest
 from protocol.message_limits import UserMessageTooLong
@@ -988,10 +990,31 @@ def uml_rag_body(session: Session):
     else:
         try:
             rag_message: RAGMessage = session.run_rag(user_message)
+            _record_rag_estimate(rag_message, user_message)
             reply_message(session, rag_message.answer)
         except Exception as e:
             logger.error(f"❌ Error in uml_rag_body: {e}")
             _uml_llm_reply(session, uml_prompts.error_fallback_prompt(user_message))
+
+
+def _record_rag_estimate(rag_message: RAGMessage, question: str) -> None:
+    """Count the RAG answer in the turn's ``llmUsage`` as an ESTIMATE.
+
+    BAF's RAG engine calls its LLM itself (``llm.predict`` on the server
+    key), outside ``LLMProvider``, and reports no usage, so without this a
+    UML-spec turn would report only its classifier call. The prompt is
+    rebuilt the way the engine builds it (instructions, retrieved chunks,
+    question), without the chat history it adds when BAF's monitoring
+    database is on, and counted at about four characters per token
+    (``TokenTracker.record_estimate``): a lower bound, not a measurement.
+    The query embedding is not counted. Best effort."""
+    try:
+        prompt = ctx.uml_rag.create_prompt(history=[], docs=rag_message.docs or [], question=question)
+        get_tracker().record_estimate(
+            prompt, rag_message.answer, model=rag_message.llm_name, provider=SERVER_PROVIDER,
+        )
+    except Exception as exc:
+        logger.debug(f"[UML_RAG] usage estimate skipped (best-effort): {exc}")
 
 
 def _uml_llm_reply(session: Session, prompt: str, *, note: str = "") -> None:

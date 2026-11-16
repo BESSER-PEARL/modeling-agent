@@ -201,6 +201,10 @@ class _UsageBucket:
     last_call_ts: float = field(default_factory=time.time)
 
 
+# The rough characters-per-token ratio of an estimated call (record_estimate).
+_ESTIMATED_CHARS_PER_TOKEN = 4
+
+
 class TokenTracker:
     """Thread-safe token/cost tracker with per-session granularity."""
 
@@ -224,12 +228,15 @@ class TokenTracker:
         cached: bool = False,
         cached_prompt_tokens: int = 0,
         cache_write_tokens: int = 0,
+        provider: Optional[str] = None,
     ) -> None:
         """Record a single LLM call's token usage.
 
         ``prompt_tokens`` counts every input token; ``cached_prompt_tokens`` and
         ``cache_write_tokens`` are the parts of it read from / written to a
-        prompt cache, billed at the cached and cache-write rates.
+        prompt cache, billed at the cached and cache-write rates. ``provider``
+        names the provider the call ran on for the turn's totals when it is
+        not the request's (a server-key call during a BYOK request).
         """
         total = prompt_tokens + completion_tokens
         cost_table = _cost_table_for(model)
@@ -249,7 +256,7 @@ class TokenTracker:
 
         # The turn's totals, reported to the editor as llmUsage.
         try:
-            record_call(prompt_tokens, completion_tokens, model)
+            record_call(prompt_tokens, completion_tokens, model, provider=provider)
         except Exception as exc:  # pragma: no cover - tracking is best effort
             logger.debug("Turn usage tracking failed (best-effort): %s", exc)
 
@@ -297,6 +304,25 @@ class TokenTracker:
         logger.debug(
             f"[TokenTracker] +{total} tokens (p={prompt_tokens}, c={completion_tokens}) "
             f"${cost:.6f} model={model} session={session_id or 'global'}"
+        )
+
+    def record_estimate(
+        self,
+        prompt: str,
+        response: Optional[str],
+        *,
+        model: str,
+        provider: Optional[str] = None,
+    ) -> None:
+        """Record an ESTIMATE of a call whose provider reports no usage (BAF's
+        own ``predict``, its RAG engine): about four characters per token of
+        the prompt and the response text. Real counts differ, so use it only
+        where nothing exact exists."""
+        self.record(
+            prompt_tokens=len(prompt or "") // _ESTIMATED_CHARS_PER_TOKEN,
+            completion_tokens=len(response or "") // _ESTIMATED_CHARS_PER_TOKEN,
+            model=model,
+            provider=provider,
         )
 
     def record_from_usage(

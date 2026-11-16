@@ -10,7 +10,9 @@ count too. The reply choke point (``session_helpers._send_to_session``) stamps
 the running totals on the turn's terminal replies.
 
 Totals are only as exact as what is recorded: a call through BAF's own
-``predict`` has no usage, so its tokens are the tracker's estimate.
+``predict`` or its RAG engine has no usage, so its tokens are the tracker's
+estimate (``TokenTracker.record_estimate``). Not counted at all: Whisper
+speech-to-text (``user_voice``) and the RAG engine's query embedding.
 """
 
 import contextvars
@@ -95,12 +97,13 @@ def end_turn() -> None:
     _current.set(None)
 
 
-def record_call(input_tokens: int, output_tokens: int, model: str) -> None:
-    """Add one call to the open turn, if any: on the user's provider when a
-    BYOK key is active, else on the server's."""
+def record_call(input_tokens: int, output_tokens: int, model: str, *, provider: Optional[str] = None) -> None:
+    """Add one call to the open turn, if any: on *provider* when given, else
+    on the user's provider when a BYOK key is active, else on the server's."""
     usage = _current.get()
     if usage is None:
         return
-    cfg = get_current()
-    usage.add(input_tokens, output_tokens, model=model,
-              provider=cfg.provider if cfg is not None else SERVER_PROVIDER)
+    if provider is None:
+        cfg = get_current()
+        provider = cfg.provider if cfg is not None else SERVER_PROVIDER
+    usage.add(input_tokens, output_tokens, model=model, provider=provider)

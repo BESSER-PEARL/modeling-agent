@@ -296,3 +296,47 @@ def test_two_sessions_interleaving_on_their_own_threads_keep_their_totals():
         for tokens, snapshot in rows:
             assert snapshot == {"model": f"m-{name}", "provider": "openai",
                                 "inputTokens": 2 * tokens, "outputTokens": 1}
+
+
+# --- Calls outside LLMProvider ------------------------------------------------------
+
+def test_a_rag_answer_is_counted_as_an_estimate_on_the_server_key(monkeypatch):
+    # BAF's RAG engine calls its LLM itself and reports no usage: the turn
+    # counts an estimate of it (four characters per token), on the server's
+    # provider even while the request carries a user's key.
+    from types import SimpleNamespace
+    from baf.nlp.rag.rag import RAG, RAGMessage
+    from conversation import agent_context as ctx
+
+    rag = RAG.__new__(RAG)
+    rag.llm_prompt = "Answer from the UML specification." * 10
+    docs = [SimpleNamespace(page_content="An association class is " * 40)]
+    answer = "An association class is an association that is also a class. " * 5
+    session = _session()
+    session.run_rag = lambda message: RAGMessage(llm_name="gpt-6-luna", question=message, answer=answer, docs=docs)
+    monkeypatch.setattr(ctx, "uml_rag", rag)
+    monkeypatch.setattr(state_bodies, "_common_preamble",
+                        lambda s: SimpleNamespace(message="what is an association class?"))
+    session_helpers.begin_turn_usage(session)
+    token = byok_config.current_byok.set(BYOKConfig(provider="anthropic", api_key="sk-x"))
+    try:
+        state_bodies.uml_rag_body(session)
+    finally:
+        byok_config.current_byok.reset(token)
+    prompt = rag.create_prompt(history=[], docs=docs, question="what is an association class?")
+    usage = _frames(session)[0]["llmUsage"]
+    assert usage == {"model": "gpt-6-luna", "provider": "openai",
+                     "inputTokens": len(prompt) // 4, "outputTokens": len(answer) // 4}
+
+
+def test_an_estimate_failure_never_breaks_the_answer(monkeypatch):
+    from types import SimpleNamespace
+    from baf.nlp.rag.rag import RAGMessage
+    from conversation import agent_context as ctx
+
+    session = _session()
+    session.run_rag = lambda message: RAGMessage(llm_name="m", question=message, answer="The answer.", docs=None)
+    monkeypatch.setattr(ctx, "uml_rag", object())            # no create_prompt
+    monkeypatch.setattr(state_bodies, "_common_preamble", lambda s: SimpleNamespace(message="q?"))
+    state_bodies.uml_rag_body(session)
+    assert _frames(session)[0]["message"] == "The answer."

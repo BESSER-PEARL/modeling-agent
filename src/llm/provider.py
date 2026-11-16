@@ -148,11 +148,7 @@ class LLMProvider:
         parameters, never a BYOK key); BAF exposes no usage, so the tokens
         are estimated. Callers go through :meth:`complete`."""
         response = self._llm.predict(prompt, **kwargs)
-        self.tracker.record(
-            prompt_tokens=len(prompt) // 4,
-            completion_tokens=len(response) // 4 if response else 0,
-            model=self._model,
-        )
+        self.tracker.record_estimate(prompt, response, model=self._model)
         return response
 
     def complete(
