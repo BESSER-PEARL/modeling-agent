@@ -214,7 +214,7 @@ def test_smart_gen_confirmation_has_clickable_key_link():
 # Context-aware confirmation: FIX/MODIFY vs FIRST generation
 # ---------------------------------------------------------------------------
 
-_CONFIRM_PROMPT = "generate anyway with my current model"
+_CONFIRM_PROMPT = "continue with the generation"
 
 _PROJECT_ID = "proj-todo-0001"
 _OTHER_PROJECT_ID = "proj-shop-0002"

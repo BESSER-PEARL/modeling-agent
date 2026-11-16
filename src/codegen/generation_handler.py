@@ -166,6 +166,7 @@ _SMART_GEN_CONFIRM_PHRASES = {
     "yes", "yes please", "confirm", "confirm it", "run it", "run it now",
     "please run it", "go ahead", "proceed", "start it", "start the generation",
     "generate anyway", "generate anyway with my current model",
+    "continue with the generation",
     "continue", "please continue", "yes continue", "ok", "ok go ahead",
     "sure", "sure go ahead", "continue please",
 }
@@ -487,7 +488,7 @@ def _build_smart_gen_confirmation(
         "suggestedActions": [
             {
                 "label": confirm_label,
-                "prompt": "generate anyway with my current model",
+                "prompt": "continue with the generation",
             },
         ],
     }

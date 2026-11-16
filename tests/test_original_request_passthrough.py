@@ -328,6 +328,9 @@ _STORED_SPEC = "An order has a status: open, paid or shipped. A customer places 
     "build the app",
     "create the app",
     "generate anyway with my current model",
+    # The confirmation chip's sentence.
+    "continue with the generation",
+    "Continue with the generation.",
 ])
 def test_bare_generate_command_is_not_carried_as_a_requirement(monkeypatch, command):
     """A command that only says "generate it" adds nothing to the user's spec."""
@@ -340,6 +343,21 @@ def test_bare_generate_command_is_not_carried_as_a_requirement(monkeypatch, comm
 
     assert generation._original_for_smart_generation(session, command) == _STORED_SPEC
     assert original_request_for_project(session, "shop") == _STORED_SPEC
+
+
+@pytest.mark.parametrize("command", [
+    "continue with the generation",
+    "generate anyway with my current model",
+])
+def test_confirmation_sentence_is_never_stored_as_the_request(monkeypatch, command):
+    from codegen import generation_handler as generation
+    from utilities.original_request import original_request_for_project
+
+    session = _DictSession()
+    monkeypatch.setattr(generation, "_active_project_id", lambda s: "shop")
+
+    assert generation._original_for_smart_generation(session, command) == ""
+    assert original_request_for_project(session, "shop") == ""
 
 
 @pytest.mark.parametrize("request_text", [
