@@ -12,7 +12,7 @@ from routing.generation_signals import (
 )
 from routing.unified_classifier import EXPLICIT_SCREEN_VOCAB_RE
 
-from .workspace_orchestrator import KEYWORD_TARGETS, determine_target_diagram_types
+from .workspace_orchestrator import determine_target_diagram_types, keyword_target_hits
 
 logger = logging.getLogger(__name__)
 
@@ -180,12 +180,7 @@ def _split_message_segments(message: str) -> List[str]:
 
 
 def _match_segment_target(segment: str) -> Optional[str]:
-    segment_lower = segment.lower()
-    candidates: List[Tuple[int, str]] = []
-    for token, diagram_type in KEYWORD_TARGETS:
-        index = segment_lower.find(token)
-        if index >= 0:
-            candidates.append((index, diagram_type))
+    candidates = keyword_target_hits(segment.lower())
     if not candidates:
         return None
     candidates.sort(key=lambda item: item[0])
@@ -215,7 +210,7 @@ def _should_use_llm_planner(
     lower = (message or "").lower()
     has_connector = any(connector in lower for connector in PLANNER_CONNECTORS)
     has_multi_clause = has_connector or lower.count(",") >= 2
-    has_explicit_diagram_tokens = any(token in lower for token, _ in KEYWORD_TARGETS)
+    has_explicit_diagram_tokens = bool(keyword_target_hits(lower))
 
     # Fast path: when the intent classifier already resolved a single-
     # diagram intent and keyword inference agrees (exactly 1 target, no

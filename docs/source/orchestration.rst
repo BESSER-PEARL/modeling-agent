@@ -192,7 +192,9 @@ Three-Level Resolution
 Level 1: Keyword Matching
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Direct string matching against the user message (``KEYWORD_TARGETS``):
+Whole-word matching against the user message (``KEYWORD_TARGETS``); the last
+word of a keyword may be plural or a gerund (``"personas"``,
+``"process modelling"``), so ``"persona"`` does not match ``"personal"``:
 
 .. list-table::
    :header-rows: 1

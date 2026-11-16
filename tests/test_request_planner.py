@@ -71,6 +71,13 @@ class TestMatchSegmentTarget:
     def test_no_match(self):
         assert _match_segment_target("say hello") is None
 
+    def test_keyword_inside_another_word_is_not_a_match(self):
+        assert _match_segment_target("store the personal details of each customer") is None
+        assert _match_segment_target("add a guide page for new members") is None
+
+    def test_plural_keyword_matches(self):
+        assert _match_segment_target("describe the personas of the shop") == "UserDiagram"
+
 
 # ---------------------------------------------------------------------------
 # _should_use_llm_planner
@@ -89,6 +96,15 @@ class TestShouldUseLlmPlanner:
         assert _should_use_llm_planner(
             "create a class diagram and then generate django code", 1, True
         )
+
+    def test_keyword_inside_another_word_is_not_an_explicit_diagram(self):
+        # No diagram is named, so the long multi-clause request goes to the planner.
+        msg = (
+            "I need to keep the personal details of every customer, their orders, "
+            "the invoices and the payments, with a history of each change"
+        )
+        assert len(msg) > 120
+        assert _should_use_llm_planner(msg, 1, False)
 
     def test_long_complex_no_diagram_keywords(self):
         msg = "I want to build something complex with multiple entities and relationships and attributes " * 2

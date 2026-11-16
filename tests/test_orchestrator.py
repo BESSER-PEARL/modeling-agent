@@ -54,6 +54,41 @@ class TestCollectExplicitTargets:
         assert targets == ["GUINoCodeDiagram"]
 
 
+    @pytest.mark.parametrize("message", [
+        "track personal details and the personal best of each member",
+        "a personalised greeting for each customer",
+        "add a guide page for new members",
+        "follow the guidelines of the club",
+        "add a guid attribute to order",
+        "create a real estate diagram",
+        "a human agent handles the tickets",
+        "a reagent that reacts with water",
+    ])
+    def test_keyword_inside_another_word_is_not_a_target(self, message):
+        assert _collect_explicit_targets(message) == []
+
+    @pytest.mark.parametrize("message, expected", [
+        ("describe the personas of the shop", "UserDiagram"),
+        ("a persona for the returning customer", "UserDiagram"),
+        ("define the user profiles", "UserDiagram"),
+        ("draw two class diagrams", "ClassDiagram"),
+        ("domain modelling for a bookshop", "ClassDiagram"),
+        ("business processes of the warehouse", "BPMN"),
+        ("process modeling for order handling", "BPMN"),
+        ("state machines for orders and invoices", "StateMachineDiagram"),
+        ("add chatbots for support", "AgentDiagram"),
+        ("build an agent that answers questions", "AgentDiagram"),
+        ("design the gui, then the model", "GUINoCodeDiagram"),
+        ("three qubits in superposition", "QuantumCircuitDiagram"),
+        ("two entangled particles", "QuantumCircuitDiagram"),
+        ("show entanglement", "QuantumCircuitDiagram"),
+        ("apply grover's search", "QuantumCircuitDiagram"),
+        ("component diagrams of the platform", "ComponentDiagram"),
+    ])
+    def test_keyword_as_a_word_is_a_target(self, message, expected):
+        assert _collect_explicit_targets(message) == [expected]
+
+
 # ---------------------------------------------------------------------------
 # _rank_implicit_targets
 # ---------------------------------------------------------------------------
