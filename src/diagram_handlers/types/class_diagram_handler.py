@@ -677,8 +677,9 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 )
                 cls["attributes"] = kept
 
-    # The request itself asks for an id ("each product has an id and a name").
-    _ID_REQUEST_RE = re.compile(r"\b(?:ids?|identifiers?)\b", re.IGNORECASE)
+    # The request itself asks for an id ("each product has an id and a name",
+    # "an id_number"); an underscore may follow the word but not precede it.
+    _ID_REQUEST_RE = re.compile(r"\b(?:ids?|identifiers?)(?![A-Za-z0-9])", re.IGNORECASE)
 
     def _strip_surrogate_ids(
         self, classes: Any, request_text: Optional[str], references: str = "",
@@ -1887,7 +1888,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
     @staticmethod
     def _request_member_names(request_text: Any) -> FrozenSet[str]:
         """The identifiers written in the request, case and underscores ignored
-        (``createdAt`` and ``created_at`` both give ``createdat``)."""
+        (``customerId`` and ``customer_id`` both give ``customerid``)."""
         return frozenset(
             token.replace("_", "").lower()
             for token in re.findall(r"\w+", str(request_text or ""))

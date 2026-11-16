@@ -75,6 +75,9 @@ class TestStripSurrogateIds:
         "Products have an ID and a price",
         "every order gets a unique identifier",
         "store the ids of the products",
+        "every product has its own id_number",
+        "every product has an id-number",
+        "every product has an ID number",
     ])
     def test_id_the_request_asks_for_is_kept(self, handler, request_text):
         classes = [_cls("Product", ["id", "name"])]
@@ -83,7 +86,9 @@ class TestStripSurrogateIds:
 
     @pytest.mark.parametrize("request_text", [
         "a video library where paid members rate valid entries",
+        "an idea board",
         "every room is identified by its room number",
+        "orders keep the customer_id of the buyer",
         "", None,
     ])
     def test_other_words_are_not_a_request_for_an_id(self, handler, request_text):
