@@ -696,6 +696,7 @@ def _resume_remaining_ops(
     if stored_diagram_type:
         resume_request = build_request_for_target(working_request, stored_diagram_type)
 
+    all_built = True  # no step stopped for a question, failed or raised
     for op_idx, remaining_op in enumerate(remaining_ops):
         if not isinstance(remaining_op, dict):
             continue
@@ -709,6 +710,7 @@ def _resume_remaining_ops(
                     default_mode=stored_default_mode,
                 )
                 if result is None:
+                    all_built = False
                     # This operation stored a new pending confirmation.
                     # Save the rest of the remaining ops so they can be
                     # resumed after the user responds to the new prompt.
@@ -736,6 +738,7 @@ def _resume_remaining_ops(
                 if isinstance(result, str) and result:
                     resume_request = build_request_for_target(resume_request, result)
             except Exception as exc:
+                all_built = False
                 logger.error(
                     f"[PendingConfirm] Error executing remaining operation "
                     f"{remaining_op}: {exc}",
@@ -785,8 +788,10 @@ def _resume_remaining_ops(
 
     # Web-app pause (GUI-choice path): the GUI was just built and its generation
     # was stripped at the plan source, so show the "generate the web app?" prompt
-    # here. Non-web-app resumes leave the flag unset and skip this.
-    _maybe_emit_webapp_prompt(session)
+    # here. Non-web-app resumes leave the flag unset and skip this. A screen
+    # step that asked its question or failed has built no screens yet.
+    if all_built:
+        _maybe_emit_webapp_prompt(session)
 
 
 # ------------------------------------------------------------------

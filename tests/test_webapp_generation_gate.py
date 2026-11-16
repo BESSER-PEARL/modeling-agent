@@ -322,6 +322,54 @@ def test_basic_pages_can_be_picked_after_a_failed_ai_design():
     assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is None
 
 
+_GUI_OP = {"type": "model", "diagramType": "GUINoCodeDiagram",
+           "mode": "complete_system", "request": "create a GUI"}
+
+
+def _resume_with_screen_step(execute):
+    """Resume a web-app plan whose class diagram step waited for replace/keep:
+    the screen step is what is left. Returns (emit mock, session)."""
+    session = _FakeSession()
+    pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, True)
+    emit = MagicMock()
+    with patch.object(confirmation, "execute_model_operation", side_effect=execute), \
+         patch.object(confirmation, "reply_message"), \
+         patch.object(confirmation, "emit_webapp_generate_prompt", emit), \
+         patch("orchestrator.request_builders.build_request_for_target", side_effect=lambda r, t: r):
+        confirmation._resume_remaining_ops(
+            session, [dict(_GUI_OP)], MagicMock(), "ClassDiagram", "complete_system",
+            "create a web app", {},
+        )
+    return emit, session
+
+
+def test_resumed_plan_asks_the_screen_question_without_announcing_screens():
+    def asks_how_to_create_the_screens(session, request, operation, default_mode):
+        pending_dialogs.put(session, PENDING_GUI_CHOICE, {"operation": operation})
+        return None
+
+    emit, session = _resume_with_screen_step(asks_how_to_create_the_screens)
+    assert not emit.called
+    assert pending_dialogs.get(session, PENDING_GUI_CHOICE)
+    assert pending_dialogs.get(session, PENDING_WEBAPP_GENERATE)  # for the answer's follow-up
+
+
+def _raises(**_kwargs):
+    raise RuntimeError("screen build crashed")
+
+
+@pytest.mark.parametrize("execute", [lambda **_kwargs: None, _raises])
+def test_resumed_plan_does_not_announce_screens_that_failed(execute):
+    emit, _session = _resume_with_screen_step(execute)
+    assert not emit.called
+
+
+def test_resumed_plan_announces_screens_it_built():
+    emit, session = _resume_with_screen_step(lambda **_kwargs: "GUINoCodeDiagram")
+    assert emit.call_count == 1
+    assert pending_dialogs.get(session, PENDING_WEBAPP_GENERATE) is None
+
+
 def test_cancelling_the_screen_question_ends_the_webapp_plan():
     session = _open_webapp_gui_choice()
     handled, emit, payloads, messages = _answer_gui_choice(session, "cancel", MagicMock())
