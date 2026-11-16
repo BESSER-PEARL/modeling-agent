@@ -215,7 +215,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # Guard: a link kept as an id attribute (Order.customerId). Beside the
         # association the generated backend defines the foreign key twice;
         # without one the link is missing from the model.
-        self._rewrite_foreign_key_attributes(system_spec, raw_request or user_request)
+        converted = self._rewrite_foreign_key_attributes(
+            system_spec, raw_request or user_request)
 
         # Guard: a label naming BOTH ends ("contact / bookingsAsContact")
         # becomes a name plus a sourceRole. A name with a space fails the
@@ -264,7 +265,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # association ends with the same name" validation error on rich
         # models). Reorients/renames colliding relationships using the
         # exact end-name derivation the validator applies.
-        self._ensure_unique_association_ends(system_spec)
+        renamed_ends = self._ensure_unique_association_ends(system_spec)
 
         # Guard: isAbstract on a LEAF rather than the base. An abstract leaf
         # cannot be instantiated, so the app cannot create that entity at all.
@@ -315,7 +316,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
             cls.pop("position", None)
         self.apply_system_layout(system_spec, existing_model)
 
-        message = self._build_system_message(system_spec, relaxations)
+        message = self._build_system_message(
+            system_spec, relaxations, converted=converted, renamed=renamed_ends)
 
         # The matching frontend converter persists constraints as OCL
         # boxes/links and associationClass attachments as ClassLinkRel.
@@ -2575,13 +2577,25 @@ class ClassDiagramHandler(BaseDiagramHandler):
         parts.append(". Want to add more details or connect it to something else?")
         return "".join(parts)
 
+    @staticmethod
+    def _listed(items: Sequence[str]) -> str:
+        """``A``, ``A and B``, ``A, B, C and 2 more`` (the first three, bold)."""
+        listed = [f"**{item}**" for item in items[:3]]
+        if len(items) > 3:
+            listed.append(f"{len(items) - 3} more")
+        return listed[0] if len(listed) == 1 else f"{', '.join(listed[:-1])} and {listed[-1]}"
+
     def _build_system_message(
         self, spec: Dict[str, Any], relaxations: Sequence[Dict[str, Any]] = (),
+        converted: Sequence[Dict[str, str]] = (), renamed: Sequence[str] = (),
     ) -> str:
         """Build a descriptive message for a complete class diagram spec.
 
         *relaxations* are the ends ``_break_mandatory_cycles`` made optional;
-        their invariants are the agent's, not rules the user stated."""
+        their invariants are the agent's, not rules the user stated.
+        *converted* (id attributes turned into associations) and *renamed*
+        (association ends given a new name) are what the guards changed that
+        shows in the diagram."""
         system_name = spec.get("systemName", "System")
         classes = spec.get("classes", [])
         rels = spec.get("relationships", [])
@@ -2596,6 +2610,21 @@ class ClassDiagramHandler(BaseDiagramHandler):
         elif rels:
             msg += f", with {len(rels)} relationship(s) between them"
         msg += "."
+        changes = []
+        if converted:
+            links = self._listed([f"{c['owner']}.{c['attribute']}" for c in converted])
+            if len(converted) == 1:
+                changes.append(f"{links} became an association to **{converted[0]['target']}**")
+            else:
+                changes.append(f"{links} became associations to the classes they name")
+        if renamed:
+            ends, verb = ("end", "was") if len(renamed) == 1 else ("ends", "were")
+            changes.append(
+                f"the association {ends} {self._listed(list(renamed))} {verb} "
+                "renamed so that no class has two members of one name")
+        if changes:
+            sentence = " and ".join(changes)
+            msg += f" {sentence[0].upper()}{sentence[1:]}."
         # The editor draws every constraint as an OCL box on its class.
         constraints = [c for c in spec.get("constraints") or [] if isinstance(c, dict)]
         agent_made = [r for r in relaxations if any(r["constraint"] is c for c in constraints)]
