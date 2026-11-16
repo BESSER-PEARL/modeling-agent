@@ -124,14 +124,14 @@ def _build_auto_gui_message(
 
     if detected_gen is None:
         detected_gen = detect_generator_type(getattr(request, "message", "") or "")
-    from conversation.reply_copy import REFINE_MODEL_PROMPT, continue_generating_prompt
+    from conversation.reply_copy import REFINE_SCREENS_PROMPT, continue_generating_prompt
     # Offer generation only when the user's own request asked for the app (a
     # web-app plan, PENDING_WEBAPP_GENERATE); screens laid out on their own get
     # a modeling follow-up (BESSER-PEARL/BESSER#747).
     if offer_generation:
         _follow_up = "\n\n" + continue_generating_prompt(get_artifact_label(detected_gen))
     else:
-        _follow_up = "\n\n" + REFINE_MODEL_PROMPT
+        _follow_up = "\n\n" + REFINE_SCREENS_PROMPT
 
     try:
         from utilities.model_resolution import resolve_class_diagram

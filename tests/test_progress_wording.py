@@ -9,6 +9,7 @@ import pytest
 
 from diagram_handlers.registry.metadata import get_diagram_type_info
 from execution.model_operations import _complete_system_progress_steps
+from protocol.types import SUPPORTED_DIAGRAM_TYPES
 
 
 def _lines(diagram_type: str) -> list:
@@ -34,3 +35,37 @@ def test_bpmn_build_names_the_bpmn_diagram():
 def test_class_and_gui_wording_is_unchanged():
     assert _lines("ClassDiagram")[0] == "Generating classes and relationships..."
     assert _lines("GUINoCodeDiagram")[0].startswith("Designing your screens")
+
+
+# ---------------------------------------------------------------------------
+# "Step n/m" lines of a multi-step plan
+# ---------------------------------------------------------------------------
+
+def _step_line(monkeypatch, operation) -> str:
+    from execution import progress
+
+    sent = []
+    monkeypatch.setattr(
+        progress, "reply_progress",
+        lambda _session, message, **_kwargs: sent.append(message),
+    )
+    progress._report_progress(None, 1, 3, operation)
+    (line,) = sent
+    return line
+
+
+@pytest.mark.parametrize("diagram_type", sorted(SUPPORTED_DIAGRAM_TYPES))
+def test_step_line_names_the_diagram_as_the_user_knows_it(monkeypatch, diagram_type):
+    line = _step_line(monkeypatch, {"type": "model", "diagramType": diagram_type})
+    name = get_diagram_type_info(diagram_type)["name"]
+    assert line == f"Step 2/3: Creating {name}…"
+
+
+@pytest.mark.parametrize("generator_type, expected", [
+    ("web_app", "Step 2/3: Generating web app…"),
+    ("rest_api", "Step 2/3: Generating REST API…"),
+    ("jsonschema", "Step 2/3: Generating JSON Schema…"),
+])
+def test_step_line_names_what_is_generated(monkeypatch, generator_type, expected):
+    line = _step_line(monkeypatch, {"type": "generation", "generatorType": generator_type})
+    assert line == expected
