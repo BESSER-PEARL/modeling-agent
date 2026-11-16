@@ -1548,6 +1548,60 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 added, len(candidates),
             )
 
+    def _reaches_through_role(
+        self, relationships: List[Any], owner: str, target: str, role: str,
+    ) -> bool:
+        """True when *owner* already has an association end to *target* that
+        states the link *role* names.
+
+        That is an end of that name (an unnamed end is named after its class),
+        or any end when *role* itself only repeats the target class. Two
+        differently named roles between one pair (``billingAddress`` /
+        ``shippingAddress``) are different links.
+        """
+        wanted = (role or "").strip().lower()
+        any_end = not wanted or self._is_default_end_name(wanted, target)
+        for rel in relationships:
+            if (not isinstance(rel, dict)
+                    or self._spec_rel_type(rel) in self._SPEC_NON_END_REL_TYPES):
+                continue
+            for near, far in (("source", "target"), ("target", "source")):
+                if rel.get(near) != owner or rel.get(far) != target:
+                    continue
+                end = self._spec_role(rel, far) or target.lower()
+                if any_end or end.lower() == wanted:
+                    return True
+        return False
+
+    def _link_attribute_to_class(
+        self, relationships: List[Any], owner: str, attr: Dict[str, Any], target: str,
+    ) -> bool:
+        """Add the Association ``owner -> target`` that *attr* stands for,
+        unless the two classes are already linked for that role.
+
+        Returns whether an association was added.
+        """
+        role = attr.get("name") or self._to_camel_case(target)
+        if self._reaches_through_role(relationships, owner, target, role):
+            logger.info(
+                "[ClassDiagram] Dropped attribute %s.%s: %s is already linked "
+                "to %s for that role", owner, attr.get("name"), owner, target,
+            )
+            return False
+        relationships.append({
+            "type": "Association",
+            "source": owner,
+            "target": target,
+            "sourceMultiplicity": "0..*",
+            "targetMultiplicity": "0..1" if attr.get("isOptional") else "1",
+            "name": role,
+        })
+        logger.info(
+            "[ClassDiagram] Rewrote attribute %s.%s into an Association to %s",
+            owner, attr.get("name"), target,
+        )
+        return True
+
     def _rewrite_class_typed_attributes(self, system_spec: Dict[str, Any]) -> None:
         """Convert an attribute TYPED as another class into an Association.
 
@@ -1557,8 +1611,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
         type" and forces the expensive LLM-from-scratch rebuild. This guard
         rewrites such an attribute into an ``Association`` owner->target (role
         = the attribute name, so ``startLocation``/``endLocation`` stay
-        distinct). A PascalCase type naming no class/enum in the spec is a
-        hallucinated reference and is coerced to ``String``.
+        distinct). No association is added when the owner already reaches the
+        target through that role (:meth:`_reaches_through_role`); the attribute
+        is dropped either way. A PascalCase type naming no class/enum in the
+        spec is a hallucinated reference and is coerced to ``String``.
 
         The INVERSE guard (relationship-to-enum -> attribute) is
         :meth:`_rewrite_enum_relationships`. Mutates *system_spec* in place;
@@ -1617,21 +1673,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
                     kept.append(a)  # primitive or valid enum-typed attribute
                     continue
                 if tt in non_enum_classes:
-                    # class-typed attribute -> association owner -> target
-                    relationships.append({
-                        "type": "Association",
-                        "source": owner,
-                        "target": tt,
-                        "sourceMultiplicity": "0..*",
-                        "targetMultiplicity": "0..1" if a.get("isOptional") else "1",
-                        "name": a.get("name") or self._to_camel_case(tt),
-                    })
-                    converted += 1
-                    logger.info(
-                        "[ClassDiagram] Rewrote class-typed attribute %s.%s : %s "
-                        "into an Association", owner, a.get("name"), tt,
-                    )
-                    # drop the attribute (replaced by the association)
+                    # class-typed attribute -> association owner -> target;
+                    # the attribute is dropped either way
+                    if self._link_attribute_to_class(relationships, owner, a, tt):
+                        converted += 1
                 else:
                     # PascalCase but not a known class/enum/primitive -> a
                     # hallucinated type reference; keep the field, make it a String.

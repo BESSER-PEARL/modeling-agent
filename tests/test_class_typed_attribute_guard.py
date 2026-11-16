@@ -92,3 +92,96 @@ class TestClassTypedAttributeGuard:
         handler._rewrite_class_typed_attributes(spec)
         rel = next(r for r in spec["relationships"] if r["target"] == "Image")
         assert rel["targetMultiplicity"] == "0..1"
+
+
+def _cls(name, attributes=()):
+    return {"className": name, "isEnumeration": False, "attributes": list(attributes)}
+
+
+def _between(spec, a, b):
+    return [r for r in spec["relationships"] if {r["source"], r["target"]} == {a, b}]
+
+
+class TestExistingLinkIsNotDuplicated:
+    """A class-typed attribute restating a relationship the classes already
+    have adds no second relationship; a different role still does."""
+
+    def test_composition_with_the_same_role_is_not_duplicated(self, handler):
+        spec = _spec(
+            [_cls("OrderLine", [{"name": "quantity", "type": "int"},
+                                {"name": "order", "type": "Order"}]),
+             _cls("Order")],
+            [{"type": "Composition", "source": "OrderLine", "target": "Order",
+              "sourceMultiplicity": "0..*", "targetMultiplicity": "1",
+              "name": "order", "sourceRole": "lines"}],
+        )
+        handler._rewrite_class_typed_attributes(spec)
+        assert [a["name"] for a in spec["classes"][0]["attributes"]] == ["quantity"]
+        assert [r["type"] for r in _between(spec, "OrderLine", "Order")] == ["Composition"]
+
+    def test_role_on_the_source_end_is_recognised(self, handler):
+        # Order is the whole (target); it reaches its lines through sourceRole.
+        spec = _spec(
+            [_cls("Order", [{"name": "lines", "type": "OrderLine"}]), _cls("OrderLine")],
+            [{"type": "Composition", "source": "OrderLine", "target": "Order",
+              "sourceMultiplicity": "0..*", "targetMultiplicity": "1",
+              "name": "order", "sourceRole": "lines"}],
+        )
+        handler._rewrite_class_typed_attributes(spec)
+        assert spec["classes"][0]["attributes"] == []
+        assert len(_between(spec, "Order", "OrderLine")) == 1
+
+    def test_unnamed_end_is_the_link_named_after_the_class(self, handler):
+        spec = _spec(
+            [_cls("Chapter", [{"name": "book", "type": "Book"}]), _cls("Book")],
+            [{"type": "Aggregation", "source": "Chapter", "target": "Book",
+              "sourceMultiplicity": "0..*", "targetMultiplicity": "1"}],
+        )
+        handler._rewrite_class_typed_attributes(spec)
+        assert spec["classes"][0]["attributes"] == []
+        assert [r["type"] for r in _between(spec, "Chapter", "Book")] == ["Aggregation"]
+
+    def test_attribute_named_after_the_class_adds_no_second_link(self, handler):
+        spec = _spec(
+            [_cls("Chapter", [{"name": "book", "type": "Book"}]), _cls("Book")],
+            [{"type": "Composition", "source": "Chapter", "target": "Book",
+              "sourceMultiplicity": "0..*", "targetMultiplicity": "1",
+              "name": "parentBook", "sourceRole": "chapters"}],
+        )
+        handler._rewrite_class_typed_attributes(spec)
+        assert len(_between(spec, "Chapter", "Book")) == 1
+
+    def test_a_second_role_between_the_same_classes_survives(self, handler):
+        spec = _spec(
+            [_cls("Order", [{"name": "shippingAddress", "type": "Address"}]),
+             _cls("Address")],
+            [{"type": "Association", "source": "Order", "target": "Address",
+              "sourceMultiplicity": "0..*", "targetMultiplicity": "1",
+              "name": "billingAddress"}],
+        )
+        handler._rewrite_class_typed_attributes(spec)
+        roles = sorted(r["name"] for r in _between(spec, "Order", "Address"))
+        assert roles == ["billingAddress", "shippingAddress"]
+
+    def test_two_roles_beside_a_composition_both_survive(self, handler):
+        spec = _spec(
+            [_cls("Order", [{"name": "billingAddress", "type": "Address"},
+                            {"name": "shippingAddress", "type": "Address"}]),
+             _cls("Address")],
+            [{"type": "Composition", "source": "Address", "target": "Order",
+              "sourceMultiplicity": "0..*", "targetMultiplicity": "1",
+              "name": "order", "sourceRole": "addressBook"}],
+        )
+        handler._rewrite_class_typed_attributes(spec)
+        assert spec["classes"][0]["attributes"] == []
+        roles = sorted(r["name"] for r in _between(spec, "Order", "Address"))
+        assert roles == ["billingAddress", "order", "shippingAddress"]
+
+    def test_inheritance_between_the_classes_is_not_a_link(self, handler):
+        spec = _spec(
+            [_cls("Manager", [{"name": "employee", "type": "Employee"}]), _cls("Employee")],
+            [{"type": "Inheritance", "source": "Manager", "target": "Employee"}],
+        )
+        handler._rewrite_class_typed_attributes(spec)
+        assert [r["type"] for r in _between(spec, "Manager", "Employee")] == [
+            "Inheritance", "Association"]
