@@ -566,6 +566,84 @@ class TestFromScratchRouteIsForAppRequests:
     def test_app_request_that_asks_for_an_interface_gets_the_web_app_plan(self, message, target):
         assert _plan_shape(self._plan(message, target)) == _WEB_APP_PLAN
 
+    @pytest.mark.parametrize("message", [
+        "Build a library management platform with models and UI",
+        "Create a task tracker with screens for projects and tasks",
+        "I want an app to manage my recipes, with pages for recipes and ingredients",
+        "Build an inventory system with a page for each product category",
+        "Create a booking system for a hair salon with a user interface",
+        "Design a CRM with a frontend for the sales team",
+        "Make a student grading app with a dashboard page and a detail page per student",
+        "Build a blog platform with pages to list and edit posts",
+        "Create an event planner; I need screens to add events and invite guests",
+        "Build a to-do app with a simple GUI",
+        "An expense tracker with a page where I can add expenses and a page with monthly totals",
+        "Create a hotel reservation app with a checkout page and a room list page",
+        "Build me a web app to manage orders and customers",
+        "I need a web app for a veterinary clinic",
+        "Create a web application for tracking library loans",
+        "Build a habit tracker app with a mobile-friendly UI",
+        "Create a parking management system with screens",
+        "I want a movie catalogue app with a search page and a page for my watchlist",
+        "Build a small shop app: products, cart, checkout, with a page per step",
+        "Create a volunteer scheduling tool with forms and pages for shifts",
+        "Design an app for a book club with a home page, member profiles and a reading list",
+        "Build a ticketing system with an admin screen and a customer screen",
+        "Make an app to track plant watering, including a screen for each plant",
+        "Create a job board with a page that lists the openings and a page to apply",
+        "Build a simple survey tool with a web UI",
+        "Create a school timetable app with three screens: classes, teachers, rooms",
+        "I need an app for my bakery with an order page and a product page",
+        "Build a fitness log with screens and charts",
+        "Create a library app with a page to borrow books and a page to return them",
+        "Build a car rental platform, with customer-facing pages and a back office",
+        "Model a library with a UI",
+        "Model a task tracker and screens for it",
+        "Design a data model for a clinic, with pages to book appointments",
+    ])
+    @pytest.mark.parametrize("target", ["ClassDiagram", "GUINoCodeDiagram", None])
+    def test_common_wordings_of_an_interface_get_the_web_app_plan(self, message, target):
+        assert _plan_shape(self._plan(message, target)) == _WEB_APP_PLAN
+
+    @pytest.mark.parametrize("message", [
+        # A request for a model: a screen word alone does not ask for screens.
+        "Model a bug tracker for UI defects: Bug, Reporter, Component, Severity",
+        "Model a staffing agency: frontend developers, backend developers, clients and contracts",
+        "Design a data model for a design tool: wireframes, mockups, artboards and comments",
+        "A CMS data model with landing pages, blocks and authors",
+        "Model a newspaper: Edition, Section, Article; the home page editor picks the lead article",
+        "Model a TV shop that sells monitors and screens, with a warranty per item",
+        "Model a hardware store: we want screens, nails and hinges in the catalogue",
+        "Model an e-reader: Book, Chapter, Bookmark; add screens of different sizes as device types",
+        "A wiki model: Space, Page, Revision. Editors need pages to list their revisions.",
+        # Interface words that are objects of the domain.
+        "a tracker for UI defects with a severity per defect",
+        "an agency that places frontend developers with clients",
+    ])
+    def test_screen_word_in_a_model_request_stays_a_class_diagram(self, message):
+        assert _plan_shape(self._plan(message, "ClassDiagram")) == [("model", "ClassDiagram")]
+
+    def test_gui_as_a_domain_noun_does_not_get_the_web_app_plan(self):
+        # "a GUI" is also a GUI-diagram keyword, which adds its own step.
+        shape = _plan_shape(self._plan("Domain model for a GUI toolkit: Widget, Window, Layout, Event",
+                                       "ClassDiagram"))
+        assert shape[0] == ("model", "ClassDiagram")
+        assert ("generation", "web_app") not in shape
+
+    @pytest.mark.parametrize("message", [
+        "Model the lifecycle of a support ticket from the login screen to closing",
+        "the states of a UI wizard: start, details, confirm, done, with back and next transitions",
+        "which servers host the frontend and the database, and how they connect",
+    ])
+    def test_without_a_target_the_implicit_diagram_hint_keeps_its_plan(self, message):
+        shape = _plan_shape(self._plan(message, None))
+        assert ("generation", "web_app") not in shape
+        assert ("model", "GUINoCodeDiagram") not in shape
+
+    def test_without_a_target_a_lifecycle_stays_a_state_machine(self):
+        message = "Model the lifecycle of a support ticket from the login screen to closing"
+        assert _plan_shape(self._plan(message, None)) == [("model", "StateMachineDiagram")]
+
 
 # ---------------------------------------------------------------------------
 # Which diagram types the workspace already has

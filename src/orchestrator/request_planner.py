@@ -10,7 +10,6 @@ from routing.generation_signals import (
     GENERATOR_PREREQUISITES,
     detect_generator_type,
 )
-from routing.unified_classifier import EXPLICIT_SCREEN_VOCAB_RE
 
 from .workspace_orchestrator import determine_target_diagram_types, keyword_target_hits
 
@@ -774,33 +773,59 @@ def _validate_and_fix_plan(
 # ---------------------------------------------------------------------------
 
 
-# Classifier targets the from-scratch web-app route may replace (None: no verdict).
-_WEB_APP_ROUTE_TARGETS = (None, "ClassDiagram", "GUINoCodeDiagram")
+# Diagrams the from-scratch web-app route builds.
+_WEB_APP_ROUTE_DIAGRAMS = {"ClassDiagram", "GUINoCodeDiagram"}
 
+# "a UI", "with a simple GUI", "models and UI", "a frontend for ...": asked for
+# after a word like "with" or "build", and not the modifier of another noun
+# ("UI defects", "frontend developers", "a GUI toolkit").
+_UI_ASKED_FOR_RE = re.compile(
+    r"\b(?:with|and|plus|including|add|need|want|build|create|design|make|has|have)\s+"
+    r"(?:[\w-]+\s+){0,2}?"
+    r"(?:gui|ui|user\s+interface|front-?end|mockups?|wireframes?)\b"
+    r"(?!\s+(?!(?:for|to|that|which|where|with|and|or|so|in|on|plus|please|too)\b)[\w-])",
+    re.IGNORECASE,
+)
 # "pages" and "screens" are also domain nouns (a book's pages, a cinema's
 # screens). They ask for an interface only when requested as one: "with
-# screens", "pages to list ...", "a page for each ...", "a detail page".
+# screens", "pages for recipes", "a page to ...", "a detail page", "with an
+# order page". Not followed by a comma: "we want screens, nails and hinges".
 _SCREENS_AS_INTERFACE_RE = re.compile(
     r"\b(?:with|and|plus|including|design|build|create|make|add|need|want)\s+"
-    r"(?:(?:a|an|the|some|few|several|simple|basic|\d+|two|three|four|five)\s+){0,2}screens\b"
-    r"(?!\s+(?:and|or)\b)"
+    r"(?:(?:a|an|the|some|few|several|simple|basic|\d+|two|three|four|five)\s+){0,2}screens\b(?!\s*,)"
     r"|\b(?:screens?|pages?)\s+(?:"
-    r"for\s+(?:\w+ing|each|every|all)\b"
-    r"|to\s+(?:list|add|edit|view|show|manage|create|display|browse|search|see|enter|update|delete)\b"
+    r"for\s+\w+"
+    r"|per\s+\w+"
+    r"|where\b"
+    r"|to\s+(?!(?:the|a|an|my|our|their|its|this|that|each|every)\b)\w+"
     r"|that\s+(?:list|show|display|let)s?\b)"
     r"|\b(?:home|landing|login|sign-?up|dashboard|detail|list|overview|admin|settings|main|start|search)"
-    r"\s+(?:screens?|pages?)\b",
+    r"\s+(?:screens?|pages?)\b"
+    r"|\b(?:with|and|plus|including)\s+(?:(?:a|an|the|one)\s+)?(?!\d)[\w-]+\s+(?:screens?|pages?)\b",
+    re.IGNORECASE,
+)
+# A request for a model: "model a ...", "a domain/data/class model", "a class
+# diagram", "a library model: ...".
+_ASKS_FOR_A_MODEL_RE = re.compile(
+    r"\bmodel\s+(?:a|an|the|my|our)\b|\b(?:domain|data|class)\s+model\b|\bclass\s+diagram\b|\bmodel\s*:",
+    re.IGNORECASE,
+)
+# In a request for a model, screens are asked for explicitly: "and screens for
+# it", "with pages to book ...", "with screens".
+_SCREENS_ASKED_FOR_EXPLICITLY_RE = re.compile(
+    r"\b(?:with|and|plus|including|also)\s+(?:(?:a|an|the|some|simple|basic)\s+)?(?:screens?|pages?)\b"
+    r"(?=\s*(?:$|[.!?;]|for\s+(?:it|them|this|that|each|every|all)\b"
+    r"|to\s+(?!(?:the|a|an|my|our|their|its|this|that|each|every)\b)\w+|where\b|that\b))",
     re.IGNORECASE,
 )
 
 
 def _asks_for_an_interface(message: str) -> bool:
     """True when the message asks for screens, not merely uses a screen word."""
-    if any(
-        not match.group(1).lower().startswith(("page", "screen"))
-        for match in EXPLICIT_SCREEN_VOCAB_RE.finditer(message)
-    ):
+    if _UI_ASKED_FOR_RE.search(message):
         return True
+    if _ASKS_FOR_A_MODEL_RE.search(message):
+        return bool(_SCREENS_ASKED_FOR_EXPLICITLY_RE.search(message))
     return bool(_SCREENS_AS_INTERFACE_RE.search(message))
 
 
@@ -882,17 +907,18 @@ def _plan_operations(
     # "Build a library platform with models and UI" takes the same route as
     # "create a web app for X". Left to the classifier, the target flips
     # between ClassDiagram (no screens) and GUINoCodeDiagram (screens on no
-    # model). A request for any other diagram keeps its own plan.
+    # model). A request for any other diagram (the classifier's target, a
+    # diagram the message names or, without a target, one it implies) keeps
+    # its own plan.
     if (
         matched_intent == "create_complete_system_intent"
         and app_target_kind != "other"
-        and llm_target_type in _WEB_APP_ROUTE_TARGETS
         and _asks_for_an_interface(request.message or "")
-        and all(
-            diagram_type in _WEB_APP_ROUTE_TARGETS
-            for _, diagram_type in keyword_target_hits((request.message or "").lower())
-        )
-        and not {"ClassDiagram", "GUINoCodeDiagram"} & _get_workspace_diagram_types(request)
+        and set(determine_target_diagram_types(
+            request, last_intent=matched_intent, max_targets=len(SUPPORTED_DIAGRAM_TYPES),
+            llm_target_type=llm_target_type,
+        )) <= _WEB_APP_ROUTE_DIAGRAMS
+        and not _WEB_APP_ROUTE_DIAGRAMS & _get_workspace_diagram_types(request)
     ):
         message = request.message.strip()
         return _validate_and_fix_plan([
