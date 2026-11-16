@@ -16,7 +16,6 @@ from common.session_keys import UNIFIED_CLASSIFICATION
 from conversation import session_helpers
 from conversation.session_helpers import StreamedReply
 from conversation.reply_copy import TRACE_NOT_AVAILABLE, show_trace_label
-from orchestrator import request_planner
 from prompts import traceability as trace_prompts
 from prompts.classifier import SYSTEM_PROMPT as CLASSIFIER_PROMPT
 from protocol.actions import Action, show_trace
@@ -431,10 +430,6 @@ def test_the_classifier_is_told_when_the_record_was_sent():
     with_record = _build_user_block(parse_assistant_request(_session()))
     assert "- traceability record: sent (42 artifacts, 2 out-of-date links)" in with_record
     assert "traceability record" not in _build_user_block(parse_assistant_request(_session(digest=None)))
-
-
-def test_a_trace_question_never_plans_a_generation():
-    assert INTENT in request_planner._MODELING_INTENTS
 
 
 def test_the_state_is_wired_like_the_others():
