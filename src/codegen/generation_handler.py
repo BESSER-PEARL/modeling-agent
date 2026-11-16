@@ -8,7 +8,6 @@ from baf.core.session import Session
 from codegen.smart_generation_handler import (
     build_trigger_smart_generator_payload,
 )
-from common.agent_config import MAX_USER_MESSAGE_CHARS
 from llm import byok_config
 from llm.byok import PROVIDER_NAMES
 from protocol.types import AssistantRequest
@@ -48,7 +47,7 @@ from routing.generation_signals import (
     repo_holds_app,
 )
 from conversation.session_helpers import reply_message, reply_payload
-from routing.guards import AUTO_FIX_PREFIX, generation_route, is_past_generation_question
+from routing.guards import generation_route, is_past_generation_question
 from routing.unified_classifier import (
     UnifiedClassification,
     classify_message as _unified_classify_message,
@@ -167,8 +166,6 @@ _NO_EARLIER_REQUEST_MESSAGE = (
     "I no longer have your earlier request here, so I can't tell what to generate again. "
     "Please describe again what the application should do."
 )
-# A user turn shorter than this many words is not taken for a description of the app.
-_MIN_REQUEST_WORDS = 3
 
 
 def _normalized_message(message: str) -> str:
@@ -179,15 +176,6 @@ def _is_content_free_follow_up(message: str) -> bool:
     return bool(_CONTENT_FREE_FOLLOW_UP_RE.fullmatch(_normalized_message(message)))
 
 
-def _names_nothing_to_build(normalized: str) -> bool:
-    """A confirmation, a bare generate command or a content-free follow-up."""
-    return (
-        normalized in _SMART_GEN_CONFIRM_PHRASES | _PLAN_GEN_CONFIRM_PHRASES
-        or bool(_BARE_GENERATE_RE.fullmatch(normalized))
-        or bool(_CONTENT_FREE_FOLLOW_UP_RE.fullmatch(normalized))
-    )
-
-
 def _with_subsequent_request(previous: str, message: str) -> str:
     return (
         f"{previous}\n\n## Subsequent user request, verbatim\n\n"
@@ -196,43 +184,13 @@ def _with_subsequent_request(previous: str, message: str) -> str:
     )
 
 
-def _request_from_conversation(session) -> str:
-    """The user's requests in this conversation's memory, oldest first,
-    without the turns that name nothing to build; empty when there are none."""
-    from memory import get_memory, memory_session_key
-
-    try:
-        turns = get_memory(memory_session_key(session)).build_context()
-    except Exception:  # pragma: no cover — copy must never crash
-        logger.debug("Could not read the conversation", exc_info=True)
-        return ""
-    requests = []
-    for turn in turns:
-        text = turn["content"].strip() if turn["role"] == "user" else ""
-        normalized = _normalized_message(text)
-        if (
-            len(normalized.split()) >= _MIN_REQUEST_WORDS
-            and not text.startswith(AUTO_FIX_PREFIX)
-            and normalized not in _SMART_GEN_CANCEL_PHRASES | _CONFIG_CANCEL_PHRASES
-            and not _names_nothing_to_build(normalized)
-        ):
-            requests.append(text)
-    combined = requests[0] if requests else ""
-    for text in requests[1:]:
-        longer = _with_subsequent_request(combined, text)
-        if len(longer) > MAX_USER_MESSAGE_CHARS:
-            break
-        combined = longer
-    return combined
-
-
 def _original_for_follow_up(session, project_id, previous, asks_fix):
     """The request a content-free follow-up re-runs: the remembered one, else
-    the editor's last run's, else this conversation's; None when none exists."""
+    the editor's last run's; None when neither exists."""
     original = previous
     if not original:
         last_generation = getattr(_request_context(session), "last_generation", None) or {}
-        original = last_generation.get("request") or _request_from_conversation(session)
+        original = last_generation.get("request")
         if not original:
             return None
         remember_original_request(session, original, project_id)

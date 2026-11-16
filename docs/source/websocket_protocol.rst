@@ -217,9 +217,8 @@ Field Reference
        ``{runId, at, expired, request}``, where ``request`` is the text the run
        was started with (read up to 4,000 characters). A content-free
        follow-up ("regenerate with fixes", "try again", "fix it") re-runs the
-       request remembered for the project, else this ``request``, else the
-       user's earlier requests in the conversation; with none of them the
-       agent asks the user to describe the application again. When
+       request remembered for the project, else this ``request``; with neither
+       the agent asks the user to describe the application again. When
        ``expired`` is true (and no linked repo holds the app), the run
        confirmation says the previous result is no longer available and the
        application will be built again, instead of offering to update it.

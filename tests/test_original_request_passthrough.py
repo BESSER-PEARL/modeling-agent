@@ -603,31 +603,22 @@ def test_follow_up_uses_the_editors_last_run_request_next():
     assert original_request_for_project(session, "proj-1") == _LAST_RUN_SPEC
 
 
-def test_follow_up_rebuilds_the_request_from_the_conversation_last():
+def test_follow_up_never_rebuilds_the_request_from_the_conversation():
+    # The chat may hold another project's app, a question, an edit or an app the
+    # user started over from; none of it is reliably this project's request.
     from codegen import generation_handler as generation
     from utilities.original_request import original_request_for_project
 
     session = _follow_up_session("regenerate with fixes.", history=[
-        ("user", "hi"),
         ("user", _ORDER_SPEC),
         ("assistant", "Created the class diagram with Order and Customer."),
+        ("user", "why did the run fail?"),
         ("user", "add a delivery date to orders"),
-        ("user", "generate the app"),
-        ("user", "continue with the generation"),
-        ("user", "yes"),
-        ("user", "[auto-fix] Repair the model: Order has two attributes named status."),
-        ("user", "try again"),
+        ("user", "Start over: a task board where tasks have a title and a due date."),
     ])
 
-    original = generation._original_for_smart_generation(session, "regenerate with fixes.")
-
-    rebuilt = (
-        f"{_ORDER_SPEC}\n\n## Subsequent user request, verbatim\n\n"
-        "This later request takes precedence where it changes earlier requirements.\n\n"
-        "add a delivery date to orders"
-    )
-    assert original == f"{rebuilt}\n\n## Subsequent user request\n\n{_FIX_NOTE}"
-    assert original_request_for_project(session, "proj-1") == rebuilt
+    assert generation._original_for_smart_generation(session, "regenerate with fixes.") is None
+    assert original_request_for_project(session, "proj-1") == ""
 
 
 def test_follow_up_with_nothing_to_go_on_finds_no_request():
