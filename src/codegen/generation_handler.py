@@ -126,17 +126,23 @@ def _stash_smart_gen(
     session.set(SMART_GEN_ARMED_PROJECT_ID, _active_project_id(session))
 
 
+# A bare "generate the app" command (lowercased, punctuation dropped): it names
+# nothing to build, so it is not a requirement of the run.
+_BARE_GENERATE_RE = re.compile(
+    r"(?:(?:can|could) you )?(?:please )?"
+    r"(?:generate|build|create) "
+    r"(?:it|(?:(?:the|my|this|a|an) )?(?:web ?)?(?:app|application|code))"
+    r"(?: now)?(?: please)?"
+)
+
+
 def _original_for_smart_generation(session, user_message, *, replace=False):
     project_id = _active_project_id(session)
     previous = original_request_for_project(session, project_id)
     message = (user_message or "").strip()
     normalized = _norm_prompt(re.sub(r"[,.!?]+", " ", message))
-    generic = _SMART_GEN_CONFIRM_PHRASES | _PLAN_GEN_CONFIRM_PHRASES | {
-        "generate app", "generate application", "generate the application",
-        "generate a web app", "generate web app", "generate code", "generate it",
-        "build it", "build the app", "create the app",
-    }
-    if not message or normalized in generic:
+    generic = _SMART_GEN_CONFIRM_PHRASES | _PLAN_GEN_CONFIRM_PHRASES
+    if not message or normalized in generic or _BARE_GENERATE_RE.fullmatch(normalized):
         return previous
     if previous and not replace and (message == previous or previous.endswith("\n" + message)):
         return previous

@@ -296,6 +296,73 @@ def _refined_instructions_description() -> str:
     return UnifiedClassification.model_fields["refined_instructions"].description
 
 
+class _DictSession:
+    def __init__(self):
+        self.data = {}
+
+    def get(self, key):
+        return self.data.get(key)
+
+    def set(self, key, value):
+        self.data[key] = value
+
+
+_STORED_SPEC = "An order has a status: open, paid or shipped. A customer places many orders."
+
+
+@pytest.mark.parametrize("command", [
+    "generate the web app",
+    "Generate the web app.",
+    "generate the app",
+    "generate my app",
+    "generate my web app",
+    "generate the web application",
+    "generate the webapp",
+    "please generate the web app",
+    "Generate the web app, please!",
+    "can you generate the app?",
+    "generate the web app now",
+    # Phrasings that were already treated as bare commands.
+    "generate web app",
+    "generate it",
+    "build the app",
+    "create the app",
+    "generate anyway with my current model",
+])
+def test_bare_generate_command_is_not_carried_as_a_requirement(monkeypatch, command):
+    """A command that only says "generate it" adds nothing to the user's spec."""
+    from codegen import generation_handler as generation
+    from utilities.original_request import remember_original_request, original_request_for_project
+
+    session = _DictSession()
+    monkeypatch.setattr(generation, "_active_project_id", lambda s: "shop")
+    remember_original_request(session, _STORED_SPEC, "shop")
+
+    assert generation._original_for_smart_generation(session, command) == _STORED_SPEC
+    assert original_request_for_project(session, "shop") == _STORED_SPEC
+
+
+@pytest.mark.parametrize("request_text", [
+    "generate the web app with a dark theme",
+    "generate the app in French",
+    "generate the web app and add a login page",
+    "build the app for mobile",
+    "generate the invoice report",
+])
+def test_generate_request_with_content_is_carried(monkeypatch, request_text):
+    from codegen import generation_handler as generation
+    from utilities.original_request import remember_original_request
+
+    session = _DictSession()
+    monkeypatch.setattr(generation, "_active_project_id", lambda s: "shop")
+    remember_original_request(session, _STORED_SPEC, "shop")
+
+    combined = generation._original_for_smart_generation(session, request_text)
+    assert combined.startswith(_STORED_SPEC)
+    assert combined.endswith(request_text)
+    assert "Subsequent user request, verbatim" in combined
+
+
 def test_the_routing_rulebook_does_not_use_auth_as_an_example():
     assert "Devise auth" not in SYSTEM_PROMPT
     assert "Add user authentication" not in SYSTEM_PROMPT
