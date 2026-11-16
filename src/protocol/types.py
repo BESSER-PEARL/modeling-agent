@@ -35,6 +35,10 @@ class WorkspaceContext:
     # (it holds an app a run continues from) and ``recap`` (where that app
     # stands, in chat markdown). None without a link.
     github_repo: Optional[Dict[str, Any]] = None
+    # What the editor's next Spec-Driven run would use: ``tier`` ("own" | "free"
+    # | "none"), ``provider`` and ``model`` (None when not given). Never the key.
+    # None when the editor does not say (older editors).
+    generation_key: Optional[Dict[str, Any]] = None
 
     def get_active_index(self, diagram_type: str) -> int:
         """Return the active tab index for the given diagram type (default 0)."""

@@ -8,6 +8,8 @@ from baf.core.session import Session
 from codegen.smart_generation_handler import (
     build_trigger_smart_generator_payload,
 )
+from llm import byok_config
+from llm.byok import PROVIDER_NAMES
 from protocol.types import AssistantRequest
 from utilities.model_context import is_diagram_nontrivial
 from utilities.original_request import (
@@ -399,8 +401,8 @@ def _build_smart_gen_confirmation(
     a "Continue" button; a fix / modify of an already-generated app gets
     fix-framing + a "Fix it" button (from-scratch wording reads wrong when
     the user only wants a fix). Both branches keep the
-    same confirm token so the confirm gate fires identically, and both keep
-    the clickable API-key link. The fix branch is gated to the direct path
+    same confirm token so the confirm gate fires identically, and each says
+    which key the run will use (``_key_note``). The fix branch is gated to the direct path
     (no ``reason_prefix``): the mismatch/rebuild resumes always produce a
     freshly rebuilt model, which is a from-scratch build by definition — and,
     per ``_looks_like_fix_request``, to projects that have actually produced
@@ -437,16 +439,14 @@ def _build_smart_gen_confirmation(
         message = (
             f"{prefix}I'll rebuild the app from scratch instead of changing the code in "
             f"**{linked_repo_name(session)}**. Pushing the result will replace that code. "
-            f"It uses the free model by default — "
-            f"[set up your own API key](wme:add-key) for higher quality.\n\n"
+            f"{_key_note(session, short=True)}\n\n"
             f"Do you want to continue?"
         )
         confirm_label = "Rebuild"
     elif is_fix:
         message = (
             f"{prefix}I'll update your existing app to make that change. "
-            f"It uses the free model by default — "
-            f"[set up your own API key](wme:add-key) for higher quality.\n\n"
+            f"{_key_note(session, short=True)}\n\n"
             f"Do you want to continue?"
         )
         confirm_label = "Fix it"
@@ -456,10 +456,7 @@ def _build_smart_gen_confirmation(
             f"designed specs. BESSER has no built-in generator for it, so the "
             f"AI writes the code; our build server can't compile it, so it "
             f"isn't test-run before you get it.{_architecture_note(target)}\n\n"
-            f"BESSER includes a free model by default, so you can generate at "
-            f"no cost. For higher-quality results, you can "
-            f"[set up your own API key](wme:add-key) and use a stronger "
-            f"provider or model.\n\n"
+            f"{_key_note(session, short=False)}\n\n"
             f"Do you want to continue?"
         )
         confirm_label = "Continue"
@@ -469,10 +466,7 @@ def _build_smart_gen_confirmation(
             f"designed specs using its built-in generators. If some of your "
             f"requirements are not supported by these generators, BESSER can "
             f"use an LLM to handle them.{_architecture_note(target)}\n\n"
-            f"BESSER includes a free model by default, so you can generate at "
-            f"no cost. For higher-quality results, you can "
-            f"[set up your own API key](wme:add-key) and use a stronger "
-            f"provider or model.\n\n"
+            f"{_key_note(session, short=False)}\n\n"
             f"Do you want to continue?"
         )
         confirm_label = "Continue"
@@ -503,6 +497,52 @@ def _request_target(session: Session) -> Dict[str, Any]:
     except Exception:  # pragma: no cover — copy must never crash
         logger.debug("Could not resolve the request target", exc_info=True)
         return {}
+
+
+def _request_context(session: Session):
+    """The workspace context of the request being handled, or None."""
+    from protocol.adapters import parse_assistant_request
+
+    try:
+        return parse_assistant_request(session).context
+    except Exception:  # pragma: no cover — copy must never crash
+        logger.debug("Could not read the request context", exc_info=True)
+        return None
+
+
+_DISPLAYABLE_MODEL_RE = re.compile(r"[\w.:/@+-]{1,100}")
+
+
+def _generation_key(session: Session) -> Dict[str, Any]:
+    """What the run will use: the editor's ``generationKey``, else the key
+    armed on this socket, else the free tier."""
+    key = getattr(_request_context(session), "generation_key", None)
+    if key:
+        return key
+    cfg = byok_config.get_current()
+    if cfg is None:
+        return {"tier": "free"}
+    # An endpoint of its own (a gateway or a local server) is not the vendor.
+    return {"tier": "own", "provider": None if cfg.base_url else cfg.provider, "model": cfg.model}
+
+
+def _key_note(session: Session, *, short: bool) -> str:
+    """The confirmation's sentence about the key the run will use."""
+    key = _generation_key(session)
+    if key["tier"] == "own":
+        name = PROVIDER_NAMES.get(key.get("provider") or "", "API")
+        model = key.get("model")
+        shown = f" ({model})" if model and _DISPLAYABLE_MODEL_RE.fullmatch(model) else ""
+        return f"It will use your own {name} key{shown}."
+    if key["tier"] == "none":
+        return "You need an API key to generate: [set up your own API key](wme:add-key) first."
+    if short:
+        return "It uses the free model by default — [set up your own API key](wme:add-key) for higher quality."
+    return (
+        "BESSER includes a free model by default, so you can generate at no cost. "
+        "For higher-quality results, you can [set up your own API key](wme:add-key) "
+        "and use a stronger provider or model."
+    )
 
 
 def _architecture_note(target: Dict[str, Any]) -> str:

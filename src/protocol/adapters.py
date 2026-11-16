@@ -62,6 +62,22 @@ def _parse_github_repo(context_payload: Dict[str, Any]) -> Optional[Dict[str, An
     }
 
 
+_GENERATION_KEY_TIERS = ("own", "free", "none")
+
+
+def _parse_generation_key(context_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Validate the optional ``context.generationKey`` (or drop it)."""
+    key = context_payload.get("generationKey")
+    if not isinstance(key, dict) or key.get("tier") not in _GENERATION_KEY_TIERS:
+        return None
+    provider, model = key.get("provider"), key.get("model")
+    return {
+        "tier": key["tier"],
+        "provider": provider.strip().lower()[:40] or None if isinstance(provider, str) else None,
+        "model": model.strip()[:100] or None if isinstance(model, str) else None,
+    }
+
+
 def safe_json_loads(value: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(value, str):
         return None
@@ -291,6 +307,7 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         current_diagram_indices=current_diagram_indices,
         pilot_participant=pilot_participant,
         github_repo=_parse_github_repo(context_payload),
+        generation_key=_parse_generation_key(context_payload),
     )
 
     # ── Parse file attachments ──

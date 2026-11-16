@@ -192,6 +192,39 @@ class TestParseV2Payload:
         assert request.diagram_type == "ClassDiagram"
 
 
+def _with_context(**extra):
+    inner = {
+        "action": "user_message", "protocolVersion": "2.0", "message": "hello",
+        "context": {"activeDiagramType": "ClassDiagram", **extra},
+    }
+    return parse_v2_payload({"action": "user_message", "message": json.dumps(inner)})
+
+
+class TestGenerationKey:
+    def test_own_key_is_read_without_anything_else(self):
+        request = _with_context(generationKey={
+            "tier": "own", "provider": "OpenAI", "model": " gpt-6-luna ", "apiKey": "sk-never-read",
+        })
+        assert request.context.generation_key == {"tier": "own", "provider": "openai", "model": "gpt-6-luna"}
+
+    def test_free_and_none_tiers_need_no_provider(self):
+        assert _with_context(generationKey={"tier": "free"}).context.generation_key == {
+            "tier": "free", "provider": None, "model": None}
+        assert _with_context(generationKey={"tier": "none", "model": None}).context.generation_key == {
+            "tier": "none", "provider": None, "model": None}
+
+    @pytest.mark.parametrize("value", [
+        None, "own", ["own"], {}, {"tier": "paid"}, {"tier": 1}, {"provider": "openai"},
+    ])
+    def test_absent_or_malformed_is_none(self, value):
+        extra = {} if value is None else {"generationKey": value}
+        assert _with_context(**extra).context.generation_key is None
+
+    def test_malformed_provider_and_model_are_dropped(self):
+        key = _with_context(generationKey={"tier": "own", "provider": 7, "model": {"id": "x"}}).context.generation_key
+        assert key == {"tier": "own", "provider": None, "model": None}
+
+
 def test_full_spec_limit_is_preserved_or_explicitly_rejected_for_both_transports(monkeypatch):
     from types import SimpleNamespace
     from common.agent_config import MAX_USER_MESSAGE_CHARS

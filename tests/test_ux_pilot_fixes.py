@@ -548,3 +548,136 @@ def test_gui_choice_is_asked_even_when_the_request_mentions_a_dashboard():
     assert result is None, "no GUI may be generated before the user chose how"
     assert pending_dialogs.get(session, PENDING_GUI_CHOICE), "the choice must be pending"
     assert "How would you like me to create your screens" in captured[0]["message"]
+
+
+# ---------------------------------------------------------------------------
+# The confirmation says which key the run will use
+# ---------------------------------------------------------------------------
+
+_KEY_LINK = "[set up your own API key](wme:add-key)"
+_FREE_SHORT = f"It uses the free model by default — {_KEY_LINK} for higher quality."
+_FREE_LONG = (
+    f"BESSER includes a free model by default, so you can generate at no cost. "
+    f"For higher-quality results, you can {_KEY_LINK} and use a stronger provider or model."
+)
+_ABSENT = object()
+
+# Branch -> (button label, a sentence only that branch writes, free-tier text).
+_BRANCHES = {
+    "rebuild": ("Rebuild", "rebuild the app from scratch", _FREE_SHORT),
+    "fix": ("Fix it", "update your existing app", _FREE_SHORT),
+    "other": ("Continue", "no built-in generator", _FREE_LONG),
+    "default": ("Continue", "BESSER will generate your application", _FREE_LONG),
+}
+
+
+def _branch_session(branch, generation_key=_ABSENT, last_generation=_ABSENT):
+    import uuid
+
+    from routing.unified_classifier import UnifiedClassification
+
+    context = {"activeDiagramType": "ClassDiagram", "projectSnapshot": {"id": _PROJECT_ID, "diagrams": {}}}
+    if generation_key is not _ABSENT:
+        context["generationKey"] = generation_key
+    if last_generation is not _ABSENT:
+        context["lastGeneration"] = last_generation
+    if branch == "rebuild":
+        context["githubRepo"] = {"fullName": "acme/orders", "hasCode": True}
+    message = "fix the errors in the order form" if branch == "fix" else "build an order tracking app"
+    session = FakeSession({
+        "action": "user_message", "protocolVersion": "2.0", "message": message,
+        "context": context, "sessionId": uuid.uuid4().hex,
+    })
+    verdict = {"rebuild": {"model_disposition": "replace_existing"},
+               "other": {"target_kind": "other", "target_description": "desktop app"}}.get(branch)
+    if verdict:
+        session.set(UNIFIED_CLASSIFICATION, UnifiedClassification(
+            intent="generation_intent", generation_route="smart", reason="test", **verdict))
+    if branch == "fix":
+        _record_generated_app(session, _PROJECT_ID)
+    return session, message
+
+
+def _branch_confirmation(branch, generation_key=_ABSENT, **kwargs):
+    session, message = _branch_session(branch, generation_key, **kwargs)
+    payload = _build_smart_gen_confirmation(session, "Build the order app.", "anthropic", user_message=message)
+    label, marker, _ = _BRANCHES[branch]
+    assert payload["suggestedActions"][0]["label"] == label
+    assert marker in payload["message"]
+    return payload["message"]
+
+
+@pytest.mark.parametrize("branch", list(_BRANCHES))
+@pytest.mark.parametrize("key, sentence", [
+    ({"tier": "own", "provider": "openai", "model": "gpt-6-luna"}, "It will use your own OpenAI key (gpt-6-luna)."),
+    ({"tier": "own", "provider": "anthropic", "model": None}, "It will use your own Anthropic key."),
+    ({"tier": "own", "provider": "gateway", "model": "some-model"}, "It will use your own API key (some-model)."),
+    ({"tier": "own"}, "It will use your own API key."),
+])
+def test_own_key_is_named_instead_of_the_free_model(branch, key, sentence):
+    message = _branch_confirmation(branch, key)
+    assert sentence in message
+    assert "free model" not in message
+    assert _KEY_LINK not in message
+    assert "gateway" not in message.lower()
+
+
+@pytest.mark.parametrize("branch", list(_BRANCHES))
+def test_free_tier_keeps_the_free_model_text(branch):
+    message = _branch_confirmation(branch, {"tier": "free", "provider": None, "model": None})
+    assert _BRANCHES[branch][2] in message
+
+
+@pytest.mark.parametrize("branch", list(_BRANCHES))
+def test_no_key_and_no_free_tier_says_a_key_is_needed(branch):
+    message = _branch_confirmation(branch, {"tier": "none"})
+    assert f"You need an API key to generate: {_KEY_LINK} first." in message
+    assert "free model" not in message
+
+
+@pytest.mark.parametrize("branch", list(_BRANCHES))
+def test_older_editor_without_a_key_keeps_todays_text(branch):
+    assert _BRANCHES[branch][2] in _branch_confirmation(branch)
+
+
+@pytest.mark.parametrize("branch", list(_BRANCHES))
+@pytest.mark.parametrize("cfg, sentence", [
+    ({"provider": "mistral", "model": "mistral-large-latest"}, "It will use your own Mistral key (mistral-large-latest)."),
+    ({"provider": "openai", "model": None}, "It will use your own OpenAI key."),
+    # A gateway or local endpoint speaks OpenAI's protocol but is not OpenAI.
+    ({"provider": "openai", "model": None, "base_url": "https://llm.example.org/v1"}, "It will use your own API key."),
+])
+def test_older_editor_falls_back_to_the_key_armed_on_the_socket(branch, cfg, sentence):
+    from llm.byok_config import BYOKConfig, current_byok
+
+    token = current_byok.set(BYOKConfig(api_key="sk-test-secret", **cfg))
+    try:
+        message = _branch_confirmation(branch)
+    finally:
+        current_byok.reset(token)
+    assert sentence in message
+    assert "sk-test-secret" not in message
+    assert "free model" not in message
+
+
+def test_the_editors_field_wins_over_the_socket_key():
+    from llm.byok_config import BYOKConfig, current_byok
+
+    token = current_byok.set(BYOKConfig(provider="openai", api_key="sk-test"))
+    try:
+        message = _branch_confirmation("default", {"tier": "free"})
+    finally:
+        current_byok.reset(token)
+    assert _FREE_LONG in message
+
+
+def test_a_model_name_that_is_not_an_identifier_is_left_out():
+    message = _branch_confirmation("default", {"tier": "own", "provider": "openai", "model": "[x](javascript:y)"})
+    assert "It will use your own OpenAI key." in message
+    assert "javascript" not in message
+
+
+def test_every_supported_provider_has_a_public_name():
+    from llm.byok import PROVIDER_NAMES, SUPPORTED_PROVIDERS
+
+    assert set(PROVIDER_NAMES) == set(SUPPORTED_PROVIDERS)

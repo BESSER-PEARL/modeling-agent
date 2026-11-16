@@ -203,6 +203,14 @@ Field Reference
        however old the last run is. ``recap`` is where that app stands, in chat
        markdown, capped at 4,000 characters; it answers "what did we build?" and
        enters conversation memory when it changes, labelled as a record.
+   * - ``context.generationKey``
+     - No
+     - What the next Spec-Driven run would use: ``{tier, provider, model}``
+       with ``tier`` ``"own"`` (a stored user key; ``provider`` is set and
+       ``model`` is the chosen model or null), ``"free"`` or ``"none"`` (no key
+       and no free tier). Never contains the key. The run confirmation names
+       the user's key, or the free model, from it; without it the agent reads
+       the key armed on the socket. Malformed values are ignored.
    * - ``attachments``
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)
