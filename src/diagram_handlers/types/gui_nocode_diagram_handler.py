@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import copy
 import json
-import math
 import re
 import logging
 from datetime import datetime
+from decimal import Decimal
 from html import escape as _html_escape
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1523,6 +1523,8 @@ _FILTER_TRUTH = {
     "true": "true", "yes": "true", "1": "true", "false": "false", "no": "false", "0": "false",
 }
 _ISO_DATE_START_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# A number with a "." decimal point and no grouping: "1,5" or "1.000,50" is refused.
+_FILTER_NUMBER_RE = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
 # What the generated app's filter parser reads as syntax in a value: a
 # separator anywhere, or the word 'in' / 'contains' followed by more text.
 _FILTER_SYNTAX_RE = re.compile(r"&&|[;,]|\band\b|(?:^|\s)(?:in|contains)\s+\S", re.IGNORECASE)
@@ -1539,9 +1541,9 @@ def _bind_filter(bind: Any) -> Optional[Dict[str, Any]]:
 
 
 def _filter_value(attr: Dict[str, Any], raw: Any, equality: bool) -> Optional[str]:
-    """*raw* as the generated app's filter reads a value of *attr*'s type: a
-    literal of its enumeration, true / false, a plain number, an ISO date or
-    quoted text. ``None`` when it is no such value, or the comparison is an
+    """*raw* as a value of *attr*'s type for the generated app's filter: a
+    literal of its enumeration, true / false, a plain decimal number, an ISO
+    date or text. ``None`` when it is no such value, or the comparison is an
     ordering the type does not have."""
     if isinstance(raw, bool):
         text = "true" if raw else "false"
@@ -1566,10 +1568,8 @@ def _filter_value(attr: Dict[str, Any], raw: Any, equality: bool) -> Optional[st
     if attr_type in ("bool", "boolean"):
         return _FILTER_TRUTH.get(text.lower()) if equality else None
     if attr.get("isNumeric"):
-        number = _coerce_numeric(text)
-        if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number):
-            return None
-        return f"{number:f}".rstrip("0").rstrip(".") if isinstance(number, float) else str(number)
+        # Written out in full: the app reads neither an exponent nor a rounded value as meant.
+        return format(Decimal(text), "f") if _FILTER_NUMBER_RE.fullmatch(text) else None
     if attr_type in ("date", "datetime"):
         stamp = text.replace(" ", "T")
         try:
@@ -1578,7 +1578,7 @@ def _filter_value(attr: Dict[str, Any], raw: Any, equality: bool) -> Optional[st
             return None
         return stamp if _ISO_DATE_START_RE.match(stamp) else None
     if attr.get("isString"):
-        return f"'{text}'" if equality and "\n" not in text else None
+        return text if equality and "\n" not in text else None
     return None
 
 
@@ -1597,8 +1597,13 @@ def _filter_expression(
     if not attr or not operator:
         return None
     value = _filter_value(attr, spec.get("value"), operator in ("==", "!="))
-    if value is None or _FILTER_SYNTAX_RE.search(value):
+    if value is None:
         return None
+    if _FILTER_SYNTAX_RE.search(value):
+        # The app would split the text form there; it reads the JSON form as one condition.
+        return json.dumps({"field": attr["name"], "op": operator, "value": value}, ensure_ascii=False)
+    if attr.get("isString") and not attr.get("enumLiterals"):
+        value = f"'{value}'"
     return f"{attr['name']} {operator} {value}"
 
 

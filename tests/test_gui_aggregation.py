@@ -194,7 +194,6 @@ def test_metric_whose_condition_the_model_cannot_evaluate_is_left_out():
         _filtered("status", "lost"),               # not a literal of the enumeration
         _filtered("status", "active", ">"),        # an enumeration has no order
         _filtered("fine", "a lot", ">"),           # not a number
-        _filtered("desk", "front and back"),       # would split the expression
         {"kind": "metric_card", "className": "Loan", "title": "Loans"},
     )
     assert [c["attributes"]["metric-title"] for c in cards] == ["Loans"]
@@ -266,7 +265,7 @@ def test_prompt_offers_the_metric_filter():
 
 # -- a filter never costs more than its own card -------------------------------
 
-STAGES = ["DRAFT", "IN_REVIEW", "In", "on hold"]
+STAGES = ["DRAFT", "IN_REVIEW", "In", "on hold", "In progress"]
 STAGE_META = [{
     "id": "cls-paper", "name": "Paper",
     "attributes": [
@@ -319,28 +318,59 @@ def test_filter_values_the_generated_app_reads_are_accepted():
         _paper("stage", "'DRAFT'"),
         _paper("stage", "on hold"),
         _paper("pages", "1e3", ">="),
-        _paper("pages", "1,000", "<"),
         _paper("sentAt", "2030-01-31T08:00:00Z", ">="),
         _paper("author", "O'Neil"),
         _paper("author", "R&D"),
         _paper("open", "yes"),
     ) == [
         "stage == In", "stage == IN_REVIEW", "stage == DRAFT", "stage == on hold",
-        "pages >= 1000", "pages < 1000", "sentAt >= 2030-01-31T08:00:00Z",
+        "pages >= 1000", "sentAt >= 2030-01-31T08:00:00Z",
         "author == 'O'Neil'", "author == 'R&D'", "open == true",
     ]
 
 
 def test_filter_values_the_generated_app_would_misread_are_not():
-    # 'and', ',' and ';' split the expression; a leading 'in' reads as the operator.
     assert _paper_filters(
-        _paper("author", "Rock and roll"),
-        _paper("author", "Acme, Inc."),
-        _paper("author", "checked in today"),
         _paper("stage", "in review 2"),
         _paper("pages", "many", ">"),
         _paper("sentAt", "last week", ">"),
+        # A number in a locale format: '1,5' was read as 15, '1.000,50' as 1.0005.
+        _paper("pages", "1,5", ">"),
+        _paper("pages", "1.000,50", ">"),
+        _paper("pages", "1,000", "<"),
+        _paper("pages", "1 000", "<"),
     ) == []
+
+
+def test_filter_numbers_are_written_without_rounding():
+    # 1e-7 was written as 0 and 0.1234567 as 0.123457: the card counted other records.
+    assert _paper_filters(
+        _paper("pages", "1e-7", ">"),
+        _paper("pages", 1e-7, ">"),
+        _paper("pages", "0.1234567", ">"),
+        _paper("pages", 1e21, "<"),
+        _paper("pages", "-5", ">="),
+    ) == [
+        "pages > 0.0000001", "pages > 0.0000001", "pages > 0.1234567",
+        "pages < 1000000000000000000000", "pages >= -5",
+    ]
+
+
+def test_filter_value_the_text_form_would_split_is_written_as_json():
+    # The app reads 'and', ',', ';' and a word 'in' / 'contains' in a text
+    # filter as syntax; it reads a filter written as JSON as one condition.
+    filters = _paper_filters(
+        _paper("stage", "In progress"),
+        _paper("author", "Rock and roll", "!="),
+        _paper("author", "Acme, Inc."),
+        _paper("author", "checked in today"),
+    )
+    assert [json.loads(f) for f in filters] == [
+        {"field": "stage", "op": "==", "value": "In progress"},
+        {"field": "author", "op": "!=", "value": "Rock and roll"},
+        {"field": "author", "op": "==", "value": "Acme, Inc."},
+        {"field": "author", "op": "==", "value": "checked in today"},
+    ]
 
 
 def test_reply_names_a_metric_card_that_was_left_out():
