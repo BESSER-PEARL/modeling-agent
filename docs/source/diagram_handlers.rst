@@ -231,11 +231,15 @@ hold for the guards below:
      - Turns round a hierarchy stated backwards. Runs before the guards
        that read the direction of the hierarchy.
    * - ``_rewrite_foreign_key_attributes``
-     - ``<x>Id`` is removed when ``<x>`` is an end or a class the owner (or
-       an ancestor) is linked to, and becomes an association when ``<x>``
-       is a class it is not linked to. Never for the class's own id or the
-       id of a class in its own hierarchy, nor for an ``isExternalId``
-       attribute or an identifier naming no class.
+     - A string or integer ``<x>Id`` / ``<x>_id`` is removed only when, among
+       the ends of the owner and its ancestors, exactly one is named ``<x>``
+       (or, when none is, exactly one reaches class ``<x>``), that end is
+       to-one and required exactly when the attribute is, and ``<x>`` is not
+       a class of the owner's own hierarchy. Every other ``<x>Id`` stays: an
+       id beside a link with another role (an optional ``referredBy`` beside
+       a required ``customerId``), beside a to-many link, beside two links,
+       or naming a class the owner is not linked to, and an ``isExternalId``
+       attribute. The guard never adds an association.
    * - ``_ensure_unique_association_ends``
      - One member per name: duplicate ends, and an end named like an
        attribute, get a ``_1`` suffix. An integer attribute named like a
@@ -247,8 +251,7 @@ hold for the guards below:
        modifications.
 
 The reply (``_build_system_message``) says what the user can see of this: an
-id attribute that became an association and an association end that was
-renamed.
+association end that was renamed.
 
 StateMachineHandler
 -------------------

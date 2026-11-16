@@ -118,12 +118,13 @@ def test_a_second_pass_changes_nothing(name, monkeypatch):
 
 
 def test_the_first_pass_did_something(monkeypatch):
-    """The models above are not already clean: the guards do rename, convert
-    and remove on the first pass."""
+    """The models above are not already clean: the guards do rename and
+    remove on the first pass."""
     request_text, spec = MODELS["end named like an attribute"]
     first = _build(copy.deepcopy(spec), request_text, monkeypatch)
     assert first["relationships"][0]["name"] == "keywords_1"
     request_text, spec = MODELS["id attributes of linked and unlinked classes"]
     first = _build(copy.deepcopy(spec), request_text, monkeypatch)
-    assert [a["name"] for a in first["classes"][0]["attributes"]] == ["total"]
-    assert len(first["relationships"]) == 3
+    assert [a["name"] for a in first["classes"][0]["attributes"]] == [
+        "total", "depotId", "couponId"]
+    assert len(first["relationships"]) == 1

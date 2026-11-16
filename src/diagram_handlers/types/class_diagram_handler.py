@@ -212,11 +212,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # the hierarchy: the foreign-key guard next and the shadow-strip.
         self._fix_inverted_inheritance(system_spec)
 
-        # Guard: a link kept as an id attribute (Order.customerId). Beside the
-        # association the generated backend defines the foreign key twice;
-        # without one the link is missing from the model.
-        converted = self._rewrite_foreign_key_attributes(
-            system_spec, raw_request or user_request)
+        # Guard: an id attribute beside the association that stores the same
+        # reference (Order.customerId). The generated backend would define
+        # the foreign key twice.
+        self._rewrite_foreign_key_attributes(system_spec, raw_request or user_request)
 
         # Guard: a label naming BOTH ends ("contact / bookingsAsContact")
         # becomes a name plus a sourceRole. A name with a space fails the
@@ -317,7 +316,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         self.apply_system_layout(system_spec, existing_model)
 
         message = self._build_system_message(
-            system_spec, relaxations, converted=converted, renamed=renamed_ends)
+            system_spec, relaxations, renamed=renamed_ends)
 
         # The matching frontend converter persists constraints as OCL
         # boxes/links and associationClass attachments as ClassLinkRel.
@@ -1852,44 +1851,38 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
     def _rewrite_foreign_key_attributes(
         self, system_spec: Dict[str, Any], request_text: Optional[str] = None,
-    ) -> List[Dict[str, str]]:
-        """Remove or convert an attribute that holds another class's id.
+    ) -> None:
+        """Remove an id attribute that restates a link the model already has.
 
-        A string or integer attribute named ``<x>Id`` / ``<x>_id`` is a foreign
-        key kept by hand when ``<x>`` names:
+        A string or integer attribute named ``<x>Id`` / ``<x>_id`` is removed
+        only when one link certainly stores the same reference. Among the
+        association ends of the owner and of its ancestors (an association
+        class reaches both classes of its association), exactly one is named
+        ``<x>`` or, when none is, exactly one reaches class ``<x>``; that end
+        is to-one from the owner's side and required exactly when the
+        attribute is; and ``<x>`` is not the owner or a class of its
+        generalization chain. An end with a role of its own that disagrees
+        with the attribute (an optional ``referredBy`` beside a required
+        ``customerId``) is another link to the same class.
 
-        * an association end the owner has, or a class it is linked to (also
-          by the last word of its name, ``agentId`` for ``SupportAgent``, when
-          the request says nothing about that id) - the association already
-          stores the reference, so the attribute is removed;
-        * another class of the model the owner is not linked to - the
-          attribute becomes that association, as a class-typed attribute does;
-          optional unless the attribute was required and the request does not
-          talk about that id.
-
-        Links of the owner, of its ancestors and of the association it is the
-        association class of count; a link only a subclass has does not.
-        Anything else is left alone: an attribute flagged ``isExternalId``,
-        one the request names as written, one a constraint or a method body
-        uses, the id of the class itself or of a class in its own
-        generalization chain (the hierarchy's identifier, not a link), and
-        identifiers naming no class (``isbn``, ``externalId``, ``trackingId``).
+        Every other attribute stays, also an id naming a class the owner is not
+        linked to: the guard never adds a link. Also kept: an attribute flagged
+        ``isExternalId``, one the request names as written, and one a
+        constraint or a method body reads.
 
         Reads the inheritance direction, so it runs after
-        :meth:`_fix_inverted_inheritance`. Mutates *system_spec* in place and
-        returns the conversions (``owner``, ``attribute``, ``target``), for
-        the reply.
+        :meth:`_fix_inverted_inheritance`. Mutates *system_spec* in place.
         """
         classes = system_spec.get("classes")
-        if not isinstance(classes, list):
-            return []
         relationships = system_spec.get("relationships")
-        if not isinstance(relationships, list):
-            relationships = []
-            system_spec["relationships"] = relationships
+        if not isinstance(classes, list) or not isinstance(relationships, list):
+            return
+
+        def _key(name: str) -> str:
+            return name.replace("_", "").lower()
 
         class_by_key = {
-            cls["className"].replace("_", "").lower(): cls["className"]
+            _key(cls["className"]): cls["className"]
             for cls in classes
             if isinstance(cls, dict) and isinstance(cls.get("className"), str)
             and cls["className"] and not cls.get("isEnumeration")
@@ -1902,27 +1895,17 @@ class ClassDiagramHandler(BaseDiagramHandler):
         ]
         references = self._member_references(system_spec)
         named = self._request_member_names(request_text)
-        # every word of the request run together: "device id" names deviceId
-        spoken = re.sub(r"[\W_]+", "", str(request_text or "").lower())
 
-        def _key(name: str) -> str:
-            return name.replace("_", "").lower()
-
-        def _line(owner: str) -> set:
-            """*owner* and its ancestors."""
+        def _ends(owner: str) -> List[Tuple[str, str, tuple]]:
+            """(far class, end name as a key, multiplicity) of every end of
+            *owner* and its ancestors."""
             line = {owner}
             frontier = {owner}
             while frontier:
                 frontier = {parent for child, parent in inheritance_edges
                             if child in frontier and parent not in line}
                 line |= frontier
-            return line
-
-        def _links(owner: str) -> Tuple[set, set]:
-            """(end names, classes) *owner* reaches; end names as keys."""
-            line = _line(owner)
-            roles: set = set()
-            linked: set = set()
+            ends = []
             for rel in relationships:
                 if (not isinstance(rel, dict)
                         or self._spec_rel_type(rel) in self._SPEC_NON_END_REL_TYPES):
@@ -1931,16 +1914,15 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 if not isinstance(source, str) or not isinstance(target, str):
                     continue
                 if rel.get("associationClass") in line:
-                    linked.update((source, target))
+                    ends += [(far, _key(far), (1, 1)) for far in (source, target)]
                 for near, far, side in ((source, target, "target"),
                                         (target, source, "source")):
                     if near in line:
-                        linked.add(far)
-                        roles.add(_key(self._spec_role(rel, side) or far))
-            return roles, linked
+                        ends.append((far, _key(self._spec_role(rel, side) or far),
+                                     self._parse_multiplicity(rel.get(f"{side}Multiplicity"))))
+            return ends
 
         removed = 0
-        converted: List[Dict[str, str]] = []
         for cls in classes:
             if not isinstance(cls, dict) or cls.get("isEnumeration"):
                 continue
@@ -1949,7 +1931,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             if not isinstance(owner, str) or not owner or not isinstance(attrs, list):
                 continue
             hierarchy = self._reach_over_edges(inheritance_edges, {owner})
-            roles, linked = _links(owner)
+            ends = _ends(owner)
             kept: List[Any] = []
             for a in attrs:
                 name = a.get("name") if isinstance(a, dict) else None
@@ -1957,45 +1939,27 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 if (match is None or a.get("isExternalId")
                         or str(a.get("type") or "").strip().lower() not in self._FK_ATTR_TYPES
                         or _key(name) in named
-                        or self._is_referenced(name, references)):
+                        or self._is_referenced(name, references)
+                        or class_by_key.get(_key(match.group(1))) in hierarchy):
                     kept.append(a)
                     continue
-                stem = match.group(1)
-                key = _key(stem)
-                target = class_by_key.get(key)
-                talked_about = _key(name) in spoken
-                by_last_word = [] if talked_about else [
-                    c for c in linked
-                    if len(c) > len(key) and c.lower().endswith(key)
-                    and c[-len(key)].isupper()
-                ]
-                if target in hierarchy:
-                    kept.append(a)  # the identifier of the class or of its hierarchy
-                elif key in roles or target in linked or (
-                        target is None and len(by_last_word) == 1):
-                    removed += 1
-                    logger.info(
-                        "[ClassDiagram] Dropped foreign-key attribute %s.%s: "
-                        "the association already holds that reference", owner, name,
-                    )
-                elif target is None:
+                key = _key(match.group(1))
+                same = ([e for e in ends if e[1] == key]
+                        or [e for e in ends if _key(e[0]) == key])
+                lower, upper = same[0][2] if len(same) == 1 else (0, 0)
+                if len(same) != 1 or upper > 1 or (lower == 0) != bool(a.get("isOptional")):
                     kept.append(a)
-                else:
-                    role = self._to_camel_case(self._to_identifier(stem, pascal=False))
-                    self._link_attribute_to_class(relationships, owner, {
-                        **a, "name": role,
-                        "isOptional": bool(a.get("isOptional")) or talked_about,
-                    }, target)
-                    converted.append({"owner": owner, "attribute": name, "target": target})
-                    roles, linked = _links(owner)
+                    continue
+                removed += 1
+                logger.info(
+                    "[ClassDiagram] Dropped foreign-key attribute %s.%s: the "
+                    "association to %s already holds that reference",
+                    owner, name, same[0][0],
+                )
             cls["attributes"] = kept
 
-        if removed or converted:
-            logger.info(
-                "[ClassDiagram] Foreign-key-attribute guard: %d removed, "
-                "%d -> association", removed, len(converted),
-            )
-        return converted
+        if removed:
+            logger.info("[ClassDiagram] Foreign-key-attribute guard: %d removed", removed)
 
     def _break_mandatory_cycles(self, system_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Relax one end of every mandatory creation cycle, keeping the rule as OCL.
@@ -2595,15 +2559,14 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
     def _build_system_message(
         self, spec: Dict[str, Any], relaxations: Sequence[Dict[str, Any]] = (),
-        converted: Sequence[Dict[str, str]] = (), renamed: Sequence[str] = (),
+        renamed: Sequence[str] = (),
     ) -> str:
         """Build a descriptive message for a complete class diagram spec.
 
         *relaxations* are the ends ``_break_mandatory_cycles`` made optional;
         their invariants are the agent's, not rules the user stated.
-        *converted* (id attributes turned into associations) and *renamed*
-        (association ends given a new name) are what the guards changed that
-        shows in the diagram."""
+        *renamed* (association ends given a new name) is what the guards
+        changed that shows in the diagram."""
         system_name = spec.get("systemName", "System")
         classes = spec.get("classes", [])
         rels = spec.get("relationships", [])
@@ -2618,21 +2581,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
         elif rels:
             msg += f", with {len(rels)} relationship(s) between them"
         msg += "."
-        changes = []
-        if converted:
-            links = self._listed([f"{c['owner']}.{c['attribute']}" for c in converted])
-            if len(converted) == 1:
-                changes.append(f"{links} became an association to **{converted[0]['target']}**")
-            else:
-                changes.append(f"{links} became associations to the classes they name")
         if renamed:
             ends, verb = ("end", "was") if len(renamed) == 1 else ("ends", "were")
-            changes.append(
-                f"the association {ends} {self._listed(list(renamed))} {verb} "
-                "renamed so that no class has two members of one name")
-        if changes:
-            sentence = " and ".join(changes)
-            msg += f" {sentence[0].upper()}{sentence[1:]}."
+            msg += (f" The association {ends} {self._listed(list(renamed))} {verb} "
+                    "renamed so that no class has two members of one name.")
         # The editor draws every constraint as an OCL box on its class.
         constraints = [c for c in spec.get("constraints") or [] if isinstance(c, dict)]
         agent_made = [r for r in relaxations if any(r["constraint"] is c for c in constraints)]

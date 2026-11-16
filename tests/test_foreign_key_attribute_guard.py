@@ -1,13 +1,12 @@
 """Foreign-key attributes in a generated class diagram.
 
 A link between two classes is an association. An attribute holding the id of
-the other class (``Order.customerId``) restates it: beside the association the
-generated backend defines the foreign key twice, and without the association
-the link is not in the model at all.
-``ClassDiagramHandler._rewrite_foreign_key_attributes`` removes such an
-attribute when the owner is linked to the class or role it names, and turns
-it into an association when it is not. Identifiers that name no class of the
-model are left alone.
+the other class (``Order.customerId``) beside that association restates it: the
+generated backend then defines the foreign key twice and asks for the same
+reference twice. ``ClassDiagramHandler._rewrite_foreign_key_attributes``
+removes such an attribute only when exactly one to-one link stores the same
+reference. Any other id attribute stays, and the guard never adds a link:
+keeping a redundant attribute is harmless, losing a link is not.
 """
 
 import copy
@@ -69,10 +68,11 @@ class TestLinkedClass:
         assert _names(spec, "Order") == []
 
     def test_link_stated_from_the_other_class_counts(self, handler):
-        rels = [_assoc("Chapter", "Book", "book", "chapters", type_="Composition")]
-        spec = _spec([_cls("Book", [_attr("chapterId")]), _cls("Chapter")], copy.deepcopy(rels))
+        rels = [_assoc("Customer", "Order", "orders", "customer",
+                       sourceMultiplicity="1", targetMultiplicity="0..*")]
+        spec = _spec([_cls("Order", [_attr("customerId")]), _cls("Customer")], copy.deepcopy(rels))
         handler._rewrite_foreign_key_attributes(spec)
-        assert _names(spec, "Book") == []
+        assert _names(spec, "Order") == []
         assert spec["relationships"] == rels
 
     def test_id_named_after_an_end_role_is_removed(self, handler):
@@ -88,7 +88,8 @@ class TestLinkedClass:
     def test_role_on_the_source_end_counts(self, handler):
         # Club is the target: it reaches Player through sourceRole "captain".
         spec = _spec([_cls("Club", [_attr("captainId")]), _cls("Player")],
-                     [_assoc("Player", "Club", "captainOf", "captain")])
+                     [_assoc("Player", "Club", "captainOf", "captain", sourceMultiplicity="1",
+                             targetMultiplicity="0..1")])
         handler._rewrite_foreign_key_attributes(spec)
         assert _names(spec, "Club") == []
 
@@ -112,11 +113,11 @@ class TestLinkedClass:
         assert _names(spec, "Assignment") == ["hours"]
         assert spec["relationships"] == rels
 
-    def test_last_word_of_a_linked_class_name_is_enough(self, handler):
-        spec = _spec([_cls("Ticket", [_attr("agentId")]), _cls("SupportAgent")],
-                     [_assoc("Ticket", "SupportAgent", "handledBy", "tickets")])
+    def test_an_optional_id_beside_an_optional_link_is_removed(self, handler):
+        spec = _spec([_cls("Task", [_attr("projectId", isOptional=True)]), _cls("Project")],
+                     [_assoc("Task", "Project", "project", "tasks", targetMultiplicity="0..1")])
         handler._rewrite_foreign_key_attributes(spec)
-        assert _names(spec, "Ticket") == []
+        assert _names(spec, "Task") == []
 
     def test_last_word_shared_by_two_linked_classes_is_kept(self, handler):
         spec = _spec([_cls("Invoice", [_attr("orderId")]), _cls("SalesOrder"),
@@ -133,38 +134,105 @@ class TestLinkedClass:
         assert _names(spec, "Product") == ["groupId"]
 
 
-class TestUnlinkedClass:
-    def test_id_of_an_unlinked_class_becomes_an_association(self, handler):
+class TestAnotherLinkToTheSameClass:
+    """The one link to the class the id names may be a different link:
+    removing the id would lose the link it stands for."""
+
+    def test_an_optional_link_with_a_role_of_its_own(self, handler):
+        spec = _spec([_cls("Order", [_attr("total", "float"), _attr("customerId")]),
+                      _cls("Customer")],
+                     [_assoc("Order", "Customer", "referredBy", "referrals",
+                             targetMultiplicity="0..1")])
+        before = copy.deepcopy(spec)
+        handler._rewrite_foreign_key_attributes(spec)
+        assert spec == before
+
+    def test_a_link_the_other_class_states_for_another_role(self, handler):
+        # a department is headed by one employee; the id is the employee's department
+        spec = _spec([_cls("Employee", [_attr("departmentId")]), _cls("Department")],
+                     [_assoc("Department", "Employee", "head", "headOf",
+                             sourceMultiplicity="0..1", targetMultiplicity="1")])
+        before = copy.deepcopy(spec)
+        handler._rewrite_foreign_key_attributes(spec)
+        assert spec == before
+
+    def test_a_single_reference_beside_a_to_many_link(self, handler):
+        # the main category of a product that belongs to several categories
+        spec = _spec([_cls("Product", [_attr("categoryId")]), _cls("Category")],
+                     [_assoc("Product", "Category", "categories", "products",
+                             targetMultiplicity="0..*")])
+        before = copy.deepcopy(spec)
+        handler._rewrite_foreign_key_attributes(spec)
+        assert spec == before
+
+    def test_two_links_to_the_class_none_named_by_the_id(self, handler):
+        spec = _spec([_cls("Order", [_attr("addressId")]), _cls("Address")],
+                     [_assoc("Order", "Address", "billingAddress"),
+                      _assoc("Order", "Address", "shippingAddress")])
+        before = copy.deepcopy(spec)
+        handler._rewrite_foreign_key_attributes(spec)
+        assert spec == before
+
+    def test_two_ends_with_the_role_the_id_names(self, handler):
+        spec = _spec([_cls("Match", [_attr("hostId")]), _cls("Team"), _cls("Club")],
+                     [_assoc("Match", "Team", "host"), _assoc("Club", "Match", "hostedMatches", "host",
+                                                             sourceMultiplicity="1")])
+        before = copy.deepcopy(spec)
+        handler._rewrite_foreign_key_attributes(spec)
+        assert spec == before
+
+    def test_the_last_word_of_a_linked_class_name_is_not_enough(self, handler):
+        spec = _spec([_cls("Ticket", [_attr("agentId")]), _cls("SupportAgent")],
+                     [_assoc("Ticket", "SupportAgent", "handledBy", "tickets")])
+        before = copy.deepcopy(spec)
+        handler._rewrite_foreign_key_attributes(spec)
+        assert spec == before
+
+    def test_an_account_is_not_the_linked_bank_account(self, handler):
+        # the sign-in account of an employee who also holds bank accounts
+        spec = _spec([_cls("Employee", [_attr("name"), _attr("accountId")]),
+                      _cls("BankAccount", [_attr("iban")])],
+                     [_assoc("BankAccount", "Employee", "holder", "bankAccounts")])
+        before = copy.deepcopy(spec)
+        handler._rewrite_foreign_key_attributes(spec)
+        assert spec == before
+
+
+class TestNoLinkIsAdded:
+    """An id naming a class the owner is not linked to is left as it is: it
+    may be a plain value, or name another thing that shares the class name."""
+
+    def test_id_of_an_unlinked_class_stays_an_attribute(self, handler):
         spec = _spec([_cls("Order", [_attr("total", "float"), _attr("customerId")]),
                       _cls("Customer")])
+        before = copy.deepcopy(spec)
         handler._rewrite_foreign_key_attributes(spec)
-        assert _names(spec, "Order") == ["total"]
-        assert spec["relationships"] == [{
-            "type": "Association", "source": "Order", "target": "Customer",
-            "sourceMultiplicity": "0..*", "targetMultiplicity": "1", "name": "customer",
-            "sourceRole": None, "associationClass": None,
-        }]
+        assert spec == before
 
-    def test_optional_id_becomes_an_optional_end(self, handler):
-        spec = _spec([_cls("Task", [_attr("project_id", isOptional=True)]), _cls("Project")])
-        handler._rewrite_foreign_key_attributes(spec)
-        assert spec["relationships"][0]["targetMultiplicity"] == "0..1"
-        assert spec["relationships"][0]["name"] == "project"
+    def test_an_id_the_request_keeps_as_plain_text(self, handler):
+        spec = _spec([_cls("Ticket", [_attr("title"), _attr("deviceId")]),
+                      _cls("Device", [_attr("serial")])])
+        before = copy.deepcopy(spec)
+        handler._rewrite_foreign_key_attributes(
+            spec, "each ticket stores the device id as plain text; devices are listed separately")
+        assert spec == before
 
-    @pytest.mark.parametrize("attribute", ["sales_order_id", "SalesOrderId"])
-    def test_the_new_end_is_named_in_camel_case(self, handler, attribute):
-        spec = _spec([_cls("Invoice", [_attr(attribute)]), _cls("SalesOrder")])
-        handler._rewrite_foreign_key_attributes(spec)
-        assert [(r["target"], r["name"]) for r in spec["relationships"]] == [
-            ("SalesOrder", "salesOrder")]
+    def test_an_id_naming_an_unrelated_class_of_the_same_name(self, handler):
+        # a browser session beside the sessions of a conference programme
+        spec = _spec([_cls("Session", [_attr("title")]), _cls("Room"), _cls("User"),
+                      _cls("Login", [_attr("at", "datetime"), _attr("sessionId")])],
+                     [_assoc("Session", "Room", "room"), _assoc("Login", "User", "user", "logins")])
+        before = copy.deepcopy(spec)
+        handler._rewrite_foreign_key_attributes(
+            spec, "a conference app with sessions and rooms; log every login of a user")
+        assert spec == before
 
     def test_a_link_to_another_class_does_not_count(self, handler):
         spec = _spec([_cls("Order", [_attr("customerId")]), _cls("Customer"), _cls("Product")],
                      [_assoc("Order", "Product", "products")])
+        before = copy.deepcopy(spec)
         handler._rewrite_foreign_key_attributes(spec)
-        assert _names(spec, "Order") == []
-        assert [(r["source"], r["target"]) for r in spec["relationships"]] == [
-            ("Order", "Product"), ("Order", "Customer")]
+        assert spec == before
 
 
 class TestLeftAlone:
@@ -236,13 +304,14 @@ class TestOwnHierarchy:
         handler._rewrite_foreign_key_attributes(spec)
         assert spec == before
 
-    def test_id_of_a_sibling_is_still_a_link(self, handler):
+    def test_id_of_an_unlinked_sibling_is_left_alone(self, handler):
         spec = _spec(
             [_cls("Person"), _cls("Engineer", [_attr("managerId")]), _cls("Manager")],
             [_inherits("Engineer", "Person"), _inherits("Manager", "Person")],
         )
+        before = copy.deepcopy(spec)
         handler._rewrite_foreign_key_attributes(spec)
-        assert _associations(spec) == [("Engineer", "Manager")]
+        assert spec == before
 
     def test_generated_model_links_no_class_to_its_own_ancestor(self, monkeypatch):
         compact = CompactSystemClassSpec(
@@ -274,9 +343,9 @@ class TestInheritedLinks:
             [_cls("Person", [_attr("companyId")]), _cls("Engineer"), _cls("Company")],
             [_inherits("Engineer", "Person"), _assoc("Engineer", "Company", "employer", "staff")],
         )
+        before = copy.deepcopy(spec)
         handler._rewrite_foreign_key_attributes(spec)
-        assert _names(spec, "Person") == []
-        assert _associations(spec) == [("Engineer", "Company"), ("Person", "Company")]
+        assert spec == before
 
     def test_hierarchy_direction_is_settled_before_links_are_counted(self, monkeypatch):
         """The model states the hierarchy backwards (one class the subclass of
@@ -328,28 +397,6 @@ class TestTheRequestDecides:
         handler._rewrite_foreign_key_attributes(spec, f"orders keep a {written} field")
         assert _names(spec, "Order") == ["customerId"]
 
-    def test_an_id_the_request_talks_about_becomes_an_optional_link(self, handler):
-        spec = _spec([_cls("Ticket", [_attr("deviceId")]), _cls("Device")])
-        handler._rewrite_foreign_key_attributes(
-            spec, "tickets store the device id as plain text")
-        assert _names(spec, "Ticket") == []
-        assert spec["relationships"][0]["targetMultiplicity"] == "0..1"
-
-    def test_a_required_id_the_request_is_silent_about_is_a_required_link(self, handler):
-        spec = _spec([_cls("Ticket", [_attr("deviceId")]), _cls("Device")])
-        handler._rewrite_foreign_key_attributes(spec, "tickets for devices")
-        assert spec["relationships"][0]["targetMultiplicity"] == "1"
-
-    def test_last_word_match_needs_the_request_to_be_silent_about_the_id(self, handler):
-        rels = [_assoc("Invoice", "SalesOrder", "sale", "invoices")]
-        spec = _spec([_cls("Invoice", [_attr("orderId")]), _cls("SalesOrder")],
-                     copy.deepcopy(rels))
-        handler._rewrite_foreign_key_attributes(
-            spec, "each invoice stores the customer's own order id")
-        assert _names(spec, "Invoice") == ["orderId"]
-        handler._rewrite_foreign_key_attributes(spec, "invoices for sales orders")
-        assert _names(spec, "Invoice") == []
-
 
 class TestMembersInUse:
     def test_an_id_a_constraint_reads_is_kept(self, handler):
@@ -378,31 +425,43 @@ def test_the_generation_prompt_forbids_id_attributes_for_links():
     assert "customerId" in prompt
 
 
-def test_generated_system_links_classes_by_association_only(monkeypatch):
-    """Through generate_complete_system: one id beside its association, one
-    with no association at all."""
-    compact = CompactSystemClassSpec(
-        name="Shop",
-        classes=[
-            CompactClassSpec(n="Order", m=[], k="",
-                             a=["placedOn: date", "customerId: str", "couponId: str?"]),
-            CompactClassSpec(n="Customer", a=["name: str"], m=[], k=""),
-            CompactClassSpec(n="Coupon", a=["code: str!"], m=[], k=""),
-        ],
-        rels=[CompactRelationshipSpec(
-            f="Order", t="Customer", k="assoc", how_many_TARGET_for_one_SOURCE="1",
-            how_many_SOURCE_for_one_TARGET="0..*", l="customer", ls="orders")],
-        ocl=[],
-    )
+def _generate(monkeypatch, classes, rels, request_text="a shop"):
+    compact = CompactSystemClassSpec(name="Shop", classes=classes, rels=rels, ocl=[])
     monkeypatch.setattr(handler_mod, "COMPACT_SPEC_ENABLED", True, raising=True)
     handler = ClassDiagramHandler(None)
     monkeypatch.setattr(handler, "predict_two_pass_structured", lambda **kwargs: compact)
+    return handler.generate_complete_system(request_text)
 
-    spec = handler.generate_complete_system("a shop")["systemSpec"]
 
+def _order_to_customer(role, how_many):
+    return CompactRelationshipSpec(
+        f="Order", t="Customer", k="assoc", how_many_TARGET_for_one_SOURCE=how_many,
+        how_many_SOURCE_for_one_TARGET="0..*", l=role, ls="orders")
+
+
+def test_generated_system_drops_the_id_its_association_stores(monkeypatch):
+    result = _generate(monkeypatch, [
+        CompactClassSpec(n="Order", a=["placedOn: date", "customerId: str"], m=[], k=""),
+        CompactClassSpec(n="Customer", a=["name: str"], m=[], k=""),
+    ], [_order_to_customer("customer", "1")])
+
+    spec = result["systemSpec"]
     assert _names(spec, "Order") == ["placedOn"]
     assert [(r["source"], r["target"], r["name"], r["targetMultiplicity"])
-            for r in spec["relationships"]] == [
-        ("Order", "Customer", "customer", "1"),
-        ("Order", "Coupon", "coupon", "0..1"),
-    ]
+            for r in spec["relationships"]] == [("Order", "Customer", "customer", "1")]
+
+
+def test_generated_system_keeps_ids_of_other_links_and_adds_none(monkeypatch):
+    result = _generate(monkeypatch, [
+        CompactClassSpec(n="Order", m=[], k="",
+                         a=["placedOn: date", "customerId: str", "couponId: str?"]),
+        CompactClassSpec(n="Customer", a=["name: str"], m=[], k=""),
+        CompactClassSpec(n="Coupon", a=["code: str!"], m=[], k=""),
+    ], [_order_to_customer("referredBy", "0..1")],
+        "orders placed by a customer, possibly referred by another customer")
+
+    spec = result["systemSpec"]
+    assert _names(spec, "Order") == ["placedOn", "customerId", "couponId"]
+    assert [(r["source"], r["target"], r["name"]) for r in spec["relationships"]] == [
+        ("Order", "Customer", "referredBy")]
+    assert "association to" not in result["message"]
