@@ -79,8 +79,10 @@ def _digest_str(value: Any, cap: int) -> Optional[str]:
 
 
 def _digest_count(value: Any) -> Optional[int]:
-    """A non-negative int (never a bool), else None."""
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+    """A non-negative int (never a bool) up to ``TRACE_DIGEST_MAX_COUNT``, else None."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if not 0 <= value <= agent_config.TRACE_DIGEST_MAX_COUNT:
         return None
     return value
 

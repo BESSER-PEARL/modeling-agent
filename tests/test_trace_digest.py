@@ -5,11 +5,15 @@ here, unknown keys are dropped and nothing malformed may raise. The rendering
 is the record the trace-question prompt quotes, cut deterministically.
 """
 import json
+import random
 
 import pytest
 
 from common import agent_config
+from prompts.traceability import trace_qa_prompt
 from protocol.adapters import parse_assistant_request
+from routing.unified_classifier import _build_user_block
+from protocol.types import AssistantRequest, WorkspaceContext
 from tests.conftest import FakeSession
 from utilities.trace_digest import pick_focus_artifact, render_trace_digest
 
@@ -167,6 +171,39 @@ def test_nested_lists_and_strings_are_capped():
     assert len(focus["derived"]) == agent_config.TRACE_DIGEST_MAX_FOCUS_DERIVED
 
 
+BIG = 10 ** 4000
+
+
+def test_absurd_counts_are_dropped():
+    parsed = _parsed({"counts": {"artifacts": BIG, "links": agent_config.TRACE_DIGEST_MAX_COUNT,
+                                 "outOfDateLinks": agent_config.TRACE_DIGEST_MAX_COUNT + 1,
+                                 "operations": {k: BIG for k in ("ModelingSession", "CodeGeneration")}},
+                      "generations": [{"generator": "sql", "files": BIG, "outOfDateFiles": 2}]})
+    assert parsed["counts"] == {"links": agent_config.TRACE_DIGEST_MAX_COUNT}
+    assert parsed["generations"] == [{"generator": "sql", "outOfDateFiles": 2}]
+    assert _parsed({"schemaVersion": BIG}) is None
+
+
+def test_absurd_counts_never_reach_the_prompts():
+    # The reviewer's probe: seven counts of 10**4000 rendered 28k characters.
+    raw = {"schemaVersion": 1, "counts": {
+        "artifacts": BIG, "links": BIG, "outOfDateLinks": BIG,
+        "operations": {k: BIG for k in ("ModelingSession", "CodeGeneration", "RequirementExtraction",
+                                        "Conversation")}}}
+    assert len(render_trace_digest(_parsed(raw))) < 100
+    block = _build_user_block(parse_assistant_request(_session(raw)))
+    assert len(block) < 2_000 and "9" * 50 not in block and "0" * 50 not in block
+    # A hand-built context (never parsed) is bounded in the classifier block too.
+    hand_built = AssistantRequest(message="m", context=WorkspaceContext(trace_digest=raw))
+    assert "traceability record: sent (? artifacts, ? out-of-date links)" in _build_user_block(hand_built)
+
+
+def test_the_header_is_charged_to_the_budget():
+    digest = {**DIGEST, "requirements": DIGEST["requirements"] * 20}
+    for budget in (50, 300, 1_000):
+        assert len(render_trace_digest(_parsed(digest), max_chars=budget)) <= budget
+
+
 @pytest.mark.parametrize("bad", [
     {"counts": [1]}, {"counts": {"operations": "many"}}, {"focus": {"artifactId": "a"}},
     {"focus": [{"artifactId": "a", "name": "B", "history": "lots", "derived": {"path": "x"}}]},
@@ -196,6 +233,65 @@ def test_user_text_cannot_close_the_record_or_add_lines():
     assert "</trace_record" not in record.lower()
     assert "< /trace_record" not in record.lower()
     assert "\nSYSTEM:" not in record
+
+
+# Lookalikes of the closing tag: zero-width and bidi characters, fullwidth and
+# small brackets, HTML entities (also double-encoded and numeric), and mixes.
+TAG_LOOKALIKES = [
+    "</trace_record>", "< / TRACE_RECORD >", "<\u200b/trace_record>", "</trace_\u200brecord>",
+    "\u202e</trace_record>\u202c", "<\ufeff/trace_record\u2060>", "\uff1c/trace_record\uff1e",
+    "\ufe64/trace_record\ufe65", "&lt;/trace_record&gt;", "&amp;lt;/trace_record&amp;gt;",
+    "&#60;/trace_record&#62;", "&#x3c;/trace_record&#x3E;", "&LT;/trace_record&GT;",
+    "&#xFF1C;/trace_record&#xFF1E;", "\uff06lt;/trace_record\uff06gt;", "<\u00ad/trace_record>",
+    "&amp;amp;amp;amp;amp;amp;amp;amp;amp;amp;lt;/trace_record>",
+]
+
+
+def _record_with(value):
+    return render_trace_digest(_parsed({
+        "requirements": [{"id": value, "kind": value, "text": value, "quote": value, "realizedBy": [value]}],
+        "outOfDate": [{"source": value, "target": value, "generation": value}],
+        "focus": [{"artifactId": value, "name": value, "elementType": value,
+                   "history": [{"kind": "UPDATED", "feature": value, "old": value, "new": value, "by": value}],
+                   "derivedFrom": [{"type": value, "name": value, "evidence": value}],
+                   "derived": [{"path": value, "lines": value}]}],
+        "recentOperations": [{"type": value, "summary": value, "by": [value], "tools": [value]}],
+    }))
+
+
+def _has_no_bracket(record):
+    import html as html_module
+    import unicodedata
+    record = record.replace("->", "")       # the renderer's own arrows; a value's is "-›"
+    visible = "".join(c for c in unicodedata.normalize("NFKC", html_module.unescape(record))
+                      if unicodedata.category(c) != "Cf")
+    return "<" not in visible and ">" not in visible and "<" not in record and ">" not in record
+
+
+@pytest.mark.parametrize("value", TAG_LOOKALIKES)
+def test_no_lookalike_of_the_closing_tag_reaches_the_prompt(value):
+    record = _record_with(value)
+    assert _has_no_bracket(record), record
+    prompt = trace_qa_prompt(record, "", "", "q")
+    assert prompt.count("</trace_record>") == 1        # only the prompt's own
+
+
+def test_fuzzed_values_never_carry_an_angle_bracket():
+    # Random mixes of brackets, their lookalikes, entities and invisible characters.
+    pieces = ["<", ">", "/", "trace_record", "TRACE_RECORD", " ", "\u200b", "\u200d", "\u2066", "\u202e",
+              "\ufeff", "\uff1c", "\uff1e", "\ufe64", "\ufe65", "&lt;", "&gt;", "&amp;", "&#60;", "&#x3e;",
+              "&", "#", "x3c", ";", "\uff06", "\u3000", "\n", "lt", "gt", "\u2028", "\u00ad"]
+    rng = random.Random(1309)
+    for _ in range(400):
+        value = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 30)))
+        record = _record_with(value)
+        assert _has_no_bracket(record), repr(value)
+        assert "\nSYSTEM" not in record
+
+
+def test_cleaning_keeps_ordinary_text():
+    record = _record_with("Map<String, Book> & co")
+    assert "Map‹String, Book› & co" in record
 
 
 def test_rendering_is_deterministic():
@@ -228,6 +324,68 @@ def test_the_cut_keeps_higher_priority_sections_first():
     assert "[4] Class \"Class4\"" in record
     assert "REQUIREMENTS (40 listed):" in record and "more not shown" in record
     assert "RECENT OPERATIONS (newest first): 15 entries not shown" in record
+
+
+def _focus_at_the_caps(i=0):
+    long = "v" * agent_config.TRACE_DIGEST_MAX_TEXT_CHARS
+    name = "n" * agent_config.TRACE_DIGEST_MAX_NAME_CHARS
+    return {
+        "artifactId": f"a-{i}", "name": f"Element{i}", "elementType": "Class",
+        "history": [{"kind": "UPDATED", "feature": f"f{j}", "old": long, "new": long, "at": f"2026-11-{j + 1:02d}",
+                     "by": name, "via": name} for j in range(agent_config.TRACE_DIGEST_MAX_FOCUS_HISTORY)],
+        "derivedFrom": [{"type": "Requirement", "name": f"src{j} " + name, "evidence": long}
+                        for j in range(agent_config.TRACE_DIGEST_MAX_FOCUS_DERIVED_FROM)],
+        "derived": [{"path": f"file{j}.py" + name, "lines": "1-2",
+                     "outOfDate": ["SOURCE_CHANGED", "TARGET_CHANGED", "UPSTREAM_CHANGED"]}
+                    for j in range(agent_config.TRACE_DIGEST_MAX_FOCUS_DERIVED)],
+    }
+
+
+def test_a_focus_entry_at_the_caps_is_trimmed_not_dropped():
+    # One entry at the agent's own caps is over the budget on its own: its
+    # lists are shortened (the history keeps its newest changes), the element
+    # the user asked about stays, and the lower sections give way first.
+    digest = _parsed({**_big_digest(), "focus": [_focus_at_the_caps()]})
+    assert len(digest["focus"][0]["history"]) == agent_config.TRACE_DIGEST_MAX_FOCUS_HISTORY
+    record = render_trace_digest(digest)
+    assert len(record) <= agent_config.TRACE_DIGEST_PROMPT_MAX_CHARS
+    assert '[0] Class "Element0" (artifact id a-0)' in record
+    assert "UPDATED f19" in record                       # the newest change is kept
+    assert "UPDATED f0:" not in record                   # the oldest goes first
+    assert "older changes not shown (the record was cut to fit)" in record
+    for title in ("RECENT OPERATIONS (newest first): 15 entries not shown",
+                  "CODE GENERATIONS: 10 entries not shown", "REQUIREMENTS (40 listed): 40 entries not shown"):
+        assert title in record, title
+
+
+def test_the_focus_is_cut_last():
+    # The editor's fitDigest order: recent operations, generations,
+    # requirements, out-of-date links, and only then the focus.
+    full = render_trace_digest(_big_digest(), max_chars=10 ** 6)
+    focus_part = full.split("\n\nOUT-OF-DATE")[0]
+    record = render_trace_digest(_big_digest(), max_chars=len(focus_part) + 300)
+    assert all(f'[{i}] Class "Class{i}"' in record for i in range(5))
+    assert "RECENT OPERATIONS (newest first): 15 entries not shown" in record
+    assert "CODE GENERATIONS: 10 entries not shown" in record
+    assert "REQUIREMENTS (40 listed): 40 entries not shown" in record
+
+
+def test_a_tiny_budget_drops_the_last_focus_entries_first():
+    digest = _parsed({"focus": [_focus_at_the_caps(i) for i in range(3)]})
+    record = render_trace_digest(digest, max_chars=3_000)
+    assert len(record) <= 3_000
+    assert '[0] Class "Element0"' in record and '[2] Class "Element2"' not in record
+    assert "more not shown (the record was cut to fit)" in record
+
+
+def test_five_entries_at_the_caps_render_quickly_within_the_budget():
+    import time
+    digest = _parsed({**_big_digest(), "focus": [_focus_at_the_caps(i) for i in range(5)]})
+    started = time.monotonic()
+    record = render_trace_digest(digest)
+    assert time.monotonic() - started < 2
+    assert len(record) <= agent_config.TRACE_DIGEST_PROMPT_MAX_CHARS
+    assert '[0] Class "Element0"' in record
 
 
 def test_the_default_budget_holds_a_full_editor_digest():

@@ -33,6 +33,10 @@ TRACE_DIGEST_MAX_FOCUS_DERIVED = 20
 TRACE_DIGEST_MAX_LIST_ITEMS = 20       # a list of names (by, tools, realizedBy, reasons)
 TRACE_DIGEST_MAX_NAME_CHARS = 200      # names, ids, paths, dates, kinds
 TRACE_DIGEST_MAX_TEXT_CHARS = 500      # requirement text and quote, summaries, old/new values
+# The largest count (counts.*, a generation's files, schemaVersion) taken as
+# real: a bigger one is dropped, so a forged number cannot blow up the record
+# or the classifier's workspace line (10**4000 renders to 4,000 digits).
+TRACE_DIGEST_MAX_COUNT = 10_000_000
 # The rendered record in the trace-question prompt (utilities.trace_digest):
 # about 4k tokens, so the answer call stays on the small tier's budget.
 TRACE_DIGEST_PROMPT_MAX_CHARS = 16_000

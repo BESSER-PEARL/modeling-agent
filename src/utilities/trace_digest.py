@@ -8,21 +8,31 @@ artifact the ``show_trace`` button may open. Pure and deterministic: the same
 digest always renders the same text, cut the same way.
 
 Every string in the digest is user data (element names, requirement quotes,
-prompt summaries). The renderer keeps each on one line and neutralizes the
-record's own delimiter, so a value can neither close the record nor pose as a
-section of it.
+prompt summaries). The renderer keeps each on one line and turns every angle
+bracket in it into a guillemet, after undoing what could hide one (HTML
+entities, fullwidth and other compatibility forms, zero-width and bidi
+characters), so a value can neither close the record (or open any other tag)
+nor pose as a section of it.
 """
 
+import functools
+import html
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+import unicodedata
+from typing import Any, Dict, List, Optional
 
 from common.agent_config import TRACE_DIGEST_PROMPT_MAX_CHARS
 
 # The tag the prompt wraps the record in (prompts.traceability).
 RECORD_TAG = "trace_record"
-_TAG_RE = re.compile(r"<\s*/?\s*" + RECORD_TAG, re.IGNORECASE)
 _SPACE_RE = re.compile(r"\s+")
+# What a "<" or ">" in a value becomes.
+_ANGLE_BRACKETS = str.maketrans({"<": "‹", ">": "›"})
+# Undoing entities and compatibility forms can expose another layer
+# ("&amp;lt;", "＆lt;"); a few rounds reach the fixed point of any real value,
+# and an ampersand still left after them is defused (fullwidth).
+_UNWRAP_ROUNDS = 8
 
 # Plain-words meaning of each out-of-date reason, shown next to the reason.
 OUT_OF_DATE_MEANING = {
@@ -35,10 +45,31 @@ OUT_OF_DATE_MEANING = {
 _OMITTED_NOTE_RESERVE = 100
 
 
+def _visible(text: str) -> str:
+    """*text* without format characters (category Cf: zero-width spaces and
+    joiners, bidi controls, the BOM, soft hyphens)."""
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+
+
 def _clean(value: Any) -> str:
-    """One line of user data: whitespace collapsed, the record tag defused."""
-    text = _SPACE_RE.sub(" ", str(value)).strip()
-    return _TAG_RE.sub("‹" + RECORD_TAG, text)
+    """One line of user data with no angle bracket in it: HTML entities
+    decoded, NFKC-normalized (fullwidth "＜" is "<"), format characters
+    removed (to a fixed point), whitespace collapsed, then every "<" / ">"
+    made "‹" / "›"."""
+    return _clean_text(str(value))
+
+
+# The budget re-renders a focus entry each time it shortens one of its lists.
+@functools.lru_cache(maxsize=4096)
+def _clean_text(text: str) -> str:
+    for _ in range(_UNWRAP_ROUNDS):
+        unwrapped = _visible(html.unescape(unicodedata.normalize("NFKC", text)))
+        if unwrapped == text:
+            break
+        text = unwrapped
+    else:
+        text = text.replace("&", "＆")
+    return _SPACE_RE.sub(" ", text).strip().translate(_ANGLE_BRACKETS)
 
 
 def _quoted(value: Any) -> str:
@@ -71,12 +102,21 @@ def _header(digest: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _focus_entry(index: int, item: Dict[str, Any]) -> str:
+def _cut_line(count: int, what: str) -> str:
+    return f"   - ... {count} {what} not shown (the record was cut to fit)"
+
+
+def _focus_entry(index: int, item: Dict[str, Any], cut: Optional[Dict[str, int]] = None) -> str:
+    """One focus artifact; *cut* counts the entries of each of its lists the
+    budget removed (the oldest history, the last sources and code)."""
+    cut = cut or {}
     kind = _clean(item.get("elementType") or "Element")
     lines = [f"[{index}] {kind} {_quoted(item['name'])} (artifact id {_clean(item['artifactId'])})"]
     history = item.get("history") or []
-    if history:
+    if history or cut.get("history"):
         lines.append("  history (oldest first):")
+        if cut.get("history"):
+            lines.append(_cut_line(cut["history"], "older changes"))
         for change in history:
             text = f"   - {change['kind']}"
             if change.get("feature"):
@@ -88,15 +128,17 @@ def _focus_entry(index: int, item: Dict[str, Any]) -> str:
                     text += f" {label} {_clean(change[key])}"
             lines.append(text)
     sources = item.get("derivedFrom") or []
-    if sources:
+    if sources or cut.get("derivedFrom"):
         lines.append("  derived from:")
         for source in sources:
             text = f"   - {_clean(source.get('type') or 'Artifact')} {_quoted(source.get('name', ''))}"
             if source.get("evidence"):
                 text += f" (evidence: {_quoted(source['evidence'])})"
             lines.append(text)
+        if cut.get("derivedFrom"):
+            lines.append(_cut_line(cut["derivedFrom"], "more sources"))
     derived = item.get("derived") or []
-    if derived:
+    if derived or cut.get("derived"):
         lines.append("  derived from it (generated code):")
         for target in derived:
             text = f"   - {_clean(target['path'])}"
@@ -105,6 +147,8 @@ def _focus_entry(index: int, item: Dict[str, Any]) -> str:
             text += (f" OUT OF DATE: {_reasons(target['outOfDate'])}" if target.get("outOfDate")
                      else " up to date")
             lines.append(text)
+        if cut.get("derived"):
+            lines.append(_cut_line(cut["derived"], "more generated fragments"))
     if len(lines) == 1:
         lines.append("  (the trace records nothing else about it)")
     return "\n".join(lines)
@@ -162,57 +206,106 @@ def _operation_entry(item: Dict[str, Any]) -> str:
     return text
 
 
-def _sections(digest: Dict[str, Any]) -> List[Tuple[str, List[str]]]:
-    """(title, entries) in the order they are kept when the record is cut."""
-    requirements = digest.get("requirements") or []
-    return [
-        ("ELEMENTS THE QUESTION NAMES (index, then what the trace records about each)",
-         [_focus_entry(i, item) for i, item in enumerate(digest.get("focus") or [])]),
-        ("OUT-OF-DATE TRACE LINKS (source -> target)",
-         [_out_of_date_entry(item) for item in digest.get("outOfDate") or []]),
-        (f"REQUIREMENTS ({len(requirements)} listed)",
-         [_requirement_entry(item) for item in requirements]),
-        ("CODE GENERATIONS", [_generation_entry(item) for item in digest.get("generations") or []]),
-        ("RECENT OPERATIONS (newest first)",
-         [_operation_entry(item) for item in digest.get("recentOperations") or []]),
-    ]
+# The sections, in the order they are shown.
+_FOCUS_TITLE = "ELEMENTS THE QUESTION NAMES (index, then what the trace records about each)"
+_SECTIONS = (
+    ("focus", None),
+    ("outOfDate", _out_of_date_entry),
+    ("requirements", _requirement_entry),
+    ("generations", _generation_entry),
+    ("recentOperations", _operation_entry),
+)
+# The order the budget shortens them in, the least valuable first (the
+# editor's fitDigest, shared/traceability/traceDigest.ts): the question is
+# about the focus, so it is cut last.
+_CUT_ORDER = ("recentOperations", "generations", "requirements", "outOfDate")
+# A focus entry's lists, in the order a tie on length shortens them.
+_FOCUS_LISTS = ("derived", "derivedFrom", "history")
+
+
+def _title(key: str, total: int) -> str:
+    return {
+        "focus": _FOCUS_TITLE,
+        "outOfDate": "OUT-OF-DATE TRACE LINKS (source -> target)",
+        "requirements": f"REQUIREMENTS ({total} listed)",
+        "generations": "CODE GENERATIONS",
+        "recentOperations": "RECENT OPERATIONS (newest first)",
+    }[key]
+
+
+def _block(title: str, entries: List[str], omitted: int) -> str:
+    if not entries:
+        return f"{title}: {omitted} entr{'y' if omitted == 1 else 'ies'} not shown (the record was cut to fit)"
+    block = title + ":\n" + "\n".join(entries)
+    if omitted:
+        block += f"\n- ... {omitted} more not shown (the record was cut to fit)"
+    return block
+
+
+class _Focus:
+    """A focus entry the budget may shorten: its lists, what was cut of each,
+    and its rendering."""
+
+    def __init__(self, index: int, item: Dict[str, Any]) -> None:
+        self.index = index
+        self.item = {**item, **{key: list(item.get(key) or []) for key in _FOCUS_LISTS}}
+        self.cut = {key: 0 for key in _FOCUS_LISTS}
+        self.text = _focus_entry(index, self.item, self.cut)
+
+    def shorten(self) -> bool:
+        """Remove one entry of its longest list (the oldest change of the
+        history, the last source or fragment); False when all are empty."""
+        key = max(_FOCUS_LISTS, key=lambda k: (len(self.item[k]), -_FOCUS_LISTS.index(k)))
+        if not self.item[key]:
+            return False
+        self.item[key].pop(0 if key == "history" else -1)
+        self.cut[key] += 1
+        self.text = _focus_entry(self.index, self.item, self.cut)
+        return True
 
 
 def render_trace_digest(digest: Dict[str, Any], max_chars: int = TRACE_DIGEST_PROMPT_MAX_CHARS) -> str:
-    """The digest as compact prompt text of at most about *max_chars* characters.
+    """The digest as compact prompt text of at most *max_chars* characters.
 
-    Sections come in a fixed priority order (focus elements, out-of-date
-    links, requirements, generations, recent operations) and entries in the
-    digest's order. When the budget runs out, the rest of a section is
-    replaced by one line saying how many entries are not shown, and the next
-    sections are filled from what is left, so the cut is deterministic.
+    Sections are shown in a fixed order (focus elements, out-of-date links,
+    requirements, generations, recent operations), entries in the digest's
+    order. Over the budget, lists are shortened from their end, the least
+    valuable first, as the editor's own ``fitDigest`` does: recent
+    operations, generations, requirements, out-of-date links, and last the
+    focus, whose element's own lists (the oldest history first, then its
+    last sources and code, the longest list first) are cut before an entry is
+    dropped, the last entry first. A cut section keeps one line saying how
+    many entries are not shown. The header (counts) is charged to the budget
+    too. Deterministic: the same digest is always cut the same way.
     """
-    out = [_header(digest)]
-    used = len(out[0])
-    sections = [(title, entries) for title, entries in _sections(digest) if entries]
-    for position, (title, entries) in enumerate(sections):
-        # Room for the one-line note of every later section, so each is at least counted.
-        available = max_chars - _OMITTED_NOTE_RESERVE * (len(sections) - position - 1)
-        kept: List[str] = []
-        cost = used + len(title) + 2
-        for entry in entries:
-            if cost + len(entry) + 1 + _OMITTED_NOTE_RESERVE > available:
-                break
-            kept.append(entry)
-            cost += len(entry) + 1
-        omitted = len(entries) - len(kept)
-        if not kept:
-            note = f"\n{title}: {omitted} entr{'y' if omitted == 1 else 'ies'} not shown (the record was cut to fit)"
-            if used + len(note) <= max_chars:
-                out.append(note)
-                used += len(note)
-            continue
-        block = "\n" + title + ":\n" + "\n".join(kept)
-        if omitted:
-            block += f"\n- ... {omitted} more not shown (the record was cut to fit)"
-        out.append(block)
-        used += len(block)
-    return "\n".join(out)
+    header = _header(digest)[:max_chars]
+    totals = {key: len(digest.get(key) or []) for key, _ in _SECTIONS}
+    rendered = {
+        key: [render(item) for item in digest.get(key) or []]
+        for key, render in _SECTIONS if render is not None
+    }
+    focus = [_Focus(i, item) for i, item in enumerate(digest.get("focus") or [])]
+
+    def text() -> str:
+        parts = [header]
+        for key, _ in _SECTIONS:
+            if not totals[key]:
+                continue
+            entries = [entry.text for entry in focus] if key == "focus" else rendered[key]
+            parts.append("\n" + _block(_title(key, totals[key]), entries, totals[key] - len(entries)))
+        return "\n".join(parts)
+
+    out = text()
+    for key in _CUT_ORDER:
+        while rendered[key] and len(out) > max_chars:
+            rendered[key].pop()
+            out = text()
+    while focus and len(out) > max_chars:
+        if not focus[-1].shorten():
+            focus.pop()
+        out = text()
+    # Only the one-line notes are left: a budget smaller than those is cut hard.
+    return out[:max_chars]
 
 
 def _mentions(message: str, name: str) -> bool:

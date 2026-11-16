@@ -57,6 +57,7 @@ from common.session_keys import (
     UNIFIED_CLASSIFICATION,
     UNIFIED_CLASSIFICATION_EVENT_ID,
 )
+from common.agent_config import TRACE_DIGEST_MAX_COUNT
 from common import pending_dialogs
 from common.pending_dialogs import PENDING_GENERATOR_CONFIG, PLAN_GENERATION_CONFIRM_FLAG
 
@@ -915,11 +916,18 @@ def _build_user_block(
     # Whether the editor sent its trace record (see traceability_question_intent).
     trace_digest = getattr(ctx, "trace_digest", None)
     if isinstance(trace_digest, dict):
-        counts = trace_digest.get("counts") or {}
+        counts = trace_digest.get("counts")
+        counts = counts if isinstance(counts, dict) else {}
+
+        def _count(key: str):
+            # The parser bounds counts; a hand-built context is bounded here too.
+            value = counts.get(key)
+            ok = isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= TRACE_DIGEST_MAX_COUNT
+            return value if ok else "?"
+
         summary_lines.append(
             "- traceability record: sent "
-            f"({counts.get('artifacts', '?')} artifacts, "
-            f"{counts.get('outOfDateLinks', '?')} out-of-date links)"
+            f"({_count('artifacts')} artifacts, {_count('outOfDateLinks')} out-of-date links)"
         )
 
     if summary_lines:

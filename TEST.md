@@ -158,7 +158,7 @@ four files that import `patches.websocket_platform` are skipped at import, leavi
 | File | Tests | Markers | What it verifies |
 | --- | --- | --- | --- |
 | `test_protocol.py` | 32 | — | v2 wire-payload parsing (`protocol/adapters.py`). |
-| `test_trace_digest.py` | 53 | — | `context.traceDigest`: validated, capped and stripped of unknown keys, malformed input dropped without raising; the rendered record (content, defused delimiter, deterministic cut to a budget) and `pick_focus_artifact`. |
+| `test_trace_digest.py` | 79 | — | `context.traceDigest`: validated, capped (absurd counts dropped) and stripped of unknown keys, malformed input dropped without raising; the rendered record (content, every angle bracket defused after entities, NFKC and invisible characters, fuzzed; the header charged to the budget; the editor's cut order with the focus last and trimmed before it is dropped) and `pick_focus_artifact`. |
 | `test_llm_usage.py` | 21 | — | `llmUsage`: the turn's LLM totals (per-event turn, pool threads, BYOK provider) stamped on terminal replies only, running totals, absent without a call or a turn, kept on replay. |
 | `test_conversation_memory.py` | 14 | — | `ConversationMemory` sliding window, summarizer trigger, `build_context`, the global registry, and thread safety. |
 | `test_memory_session_key.py` | 5 | — | `memory_session_key` derivation chain — `request.session_id` → payload `sessionId` → BAF `session.id` → `id(session)`. |
