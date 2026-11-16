@@ -681,6 +681,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
         rejected by Django and reported by the validator on every class. Kept
         when *request_text* asks for an id; identifiers the user names
         (``isbn``, ``sku``) are other attributes and are never touched.
+        *classes* may also be the ``changes`` of ``add_class`` modifications,
+        which carry the same keys.
         """
         if not isinstance(classes, list) or self._ID_REQUEST_RE.search(request_text or ""):
             return
@@ -3397,7 +3399,17 @@ class ClassDiagramHandler(BaseDiagramHandler):
             return deduped
 
         def _expand_refactoring(handler, spec):
-            return handler._prepare_modification_spec(spec, current_model)
+            spec = handler._prepare_modification_spec(spec, current_model)
+            # A new class gets no surrogate id, as in a generated diagram.
+            mods = spec.get("modifications")
+            if not isinstance(mods, list):
+                mods = [spec.get("modification")]
+            handler._strip_surrogate_ids(
+                [m.get("changes") for m in mods
+                 if isinstance(m, dict) and m.get("action") == "add_class"],
+                kwargs.get("raw_request") or user_request,
+            )
+            return spec
 
         # Up to TWO samples: when EVERY op targets something absent from
         # the model, the parse was almost certainly a sampling glitch

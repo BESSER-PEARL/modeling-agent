@@ -142,6 +142,42 @@ def test_single_class_carries_no_id(handler, monkeypatch):
     assert [a["name"] for a in result["element"]["attributes"]] == ["price"]
 
 
+class TestAddClassModification:
+    """A class added to an existing diagram gets no surrogate id either."""
+
+    def _modify(self, handler, monkeypatch, request_text):
+        from schemas import ClassModificationResponse
+        reply = ClassModificationResponse(modifications=[
+            {"action": "add_class", "target": {},
+             "changes": {"className": "Award", "attributes": [
+                 {"name": "id", "type": "str"}, {"name": "edition", "type": "int"}]}},
+            {"action": "add_class", "target": {},
+             "changes": {"className": "DocumentKind", "isEnumeration": True,
+                         "attributes": [{"name": "ID"}, {"name": "PASSPORT"}]}},
+            {"action": "add_attribute", "target": {"className": "Book"},
+             "changes": {"name": "id", "type": "str"}},
+        ])
+        monkeypatch.setattr(handler, "predict_structured", lambda *a, **k: reply)
+        model = {"elements": {"c1": {"id": "c1", "name": "Book", "type": "Class",
+                                     "attributes": [], "methods": []}},
+                 "relationships": {}}
+        result = handler.generate_modification(request_text, current_model=model)
+        return {m["changes"].get("className") or m["action"]:
+                [a["name"] for a in m["changes"].get("attributes") or []]
+                for m in result["modifications"]}
+
+    def test_new_class_carries_no_id(self, handler, monkeypatch):
+        added = self._modify(handler, monkeypatch, "also store awards and document kinds")
+        assert added["Award"] == ["edition"]
+        assert added["DocumentKind"] == ["ID", "PASSPORT"]
+        # an attribute added to an existing class is the user's request
+        assert "add_attribute" in added
+
+    def test_requested_id_is_kept(self, handler, monkeypatch):
+        added = self._modify(handler, monkeypatch, "add an Award class with an id and an edition")
+        assert added["Award"] == ["id", "edition"]
+
+
 class TestStarterClasses:
     def test_fallback_class_has_no_id(self, handler):
         spec = handler.generate_fallback_element("create a Product class")["element"]
