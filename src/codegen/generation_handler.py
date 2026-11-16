@@ -577,7 +577,7 @@ def _request_context(session: Session):
 
     try:
         return parse_assistant_request(session).context
-    except Exception:  # pragma: no cover — copy must never crash
+    except Exception:  # pragma: no cover — an unreadable request has no context
         logger.debug("Could not read the request context", exc_info=True)
         return None
 
@@ -589,7 +589,16 @@ def _previous_result_gone(session: Session) -> bool:
     return last_generation.get("expired") is True and not repo_holds_app(session)
 
 
-_DISPLAYABLE_MODEL_RE = re.compile(r"[\w.:/@+-]{1,100}")
+# A model value that is not shown: markup, a URL, or what looks like a key.
+_HIDDEN_MODEL_RE = re.compile(r"[`\s]|://|^(?:sk|rk|gsk|xai|hf)[-_]|^AIza", re.IGNORECASE)
+_MAX_SHOWN_MODEL_CHARS = 80
+
+
+def _shown_model(model: Optional[str]) -> str:
+    """`` (`model`)`` for a model id, empty for anything else."""
+    if not model or len(model) > _MAX_SHOWN_MODEL_CHARS or _HIDDEN_MODEL_RE.search(model):
+        return ""
+    return f" (`{model}`)"
 
 
 def _generation_key(session: Session) -> Dict[str, Any]:
@@ -610,9 +619,7 @@ def _key_note(session: Session, *, short: bool) -> str:
     key = _generation_key(session)
     if key["tier"] == "own":
         name = PROVIDER_NAMES.get(key.get("provider") or "", "API")
-        model = key.get("model")
-        shown = f" ({model})" if model and _DISPLAYABLE_MODEL_RE.fullmatch(model) else ""
-        return f"It will use your own {name} key{shown}."
+        return f"It will use your own {name} key{_shown_model(key.get('model'))}."
     if key["tier"] == "none":
         return "You need an API key to generate: [set up your own API key](wme:add-key) first."
     if short:

@@ -609,9 +609,9 @@ def _branch_confirmation(branch, generation_key=_ABSENT, **kwargs):
 
 @pytest.mark.parametrize("branch", list(_BRANCHES))
 @pytest.mark.parametrize("key, sentence", [
-    ({"tier": "own", "provider": "openai", "model": "gpt-6-luna"}, "It will use your own OpenAI key (gpt-6-luna)."),
+    ({"tier": "own", "provider": "openai", "model": "gpt-6-luna"}, "It will use your own OpenAI key (`gpt-6-luna`)."),
     ({"tier": "own", "provider": "anthropic", "model": None}, "It will use your own Anthropic key."),
-    ({"tier": "own", "provider": "gateway", "model": "some-model"}, "It will use your own API key (some-model)."),
+    ({"tier": "own", "provider": "gateway", "model": "some-model"}, "It will use your own API key (`some-model`)."),
     ({"tier": "own"}, "It will use your own API key."),
 ])
 def test_own_key_is_named_instead_of_the_free_model(branch, key, sentence):
@@ -642,7 +642,7 @@ def test_older_editor_without_a_key_keeps_todays_text(branch):
 
 @pytest.mark.parametrize("branch", list(_BRANCHES))
 @pytest.mark.parametrize("cfg, sentence", [
-    ({"provider": "mistral", "model": "mistral-large-latest"}, "It will use your own Mistral key (mistral-large-latest)."),
+    ({"provider": "mistral", "model": "mistral-large-latest"}, "It will use your own Mistral key (`mistral-large-latest`)."),
     ({"provider": "openai", "model": None}, "It will use your own OpenAI key."),
     # A gateway or local endpoint speaks OpenAI's protocol but is not OpenAI.
     ({"provider": "openai", "model": None, "base_url": "https://llm.example.org/v1"}, "It will use your own API key."),
@@ -671,10 +671,24 @@ def test_the_editors_field_wins_over_the_socket_key():
     assert _FREE_LONG in message
 
 
-def test_a_model_name_that_is_not_an_identifier_is_left_out():
-    message = _branch_confirmation("default", {"tier": "own", "provider": "openai", "model": "[x](javascript:y)"})
+@pytest.mark.parametrize("model", ["vendor/model-name", "name:tag", "_x_", "gpt-6-luna"])
+def test_a_model_id_is_shown_as_code(model):
+    message = _branch_confirmation("default", {"tier": "own", "provider": "openai", "model": model})
+    assert f"It will use your own OpenAI key (`{model}`)." in message
+
+
+@pytest.mark.parametrize("model", [
+    "https://llm.example.org/v1",
+    "gpt`x",
+    "gpt x",
+    "sk-proj-0123456789abcdef",
+    "SK_live_0123456789",
+    "x" * 81,
+])
+def test_a_model_value_that_is_not_a_model_id_is_not_shown(model):
+    message = _branch_confirmation("default", {"tier": "own", "provider": "openai", "model": model})
     assert "It will use your own OpenAI key." in message
-    assert "javascript" not in message
+    assert model not in message
 
 
 def test_every_supported_provider_has_a_public_name():
