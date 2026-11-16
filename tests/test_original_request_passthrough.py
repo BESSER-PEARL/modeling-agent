@@ -600,7 +600,7 @@ def test_follow_up_uses_the_editors_last_run_request_next():
 
     assert original.startswith(_LAST_RUN_SPEC)
     assert "recipe" not in original
-    assert original_request_for_project(session, "proj-1") == _LAST_RUN_SPEC
+    assert original_request_for_project(session, "proj-1") == ""
 
 
 def test_follow_up_never_rebuilds_the_request_from_the_conversation():
@@ -641,6 +641,49 @@ def test_a_follow_up_with_content_is_still_carried():
     original = generation._original_for_smart_generation(session, "regenerate with a dark theme")
     assert original.startswith(_ORDER_SPEC)
     assert original.endswith("regenerate with a dark theme")
+
+
+@pytest.mark.parametrize("message", ["generate the app", "continue with the generation", ""])
+def test_a_command_without_content_runs_the_editors_last_request(message):
+    from codegen import generation_handler as generation
+
+    session = _follow_up_session(message, last_generation={"request": _LAST_RUN_SPEC, "expired": True})
+
+    assert generation._original_for_smart_generation(session, message) == _LAST_RUN_SPEC
+
+
+def test_a_follow_up_with_content_extends_the_editors_last_request():
+    from codegen import generation_handler as generation
+    from utilities.original_request import original_request_for_project
+
+    message = "regenerate with a dark theme"
+    session = _follow_up_session(message, last_generation={"request": _LAST_RUN_SPEC, "expired": True})
+
+    original = generation._original_for_smart_generation(session, message)
+
+    assert original.startswith(_LAST_RUN_SPEC)
+    assert original.endswith(message)
+    assert "## Subsequent user request, verbatim" in original
+    assert original_request_for_project(session, "proj-1") == original
+
+
+def test_the_remembered_request_wins_over_the_editors_last_request():
+    from codegen import generation_handler as generation
+    from utilities.original_request import remember_original_request
+
+    session = _follow_up_session("generate the app", last_generation={"request": _LAST_RUN_SPEC})
+    remember_original_request(session, _ORDER_SPEC, "proj-1")
+
+    assert generation._original_for_smart_generation(session, "generate the app") == _ORDER_SPEC
+
+
+def test_a_replacing_request_ignores_the_editors_last_request():
+    from codegen import generation_handler as generation
+
+    message = "a recipe app with ingredients and steps"
+    session = _follow_up_session(message, last_generation={"request": _LAST_RUN_SPEC})
+
+    assert generation._original_for_smart_generation(session, message, replace=True) == message
 
 
 class _FollowUpProvider:

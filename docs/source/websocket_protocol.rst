@@ -215,10 +215,12 @@ Field Reference
      - No
      - The editor's last Spec-Driven run of this project:
        ``{runId, at, expired, request}``, where ``request`` is the text the run
-       was started with (read up to 4,000 characters). A content-free
-       follow-up ("regenerate with fixes", "try again", "fix it") re-runs the
-       request remembered for the project, else this ``request``; with neither
-       the agent asks the user to describe the application again. When
+       was started with (read up to 4,000 characters). When the agent remembers
+       no request for the project, this ``request`` is the run's original
+       request: a generate command or confirmation runs it, a follow-up with
+       content is appended to it. A content-free follow-up ("regenerate with
+       fixes", "try again", "fix it") with neither asks the user to describe
+       the application again. When
        ``expired`` is true (and no linked repo holds the app), the run
        confirmation says the previous result is no longer available and the
        application will be built again, instead of offering to update it.

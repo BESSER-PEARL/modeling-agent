@@ -184,33 +184,28 @@ def _with_subsequent_request(previous: str, message: str) -> str:
     )
 
 
-def _original_for_follow_up(session, project_id, previous, asks_fix):
-    """The request a content-free follow-up re-runs: the remembered one, else
-    the editor's last run's; None when neither exists."""
-    original = previous
-    if not original:
-        last_generation = getattr(_request_context(session), "last_generation", None) or {}
-        original = last_generation.get("request")
-        if not original:
-            return None
-        remember_original_request(session, original, project_id)
-    if asks_fix:
-        original = f"{original}\n\n## Subsequent user request\n\n{_FIX_FOLLOW_UP_NOTE}"
-    return original
-
-
 def _original_for_smart_generation(session, user_message, *, replace=False):
     """The user's own request for the run, or None for a content-free
-    follow-up with no earlier request to re-run."""
+    follow-up with no earlier request to re-run.
+
+    The earlier request is the one remembered for the project, else the one the
+    editor's last run was started with (unless this message replaces it)."""
     project_id = _active_project_id(session)
     previous = original_request_for_project(session, project_id)
+    if not previous and not replace:
+        last_generation = getattr(_request_context(session), "last_generation", None) or {}
+        previous = last_generation.get("request") or ""
     message = (user_message or "").strip()
     normalized = _normalized_message(message)
     generic = _SMART_GEN_CONFIRM_PHRASES | _PLAN_GEN_CONFIRM_PHRASES
     if not message or normalized in generic or _BARE_GENERATE_RE.fullmatch(normalized):
         return previous
     if _CONTENT_FREE_FOLLOW_UP_RE.fullmatch(normalized):
-        return _original_for_follow_up(session, project_id, previous, bool(re.search(r"\bfix", normalized)))
+        if not previous:
+            return None
+        if re.search(r"\bfix", normalized):
+            return f"{previous}\n\n## Subsequent user request\n\n{_FIX_FOLLOW_UP_NOTE}"
+        return previous
     if previous and not replace and (message == previous or previous.endswith("\n" + message)):
         return previous
     if previous and not replace:
@@ -493,9 +488,10 @@ def _build_smart_gen_confirmation(
     result_expired = _last_result_expired(session) and not repo_holds_app(session)
     prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
     if result_expired:
+        sources = "your model and your original request" if original else "your model"
         prefix += (
-            "Your previous result is no longer available, so I'll build the application again "
-            "from your model and your original request.\n\n"
+            f"Your previous result is no longer available, so I'll build the application again "
+            f"from {sources}.\n\n"
         )
 
     is_fix = (not reason_prefix) and (not starting_over) and (not result_expired) and _looks_like_fix_request(

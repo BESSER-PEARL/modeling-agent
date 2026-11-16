@@ -747,3 +747,15 @@ def test_regenerating_after_expiry_rebuilds_from_the_last_runs_request():
     assert payload["suggestedActions"][0]["label"] == "Continue"
     assert payload["message"].startswith(_EXPIRED_NOTE)
     assert pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) == "An order app with customers."
+
+
+def test_expiry_note_does_not_promise_a_request_that_will_not_be_sent():
+    from common.pending_dialogs import PENDING_SMART_GEN_ORIGINAL_REQUEST
+
+    session, _ = _branch_session("default", last_generation={"expired": True})
+    payload = _build_smart_gen_confirmation(session, "Build the app.", "anthropic", user_message="generate the app")
+
+    assert pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) == ""
+    assert payload["message"].startswith(
+        "Your previous result is no longer available, so I'll build the application again from your model.\n\n")
+    assert "original request" not in payload["message"]
