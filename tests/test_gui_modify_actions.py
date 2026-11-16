@@ -309,6 +309,69 @@ def test_renamed_page_is_renamed_in_every_nav():
         assert [(l["attributes"]["href"], _text(l)) for l in links][-1] == ("/portfolio", "Portfolio")
 
 
+# Two pages whose names give one route: the app numbers the second one.
+SAME_ROUTE_PAGES = [
+    {"name": name, "sections": [{"html": f"<section class='s'><h1>{name}</h1></section>"}]}
+    for name in ("Home", "Q&A", "Q-A")
+]
+
+
+def _same_route_model():
+    handler = _handler()
+    handler.predict_two_pass_structured = (
+        lambda **kw: AuthoredSystemGUISpec(projectName="Help", pages=SAME_ROUTE_PAGES)
+    )
+    return handler.generate_complete_system("help desk")["model"]
+
+
+def _nav_entries_of(model, page_name):
+    nav = _page(model, page_name)["frames"][0]["component"]["components"][0]
+    return [(link["attributes"]["href"], _text(link)) for link in _links_in(nav)]
+
+
+def test_renaming_a_page_with_a_numbered_route_retargets_only_its_links():
+    # The route was computed from the name alone: renaming 'Q-A' ('/q-a-2')
+    # moved the links of 'Q&A' ('/q-a') and left its own nav entry behind.
+    model = _same_route_model()
+    assert _nav_entries_of(model, "Home") == [("/home", "Home"), ("/q-a", "Q&A"), ("/q-a-2", "Q-A")]
+    by_spec = _modify(model, [{"operation": "rename_page", "pageName": "Q-A", "newPageName": "Done"}],
+                      "rename the second help page")
+    handler = _handler()
+    handler.predict_structured = None  # the request needs no LLM call
+    by_rule = handler.generate_modification(
+        "rename Q-A to Done", copy.deepcopy(model), raw_request="rename Q-A to Done", class_metadata=None,
+    )["model"]
+    for after in (by_spec, by_rule):
+        assert _nav_entries_of(after, "Home") == [("/home", "Home"), ("/q-a", "Q&A"), ("/done", "Done")]
+
+
+def test_removing_a_page_with_a_numbered_route_leaves_every_nav():
+    after = _modify(_same_route_model(), [{"operation": "remove_page", "pageName": "Q-A"}],
+                    "remove the second help page")
+    for name in ("Home", "Q&A"):
+        assert _nav_entries_of(after, name) == [("/home", "Home"), ("/q-a", "Q&A")]
+
+
+def test_model_routes_are_the_ones_besser_gives_the_pages():
+    from diagram_handlers.types.gui_nocode_diagram_handler import _model_page_routes
+
+    # BESSER keeps a stored route that is URL-safe and free, else derives one
+    # from the name; a page without a name is 'Page_<n>', a blank name
+    # 'Screen_<n>', and a name that leaves no route '/page-<n>'.
+    pages = [
+        {"id": "p1", "name": "Home", "route_path": "/home"},
+        {"id": "p2", "name": ""},
+        {"id": "p3", "name": "   "},
+        {"id": "p4"},
+        {"id": "p5", "name": "Orders", "route_path": "/orders-archive"},
+        {"id": "p6", "name": "Rooms & Rates", "route_path": "/rooms-&-rates"},
+        {"id": "p7", "name": "Home", "route_path": "/home"},
+    ]
+    assert _model_page_routes(pages) == [
+        "/home", "/screen_2", "/page-3", "/page_4", "/orders-archive", "/rooms-rates", "/home-2",
+    ]
+
+
 def test_modification_lifts_a_saved_link_out_of_a_paragraph():
     # Exact node from the saved live hotel design (also after the editor
     # round-trip, where the <p> may carry type 'text').

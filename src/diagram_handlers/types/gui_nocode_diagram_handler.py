@@ -2685,21 +2685,41 @@ def _page_route(name: Any) -> str:
     return "/" + re.sub(r"[^\w]+", "-", _clean_text(name).lower()).strip("-")
 
 
-def _page_routes(names: List[Any]) -> List[str]:
-    """The route of each page, in page order, numbered as BESSER numbers
-    them: a name that leaves no route gets ``/page-<position>``, a route
-    already taken gets ``-2``, ``-3``, ..."""
-    routes: List[str] = []
-    for position, name in enumerate(names, 1):
-        route = _page_route(name)
+# A stored route BESSER keeps as is: letters, digits, "_" and "-" in each segment.
+_STORED_ROUTE_RE = re.compile(r"(?:/[\w-]+)+")
+
+
+def _model_page_routes(pages: List[Dict[str, Any]]) -> List[str]:
+    """The route of each page, in page order, as BESSER assigns them: the
+    page's stored ``route_path`` when it is URL-safe and not taken, else the
+    route of its name (``Page_<n>`` without a name, ``Screen_<n>`` with a
+    blank one); ``/page-<n>`` when that leaves no route, and ``-2``, ``-3``,
+    ... for a route already taken. Pages are taken in id order."""
+    routes: Dict[int, str] = {}
+    for position in sorted(range(len(pages)), key=lambda i: (str(pages[i].get("id") or ""), i)):
+        page = pages[position]
+        stored = str(page.get("route_path") or "")
+        route = stored if _STORED_ROUTE_RE.fullmatch(stored) and stored not in routes.values() else ""
+        route = route or _page_route(page.get("name", f"Page_{position + 1}") or f"Screen_{position + 1}")
         if route == "/":
-            route = f"/page-{position}"
+            route = f"/page-{position + 1}"
         base, suffix = route, 1
-        while route in routes:
+        while route in routes.values():
             suffix += 1
             route = f"{base}-{suffix}"
-        routes.append(route)
-    return routes
+        routes[position] = route
+    return [routes[i] for i in range(len(pages))]
+
+
+def _page_routes(names: List[Any]) -> List[str]:
+    """The route of each page of a new design, in page order."""
+    return _model_page_routes([{"name": name} for name in names])
+
+
+def _route_table(model: Dict[str, Any]) -> List[Tuple[Dict[str, Any], str]]:
+    """``(page, route)`` for each page of *model*."""
+    pages = [p for p in model.get("pages") or [] if isinstance(p, dict)]
+    return list(zip(pages, _model_page_routes(pages)))
 
 
 def _slug(text: Any) -> str:
@@ -3214,7 +3234,7 @@ def _wire_model_actions(
             new_ids.add(page_id)
             page["id"] = page_id
         page_index.append({"name": name, "id": page["id"]})
-    for entry, route in zip(page_index, _page_routes([p["name"] for p in page_index])):
+    for entry, route in zip(page_index, _model_page_routes(pages)):
         entry["route"] = route
 
     classes_by_id = {c["id"]: c for c in (class_metadata or [])}
@@ -3396,14 +3416,13 @@ def _add_new_pages_to_navs(
         wrapper["components"].insert(0, header)
 
 
-def _drop_nav_entries(model: Dict[str, Any], page_name: str) -> None:
-    """Remove a deleted page's entries from every nav that lists pages."""
-    route = _page_route(page_name)
-    routes = {
-        _page_route(p.get("name")): {"name": _clean_text(p.get("name"))}
-        for p in model.get("pages") or [] if isinstance(p, dict)
-    }
-    routes[route] = {"name": page_name}
+def _drop_nav_entries(
+    model: Dict[str, Any], before: List[Tuple[Dict[str, Any], str]], gone: Dict[str, Any],
+) -> None:
+    """Remove the entries of the deleted page *gone* from every nav that lists
+    pages; *before* is the route table of the model before the deletion."""
+    routes = {route: {"name": _clean_text(page.get("name"))} for page, route in before}
+    route = next(route for page, route in before if page is gone)
     for page in model.get("pages") or []:
         if not isinstance(page, dict):
             continue
@@ -3413,18 +3432,30 @@ def _drop_nav_entries(model: Dict[str, Any], page_name: str) -> None:
                     parent.remove(item)
 
 
-def _retarget_links(model: Dict[str, Any], old_name: str, new_name: str) -> None:
-    """Point links at a renamed page's new route (the route follows the name);
-    a link labelled with the old name, like a nav entry, takes the new one."""
-    old_route, new_route = _page_route(old_name), _page_route(new_name)
+def _retarget_links(
+    model: Dict[str, Any],
+    before: List[Tuple[Dict[str, Any], str]],
+    renamed: Optional[Dict[str, Any]] = None,
+    old_name: str = "",
+) -> None:
+    """Point the links of each page whose route changed since *before* (the
+    route table of the model before the change) at its new route. A link to
+    the *renamed* page labelled with its *old_name*, like a nav entry, takes
+    the new name."""
+    after = {id(page): route for page, route in _route_table(model)}
+    moved = {
+        route: page for page, route in before
+        if id(page) in after and (after[id(page)] != route or page is renamed)
+    }
 
     def _walk(node: Any) -> None:
         if not isinstance(node, dict):
             return
         attrs = node.get("attributes")
-        if isinstance(attrs, dict) and attrs.get("href") == old_route:
-            _point_link(node, {"name": new_name, "route": new_route},
-                        relabel=_node_text(node) == old_name)
+        if isinstance(attrs, dict) and attrs.get("href") in moved:
+            page = moved[attrs["href"]]
+            _point_link(node, {"name": _clean_text(page.get("name")), "route": after[id(page)]},
+                        relabel=page is renamed and _node_text(node) == old_name)
             return
         for child in node.get("components") or []:
             _walk(child)
@@ -4114,11 +4145,12 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
                     matched_page = suffix_matches[0]
             if matched_page is not None:
                 old_name = _clean_text(matched_page.get("name"))
-                _retarget_links(model, old_name, new_name)
+                before = _route_table(model)
                 matched_page["name"] = new_name
                 matched_page["route_path"] = (
                     f"/{re.sub(r'[^a-z0-9-]+', '-', new_name.lower()).strip('-') or 'page'}"
                 )
+                _retarget_links(model, before, matched_page, old_name)
                 return model, f"Renamed the **{old_name}** page to **{new_name}**."
             # Otherwise it may be a section rename — try that.
             if self._rename_section(model, raw_old, new_name):
@@ -4291,11 +4323,12 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
             renamed = False
             for page in model.get("pages", []):
                 if isinstance(page, dict) and _clean_text(page.get("name")).lower() == page_name.lower():
-                    _retarget_links(model, _clean_text(page.get("name")), new_page_name)
+                    old_name, before = _clean_text(page.get("name")), _route_table(model)
                     page["name"] = new_page_name
                     page["route_path"] = (
                         f"/{re.sub(r'[^a-z0-9-]+', '-', new_page_name.lower()).strip('-') or 'page'}"
                     )
+                    _retarget_links(model, before, page, old_name)
                     renamed = True
                     break
             if renamed:
@@ -4325,10 +4358,12 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
             filtered = [p for p in pages if _clean_text(p.get("name")).lower() != page_name.lower()]
             # SAFETY: never remove the last page — leave at least one.
             if filtered and len(filtered) < len(pages):
+                before = _route_table(model)
                 model["pages"] = filtered
                 for gone in pages:
-                    if gone not in filtered:
-                        _drop_nav_entries(model, _clean_text(gone.get("name")))
+                    if not any(gone is kept for kept in filtered):
+                        _drop_nav_entries(model, before, gone)
+                _retarget_links(model, before)
                 return model, f"Removed the **{page_name}** page from the GUI."
             return model, (
                 f"I couldn't remove the **{page_name}** page (it either doesn't exist or "
