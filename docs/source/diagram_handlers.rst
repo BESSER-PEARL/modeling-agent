@@ -560,6 +560,55 @@ Features
    in the design system is therefore system-fonts-only, and all imagery in
    the exemplars is a CSS gradient or inline SVG.
 
+What a Designed Screen Binds and Wires
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. important::
+
+   The page routes and the designed forms kept as authored rely on the
+   matching BESSER generator change (URL-safe page routes and the automatic
+   parent select in bound forms): release this behaviour together with that
+   BESSER change or after it.
+
+The LLM states intent (a ``bind`` spec, ``<a href>``, ``<button data-page>``,
+``<form data-class>``); the handler turns it into the encodings BESSER's GUI
+converter and web-app generator read. With a ClassDiagram:
+
+- **Tables.** The designed ``columns`` that name an attribute or a related
+  class are kept, in the designed order, when at least half of them do;
+  otherwise the table shows every attribute, inherited ones included. The
+  surrogate ``id`` is a column only when the design asks for it. Labels are
+  split into words (``dueDate`` → "Due date"), and a related record is shown
+  by its ``name`` / ``title`` / ``label``, else its first text attribute,
+  else its natural key.
+- **Metric cards.** A card over only some records carries a ``filter``: one
+  attribute compared with a fixed value (enumeration literal, boolean,
+  number, ISO date, text). It is checked against the class diagram and
+  written as the widget's ``filter`` attribute, in the grammar the generated
+  app parses. A number needs a ``.`` decimal point and no grouping and is
+  written out in full; a value the text grammar would split (``,``, ``;``,
+  ``&&``, ``and``, or ``in`` / ``contains`` before more text) is written in
+  the JSON form the app also reads
+  (``{"field": ..., "op": ..., "value": ...}``). A card whose filter cannot
+  be used is left out, and the reply names it.
+- **Forms.** A ``<form data-class>`` whose inputs cover the attributes a new
+  record needs is bound to the class and kept as authored; for a record that
+  must be linked to another one, the generated app adds the select of that
+  record.
+- **Links and routes.** A page's route is the one BESSER assigns: its stored
+  ``route_path`` when it is URL-safe and free, else ``/`` and the name in
+  lower case, each run of characters that are not letters, digits or ``_``
+  as one ``-``. A route already taken is numbered (``-2``) in page id order,
+  a name that leaves no route becomes ``/page-<position>``, and a page
+  without a name, or with a blank one, is named ``Page_<n>`` / ``Screen_<n>``
+  first. Renaming or removing a page points every link whose page changed
+  route at its new route.
+- **Static copy.** The design and modification prompts forbid model paths,
+  invented values and promised behaviour in authored text.
+- **Stylesheet.** The design's CSS keeps its source order (a ``@media`` rule
+  stays after the rule it refines), up to 160 rules; the rules past that are
+  not applied, and the log says how many.
+
 GUINoCodeDiagram Generation Modes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
