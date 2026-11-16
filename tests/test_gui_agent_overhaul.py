@@ -263,6 +263,22 @@ class TestFreeAuthorship:
         kinds = sorted(r.get("atRuleType", "plain") for r in rules)
         assert kinds == ["media", "plain"]
 
+    def test_prompt_asks_for_font_fallbacks(self, monkeypatch):
+        # A typeface named alone falls back to the browser default where it is
+        # not installed.
+        handler = GUINoCodeDiagramHandler(None)
+        captured = {}
+
+        def fake_two_pass_structured(**kwargs):
+            captured.update(kwargs)
+            return _authored_spec()
+
+        monkeypatch.setattr(handler, "predict_two_pass_structured", fake_two_pass_structured)
+        handler.generate_complete_system("create a patient portal")
+        prompt = captured["system_prompt"]
+        assert "'Fraunces', Georgia, serif" in prompt
+        assert "Typefaces available" not in prompt
+
     def test_parse_llm_css_keeps_source_order(self):
         # A media rule placed after its base rule must stay after it, or the
         # base rule (equal specificity) overrides the responsive one.

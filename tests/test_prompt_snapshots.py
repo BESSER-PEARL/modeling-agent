@@ -164,7 +164,7 @@ EXPECTED = {
     "gui.MOCKUP_REASONING_ADDENDUM": "c2b3920b4a068408",
     "gui.STATIC_COPY_RULES": "dbd07abd5d52b46b",
     "gui.SVG_THUMB_HINT": "d940d49684416059",
-    "gui.complete_system_prompt": "31de561bfd2d1237",
+    "gui.complete_system_prompt": "d0ee2e14bda28ecc",
     "gui.data_model_step_for_classes": "0133afd5b613e683",
     "gui.interactions_block": "42710b03fa350131",
     "gui.interactions_block[has_classes=False]": "42c93b6ba660efb1",
