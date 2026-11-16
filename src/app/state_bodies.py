@@ -34,6 +34,7 @@ from conversation.session_helpers import (
     reply_payload,
     replay_last_reply,
     reply_show_trace,
+    stream_llm_reply,
     stream_llm_response,
     user_key_reply,
     json_intent_matches,
@@ -853,19 +854,13 @@ def trace_question_body(session: Session):
         render_trace_digest(digest), project_summary, history_section, request.message,
     )
 
-    try:
-        answer = stream_llm_response(
-            session, ctx.gpt_text, prompt,
-            system_prompt=trace_prompts.SYSTEM_PROMPT, model=MODEL_GENERATION_SMALL,
-        )
-    except Exception as e:
-        logger.error(f"❌ Error in trace_question_body: {e}", exc_info=True)
-        reply_message(
-            session,
-            "I had trouble reading your project's history. Could you try rephrasing your question?",
-        )
-        return
-    if answer:
+    # A provider failure is reported in the stream itself (an error hint or a
+    # refusal notice); the button follows only an answer the model completed.
+    answer = stream_llm_reply(
+        session, ctx.gpt_text, prompt,
+        system_prompt=trace_prompts.SYSTEM_PROMPT, model=MODEL_GENERATION_SMALL,
+    )
+    if answer.completed:
         _offer_trace_view(session, request)
 
 

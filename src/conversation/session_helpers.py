@@ -12,7 +12,7 @@ import logging
 import threading
 import uuid
 from collections import OrderedDict
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, NamedTuple, Optional, Tuple
 
 from baf.core.session import Session
 
@@ -529,6 +529,15 @@ def reply_progress(session: Session, message: str, step: int = 0, total: int = 0
     _send_to_session(session, payload)
 
 
+class StreamedReply(NamedTuple):
+    """What :func:`stream_llm_reply` streamed: the full text sent, and whether
+    the provider completed the answer (False after an error, a refusal, or a
+    stream cut mid-way: the text is then an error hint, a refusal notice or a
+    partial answer)."""
+    text: str
+    completed: bool
+
+
 def stream_llm_response(
     session: Session, llm_instance: Any, prompt: str, system_prompt: str = "",
     model: Optional[str] = None,
@@ -545,17 +554,30 @@ def stream_llm_response(
             defaults to the instance's configured model.
 
     Returns:
-        The full completed text.
+        The full text sent (on a failure, the error hint or refusal notice
+        that replaced the answer; see :func:`stream_llm_reply`).
     """
+    return stream_llm_reply(session, llm_instance, prompt, system_prompt, model).text
+
+
+def stream_llm_reply(
+    session: Session, llm_instance: Any, prompt: str, system_prompt: str = "",
+    model: Optional[str] = None,
+) -> StreamedReply:
+    """:func:`stream_llm_response`, also saying whether the provider
+    completed the answer, for a caller that follows only a real answer with
+    more (a button). Never raises for a provider failure: it is reported to
+    the user in the stream, or as a key error reply."""
     instruction = language_instruction(session)
     if instruction:
         system_prompt = f"{system_prompt}\n\n{instruction}" if system_prompt else instruction
     stream_id = reply_stream_start(session)
     full_text = ""
+    completed = False
 
     try:
         chunks = LLMProvider(llm_instance).stream(prompt, system_prompt=system_prompt, model=model)
-        full_text = _send_chunks(session, chunks, stream_id)
+        full_text, completed = _send_chunks(session, chunks, stream_id)
     except Exception as e:
         logger.error(f"❌ [Streaming] Error: {e}")
         key_reply = user_key_reply(e)
@@ -574,15 +596,17 @@ def stream_llm_response(
 
     reply_stream_done(session, stream_id, full_text)
     _record_assistant_response(session, full_text)
-    return full_text
+    return StreamedReply(full_text, completed and bool(full_text))
 
 
-def _send_chunks(session: Session, chunks: Iterable[str], stream_id: str) -> str:
+def _send_chunks(session: Session, chunks: Iterable[str], stream_id: str) -> Tuple[str, bool]:
     """Send text chunks to the frontend as they arrive, buffered to about a
-    sentence, and return the whole text. A mid-stream failure keeps the text
-    sent so far; a refusal propagates."""
+    sentence, and return the whole text and whether the stream ran to its
+    end. A mid-stream failure keeps the text sent so far (not completed); a
+    refusal propagates."""
     full_text = ""
     chunk_buffer = ""
+    completed = False
     try:
         for content in chunks:
             full_text += content
@@ -595,6 +619,7 @@ def _send_chunks(session: Session, chunks: Iterable[str], stream_id: str) -> str
             ):
                 reply_stream_chunk(session, chunk_buffer, stream_id)
                 chunk_buffer = ""
+        completed = True
     except ModelRefusal:
         raise
     except Exception as exc:
@@ -603,4 +628,4 @@ def _send_chunks(session: Session, chunks: Iterable[str], stream_id: str) -> str
         # Always flush remaining buffer so no text is silently lost
         if chunk_buffer:
             reply_stream_chunk(session, chunk_buffer, stream_id)
-    return full_text
+    return full_text, completed

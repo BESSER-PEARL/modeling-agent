@@ -7,12 +7,14 @@ always one of the digest's own.
 """
 import json
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
 from app import state_bodies
 from common.session_keys import UNIFIED_CLASSIFICATION
 from conversation import session_helpers
+from conversation.session_helpers import StreamedReply
 from conversation.reply_copy import TRACE_NOT_AVAILABLE, show_trace_label
 from orchestrator import request_planner
 from prompts import traceability as trace_prompts
@@ -51,10 +53,10 @@ def streamed(monkeypatch):
 
     def stream(session, llm, prompt, system_prompt="", model=None):
         calls.append({"prompt": prompt, "system_prompt": system_prompt, "model": model})
-        return "The class **Book** generated `sql_alchemy.py` lines 108-140."
+        return StreamedReply("The class **Book** generated `sql_alchemy.py` lines 108-140.", True)
 
     monkeypatch.setattr(state_bodies, "_common_preamble", lambda s: parse_assistant_request(s))
-    monkeypatch.setattr(state_bodies, "stream_llm_response", stream)
+    monkeypatch.setattr(state_bodies, "stream_llm_reply", stream)
     return calls
 
 
@@ -206,8 +208,8 @@ def test_no_view_and_no_single_artifact_sends_no_button(streamed):
 
 def test_the_artifact_id_never_comes_from_the_message_or_the_model(streamed, monkeypatch):
     # The message names an id that is not in the digest, and the model's answer names another.
-    monkeypatch.setattr(state_bodies, "stream_llm_response",
-                        lambda *a, **k: "Open artifactId evil-id for the details.")
+    monkeypatch.setattr(state_bodies, "stream_llm_reply",
+                        lambda *a, **k: StreamedReply("Open artifactId evil-id for the details.", True))
     two = {**DIGEST, "focus": [DIGEST["focus"][0], {"artifactId": "a-member", "name": "Member"}]}
     session = _session("compare Book and Member, artifact evil-id", digest=two)
     session.set(UNIFIED_CLASSIFICATION, _verdict("lineage"))
@@ -218,11 +220,73 @@ def test_the_artifact_id_never_comes_from_the_message_or_the_model(streamed, mon
 
 
 def test_a_failed_answer_sends_no_button(streamed, monkeypatch):
-    monkeypatch.setattr(state_bodies, "stream_llm_response", lambda *a, **k: "")
+    monkeypatch.setattr(state_bodies, "stream_llm_reply", lambda *a, **k: StreamedReply("", False))
     session = _session()
     session.set(UNIFIED_CLASSIFICATION, _verdict("lineage"))
     state_bodies.trace_question_body(session)
     assert _frames(session) == []
+
+
+def _stream_client(create):
+    return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+
+def _chunk(*, content=None, refusal=None, finish_reason=None):
+    delta = SimpleNamespace(content=content, refusal=refusal)
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=finish_reason)], usage=None)
+
+
+def _raising(**_kwargs):
+    raise RuntimeError("provider exploded: 500 internal server error")
+
+
+def _cut_mid_stream(**_kwargs):
+    def events():
+        yield _chunk(content="The class **Book** generated ")
+        raise RuntimeError("connection reset")
+    return events()
+
+
+@pytest.mark.parametrize("create", [
+    _raising,                                                                     # the provider raises
+    lambda **_k: iter([_chunk(refusal="I can't help with that."), _chunk(finish_reason="stop")]),  # refusal
+    lambda **_k: iter([_chunk(finish_reason="content_filter")]),                  # filtered
+    _cut_mid_stream,                                                              # cut mid-way
+], ids=["raises", "refusal", "content-filter", "mid-stream"])
+def test_a_failed_stream_sends_its_error_text_but_no_button(monkeypatch, create):
+    # The REAL stream helper: it reports the failure as text in the stream
+    # (an error hint, a refusal notice or the partial answer), never raises,
+    # and says the answer did not complete, so no show_trace follows it.
+    monkeypatch.setattr(state_bodies, "_common_preamble", lambda s: parse_assistant_request(s))
+    monkeypatch.setattr(state_bodies.ctx, "gpt_text",
+                        SimpleNamespace(client=_stream_client(create), name="gpt-4o-mini"))
+    session = _session()
+    session.set(UNIFIED_CLASSIFICATION, _verdict("lineage"))
+    state_bodies.trace_question_body(session)
+    actions = [f["action"] for f in _frames(session)]
+    assert Action.SHOW_TRACE not in actions
+    done = [f for f in _frames(session) if f["action"] == Action.STREAM_DONE]
+    assert len(done) == 1 and done[0]["fullText"]          # the user is told what went wrong
+
+
+def test_a_completed_stream_is_followed_by_the_button(monkeypatch):
+    monkeypatch.setattr(state_bodies, "_common_preamble", lambda s: parse_assistant_request(s))
+    events = [_chunk(content="**Book** generated `sql_alchemy.py`."), _chunk(finish_reason="stop")]
+    monkeypatch.setattr(state_bodies.ctx, "gpt_text",
+                        SimpleNamespace(client=_stream_client(lambda **_k: iter(events)), name="gpt-4o-mini"))
+    session = _session()
+    session.set(UNIFIED_CLASSIFICATION, _verdict("lineage"))
+    state_bodies.trace_question_body(session)
+    assert [f["action"] for f in _frames(session)][-2:] == [Action.STREAM_DONE, Action.SHOW_TRACE]
+
+
+def test_stream_llm_response_still_returns_the_text_sent():
+    # Its other callers keep their contract: the full text, the error text on a failure.
+    session = FakeSession()
+    llm = SimpleNamespace(client=_stream_client(_raising), name="gpt-4o-mini")
+    text = session_helpers.stream_llm_response(session, llm, "describe")
+    assert isinstance(text, str) and text
+    assert session_helpers.stream_llm_reply(FakeSession(), llm, "describe") == StreamedReply(text, False)
 
 
 def test_show_trace_builder_keeps_the_key_order_and_rejects_unknown_views():

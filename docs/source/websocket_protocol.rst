@@ -1004,7 +1004,7 @@ Traceability page on that view (and artifact):
 * ``message`` — a short button label, translated into the user's language like
   any reply; not recorded in the conversation memory.
 
-Not sent when the answer failed (the provider raised, refused or returned
+Not sent when the answer failed (the provider raised, refused, was cut off or returned
 nothing; the stream then carries the error text) or when the request carried no
 ``traceDigest``. Without a ``traceDigest``, an explicit trace question (generated
 code, out of date, requirement coverage, who / when, the project's history) gets
