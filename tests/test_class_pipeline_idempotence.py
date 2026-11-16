@@ -45,8 +45,12 @@ def _spec(classes, relationships=(), constraints=()):
 
 MODELS = {
     "end named like an attribute": (
+        "articles with an author name",
+        _spec([_cls("Article", ["title", "author"]), _cls("Writer", ["name"])],
+              [_rel("Article", "Writer", "author", "articles")])),
+    "text attribute restating a to-many end": (
         "articles with keywords",
-        _spec([_cls("Article", ["title", "keywords"]), _cls("Keyword", ["word"])],
+        _spec([_cls("Article", ["title", "keywords:List[str]"]), _cls("Keyword", ["word"])],
               [_rel("Article", "Keyword", "keywords", "articles", tm="0..*")])),
     "end named like an inherited attribute": (
         "posts and articles with keywords",
@@ -122,7 +126,10 @@ def test_the_first_pass_did_something(monkeypatch):
     remove on the first pass."""
     request_text, spec = MODELS["end named like an attribute"]
     first = _build(copy.deepcopy(spec), request_text, monkeypatch)
-    assert first["relationships"][0]["name"] == "keywords_1"
+    assert first["relationships"][0]["name"] == "author_1"
+    request_text, spec = MODELS["text attribute restating a to-many end"]
+    first = _build(copy.deepcopy(spec), request_text, monkeypatch)
+    assert [a["name"] for a in first["classes"][0]["attributes"]] == ["title"]
     request_text, spec = MODELS["id attributes of linked and unlinked classes"]
     first = _build(copy.deepcopy(spec), request_text, monkeypatch)
     assert [a["name"] for a in first["classes"][0]["attributes"]] == [

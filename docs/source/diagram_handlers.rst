@@ -242,16 +242,19 @@ hold for the guards below:
        attribute. The guard never adds an association.
    * - ``_ensure_unique_association_ends``
      - One member per name: duplicate ends, and an end named like an
-       attribute, get a ``_1`` suffix. An integer attribute named like a
-       to-one end is dropped instead.
+       attribute, get a ``_1`` suffix. Dropped instead: an integer attribute
+       named like a to-one end, and a text attribute named like a to-many
+       end of the class or an ancestor whose class keeps text (``tags: str``
+       or ``List[str]`` beside ``tags`` to ``Tag``).
    * - ``_strip_surrogate_ids``
      - Removes an attribute named ``id`` unless the request asks for an id:
        the generators create the primary key, and the spec cannot mark an
        identifier. Also applied to a single class and to ``add_class``
        modifications.
 
-The reply (``_build_system_message``) says what the user can see of this: an
-association end that was renamed.
+The reply (``_build_system_message``) explains each renamed association end:
+which class's link to which class, its new name, and the attribute or link it
+met (the first three; any others are counted).
 
 StateMachineHandler
 -------------------

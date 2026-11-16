@@ -1295,6 +1295,17 @@ class ClassDiagramHandler(BaseDiagramHandler):
             ]
 
     @staticmethod
+    def _ancestors(edges: List[tuple], name: str) -> set:
+        """*name* and its ancestors over ``(child, parent)`` *edges*."""
+        line = {name}
+        frontier = {name}
+        while frontier:
+            frontier = {parent for child, parent in edges
+                        if child in frontier and parent not in line}
+            line |= frontier
+        return line
+
+    @staticmethod
     def _reach_over_edges(edges: List[tuple], seeds: set) -> set:
         """Seeds plus everything reachable following the directed edges BOTH
         ways (ancestors ∪ descendants — never siblings), matching the
@@ -1315,7 +1326,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         return _reach(True) | _reach(False)
 
-    def _ensure_unique_association_ends(self, system_spec: Dict[str, Any]) -> List[str]:
+    def _ensure_unique_association_ends(self, system_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Make every class's association-end names unique in the spec.
 
         Computes each class's navigable end names with the same derivation
@@ -1332,9 +1343,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         An attribute of the class holds its name against every end: generated
         code gives a class one member per name, so the end is the one renamed.
-        An integer attribute named like a to-one end is that end's reference
-        kept by hand and is dropped instead. A name a constraint or a method
-        body reads is left on both, so the rule keeps reading what it read.
+        Dropped instead: an integer attribute named like a to-one end (that
+        end's reference kept by hand), and a text attribute named like a
+        to-many end of the class or an ancestor whose class keeps text (the
+        linked values written out, ``tags: str`` beside ``tags`` to ``Tag``).
+        A name a constraint or a method body reads is left on both, so the
+        rule keeps reading what it read.
 
         Endpoints are NEVER swapped: the wire format carries the target role
         in ``name`` and the source role in ``sourceRole``, so a swap moves
@@ -1342,7 +1356,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
         always enough.
 
         Mutates *system_spec* in place; no-op for already-clean specs.
-        Returns the new end names, for the reply.
+        Returns one record per renamed end, for the reply: the class that owns
+        the end (``owner``), the class it links to (``other``), the ``old``
+        and ``new`` name, and the class whose member it met (``holder``) with
+        whether that member is an ``attribute`` or another end.
         """
         relationships = system_spec.get("relationships")
         if not isinstance(relationships, list) or not relationships:
@@ -1402,7 +1419,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             if entry["owner"] not in class_order:
                 class_order.append(entry["owner"])
 
-        renamed: List[str] = []
+        renamed: List[Dict[str, Any]] = []
         for cls_name in class_order:
             entries = _collect_entries()  # recompute after prior mutations
             chain = self._reach_over_edges(inheritance_edges, {cls_name})
@@ -1420,12 +1437,16 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 # A name a rule or a method body reads keeps meaning what it
                 # meant: neither the attribute nor the end is touched.
                 attr = None if self._is_referenced(end_name, references) else own_attrs.get(end_name)
-                if attr is not None and self._is_reference_to_end(attr, group):
+                if attr is not None and (
+                        self._is_reference_to_end(attr, group)
+                        or self._is_text_copy_of_ends(
+                            attr, group, self._ancestors(inheritance_edges, cls_name),
+                            class_by_name)):
                     class_by_name[cls_name]["attributes"].remove(attr)
                     attr = None
                     logger.info(
                         "[ClassDiagram] Dropped attribute %s.%s: the association "
-                        "end of that name already holds the reference",
+                        "end of that name already holds it",
                         cls_name, end_name,
                     )
                 if len(group) < 2 and attr is None:
@@ -1457,7 +1478,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
                     taken_ends.add(unique)
                     if side == "target":
                         taken_labels.add(unique.lower())
-                    renamed.append(unique)
+                    renamed.append({
+                        "owner": e["owner"], "other": rel[side], "new": unique,
+                        "old": end_name, "holder": cls_name, "attribute": attr is not None,
+                    })
                     logger.info(
                         "[ClassDiagram] Named the %s end of the %s-%s "
                         "association '%s' so '%s' has a single '%s' member",
@@ -1485,6 +1509,26 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 cls._parse_multiplicity(e["rel"].get(f"{e['side']}Multiplicity"))[1] <= 1
                 for e in ends
             )
+        )
+
+    _TEXT_ATTR_TYPES = frozenset({"str", "string"})
+
+    @classmethod
+    def _is_text_copy_of_ends(
+        cls, attr: Dict[str, Any], ends: List[Dict[str, Any]], owners: set,
+        class_by_name: Dict[str, Dict[str, Any]],
+    ) -> bool:
+        """True when *attr* is text and every end of its name is a to-many end
+        of *owners* (the class and its ancestors) to a class with a text
+        attribute: the attribute writes out the values the link holds."""
+        def _is_text(a: Any) -> bool:
+            return isinstance(a, dict) and str(a.get("type") or "").strip().lower() in cls._TEXT_ATTR_TYPES
+
+        return _is_text(attr) and all(
+            e["owner"] in owners
+            and cls._parse_multiplicity(e["rel"].get(f"{e['side']}Multiplicity"))[1] > 1
+            and any(map(_is_text, class_by_name.get(e["rel"][e["side"]], {}).get("attributes") or []))
+            for e in ends
         )
 
     # Attribute types the deterministic generators accept without an association.
@@ -1899,12 +1943,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         def _ends(owner: str) -> List[Tuple[str, str, tuple]]:
             """(far class, end name as a key, multiplicity) of every end of
             *owner* and its ancestors."""
-            line = {owner}
-            frontier = {owner}
-            while frontier:
-                frontier = {parent for child, parent in inheritance_edges
-                            if child in frontier and parent not in line}
-                line |= frontier
+            line = self._ancestors(inheritance_edges, owner)
             ends = []
             for rel in relationships:
                 if (not isinstance(rel, dict)
@@ -2549,24 +2588,16 @@ class ClassDiagramHandler(BaseDiagramHandler):
         parts.append(". Want to add more details or connect it to something else?")
         return "".join(parts)
 
-    @staticmethod
-    def _listed(items: Sequence[str]) -> str:
-        """``A``, ``A and B``, ``A, B, C and 2 more`` (the first three, bold)."""
-        listed = [f"**{item}**" for item in items[:3]]
-        if len(items) > 3:
-            listed.append(f"{len(items) - 3} more")
-        return listed[0] if len(listed) == 1 else f"{', '.join(listed[:-1])} and {listed[-1]}"
-
     def _build_system_message(
         self, spec: Dict[str, Any], relaxations: Sequence[Dict[str, Any]] = (),
-        renamed: Sequence[str] = (),
+        renamed: Sequence[Dict[str, Any]] = (),
     ) -> str:
         """Build a descriptive message for a complete class diagram spec.
 
         *relaxations* are the ends ``_break_mandatory_cycles`` made optional;
         their invariants are the agent's, not rules the user stated.
-        *renamed* (association ends given a new name) is what the guards
-        changed that shows in the diagram."""
+        *renamed* are the association ends ``_ensure_unique_association_ends``
+        renamed: the first three are explained, the rest counted."""
         system_name = spec.get("systemName", "System")
         classes = spec.get("classes", [])
         rels = spec.get("relationships", [])
@@ -2581,10 +2612,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
         elif rels:
             msg += f", with {len(rels)} relationship(s) between them"
         msg += "."
-        if renamed:
-            ends, verb = ("end", "was") if len(renamed) == 1 else ("ends", "were")
-            msg += (f" The association {ends} {self._listed(list(renamed))} {verb} "
-                    "renamed so that no class has two members of one name.")
+        for r in renamed[:3]:
+            member = "an attribute" if r["attribute"] else "another link"
+            msg += (f" {r['owner']}'s link to {r['other']} is now called **{r['new']}**, "
+                    f"because {r['holder']} already has {member} named **{r['old']}**.")
+        if len(renamed) > 3:
+            msg += f" {len(renamed) - 3} more association end(s) were renamed the same way."
         # The editor draws every constraint as an OCL box on its class.
         constraints = [c for c in spec.get("constraints") or [] if isinstance(c, dict)]
         agent_made = [r for r in relaxations if any(r["constraint"] is c for c in constraints)]

@@ -244,23 +244,26 @@ _COMPONENT_MODEL = {
 
 # A canned output for one case only, picked by a phrase of that case's request.
 # This one is what the class-diagram guards exist for: a surrogate id, an id
-# attribute beside the association that stores it, and an association end named
-# like an attribute.
+# attribute beside the association that stores it, a text copy of a to-many end,
+# and an association end named like an attribute.
 CANNED_FOR_REQUEST: Dict[str, Dict[str, Dict[str, Any]]] = {
     "CompactSystemClassSpec": {
         "a shop with orders": {
             "name": "Shop",
             "classes": [
                 {"n": "Order", "k": "", "m": [],
-                 "a": ["id: str", "placedOn: date", "customerId: str", "labels: str"]},
+                 "a": ["id: str", "placedOn: date", "customerId: str", "labels: str", "shipper: str"]},
                 {"n": "Customer", "a": ["id: str", "name: str"], "m": [], "k": ""},
                 {"n": "Label", "a": ["text: str"], "m": [], "k": ""},
+                {"n": "Carrier", "a": ["name: str"], "m": [], "k": ""},
             ],
             "rels": [
                 {"f": "Order", "t": "Label", "k": "assoc", "how_many_TARGET_for_one_SOURCE": "0..*",
                  "how_many_SOURCE_for_one_TARGET": "0..*", "l": "labels", "ls": "orders"},
                 {"f": "Order", "t": "Customer", "k": "assoc", "how_many_TARGET_for_one_SOURCE": "1",
                  "how_many_SOURCE_for_one_TARGET": "0..*", "l": "customer", "ls": "orders"},
+                {"f": "Order", "t": "Carrier", "k": "assoc", "how_many_TARGET_for_one_SOURCE": "1",
+                 "how_many_SOURCE_for_one_TARGET": "0..*", "l": "shipper", "ls": "orders"},
             ],
             "ocl": [],
         },

@@ -35,36 +35,65 @@ def test_no_sentence_when_nothing_changed(handler):
     assert _message(handler) == SUMMARY
 
 
-def test_renamed_ends(handler):
-    assert _message(handler, renamed=["shelf_1"]) == SUMMARY + (
-        " The association end **shelf_1** was renamed so that no class has two members of one name.")
-    assert _message(handler, renamed=["shelf_1", "book_1"]) == SUMMARY + (
-        " The association ends **shelf_1** and **book_1** were renamed so that no class has "
-        "two members of one name.")
+def _rename(owner, other, new, old, holder=None, attribute=True):
+    return {"owner": owner, "other": other, "new": new, "old": old,
+            "holder": holder or owner, "attribute": attribute}
+
+
+def test_a_renamed_end_names_the_class_the_old_name_and_why(handler):
+    assert _message(handler, renamed=[_rename("Book", "Shelf", "shelf_1", "shelf")]) == SUMMARY + (
+        " Book's link to Shelf is now called **shelf_1**, because Book already has an "
+        "attribute named **shelf**.")
+
+
+def test_an_end_renamed_for_another_link(handler):
+    message = _message(handler, renamed=[
+        _rename("Doctor", "Department", "department_1", "department", attribute=False)])
+    assert message == SUMMARY + (
+        " Doctor's link to Department is now called **department_1**, because Doctor already "
+        "has another link named **department**.")
+
+
+def test_an_end_renamed_for_a_subclass_attribute(handler):
+    message = _message(handler, renamed=[_rename("Media", "Tag", "tags_1", "tags", "Video")])
+    assert message == SUMMARY + (
+        " Media's link to Tag is now called **tags_1**, because Video already has an "
+        "attribute named **tags**.")
+
+
+def test_more_than_three_renamed_ends_are_counted(handler):
+    message = _message(handler, renamed=[
+        _rename("Book", other, f"{other.lower()}_1", other.lower())
+        for other in ("Shelf", "Author", "Genre", "Publisher", "Series")])
+    assert message == SUMMARY + (
+        " Book's link to Shelf is now called **shelf_1**, because Book already has an "
+        "attribute named **shelf**. Book's link to Author is now called **author_1**, because "
+        "Book already has an attribute named **author**. Book's link to Genre is now called "
+        "**genre_1**, because Book already has an attribute named **genre**. 2 more "
+        "association end(s) were renamed the same way.")
 
 
 def test_generated_reply_says_what_the_guards_changed(monkeypatch):
     compact = CompactSystemClassSpec(
         name="Books",
         classes=[
-            CompactClassSpec(n="Book", a=["title: str", "genres: str"], m=[], k=""),
+            CompactClassSpec(n="Book", a=["title: str", "shelf: str"], m=[], k=""),
             CompactClassSpec(n="Shelf", a=["room: str"], m=[], k=""),
-            CompactClassSpec(n="Genre", a=["name: str"], m=[], k=""),
         ],
         rels=[CompactRelationshipSpec(
-            f="Book", t="Genre", k="assoc", how_many_TARGET_for_one_SOURCE="0..*",
-            how_many_SOURCE_for_one_TARGET="0..*", l="genres", ls="books")],
+            f="Book", t="Shelf", k="assoc", how_many_TARGET_for_one_SOURCE="1",
+            how_many_SOURCE_for_one_TARGET="0..*", l="shelf", ls="books")],
         ocl=[],
     )
     monkeypatch.setattr(handler_mod, "COMPACT_SPEC_ENABLED", True, raising=True)
     handler = ClassDiagramHandler(None)
     monkeypatch.setattr(handler, "predict_two_pass_structured", lambda **_: compact)
 
-    result = handler.generate_complete_system("books on shelves, with genres")
+    result = handler.generate_complete_system("books on shelves, each with a shelf label")
 
     assert result["message"].endswith(
-        " The association end **genres_1** was renamed so that no class has two members "
-        "of one name.")
+        " Book's link to Shelf is now called **shelf_1**, because Book already has an "
+        "attribute named **shelf**.")
 
 
 def test_generated_reply_is_unchanged_when_the_guards_changed_nothing(monkeypatch):
