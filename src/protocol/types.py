@@ -35,6 +35,11 @@ class WorkspaceContext:
     # (it holds an app a run continues from) and ``recap`` (where that app
     # stands, in chat markdown). None without a link.
     github_repo: Optional[Dict[str, Any]] = None
+    # The editor's summary of the project trace (``context.traceDigest``),
+    # validated and capped by ``adapters._parse_trace_digest`` (wire field
+    # names kept). Sent only while trace recording is on and a trace exists;
+    # None otherwise. Every string in it is user data, never instructions.
+    trace_digest: Optional[Dict[str, Any]] = None
 
     def get_active_index(self, diagram_type: str) -> int:
         """Return the active tab index for the given diagram type (default 0)."""

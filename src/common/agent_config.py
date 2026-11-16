@@ -17,6 +17,29 @@ MAX_USER_MESSAGE_CHARS = 64_000
 MAX_REQUIREMENTS = 128
 MAX_REQUIREMENT_CHARS = 1_000
 
+# ── Traceability digest (context.traceDigest) ────────────────────────────
+# The editor caps its digest (~12k characters serialized); the agent does not
+# trust the client and caps every list and string again. List caps are the
+# editor's (cross-repo contract, section 3); the nested ones bound one focus
+# artifact. A string longer than its cap is cut, never rejected.
+TRACE_DIGEST_MAX_RECENT_OPERATIONS = 15
+TRACE_DIGEST_MAX_REQUIREMENTS = 40
+TRACE_DIGEST_MAX_OUT_OF_DATE = 30
+TRACE_DIGEST_MAX_GENERATIONS = 10
+TRACE_DIGEST_MAX_FOCUS = 5
+TRACE_DIGEST_MAX_FOCUS_HISTORY = 20
+TRACE_DIGEST_MAX_FOCUS_DERIVED_FROM = 10
+TRACE_DIGEST_MAX_FOCUS_DERIVED = 20
+TRACE_DIGEST_MAX_LIST_ITEMS = 20       # a list of names (by, tools, realizedBy, reasons)
+TRACE_DIGEST_MAX_NAME_CHARS = 200      # names, ids, paths, dates, kinds
+TRACE_DIGEST_MAX_TEXT_CHARS = 500      # requirement text and quote, summaries, old/new values
+# The rendered record in the trace-question prompt (utilities.trace_digest):
+# about 4k tokens, so the answer call stays on the small tier's budget.
+TRACE_DIGEST_PROMPT_MAX_CHARS = 16_000
+# The current-model summary a trace answer gets (requirement coverage needs
+# the model's elements); cut so the record stays the subject.
+TRACE_QA_PROJECT_SUMMARY_MAX_CHARS = 6_000
+
 # ── Session cleanup ──────────────────────────────────────────────────────
 GRACE_PERIOD_SECONDS = 300
 
