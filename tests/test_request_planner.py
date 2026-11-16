@@ -301,14 +301,32 @@ class TestWebAppPlan:
         assert _plan_shape(ops) != _WEB_APP_PLAN
 
     @pytest.mark.parametrize("message", [
-        # The words after "web app" say where it comes from, not what it is for.
+        "build a web app like Trello for my team",
+        "Build a web app like Airbnb but for boat rentals",
+        "create a web app from scratch for my bakery",
+        "build a web app instead of our spreadsheet to track leads",
+        "create a web app based on the requirements below: customers place orders and track deliveries",
+        "build a web app using roles: admin, teacher, student, to manage courses",
+    ])
+    def test_from_using_like_instead_followed_by_a_domain_get_the_plan(self, message):
+        ops = _try_heuristic_decomposition(message, _make_request(message), "complete_system")
+        assert _plan_shape(ops) == _WEB_APP_PLAN
+        assert ops[0]["request"] == f"create a class diagram for a web app {message.split(' web app ', 1)[1]}"
+
+    @pytest.mark.parametrize("message", [
+        # The words after "web app" point at the user's existing model.
         "I need a web app generated from my class diagram",
         "could you create a web app from this model",
         "create a web app using my class diagram",
         "build a web app based on this model",
+        "build a web app using the current diagram",
+        "create a web app based on our classes",
+        "make a web app from it",
+        # After "I want/need ...", only a clause or "for ..." names the domain.
         "I want a web app like the one we discussed",
         "I'd like a web application instead of a mobile app",
         # Nothing but filler.
+        "create a web app from scratch",
         "Can you build a web app for me?",
         "make us a web app for us",
         "I want a web app for it",

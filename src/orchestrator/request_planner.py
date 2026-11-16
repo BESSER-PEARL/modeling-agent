@@ -406,8 +406,19 @@ _HEURISTIC_WEB_APP = re.compile(
 )
 # A domain given as a clause ("to manage orders", "that lets ...") rather than a noun.
 _WEB_APP_CLAUSE = re.compile(r"(?:to|that|which|where|with)\b", re.IGNORECASE)
-# Words after "web app" that say where it comes from or what it replaces.
-_WEB_APP_NOT_A_DOMAIN = re.compile(r"(?:from|using|based\s+on|generated|like|instead)\b", re.IGNORECASE)
+# ... or by comparison or origin ("like a kanban board for ...", "from scratch for ...").
+_WEB_APP_COMPARISON = re.compile(r"(?:like|from|using|based\s+on|instead)\b", re.IGNORECASE)
+# Words after "web app" that point at the user's existing model ("from my class
+# diagram", "using the current diagram", "based on our classes", "from it").
+_WEB_APP_FROM_EXISTING_MODEL = re.compile(
+    r"(?:generated\s+)?(?:from|using|based\s+on|out\s+of)\s+"
+    r"(?:(?:it|them|this|that)\s*$"
+    r"|(?:(?:my|our|the|this|that|these|those|current|existing|same)\s+)+(?:[\w-]+\s+)?"
+    r"(?:class(?:es)?|diagrams?|models?|uml|entities|schema)\b)",
+    re.IGNORECASE,
+)
+# What a domain must not be on its own.
+_WEB_APP_FILLER = re.compile(r"(?:me|us|it|from\s+scratch)$", re.IGNORECASE)
 _TRAILING_PLEASE = re.compile(r"[\s,]*\bplease[\s.?!]*$", re.IGNORECASE)
 
 
@@ -415,13 +426,15 @@ def _web_app_domain(match: "re.Match") -> Optional[str]:
     """What a matched "create a web app ..." request is about, or None when
     the words after "web app" name no domain."""
     domain = _TRAILING_PLEASE.sub("", match.group("domain")).strip().rstrip(".?!").strip()
-    if not domain or domain.lower() in ("me", "us", "it") or _WEB_APP_NOT_A_DOMAIN.match(domain):
+    if not domain or _WEB_APP_FILLER.match(domain) or _WEB_APP_FROM_EXISTING_MODEL.match(domain):
         return None
     if _WEB_APP_CLAUSE.match(domain):
         return f"a web app {domain}"
     if match.group("wish") and not match.group("for"):
         # "I need a web application firewall ...": the name of something else.
         return None
+    if _WEB_APP_COMPARISON.match(domain):
+        return f"a web app {domain}"
     return domain
 
 _HEURISTIC_MODEL_AND_GENERATE = re.compile(
