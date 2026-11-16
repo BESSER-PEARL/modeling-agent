@@ -392,49 +392,10 @@ def _normalize_operations(
 # When a pattern matches the entire intent can be resolved without an LLM call.
 # ---------------------------------------------------------------------------
 
-# "create a web app for X" and its common openings: "build me a web app to X",
-# "can you make a web app that X", "I want/need a web app where X".
-_WEB_APP_VERB = r"(?:create|build|design|make)"
 _HEURISTIC_WEB_APP = re.compile(
-    r"^(?:"
-    rf"(?:please\s+)?(?:(?:can|could)\s+you\s+(?:please\s+)?)?{_WEB_APP_VERB}(?:\s+(?:me|us))?"
-    r"|(?P<wish>i(?:\s+(?:want|need|would\s+like)|['’]d\s+like)"
-    rf"(?:\s+(?:you\s+)?to\s+{_WEB_APP_VERB}(?:\s+(?:me|us))?)?)"
-    r")\s+(?:a\s+)?web\s*app(?:lication)?\s+(?P<for>for\s+)?(?P<domain>.+)$",
+    r"^(?:create|build|design|make)\s+(?:a\s+)?web\s*app(?:lication)?\s+(?:for\s+)?(?P<domain>.+)$",
     re.IGNORECASE,
 )
-# A domain given as a clause ("to manage orders", "that lets ...") rather than a noun.
-_WEB_APP_CLAUSE = re.compile(r"(?:to|that|which|where|with)\b", re.IGNORECASE)
-# ... or by comparison or origin ("like a kanban board for ...", "from scratch for ...").
-_WEB_APP_COMPARISON = re.compile(r"(?:like|from|using|based\s+on|instead)\b", re.IGNORECASE)
-# Words after "web app" that point at the user's existing model ("from my class
-# diagram", "using the current diagram", "based on our classes", "from it").
-_WEB_APP_FROM_EXISTING_MODEL = re.compile(
-    r"(?:generated\s+)?(?:from|using|based\s+on|out\s+of)\s+"
-    r"(?:(?:it|them|this|that)\s*$"
-    r"|(?:(?:my|our|the|this|that|these|those|current|existing|same)\s+)+(?:[\w-]+\s+)?"
-    r"(?:class(?:es)?|diagrams?|models?|uml|entities|schema)\b)",
-    re.IGNORECASE,
-)
-# What a domain must not be on its own.
-_WEB_APP_FILLER = re.compile(r"(?:me|us|it|from\s+scratch)$", re.IGNORECASE)
-_TRAILING_PLEASE = re.compile(r"[\s,]*\bplease[\s.?!]*$", re.IGNORECASE)
-
-
-def _web_app_domain(match: "re.Match") -> Optional[str]:
-    """What a matched "create a web app ..." request is about, or None when
-    the words after "web app" name no domain."""
-    domain = _TRAILING_PLEASE.sub("", match.group("domain")).strip().rstrip(".?!").strip()
-    if not domain or _WEB_APP_FILLER.match(domain) or _WEB_APP_FROM_EXISTING_MODEL.match(domain):
-        return None
-    if _WEB_APP_CLAUSE.match(domain):
-        return f"a web app {domain}"
-    if match.group("wish") and not match.group("for"):
-        # "I need a web application firewall ...": the name of something else.
-        return None
-    if _WEB_APP_COMPARISON.match(domain):
-        return f"a web app {domain}"
-    return domain
 
 _HEURISTIC_MODEL_AND_GENERATE = re.compile(
     r"^(?P<model_part>(?:create|build|design|make)\s+.+?)"
@@ -554,8 +515,8 @@ def _try_heuristic_decomposition(
 
     # Pattern 1: "create/build a web app for X"
     match = _HEURISTIC_WEB_APP.match(stripped)
-    domain = _web_app_domain(match) if match else None
-    if domain:
+    if match:
+        domain = match.group("domain").strip().rstrip(".")
         return [
             {"type": "model", "diagramType": "ClassDiagram", "mode": "complete_system",
              "request": f"create a class diagram for {domain}"},

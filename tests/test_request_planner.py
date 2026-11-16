@@ -8,7 +8,6 @@ import pytest
 from orchestrator.request_planner import (
     GENERATOR_PREREQUISITES,
     plan_assistant_operations,
-    _try_heuristic_decomposition,
     _split_message_segments,
     _match_segment_target,
     _should_use_llm_planner,
@@ -250,100 +249,6 @@ _WEB_APP_PLAN = [
 
 def _plan_shape(ops):
     return [(o["type"], o.get("diagramType") or o.get("generatorType")) for o in ops or []]
-
-
-class TestWebAppPlan:
-    @pytest.mark.parametrize("message", [
-        "create a web app for a bookshop",
-        "Build a web application for tracking orders and customers",
-        "Build me a web app to manage orders and customers",
-        "Create me a web application that lets customers place orders",
-        "Make us a web app for a bookshop",
-        "I want a web app to manage tasks and their deadlines",
-        "I need a web application for a bookshop",
-        "I'd like a web app where authors publish books",
-        "I would like a web app for a bookshop",
-        "I want to build a web app for a bookshop",
-        "I need you to create a web app for a bookshop",
-        "Can you build a web app for a bookshop?",
-        "Could you please make me a webapp to manage tasks",
-        "Please create a web app for a bookshop.",
-    ])
-    def test_common_openings_get_the_web_app_plan(self, message):
-        ops = _try_heuristic_decomposition(message, _make_request(message), "complete_system")
-        assert _plan_shape(ops) == _WEB_APP_PLAN
-
-    @pytest.mark.parametrize("message, subject", [
-        ("create a web app for a bookshop", "a bookshop"),
-        ("Can you build a web app for a bookshop?", "a bookshop"),
-        ("Build me a web app to manage orders", "a web app to manage orders"),
-        ("I need a web app where authors publish books", "a web app where authors publish books"),
-        ("Create me a web application that lets customers place orders",
-         "a web app that lets customers place orders"),
-    ])
-    def test_step_requests_read_as_sentences(self, message, subject):
-        ops = _try_heuristic_decomposition(message, _make_request(message), "complete_system")
-        assert ops[0]["request"] == f"create a class diagram for {subject}"
-        assert ops[1]["request"] == f"create a GUI for {subject}"
-
-    @pytest.mark.parametrize("message", [
-        "build a web app",
-        "what is a web app for a bookshop?",
-        "we built a web app for a bookshop last year",
-        "I want to rename the web app class to Portal",
-        "can you explain what a web app is",
-        "add a page to the web app for orders",
-        "I need the web app to show a list of orders",
-        "a web app for a bookshop",
-    ])
-    def test_other_messages_do_not_get_the_web_app_plan(self, message):
-        ops = _try_heuristic_decomposition(message, _make_request(message), "complete_system")
-        assert _plan_shape(ops) != _WEB_APP_PLAN
-
-    @pytest.mark.parametrize("message", [
-        "build a web app like Trello for my team",
-        "Build a web app like Airbnb but for boat rentals",
-        "create a web app from scratch for my bakery",
-        "build a web app instead of our spreadsheet to track leads",
-        "create a web app based on the requirements below: customers place orders and track deliveries",
-        "build a web app using roles: admin, teacher, student, to manage courses",
-    ])
-    def test_from_using_like_instead_followed_by_a_domain_get_the_plan(self, message):
-        ops = _try_heuristic_decomposition(message, _make_request(message), "complete_system")
-        assert _plan_shape(ops) == _WEB_APP_PLAN
-        assert ops[0]["request"] == f"create a class diagram for a web app {message.split(' web app ', 1)[1]}"
-
-    @pytest.mark.parametrize("message", [
-        # The words after "web app" point at the user's existing model.
-        "I need a web app generated from my class diagram",
-        "could you create a web app from this model",
-        "create a web app using my class diagram",
-        "build a web app based on this model",
-        "build a web app using the current diagram",
-        "create a web app based on our classes",
-        "make a web app from it",
-        # After "I want/need ...", only a clause or "for ..." names the domain.
-        "I want a web app like the one we discussed",
-        "I'd like a web application instead of a mobile app",
-        # Nothing but filler.
-        "create a web app from scratch",
-        "Can you build a web app for me?",
-        "make us a web app for us",
-        "I want a web app for it",
-        "build me a web app please",
-        "Can you build a web app for me, please?",
-        # "web application" is the start of a longer name.
-        "I need a web application firewall rule model",
-        "I want a web app store listing model",
-    ])
-    def test_web_app_without_a_domain_does_not_get_the_plan(self, message):
-        ops = _try_heuristic_decomposition(message, _make_request(message), "complete_system")
-        assert _plan_shape(ops) != _WEB_APP_PLAN
-
-    def test_trailing_please_is_not_part_of_the_domain(self):
-        message = "Create a web app for a bookshop, please."
-        ops = _try_heuristic_decomposition(message, _make_request(message), "complete_system")
-        assert ops[0]["request"] == "create a class diagram for a bookshop"
 
 
 # ---------------------------------------------------------------------------
@@ -589,8 +494,6 @@ class TestFromScratchRouteIsForAppRequests:
         "Build a to-do app with a simple GUI",
         "An expense tracker with a page where I can add expenses and a page with monthly totals",
         "Create a hotel reservation app with a checkout page and a room list page",
-        "Build me a web app to manage orders and customers",
-        "I need a web app for a veterinary clinic",
         "Create a web application for tracking library loans",
         "Build a habit tracker app with a mobile-friendly UI",
         "Create a parking management system with screens",
