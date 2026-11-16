@@ -201,6 +201,176 @@ class TestLeftAlone:
         assert spec == before
 
 
+def _inherits(child, parent):
+    return {"type": "Inheritance", "source": child, "target": parent}
+
+
+def _associations(spec):
+    return [(r["source"], r["target"]) for r in spec["relationships"]
+            if r.get("type") != "Inheritance"]
+
+
+class TestOwnHierarchy:
+    """``<x>Id`` naming the class itself or a class of its generalization chain
+    is that hierarchy's identifier: a link from a class to its own ancestor
+    makes the generated backend pass the same key twice."""
+
+    def test_id_of_the_parent_is_not_a_link_to_the_parent(self, handler):
+        spec = _spec(
+            [_cls("Person", [_attr("personId"), _attr("name")]),
+             _cls("Engineer", [_attr("personId"), _attr("grade")])],
+            [_inherits("Engineer", "Person")],
+        )
+        before = copy.deepcopy(spec)
+        handler._rewrite_foreign_key_attributes(spec)
+        assert spec == before
+
+    def test_id_of_a_grandparent_or_of_a_subclass_is_left_alone(self, handler):
+        spec = _spec(
+            [_cls("Asset", [_attr("truckId")]), _cls("Vehicle"),
+             _cls("Truck", [_attr("assetId"), _attr("vehicleId")])],
+            [_inherits("Vehicle", "Asset"), _inherits("Truck", "Vehicle")],
+        )
+        before = copy.deepcopy(spec)
+        handler._rewrite_foreign_key_attributes(spec)
+        assert spec == before
+
+    def test_id_of_a_sibling_is_still_a_link(self, handler):
+        spec = _spec(
+            [_cls("Person"), _cls("Engineer", [_attr("managerId")]), _cls("Manager")],
+            [_inherits("Engineer", "Person"), _inherits("Manager", "Person")],
+        )
+        handler._rewrite_foreign_key_attributes(spec)
+        assert _associations(spec) == [("Engineer", "Manager")]
+
+    def test_generated_model_links_no_class_to_its_own_ancestor(self, monkeypatch):
+        compact = CompactSystemClassSpec(
+            name="Staff",
+            classes=[
+                CompactClassSpec(n="Person", a=["personId: str", "name: str"], m=[], k=""),
+                CompactClassSpec(n="Engineer", a=["personId: str", "grade: str"], m=[], k=""),
+            ],
+            rels=[CompactRelationshipSpec(
+                f="Engineer", t="Person", k="inher", how_many_TARGET_for_one_SOURCE="",
+                how_many_SOURCE_for_one_TARGET="", l="")],
+            ocl=[],
+        )
+        monkeypatch.setattr(handler_mod, "COMPACT_SPEC_ENABLED", True, raising=True)
+        handler = ClassDiagramHandler(None)
+        monkeypatch.setattr(handler, "predict_two_pass_structured", lambda **kwargs: compact)
+
+        spec = handler.generate_complete_system("engineers are people")["systemSpec"]
+
+        assert _associations(spec) == []
+        # the subclass copy is the shadow guard's to remove, as before
+        assert _names(spec, "Person") == ["personId", "name"]
+        assert _names(spec, "Engineer") == ["grade"]
+
+
+class TestInheritedLinks:
+    def test_a_link_only_a_subclass_has_does_not_count_for_the_parent(self, handler):
+        spec = _spec(
+            [_cls("Person", [_attr("companyId")]), _cls("Engineer"), _cls("Company")],
+            [_inherits("Engineer", "Person"), _assoc("Engineer", "Company", "employer", "staff")],
+        )
+        handler._rewrite_foreign_key_attributes(spec)
+        assert _names(spec, "Person") == []
+        assert _associations(spec) == [("Engineer", "Company"), ("Person", "Company")]
+
+    def test_hierarchy_direction_is_settled_before_links_are_counted(self, monkeypatch):
+        """The model states the hierarchy backwards (one class the subclass of
+        two). Once it is turned round the subclass inherits the parent's link,
+        so its id attribute goes and no second link is added."""
+        def rel(f, t, k, name="", source_role=""):
+            many = "" if k == "inher" else "0..*"
+            return CompactRelationshipSpec(
+                f=f, t=t, k=k, how_many_TARGET_for_one_SOURCE="" if k == "inher" else "1",
+                how_many_SOURCE_for_one_TARGET=many, l=name, ls=source_role)
+
+        compact = CompactSystemClassSpec(
+            name="Staff",
+            classes=[
+                CompactClassSpec(n="Person", a=["name: str"], m=[], k=""),
+                CompactClassSpec(n="Engineer", a=["grade: str", "companyId: str"], m=[], k=""),
+                CompactClassSpec(n="Manager", a=["level: int"], m=[], k=""),
+                CompactClassSpec(n="Company", a=["name: str"], m=[], k=""),
+            ],
+            rels=[rel("Person", "Engineer", "inher"), rel("Person", "Manager", "inher"),
+                  rel("Person", "Company", "assoc", "employer", "staff")],
+            ocl=[],
+        )
+        monkeypatch.setattr(handler_mod, "COMPACT_SPEC_ENABLED", True, raising=True)
+        handler = ClassDiagramHandler(None)
+        monkeypatch.setattr(handler, "predict_two_pass_structured", lambda **kwargs: compact)
+
+        spec = handler.generate_complete_system("a staff directory")["systemSpec"]
+
+        assert _names(spec, "Engineer") == ["grade"]
+        assert _associations(spec) == [("Person", "Company")]
+
+
+class TestTheRequestDecides:
+    def test_an_id_the_request_names_as_written_is_the_users_field(self, handler):
+        spec = _spec(
+            [_cls("Scan", [_attr("ticketId")]), _cls("Ticket"), _cls("Hall")],
+            [_assoc("Ticket", "Hall", "hall")],
+        )
+        before = copy.deepcopy(spec)
+        handler._rewrite_foreign_key_attributes(
+            spec, "tickets for a hall; each scan stores the printed ticketId")
+        assert spec == before
+
+    @pytest.mark.parametrize("written", ["customerId", "customer_id", "CUSTOMER_ID"])
+    def test_named_as_written_also_beside_a_link(self, handler, written):
+        spec = _spec([_cls("Order", [_attr("customerId")]), _cls("Customer")],
+                     [_assoc("Order", "Customer", "customer", "orders")])
+        handler._rewrite_foreign_key_attributes(spec, f"orders keep a {written} field")
+        assert _names(spec, "Order") == ["customerId"]
+
+    def test_an_id_the_request_talks_about_becomes_an_optional_link(self, handler):
+        spec = _spec([_cls("Ticket", [_attr("deviceId")]), _cls("Device")])
+        handler._rewrite_foreign_key_attributes(
+            spec, "tickets store the device id as plain text")
+        assert _names(spec, "Ticket") == []
+        assert spec["relationships"][0]["targetMultiplicity"] == "0..1"
+
+    def test_a_required_id_the_request_is_silent_about_is_a_required_link(self, handler):
+        spec = _spec([_cls("Ticket", [_attr("deviceId")]), _cls("Device")])
+        handler._rewrite_foreign_key_attributes(spec, "tickets for devices")
+        assert spec["relationships"][0]["targetMultiplicity"] == "1"
+
+    def test_last_word_match_needs_the_request_to_be_silent_about_the_id(self, handler):
+        rels = [_assoc("Invoice", "SalesOrder", "sale", "invoices")]
+        spec = _spec([_cls("Invoice", [_attr("orderId")]), _cls("SalesOrder")],
+                     copy.deepcopy(rels))
+        handler._rewrite_foreign_key_attributes(
+            spec, "each invoice stores the customer's own order id")
+        assert _names(spec, "Invoice") == ["orderId"]
+        handler._rewrite_foreign_key_attributes(spec, "invoices for sales orders")
+        assert _names(spec, "Invoice") == []
+
+
+class TestMembersInUse:
+    def test_an_id_a_constraint_reads_is_kept(self, handler):
+        spec = _spec([_cls("Order", [_attr("customerId")]), _cls("Customer")],
+                     [_assoc("Order", "Customer", "customer", "orders")])
+        spec["constraints"] = [{"context": "Order", "name": "known",
+                                "expression": "context Order inv known: self.customerId <> ''"}]
+        handler._rewrite_foreign_key_attributes(spec, "orders must name their customer")
+        assert _names(spec, "Order") == ["customerId"]
+
+    def test_an_id_a_method_body_reads_is_kept(self, handler):
+        spec = _spec([_cls("Order", [_attr("customerId")]), _cls("Customer")])
+        spec["classes"][0]["methods"] = [{
+            "name": "tagline", "returnType": "str", "parameters": [],
+            "implementationType": "code",
+            "code": "def tagline(self):\n    return 'order of ' + self.customerId",
+        }]
+        handler._rewrite_foreign_key_attributes(spec, "orders")
+        assert _names(spec, "Order") == ["customerId"]
+        assert spec["relationships"] == []
+
+
 def test_the_generation_prompt_forbids_id_attributes_for_links():
     prompt = ClassDiagramHandler(None)._get_system_generation_prompt()
     assert "A LINK IS NEVER AN ID ATTRIBUTE" in prompt
