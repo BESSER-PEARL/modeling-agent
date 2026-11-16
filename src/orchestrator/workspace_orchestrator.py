@@ -34,6 +34,7 @@ KEYWORD_TARGETS = [
     ("target user", "UserDiagram"),
     ("user persona", "UserDiagram"),
     ("persona", "UserDiagram"),
+    ("personal_information", "UserDiagram"),  # a class of the user-profile metamodel
     # Component / Deployment: only tokens that NAME the diagram. Generic
     # architecture vocabulary ("system architecture", "subsystem",
     # "service architecture") is everyday class-diagram phrasing and must
@@ -80,9 +81,15 @@ KEYWORD_TARGETS = [
 ]
 
 # A keyword counts only as whole words ("persona" is not in "personal"); its
-# last word may be plural or a gerund ("personas", "process modelling").
+# last word may be plural, a gerund or numbered ("personas", "process
+# modelling", "bpmn2"), and "diagram" may be spelled "diagramm".
 _KEYWORD_TARGET_PATTERNS: List[Tuple[re.Pattern, str]] = [
-    (re.compile(rf"\b{re.escape(token)}(?:s|es|l?ing)?\b"), diagram_type)
+    (
+        re.compile(
+            rf"\b{re.escape(token)}{'m?' if token.endswith('diagram') else ''}(?:s|es|l?ing|\d+)?\b"
+        ),
+        diagram_type,
+    )
     for token, diagram_type in KEYWORD_TARGETS
 ]
 

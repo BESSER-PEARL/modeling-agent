@@ -6,7 +6,7 @@ from baf.core.session import Session
 
 from conversation.session_helpers import reply_progress
 from conversation.suggestions import GENERATOR_ARTIFACT_LABELS
-from diagram_handlers.registry.metadata import get_diagram_type_info
+from diagram_handlers.registry.metadata import DIAGRAM_TYPE_METADATA
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ def _report_progress(session: Session, current_idx: int, total: int, operation: 
     # Display names, not the internal type tokens ("GUINoCodeDiagram", "web_app").
     progress_msg = f"Step {current_idx + 1}/{total}: "
     if op_type == "model":
-        diagram_label = get_diagram_type_info(diagram_type).get("name", diagram_type)
+        diagram_label = DIAGRAM_TYPE_METADATA.get(diagram_type, {}).get("name", diagram_type)
         progress_msg += f"Creating {diagram_label}\u2026" if diagram_type else "Processing model\u2026"
     elif op_type == "generation":
         gen_type = operation.get("generatorType", "code")

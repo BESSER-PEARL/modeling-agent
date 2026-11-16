@@ -63,6 +63,7 @@ class TestCollectExplicitTargets:
         "create a real estate diagram",
         "a human agent handles the tickets",
         "a reagent that reacts with water",
+        "store the personal information of each customer",
     ])
     def test_keyword_inside_another_word_is_not_a_target(self, message):
         assert _collect_explicit_targets(message) == []
@@ -84,6 +85,11 @@ class TestCollectExplicitTargets:
         ("show entanglement", "QuantumCircuitDiagram"),
         ("apply grover's search", "QuantumCircuitDiagram"),
         ("component diagrams of the platform", "ComponentDiagram"),
+        ("bpmn2 process for claims", "BPMN"),
+        ("create a class diagramm for a shop", "ClassDiagram"),
+        ("the state diagramms of the two doors", "StateMachineDiagram"),
+        ("add an attribute age to personal_information", "UserDiagram"),
+        ("set the age of personal_information1 to 70", "UserDiagram"),
     ])
     def test_keyword_as_a_word_is_a_target(self, message, expected):
         assert _collect_explicit_targets(message) == [expected]

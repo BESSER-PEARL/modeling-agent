@@ -199,8 +199,9 @@ Level 1: Keyword Matching
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Whole-word matching against the user message (``KEYWORD_TARGETS``); the last
-word of a keyword may be plural or a gerund (``"personas"``,
-``"process modelling"``), so ``"persona"`` does not match ``"personal"``:
+word of a keyword may be plural, a gerund or numbered (``"personas"``,
+``"process modelling"``, ``"bpmn2"``), so ``"persona"`` does not match
+``"personal"``:
 
 .. list-table::
    :header-rows: 1

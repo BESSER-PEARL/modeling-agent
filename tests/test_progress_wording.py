@@ -61,6 +61,11 @@ def test_step_line_names_the_diagram_as_the_user_knows_it(monkeypatch, diagram_t
     assert line == f"Step 2/3: Creating {name}…"
 
 
+def test_step_line_of_an_unknown_diagram_type_shows_its_own_name(monkeypatch):
+    line = _step_line(monkeypatch, {"type": "model", "diagramType": "KnowledgeGraphDiagram"})
+    assert line == "Step 2/3: Creating KnowledgeGraphDiagram…"
+
+
 @pytest.mark.parametrize("generator_type, expected", [
     ("web_app", "Step 2/3: Generating web app…"),
     ("rest_api", "Step 2/3: Generating REST API…"),
