@@ -211,3 +211,88 @@ def test_the_next_event_starts_from_zero():
     session_helpers.begin_turn_usage(session)
     session_helpers.reply_message(session, "Hi again!")
     assert "llmUsage" not in _frames(session)[0]
+
+
+# --- Turn identity: never id() ------------------------------------------------------
+
+class _Event:
+    """A stand-in for BAF's event objects (they take weak references)."""
+
+
+def test_a_new_event_at_a_freed_events_address_starts_from_zero():
+    # CPython reuses the id of a freed object: keyed on id(event), the next
+    # event would inherit the finished turn's totals. Probe until it happens.
+    import gc
+    from types import SimpleNamespace
+    session = SimpleNamespace(event=None)
+    reused = 0
+    seen = set()
+    for _ in range(2_000):
+        session.event = _Event()
+        reused += id(session.event) in seen
+        seen.add(id(session.event))
+        session_helpers.begin_turn_usage(session)               # the transition hook
+        assert tracking.current_turn().snapshot() is None      # nothing inherited
+        get_tracker().record(prompt_tokens=10, completion_tokens=1, model="m")
+        session_helpers.begin_turn_usage(session)               # the state body: same event, same turn
+        assert tracking.current_turn().snapshot()["inputTokens"] == 10
+        session.event = None
+        gc.collect(0)
+    assert reused > 0      # the probe did exercise id reuse
+
+
+def test_a_turn_does_not_keep_its_event_alive():
+    import gc
+    import weakref
+    event = _Event()
+    tracking.begin_turn(event)
+    ref = weakref.ref(event)
+    del event
+    gc.collect()
+    assert ref() is None
+
+
+def test_two_sessions_interleaving_on_their_own_threads_keep_their_totals():
+    # BAF runs each session on its own thread and event loop; events arrive
+    # interleaved and are freed as soon as they are handled, so ids recur.
+    import random
+    results = {"A": [], "B": []}
+    errors = []
+
+    def session_loop(name, tokens_base):
+        rng = random.Random(name)
+
+        def run():
+            from types import SimpleNamespace
+            session = SimpleNamespace(event=None)
+            last = None
+            for i in range(300):
+                session.event = _Event()
+                session_helpers.begin_turn_usage(session)        # the transition hook
+                get_tracker().record(prompt_tokens=tokens_base + i, completion_tokens=0, model=f"m-{name}")
+                if rng.random() < 0.5:
+                    threading.Event().wait(0.0001)
+                session_helpers.begin_turn_usage(session)        # the state body
+                get_tracker().record(prompt_tokens=tokens_base + i, completion_tokens=1, model=f"m-{name}")
+                results[name].append((tokens_base + i, tracking.current_turn().snapshot()))
+                if rng.random() < 0.3:
+                    last = session.event                         # BAF's fallback path restores one
+                session.event = None
+            del last
+        try:
+            contextvars.copy_context().run(run)
+        except Exception as exc:  # pragma: no cover - reported below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=session_loop, args=("A", 10)),
+               threading.Thread(target=session_loop, args=("B", 10_000))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    for name, rows in results.items():
+        assert len(rows) == 300
+        for tokens, snapshot in rows:
+            assert snapshot == {"model": f"m-{name}", "provider": "openai",
+                                "inputTokens": 2 * tokens, "outputTokens": 1}

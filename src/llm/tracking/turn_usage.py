@@ -2,10 +2,10 @@
 
 Every LLM call records its tokens through ``TokenTracker.record``; while a
 turn is open in the current context, that also adds them to the turn's
-:class:`TurnUsage`. A turn is opened per incoming event
+:class:`TurnUsage`. A turn is opened per incoming event object
 (``session_helpers.begin_turn_usage``, from the first transition hook and the
-state preamble) in the context BAF runs that event's transitions and state
-body in; the thread pool of a parallel plan copies that context, so its calls
+state preamble; matched by identity, see :class:`TurnUsage`) in the context
+BAF runs that event's transitions and state body in; the thread pool of a parallel plan copies that context, so its calls
 count too. The reply choke point (``session_helpers._send_to_session``) stamps
 the running totals on the turn's terminal replies.
 
@@ -15,6 +15,7 @@ Totals are only as exact as what is recorded: a call through BAF's own
 
 import contextvars
 import threading
+import weakref
 from typing import Any, Dict, Optional, Tuple
 
 from llm.byok_config import get_current
@@ -24,13 +25,26 @@ SERVER_PROVIDER = "openai"
 
 
 class TurnUsage:
-    """Token totals of one turn's LLM calls, per (provider, model)."""
+    """Token totals of one turn's LLM calls, per (provider, model).
 
-    def __init__(self, key: Any) -> None:
-        self.key = key
+    *event* is the turn's key, compared by identity (``is``), never by
+    ``id()``: CPython reuses the id of a freed object, so the next event
+    could inherit a finished turn's totals. A weak reference is held when the
+    object takes one, so the turn never keeps its event alive; a freed event
+    then matches nothing."""
+
+    def __init__(self, event: Any) -> None:
+        try:
+            self._event = weakref.ref(event)
+        except TypeError:  # str, int, ... (tests): no weak reference, held as is
+            self._event = lambda: event
         self._lock = threading.Lock()
         # (provider, model) -> [input tokens, output tokens], in first-call order.
         self._per_model: Dict[Tuple[str, str], list] = {}
+
+    def belongs_to(self, event: Any) -> bool:
+        """True when this is the turn of *event* (the same object)."""
+        return self._event() is event
 
     def add(self, input_tokens: int, output_tokens: int, *, model: str, provider: str) -> None:
         with self._lock:
@@ -61,12 +75,13 @@ _current: "contextvars.ContextVar[Optional[TurnUsage]]" = contextvars.ContextVar
 )
 
 
-def begin_turn(key: Any) -> TurnUsage:
-    """Open the turn *key* in the current context, or return it when it is
-    already the open one (the hook and the state body of one event)."""
+def begin_turn(event: Any) -> TurnUsage:
+    """Open the turn of *event* (the incoming event object) in the current
+    context, or return it when it is already the open one (the hook and the
+    state body of one event)."""
     usage = _current.get()
-    if usage is None or usage.key != key:
-        usage = TurnUsage(key)
+    if usage is None or not usage.belongs_to(event):
+        usage = TurnUsage(event)
         _current.set(usage)
     return usage
 

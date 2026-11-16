@@ -435,7 +435,7 @@ def begin_turn_usage(session: Session) -> None:
     try:
         event = getattr(session, "event", None)
         if event is not None:
-            tracking.begin_turn(id(event))
+            tracking.begin_turn(event)
     except Exception as exc:
         logger.debug(f"[Usage] turn start skipped (best-effort): {exc}")
 
