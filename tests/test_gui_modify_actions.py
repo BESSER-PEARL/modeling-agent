@@ -208,6 +208,68 @@ def test_modification_prompt_states_the_interaction_vocabulary():
         assert marker in seen["prompt"]
 
 
+# -- a saved design is left as it is ------------------------------------------
+
+SAVED_PAGES = [
+    {"name": "Desk", "sections": [
+        {"bind": {"kind": "table", "className": "Task", "title": "Desk tasks"}},
+        {"html": "<section class='app-desk'><h2>Desk</h2><button class='app-chip'>Mine</button>"
+                 "<a class='app-link' href='/projects'>All projects</a>"
+                 "<form data-class='Project'><input name='name'><button>Save</button></form></section>"},
+    ]},
+    {"name": "Projects", "sections": [{"html": "<section class='s'><h2>Projects</h2></section>"}]},
+]
+
+
+def _main_sections(model, page_name):
+    wrapper = _page(model, page_name)["frames"][0]["component"]
+    return next(c for c in wrapper["components"] if c.get("tagName") == "main")["components"]
+
+
+def _without_hrefs(node):
+    if isinstance(node, dict):
+        return {k: ({a: v for a, v in node[k].items() if a != "href"} if k == "attributes" else _without_hrefs(v))
+                for k, v in node.items()}
+    if isinstance(node, list):
+        return [_without_hrefs(item) for item in node]
+    return node
+
+
+def test_an_edit_leaves_the_saved_sections_of_a_design_as_they_are():
+    # What the user saved, a button without an action included, comes back
+    # unchanged apart from link hrefs.
+    handler = _handler()
+    handler.predict_two_pass_structured = (
+        lambda **kw: AuthoredSystemGUISpec(projectName="Tracker", pages=SAVED_PAGES)
+    )
+    saved = handler.generate_complete_system("tracker", class_metadata=TASK_METADATA)["model"]
+    # A button the user added in the editor after the design was built.
+    _main_sections(saved, "Desk")[-1]["components"].append(
+        {"tagName": "button", "attributes": {"class": "app-later"},
+         "components": [{"type": "textnode", "content": "Later"}]}
+    )
+
+    def _no_llm(*args, **kwargs):
+        raise AssertionError("the request needs no LLM call")
+
+    no_llm = _handler()
+    no_llm.predict_structured = _no_llm
+    edited = [
+        no_llm.generate_modification(
+            "change the color to red", copy.deepcopy(saved),
+            raw_request="change the color to red", class_metadata=TASK_METADATA,
+        )["model"],
+        _modify(saved, [{
+            "operation": "append_section", "pageName": "Desk",
+            "section": {"html": "<section class='app-new'><h2>Notes</h2><button>Pin</button></section>"},
+        }], "add a notes section"),
+    ]
+    for after in edited:
+        for page in ("Desk", "Projects"):
+            before = _main_sections(saved, page)
+            assert _without_hrefs(_main_sections(after, page)[:len(before)]) == _without_hrefs(before)
+
+
 # -- navigation after page edits ---------------------------------------------
 
 def _nav_routes(model, page_name):
