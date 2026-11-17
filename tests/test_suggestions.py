@@ -35,6 +35,27 @@ class TestClassDiagramCompleteSytem:
         assert "Review the model" in labels and "Explain the specs" in labels
         assert not any(label.lower().startswith("generate") for label in labels)
 
+    @pytest.mark.parametrize("summary", [None, {"element_names": ["Quiz", "Question"], "element_count": 2,
+                                                "relationship_count": 1}])
+    def test_the_agentic_interface_offers_generating_the_code_first(self, summary):
+        # The drawer ("workspace") is the agentic interface; only the small widget stays
+        # modeling-only (BESSER-PEARL/BESSER#747).
+        actions = get_suggested_actions("ClassDiagram", "complete_system", model_summary=summary,
+                                        client_mode="workspace")
+        assert actions[0] == {"label": "Generate the code", "prompt": "generate the application"}
+        assert "Review the model" in [a["label"] for a in actions]
+        _assert_valid_actions(actions)
+
+    @pytest.mark.parametrize("client_mode", ["widget", None])
+    def test_the_widget_offers_no_generation(self, client_mode):
+        actions = get_suggested_actions("ClassDiagram", "complete_system", client_mode=client_mode)
+        assert not any(a["label"].lower().startswith("generate") for a in actions)
+
+    @pytest.mark.parametrize("mode", ["single_element", "modify_model"])
+    def test_only_a_complete_class_diagram_offers_it(self, mode):
+        actions = get_suggested_actions("ClassDiagram", mode, client_mode="workspace")
+        assert not any(a["label"] == "Generate the code" for a in actions)
+
 
 # ------------------------------------------------------------------
 # 2. ClassDiagram single_element returns different suggestions
