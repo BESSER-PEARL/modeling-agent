@@ -1,6 +1,9 @@
 """Tests for the request planner (orchestrator/request_planner.py)."""
 
+import copy
 import json
+from pathlib import Path
+
 import pytest
 from orchestrator.request_planner import (
     GENERATOR_PREREQUISITES,
@@ -11,6 +14,7 @@ from orchestrator.request_planner import (
     _normalize_operations,
     _fallback_operations,
     _validate_and_fix_plan,
+    _get_workspace_diagram_types,
 )
 from protocol.types import AssistantRequest, WorkspaceContext
 
@@ -20,6 +24,42 @@ def _make_request(message: str, active_diagram_type: str = "ClassDiagram") -> As
         message=message,
         diagram_type=active_diagram_type,
         context=WorkspaceContext(active_diagram_type=active_diagram_type),
+    )
+
+
+# What the editor sends as ``projectSnapshot`` for a new project
+# (``createDefaultProject``): every diagram type has one tab whose model is a
+# non-empty dict with no content.
+_EDITOR_DEFAULT_PROJECT = json.loads(
+    (Path(__file__).parent / "fixtures" / "editor_default_project.json").read_text(encoding="utf-8")
+)
+
+_BOOK_CLASS = {"id": "c1", "name": "Book", "type": "Class", "owner": None}
+
+
+def _editor_request(
+    message: str,
+    active_diagram_type: str = "ClassDiagram",
+    *,
+    classes: bool = False,
+    screens: bool = False,
+) -> AssistantRequest:
+    """A request as the editor sends it: the whole project snapshot, optionally
+    with a class and a designed screen in it."""
+    snapshot = copy.deepcopy(_EDITOR_DEFAULT_PROJECT)
+    if classes:
+        snapshot["diagrams"]["ClassDiagram"][0]["model"]["elements"] = {"c1": dict(_BOOK_CLASS)}
+    if screens:
+        wrapper = snapshot["diagrams"]["GUINoCodeDiagram"][0]["model"]["pages"][0]["frames"][0]["component"]
+        wrapper["components"] = [{"type": "text", "content": "Books"}]
+    return AssistantRequest(
+        message=message,
+        diagram_type=active_diagram_type,
+        context=WorkspaceContext(
+            active_diagram_type=active_diagram_type,
+            project_snapshot=snapshot,
+            current_diagram_indices=snapshot["currentDiagramIndices"],
+        ),
     )
 
 
@@ -71,6 +111,13 @@ class TestMatchSegmentTarget:
     def test_no_match(self):
         assert _match_segment_target("say hello") is None
 
+    def test_keyword_inside_another_word_is_not_a_match(self):
+        assert _match_segment_target("store the personal details of each customer") is None
+        assert _match_segment_target("add a guide page for new members") is None
+
+    def test_plural_keyword_matches(self):
+        assert _match_segment_target("describe the personas of the shop") == "UserDiagram"
+
 
 # ---------------------------------------------------------------------------
 # _should_use_llm_planner
@@ -89,6 +136,15 @@ class TestShouldUseLlmPlanner:
         assert _should_use_llm_planner(
             "create a class diagram and then generate django code", 1, True
         )
+
+    def test_keyword_inside_another_word_is_not_an_explicit_diagram(self):
+        # No diagram is named, so the long multi-clause request goes to the planner.
+        msg = (
+            "I need to keep the personal details of every customer, their orders, "
+            "the invoices and the payments, with a history of each change"
+        )
+        assert len(msg) > 120
+        assert _should_use_llm_planner(msg, 1, False)
 
     def test_long_complex_no_diagram_keywords(self):
         msg = "I want to build something complex with multiple entities and relationships and attributes " * 2
@@ -181,6 +237,21 @@ class TestPlanAssistantOperations:
 
 
 # ---------------------------------------------------------------------------
+# "create a web app ..." → class diagram, screens, paused web_app generation
+# ---------------------------------------------------------------------------
+
+_WEB_APP_PLAN = [
+    ("model", "ClassDiagram"),
+    ("model", "GUINoCodeDiagram"),
+    ("generation", "web_app"),
+]
+
+
+def _plan_shape(ops):
+    return [(o["type"], o.get("diagramType") or o.get("generatorType")) for o in ops or []]
+
+
+# ---------------------------------------------------------------------------
 # GUI builds need a class diagram first
 # ---------------------------------------------------------------------------
 
@@ -197,11 +268,12 @@ class TestGuiNeedsClassDiagram:
     def _shape(ops):
         return [(o["type"], o.get("diagramType") or o.get("generatorType")) for o in ops]
 
+    @pytest.mark.parametrize("make_request", [_make_request, _editor_request])
     @pytest.mark.parametrize("target", ["GUINoCodeDiagram", "ClassDiagram", None])
-    def test_ui_request_on_empty_workspace_takes_the_web_app_route(self, target):
+    def test_ui_request_on_empty_workspace_takes_the_web_app_route(self, target, make_request):
         # The classifier's target flips between runs; live, ClassDiagram gave
         # a model with no screens and GUINoCodeDiagram gave screens with no model.
-        request = _make_request(self.MSG)
+        request = make_request(self.MSG)
         ops = plan_assistant_operations(
             request, "complete_system", "create_complete_system_intent",
             _noop_predict, llm_target_type=target,
@@ -214,9 +286,10 @@ class TestGuiNeedsClassDiagram:
         assert ops[0]["mode"] == "complete_system"
         assert self.MSG in ops[0]["request"]
 
-    def test_lone_gui_op_on_empty_workspace_gets_class_diagram_first(self):
+    @pytest.mark.parametrize("make_request", [_make_request, _editor_request])
+    def test_lone_gui_op_on_empty_workspace_gets_class_diagram_first(self, make_request):
         # Prerequisite pass, independent of the web-app route.
-        request = _make_request(self.MSG)
+        request = make_request(self.MSG)
         ops = _validate_and_fix_plan(
             [{"type": "model", "diagramType": "GUINoCodeDiagram",
               "mode": "complete_system", "request": self.MSG}],
@@ -227,8 +300,9 @@ class TestGuiNeedsClassDiagram:
             ("model", "GUINoCodeDiagram"),
         ]
 
-    def test_create_without_ui_words_stays_a_class_diagram(self):
-        request = _make_request("Build a complete library management platform")
+    @pytest.mark.parametrize("make_request", [_make_request, _editor_request])
+    def test_create_without_ui_words_stays_a_class_diagram(self, make_request):
+        request = make_request("Build a complete library management platform")
         ops = plan_assistant_operations(
             request, "complete_system", "create_complete_system_intent",
             _noop_predict, llm_target_type="ClassDiagram",
@@ -238,7 +312,7 @@ class TestGuiNeedsClassDiagram:
     def test_existing_class_diagram_is_not_rebuilt(self):
         request = _make_request("create a GUI for my model")
         request.context.project_snapshot = {
-            "diagrams": {"ClassDiagram": [{"model": {"elements": {"c1": {"name": "Book"}}}}]},
+            "diagrams": {"ClassDiagram": [{"model": {"elements": {"c1": dict(_BOOK_CLASS)}}}]},
         }
         ops = plan_assistant_operations(
             request, "complete_system", "create_complete_system_intent",
@@ -246,10 +320,315 @@ class TestGuiNeedsClassDiagram:
         )
         assert self._shape(ops) == [("model", "GUINoCodeDiagram")]
 
-    def test_gui_modify_does_not_add_class_diagram(self):
-        request = _make_request("add a footer to the home page", "GUINoCodeDiagram")
+    def test_existing_class_diagram_in_the_editor_is_not_rebuilt(self):
+        request = _editor_request("create a GUI for my model", classes=True)
+        ops = plan_assistant_operations(
+            request, "complete_system", "create_complete_system_intent",
+            _noop_predict, llm_target_type="GUINoCodeDiagram",
+        )
+        assert self._shape(ops) == [("model", "GUINoCodeDiagram")]
+
+    @pytest.mark.parametrize("classes, screens", [(True, False), (False, True), (True, True)])
+    def test_ui_request_on_a_started_project_is_not_the_from_scratch_route(self, classes, screens):
+        request = _editor_request(self.MSG, classes=classes, screens=screens)
+        ops = plan_assistant_operations(
+            request, "complete_system", "create_complete_system_intent",
+            _noop_predict, llm_target_type="ClassDiagram",
+        )
+        assert self._shape(ops) == [("model", "ClassDiagram")]
+
+    @pytest.mark.parametrize("make_request", [_make_request, _editor_request])
+    def test_gui_modify_does_not_add_class_diagram(self, make_request):
+        request = make_request("add a footer to the home page", "GUINoCodeDiagram")
         ops = plan_assistant_operations(
             request, "modify_model", "modify_model_intent",
             _noop_predict, llm_target_type="GUINoCodeDiagram",
         )
         assert ("model", "ClassDiagram") not in self._shape(ops)
+
+
+class TestBareGenerateCommandAddsNoModelStep:
+    """"generate django code" names nothing to model: the planner adds no
+    diagram step for it, and the generation handler says what is missing."""
+
+    @pytest.mark.parametrize("message, intent, generator", [
+        ("generate django code", "create_complete_system_intent", "django"),
+        ("generate sql", "modify_model_intent", "sql"),
+        ("generate the web app", "create_complete_system_intent", "web_app"),
+        ("Generate the web app.", "create_complete_system_intent", "web_app"),
+        ("generate qiskit code", "create_complete_system_intent", "qiskit"),
+        ("generate the django code from my model", "create_complete_system_intent", "django"),
+        # Only the model, a pronoun or filler after the generator.
+        ("generate django code for my model", "create_complete_system_intent", "django"),
+        ("generate sql for it", "create_complete_system_intent", "sql"),
+        ("generate the sql of this diagram", "create_complete_system_intent", "sql"),
+        ("export to sql", "create_complete_system_intent", "sql"),
+        ("generate python code to download", "create_complete_system_intent", "python"),
+        ("generate the web app with my current model", "create_complete_system_intent", "web_app"),
+    ])
+    @pytest.mark.parametrize("classes", [False, True])
+    def test_only_the_generation_is_planned(self, message, intent, generator, classes):
+        ops = plan_assistant_operations(
+            _editor_request(message, classes=classes), "complete_system", intent, _noop_predict,
+        )
+        assert _plan_shape(ops) == [("generation", generator)]
+
+    @pytest.mark.parametrize("message, subject", [
+        ("generate a web app for a bookshop", "bookshop"),
+        ("generate a library management web app", "library management"),
+    ])
+    def test_generate_request_with_a_domain_still_gets_its_diagrams(self, message, subject):
+        ops = plan_assistant_operations(
+            _editor_request(message), "complete_system", "create_complete_system_intent", _noop_predict,
+        )
+        assert _plan_shape(ops) == _WEB_APP_PLAN
+        assert subject in ops[0]["request"]
+
+    def test_a_planned_model_step_still_gets_its_prerequisite(self):
+        # The plan has something to model, so the missing class diagram is added.
+        request = _editor_request("generate the web app")
+        ops = _validate_and_fix_plan(
+            [{"type": "model", "diagramType": "GUINoCodeDiagram", "mode": "complete_system",
+              "request": "create a GUI for a bookshop"},
+             {"type": "generation", "generatorType": "web_app", "config": {}}],
+            request,
+        )
+        assert _plan_shape(ops) == _WEB_APP_PLAN
+
+    def test_generation_with_an_existing_small_circuit_plans_no_rebuild(self):
+        request = _editor_request("generate qiskit code for my circuit")
+        circuit = request.context.project_snapshot["diagrams"]["QuantumCircuitDiagram"][0]["model"]
+        circuit["cols"] = [["H", 1], [1, "X"], ["Z", 1]]
+        ops = _validate_and_fix_plan(
+            [{"type": "generation", "generatorType": "qiskit", "config": {}}], request,
+        )
+        assert _plan_shape(ops) == [("generation", "qiskit")]
+
+
+class TestFromScratchRouteIsForAppRequests:
+    """On a new editor project, the class diagram + screens + generate plan is
+    for a request that asks for an app with an interface. A request for another
+    diagram, or one that only uses a screen word, keeps its own plan."""
+
+    @staticmethod
+    def _plan(message, target, request=None):
+        return plan_assistant_operations(
+            request or _editor_request(message), "complete_system",
+            "create_complete_system_intent", _noop_predict, llm_target_type=target,
+        )
+
+    @pytest.mark.parametrize("message, target", [
+        ("Model the invoice lifecycle as a state machine, from the payment page to archiving",
+         "StateMachineDiagram"),
+        ("I need a state machine that follows a parcel from the tracking screen to delivery",
+         "StateMachineDiagram"),
+        ("an agent that answers questions about the pages of the staff manual", "AgentDiagram"),
+        ("Draw the BPMN of how a refund moves from the returns page to the bank", "BPMN"),
+        ("draw the deployment of the frontend, the API and the database", "DeploymentDiagram"),
+        ("a user profile for people who prefer high contrast in the UI", "UserDiagram"),
+        ("a quantum circuit that prepares a bell state and fits on the start page",
+         "QuantumCircuitDiagram"),
+    ])
+    def test_request_for_another_diagram_builds_that_diagram(self, message, target):
+        ops = self._plan(message, target)
+        assert _plan_shape(ops) == [("model", target)]
+
+    @pytest.mark.parametrize("message, expected", [
+        ("I need a state machine that follows a parcel from the tracking screen to delivery",
+         "StateMachineDiagram"),
+        ("Draw the BPMN of how a refund moves from the returns page to the bank", "BPMN"),
+        ("a user profile for people who prefer high contrast in the UI", "UserDiagram"),
+    ])
+    @pytest.mark.parametrize("target", [None, "ClassDiagram"])
+    def test_a_named_diagram_is_not_replaced_by_the_web_app_plan(self, message, expected, target):
+        # No usable classifier target: the diagram the message names still wins.
+        shape = _plan_shape(self._plan(message, target))
+        assert ("model", expected) in shape
+        assert ("generation", "web_app") not in shape
+        assert ("model", "GUINoCodeDiagram") not in shape
+
+    @pytest.mark.parametrize("extra", ["AgentDiagram", "StateMachineDiagram"])
+    def test_project_with_another_diagram_and_no_classes(self, extra):
+        request = _editor_request("Build a second agent that explains the UI of the product")
+        elements = {"AgentDiagram": {"a1": {"id": "a1", "name": "greet", "type": "AgentState"}},
+                    "StateMachineDiagram": {"s1": {"id": "s1", "name": "Open", "type": "State"}}}
+        request.context.project_snapshot["diagrams"][extra][0]["model"]["elements"] = elements[extra]
+        assert _plan_shape(self._plan(request.message, "AgentDiagram", request)) == [("model", "AgentDiagram")]
+
+    @pytest.mark.parametrize("message", [
+        "a library catalogue: each book has a title, an author and a number of pages",
+        "Design a class diagram that covers books, their pages and their authors",
+        "Design a CMS data model: Site, Page, Block, Author. A page has many blocks.",
+        "a cinema booking model: each cinema has several screens and each screen has seats",
+        "a shop that sells screens and keyboards, with stock per warehouse",
+        "a notebook model where every page belongs to one section",
+    ])
+    def test_screen_word_as_a_domain_noun_stays_a_class_diagram(self, message):
+        assert _plan_shape(self._plan(message, "ClassDiagram")) == [("model", "ClassDiagram")]
+
+    @pytest.mark.parametrize("message", [
+        "Build an order tracker with models and a UI",
+        "Build an inventory system with a frontend",
+        "a booking system with a GUI",
+        "Build a task tracker with screens for adding and listing tasks",
+        "Build a task tracker and some screens",
+        "an order tracker with a list page and a detail page",
+        "a ticketing system with pages to list and edit tickets",
+        "a course catalogue with a page for each course",
+        "Build a bookshop with a landing page and a catalogue",
+    ])
+    @pytest.mark.parametrize("target", ["ClassDiagram", "GUINoCodeDiagram", None])
+    def test_app_request_that_asks_for_an_interface_gets_the_web_app_plan(self, message, target):
+        assert _plan_shape(self._plan(message, target)) == _WEB_APP_PLAN
+
+    @pytest.mark.parametrize("message", [
+        "Build a library management platform with models and UI",
+        "Create a task tracker with screens for projects and tasks",
+        "I want an app to manage my recipes, with pages for recipes and ingredients",
+        "Build an inventory system with a page for each product category",
+        "Create a booking system for a hair salon with a user interface",
+        "Design a CRM with a frontend for the sales team",
+        "Make a student grading app with a dashboard page and a detail page per student",
+        "Build a blog platform with pages to list and edit posts",
+        "Create an event planner; I need screens to add events and invite guests",
+        "Build a to-do app with a simple GUI",
+        "An expense tracker with a page where I can add expenses and a page with monthly totals",
+        "Create a hotel reservation app with a checkout page and a room list page",
+        "Create a web application for tracking library loans",
+        "Build a habit tracker app with a mobile-friendly UI",
+        "Create a parking management system with screens",
+        "I want a movie catalogue app with a search page and a page for my watchlist",
+        "Build a small shop app: products, cart, checkout, with a page per step",
+        "Create a volunteer scheduling tool with forms and pages for shifts",
+        "Design an app for a book club with a home page, member profiles and a reading list",
+        "Build a ticketing system with an admin screen and a customer screen",
+        "Make an app to track plant watering, including a screen for each plant",
+        "Create a job board with a page that lists the openings and a page to apply",
+        "Build a simple survey tool with a web UI",
+        "Create a school timetable app with three screens: classes, teachers, rooms",
+        "I need an app for my bakery with an order page and a product page",
+        "Build a fitness log with screens and charts",
+        "Create a library app with a page to borrow books and a page to return them",
+        "Build a car rental platform, with customer-facing pages and a back office",
+        "Model a library with a UI",
+        "Model a task tracker and screens for it",
+        "Design a data model for a clinic, with pages to book appointments",
+    ])
+    @pytest.mark.parametrize("target", ["ClassDiagram", "GUINoCodeDiagram", None])
+    def test_common_wordings_of_an_interface_get_the_web_app_plan(self, message, target):
+        assert _plan_shape(self._plan(message, target)) == _WEB_APP_PLAN
+
+    @pytest.mark.parametrize("message", [
+        # A request for a model: a screen word alone does not ask for screens.
+        "Model a bug tracker for UI defects: Bug, Reporter, Component, Severity",
+        "Model a staffing agency: frontend developers, backend developers, clients and contracts",
+        "Design a data model for a design tool: wireframes, mockups, artboards and comments",
+        "A CMS data model with landing pages, blocks and authors",
+        "Model a newspaper: Edition, Section, Article; the home page editor picks the lead article",
+        "Model a TV shop that sells monitors and screens, with a warranty per item",
+        "Model a hardware store: we want screens, nails and hinges in the catalogue",
+        "Model an e-reader: Book, Chapter, Bookmark; add screens of different sizes as device types",
+        "A wiki model: Space, Page, Revision. Editors need pages to list their revisions.",
+        # Interface words that are objects of the domain.
+        "a tracker for UI defects with a severity per defect",
+        "an agency that places frontend developers with clients",
+    ])
+    def test_screen_word_in_a_model_request_stays_a_class_diagram(self, message):
+        assert _plan_shape(self._plan(message, "ClassDiagram")) == [("model", "ClassDiagram")]
+
+    def test_gui_as_a_domain_noun_does_not_get_the_web_app_plan(self):
+        # "a GUI" is also a GUI-diagram keyword, which adds its own step.
+        shape = _plan_shape(self._plan("Domain model for a GUI toolkit: Widget, Window, Layout, Event",
+                                       "ClassDiagram"))
+        assert shape[0] == ("model", "ClassDiagram")
+        assert ("generation", "web_app") not in shape
+
+    @pytest.mark.parametrize("message", [
+        "Model the lifecycle of a support ticket from the login screen to closing",
+        "the states of a UI wizard: start, details, confirm, done, with back and next transitions",
+        "which servers host the frontend and the database, and how they connect",
+    ])
+    def test_without_a_target_the_implicit_diagram_hint_keeps_its_plan(self, message):
+        shape = _plan_shape(self._plan(message, None))
+        assert ("generation", "web_app") not in shape
+        assert ("model", "GUINoCodeDiagram") not in shape
+
+    def test_without_a_target_a_lifecycle_stays_a_state_machine(self):
+        message = "Model the lifecycle of a support ticket from the login screen to closing"
+        assert _plan_shape(self._plan(message, None)) == [("model", "StateMachineDiagram")]
+
+
+# ---------------------------------------------------------------------------
+# Which diagram types the workspace already has
+# ---------------------------------------------------------------------------
+
+class TestWorkspaceDiagramTypes:
+    def test_a_new_editor_project_has_no_diagrams(self):
+        assert _get_workspace_diagram_types(_editor_request("hello")) == set()
+
+    def test_tabs_with_content_are_present(self):
+        request = _editor_request("hello", classes=True, screens=True)
+        assert _get_workspace_diagram_types(request) == {"ClassDiagram", "GUINoCodeDiagram"}
+
+    def test_a_gui_page_without_components_is_not_screens(self):
+        request = _editor_request("hello", classes=True)
+        assert _get_workspace_diagram_types(request) == {"ClassDiagram"}
+
+    @pytest.mark.parametrize("diagram_type, content", [
+        ("ObjectDiagram", {"elements": {"o1": {"id": "o1", "name": "book1", "type": "Object"}}}),
+        ("StateMachineDiagram", {"elements": {"s1": {"id": "s1", "name": "Open", "type": "State"}}}),
+        ("AgentDiagram", {"elements": {"a1": {"id": "a1", "name": "greet", "type": "AgentState"}}}),
+        ("BPMN", {"elements": {"t1": {"id": "t1", "name": "Ship order", "type": "BPMNTask"}}}),
+        ("ComponentDiagram", {"elements": {"k1": {"id": "k1", "name": "Billing", "type": "Component"}}}),
+        ("KnowledgeGraphDiagram", {"nodes": [{"id": "n1", "label": "Book"}]}),
+    ])
+    def test_each_type_is_present_once_it_has_content(self, diagram_type, content):
+        request = _editor_request("hello")
+        request.context.project_snapshot["diagrams"][diagram_type][0]["model"].update(content)
+        assert _get_workspace_diagram_types(request) == {diagram_type}
+
+    def test_any_tab_with_content_counts(self):
+        request = _editor_request("hello")
+        tabs = request.context.project_snapshot["diagrams"]["ClassDiagram"]
+        tabs.append({"id": "second", "title": "Second", "model": {"elements": {"c1": dict(_BOOK_CLASS)}}})
+        assert _get_workspace_diagram_types(request) == {"ClassDiagram"}
+
+    @pytest.mark.parametrize("diagram_type, content", [
+        # Small real diagrams: nothing in them is a "typical" element.
+        ("ClassDiagram", {"elements": {
+            "c1": {"id": "c1", "name": "Shape", "type": "AbstractClass"},
+            "e1": {"id": "e1", "name": "Colour", "type": "Enumeration"},
+        }}),
+        ("QuantumCircuitDiagram", {"cols": [["H", 1], [1, "X"], ["Z", 1]]}),
+        ("QuantumCircuitDiagram", {"cols": [[1, "H"]]}),
+        ("StateMachineDiagram", {"elements": {"i1": {"id": "i1", "name": "", "type": "StateInitialNode"}}}),
+    ])
+    def test_a_small_diagram_is_present(self, diagram_type, content):
+        request = _editor_request("hello")
+        request.context.project_snapshot["diagrams"][diagram_type][0]["model"].update(content)
+        assert _get_workspace_diagram_types(request) == {diagram_type}
+
+    def test_a_quantum_circuit_of_empty_cells_is_absent(self):
+        request = _editor_request("hello")
+        request.context.project_snapshot["diagrams"]["QuantumCircuitDiagram"][0]["model"]["cols"] = [[1, 1], [1]]
+        assert _get_workspace_diagram_types(request) == set()
+
+    @pytest.mark.parametrize("diagram_type", sorted(_EDITOR_DEFAULT_PROJECT["diagrams"]))
+    def test_a_tab_without_a_model_is_absent(self, diagram_type):
+        request = _editor_request("hello")
+        request.context.project_snapshot["diagrams"][diagram_type][0]["model"] = None
+        assert _get_workspace_diagram_types(request) == set()
+
+    def test_summaries_stand_in_when_no_snapshot_was_sent(self):
+        request = _make_request("hello")
+        request.context.diagram_summaries = [{"diagramType": "ClassDiagram", "title": "Shop"}]
+        assert _get_workspace_diagram_types(request) == {"ClassDiagram"}
+
+    def test_summaries_of_empty_tabs_do_not_make_them_present(self):
+        # The agent derives one summary per tab when the editor sends none.
+        request = _editor_request("hello")
+        request.context.diagram_summaries = [
+            {"diagramType": diagram_type, "diagramId": tabs[0]["id"], "title": tabs[0]["title"]}
+            for diagram_type, tabs in request.context.project_snapshot["diagrams"].items()
+        ]
+        assert _get_workspace_diagram_types(request) == set()

@@ -34,6 +34,7 @@ KEYWORD_TARGETS = [
     ("target user", "UserDiagram"),
     ("user persona", "UserDiagram"),
     ("persona", "UserDiagram"),
+    ("personal_information", "UserDiagram"),  # a class of the user-profile metamodel
     # Component / Deployment: only tokens that NAME the diagram. Generic
     # architecture vocabulary ("system architecture", "subsystem",
     # "service architecture") is everyday class-diagram phrasing and must
@@ -70,12 +71,38 @@ KEYWORD_TARGETS = [
     ("qubit", "QuantumCircuitDiagram"),
     ("qft", "QuantumCircuitDiagram"),
     ("entangle", "QuantumCircuitDiagram"),
+    ("entangled", "QuantumCircuitDiagram"),
+    ("entanglement", "QuantumCircuitDiagram"),
     ("superposition", "QuantumCircuitDiagram"),
     ("quantum gate", "QuantumCircuitDiagram"),
     ("bernstein-vazirani", "QuantumCircuitDiagram"),
     ("deutsch-jozsa", "QuantumCircuitDiagram"),
     ("teleportation circuit", "QuantumCircuitDiagram"),
 ]
+
+# A keyword counts only as whole words ("persona" is not in "personal"); its
+# last word may be plural, a gerund or numbered ("personas", "process
+# modelling", "bpmn2"), and "diagram" may be spelled "diagramm".
+_KEYWORD_TARGET_PATTERNS: List[Tuple[re.Pattern, str]] = [
+    (
+        re.compile(
+            rf"\b{re.escape(token)}{'m?' if token.endswith('diagram') else ''}(?:s|es|l?ing|\d+)?\b"
+        ),
+        diagram_type,
+    )
+    for token, diagram_type in KEYWORD_TARGETS
+]
+
+
+def keyword_target_hits(text_lower: str) -> List[Tuple[int, str]]:
+    """``(position, diagram type)`` of each keyword found in *text_lower*, in
+    ``KEYWORD_TARGETS`` order."""
+    hits: List[Tuple[int, str]] = []
+    for pattern, diagram_type in _KEYWORD_TARGET_PATTERNS:
+        match = pattern.search(text_lower)
+        if match:
+            hits.append((match.start(), diagram_type))
+    return hits
 
 
 # ---------------------------------------------------------------------------
@@ -171,9 +198,8 @@ FALLBACK_PRIORITY: Tuple[str, ...] = (
 def _collect_explicit_targets(message_lower: str) -> List[str]:
     explicit: List[Tuple[int, str]] = []
     seen: Set[str] = set()
-    for token, diagram_type in KEYWORD_TARGETS:
-        index = message_lower.find(token)
-        if index >= 0 and diagram_type not in seen:
+    for index, diagram_type in keyword_target_hits(message_lower):
+        if diagram_type not in seen:
             explicit.append((index, diagram_type))
             seen.add(diagram_type)
     explicit.sort(key=lambda item: item[0])

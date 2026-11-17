@@ -364,7 +364,7 @@ class TestConfirmationNamesTheTarget:
         assert "can't compile" in payload["message"]
         assert pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS).startswith(
             "Target: Windows 11 desktop app (not a web app).")
-        assert payload["suggestedActions"][0]["prompt"] == "generate anyway with my current model"
+        assert payload["suggestedActions"][0]["prompt"] == "continue with the generation"
 
     def test_target_line_reaches_the_spec_driven_agent_in_its_parsed_format(self, monkeypatch):
         # Cross-repo contract: BESSER's spec-driven agent reads this line with
@@ -446,7 +446,7 @@ class TestReplyTranslation:
         session = _spanish_session()
         model = {"elements": {"c1": {"name": "Book"}}}
         actions = [{"label": label, "prompt": prompt} for label, prompt in (
-            ("Continue", "generate anyway with my current model"),
+            ("Continue", "continue with the generation"),
             ("Review the model", "wme:review-spec"),
             ("Cancel", "cancel"),
         )]
@@ -565,11 +565,11 @@ class TestTranslationIsolation:
         reply_language.localize_payload(_spanish_session(), {
             "action": "assistant_message",
             "message": f"I'll build a **x; {fake.HOSTILE}** from your specs.",
-            "suggestedActions": [{"label": "Continue", "prompt": "generate anyway with my current model"}],
+            "suggestedActions": [{"label": "Continue", "prompt": "continue with the generation"}],
         })
         other_user = reply_language.localize_payload(_spanish_session(), {
             "action": "assistant_message", "message": "Do you want to continue?",
-            "suggestedActions": [{"label": "Continue", "prompt": "generate anyway with my current model"}],
+            "suggestedActions": [{"label": "Continue", "prompt": "continue with the generation"}],
         })
         assert other_user["suggestedActions"][0]["label"] == "ES<Continue>"
 

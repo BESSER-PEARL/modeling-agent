@@ -34,7 +34,9 @@ from utilities.model_context import is_diagram_nontrivial
 from utilities.original_request import (
     current_target, original_request_for_project, remember_original_request, request_project_id,
 )
-from conversation.reply_copy import AUTO_FIX_UNFIXED, REFINE_MODEL_PROMPT, continue_generating_prompt
+from conversation.reply_copy import (
+    AUTO_FIX_UNFIXED, REFINE_MODEL_PROMPT, REFINE_SCREENS_PROMPT, continue_generating_prompt,
+)
 from conversation.suggestions import get_suggested_actions, get_artifact_label, get_post_spec_suggestions
 from common.session_keys import (
     LAST_EXECUTED_DIAGRAM_TYPE,
@@ -47,6 +49,7 @@ from common.pending_dialogs import (
     PENDING_GENERATOR_CONFIG,
     PENDING_GENERATOR_TYPE,
     PENDING_GUI_CHOICE,
+    PENDING_WEBAPP_GENERATE,
     PLAN_GENERATION_CONFIRM_FLAG,
     PLAN_PAUSED_GENERATION_OP_KEY,
     PENDING_SMART_GEN_INSTRUCTIONS,
@@ -73,6 +76,19 @@ _QUEUED_DESTRUCTIVE = "_queued_destructive_confirmation"
 # Handler replies that ask the user to rephrase: the LLM call failed, or the
 # handler crashed (generate_fallback_modification).
 _REPHRASE_ERROR_CODES = frozenset({ErrorCode.LLM_FAILURE.value, ErrorCode.GENERATION_ERROR.value})
+
+
+def gui_choice_actions() -> list:
+    """The two buttons of the screen-creation question.
+
+    Neither is pre-selected. Each sends its own label, which
+    confirmation.handle_pending_gui_choice routes by keyword
+    ("basic"/"crud" vs "experimental"/"ai"/"design").
+    """
+    return [
+        {"label": "Basic CRUD pages", "prompt": "Basic CRUD pages"},
+        {"label": "Experimental AI design", "prompt": "Experimental AI design"},
+    ]
 
 
 def _non_web_target_label(session, request):
@@ -694,13 +710,7 @@ def execute_model_operation(
                     "2️⃣ **Experimental AI design** — custom-designed screens "
                     "with navigation, styling and realistic content."
                 ),
-                # Neither option is pre-selected. Each button sends its own label,
-                # which confirmation.handle_pending_gui_choice routes by keyword
-                # ("basic"/"crud" vs "experimental"/"ai"/"design").
-                "suggestedActions": [
-                    {"label": "Basic CRUD pages", "prompt": "Basic CRUD pages"},
-                    {"label": "Experimental AI design", "prompt": "Experimental AI design"},
-                ],
+                "suggestedActions": gui_choice_actions(),
             })
             logger.info("[ModelOp] Asked user to choose GUI generation mode")
             return None
@@ -1063,7 +1073,11 @@ def execute_model_operation(
                     _detected_gen, label=_non_web_target_label(session, request),
                 )
             elif operation_mode == "complete_system":
-                result["message"] += "\n\n" + REFINE_MODEL_PROMPT
+                if target_diagram_type != "GUINoCodeDiagram":
+                    result["message"] += "\n\n" + REFINE_MODEL_PROMPT
+                elif not pending_dialogs.get(session, PENDING_WEBAPP_GENERATE):
+                    # A web-app plan closes its screens with "Your screens are ready ...".
+                    result["message"] += "\n\n" + REFINE_SCREENS_PROMPT
 
     # ── Destructive modify-model guard ───────────────────────────────────
     # Block a modify_model plan whose net effect would delete most/all of

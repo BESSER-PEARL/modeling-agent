@@ -10,9 +10,8 @@ from routing.generation_signals import (
     GENERATOR_PREREQUISITES,
     detect_generator_type,
 )
-from routing.unified_classifier import EXPLICIT_SCREEN_VOCAB_RE
 
-from .workspace_orchestrator import KEYWORD_TARGETS, determine_target_diagram_types
+from .workspace_orchestrator import determine_target_diagram_types, keyword_target_hits
 
 logger = logging.getLogger(__name__)
 
@@ -180,12 +179,7 @@ def _split_message_segments(message: str) -> List[str]:
 
 
 def _match_segment_target(segment: str) -> Optional[str]:
-    segment_lower = segment.lower()
-    candidates: List[Tuple[int, str]] = []
-    for token, diagram_type in KEYWORD_TARGETS:
-        index = segment_lower.find(token)
-        if index >= 0:
-            candidates.append((index, diagram_type))
+    candidates = keyword_target_hits(segment.lower())
     if not candidates:
         return None
     candidates.sort(key=lambda item: item[0])
@@ -215,7 +209,7 @@ def _should_use_llm_planner(
     lower = (message or "").lower()
     has_connector = any(connector in lower for connector in PLANNER_CONNECTORS)
     has_multi_clause = has_connector or lower.count(",") >= 2
-    has_explicit_diagram_tokens = any(token in lower for token, _ in KEYWORD_TARGETS)
+    has_explicit_diagram_tokens = bool(keyword_target_hits(lower))
 
     # Fast path: when the intent classifier already resolved a single-
     # diagram intent and keyword inference agrees (exactly 1 target, no
@@ -588,33 +582,93 @@ def _try_heuristic_decomposition(
 # Post-planning validation: ensure prerequisites and remove duplicates.
 # ---------------------------------------------------------------------------
 
+def _tab_has_content(tab: Any) -> bool:
+    """True when a diagram tab holds something the user or the assistant made.
+
+    A new editor project sends every tab with a model that is a non-empty dict
+    without content, so a non-empty dict proves nothing. Any element counts:
+    this is not ``is_diagram_nontrivial``, which skips small diagrams.
+    """
+    if not isinstance(tab, dict):
+        return False
+    # A legacy entry is the model itself; an entry with a "model" key is judged by it.
+    model = tab["model"] if "model" in tab else tab
+    if not isinstance(model, dict) or not model:
+        return False
+    if "pages" in model:
+        # GUI: the editor's default tab is one page with no components, and
+        # its screens are still to be built.
+        return any(
+            isinstance(frame, dict)
+            and isinstance(frame.get("component"), dict)
+            and bool(frame["component"].get("components"))
+            for page in model.get("pages") or []
+            if isinstance(page, dict)
+            for frame in page.get("frames") or []
+        )
+    if "cols" in model:
+        # Quantum circuit: any gate counts; 1 marks an empty cell.
+        return any(
+            not isinstance(column, list) or any(cell not in (1, None) for cell in column)
+            for column in model.get("cols") or []
+        )
+    # UML-family models and the knowledge graph: any element counts.
+    content = [model[key] for key in ("elements", "relationships", "nodes", "edges") if key in model]
+    return any(content) if content else True
+
+
 def _get_workspace_diagram_types(request: AssistantRequest) -> Set[str]:
     """Return the set of diagram types already present (with content) in the workspace.
 
-    For multi-tab arrays, a type is considered present only when at least one
-    tab contains a non-empty model dict.  This prevents spurious prerequisite
-    satisfaction when the frontend sends an empty placeholder tab.
+    Judged from the project snapshot: a type is present when one of its tabs
+    has content. Diagram summaries carry no content, so they stand in only
+    when no snapshot was sent.
     """
-    existing: Set[str] = set()
     snapshot = request.context.project_snapshot
-    if isinstance(snapshot, dict):
-        diagrams = snapshot.get("diagrams")
-        if isinstance(diagrams, dict):
-            for diagram_type, payload in diagrams.items():
-                if isinstance(payload, list):
-                    # Multi-tab: type is present only when ≥1 tab has a model
-                    for tab in payload:
-                        if isinstance(tab, dict) and isinstance(tab.get("model"), dict) and tab["model"]:
-                            existing.add(diagram_type)
-                            break
-                elif isinstance(payload, dict):
-                    existing.add(diagram_type)
+    diagrams = snapshot.get("diagrams") if isinstance(snapshot, dict) else None
+    if isinstance(diagrams, dict):
+        return {
+            diagram_type
+            for diagram_type, payload in diagrams.items()
+            if any(
+                _tab_has_content(tab)
+                for tab in (payload if isinstance(payload, list) else [payload])
+            )
+        }
+    existing: Set[str] = set()
     for summary in (request.context.diagram_summaries or []):
         if isinstance(summary, dict):
             dt = summary.get("diagramType")
             if isinstance(dt, str):
                 existing.add(dt)
     return existing
+
+
+# Words of a generate command that name no subject: the generators and their
+# targets, the user's model, pronouns and filler.
+_GENERATE_COMMAND_WORDS = frozenset(
+    word
+    for phrase in [
+        *GENERATOR_PREREQUISITES, *GENERATOR_KEYWORDS,
+        *(keyword for keywords in GENERATOR_KEYWORDS.values() for keyword in keywords),
+    ]
+    for word in re.findall(r"[a-z0-9]+", phrase.lower())
+) | {
+    "a", "an", "the", "my", "our", "this", "that", "these", "those", "it", "them", "its",
+    "current", "existing", "same", "whole", "full", "complete", "new",
+    "for", "of", "to", "from", "with", "in", "into", "as", "on", "and", "based", "using",
+    "model", "models", "diagram", "diagrams", "class", "classes", "uml",
+    "code", "source", "files", "file", "download", "now", "again", "please", "me", "us",
+}
+
+
+def _is_bare_generate_command(message: str) -> bool:
+    """True for "generate django code for my model": a generate command whose
+    words after the verb name only the generator, the user's model or filler."""
+    match = _HEURISTIC_GENERATE_ONLY.match(message.strip())
+    return bool(match) and set(
+        re.findall(r"[a-z0-9]+", match.group("gen_part").lower())
+    ) <= _GENERATE_COMMAND_WORDS
 
 
 def _validate_and_fix_plan(
@@ -637,13 +691,17 @@ def _validate_and_fix_plan(
             if isinstance(dt, str):
                 planned_diagrams.add(dt)
 
+    # A bare "generate django code" with no model step names nothing to model:
+    # no step is added for it, and the generation handler says what is missing.
+    nothing_to_model = not planned_diagrams and _is_bare_generate_command(request.message or "")
+
     # Check each generation op (and each GUI build) for missing prerequisites
     # and inject them
     injected: List[Dict[str, Any]] = []
     for op in operations:
         if op.get("type") == "generation":
             gen_type = op.get("generatorType")
-            if not isinstance(gen_type, str):
+            if not isinstance(gen_type, str) or nothing_to_model:
                 continue
             prereqs = GENERATOR_PREREQUISITES.get(gen_type, [])
         elif op.get("type") == "model":
@@ -691,6 +749,62 @@ def _validate_and_fix_plan(
 # ---------------------------------------------------------------------------
 # Few-shot examples appended to the LLM planner prompt.
 # ---------------------------------------------------------------------------
+
+
+# Diagrams the from-scratch web-app route builds.
+_WEB_APP_ROUTE_DIAGRAMS = {"ClassDiagram", "GUINoCodeDiagram"}
+
+# "a UI", "with a simple GUI", "models and UI", "a frontend for ...": asked for
+# after a word like "with" or "build", and not the modifier of another noun
+# ("UI defects", "frontend developers", "a GUI toolkit").
+_UI_ASKED_FOR_RE = re.compile(
+    r"\b(?:with|and|plus|including|add|need|want|build|create|design|make|has|have)\s+"
+    r"(?:[\w-]+\s+){0,2}?"
+    r"(?:gui|ui|user\s+interface|front-?end|mockups?|wireframes?)\b"
+    r"(?!\s+(?!(?:for|to|that|which|where|with|and|or|so|in|on|plus|please|too)\b)[\w-])",
+    re.IGNORECASE,
+)
+# "pages" and "screens" are also domain nouns (a book's pages, a cinema's
+# screens). They ask for an interface only when requested as one: "with
+# screens", "pages for recipes", "a page to ...", "a detail page", "with an
+# order page". Not followed by a comma: "we want screens, nails and hinges".
+_SCREENS_AS_INTERFACE_RE = re.compile(
+    r"\b(?:with|and|plus|including|design|build|create|make|add|need|want)\s+"
+    r"(?:(?:a|an|the|some|few|several|simple|basic|\d+|two|three|four|five)\s+){0,2}screens\b(?!\s*,)"
+    r"|\b(?:screens?|pages?)\s+(?:"
+    r"for\s+\w+"
+    r"|per\s+\w+"
+    r"|where\b"
+    r"|to\s+(?!(?:the|a|an|my|our|their|its|this|that|each|every)\b)\w+"
+    r"|that\s+(?:list|show|display|let)s?\b)"
+    r"|\b(?:home|landing|login|sign-?up|dashboard|detail|list|overview|admin|settings|main|start|search)"
+    r"\s+(?:screens?|pages?)\b"
+    r"|\b(?:with|and|plus|including)\s+(?:(?:a|an|the|one)\s+)?(?!\d)[\w-]+\s+(?:screens?|pages?)\b",
+    re.IGNORECASE,
+)
+# A request for a model: "model a ...", "a domain/data/class model", "a class
+# diagram", "a library model: ...".
+_ASKS_FOR_A_MODEL_RE = re.compile(
+    r"\bmodel\s+(?:a|an|the|my|our)\b|\b(?:domain|data|class)\s+model\b|\bclass\s+diagram\b|\bmodel\s*:",
+    re.IGNORECASE,
+)
+# In a request for a model, screens are asked for explicitly: "and screens for
+# it", "with pages to book ...", "with screens".
+_SCREENS_ASKED_FOR_EXPLICITLY_RE = re.compile(
+    r"\b(?:with|and|plus|including|also)\s+(?:(?:a|an|the|some|simple|basic)\s+)?(?:screens?|pages?)\b"
+    r"(?=\s*(?:$|[.!?;]|for\s+(?:it|them|this|that|each|every|all)\b"
+    r"|to\s+(?!(?:the|a|an|my|our|their|its|this|that|each|every)\b)\w+|where\b|that\b))",
+    re.IGNORECASE,
+)
+
+
+def _asks_for_an_interface(message: str) -> bool:
+    """True when the message asks for screens, not merely uses a screen word."""
+    if _UI_ASKED_FOR_RE.search(message):
+        return True
+    if _ASKS_FOR_A_MODEL_RE.search(message):
+        return bool(_SCREENS_ASKED_FOR_EXPLICITLY_RE.search(message))
+    return bool(_SCREENS_AS_INTERFACE_RE.search(message))
 
 
 def _without_web_gui_plan(
@@ -771,12 +885,18 @@ def _plan_operations(
     # "Build a library platform with models and UI" takes the same route as
     # "create a web app for X". Left to the classifier, the target flips
     # between ClassDiagram (no screens) and GUINoCodeDiagram (screens on no
-    # model).
+    # model). A request for any other diagram (the classifier's target, a
+    # diagram the message names or, without a target, one it implies) keeps
+    # its own plan.
     if (
         matched_intent == "create_complete_system_intent"
         and app_target_kind != "other"
-        and EXPLICIT_SCREEN_VOCAB_RE.search(request.message or "")
-        and not {"ClassDiagram", "GUINoCodeDiagram"} & _get_workspace_diagram_types(request)
+        and _asks_for_an_interface(request.message or "")
+        and set(determine_target_diagram_types(
+            request, last_intent=matched_intent, max_targets=len(SUPPORTED_DIAGRAM_TYPES),
+            llm_target_type=llm_target_type,
+        )) <= _WEB_APP_ROUTE_DIAGRAMS
+        and not _WEB_APP_ROUTE_DIAGRAMS & _get_workspace_diagram_types(request)
     ):
         message = request.message.strip()
         return _validate_and_fix_plan([

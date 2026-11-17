@@ -27,6 +27,7 @@ PILOT_PARTICIPANT_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,16}$")
 
 # Well above what the editor sends; the client is not trusted to keep it small.
 MAX_REPO_RECAP_CHARS = 4_000
+MAX_LAST_GENERATION_REQUEST_CHARS = 4_000
 # ``recentHistory`` caps, the same as the editor's (MAX_RECENT_HISTORY_TURNS /
 # _CHARS in AssistantClient.ts): enough turns to rebuild the conversation memory
 # (its window is 20 messages), enforced again here.
@@ -60,6 +61,32 @@ def _parse_github_repo(context_payload: Dict[str, Any]) -> Optional[Dict[str, An
         "has_code": repo.get("hasCode") is True,
         "recap": recap[:MAX_REPO_RECAP_CHARS] if isinstance(recap, str) else "",
     }
+
+
+_GENERATION_KEY_TIERS = ("own", "free", "none")
+
+
+def _parse_generation_key(context_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Validate the optional ``context.generationKey`` (or drop it)."""
+    key = context_payload.get("generationKey")
+    if not isinstance(key, dict) or key.get("tier") not in _GENERATION_KEY_TIERS:
+        return None
+    provider, model = key.get("provider"), key.get("model")
+    return {
+        "tier": key["tier"],
+        "provider": provider.strip().lower()[:40] or None if isinstance(provider, str) else None,
+        "model": model.strip()[:100] or None if isinstance(model, str) else None,
+    }
+
+
+def _parse_last_generation(context_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Validate the optional ``context.lastGeneration`` (or drop it)."""
+    last = context_payload.get("lastGeneration")
+    if not isinstance(last, dict):
+        return None
+    request = last.get("request")
+    request = request.strip()[:MAX_LAST_GENERATION_REQUEST_CHARS] if isinstance(request, str) else ""
+    return {"request": request or None, "expired": last.get("expired") is True}
 
 
 def safe_json_loads(value: Any) -> Optional[Dict[str, Any]]:
@@ -291,6 +318,8 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         current_diagram_indices=current_diagram_indices,
         pilot_participant=pilot_participant,
         github_repo=_parse_github_repo(context_payload),
+        generation_key=_parse_generation_key(context_payload),
+        last_generation=_parse_last_generation(context_payload),
     )
 
     # ── Parse file attachments ──

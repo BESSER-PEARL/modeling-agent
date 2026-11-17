@@ -208,6 +208,68 @@ def test_modification_prompt_states_the_interaction_vocabulary():
         assert marker in seen["prompt"]
 
 
+# -- a saved design is left as it is ------------------------------------------
+
+SAVED_PAGES = [
+    {"name": "Desk", "sections": [
+        {"bind": {"kind": "table", "className": "Task", "title": "Desk tasks"}},
+        {"html": "<section class='app-desk'><h2>Desk</h2><button class='app-chip'>Mine</button>"
+                 "<a class='app-link' href='/projects'>All projects</a>"
+                 "<form data-class='Project'><input name='name'><button>Save</button></form></section>"},
+    ]},
+    {"name": "Projects", "sections": [{"html": "<section class='s'><h2>Projects</h2></section>"}]},
+]
+
+
+def _main_sections(model, page_name):
+    wrapper = _page(model, page_name)["frames"][0]["component"]
+    return next(c for c in wrapper["components"] if c.get("tagName") == "main")["components"]
+
+
+def _without_hrefs(node):
+    if isinstance(node, dict):
+        return {k: ({a: v for a, v in node[k].items() if a != "href"} if k == "attributes" else _without_hrefs(v))
+                for k, v in node.items()}
+    if isinstance(node, list):
+        return [_without_hrefs(item) for item in node]
+    return node
+
+
+def test_an_edit_leaves_the_saved_sections_of_a_design_as_they_are():
+    # What the user saved, a button without an action included, comes back
+    # unchanged apart from link hrefs.
+    handler = _handler()
+    handler.predict_two_pass_structured = (
+        lambda **kw: AuthoredSystemGUISpec(projectName="Tracker", pages=SAVED_PAGES)
+    )
+    saved = handler.generate_complete_system("tracker", class_metadata=TASK_METADATA)["model"]
+    # A button the user added in the editor after the design was built.
+    _main_sections(saved, "Desk")[-1]["components"].append(
+        {"tagName": "button", "attributes": {"class": "app-later"},
+         "components": [{"type": "textnode", "content": "Later"}]}
+    )
+
+    def _no_llm(*args, **kwargs):
+        raise AssertionError("the request needs no LLM call")
+
+    no_llm = _handler()
+    no_llm.predict_structured = _no_llm
+    edited = [
+        no_llm.generate_modification(
+            "change the color to red", copy.deepcopy(saved),
+            raw_request="change the color to red", class_metadata=TASK_METADATA,
+        )["model"],
+        _modify(saved, [{
+            "operation": "append_section", "pageName": "Desk",
+            "section": {"html": "<section class='app-new'><h2>Notes</h2><button>Pin</button></section>"},
+        }], "add a notes section"),
+    ]
+    for after in edited:
+        for page in ("Desk", "Projects"):
+            before = _main_sections(saved, page)
+            assert _without_hrefs(_main_sections(after, page)[:len(before)]) == _without_hrefs(before)
+
+
 # -- navigation after page edits ---------------------------------------------
 
 def _nav_routes(model, page_name):
@@ -307,6 +369,69 @@ def test_renamed_page_is_renamed_in_every_nav():
     for name in ("Overview", "Tasks", "Portfolio"):
         links = _links_in(_page(after, name)["frames"][0]["component"]["components"][0])
         assert [(l["attributes"]["href"], _text(l)) for l in links][-1] == ("/portfolio", "Portfolio")
+
+
+# Two pages whose names give one route: the app numbers the second one.
+SAME_ROUTE_PAGES = [
+    {"name": name, "sections": [{"html": f"<section class='s'><h1>{name}</h1></section>"}]}
+    for name in ("Home", "Q&A", "Q-A")
+]
+
+
+def _same_route_model():
+    handler = _handler()
+    handler.predict_two_pass_structured = (
+        lambda **kw: AuthoredSystemGUISpec(projectName="Help", pages=SAME_ROUTE_PAGES)
+    )
+    return handler.generate_complete_system("help desk")["model"]
+
+
+def _nav_entries_of(model, page_name):
+    nav = _page(model, page_name)["frames"][0]["component"]["components"][0]
+    return [(link["attributes"]["href"], _text(link)) for link in _links_in(nav)]
+
+
+def test_renaming_a_page_with_a_numbered_route_retargets_only_its_links():
+    # The route was computed from the name alone: renaming 'Q-A' ('/q-a-2')
+    # moved the links of 'Q&A' ('/q-a') and left its own nav entry behind.
+    model = _same_route_model()
+    assert _nav_entries_of(model, "Home") == [("/home", "Home"), ("/q-a", "Q&A"), ("/q-a-2", "Q-A")]
+    by_spec = _modify(model, [{"operation": "rename_page", "pageName": "Q-A", "newPageName": "Done"}],
+                      "rename the second help page")
+    handler = _handler()
+    handler.predict_structured = None  # the request needs no LLM call
+    by_rule = handler.generate_modification(
+        "rename Q-A to Done", copy.deepcopy(model), raw_request="rename Q-A to Done", class_metadata=None,
+    )["model"]
+    for after in (by_spec, by_rule):
+        assert _nav_entries_of(after, "Home") == [("/home", "Home"), ("/q-a", "Q&A"), ("/done", "Done")]
+
+
+def test_removing_a_page_with_a_numbered_route_leaves_every_nav():
+    after = _modify(_same_route_model(), [{"operation": "remove_page", "pageName": "Q-A"}],
+                    "remove the second help page")
+    for name in ("Home", "Q&A"):
+        assert _nav_entries_of(after, name) == [("/home", "Home"), ("/q-a", "Q&A")]
+
+
+def test_model_routes_are_the_ones_besser_gives_the_pages():
+    from diagram_handlers.types.gui_nocode_diagram_handler import _model_page_routes
+
+    # BESSER keeps a stored route that is URL-safe and free, else derives one
+    # from the name; a page without a name is 'Page_<n>', a blank name
+    # 'Screen_<n>', and a name that leaves no route '/page-<n>'.
+    pages = [
+        {"id": "p1", "name": "Home", "route_path": "/home"},
+        {"id": "p2", "name": ""},
+        {"id": "p3", "name": "   "},
+        {"id": "p4"},
+        {"id": "p5", "name": "Orders", "route_path": "/orders-archive"},
+        {"id": "p6", "name": "Rooms & Rates", "route_path": "/rooms-&-rates"},
+        {"id": "p7", "name": "Home", "route_path": "/home"},
+    ]
+    assert _model_page_routes(pages) == [
+        "/home", "/screen_2", "/page-3", "/page_4", "/orders-archive", "/rooms-rates", "/home-2",
+    ]
 
 
 def test_modification_lifts_a_saved_link_out_of_a_paragraph():

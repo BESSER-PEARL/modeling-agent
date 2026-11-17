@@ -14,7 +14,7 @@ action-button whose data-instance-source is the page's table id.
 """
 
 from diagram_handlers.types.gui_html_converter import html_to_components
-from diagram_handlers.types.gui_nocode_diagram_handler import GUINoCodeDiagramHandler
+from diagram_handlers.types.gui_nocode_diagram_handler import GUINoCodeDiagramHandler, _page_routes
 from schemas import AuthoredSystemGUISpec
 
 TASK_METADATA = [
@@ -143,17 +143,30 @@ def test_navigation_button_targets_page_id():
     assert btn["attributes"]["class"] == "app-btn"  # authored look kept
 
 
-def test_nav_header_and_route_use_the_processor_route():
-    # BESSER derives '/' + name.lower().replace(' ', '-'); the old nav slug
-    # ('/rooms-rates') was redirected to the start page by the app router.
+def test_page_routes_are_the_ones_the_generated_app_gives_its_pages():
+    # BESSER: '/' + the name in lower case, each run of characters that are
+    # not letters, digits or '_' as one '-'; a route already taken is numbered
+    # and a name with no such character becomes '/page-<position>'.
+    names = ["Front Desk", "Rooms & Rates", "Q&A / Help", "Réservations 2026", "my_page",
+             " Orders ", "Orders", "orders", "!!!"]
+    assert _page_routes(names) == [
+        "/front-desk", "/rooms-rates", "/q-a-help", "/réservations-2026", "/my_page",
+        "/orders", "/orders-2", "/orders-3", "/page-9",
+    ]
+
+
+def test_nav_header_and_links_use_those_routes():
+    section = "<section class='s'><h2>H</h2><a href='/orders'>All orders</a></section>"
     model = _generate([
-        {"name": "Rooms & Rates", "sections": [{"html": "<section class='s'><h2>R</h2></section>"}]},
-        {"name": "Home", "sections": [{"html": "<section class='s'><h2>H</h2></section>"}]},
+        {"name": "Rooms & Rates", "sections": [{"html": section}]},
+        {"name": "Orders", "sections": [{"html": section}]},
+        {"name": "Orders", "sections": [{"html": section}]},
     ], class_metadata=None)
-    page = next(p for p in model["pages"] if p["name"] == "Rooms & Rates")
-    assert page["route_path"] == "/rooms-&-rates"
-    hrefs = {n["attributes"]["href"] for n in _nodes(model, "Home") if n.get("type") == "link"}
-    assert "/rooms-&-rates" in hrefs
+    nav_links = [n["attributes"] for n in _nodes(model, "Rooms & Rates") if n.get("type") == "link"]
+    assert [(a["href"], a["data-navigate-to"]) for a in nav_links] == [
+        ("/rooms-rates", "rooms-rates"), ("/orders", "orders"), ("/orders-2", "orders-2"),
+    ]
+    assert _by_text(_nodes(model, "Rooms & Rates"), "All orders")["attributes"]["href"] == "/orders"
 
 
 # -- method buttons -----------------------------------------------------------

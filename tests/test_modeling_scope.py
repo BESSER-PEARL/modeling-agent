@@ -29,7 +29,7 @@ from common.pending_dialogs import (
     PENDING_WEBAPP_GENERATE,
     PLAN_GENERATION_CONFIRM_FLAG,
 )
-from conversation.reply_copy import REFINE_MODEL_PROMPT, continue_generating_prompt
+from conversation.reply_copy import REFINE_MODEL_PROMPT, REFINE_SCREENS_PROMPT, continue_generating_prompt
 from conversation.suggestions import get_suggested_actions
 from protocol.types import AssistantRequest, WorkspaceContext
 from tests.conftest import MINIMAL_CLASS_MODEL, FakeSession
@@ -232,8 +232,25 @@ def test_screens_alone_get_a_modeling_follow_up():
     (payload,) = payloads
     assert payload["action"] == "auto_generate_gui"
     assert not _offers_generation(payload), payload
-    assert payload["message"].endswith(REFINE_MODEL_PROMPT)
+    assert payload["message"].endswith(REFINE_SCREENS_PROMPT)
     assert not emit.called
+
+
+def test_designed_screens_close_with_a_line_about_the_screens(monkeypatch):
+    payload = _run(monkeypatch, "create screens for my classes", "complete_system",
+                   diagram_type="GUINoCodeDiagram")
+    assert payload["message"] == "I created the model.\n\n" + REFINE_SCREENS_PROMPT
+    assert not _offers_generation(payload), payload
+
+
+def test_designed_screens_of_a_web_app_plan_leave_the_closing_to_its_prompt(monkeypatch):
+    # The plan follows the screens with "Your screens are ready. ..."; a second
+    # closing line above it would say the same thing about "the model".
+    session = FakeSession()
+    pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, True)
+    payload = _run(monkeypatch, "create a GUI for a bookshop", "complete_system",
+                   diagram_type="GUINoCodeDiagram", session=session)
+    assert payload["message"] == "I created the model."
 
 
 def test_screens_for_a_requested_web_app_still_ask_to_generate_it_once():

@@ -16,6 +16,15 @@ SVG_THUMB_HINT = (
 )
 
 
+# How a table bound to a class names its columns; shared by the design and
+# the modification prompt.
+TABLE_COLUMNS_RULE = (
+    "On a table bound to a class, \"columns\" are the exact attribute names of that "
+    "class (or the name of a related class) to show, in display order — only those "
+    "columns appear, so list every one the screen needs and leave out the technical id."
+)
+
+
 def interactions_block(has_classes: bool) -> str:
     """How authored markup states link, navigation and method intent."""
     method_rule = (
@@ -35,8 +44,8 @@ def interactions_block(has_classes: bool) -> str:
     return (
         "INTERACTIONS — every link and button must DO something in the generated app:\n"
         "- Page links: <a href='/route'> where route is the target page's name lowercased "
-        "with spaces replaced by hyphens (page 'Front Desk' -> '/front-desk'). Never "
-        "href='#' and never an external URL.\n"
+        "with each run of spaces or punctuation as one hyphen (page 'Front Desk' -> "
+        "'/front-desk'). Never href='#' and never an external URL.\n"
         "- Navigation buttons: <button data-page='Page Name'>."
         f"{method_rule}\n"
         "- Create / edit / delete buttons act through X's data table: 'Add X' / 'New X' "
@@ -162,6 +171,7 @@ Each section is EXACTLY ONE of these two shapes:
     "title": "Specific widget title, e.g. 'Overdue loans'",
     "labelField": "chart: category attribute", "valueField": "chart/metric: numeric attribute",
     "aggregation": "chart/metric: count|sum|avg|min|max",
+    "filter": {{"field": "metric: attribute", "operator": "==|!=|>|>=|<|<=", "value": "fixed value"}},
     "columns": ["Column", "headers"],
     "rows": [{{"cells": ["cell A1", "cell A2"]}}, {{"cells": ["cell B1", "cell B2"]}}],
     "series": ["series names"],
@@ -171,8 +181,8 @@ Each section is EXACTLY ONE of these two shapes:
 }}
    - Put a <!--WIDGET:kind--> comment inside the chrome where the widget belongs; the server splices the real, data-bound widget there.
    - The "html" chrome is OPTIONAL — omit it and the widget is card-wrapped automatically — but authoring chrome around it gives a far nicer result.
-   - Whatever widget you place, populate it or it renders empty: a table needs "columns" + "rows" ("cells" aligned 1:1 to "columns"); a chart needs "sampleData" (name + numeric value; pie adds a "color" hex).
-   - Give every widget a specific "title" (never 'Data Table' / 'Bar Chart'). With a class diagram, set a chart's "labelField" (category attribute) and its "aggregation": the chart groups records by labelField and shows per label the "count" of records (no valueField needed) or the "sum"/"avg"/"min"/"max" of "valueField" (numeric attribute) — e.g. count of books by genre, sum of amount by month; omit "aggregation" only to plot valueField of each record, labelled by a unique field. A metric_card shows the "count" of records (no valueField), or the "sum"/"avg"/"min"/"max" of its "valueField" — set its "aggregation" to match its title (e.g. 'Active members' = count, 'Average fine' = avg of fine).
+   - Whatever widget you place, populate it or it renders empty: a table needs "columns" + "rows" ("cells" aligned 1:1 to "columns"); a chart needs "sampleData" (name + numeric value; pie adds a "color" hex). {TABLE_COLUMNS_RULE}
+   - Give every widget a specific "title" (never 'Data Table' / 'Bar Chart'). With a class diagram, set a chart's "labelField" (category attribute) and its "aggregation": the chart groups records by labelField and shows per label the "count" of records (no valueField needed) or the "sum"/"avg"/"min"/"max" of "valueField" (numeric attribute) — e.g. count of books by genre, sum of amount by month; omit "aggregation" only to plot valueField of each record, labelled by a unique field. A metric_card shows the "count" of records (no valueField), or the "sum"/"avg"/"min"/"max" of its "valueField" — set its "aggregation" to match its title (e.g. 'Members' = count, 'Average fine' = avg of fine). A metric over only SOME records ('Active members', 'Open orders', 'Paid invoices') MUST carry a "filter": one attribute of its class compared with a fixed value — an enumeration literal, true/false, a number or an ISO date (status == active, paid == true, amount > 0); without it the card shows the figure for ALL records. When the condition cannot be written that way (it depends on today's date, on another class or on a calculation), leave that card out.
    - Pick the widget that fits the content: a table suits tabular records (orders, bookings, transactions, inventory); a card grid (below) usually reads better for listings of people / products / profiles / features. Use your judgment.
 
 Utility classes, pre-styled for the {domain} theme (OPTIONAL helpers — reach for them for speed and widget chrome, not as your design ceiling):
@@ -186,7 +196,7 @@ Proven, editable-safe block patterns for the {domain} domain — COMPOSE from th
 DESIGN OWNERSHIP — you are a world-class product designer and the look of this app is YOURS. The {domain} preset is only the floor:
 - When the user asks for a specific look (dark mode, brand colors, pastel, corporate navy, ...), emit a top-level "theme" object overriding ONLY the tokens that must change (primary/secondary/accent/background/surface/text/muted/border/radius/heroBackground/heroText) — the whole design system re-derives from them coherently.
 - Otherwise OMIT "theme" entirely and let the domain preset style everything.
-- Author the top-level "css" stylesheet for EVERY app: a complete design — layout systems, gradients, hover/focus states, responsive rules — plain CSS only (class rules + @media; no @import/url()/webfonts). Your class names are yours (avoid the ds- prefix). The auto-added navigation header carries the class assistant-nav-header — restyle it in your css if your design wants a different top bar. The ONLY predefined CSS variables are the --ds-* tokens (var(--ds-primary), var(--ds-accent), var(--ds-border), ...) — never reference variables that do not exist. Typefaces available: 'Inter' (UI) and 'Fraunces' (display serif) — you may use font-family with these names in your css.
+- Author the top-level "css" stylesheet for EVERY app: a complete design — layout systems, gradients, hover/focus states, responsive rules — plain CSS only (class rules + @media; no @import/url()/webfonts). Your class names are yours (avoid the ds- prefix). The auto-added navigation header carries the class assistant-nav-header — restyle it in your css if your design wants a different top bar. The ONLY predefined CSS variables are the --ds-* tokens (var(--ds-primary), var(--ds-accent), var(--ds-border), ...) — never reference variables that do not exist. Typefaces: 'Inter' (UI) and 'Fraunces' (display serif) may be named in font-family, always followed by a system fallback ('Inter', system-ui, sans-serif; 'Fraunces', Georgia, serif) for where the typeface is not installed.
 
 Realism directives (this is what makes the result credible, not generic):
 - Reproduce the SPECIFIC real-world artifact the request implies, with its real structure. E.g. a government service page has an official header, an eligibility notice, an applicant-identity fieldset, a multi-step application form, a document upload, declarations/consent checkboxes, and a submit + application tracker — NOT a generic marketing page.
@@ -217,6 +227,23 @@ Design judgment — build what THIS request actually needs; do not pad or force 
 9. Return JSON only.{class_block}{mockup_block}"""
 
 
+# Appended to the class block: these only hold for an app built on a class diagram.
+STATIC_COPY_RULES = (
+    "STATIC COPY — this app runs on the class diagram above and shows its real records, "
+    "so the text you write in html is fixed wording. These rules override the realism "
+    "directives:\n"
+    "- Never write a model path, attribute name or class name as text ('Invoice.amount', "
+    "'issuedOn', 'InvoiceItem'): word it as a user would ('Amount', 'Issued on', "
+    "'invoice items').\n"
+    "- Never invent record values, counts, dates, times or 'last updated' stamps, and "
+    "never show sample figures as if they were live. Whatever shows data is a DATA "
+    "section (table, chart, metric_card); its \"rows\" and \"sampleData\" are editor "
+    "previews and stay.\n"
+    "- Never promise behaviour ('refreshes every minute', 'sends a reminder the day "
+    "before'): describe only what the user sees and can do on the page."
+)
+
+
 def data_model_step_for_classes(class_metadata_text: str) -> str:
     return (
         "1. DATA MODEL (fixed). The app is built on this class diagram — "
@@ -231,7 +258,9 @@ CHART_RULE_FOR_CLASSES = (
     "A chart groups records by one attribute (labelField) and "
     "shows per group the count of records or the sum/avg/min/max "
     "of ONE numeric attribute (valueField); a metric card shows a "
-    "count, sum, average, minimum or maximum over all records."
+    "count, sum, average, minimum or maximum over all records, or "
+    "over the records where one attribute has a fixed value "
+    "(filter: status == active)."
 )
 
 
@@ -304,7 +333,7 @@ For append_section / edit_section / add_page, author "section" in the app's desi
   PREFERRED — rich themed HTML: {{"html": "<section class='ds-section'><h2 class='ds-heading'>Title</h2> ...concrete content... </section>"}}
    - Root element carries a stable class; use ONLY .ds-* classes + semantic tags (h1-h6, p, span, a, ul, li, button, svg, plain tables). No scripts/styles/external URLs. Real copy, never placeholders.
   DATA — a live bound widget: {{"bind": {{"kind": "table|bar_chart|pie_chart|line_chart|radar_chart|metric_card|form|dashboard", "className": "Entity from the class diagram", "columns": [...], "rows": [{{"cells": [...]}}], "sampleData": [{{"name": "...", "value": 42}}]}}, "html": "<section class='ds-section'><h3 class='ds-heading'>Title</h3><div class='ds-card'><!--WIDGET:kind--></div></section>"}}
-   - Populate the widget (columns+rows for tables, sampleData for charts) or it renders empty.
+   - Populate the widget (columns+rows for tables, sampleData for charts) or it renders empty. {TABLE_COLUMNS_RULE}
 Design-system classes: ds-section, ds-hero, ds-heading, ds-card, ds-grid-2, ds-grid-3, ds-kpi, ds-kpi-value, ds-kpi-label, ds-table-wrap, ds-btn, ds-btn-primary, ds-notice, ds-badge, ds-field, ds-label, ds-input, ds-container, ds-footer.
 
 {interactions_block(bool(class_metadata))}

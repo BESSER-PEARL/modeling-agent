@@ -1,0 +1,299 @@
+{
+  "id": "00000000-0000-4000-8000-000000000000",
+  "type": "Project",
+  "schemaVersion": 6,
+  "name": "New Project",
+  "description": "",
+  "owner": "",
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "currentDiagramType": "ClassDiagram",
+  "currentDiagramIndices": {
+    "ClassDiagram": 0,
+    "ObjectDiagram": 0,
+    "StateMachineDiagram": 0,
+    "AgentDiagram": 0,
+    "ComponentDiagram": 0,
+    "DeploymentDiagram": 0,
+    "UserDiagram": 0,
+    "GUINoCodeDiagram": 0,
+    "KnowledgeGraphDiagram": 0,
+    "QuantumCircuitDiagram": 0,
+    "NNDiagram": 0,
+    "BPMN": 0
+  },
+  "diagrams": {
+    "ClassDiagram": [
+      {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "title": "Class Diagram",
+        "model": {
+          "version": "3.0.0",
+          "type": "ClassDiagram",
+          "size": {
+            "width": 1400,
+            "height": 740
+          },
+          "elements": {},
+          "relationships": {},
+          "interactive": {
+            "elements": {},
+            "relationships": {}
+          },
+          "assessments": {}
+        }
+      }
+    ],
+    "ObjectDiagram": [
+      {
+        "id": "00000000-0000-4000-8000-000000000002",
+        "title": "Object Diagram",
+        "model": {
+          "version": "3.0.0",
+          "type": "ObjectDiagram",
+          "size": {
+            "width": 1400,
+            "height": 740
+          },
+          "elements": {},
+          "relationships": {},
+          "interactive": {
+            "elements": {},
+            "relationships": {}
+          },
+          "assessments": {}
+        }
+      }
+    ],
+    "StateMachineDiagram": [
+      {
+        "id": "00000000-0000-4000-8000-000000000003",
+        "title": "State Machine Diagram",
+        "model": {
+          "version": "3.0.0",
+          "type": "StateMachineDiagram",
+          "size": {
+            "width": 1400,
+            "height": 740
+          },
+          "elements": {},
+          "relationships": {},
+          "interactive": {
+            "elements": {},
+            "relationships": {}
+          },
+          "assessments": {}
+        }
+      }
+    ],
+    "AgentDiagram": [
+      {
+        "id": "00000000-0000-4000-8000-000000000004",
+        "title": "Agent Diagram",
+        "model": {
+          "version": "3.0.0",
+          "type": "AgentDiagram",
+          "size": {
+            "width": 1400,
+            "height": 740
+          },
+          "elements": {},
+          "relationships": {},
+          "interactive": {
+            "elements": {},
+            "relationships": {}
+          },
+          "assessments": {}
+        }
+      }
+    ],
+    "ComponentDiagram": [
+      {
+        "id": "00000000-0000-4000-8000-000000000005",
+        "title": "Component Diagram",
+        "model": {
+          "version": "3.0.0",
+          "type": "ComponentDiagram",
+          "size": {
+            "width": 1400,
+            "height": 740
+          },
+          "elements": {},
+          "relationships": {},
+          "interactive": {
+            "elements": {},
+            "relationships": {}
+          },
+          "assessments": {}
+        }
+      }
+    ],
+    "DeploymentDiagram": [
+      {
+        "id": "00000000-0000-4000-8000-000000000006",
+        "title": "Deployment Diagram",
+        "model": {
+          "version": "3.0.0",
+          "type": "DeploymentDiagram",
+          "size": {
+            "width": 1400,
+            "height": 740
+          },
+          "elements": {},
+          "relationships": {},
+          "interactive": {
+            "elements": {},
+            "relationships": {}
+          },
+          "assessments": {}
+        }
+      }
+    ],
+    "UserDiagram": [
+      {
+        "id": "00000000-0000-4000-8000-000000000007",
+        "title": "User Diagram",
+        "model": {
+          "version": "3.0.0",
+          "type": "UserDiagram",
+          "size": {
+            "width": 1400,
+            "height": 740
+          },
+          "elements": {},
+          "relationships": {},
+          "interactive": {
+            "elements": {},
+            "relationships": {}
+          },
+          "assessments": {}
+        }
+      }
+    ],
+    "GUINoCodeDiagram": [
+      {
+        "id": "00000000-0000-4000-8000-000000000008",
+        "title": "GUI Diagram",
+        "model": {
+          "pages": [
+            {
+              "name": "Home",
+              "frames": [
+                {
+                  "component": {
+                    "type": "wrapper",
+                    "stylable": [
+                      "background",
+                      "background-color",
+                      "background-image",
+                      "background-repeat",
+                      "background-attachment",
+                      "background-position",
+                      "background-size"
+                    ],
+                    "components": [],
+                    "head": {
+                      "type": "head"
+                    },
+                    "docEl": {
+                      "tagName": "html"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "styles": [],
+          "assets": [],
+          "symbols": [],
+          "version": "0.21.13"
+        }
+      }
+    ],
+    "KnowledgeGraphDiagram": [
+      {
+        "id": "00000000-0000-4000-8000-000000000009",
+        "title": "Knowledge Graph",
+        "model": {
+          "type": "KnowledgeGraphDiagram",
+          "version": "1.0.0",
+          "nodes": [],
+          "edges": []
+        }
+      }
+    ],
+    "QuantumCircuitDiagram": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "title": "Quantum Circuit",
+        "model": {
+          "cols": [],
+          "gates": [],
+          "gateMetadata": {},
+          "initialStates": [],
+          "version": "1.0.0"
+        }
+      }
+    ],
+    "NNDiagram": [
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "title": "NN Diagram",
+        "model": {
+          "version": "3.0.0",
+          "type": "NNDiagram",
+          "size": {
+            "width": 1400,
+            "height": 740
+          },
+          "elements": {},
+          "relationships": {},
+          "interactive": {
+            "elements": {},
+            "relationships": {}
+          },
+          "assessments": {}
+        }
+      }
+    ],
+    "BPMN": [
+      {
+        "id": "00000000-0000-4000-8000-000000000012",
+        "title": "BPMN Diagram",
+        "model": {
+          "version": "3.0.0",
+          "type": "BPMNDiagram",
+          "size": {
+            "width": 1400,
+            "height": 740
+          },
+          "elements": {},
+          "relationships": {},
+          "interactive": {
+            "elements": {},
+            "relationships": {}
+          },
+          "assessments": {}
+        }
+      }
+    ]
+  },
+  "settings": {
+    "defaultDiagramType": "ClassDiagram",
+    "autoSave": true,
+    "collaborationEnabled": false,
+    "perspectives": {
+      "ClassDiagram": true,
+      "ObjectDiagram": true,
+      "StateMachineDiagram": true,
+      "AgentDiagram": true,
+      "ComponentDiagram": true,
+      "DeploymentDiagram": true,
+      "UserDiagram": true,
+      "GUINoCodeDiagram": true,
+      "KnowledgeGraphDiagram": true,
+      "QuantumCircuitDiagram": true,
+      "NNDiagram": true,
+      "BPMN": true
+    }
+  }
+}
