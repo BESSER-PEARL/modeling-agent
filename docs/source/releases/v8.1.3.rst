@@ -38,6 +38,9 @@ Fixes
   routes that mirror the generator, to match the web-app generator of BESSER
   v8.10.0 (`#75 <https://github.com/BESSER-PEARL/modeling-agent/pull/75>`_).
 
+* **Claude Sonnet 5.5 cache reads cost $0.10 per 1M tokens**, as in BESSER's
+  model catalog; the agent priced them at $0.20 and over-reported that cost.
+
 Protocol
 --------
 
