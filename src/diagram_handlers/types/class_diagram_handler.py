@@ -139,6 +139,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         raw_request: Optional[str] = None,
         *,
         prepared=None,
+        record_requirements: bool = False,
         **kwargs,
     ) -> Dict[str, Any]:
         """Generate a complete class diagram with two-pass structured outputs, domain patterns,
@@ -147,19 +148,21 @@ class ClassDiagramHandler(BaseDiagramHandler):
         ``raw_request`` is the original user message before context enrichment
         (conversation history / workspace block); it drives the fast-path
         length check and keeps the reasoning prompt lean. Falls back to the
-        full ``user_request`` when not provided.
+        full ``user_request`` when not provided. ``record_requirements`` is True
+        when the project records traces, the only place the requirements go.
         """
 
         system_prompt = prepared
 
         # The requirements the user's own words state, listed in the structured
-        # pass only so it can report what realizes each one. None without those
-        # words (an enriched or synthesized request has nothing to quote), and
-        # none for a request too short for the reasoning pass: a trivial request
-        # stays one LLM call.
+        # pass only so it can report what realizes each one. None when the project
+        # records no traces, none without those words (an enriched or synthesized
+        # request has nothing to quote), and none for a request too short for the
+        # reasoning pass: a trivial request stays one LLM call.
         requirements = (
             extract_requirements(self, raw_request)
-            if raw_request and len(raw_request.strip()) >= self._TWO_PASS_MIN_LENGTH else []
+            if record_requirements and raw_request and len(raw_request.strip()) >= self._TWO_PASS_MIN_LENGTH
+            else []
         )
         # Only the kinds a class diagram realizes are listed; each listed one
         # adds a realizations entry to the reply, so it adds to its budget.

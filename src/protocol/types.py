@@ -40,6 +40,9 @@ class WorkspaceContext:
     # names kept). Sent only while trace recording is on and a trace exists;
     # None otherwise. Every string in it is user data, never instructions.
     trace_digest: Optional[Dict[str, Any]] = None
+    # The project records traces (``context.traceabilityEnabled``). Recording is
+    # opt-in; an editor that does not send the field records nothing.
+    traceability_enabled: bool = False
 
     def get_active_index(self, diagram_type: str) -> int:
         """Return the active tab index for the given diagram type (default 0)."""

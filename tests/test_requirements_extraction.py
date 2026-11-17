@@ -273,7 +273,8 @@ class TestHandler:
 
         monkeypatch.setattr(compact_handler, "predict_structured", lambda *a, **k: extracted)
         monkeypatch.setattr(compact_handler, "predict_two_pass_structured", fake_two_pass)
-        result = compact_handler.generate_complete_system(f"User Request: {REQUEST}", raw_request=REQUEST)
+        result = compact_handler.generate_complete_system(
+            f"User Request: {REQUEST}", raw_request=REQUEST, record_requirements=True)
 
         assert [r["id"] for r in result["requirements"]] == ["R1", "R2", "R3"]
         assert result["realizations"] == [
@@ -302,10 +303,27 @@ class TestHandler:
         assert "requirements" not in result and "realizations" not in result
         assert "realizations" not in result["systemSpec"]
 
+    def test_a_project_that_records_no_traces_pays_for_no_extraction(self, compact_handler, monkeypatch):
+        """Recording is opt-in: without it the requirements go nowhere, so no LLM call extracts them."""
+        def no_extraction(*args, **kwargs):
+            raise AssertionError("nothing records the requirements")
+
+        captured = {}
+
+        def fake_two_pass(**kwargs):
+            captured.update(kwargs)
+            return _hotel_compact()
+
+        monkeypatch.setattr(compact_handler, "predict_structured", no_extraction)
+        monkeypatch.setattr(compact_handler, "predict_two_pass_structured", fake_two_pass)
+        result = compact_handler.generate_complete_system(REQUEST, raw_request=REQUEST)
+        assert "requirements" not in result and "realizations" not in result
+        assert captured["max_tokens"] == compact_handler._structured_max_tokens(CompactSystemClassSpec)
+
     def test_a_request_stating_nothing_sends_no_requirements(self, compact_handler, monkeypatch):
         monkeypatch.setattr(compact_handler, "predict_structured", lambda *a, **k: _extraction())
         monkeypatch.setattr(compact_handler, "predict_two_pass_structured", lambda **kwargs: _hotel_compact())
-        result = compact_handler.generate_complete_system(REQUEST, raw_request=REQUEST)
+        result = compact_handler.generate_complete_system(REQUEST, raw_request=REQUEST, record_requirements=True)
         assert "requirements" not in result and "requirementsModel" not in result
 
     def test_a_trivial_request_stays_one_call(self, compact_handler, monkeypatch):
@@ -317,7 +335,7 @@ class TestHandler:
         assert len(short) < compact_handler._TWO_PASS_MIN_LENGTH
         monkeypatch.setattr(compact_handler, "predict_structured", no_extraction)
         monkeypatch.setattr(compact_handler, "predict_two_pass_structured", lambda **kwargs: _hotel_compact())
-        assert "requirements" not in compact_handler.generate_complete_system(short, raw_request=short)
+        assert "requirements" not in compact_handler.generate_complete_system(short, raw_request=short, record_requirements=True)
 
 
 class TestExtractionModel:

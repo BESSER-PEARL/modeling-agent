@@ -200,8 +200,9 @@ Features
   etc.) are ``Literal`` types — the LLM cannot hallucinate invalid actions.
 - **Enum Type Safety:** The LLM prompt requires every referenced enum type
   (e.g. ``OrderStatus``) to be created as an Enumeration in the same response.
-- **Requirements and their realizations:** a complete system built from the
-  user's own message (``raw_request``) first extracts the requirements that
+- **Requirements and their realizations:** for a project that records traces
+  (``context.traceabilityEnabled``, passed as ``record_requirements``), a complete
+  system built from the user's own message (``raw_request``) first extracts the requirements that
   message states, one call on the ``MODEL_GENERATION_SMALL`` tier
   (``diagram_handlers/types/class_diagram_requirements.py``, prompt in
   ``prompts/requirements.py``). An item whose ``quote`` is not in the message, or

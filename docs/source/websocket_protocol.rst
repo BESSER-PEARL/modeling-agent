@@ -208,6 +208,11 @@ Field Reference
      - The editor's summary of the project trace, sent only while trace
        recording is on and a trace exists (see `Trace digest`_ below). Answers
        questions about the project's history (``traceability_question_intent``).
+   * - ``context.traceabilityEnabled``
+     - No
+     - ``true`` when the project records traces (opt-in in the editor). Only
+       then does a complete class diagram extract the request's requirements
+       for the trace; missing or anything but ``true`` reads as off.
    * - ``attachments``
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)

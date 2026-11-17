@@ -171,7 +171,7 @@ class TestTwoPassContextDeduplication:
 
         enriched = build_enriched_prompt(self.LONG_RAW_REQUEST)
         result = handler.generate_complete_system(
-            enriched, raw_request=self.LONG_RAW_REQUEST,
+            enriched, raw_request=self.LONG_RAW_REQUEST, record_requirements=True,
         )
 
         assert len(llm.call_log) == 3

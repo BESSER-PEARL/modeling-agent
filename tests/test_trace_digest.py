@@ -74,6 +74,15 @@ def test_no_digest_is_none():
     assert _parsed(...) is None
 
 
+@pytest.mark.parametrize(("sent", "enabled"), [(True, True), (False, False), ("true", False), (1, False), (..., False)])
+def test_recording_is_on_only_when_the_editor_says_so(sent, enabled):
+    """Recording is opt-in: an editor that sends no flag (or anything but true) records nothing."""
+    context = {"activeDiagramType": "ClassDiagram", **({} if sent is ... else {"traceabilityEnabled": sent})}
+    session = FakeSession({"action": "user_message", "protocolVersion": "2.0", "message": "a library",
+                           "context": context, "sessionId": "s1"})
+    assert parse_assistant_request(session).context.traceability_enabled is enabled
+
+
 @pytest.mark.parametrize("bad", [
     None, "a digest", 3, [DIGEST], True,
     {**DIGEST, "schemaVersion": "1"}, {**DIGEST, "schemaVersion": 0}, {**DIGEST, "schemaVersion": True},

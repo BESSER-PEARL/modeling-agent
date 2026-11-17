@@ -475,6 +475,7 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         pilot_participant=pilot_participant,
         github_repo=_parse_github_repo(context_payload),
         trace_digest=_parse_trace_digest(context_payload),
+        traceability_enabled=context_payload.get("traceabilityEnabled") is True,
     )
 
     # ── Parse file attachments ──

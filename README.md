@@ -21,8 +21,9 @@ that the editor applies to the canvas or hands to a generator.
   element, which requirement it realizes, who changed what and when, what is out of date,
   which requirements the model does not cover; then offers to open the Traceability page
   (`show_trace`).
-- Extracts the requirements of a complete-system request and the class-diagram elements that
-  realize them (`requirements`, `realizations` on `inject_complete_system`).
+- For a project that records traces (`context.traceabilityEnabled`, opt-in), extracts the requirements
+  of a complete-system request and the class-diagram elements that realize them (`requirements`,
+  `realizations` on `inject_complete_system`).
 - Reports the tokens of each turn's LLM calls (`llmUsage` on its terminal replies).
 - Converts uploaded files (PlantUML, knowledge graphs, XMI, PDFs, images, text) into
   diagram specifications.
