@@ -656,9 +656,12 @@ def stylesheet_rules_from_tokens(t: Dict) -> List[Dict]:
         "border-color": p["primary"],
         "color": "#ffffff",
     }))
+    # Restates the primary look: .ds-btn:hover would otherwise put the page
+    # background and a muted border under the white label.
     rules.append(_raw_rule(".ds-btn-primary:hover", {
         "filter": "brightness(1.08)",
-        "background-color": "transparent",
+        "background": btn_primary_bg,
+        "border-color": p["primary"],
         "transform": "translateY(-1px)",
     }))
 

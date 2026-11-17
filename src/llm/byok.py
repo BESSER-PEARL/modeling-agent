@@ -71,6 +71,8 @@ from utilities.image_inputs import anthropic_content, openai_content
 logger = logging.getLogger(__name__)
 
 SUPPORTED_PROVIDERS = ("openai", "anthropic", "mistral", "nebius")
+# How a provider is named to the user.
+PROVIDER_NAMES = {"openai": "OpenAI", "anthropic": "Anthropic", "mistral": "Mistral", "nebius": "Nebius"}
 
 # Mistral speaks the OpenAI Chat Completions protocol at this endpoint.
 MISTRAL_BASE_URL = "https://api.mistral.ai/v1"

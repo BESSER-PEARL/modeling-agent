@@ -9,6 +9,8 @@ import copy
 import json
 import re
 import logging
+from datetime import datetime
+from decimal import Decimal
 from html import escape as _html_escape
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -71,6 +73,14 @@ def _clean_text(value: Any, fallback: str = "") -> str:
     return fallback
 
 
+def _human_label(name: Any) -> str:
+    """A reader's label for a model name: ``dueDate`` / ``due_date`` -> ``Due date``."""
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", " ", str(name or ""))
+    words = re.sub(r"[_\-\s]+", " ", spaced).split()
+    text = " ".join(w if w.isupper() and len(w) > 1 else w.lower() for w in words)
+    return text[:1].upper() + text[1:]
+
+
 def _coerce_numeric(value: Any) -> Any:
     """Best-effort convert a chart ``value`` to a number.
 
@@ -119,6 +129,12 @@ def _main_container(children: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 _CSS_BLOCK_RE = re.compile(r"([^{}]+)\{([^{}]*)\}")
+# One top-level block: a single-level @media block, or a plain rule.
+_CSS_TOP_LEVEL_RE = re.compile(
+    r"@media(?P<media>[^{]+)\{(?P<rules>(?:[^{}]*\{[^{}]*\})*)\s*\}"
+    r"|(?P<selector>[^{}]+)\{(?P<body>[^{}]*)\}",
+    re.DOTALL,
+)
 _SAFE_SELECTOR_RE = re.compile(r"^[.#a-zA-Z][-\w\s.,:#>()\[\]='\"*+~^$|]*$")
 _MAX_LLM_CSS_RULES = 160
 
@@ -133,6 +149,7 @@ def _parse_llm_css(css: Any) -> List[Dict[str, Any]]:
     are silently dropped, never raised.
     """
     rules: List[Dict[str, Any]] = []
+    over_cap = 0
     if not isinstance(css, str) or not css.strip():
         return rules
     text = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
@@ -156,7 +173,11 @@ def _parse_llm_css(css: Any) -> List[Dict[str, Any]]:
         if not selector or not _SAFE_SELECTOR_RE.match(selector):
             return
         style = parse_decls(body)
-        if not style or len(rules) >= _MAX_LLM_CSS_RULES:
+        if not style:
+            return
+        if len(rules) >= _MAX_LLM_CSS_RULES:
+            nonlocal over_cap
+            over_cap += 1
             return
         rule: Dict[str, Any] = {"selectors": [], "selectorsAdd": selector, "style": style}
         if media:
@@ -164,19 +185,20 @@ def _parse_llm_css(css: Any) -> List[Dict[str, Any]]:
             rule["mediaText"] = media
         rules.append(rule)
 
-    media_re = re.compile(r"@media([^{]+)\{((?:[^{}]*\{[^{}]*\})*)\s*\}", re.DOTALL)
-
-    def handle_media(match: "re.Match") -> str:
-        media_text = match.group(1).strip()
-        for sel, body in _CSS_BLOCK_RE.findall(match.group(2)):
-            add_rule(sel, body, media=media_text)
-        return ""
-
-    text = media_re.sub(handle_media, text)
-    for sel, body in _CSS_BLOCK_RE.findall(text):
-        if sel.strip().startswith("@"):
-            continue
-        add_rule(sel, body)
+    # Source order is kept: a media rule only wins over the base rule it
+    # refines (equal specificity) when it comes after it.
+    for match in _CSS_TOP_LEVEL_RE.finditer(text):
+        if match.group("media") is not None:
+            media_text = match.group("media").strip()
+            for sel, body in _CSS_BLOCK_RE.findall(match.group("rules")):
+                add_rule(sel, body, media=media_text)
+        elif not match.group("selector").strip().startswith("@"):
+            add_rule(match.group("selector"), match.group("body"))
+    if over_cap:
+        logger.warning(
+            "[GUINoCode] LLM stylesheet cut at %d rules: the last %d rule(s) are not applied",
+            _MAX_LLM_CSS_RULES, over_cap,
+        )
     return rules
 
 
@@ -672,7 +694,7 @@ def _create_form_attributes(
 def _labelled_input(attr: Dict[str, Any], form_key: str, input_style: Dict[str, str]) -> Dict[str, Any]:
     """A ``<label>`` + ``<input name=attribute>`` pair for a create form."""
     input_id = f"{form_key}-{_slug(attr['name'])}"
-    label = attr["name"].replace("_", " ").strip().capitalize()
+    label = _human_label(attr["name"])
     input_type = _INPUT_TYPES.get(str(attr.get("type", "")).lower(), "text")
     input_attrs = {"type": input_type, "name": attr["name"], "id": input_id}
     if input_type != "checkbox":
@@ -1054,7 +1076,7 @@ def _build_series(
                     table_rows, chart_type, cls, value_attr_name=num_attr["name"],
                 )
             s = {
-                "name": num_attr["name"].replace("_", " ").title(),
+                "name": _human_label(num_attr["name"]),
                 "data-source": cls["id"],
                 "color": _CHART_COLORS[idx % len(_CHART_COLORS)],
                 "data": per_attr_data or fallback_data,
@@ -1225,6 +1247,85 @@ def _html_data_table_node(columns: List[str], rows: List[List[str]]) -> Dict[str
     return nodes[0] if nodes else {"tagName": "table", "attributes": {"class": "ds-table"}}
 
 
+def _display_attribute(cls: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The attribute that names a record of *cls* to a reader: ``name`` /
+    ``title`` / ``label``, else its first text attribute, else its natural
+    key. The surrogate id only when the class has nothing else."""
+    attrs = cls.get("attributes", [])
+    for wanted in ("name", "title", "label"):
+        named = next((a for a in attrs if str(a.get("name", "")).lower() == wanted), None)
+        if named:
+            return named
+    candidates = [a for a in attrs if not _is_server_owned(a)]
+    return (
+        next((a for a in candidates if a.get("isString")), None)
+        or next((a for a in candidates if a.get("isId") or a.get("isExternalId")), None)
+        or _pick_label_field(cls)
+    )
+
+
+def _table_columns(
+    cls: Dict[str, Any], designed: List[Any], classes: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """The columns of a table bound to *cls*.
+
+    The *designed* columns that name an attribute or a related class, in the
+    designed order, when at least half of them do; otherwise (headers written
+    as free labels) every attribute, inherited ones included, and related
+    class. The surrogate ``id`` is a column only when the design asks for it.
+    """
+    by_id = {c["id"]: c for c in classes}
+
+    def field(attr: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "field": attr["name"],
+            "label": _human_label(attr["name"]),
+            "columnType": "field",
+            "_expanded": False,
+        }
+
+    def lookup(end: Dict[str, Any]) -> Dict[str, Any]:
+        target = by_id.get(end.get("targetClassId"))
+        shown = _display_attribute(target) if target else None
+        return {
+            "field": end.get("targetClassName", end.get("targetClassId", "")),
+            "label": _human_label(end.get("targetClassName", "Related")),
+            "columnType": "lookup",
+            "lookupEntity": end.get("targetClassId", ""),
+            "lookupField": shown["name"] if shown else end.get("displayAttributeName", ""),
+            "_expanded": False,
+        }
+
+    attrs = _all_attributes(cls, classes)
+    ends = cls.get("associationEnds", [])
+    columns: List[Dict[str, Any]] = []
+    unknown: List[str] = []
+    for name in designed:
+        attr = next((a for a in attrs if _names_match(a["name"], name)), None)
+        end = None if attr else next(
+            (e for e in ends if _names_match(e.get("targetClassName"), name)), None
+        )
+        column = field(attr) if attr else lookup(end) if end else None
+        if column is None:
+            unknown.append(str(name))
+        elif column not in columns:
+            columns.append(column)
+    if columns and len(unknown) <= len(designed) / 2:
+        if unknown:
+            logger.info(
+                "[GUINoCode] table of %s: designed column(s) %s name no attribute, left out",
+                cls["name"], unknown,
+            )
+        return columns
+    if designed:
+        logger.info(
+            "[GUINoCode] table of %s: %d of %d designed columns name an attribute, showing all",
+            cls["name"], len(designed) - len(unknown), len(designed),
+        )
+    shown_attrs = [a for a in attrs if a.get("isId") or a.get("name") != "id"] or attrs
+    return [field(a) for a in shown_attrs] + [lookup(e) for e in ends]
+
+
 def _table_component(
     section_spec: Dict[str, Any],
     class_metadata: Optional[List[Dict[str, Any]]],
@@ -1257,31 +1358,9 @@ def _table_component(
 
     if cls:
         table_attrs["data-source"] = cls["id"]
-        # Build auto-generated columns (field columns + lookup columns)
-        auto_columns: List[Dict[str, Any]] = []
-
-        # Field columns from attributes
-        for attr in cls.get("attributes", []):
-            auto_columns.append({
-                "field": attr["name"],
-                "label": attr["name"].replace("_", " ").title(),
-                "columnType": "field",
-                "_expanded": False,
-            })
-
-        # Lookup columns from association ends
-        for end in cls.get("associationEnds", []):
-            auto_columns.append({
-                "field": end.get("targetClassName", end.get("targetClassId", "")),
-                "label": end.get("targetClassName", "Related").replace("_", " ").title(),
-                "columnType": "lookup",
-                "lookupEntity": end.get("targetClassId", ""),
-                "lookupField": end.get("displayAttributeName", ""),
-                "_expanded": False,
-            })
-
-        if auto_columns:
-            table_attrs["columns"] = json.dumps(auto_columns)
+        columns = _table_columns(cls, section_spec.get("fields") or [], class_metadata or [cls])
+        if columns:
+            table_attrs["columns"] = json.dumps(columns)
 
     return {
         "type": "table",
@@ -1433,6 +1512,118 @@ def _metric_binding(
     return None, "count"
 
 
+# Spellings of a comparison -> the operator the generated app's filter reads.
+_FILTER_OPERATORS = {
+    "==": "==", "=": "==", "eq": "==", "equals": "==", "is": "==",
+    "!=": "!=", "<>": "!=", "ne": "!=", "neq": "!=", "not": "!=",
+    ">": ">", "gt": ">", ">=": ">=", "gte": ">=", "ge": ">=",
+    "<": "<", "lt": "<", "<=": "<=", "lte": "<=", "le": "<=",
+}
+_FILTER_TRUTH = {
+    "true": "true", "yes": "true", "1": "true", "false": "false", "no": "false", "0": "false",
+}
+_ISO_DATE_START_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# A number with a "." decimal point and no grouping: "1,5" or "1.000,50" is refused.
+_FILTER_NUMBER_RE = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
+# What the generated app's filter parser reads as syntax in a value: a
+# separator anywhere, or the word 'in' / 'contains' followed by more text.
+_FILTER_SYNTAX_RE = re.compile(r"&&|[;,]|\band\b|(?:^|\s)(?:in|contains)\s+\S", re.IGNORECASE)
+
+
+def _bind_filter(bind: Any) -> Optional[Dict[str, Any]]:
+    """The filter a bind states, or ``None`` (a blank one states nothing)."""
+    spec = bind.get("filter") if isinstance(bind, dict) else None
+    if not isinstance(spec, dict):
+        return None
+    value = spec.get("value")
+    stated = _clean_text(spec.get("field")) or (value is not None and str(value).strip())
+    return spec if stated else None
+
+
+def _filter_value(attr: Dict[str, Any], raw: Any, equality: bool) -> Optional[str]:
+    """*raw* as a value of *attr*'s type for the generated app's filter: a
+    literal of its enumeration, true / false, a plain decimal number, an ISO
+    date or text. ``None`` when it is no such value, or the comparison is an
+    ordering the type does not have."""
+    if isinstance(raw, bool):
+        text = "true" if raw else "false"
+    elif isinstance(raw, (int, float)):
+        text = str(raw)
+    else:
+        text = _clean_text(raw)
+        if len(text) > 1 and text[0] == text[-1] and text[0] in "'\"":
+            text = text[1:-1].strip()
+    if not text:
+        return None
+    attr_type = str(attr.get("type", "")).lower()
+    if attr.get("enumLiterals"):
+        def key(name: str) -> str:
+            return re.sub(r"[^a-z0-9]", "", name.lower())
+
+        literals = attr["enumLiterals"]
+        hits = [lit for lit in literals if lit.lower() == text.lower()] or [
+            lit for lit in literals if key(lit) == key(text)
+        ]
+        return hits[0] if equality and len(hits) == 1 else None
+    if attr_type in ("bool", "boolean"):
+        return _FILTER_TRUTH.get(text.lower()) if equality else None
+    if attr.get("isNumeric"):
+        # Written out in full: the app reads neither an exponent nor a rounded value as meant.
+        return format(Decimal(text), "f") if _FILTER_NUMBER_RE.fullmatch(text) else None
+    if attr_type in ("date", "datetime"):
+        stamp = text.replace(" ", "T")
+        try:
+            datetime.fromisoformat(stamp)
+        except ValueError:
+            return None
+        return stamp if _ISO_DATE_START_RE.match(stamp) else None
+    if attr.get("isString"):
+        return text if equality and "\n" not in text else None
+    return None
+
+
+def _filter_expression(
+    cls: Dict[str, Any], spec: Dict[str, Any], classes: List[Dict[str, Any]],
+) -> Optional[str]:
+    """The filter BESSER reads off a widget (``status == active``), or
+    ``None`` when *spec* is not a condition the class model can evaluate:
+    one attribute of *cls* compared with a fixed value of its type.
+    """
+    attr = next(
+        (a for a in _all_attributes(cls, classes) if _names_match(a["name"], spec.get("field"))),
+        None,
+    )
+    operator = _FILTER_OPERATORS.get(_clean_text(spec.get("operator"), fallback="==").lower())
+    if not attr or not operator:
+        return None
+    value = _filter_value(attr, spec.get("value"), operator in ("==", "!="))
+    if value is None:
+        return None
+    if _FILTER_SYNTAX_RE.search(value):
+        # The app would split the text form there; it reads the JSON form as one condition.
+        return json.dumps({"field": attr["name"], "op": operator, "value": value}, ensure_ascii=False)
+    if attr.get("isString") and not attr.get("enumLiterals"):
+        value = f"'{value}'"
+    return f"{attr['name']} {operator} {value}"
+
+
+def _has_unusable_filter(bind: Any, class_metadata: Optional[List[Dict[str, Any]]]) -> bool:
+    """Whether *bind* is a class-bound metric card stating a filter the class
+    model cannot evaluate: built without it, the card shows the wrong figure."""
+    spec = _bind_filter(bind)
+    if not spec or _clean_text(bind.get("kind")).lower() != "metric_card":
+        return False
+    cls = _resolve_class_binding({"className": bind.get("className")}, class_metadata)
+    return bool(cls) and _filter_expression(cls, spec, class_metadata or [cls]) is None
+
+
+_UNUSABLE_FILTER_MESSAGE = (
+    "I couldn't add that metric: its condition does not match an attribute and "
+    "a value of the class diagram, so the card would show the wrong number. "
+    "Your GUI is unchanged."
+)
+
+
 def _metric_card_component(
     section_spec: Dict[str, Any],
     class_metadata: Optional[List[Dict[str, Any]]],
@@ -1460,6 +1651,10 @@ def _metric_card_component(
         if data_attr:
             card_attrs["data-field"] = data_attr["id"]
         card_attrs["aggregation"] = aggregation
+        filter_spec = _bind_filter(section_spec)
+        expression = _filter_expression(cls, filter_spec, class_metadata or [cls]) if filter_spec else None
+        if expression:
+            card_attrs["filter"] = expression
 
     return {
         "type": "metric-card",
@@ -1821,14 +2016,13 @@ def _nav_header_component(
         active_bg = "transparent"
 
     nav_links: List[Dict[str, Any]] = []
-    for name in page_names:
-        route = _page_route(name)
+    for name, route in zip(page_names, _page_routes(page_names)):
         is_active = name.lower() == active_page.lower()
         nav_links.append({
             "type": "link",
             "attributes": {
                 "href": route,
-                "data-navigate-to": name.lower().replace(" ", "-"),
+                "data-navigate-to": route.strip("/"),
             },
             "style": {
                 "color": primary if is_active else palette.get("muted", "#64748b"),
@@ -2291,7 +2485,7 @@ def _widget_fallback_title(
     if kind == "metric_card":
         attr, _ = _metric_binding(cls, value_field, aggregation)
         if attr:
-            return f"{name} {attr['name'].replace('_', ' ')}".title()
+            return _human_label(f"{name} {attr['name']}")
         return f"{name} Count"
     return f"{name} Overview"
 
@@ -2333,6 +2527,7 @@ def _build_bind_widget(
         "labelField": _clean_text(bind.get("labelField")),
         "valueField": value_field,
         "aggregation": _clean_text(bind.get("aggregation")),
+        "filter": bind.get("filter"),
     }
 
     if kind in _BIND_CHART_KINDS:
@@ -2483,9 +2678,48 @@ def _build_section_component(
 # buttons, like a Basic CRUD page.
 
 def _page_route(name: Any) -> str:
-    """The route BESSER's GUI processor gives a page: ``/`` + lowercased name,
-    spaces as hyphens. Any other spelling is redirected to the start page."""
-    return "/" + _clean_text(name).lower().replace(" ", "-")
+    """The route BESSER derives from a page name: ``/`` and the name in lower
+    case, each run of characters that are not letters, digits or ``_`` as one
+    ``-`` (``Q&A / Help`` -> ``/q-a-help``). Any other spelling of a route is
+    redirected to the start page."""
+    return "/" + re.sub(r"[^\w]+", "-", _clean_text(name).lower()).strip("-")
+
+
+# A stored route BESSER keeps as is: letters, digits, "_" and "-" in each segment.
+_STORED_ROUTE_RE = re.compile(r"(?:/[\w-]+)+")
+
+
+def _model_page_routes(pages: List[Dict[str, Any]]) -> List[str]:
+    """The route of each page, in page order, as BESSER assigns them: the
+    page's stored ``route_path`` when it is URL-safe and not taken, else the
+    route of its name (``Page_<n>`` without a name, ``Screen_<n>`` with a
+    blank one); ``/page-<n>`` when that leaves no route, and ``-2``, ``-3``,
+    ... for a route already taken. Pages are taken in id order."""
+    routes: Dict[int, str] = {}
+    for position in sorted(range(len(pages)), key=lambda i: (str(pages[i].get("id") or ""), i)):
+        page = pages[position]
+        stored = str(page.get("route_path") or "")
+        route = stored if _STORED_ROUTE_RE.fullmatch(stored) and stored not in routes.values() else ""
+        route = route or _page_route(page.get("name", f"Page_{position + 1}") or f"Screen_{position + 1}")
+        if route == "/":
+            route = f"/page-{position + 1}"
+        base, suffix = route, 1
+        while route in routes.values():
+            suffix += 1
+            route = f"{base}-{suffix}"
+        routes[position] = route
+    return [routes[i] for i in range(len(pages))]
+
+
+def _page_routes(names: List[Any]) -> List[str]:
+    """The route of each page of a new design, in page order."""
+    return _model_page_routes([{"name": name} for name in names])
+
+
+def _route_table(model: Dict[str, Any]) -> List[Tuple[Dict[str, Any], str]]:
+    """``(page, route)`` for each page of *model*."""
+    pages = [p for p in model.get("pages") or [] if isinstance(p, dict)]
+    return list(zip(pages, _model_page_routes(pages)))
 
 
 def _slug(text: Any) -> str:
@@ -2496,13 +2730,13 @@ def _build_page_index(page_names: List[str]) -> List[Dict[str, str]]:
     """Stable ``{name, id, route}`` per page; ids are unique and name-derived."""
     index: List[Dict[str, str]] = []
     used: set = set()
-    for name in page_names:
+    for name, route in zip(page_names, _page_routes(page_names)):
         base = f"page-{_slug(name) or 'page'}"
         page_id, n = base, 2
         while page_id in used:
             page_id, n = f"{base}-{n}", n + 1
         used.add(page_id)
-        index.append({"name": name, "id": page_id, "route": _page_route(name)})
+        index.append({"name": name, "id": page_id, "route": route})
     return index
 
 
@@ -2999,7 +3233,9 @@ def _wire_model_actions(
             used.add(page_id)
             new_ids.add(page_id)
             page["id"] = page_id
-        page_index.append({"name": name, "id": page["id"], "route": _page_route(name)})
+        page_index.append({"name": name, "id": page["id"]})
+    for entry, route in zip(page_index, _model_page_routes(pages)):
+        entry["route"] = route
 
     classes_by_id = {c["id"]: c for c in (class_metadata or [])}
     wrappers = [_ensure_page_wrapper(p) for p in pages]
@@ -3038,7 +3274,7 @@ def _point_link(link: Dict[str, Any], page: Dict[str, str], relabel: bool = True
     attrs = link.setdefault("attributes", {})
     attrs["href"] = page["route"]
     if "data-navigate-to" in attrs:
-        attrs["data-navigate-to"] = page["name"].lower().replace(" ", "-")
+        attrs["data-navigate-to"] = page["route"].strip("/")
     if not relabel:
         return
 
@@ -3180,14 +3416,13 @@ def _add_new_pages_to_navs(
         wrapper["components"].insert(0, header)
 
 
-def _drop_nav_entries(model: Dict[str, Any], page_name: str) -> None:
-    """Remove a deleted page's entries from every nav that lists pages."""
-    route = _page_route(page_name)
-    routes = {
-        _page_route(p.get("name")): {"name": _clean_text(p.get("name"))}
-        for p in model.get("pages") or [] if isinstance(p, dict)
-    }
-    routes[route] = {"name": page_name}
+def _drop_nav_entries(
+    model: Dict[str, Any], before: List[Tuple[Dict[str, Any], str]], gone: Dict[str, Any],
+) -> None:
+    """Remove the entries of the deleted page *gone* from every nav that lists
+    pages; *before* is the route table of the model before the deletion."""
+    routes = {route: {"name": _clean_text(page.get("name"))} for page, route in before}
+    route = next(route for page, route in before if page is gone)
     for page in model.get("pages") or []:
         if not isinstance(page, dict):
             continue
@@ -3197,18 +3432,30 @@ def _drop_nav_entries(model: Dict[str, Any], page_name: str) -> None:
                     parent.remove(item)
 
 
-def _retarget_links(model: Dict[str, Any], old_name: str, new_name: str) -> None:
-    """Point links at a renamed page's new route (the route follows the name);
-    a link labelled with the old name, like a nav entry, takes the new one."""
-    old_route, new_route = _page_route(old_name), _page_route(new_name)
+def _retarget_links(
+    model: Dict[str, Any],
+    before: List[Tuple[Dict[str, Any], str]],
+    renamed: Optional[Dict[str, Any]] = None,
+    old_name: str = "",
+) -> None:
+    """Point the links of each page whose route changed since *before* (the
+    route table of the model before the change) at its new route. A link to
+    the *renamed* page labelled with its *old_name*, like a nav entry, takes
+    the new name."""
+    after = {id(page): route for page, route in _route_table(model)}
+    moved = {
+        route: page for page, route in before
+        if id(page) in after and (after[id(page)] != route or page is renamed)
+    }
 
     def _walk(node: Any) -> None:
         if not isinstance(node, dict):
             return
         attrs = node.get("attributes")
-        if isinstance(attrs, dict) and attrs.get("href") == old_route:
-            _point_link(node, {"name": new_name, "route": new_route},
-                        relabel=_node_text(node) == old_name)
+        if isinstance(attrs, dict) and attrs.get("href") in moved:
+            page = moved[attrs["href"]]
+            _point_link(node, {"name": _clean_text(page.get("name")), "route": after[id(page)]},
+                        relabel=page is renamed and _node_text(node) == old_name)
             return
         for child in node.get("components") or []:
             _walk(child)
@@ -3466,15 +3713,25 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
     # Message Builders
     # ------------------------------------------------------------------
 
-    def _build_gui_system_message(self, pages: list) -> str:
-        """Build a descriptive message for a complete GUI model."""
+    def _build_gui_system_message(self, pages: list, left_out: Optional[List[str]] = None) -> str:
+        """Build a descriptive message for a complete GUI model.
+
+        *left_out* names the metric cards that were not built.
+        """
         page_names = [p.get("name", "Page") for p in pages[:5] if isinstance(p, dict)]
         msg = f"I built **{len(pages)}** screen(s) for your app"
         if page_names:
             msg += f": {', '.join(f'**{n}**' for n in page_names)}"
             if len(pages) > 5:
                 msg += f" (+{len(pages) - 5} more)"
-        msg += ". Want me to add more screens or change the layout?"
+        msg += "."
+        if left_out:
+            cards = ", ".join(f"**{title}**" for title in left_out)
+            msg += (
+                f" I left out the metric card{'s' if len(left_out) > 1 else ''} {cards}: "
+                "the condition cannot be computed from the class diagram."
+            )
+        msg += " Want me to add more screens or change the layout?"
         return msg
 
     def _prepare_single_element(self, user_request: str, existing_model: Dict[str, Any] = None, **kwargs) -> str:
@@ -3501,6 +3758,8 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
 
         page_name = _sanitize_page_name(spec.get("pageName"), fallback="Home")
         section_spec = spec.get("section") if isinstance(spec.get("section"), dict) else {}
+        if _has_unusable_filter(section_spec.get("bind"), class_metadata):
+            return self._error_response(_UNUSABLE_FILTER_MESSAGE)
         section_component = _build_section_component(section_spec, class_metadata)
 
         model = _default_gui_model()
@@ -3526,7 +3785,10 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
         class_metadata: Optional[List[Dict[str, Any]]] = kwargs.get("class_metadata")
         class_block = ""
         if class_metadata:
-            class_block = "\n\n" + format_class_metadata_for_prompt(class_metadata)
+            class_block = (
+                "\n\n" + format_class_metadata_for_prompt(class_metadata)
+                + "\n\n" + gui_prompts.STATIC_COPY_RULES
+            )
         # Screenshots / mockups to reproduce, as data URLs (#643).
         images = kwargs.get("images") or ()
         mockup_block = f"\n\n{gui_prompts.mockup_block(len(images))}" if images else ""
@@ -3583,9 +3845,11 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
         )
         spec = parsed.model_dump()
         # Schema enforcement replaces the old clean/parse/salvage chain.
-        # Drop any section carrying neither authored html nor a binding.
+        # Drop any section carrying neither authored html nor a binding, and
+        # a metric whose filter the class model cannot evaluate.
+        left_out: List[str] = []
         for page in spec.get("pages", []):
-            page["sections"] = [
+            sections = [
                 sc for sc in page.get("sections", [])
                 if isinstance(sc, dict)
                 and (
@@ -3596,6 +3860,18 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
                     )
                 )
             ]
+            page["sections"] = [
+                sc for sc in sections if not _has_unusable_filter(sc.get("bind"), class_metadata)
+            ]
+            dropped = [sc for sc in sections if sc not in page["sections"]]
+            if dropped:
+                left_out += [
+                    _clean_text(sc["bind"].get("title"), fallback="untitled") for sc in dropped
+                ]
+                logger.warning(
+                    "[GUINoCode] %d metric card(s) left out of page %r: filter not on the class diagram",
+                    len(dropped), page.get("name"),
+                )
 
         pages_spec = spec.get("pages") if isinstance(spec.get("pages"), list) else []
         project_name = spec.get("projectName", "App")
@@ -3670,7 +3946,7 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
             Action.INJECT_COMPLETE_SYSTEM,
             self.get_diagram_type(),
             model,
-            self._build_gui_system_message(pages),
+            self._build_gui_system_message(pages, left_out),
         )
 
     def _system_failure_reply(self, exc, user_request, existing_model, **kwargs) -> Dict[str, Any]:
@@ -3698,7 +3974,10 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
         class_metadata: Optional[List[Dict[str, Any]]] = kwargs.get("class_metadata")
         class_block = ""
         if class_metadata:
-            class_block = "\n\n" + format_class_metadata_for_prompt(class_metadata)
+            class_block = (
+                "\n\n" + format_class_metadata_for_prompt(class_metadata)
+                + "\n\n" + gui_prompts.STATIC_COPY_RULES
+            )
 
         model = _normalize_gui_model(current_model)
         page_names = [
@@ -3866,11 +4145,12 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
                     matched_page = suffix_matches[0]
             if matched_page is not None:
                 old_name = _clean_text(matched_page.get("name"))
-                _retarget_links(model, old_name, new_name)
+                before = _route_table(model)
                 matched_page["name"] = new_name
                 matched_page["route_path"] = (
                     f"/{re.sub(r'[^a-z0-9-]+', '-', new_name.lower()).strip('-') or 'page'}"
                 )
+                _retarget_links(model, before, matched_page, old_name)
                 return model, f"Renamed the **{old_name}** page to **{new_name}**."
             # Otherwise it may be a section rename — try that.
             if self._rename_section(model, raw_old, new_name):
@@ -4034,17 +4314,21 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
         operation = _clean_text(spec.get("operation"), fallback="append_section")
         default_page = page_names[0] if page_names else "Home"
         page_name = _sanitize_page_name(spec.get("pageName"), fallback=default_page)
+        authored = spec.get("section") if isinstance(spec.get("section"), dict) else {}
+        if _has_unusable_filter(authored.get("bind"), class_metadata):
+            return model, _UNUSABLE_FILTER_MESSAGE
 
         if operation == "rename_page":
             new_page_name = _sanitize_page_name(spec.get("newPageName"), fallback=page_name)
             renamed = False
             for page in model.get("pages", []):
                 if isinstance(page, dict) and _clean_text(page.get("name")).lower() == page_name.lower():
-                    _retarget_links(model, _clean_text(page.get("name")), new_page_name)
+                    old_name, before = _clean_text(page.get("name")), _route_table(model)
                     page["name"] = new_page_name
                     page["route_path"] = (
                         f"/{re.sub(r'[^a-z0-9-]+', '-', new_page_name.lower()).strip('-') or 'page'}"
                     )
+                    _retarget_links(model, before, page, old_name)
                     renamed = True
                     break
             if renamed:
@@ -4074,10 +4358,12 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
             filtered = [p for p in pages if _clean_text(p.get("name")).lower() != page_name.lower()]
             # SAFETY: never remove the last page — leave at least one.
             if filtered and len(filtered) < len(pages):
+                before = _route_table(model)
                 model["pages"] = filtered
                 for gone in pages:
-                    if gone not in filtered:
-                        _drop_nav_entries(model, _clean_text(gone.get("name")))
+                    if not any(gone is kept for kept in filtered):
+                        _drop_nav_entries(model, before, gone)
+                _retarget_links(model, before)
                 return model, f"Removed the **{page_name}** page from the GUI."
             return model, (
                 f"I couldn't remove the **{page_name}** page (it either doesn't exist or "

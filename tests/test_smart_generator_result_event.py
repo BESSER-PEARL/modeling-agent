@@ -139,23 +139,29 @@ def test_smart_cancelled_is_not_an_error_tone():
     assert "stopped" in result["message"].lower()
 
 
-def test_non_smart_generator_result_uses_generator_confirmation():
+@pytest.mark.parametrize("generator_type, expected", [
+    ("django", "Your Django project is generated and ready to download."),
+    ("web_app", "Your web app is generated and ready to download."),
+    ("sql", "Your database schema is generated and ready to download."),
+    ("jsonschema", "Your JSON Schema is generated and ready to download."),
+])
+def test_non_smart_generator_result_uses_generator_confirmation(generator_type, expected):
     """A non-smart generator_result yields a clean, generator-appropriate
     confirmation keyed off ``generatorType`` — it no longer re-echoes the
-    frontend message or appends the filename (the download card shows those)."""
+    frontend message or appends the filename (the download card shows those).
+
+    The editor echoes the ``generatorType`` of the ``trigger_generator`` reply
+    it ran, so the value is the agent's own generator token."""
     request = _FakeRequest(
         {
             "eventType": "generator_result",
             "ok": True,
-            "message": "Generated Django app.",
-            "metadata": {"generatorType": "generate_django", "filename": "django.zip"},
+            "message": "Generated.",
+            "metadata": {"generatorType": generator_type, "filename": "out.zip"},
         }
     )
     result = _handle_frontend_event(request, None)
-    assert result == {
-        "action": "assistant_message",
-        "message": "Your Django project is generated and ready to download.",
-    }
+    assert result == {"action": "assistant_message", "message": expected}
 
 
 def test_non_smart_generator_result_falls_back_without_type():

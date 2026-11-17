@@ -287,3 +287,62 @@ def test_modification_wires_record_buttons_and_forms_once():
     again = copy.deepcopy(model)
     _wire_model_actions(again, META)
     assert again == model
+
+
+# -- records that must be linked to another record -----------------------------
+
+def _end(element, multiplicity, role):
+    return {"element": element, "multiplicity": multiplicity, "role": role}
+
+
+# An order line is part of exactly one order: its create call needs the order.
+ORDER_META = extract_class_metadata({
+    "elements": {
+        "c-order": {"id": "c-order", "type": "Class", "name": "Order"},
+        "a-number": {"id": "a-number", "type": "ClassAttribute", "owner": "c-order",
+                     "name": "number", "attributeType": "str"},
+        "c-line": {"id": "c-line", "type": "Class", "name": "OrderLine"},
+        "a-qty": {"id": "a-qty", "type": "ClassAttribute", "owner": "c-line",
+                  "name": "quantity", "attributeType": "int"},
+        "a-note": {"id": "a-note", "type": "ClassAttribute", "owner": "c-line",
+                   "name": "note", "attributeType": "str", "isOptional": True},
+    },
+    "relationships": {"r1": {"type": "ClassComposition", "source": _end("c-line", "0..*", "lines"),
+                             "target": _end("c-order", "1", "order")}},
+})
+
+LINE_FORM = (
+    "<form data-class='OrderLine' class='app-form'><label for='o'>Order</label>"
+    "<select id='o' name='order'></select><label for='q'>Quantity</label>"
+    "<input id='q' type='number'><label for='n'>Note</label><input id='n'>"
+    "<button type='submit' class='app-save'>Save line</button></form>"
+)
+
+
+def test_designed_form_of_a_record_that_needs_a_parent_stays_a_form():
+    # The generated app adds the select of the parent record to a bound form,
+    # so the design keeps its form, controls and submit button as authored.
+    model = _generate([{"name": "Lines", "sections": [
+        {"bind": {"kind": "table", "className": "OrderLine", "title": "Lines"}},
+        {"html": f"<section class='s'><h2>New line</h2>{LINE_FORM}</section>"},
+    ]}], ORDER_META)
+    form, = _forms(_nodes(model, "Lines"))
+    authored, = html_to_components(LINE_FORM)
+    # Bound to its class; only the two inputs gain their attribute's name.
+    assert form["attributes"] == {"class": "app-form", "data-source": "c-line"}
+    authored["attributes"] = form["attributes"]
+    authored["components"][3]["attributes"]["name"] = "quantity"
+    authored["components"][5]["attributes"]["name"] = "note"
+    assert form == authored
+    again = copy.deepcopy(model)
+    _wire_model_actions(again, ORDER_META)
+    assert again == model
+
+
+def test_form_widget_of_such_a_record_stays_a_form():
+    nodes = _nodes(_generate([{"name": "Entry", "sections": [
+        {"bind": {"kind": "form", "className": "OrderLine"}},
+    ]}], ORDER_META), "Entry")
+    form, = _forms(nodes)
+    assert form["attributes"]["data-source"] == "c-line"
+    assert [i["attributes"]["name"] for i in _inputs(form)] == ["quantity"]

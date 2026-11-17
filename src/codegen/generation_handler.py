@@ -8,6 +8,8 @@ from baf.core.session import Session
 from codegen.smart_generation_handler import (
     build_trigger_smart_generator_payload,
 )
+from llm import byok_config
+from llm.byok import PROVIDER_NAMES
 from protocol.types import AssistantRequest
 from utilities.model_context import is_diagram_nontrivial
 from utilities.original_request import (
@@ -126,26 +128,91 @@ def _stash_smart_gen(
     session.set(SMART_GEN_ARMED_PROJECT_ID, _active_project_id(session))
 
 
+# Vocabulary of the matchers below, which read a lowercased message with
+# punctuation dropped.
+_POLITE_PREFIX = r"(?:(?:can|could) you )?(?:please )?"
+_POLITE_SUFFIX = r"(?: now)?(?: please)?"
+_APP_OBJECT = r"(?:it|(?:(?:the|my|this|a|an) )?(?:web ?)?(?:app|application|code))"
+
+# A bare "generate the app" command: it names nothing to build, so it is not
+# a requirement of the run.
+_BARE_GENERATE_RE = re.compile(_POLITE_PREFIX + r"(?:generate|build|create) " + _APP_OBJECT + _POLITE_SUFFIX)
+
+# A content-free follow-up about the previous generation ("regenerate with
+# fixes", "try again", "fix the errors"): it re-runs the earlier request and
+# names nothing new to build.
+# Only the whole app: a single part ("regenerate the backend") names what to rebuild.
+_WHOLE_APP = r"(?:(?:web ?)?(?:app|application)|code|project|generation|build|run|result|output)"
+_APP_SIDE = r"(?:frontend|front[- ]end|backend|back[- ]end)"
+_FOLLOW_UP_OBJECT = (
+    rf"(?:{_APP_OBJECT}|that|them|everything|(?:(?:the|my|this|that) )?{_WHOLE_APP}"
+    rf"|(?:both )?(?:the )?(?:(?:app|application)'s )?{_APP_SIDE} and (?:the )?{_APP_SIDE})"
+)
+_FIX_OBJECT = (
+    rf"(?:{_APP_OBJECT}|that|them|everything|(?:the |all (?:the )?)?(?:(?:remaining|reported|open|same) )?"
+    r"(?:errors?|issues?|problems?|bugs?|blockers?|failures?))"
+)
+_AGAIN = r"(?:again|once more|one more time)"
+_REDO = (
+    rf"(?:(?:re-?generate|re-?build|re-?do|re-?run|re-?try)(?: {_FOLLOW_UP_OBJECT})?(?: {_AGAIN})?"
+    rf"|(?:try|run|generate|build|do) (?:{_FOLLOW_UP_OBJECT} )?{_AGAIN})"
+)
+_FIX = rf"fix {_FIX_OBJECT}(?: {_AGAIN})?"
+_CONTENT_FREE_FOLLOW_UP_RE = re.compile(
+    r"(?:(?:ok|okay|yes|so) )?" + _POLITE_PREFIX
+    + rf"(?:{_REDO}(?: (?:with|including) (?:the )?fix(?:es)?| and fix {_FIX_OBJECT})?"
+    + rf"|{_FIX}(?: and {_REDO})?)"
+    + _POLITE_SUFFIX
+)
+_FIX_FOLLOW_UP_NOTE = "The user asked to fix the issues of the previous result."
+_NO_EARLIER_REQUEST_MESSAGE = (
+    "I no longer have your earlier request here, so I can't tell what to generate again. "
+    "Please describe again what the application should do."
+)
+
+
+def _normalized_message(message: str) -> str:
+    return _norm_prompt(re.sub(r"[,.!?]+", " ", message or ""))
+
+
+def _is_content_free_follow_up(message: str) -> bool:
+    return bool(_CONTENT_FREE_FOLLOW_UP_RE.fullmatch(_normalized_message(message)))
+
+
+def _with_subsequent_request(previous: str, message: str) -> str:
+    return (
+        f"{previous}\n\n## Subsequent user request, verbatim\n\n"
+        "This later request takes precedence where it changes earlier requirements.\n\n"
+        f"{message}"
+    )
+
+
 def _original_for_smart_generation(session, user_message, *, replace=False):
+    """The user's own request for the run, or None for a content-free
+    follow-up with no earlier request to re-run.
+
+    The earlier request is the one remembered for the project, else the one the
+    editor's last run was started with (unless this message replaces it)."""
     project_id = _active_project_id(session)
     previous = original_request_for_project(session, project_id)
+    if not previous and not replace:
+        last_generation = getattr(_request_context(session), "last_generation", None) or {}
+        previous = last_generation.get("request") or ""
     message = (user_message or "").strip()
-    normalized = _norm_prompt(re.sub(r"[,.!?]+", " ", message))
-    generic = _SMART_GEN_CONFIRM_PHRASES | _PLAN_GEN_CONFIRM_PHRASES | {
-        "generate app", "generate application", "generate the application",
-        "generate a web app", "generate web app", "generate code", "generate it",
-        "build it", "build the app", "create the app",
-    }
-    if not message or normalized in generic:
+    normalized = _normalized_message(message)
+    generic = _SMART_GEN_CONFIRM_PHRASES | _PLAN_GEN_CONFIRM_PHRASES
+    if not message or normalized in generic or _BARE_GENERATE_RE.fullmatch(normalized):
+        return previous
+    if _CONTENT_FREE_FOLLOW_UP_RE.fullmatch(normalized):
+        if not previous:
+            return None
+        if re.search(r"\bfix", normalized) and not _previous_result_gone(session):
+            return f"{previous}\n\n## Subsequent user request\n\n{_FIX_FOLLOW_UP_NOTE}"
         return previous
     if previous and not replace and (message == previous or previous.endswith("\n" + message)):
         return previous
     if previous and not replace:
-        message = (
-            f"{previous}\n\n## Subsequent user request, verbatim\n\n"
-            "This later request takes precedence where it changes earlier requirements.\n\n"
-            f"{message}"
-        )
+        message = _with_subsequent_request(previous, message)
     remember_original_request(session, message, project_id)
     return message
 
@@ -160,6 +227,7 @@ _SMART_GEN_CONFIRM_PHRASES = {
     "yes", "yes please", "confirm", "confirm it", "run it", "run it now",
     "please run it", "go ahead", "proceed", "start it", "start the generation",
     "generate anyway", "generate anyway with my current model",
+    "continue with the generation",
     "continue", "please continue", "yes continue", "ok", "ok go ahead",
     "sure", "sure go ahead", "continue please",
 }
@@ -392,8 +460,8 @@ def _build_smart_gen_confirmation(
     a "Continue" button; a fix / modify of an already-generated app gets
     fix-framing + a "Fix it" button (from-scratch wording reads wrong when
     the user only wants a fix). Both branches keep the
-    same confirm token so the confirm gate fires identically, and both keep
-    the clickable API-key link. The fix branch is gated to the direct path
+    same confirm token so the confirm gate fires identically, and each says
+    which key the run will use (``_key_note``). The fix branch is gated to the direct path
     (no ``reason_prefix``): the mismatch/rebuild resumes always produce a
     freshly rebuilt model, which is a from-scratch build by definition — and,
     per ``_looks_like_fix_request``, to projects that have actually produced
@@ -407,15 +475,28 @@ def _build_smart_gen_confirmation(
     # call wrote.
     project_id = _active_project_id(session)
     original = _original_for_smart_generation(session, user_message)
+    if original is None:
+        if not reason_prefix:
+            _clear_pending_smart_gen(session)
+            return {"action": Action.ASSISTANT_MESSAGE, "message": _NO_EARLIER_REQUEST_MESSAGE}
+        original = ""
     starting_over = None if reason_prefix else _starting_over_on_linked_repo(session)
     replaces_repo_app = starting_over == "replace_existing"
     _stash_smart_gen(
         session, refined, provider, original_request=original, mode="generate" if replaces_repo_app else None,
     )
 
+    # Without the previous result the run is not an update of the existing app.
+    result_expired = _previous_result_gone(session)
     prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
+    if result_expired:
+        sources = "your model and your original request" if original else "your model"
+        prefix += (
+            f"Your previous result is no longer available, so I'll build the application again "
+            f"from {sources}.\n\n"
+        )
 
-    is_fix = (not reason_prefix) and (not starting_over) and _looks_like_fix_request(
+    is_fix = (not reason_prefix) and (not starting_over) and (not result_expired) and _looks_like_fix_request(
         session, user_message, project_id,
     )
 
@@ -430,16 +511,14 @@ def _build_smart_gen_confirmation(
         message = (
             f"{prefix}I'll rebuild the app from scratch instead of changing the code in "
             f"**{linked_repo_name(session)}**. Pushing the result will replace that code. "
-            f"It uses the free model by default — "
-            f"[set up your own API key](wme:add-key) for higher quality.\n\n"
+            f"{_key_note(session, short=True)}\n\n"
             f"Do you want to continue?"
         )
         confirm_label = "Rebuild"
     elif is_fix:
         message = (
             f"{prefix}I'll update your existing app to make that change. "
-            f"It uses the free model by default — "
-            f"[set up your own API key](wme:add-key) for higher quality.\n\n"
+            f"{_key_note(session, short=True)}\n\n"
             f"Do you want to continue?"
         )
         confirm_label = "Fix it"
@@ -449,10 +528,7 @@ def _build_smart_gen_confirmation(
             f"designed specs. BESSER has no built-in generator for it, so the "
             f"AI writes the code; our build server can't compile it, so it "
             f"isn't test-run before you get it.{_architecture_note(target)}\n\n"
-            f"BESSER includes a free model by default, so you can generate at "
-            f"no cost. For higher-quality results, you can "
-            f"[set up your own API key](wme:add-key) and use a stronger "
-            f"provider or model.\n\n"
+            f"{_key_note(session, short=False)}\n\n"
             f"Do you want to continue?"
         )
         confirm_label = "Continue"
@@ -462,10 +538,7 @@ def _build_smart_gen_confirmation(
             f"designed specs using its built-in generators. If some of your "
             f"requirements are not supported by these generators, BESSER can "
             f"use an LLM to handle them.{_architecture_note(target)}\n\n"
-            f"BESSER includes a free model by default, so you can generate at "
-            f"no cost. For higher-quality results, you can "
-            f"[set up your own API key](wme:add-key) and use a stronger "
-            f"provider or model.\n\n"
+            f"{_key_note(session, short=False)}\n\n"
             f"Do you want to continue?"
         )
         confirm_label = "Continue"
@@ -481,7 +554,7 @@ def _build_smart_gen_confirmation(
         "suggestedActions": [
             {
                 "label": confirm_label,
-                "prompt": "generate anyway with my current model",
+                "prompt": "continue with the generation",
             },
         ],
     }
@@ -496,6 +569,66 @@ def _request_target(session: Session) -> Dict[str, Any]:
     except Exception:  # pragma: no cover — copy must never crash
         logger.debug("Could not resolve the request target", exc_info=True)
         return {}
+
+
+def _request_context(session: Session):
+    """The workspace context of the request being handled, or None."""
+    from protocol.adapters import parse_assistant_request
+
+    try:
+        return parse_assistant_request(session).context
+    except Exception:  # pragma: no cover — an unreadable request has no context
+        logger.debug("Could not read the request context", exc_info=True)
+        return None
+
+
+def _previous_result_gone(session: Session) -> bool:
+    """True when the editor says its last run's result has expired and no
+    linked repo holds the app: the run builds the app again."""
+    last_generation = getattr(_request_context(session), "last_generation", None) or {}
+    return last_generation.get("expired") is True and not repo_holds_app(session)
+
+
+# A model value that is not shown: markup, a URL, or what looks like a key.
+_HIDDEN_MODEL_RE = re.compile(r"[`\s]|://|^(?:sk|rk|gsk|xai|hf)[-_]|^AIza", re.IGNORECASE)
+_MAX_SHOWN_MODEL_CHARS = 80
+
+
+def _shown_model(model: Optional[str]) -> str:
+    """`` (`model`)`` for a model id, empty for anything else."""
+    if not model or len(model) > _MAX_SHOWN_MODEL_CHARS or _HIDDEN_MODEL_RE.search(model):
+        return ""
+    return f" (`{model}`)"
+
+
+def _generation_key(session: Session) -> Dict[str, Any]:
+    """What the run will use: the editor's ``generationKey``, else the key
+    armed on this socket, else the free tier."""
+    key = getattr(_request_context(session), "generation_key", None)
+    if key:
+        return key
+    cfg = byok_config.get_current()
+    if cfg is None:
+        return {"tier": "free"}
+    # An endpoint of its own (a gateway or a local server) is not the vendor.
+    return {"tier": "own", "provider": None if cfg.base_url else cfg.provider, "model": cfg.model}
+
+
+def _key_note(session: Session, *, short: bool) -> str:
+    """The confirmation's sentence about the key the run will use."""
+    key = _generation_key(session)
+    if key["tier"] == "own":
+        name = PROVIDER_NAMES.get(key.get("provider") or "", "API")
+        return f"It will use your own {name} key{_shown_model(key.get('model'))}."
+    if key["tier"] == "none":
+        return "You need an API key to generate: [set up your own API key](wme:add-key) first."
+    if short:
+        return "It uses the free model by default — [set up your own API key](wme:add-key) for higher quality."
+    return (
+        "BESSER includes a free model by default, so you can generate at no cost. "
+        "For higher-quality results, you can [set up your own API key](wme:add-key) "
+        "and use a stronger provider or model."
+    )
 
 
 def _architecture_note(target: Dict[str, Any]) -> str:
@@ -536,6 +669,9 @@ def _build_mismatch_confirmation(
     provider = classification.provider or "anthropic"
     rebuild_prompt = f"create a class diagram for {suggested}"
     original = _original_for_smart_generation(session, user_message, replace=True)
+    if original is None:
+        _clear_pending_smart_gen(session)
+        return {"action": Action.ASSISTANT_MESSAGE, "message": _NO_EARLIER_REQUEST_MESSAGE}
     _stash_smart_gen(session, refined, provider, original_request=original)
     # Arm the one-shot resume with the EXACT rebuild prompt the button sends.
     # The guard below and the create choke point
@@ -1083,23 +1219,24 @@ def _normalize_defaults(generator_type: str, request: AssistantRequest, config: 
 # browser already shows a result card (generator, "0 tokens", Download), so the
 # agent's reply is just one confirming sentence under it — worded for what was
 # actually built rather than a generic "generation completed".
+# Keyed by the generator token of the ``trigger_generator`` reply, which the
+# editor echoes back as ``metadata.generatorType``.
 _GENERATOR_DONE_MESSAGES: Dict[str, str] = {
-    "generate_sql": "Your database schema is generated and ready to download.",
-    "generate_sqlalchemy": "Your SQLAlchemy models are generated and ready to download.",
-    "generate_django": "Your Django project is generated and ready to download.",
-    "generate_fastapi_backend": "Your FastAPI backend is generated and ready to download.",
-    "generate_backend": "Your backend is generated and ready to download.",
-    "generate_web_app": "Your web app is generated and ready to download.",
-    "generate_python": "Your Python classes are generated and ready to download.",
-    "generate_java": "Your Java classes are generated and ready to download.",
-    "generate_pydantic": "Your Pydantic models are generated and ready to download.",
-    "generate_json_object": "Your JSON objects are generated and ready to download.",
-    "generate_json_schema": "Your JSON Schema is generated and ready to download.",
-    "generate_pytorch": "Your PyTorch model is generated and ready to download.",
-    "generate_tensorflow": "Your TensorFlow model is generated and ready to download.",
-    "generate_bpmn": "Your BPMN process is generated and ready to download.",
-    "generate_qiskit": "Your quantum circuit code is generated and ready to download.",
-    "generate_supabase": "Your Supabase schema is generated and ready to download.",
+    "sql": "Your database schema is generated and ready to download.",
+    "sqlalchemy": "Your SQLAlchemy models are generated and ready to download.",
+    "django": "Your Django project is generated and ready to download.",
+    "backend": "Your backend is generated and ready to download.",
+    "web_app": "Your web app is generated and ready to download.",
+    "python": "Your Python classes are generated and ready to download.",
+    "java": "Your Java classes are generated and ready to download.",
+    "pydantic": "Your Pydantic models are generated and ready to download.",
+    "jsonobject": "Your JSON objects are generated and ready to download.",
+    "jsonschema": "Your JSON Schema is generated and ready to download.",
+    "pytorch": "Your PyTorch model is generated and ready to download.",
+    "tensorflow": "Your TensorFlow model is generated and ready to download.",
+    "bpmn": "Your BPMN process is generated and ready to download.",
+    "qiskit": "Your quantum circuit code is generated and ready to download.",
+    "supabase": "Your Supabase schema is generated and ready to download.",
 }
 
 

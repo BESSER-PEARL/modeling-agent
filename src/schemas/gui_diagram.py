@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import List, Literal, Optional, Union
+import re
+from typing import Any, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class GUISampleDataPoint(BaseModel):
@@ -57,6 +58,45 @@ class GUITableRow(BaseModel):
     )
 
 
+# A filter written as one line of text: ``status == active``.
+_FILTER_TEXT_RE = re.compile(r"^\s*([\w.]+)\s*(==|=|!=|<>|>=|<=|>|<)\s*(.+?)\s*$")
+
+
+# Concrete-typed for OpenAI strict structured output (see ``GUISampleDataPoint``)
+# and loose about spelling: the handler decides whether a condition can be
+# used, so one it cannot read costs its own card, never the whole design.
+class GUIBindFilter(BaseModel):
+    """One condition on an attribute of the bound class."""
+    field: str = Field(
+        default="",
+        description="Attribute of className the condition tests.",
+    )
+    operator: str = Field(
+        default="==",
+        description=(
+            "Comparison: ==, !=, >, >=, < or <=. Enumeration, boolean and text "
+            "attributes take only == and !=; numbers and dates take all six."
+        ),
+    )
+    value: Optional[Union[str, int, float, bool]] = Field(
+        default=None,
+        description=(
+            "Fixed value to compare with: an enumeration literal of the "
+            "attribute, true / false, a number, or an ISO date (2026-01-31)."
+        ),
+    )
+
+    @field_validator("field", "operator", mode="before")
+    @classmethod
+    def _as_text(cls, value: Any) -> str:
+        return "" if value is None else str(value)
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _as_scalar(cls, value: Any) -> Any:
+        return value if value is None or isinstance(value, (str, int, float, bool)) else str(value)
+
+
 class GUIBindSpec(BaseModel):
     """Data-binding spec for a DATA section (Phase 3).
 
@@ -106,6 +146,26 @@ class GUIBindSpec(BaseModel):
             "on a chart only to plot valueField of each record."
         ),
     )
+    filter: Optional[GUIBindFilter] = Field(
+        default=None,
+        description=(
+            "metric_card only: count or aggregate only the records that match "
+            "this condition ('Active loans' = count with status == active). "
+            "Omit for a figure over all records."
+        ),
+    )
+    @field_validator("filter", mode="before")
+    @classmethod
+    def _filter_as_condition(cls, value: Any) -> Any:
+        """Read a filter written as text; keep any other shape as a condition
+        the handler will find unusable."""
+        if value is None or isinstance(value, (dict, GUIBindFilter)):
+            return value
+        match = _FILTER_TEXT_RE.match(value) if isinstance(value, str) else None
+        if match:
+            return {"field": match.group(1), "operator": match.group(2), "value": match.group(3)}
+        return {"value": str(value)}
+
     columns: List[str] = Field(
         default_factory=list,
         description="Column / field names for table and form widgets.",
