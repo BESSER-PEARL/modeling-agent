@@ -1,0 +1,50 @@
+Version 8.1.3
+=============
+
+This patch release goes with BESSER v8.10.0. The assistant names the API key a
+generation will use, never starts a new application from a bare "try again",
+and builds class models and designed screens that the generators can use as
+they are.
+
+Fixes
+-----
+
+* **Run confirmations name the key.** The confirmation button posts "continue
+  with the generation" instead of "generate anyway with my current model",
+  which users read as "my API key was ignored", and every confirmation text
+  names the provider and model the run will use, or says that a key is needed
+  (`#75 <https://github.com/BESSER-PEARL/modeling-agent/pull/75>`_).
+* **The request of a run is never a bare follow-up.** "regenerate with fixes",
+  "try again" or "fix it" no longer become the whole request of a new
+  application. The request comes from the remembered original, else from the
+  editor's ``context.lastGeneration.request``; with neither, the assistant asks
+  for the description again and starts nothing. A follow-up with content is
+  appended to the original
+  (`#75 <https://github.com/BESSER-PEARL/modeling-agent/pull/75>`_).
+* **Expired results.** When the editor reports that the previous result has
+  expired, the assistant says so instead of offering to update the existing
+  application (`#75 <https://github.com/BESSER-PEARL/modeling-agent/pull/75>`_).
+* **Chat flow.** No "your screens are ready" after a failed or cancelled screen
+  build, diagram keywords match whole words only ("persona" no longer matches
+  inside "personal"), and the completion messages match the generator keys the
+  editor sends (`#75 <https://github.com/BESSER-PEARL/modeling-agent/pull/75>`_).
+* **Class model guards.** A surrogate ``id`` attribute is removed, an ``<x>Id``
+  attribute only when a single to-one link with matching optionality already
+  stores it, an attribute and an association end no longer share a name, and a
+  class-typed attribute does not add a second association next to a
+  composition (`#75 <https://github.com/BESSER-PEARL/modeling-agent/pull/75>`_).
+* **Designed screens.** Stylesheet source order, designed table columns and
+  labels (including inherited attributes), metric cards with a filter, and page
+  routes that mirror the generator, to match the web-app generator of BESSER
+  v8.10.0 (`#75 <https://github.com/BESSER-PEARL/modeling-agent/pull/75>`_).
+
+* **Claude Sonnet 5.5 cache reads cost $0.10 per 1M tokens**, as in BESSER's
+  model catalog; the agent priced them at $0.20 and over-reported that cost.
+
+Protocol
+--------
+
+The editor may send two optional context fields with each ``user_message``:
+``context.generationKey`` (``tier``, ``provider``, ``model``) and
+``context.lastGeneration`` (``request``, ``expired``). They are documented in
+:doc:`../websocket_protocol`. Without them the assistant behaves as before.
