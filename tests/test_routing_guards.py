@@ -5,11 +5,13 @@ the expected values are what the guards decided before they moved out of
 app/state_bodies.py, codegen/generation_handler.py and the classifier.
 """
 
+import time
 from unittest.mock import patch
 
 import pytest
 
 from app import state_bodies as sb
+from common.agent_config import MAX_USER_MESSAGE_CHARS
 from common.session_keys import UNIFIED_CLASSIFICATION
 from protocol.types import AssistantRequest, WorkspaceContext
 from routing import guards
@@ -263,9 +265,23 @@ def test_trace_question_guard(message, trace_digest, decision):
     ("why does the File class exist?", False),     # a class named like a trace word
     ("when should Loan be used?", False),
     ("", False),
+    ("who created the Book class?", True),
+    ("when was Author added?", True),
+    ("why does Book have an Author association?", False),
+    ("summarize my model", False),
 ])
 def test_is_explicit_trace_question(message, explicit):
     assert guards.is_explicit_trace_question(message) is explicit
+
+
+def test_is_explicit_trace_question_is_linear_on_a_maximum_size_message():
+    # "who " repeated to the message cap, with no change verb: the old
+    # who/when ".*" pattern backtracked quadratically (about 41 s here).
+    message = ("who " * (MAX_USER_MESSAGE_CHARS // 4))[:MAX_USER_MESSAGE_CHARS]
+    started = time.perf_counter()
+    assert guards.is_explicit_trace_question(message) is False
+    assert guards.is_explicit_trace_question(message + "added?") is True
+    assert time.perf_counter() - started < 1.0
 
 
 @pytest.mark.parametrize("intent,route,reason,expected", [

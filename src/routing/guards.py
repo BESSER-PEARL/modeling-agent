@@ -268,9 +268,15 @@ EXPLICIT_TRACE_QUESTION_RE = re.compile(
     r"|trace\w*|traceability|tra[cç]abilit\w*|trazabilidad|rastreabilit\w*|lineage|provenance"
     r"|history|timeline|changelog|historique|historia|hist[oò]ria|verlauf|geschichte|chronolog\w*"
     r"|what\s+happened|qu[eé]\s+(?:ha\s+)?pas[oóa]\w*|was\s+ist\s+passiert"
-    r")\b"
-    # who / when + a change verb
-    r"|\b(?:who|when|qui|quand|qui[eé]n|cu[aá]ndo|wer|wann)\b.*\b(?:creat\w*|add\w*|chang\w*|modif\w*|renam\w*"
+    r")\b",
+    re.IGNORECASE,
+)
+# Who / when, then a change verb later on the same line. Two searches, not one
+# "who.*verb" pattern: that backtracks quadratically (about 41 s on a 64k
+# message of "who who ...").
+_WHO_WHEN_RE = re.compile(r"\b(?:who|when|qui|quand|qui[eé]n|cu[aá]ndo|wer|wann)\b", re.IGNORECASE)
+_CHANGE_VERB_RE = re.compile(
+    r"\b(?:creat\w*|add\w*|chang\w*|modif\w*|renam\w*"
     r"|delet\w*|remov\w*|edit\w*|made|wrote|written|introduc\w*|cr[eé]\w*|ajout\w*|a[nñ]adi\w*|erstellt\w*"
     r"|hinzugef\w*|ge[aä]ndert\w*|umbenannt\w*)\b",
     re.IGNORECASE,
@@ -282,7 +288,14 @@ def is_explicit_trace_question(message: str) -> bool:
     date, requirement coverage, who / when something changed, the project's
     history), so only the trace can answer it; False for a design-rationale
     or summary question about the model ("why does the Loan class exist?")."""
-    return bool(EXPLICIT_TRACE_QUESTION_RE.search(message or ""))
+    message = message or ""
+    if EXPLICIT_TRACE_QUESTION_RE.search(message):
+        return True
+    for line in message.split("\n"):  # "." never crossed a newline
+        who_when = _WHO_WHEN_RE.search(line)
+        if who_when and _CHANGE_VERB_RE.search(line, who_when.end()):
+            return True
+    return False
 
 
 def trace_question_guard(request: Any) -> Optional[str]:
