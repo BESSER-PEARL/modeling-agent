@@ -225,3 +225,20 @@ def test_pick_domain_handles_empty_and_invalid_input():
 def test_pick_domain_result_is_always_a_known_domain():
     for text in ("hospital appointment booking", "invoice ledger", "random words", ""):
         assert pick_domain(text) in DOMAINS
+
+
+def test_primary_button_keeps_its_background_on_hover():
+    # A transparent hover background left the white label on the page colour:
+    # the button text vanished under the pointer when the theme had no gradient.
+    from diagram_handlers.types.gui_design_system import (
+        merge_theme_overrides, stylesheet_rules_from_tokens,
+    )
+
+    for tokens in (theme_tokens("default"), merge_theme_overrides("default", {"primary": "#4f46e5"})):
+        rules = {r.get("selectorsAdd"): r["style"] for r in stylesheet_rules_from_tokens(tokens)}
+        base = next(r["style"] for r in stylesheet_rules_from_tokens(tokens)
+                    if r.get("selectors") == [{"name": "ds-btn-primary"}] and not r.get("selectorsAdd"))
+        hover = rules[".ds-btn-primary:hover"]
+        assert hover.get("background-color") != "transparent"
+        assert hover["background"] == base["background"]
+        assert hover["border-color"] == base["border-color"]

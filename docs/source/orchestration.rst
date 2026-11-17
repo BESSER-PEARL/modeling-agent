@@ -88,6 +88,12 @@ When a generation operation is planned, the planner checks whether the required
 diagram types exist. Missing prerequisites are auto-injected as modeling
 operations before the generation step.
 
+A diagram type exists when one of its tabs has content: a new editor project
+sends every tab with an empty model, and those do not count. For the planner
+the GUI diagram exists once a page has components; the direct generation check
+(``_missing_generator_prerequisites``) accepts the empty default page, because
+the editor builds basic screens itself for a ``web_app`` trigger.
+
 .. list-table::
    :header-rows: 1
    :widths: 20 80
@@ -192,7 +198,10 @@ Three-Level Resolution
 Level 1: Keyword Matching
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Direct string matching against the user message (``KEYWORD_TARGETS``):
+Whole-word matching against the user message (``KEYWORD_TARGETS``); the last
+word of a keyword may be plural, a gerund or numbered (``"personas"``,
+``"process modelling"``, ``"bpmn2"``), so ``"persona"`` does not match
+``"personal"``:
 
 .. list-table::
    :header-rows: 1

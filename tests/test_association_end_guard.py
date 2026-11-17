@@ -201,6 +201,274 @@ class TestSpecEndUniqueness:
 
 
 # ---------------------------------------------------------------------------
+# An attribute and an association end of one name on a class
+# ---------------------------------------------------------------------------
+
+def _attr_spec(attributes, rels, classes=("Article", "Keyword")):
+    """*attributes*: {class name: [attribute dicts]}."""
+    spec = _spec(rels, classes=classes)
+    for cls in spec["classes"]:
+        cls["attributes"] = copy.deepcopy(attributes.get(cls["className"], []))
+    return spec
+
+
+def _attr_names(spec, class_name):
+    cls = next(c for c in spec["classes"] if c["className"] == class_name)
+    return [a["name"] for a in cls["attributes"]]
+
+
+def _assert_no_attribute_named_like_an_end(spec):
+    ends, inheritance_edges = _effective_ends(spec)
+    for cls in spec["classes"]:
+        line = ClassDiagramHandler._reach_over_edges(inheritance_edges, {cls["className"]})
+        end_names = {n for c in line for n in ends.get(c, [])}
+        clash = end_names & set(_attr_names(spec, cls["className"]))
+        assert not clash, f"'{cls['className']}' has attribute and end named {sorted(clash)}"
+
+
+class TestAttributeEndNameClash:
+    def test_end_named_like_an_attribute_is_renamed(self):
+        spec = _attr_spec(
+            {"Article": [{"name": "title", "type": "str"}, {"name": "keywords", "type": "str"}]},
+            [dict(_assoc("Article", "Keyword", name="keywords", sm="0..*", tm="0..*"),
+                  sourceRole="articles")],
+        )
+        _handler()._ensure_unique_association_ends(spec)
+        _assert_no_attribute_named_like_an_end(spec)
+        assert _attr_names(spec, "Article") == ["title", "keywords"]
+        assert spec["relationships"][0]["name"] == "keywords_1"
+        assert spec["relationships"][0]["sourceRole"] == "articles"
+
+    def test_source_end_named_like_an_attribute_is_renamed(self):
+        # Keyword is the target: it reaches Article through sourceRole.
+        spec = _attr_spec(
+            {"Keyword": [{"name": "articles", "type": "str"}]},
+            [dict(_assoc("Article", "Keyword", name="keywords", sm="0..*", tm="0..*"),
+                  sourceRole="articles")],
+        )
+        _handler()._ensure_unique_association_ends(spec)
+        _assert_no_attribute_named_like_an_end(spec)
+        assert spec["relationships"][0]["sourceRole"] == "articles_1"
+        assert spec["relationships"][0]["name"] == "keywords"
+
+    def test_unnamed_end_takes_the_class_name_an_attribute_already_uses(self):
+        spec = _attr_spec(
+            {"Article": [{"name": "keyword", "type": "str"}]},
+            [_assoc("Article", "Keyword", sm="0..*", tm="0..1")],
+        )
+        _handler()._ensure_unique_association_ends(spec)
+        _assert_no_attribute_named_like_an_end(spec)
+        assert spec["relationships"][0]["name"] == "keyword_1"
+
+    def test_inherited_attribute_counts(self):
+        spec = _attr_spec(
+            {"Post": [{"name": "keywords", "type": "str"}]},
+            [{"type": "Inheritance", "source": "Article", "target": "Post",
+              "sourceMultiplicity": "1", "targetMultiplicity": "1", "name": None},
+             dict(_assoc("Article", "Keyword", name="keywords", sm="0..*", tm="0..*"),
+                  sourceRole="articles")],
+            classes=("Post", "Article", "Keyword"),
+        )
+        _handler()._ensure_unique_association_ends(spec)
+        _assert_no_attribute_named_like_an_end(spec)
+        assert spec["relationships"][1]["name"] == "keywords_1"
+
+    def test_sibling_attribute_does_not_count(self):
+        spec = _attr_spec(
+            {"Memo": [{"name": "keywords", "type": "str"}]},
+            [{"type": "Inheritance", "source": "Article", "target": "Post",
+              "sourceMultiplicity": "1", "targetMultiplicity": "1", "name": None},
+             {"type": "Inheritance", "source": "Memo", "target": "Post",
+              "sourceMultiplicity": "1", "targetMultiplicity": "1", "name": None},
+             dict(_assoc("Article", "Keyword", name="keywords", sm="0..*", tm="0..*"),
+                  sourceRole="articles")],
+            classes=("Post", "Article", "Memo", "Keyword"),
+        )
+        before = copy.deepcopy(spec)
+        _handler()._ensure_unique_association_ends(spec)
+        assert spec == before
+
+    def test_integer_attribute_named_like_a_to_one_end_is_the_link(self):
+        """``room: int`` beside a to-one end ``room`` holds the room's id."""
+        spec = _attr_spec(
+            {"Booking": [{"name": "nights", "type": "int"}, {"name": "room", "type": "int"}]},
+            [dict(_assoc("Booking", "Room", name="room", sm="0..*", tm="1"),
+                  sourceRole="bookings")],
+            classes=("Booking", "Room"),
+        )
+        _handler()._ensure_unique_association_ends(spec)
+        assert _attr_names(spec, "Booking") == ["nights"]
+        assert spec["relationships"][0]["name"] == "room"
+
+    def test_integer_attribute_named_like_a_to_many_end_is_kept(self):
+        """``items: int`` beside a to-many end is a count, not a reference."""
+        spec = _attr_spec(
+            {"Cart": [{"name": "items", "type": "int"}]},
+            [dict(_assoc("Cart", "Item", name="items", sm="1", tm="0..*"),
+                  sourceRole="cart")],
+            classes=("Cart", "Item"),
+        )
+        _handler()._ensure_unique_association_ends(spec)
+        _assert_no_attribute_named_like_an_end(spec)
+        assert _attr_names(spec, "Cart") == ["items"]
+        assert spec["relationships"][0]["name"] == "items_1"
+
+    def test_text_attribute_restating_a_to_many_end_is_dropped(self):
+        """``tags: str`` beside the to-many end ``tags`` to a class that keeps
+        the tag text writes out what the association holds."""
+        spec = _attr_spec(
+            {"Question": [{"name": "text", "type": "str"}, {"name": "tags", "type": "String"}],
+             "Tag": [{"name": "name", "type": "str"}]},
+            [dict(_assoc("Question", "Tag", name="tags", sm="0..*", tm="0..*"),
+                  sourceRole="questions")],
+            classes=("Question", "Tag"),
+        )
+        renamed = _handler()._ensure_unique_association_ends(spec)
+        assert _attr_names(spec, "Question") == ["text"]
+        assert spec["relationships"][0]["name"] == "tags"
+        assert renamed == []
+
+    def test_text_beside_an_inherited_to_many_end_is_dropped(self):
+        spec = _attr_spec(
+            {"Video": [{"name": "tags", "type": "str"}], "Tag": [{"name": "name", "type": "str"}]},
+            [{"type": "Inheritance", "source": "Video", "target": "Media",
+              "sourceMultiplicity": "1", "targetMultiplicity": "1", "name": None},
+             dict(_assoc("Media", "Tag", name="tags", sm="0..*", tm="0..*"), sourceRole="media")],
+            classes=("Media", "Video", "Tag"),
+        )
+        _handler()._ensure_unique_association_ends(spec)
+        assert _attr_names(spec, "Video") == []
+        assert spec["relationships"][1]["name"] == "tags"
+
+    def test_text_beside_a_to_one_end_is_kept(self):
+        """``author: str`` beside the to-one end ``author`` may be a display name."""
+        spec = _attr_spec(
+            {"Post": [{"name": "author", "type": "str"}], "User": [{"name": "name", "type": "str"}]},
+            [dict(_assoc("Post", "User", name="author", sm="0..*", tm="1"), sourceRole="posts")],
+            classes=("Post", "User"),
+        )
+        _handler()._ensure_unique_association_ends(spec)
+        assert _attr_names(spec, "Post") == ["author"]
+        assert spec["relationships"][0]["name"] == "author_1"
+
+    def test_text_beside_ends_of_a_class_without_text_is_kept(self):
+        spec = _attr_spec(
+            {"Order": [{"name": "items", "type": "str"}],
+             "Item": [{"name": "quantity", "type": "int"}, {"name": "price", "type": "float"}]},
+            [dict(_assoc("Order", "Item", name="items", sm="1", tm="0..*"), sourceRole="order")],
+            classes=("Order", "Item"),
+        )
+        _handler()._ensure_unique_association_ends(spec)
+        assert _attr_names(spec, "Order") == ["items"]
+        assert spec["relationships"][0]["name"] == "items_1"
+
+    def test_text_of_a_parent_beside_a_subclass_end_is_kept(self):
+        spec = _attr_spec(
+            {"Post": [{"name": "keywords", "type": "str"}],
+             "Keyword": [{"name": "word", "type": "str"}]},
+            [{"type": "Inheritance", "source": "Article", "target": "Post",
+              "sourceMultiplicity": "1", "targetMultiplicity": "1", "name": None},
+             dict(_assoc("Article", "Keyword", name="keywords", sm="0..*", tm="0..*"),
+                  sourceRole="articles")],
+            classes=("Post", "Article", "Keyword"),
+        )
+        _handler()._ensure_unique_association_ends(spec)
+        assert _attr_names(spec, "Post") == ["keywords"]
+        assert spec["relationships"][1]["name"] == "keywords_1"
+
+    def test_a_renamed_end_is_reported_with_its_classes_and_old_name(self):
+        spec = _attr_spec(
+            {"Post": [{"name": "author", "type": "str"}]},
+            [dict(_assoc("Post", "User", name="author", sm="0..*", tm="1"), sourceRole="posts")],
+            classes=("Post", "User"),
+        )
+        assert _handler()._ensure_unique_association_ends(spec) == [{
+            "owner": "Post", "other": "User", "new": "author_1", "old": "author",
+            "holder": "Post", "attribute": True}]
+
+    def test_a_name_a_rule_reads_is_left_on_both(self):
+        """Renaming the end would silently point ``self.keywords->size()`` at
+        the text attribute."""
+        spec = _attr_spec(
+            {"Article": [{"name": "keywords", "type": "str"}]},
+            [dict(_assoc("Article", "Keyword", name="keywords", sm="0..*", tm="0..*"),
+                  sourceRole="articles")],
+        )
+        spec["constraints"] = [{
+            "context": "Article", "name": "tagged",
+            "expression": "context Article inv tagged: self.keywords->size() >= 1"}]
+        before = copy.deepcopy(spec)
+        _handler()._ensure_unique_association_ends(spec)
+        assert spec == before
+
+    def test_an_integer_a_method_body_reads_is_kept(self):
+        spec = _attr_spec(
+            {"Booking": [{"name": "room", "type": "int"}]},
+            [dict(_assoc("Booking", "Room", name="room", sm="0..*", tm="1"),
+                  sourceRole="bookings")],
+            classes=("Booking", "Room"),
+        )
+        spec["classes"][0]["methods"] = [
+            {"name": "door", "code": "def door(self): return self.room + 100"}]
+        before = copy.deepcopy(spec)
+        _handler()._ensure_unique_association_ends(spec)
+        assert spec == before
+
+    def test_no_clash_is_untouched(self):
+        spec = _attr_spec(
+            {"Article": [{"name": "title", "type": "str"}]},
+            [dict(_assoc("Article", "Keyword", name="keywords", sm="0..*", tm="0..*"),
+                  sourceRole="articles")],
+        )
+        before = copy.deepcopy(spec)
+        _handler()._ensure_unique_association_ends(spec)
+        assert spec == before
+
+    def test_generated_system_has_one_member_per_name(self, monkeypatch):
+        """Through generate_complete_system: a collection attribute beside the
+        composition it restates, a list of strings restating a to-many end, and
+        a text attribute named like a to-one end."""
+        import diagram_handlers.types.class_diagram_handler as handler_mod
+        from schemas.compact_class_diagram import (
+            CompactClassSpec, CompactRelationshipSpec, CompactSystemClassSpec,
+        )
+
+        def rel(f, t, k, per_source, per_target, name, source_role):
+            return CompactRelationshipSpec(
+                f=f, t=t, k=k, how_many_TARGET_for_one_SOURCE=per_source,
+                how_many_SOURCE_for_one_TARGET=per_target, l=name, ls=source_role)
+
+        compact = CompactSystemClassSpec(
+            name="Blog",
+            classes=[
+                CompactClassSpec(n="Article", m=[], k="",
+                                 a=["title: str", "sections: List[Section]", "keywords: List[str]",
+                                    "author: str"]),
+                CompactClassSpec(n="Section", a=["heading: str"], m=[], k=""),
+                CompactClassSpec(n="Keyword", a=["word: str"], m=[], k=""),
+                CompactClassSpec(n="Writer", a=["name: str"], m=[], k=""),
+            ],
+            rels=[rel("Section", "Article", "comp", "1", "0..*", "article", "sections"),
+                  rel("Article", "Keyword", "assoc", "0..*", "0..*", "keywords", "articles"),
+                  rel("Article", "Writer", "assoc", "1", "0..*", "author", "articles")],
+            ocl=[],
+        )
+        monkeypatch.setattr(handler_mod, "COMPACT_SPEC_ENABLED", True, raising=True)
+        handler = _handler()
+        monkeypatch.setattr(handler, "predict_two_pass_structured", lambda **kwargs: compact)
+
+        spec = handler.generate_complete_system("a blog")["systemSpec"]
+
+        _assert_no_attribute_named_like_an_end(spec)
+        assert _attr_names(spec, "Article") == ["title", "author"]
+        assert [(r["type"], r["source"], r["target"], r["name"]) for r in spec["relationships"]] == [
+            ("Composition", "Section", "Article", "article"),
+            ("Association", "Article", "Keyword", "keywords"),
+            ("Association", "Article", "Writer", "author_1"),
+        ]
+
+
+# ---------------------------------------------------------------------------
 # Modification-path guard (add_relationship)
 # ---------------------------------------------------------------------------
 

@@ -153,7 +153,7 @@ SCENARIOS = {
     "row4": [
         (("say", "I want a mobile app"), (_REPLY_ACTIONS, "en", None)),
         (("say", "for gym tracking"), (_REPLY_ACTIONS, "en", _TARGET_MOBILE)),
-        (("say", "generate anyway with my current model"),
+        (("say", "continue with the generation"),
          ({"trigger_smart_generator", "assistant_message"}, None, _TARGET_MOBILE)),
     ],
     # Row 5: a hand-drawn model, no history: no target keeps develop's default
@@ -184,7 +184,7 @@ async def run(name, rep):
         for (kind, text), (allowed, lang, words) in SCENARIOS[name]:
             if kind == "click":
                 actions = (last or {}).get("suggestedActions") or []
-                text = actions[0]["prompt"] if actions else "generate anyway with my current model"
+                text = actions[0]["prompt"] if actions else "continue with the generation"
             if kind == "say_with_model":
                 model = model or _SHOP_MODEL
             if kind == "smart_done":

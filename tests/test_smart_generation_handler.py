@@ -200,7 +200,7 @@ class TestHandleGenerationRequest:
         assert result["action"] == "assistant_message"
         assert "API key" in result["message"]
         prompts = [a["prompt"] for a in result["suggestedActions"]]
-        assert "generate anyway with my current model" in prompts
+        assert "continue with the generation" in prompts
         # Cancel button removed (product decision) — only Run is offered;
         # the user can still cancel by typing.
         assert "cancel the generation" not in prompts
@@ -209,7 +209,7 @@ class TestHandleGenerationRequest:
 
         # Confirm: now (and only now) the trigger payload is emitted.
         confirm = handle_generation_request(
-            session, _make_request("generate anyway with my current model"),
+            session, _make_request("continue with the generation"),
         )
         assert confirm["action"] == "trigger_smart_generator"
         assert "Rails" in confirm["instructions"]

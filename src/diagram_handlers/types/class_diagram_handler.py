@@ -116,6 +116,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             model=MODEL_GENERATION_SMALL,
         )
         simple_spec = parsed.model_dump()
+        self._strip_surrogate_ids([simple_spec], kwargs.get("raw_request") or user_request)
 
         # Remove any position the LLM might have hallucinated, then apply layout engine
         simple_spec.pop("position", None)
@@ -238,6 +239,16 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # association (or coerce an unknown type to String).
         self._rewrite_class_typed_attributes(system_spec)
 
+        # Guard: an abstract base declared as the CHILD of its own
+        # subclasses. Runs before every guard that reads the direction of
+        # the hierarchy: the foreign-key guard next and the shadow-strip.
+        self._fix_inverted_inheritance(system_spec)
+
+        # Guard: an id attribute beside the association that stores the same
+        # reference (Order.customerId). The generated backend would define
+        # the foreign key twice.
+        self._rewrite_foreign_key_attributes(system_spec, raw_request or user_request)
+
         # Guard: a label naming BOTH ends ("contact / bookingsAsContact")
         # becomes a name plus a sourceRole. A name with a space fails the
         # editor's class-diagram quality check and blocks GUI generation.
@@ -285,12 +296,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # association ends with the same name" validation error on rich
         # models). Reorients/renames colliding relationships using the
         # exact end-name derivation the validator applies.
-        self._ensure_unique_association_ends(system_spec)
-
-        # Guard: an abstract base declared as the CHILD of its own
-        # subclasses. Must run before the shadow-strip below, which walks
-        # this graph and would otherwise strip from the wrong end.
-        self._fix_inverted_inheritance(system_spec)
+        renamed_ends = self._ensure_unique_association_ends(system_spec)
 
         # Guard: isAbstract on a LEAF rather than the base. An abstract leaf
         # cannot be instantiated, so the app cannot create that entity at all.
@@ -303,6 +309,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # copies deterministically. Method OVERRIDES are left alone —
         # overriding is legitimate OO.
         self._strip_shadowed_attributes(system_spec)
+
+        # Guard: no surrogate id attribute. The generators give every class
+        # its own primary key, and the spec cannot mark an identifier.
+        self._strip_surrogate_ids(
+            system_spec.get("classes"), raw_request or user_request,
+            self._member_references(system_spec))
 
         # Guard: BUML rejects decorated type tokens the LLM sometimes
         # emits ('str?', 'int?'). Normalize them: on an attribute the '?'
@@ -335,7 +347,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
             cls.pop("position", None)
         self.apply_system_layout(system_spec, existing_model)
 
-        message = self._build_system_message(system_spec, relaxations)
+        message = self._build_system_message(
+            system_spec, relaxations, renamed=renamed_ends)
 
         # The editor records the extraction in the project trace (a call to
         # requirementsModel) and links each requirement to the elements that
@@ -461,6 +474,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
                         "name": attr_name,
                         "type": enum_name,
                         "visibility": "public",
+                        "isDerived": False,
+                        "defaultValue": None,
+                        "isOptional": False,
+                        "isExternalId": False,
                     })
                 rewritten += 1
                 logger.info(
@@ -703,6 +720,48 @@ class ClassDiagramHandler(BaseDiagramHandler):
                     len(attributes) - len(kept), name,
                 )
                 cls["attributes"] = kept
+
+    # The request itself asks for an id ("each product has an id and a name",
+    # "an id_number"); an underscore may follow the word but not precede it.
+    _ID_REQUEST_RE = re.compile(r"\b(?:ids?|identifiers?)(?![A-Za-z0-9])", re.IGNORECASE)
+
+    def _strip_surrogate_ids(
+        self, classes: Any, request_text: Optional[str], references: str = "",
+    ) -> None:
+        """Remove the attribute named ``id`` from every class in *classes*.
+
+        The generators create a primary key for a class that declares no
+        identifier, and an ``id`` attribute that is not the identifier is
+        rejected by Django and reported by the validator on every class. Kept
+        when *request_text* asks for an id, and when a constraint or a method
+        body reads it (*references* plus the code of *classes*); identifiers
+        the user names (``isbn``, ``sku``) are other attributes and are never
+        touched. *classes* may also be the ``changes`` of ``add_class``
+        modifications, which carry the same keys.
+        """
+        if not isinstance(classes, list) or self._ID_REQUEST_RE.search(request_text or ""):
+            return
+        references = references + " " + self._member_references({"classes": classes})
+        stripped = []
+        for cls in classes:
+            if not isinstance(cls, dict) or cls.get("isEnumeration"):
+                continue
+            attributes = cls.get("attributes")
+            if not isinstance(attributes, list):
+                continue
+            kept = [
+                a for a in attributes
+                if not (isinstance(a, dict) and str(a.get("name") or "").lower() == "id"
+                        and not self._is_referenced(a.get("name"), references))
+            ]
+            if len(kept) != len(attributes):
+                cls["attributes"] = kept
+                stripped.append(str(cls.get("className")))
+        if stripped:
+            logger.info(
+                "[ClassDiagram] Stripped the surrogate id attribute from %d "
+                "class(es): %s", len(stripped), ", ".join(stripped)[:200],
+            )
 
     @staticmethod
     def _to_identifier(raw: str, *, pascal: bool) -> str:
@@ -1045,6 +1104,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
             label = rel.get("name")
             if not isinstance(label, str) or not label.strip():
                 continue
+            if _VALID_IDENTIFIER_RE.match(label.strip()):
+                continue  # one valid name already ('rooms', 'room_1'): nothing to split
             target_role, _, source_role = label.partition("/")
             target_ident = self._to_identifier(target_role, pascal=False)
             if target_ident:
@@ -1279,6 +1340,17 @@ class ClassDiagramHandler(BaseDiagramHandler):
             ]
 
     @staticmethod
+    def _ancestors(edges: List[tuple], name: str) -> set:
+        """*name* and its ancestors over ``(child, parent)`` *edges*."""
+        line = {name}
+        frontier = {name}
+        while frontier:
+            frontier = {parent for child, parent in edges
+                        if child in frontier and parent not in line}
+            line |= frontier
+        return line
+
+    @staticmethod
     def _reach_over_edges(edges: List[tuple], seeds: set) -> set:
         """Seeds plus everything reachable following the directed edges BOTH
         ways (ancestors ∪ descendants — never siblings), matching the
@@ -1299,7 +1371,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         return _reach(True) | _reach(False)
 
-    def _ensure_unique_association_ends(self, system_spec: Dict[str, Any]) -> None:
+    def _ensure_unique_association_ends(self, system_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Make every class's association-end names unique in the spec.
 
         Computes each class's navigable end names with the same derivation
@@ -1314,16 +1386,29 @@ class ClassDiagramHandler(BaseDiagramHandler):
         ``sourceRole`` for a source end. New target names also stay unique
         among relationship labels.
 
+        An attribute of the class holds its name against every end: generated
+        code gives a class one member per name, so the end is the one renamed.
+        Dropped instead: an integer attribute named like a to-one end (that
+        end's reference kept by hand), and a text attribute named like a
+        to-many end of the class or an ancestor whose class keeps text (the
+        linked values written out, ``tags: str`` beside ``tags`` to ``Tag``).
+        A name a constraint or a method body reads is left on both, so the
+        rule keeps reading what it read.
+
         Endpoints are NEVER swapped: the wire format carries the target role
         in ``name`` and the source role in ``sourceRole``, so a swap moves
         each name to the opposite end. Both ends being nameable, naming is
         always enough.
 
         Mutates *system_spec* in place; no-op for already-clean specs.
+        Returns one record per renamed end, for the reply: the class that owns
+        the end (``owner``), the class it links to (``other``), the ``old``
+        and ``new`` name, and the class whose member it met (``holder``) with
+        whether that member is an ``attribute`` or another end.
         """
         relationships = system_spec.get("relationships")
         if not isinstance(relationships, list) or not relationships:
-            return
+            return []
         classes = system_spec.get("classes")
 
         def _is_end_creating(rel: Any) -> bool:
@@ -1367,29 +1452,52 @@ class ClassDiagramHandler(BaseDiagramHandler):
             and rel["name"].strip()
         }
 
+        references = self._member_references(system_spec)
         class_order: List[str] = []
+        class_by_name: Dict[str, Dict[str, Any]] = {}
         if isinstance(classes, list):
             for cls in classes:
                 if isinstance(cls, dict) and isinstance(cls.get("className"), str):
                     class_order.append(cls["className"])
+                    class_by_name[cls["className"]] = cls
         for entry in _collect_entries():
             if entry["owner"] not in class_order:
                 class_order.append(entry["owner"])
 
-        renamed = 0
+        renamed: List[Dict[str, Any]] = []
         for cls_name in class_order:
             entries = _collect_entries()  # recompute after prior mutations
             chain = self._reach_over_edges(inheritance_edges, {cls_name})
             owned = [e for e in entries if e["owner"] in chain]
-            taken_ends = {e["name"] for e in owned}
+            own_attrs = {
+                a["name"]: a
+                for a in class_by_name.get(cls_name, {}).get("attributes") or []
+                if isinstance(a, dict) and isinstance(a.get("name"), str)
+            }
+            taken_ends = {e["name"] for e in owned} | set(own_attrs)
             by_name: Dict[str, List[Dict[str, Any]]] = {}
             for e in owned:
                 by_name.setdefault(e["name"], []).append(e)
             for end_name, group in by_name.items():
-                if len(group) < 2:
+                # A name a rule or a method body reads keeps meaning what it
+                # meant: neither the attribute nor the end is touched.
+                attr = None if self._is_referenced(end_name, references) else own_attrs.get(end_name)
+                if attr is not None and (
+                        self._is_reference_to_end(attr, group)
+                        or self._is_text_copy_of_ends(
+                            attr, group, self._ancestors(inheritance_edges, cls_name),
+                            class_by_name)):
+                    class_by_name[cls_name]["attributes"].remove(attr)
+                    attr = None
+                    logger.info(
+                        "[ClassDiagram] Dropped attribute %s.%s: the association "
+                        "end of that name already holds it",
+                        cls_name, end_name,
+                    )
+                if len(group) < 2 and attr is None:
                     continue
                 explicit = [e for e in group if e["explicit"]]
-                kept = (explicit or group)[0]
+                kept = None if attr is not None else (explicit or group)[0]
                 for e in group:
                     if e is kept:
                         continue
@@ -1415,10 +1523,13 @@ class ClassDiagramHandler(BaseDiagramHandler):
                     taken_ends.add(unique)
                     if side == "target":
                         taken_labels.add(unique.lower())
-                    renamed += 1
+                    renamed.append({
+                        "owner": e["owner"], "other": rel[side], "new": unique,
+                        "old": end_name, "holder": cls_name, "attribute": attr is not None,
+                    })
                     logger.info(
                         "[ClassDiagram] Named the %s end of the %s-%s "
-                        "association '%s' so '%s' has no duplicate '%s' end",
+                        "association '%s' so '%s' has a single '%s' member",
                         side, rel["source"], rel["target"], unique, cls_name,
                         end_name,
                     )
@@ -1426,8 +1537,44 @@ class ClassDiagramHandler(BaseDiagramHandler):
         if renamed:
             logger.info(
                 "[ClassDiagram] Assigned %d unique association-end name(s)",
-                renamed,
+                len(renamed),
             )
+        return renamed
+
+    _INTEGER_ATTR_TYPES = frozenset({"int", "integer", "long", "short"})
+
+    @classmethod
+    def _is_reference_to_end(cls, attr: Dict[str, Any], ends: List[Dict[str, Any]]) -> bool:
+        """True when *attr* is an integer and every end of its name is to-one:
+        the attribute then stores the id of the object the end points to. Beside
+        a to-many end an integer of that name is a count and is kept."""
+        return (
+            str(attr.get("type") or "").strip().lower() in cls._INTEGER_ATTR_TYPES
+            and all(
+                cls._parse_multiplicity(e["rel"].get(f"{e['side']}Multiplicity"))[1] <= 1
+                for e in ends
+            )
+        )
+
+    _TEXT_ATTR_TYPES = frozenset({"str", "string"})
+
+    @classmethod
+    def _is_text_copy_of_ends(
+        cls, attr: Dict[str, Any], ends: List[Dict[str, Any]], owners: set,
+        class_by_name: Dict[str, Dict[str, Any]],
+    ) -> bool:
+        """True when *attr* is text and every end of its name is a to-many end
+        of *owners* (the class and its ancestors) to a class with a text
+        attribute: the attribute writes out the values the link holds."""
+        def _is_text(a: Any) -> bool:
+            return isinstance(a, dict) and str(a.get("type") or "").strip().lower() in cls._TEXT_ATTR_TYPES
+
+        return _is_text(attr) and all(
+            e["owner"] in owners
+            and cls._parse_multiplicity(e["rel"].get(f"{e['side']}Multiplicity"))[1] > 1
+            and any(map(_is_text, class_by_name.get(e["rel"][e["side"]], {}).get("attributes") or []))
+            for e in ends
+        )
 
     # Attribute types the deterministic generators accept without an association.
     _PRIMITIVE_ATTR_TYPES = frozenset({
@@ -1592,6 +1739,75 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 added, len(candidates),
             )
 
+    def _reaches_through_role(
+        self, relationships: List[Any], owner: str, target: str, role: str,
+        *, exact: bool = False,
+    ) -> bool:
+        """True when *owner* already has an association end to *target* that
+        states the link *role* names.
+
+        That is an end of that name (an unnamed end is named after its class),
+        or, unless *exact*, an end named after the target class when *role*
+        is too (``book`` beside ``books``). An end with a role of its own is a
+        different link: ``referredBy`` beside ``customer``, ``billingAddress``
+        beside ``shippingAddress``.
+        """
+        wanted = (role or "").strip().lower()
+        plain = not exact and (not wanted or self._is_default_end_name(wanted, target))
+        for rel in relationships:
+            if (not isinstance(rel, dict)
+                    or self._spec_rel_type(rel) in self._SPEC_NON_END_REL_TYPES):
+                continue
+            for near, far in (("source", "target"), ("target", "source")):
+                if rel.get(near) != owner or rel.get(far) != target:
+                    continue
+                end = self._spec_role(rel, far) or target.lower()
+                if end.lower() == wanted or (plain and self._is_default_end_name(end, target)):
+                    return True
+        return False
+
+    def _link_attribute_to_class(
+        self, relationships: List[Any], owner: str, attr: Dict[str, Any], target: str,
+        *, many: bool = False, in_use: bool = False,
+    ) -> bool:
+        """Add the Association ``owner -> target`` that *attr* stands for,
+        unless the two classes are already linked for that role.
+
+        *many*: the attribute holds a collection of the target. *in_use*: a
+        rule or a method body reads the attribute, so an end of exactly its
+        name must exist afterwards. Returns whether an association was added.
+        """
+        role = attr.get("name") or self._to_camel_case(target)
+        if self._reaches_through_role(relationships, owner, target, role, exact=in_use):
+            logger.info(
+                "[ClassDiagram] Dropped attribute %s.%s: %s is already linked "
+                "to %s for that role", owner, attr.get("name"), owner, target,
+            )
+            return False
+        relationships.append({
+            "type": "Association",
+            "source": owner,
+            "target": target,
+            "sourceMultiplicity": "0..*",
+            "targetMultiplicity": (
+                "0..*" if many else "0..1" if attr.get("isOptional") else "1"),
+            "name": role,
+            "sourceRole": None,
+            "associationClass": None,
+        })
+        logger.info(
+            "[ClassDiagram] Rewrote attribute %s.%s into an Association to %s",
+            owner, attr.get("name"), target,
+        )
+        return True
+
+    # 'List[Item]', 'Set<Item>', 'Item[]': a collection of one named type.
+    _COLLECTION_TYPE_RE = re.compile(
+        r"^(?:(?:list|set|sequence|collection|array|iterable)\s*[\[<]\s*(\w+)\s*[\]>]"
+        r"|(\w+)\s*\[\s*\])$",
+        re.IGNORECASE,
+    )
+
     def _rewrite_class_typed_attributes(self, system_spec: Dict[str, Any]) -> None:
         """Convert an attribute TYPED as another class into an Association.
 
@@ -1601,8 +1817,11 @@ class ClassDiagramHandler(BaseDiagramHandler):
         type" and forces the expensive LLM-from-scratch rebuild. This guard
         rewrites such an attribute into an ``Association`` owner->target (role
         = the attribute name, so ``startLocation``/``endLocation`` stay
-        distinct). A PascalCase type naming no class/enum in the spec is a
-        hallucinated reference and is coerced to ``String``.
+        distinct); a collection of a class (``items : List[Item]``) becomes a
+        to-many one. No association is added when the owner already reaches the
+        target through that role (:meth:`_reaches_through_role`); the attribute
+        is dropped either way. A PascalCase type naming no class/enum in the
+        spec is a hallucinated reference and is coerced to ``String``.
 
         The INVERSE guard (relationship-to-enum -> attribute) is
         :meth:`_rewrite_enum_relationships`. Mutates *system_spec* in place;
@@ -1628,6 +1847,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         if not isinstance(relationships, list):
             relationships = []
             system_spec["relationships"] = relationships
+        references = self._member_references(system_spec)
 
         converted = 0
         coerced = 0
@@ -1660,22 +1880,15 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 if tt.lower() in self._PRIMITIVE_ATTR_TYPES or tt in enum_names:
                     kept.append(a)  # primitive or valid enum-typed attribute
                     continue
-                if tt in non_enum_classes:
-                    # class-typed attribute -> association owner -> target
-                    relationships.append({
-                        "type": "Association",
-                        "source": owner,
-                        "target": tt,
-                        "sourceMultiplicity": "0..*",
-                        "targetMultiplicity": "0..1" if a.get("isOptional") else "1",
-                        "name": a.get("name") or self._to_camel_case(tt),
-                    })
-                    converted += 1
-                    logger.info(
-                        "[ClassDiagram] Rewrote class-typed attribute %s.%s : %s "
-                        "into an Association", owner, a.get("name"), tt,
-                    )
-                    # drop the attribute (replaced by the association)
+                collection = self._COLLECTION_TYPE_RE.match(tt)
+                element = collection.group(1) or collection.group(2) if collection else tt
+                if element in non_enum_classes:
+                    # class-typed attribute -> association owner -> target;
+                    # the attribute is dropped either way
+                    if self._link_attribute_to_class(
+                            relationships, owner, a, element, many=bool(collection),
+                            in_use=self._is_referenced(a.get("name"), references)):
+                        converted += 1
                 else:
                     # PascalCase but not a known class/enum/primitive -> a
                     # hallucinated type reference; keep the field, make it a String.
@@ -1693,6 +1906,144 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 "[ClassDiagram] Class-typed-attribute guard: %d -> association, "
                 "%d -> String", converted, coerced,
             )
+
+    # 'customerId', 'customer_id', 'customerID': a name ending in an id marker.
+    _FK_ATTR_NAME_RE = re.compile(r"^(\w+?)(?:_[iI][dD]|(?<=[a-z0-9])I[dD])$")
+    _FK_ATTR_TYPES = frozenset({"str", "string"}) | _INTEGER_ATTR_TYPES
+
+    @staticmethod
+    def _member_references(system_spec: Dict[str, Any]) -> str:
+        """The text of the model's own rules and method bodies. A member named
+        there is in use: no guard removes or renames it."""
+        parts: List[Any] = [
+            c.get("expression") for c in system_spec.get("constraints") or []
+            if isinstance(c, dict)
+        ]
+        for cls in system_spec.get("classes") or []:
+            if isinstance(cls, dict):
+                parts += [m.get("code") for m in cls.get("methods") or [] if isinstance(m, dict)]
+        return "\n".join(p for p in parts if isinstance(p, str))
+
+    @staticmethod
+    def _is_referenced(name: Any, references: str) -> bool:
+        return isinstance(name, str) and bool(name) and re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", references) is not None
+
+    @staticmethod
+    def _request_member_names(request_text: Any) -> FrozenSet[str]:
+        """The identifiers written in the request, case and underscores ignored
+        (``customerId`` and ``customer_id`` both give ``customerid``)."""
+        return frozenset(
+            token.replace("_", "").lower()
+            for token in re.findall(r"\w+", str(request_text or ""))
+        )
+
+    def _rewrite_foreign_key_attributes(
+        self, system_spec: Dict[str, Any], request_text: Optional[str] = None,
+    ) -> None:
+        """Remove an id attribute that restates a link the model already has.
+
+        A string or integer attribute named ``<x>Id`` / ``<x>_id`` is removed
+        only when one link certainly stores the same reference. Among the
+        association ends of the owner and of its ancestors (an association
+        class reaches both classes of its association), exactly one is named
+        ``<x>`` or, when none is, exactly one reaches class ``<x>``; that end
+        is to-one from the owner's side and required exactly when the
+        attribute is; and ``<x>`` is not the owner or a class of its
+        generalization chain. An end with a role of its own that disagrees
+        with the attribute (an optional ``referredBy`` beside a required
+        ``customerId``) is another link to the same class.
+
+        Every other attribute stays, also an id naming a class the owner is not
+        linked to: the guard never adds a link. Also kept: an attribute flagged
+        ``isExternalId``, one the request names as written, and one a
+        constraint or a method body reads.
+
+        Reads the inheritance direction, so it runs after
+        :meth:`_fix_inverted_inheritance`. Mutates *system_spec* in place.
+        """
+        classes = system_spec.get("classes")
+        relationships = system_spec.get("relationships")
+        if not isinstance(classes, list) or not isinstance(relationships, list):
+            return
+
+        def _key(name: str) -> str:
+            return name.replace("_", "").lower()
+
+        class_by_key = {
+            _key(cls["className"]): cls["className"]
+            for cls in classes
+            if isinstance(cls, dict) and isinstance(cls.get("className"), str)
+            and cls["className"] and not cls.get("isEnumeration")
+        }
+        inheritance_edges = [
+            (rel.get("source"), rel.get("target"))
+            for rel in relationships
+            if isinstance(rel, dict)
+            and self._spec_rel_type(rel) in self._SPEC_NON_END_REL_TYPES
+        ]
+        references = self._member_references(system_spec)
+        named = self._request_member_names(request_text)
+
+        def _ends(owner: str) -> List[Tuple[str, str, tuple]]:
+            """(far class, end name as a key, multiplicity) of every end of
+            *owner* and its ancestors."""
+            line = self._ancestors(inheritance_edges, owner)
+            ends = []
+            for rel in relationships:
+                if (not isinstance(rel, dict)
+                        or self._spec_rel_type(rel) in self._SPEC_NON_END_REL_TYPES):
+                    continue
+                source, target = rel.get("source"), rel.get("target")
+                if not isinstance(source, str) or not isinstance(target, str):
+                    continue
+                if rel.get("associationClass") in line:
+                    ends += [(far, _key(far), (1, 1)) for far in (source, target)]
+                for near, far, side in ((source, target, "target"),
+                                        (target, source, "source")):
+                    if near in line:
+                        ends.append((far, _key(self._spec_role(rel, side) or far),
+                                     self._parse_multiplicity(rel.get(f"{side}Multiplicity"))))
+            return ends
+
+        removed = 0
+        for cls in classes:
+            if not isinstance(cls, dict) or cls.get("isEnumeration"):
+                continue
+            owner = cls.get("className")
+            attrs = cls.get("attributes")
+            if not isinstance(owner, str) or not owner or not isinstance(attrs, list):
+                continue
+            hierarchy = self._reach_over_edges(inheritance_edges, {owner})
+            ends = _ends(owner)
+            kept: List[Any] = []
+            for a in attrs:
+                name = a.get("name") if isinstance(a, dict) else None
+                match = self._FK_ATTR_NAME_RE.match(name) if isinstance(name, str) else None
+                if (match is None or a.get("isExternalId")
+                        or str(a.get("type") or "").strip().lower() not in self._FK_ATTR_TYPES
+                        or _key(name) in named
+                        or self._is_referenced(name, references)
+                        or class_by_key.get(_key(match.group(1))) in hierarchy):
+                    kept.append(a)
+                    continue
+                key = _key(match.group(1))
+                same = ([e for e in ends if e[1] == key]
+                        or [e for e in ends if _key(e[0]) == key])
+                lower, upper = same[0][2] if len(same) == 1 else (0, 0)
+                if len(same) != 1 or upper > 1 or (lower == 0) != bool(a.get("isOptional")):
+                    kept.append(a)
+                    continue
+                removed += 1
+                logger.info(
+                    "[ClassDiagram] Dropped foreign-key attribute %s.%s: the "
+                    "association to %s already holds that reference",
+                    owner, name, same[0][0],
+                )
+            cls["attributes"] = kept
+
+        if removed:
+            logger.info("[ClassDiagram] Foreign-key-attribute guard: %d removed", removed)
 
     def _break_mandatory_cycles(self, system_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Relax one end of every mandatory creation cycle, keeping the rule as OCL.
@@ -2180,13 +2531,14 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 classes.append({
                     "className": name,
                     "attributes": [
-                        {"name": "id", "type": "String", "visibility": "public"},
+                        {"name": "name", "type": "String", "visibility": "public"},
                     ],
                     "methods": [],
                 })
 
         if not classes:
             return self.generate_fallback_system()
+        self._strip_surrogate_ids(classes, raw_request or user_request)
 
         system_spec = {
             "systemName": "System",
@@ -2222,7 +2574,6 @@ class ClassDiagramHandler(BaseDiagramHandler):
         fallback_spec = {
             "className": class_name,
             "attributes": [
-                {"name": "id", "type": "String", "visibility": "public"},
                 {"name": "name", "type": "String", "visibility": "private"}
             ],
             "methods": []
@@ -2245,7 +2596,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 {
                     "className": "Entity",
                     "attributes": [
-                        {"name": "id", "type": "String", "visibility": "public"}
+                        {"name": "name", "type": "String", "visibility": "public"}
                     ],
                     "methods": []
                 }
@@ -2284,11 +2635,14 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
     def _build_system_message(
         self, spec: Dict[str, Any], relaxations: Sequence[Dict[str, Any]] = (),
+        renamed: Sequence[Dict[str, Any]] = (),
     ) -> str:
         """Build a descriptive message for a complete class diagram spec.
 
         *relaxations* are the ends ``_break_mandatory_cycles`` made optional;
-        their invariants are the agent's, not rules the user stated."""
+        their invariants are the agent's, not rules the user stated.
+        *renamed* are the association ends ``_ensure_unique_association_ends``
+        renamed: the first three are explained, the rest counted."""
         system_name = spec.get("systemName", "System")
         classes = spec.get("classes", [])
         rels = spec.get("relationships", [])
@@ -2303,6 +2657,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
         elif rels:
             msg += f", with {len(rels)} relationship(s) between them"
         msg += "."
+        for r in renamed[:3]:
+            member = "an attribute" if r["attribute"] else "another link"
+            msg += (f" {r['owner']}'s link to {r['other']} is now called **{r['new']}**, "
+                    f"because {r['holder']} already has {member} named **{r['old']}**.")
+        if len(renamed) > 3:
+            msg += f" {len(renamed) - 3} more association end(s) were renamed the same way."
         # The editor draws every constraint as an OCL box on its class.
         constraints = [c for c in spec.get("constraints") or [] if isinstance(c, dict)]
         agent_made = [r for r in relaxations if any(r["constraint"] is c for c in constraints)]
@@ -3183,7 +3543,19 @@ class ClassDiagramHandler(BaseDiagramHandler):
             return deduped
 
         def _expand_refactoring(handler, spec):
-            return handler._prepare_modification_spec(spec, current_model)
+            spec = handler._prepare_modification_spec(spec, current_model)
+            # A new class gets no surrogate id, as in a generated diagram.
+            mods = spec.get("modifications")
+            if not isinstance(mods, list):
+                mods = [spec.get("modification")]
+            mods = [m for m in mods if isinstance(m, dict)]
+            handler._strip_surrogate_ids(
+                [m.get("changes") for m in mods if m.get("action") == "add_class"],
+                kwargs.get("raw_request") or user_request,
+                # an OCL rule added in the same request may read the id
+                " ".join(str((m.get("changes") or {}).get("constraint") or "") for m in mods),
+            )
+            return spec
 
         # Up to TWO samples: when EVERY op targets something absent from
         # the model, the parse was almost certainly a sampling glitch

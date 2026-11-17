@@ -219,6 +219,61 @@ Features
   A failed extraction, a reply cut off at the token cap included, only logs a
   warning: the diagram is built without requirements.
 
+Guards after generation
+~~~~~~~~~~~~~~~~~~~~~~~
+
+``_build_system`` runs deterministic guards on the structured output before it
+is sent to the editor. Each one repairs a model that would fail validation or
+break code generation; none decides what the user wanted modeled. Three rules
+hold for the guards below:
+
+- an id attribute the request names as written (``customerId``,
+  ``customer_id``) is the user's field and is left alone;
+- a member an OCL constraint or a method body reads is neither removed nor
+  renamed;
+- running the guards on their own output changes nothing
+  (``tests/test_class_pipeline_idempotence.py``).
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 66
+
+   * - Guard
+     - What it does
+   * - ``_rewrite_class_typed_attributes``
+     - An attribute typed as a class, or as a collection of it
+       (``List[Item]``), becomes an association, unless the owner already
+       reaches that class through an end of that name. A type naming
+       nothing becomes ``String``.
+   * - ``_fix_inverted_inheritance``
+     - Turns round a hierarchy stated backwards. Runs before the guards
+       that read the direction of the hierarchy.
+   * - ``_rewrite_foreign_key_attributes``
+     - A string or integer ``<x>Id`` / ``<x>_id`` is removed only when, among
+       the ends of the owner and its ancestors, exactly one is named ``<x>``
+       (or, when none is, exactly one reaches class ``<x>``), that end is
+       to-one and required exactly when the attribute is, and ``<x>`` is not
+       a class of the owner's own hierarchy. Every other ``<x>Id`` stays: an
+       id beside a link with another role (an optional ``referredBy`` beside
+       a required ``customerId``), beside a to-many link, beside two links,
+       or naming a class the owner is not linked to, and an ``isExternalId``
+       attribute. The guard never adds an association.
+   * - ``_ensure_unique_association_ends``
+     - One member per name: duplicate ends, and an end named like an
+       attribute, get a ``_1`` suffix. Dropped instead: an integer attribute
+       named like a to-one end, and a text attribute named like a to-many
+       end of the class or an ancestor whose class keeps text (``tags: str``
+       or ``List[str]`` beside ``tags`` to ``Tag``).
+   * - ``_strip_surrogate_ids``
+     - Removes an attribute named ``id`` unless the request asks for an id:
+       the generators create the primary key, and the spec cannot mark an
+       identifier. Also applied to a single class and to ``add_class``
+       modifications.
+
+The reply (``_build_system_message``) explains each renamed association end:
+which class's link to which class, its new name, and the attribute or link it
+met (the first three; any others are counted).
+
 StateMachineHandler
 -------------------
 
@@ -522,6 +577,55 @@ Features
    blocks external stylesheets, webfonts and remote images. Every font stack
    in the design system is therefore system-fonts-only, and all imagery in
    the exemplars is a CSS gradient or inline SVG.
+
+What a Designed Screen Binds and Wires
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. important::
+
+   The page routes and the designed forms kept as authored rely on the
+   matching BESSER generator change (URL-safe page routes and the automatic
+   parent select in bound forms): release this behaviour together with that
+   BESSER change or after it.
+
+The LLM states intent (a ``bind`` spec, ``<a href>``, ``<button data-page>``,
+``<form data-class>``); the handler turns it into the encodings BESSER's GUI
+converter and web-app generator read. With a ClassDiagram:
+
+- **Tables.** The designed ``columns`` that name an attribute or a related
+  class are kept, in the designed order, when at least half of them do;
+  otherwise the table shows every attribute, inherited ones included. The
+  surrogate ``id`` is a column only when the design asks for it. Labels are
+  split into words (``dueDate`` → "Due date"), and a related record is shown
+  by its ``name`` / ``title`` / ``label``, else its first text attribute,
+  else its natural key.
+- **Metric cards.** A card over only some records carries a ``filter``: one
+  attribute compared with a fixed value (enumeration literal, boolean,
+  number, ISO date, text). It is checked against the class diagram and
+  written as the widget's ``filter`` attribute, in the grammar the generated
+  app parses. A number needs a ``.`` decimal point and no grouping and is
+  written out in full; a value the text grammar would split (``,``, ``;``,
+  ``&&``, ``and``, or ``in`` / ``contains`` before more text) is written in
+  the JSON form the app also reads
+  (``{"field": ..., "op": ..., "value": ...}``). A card whose filter cannot
+  be used is left out, and the reply names it.
+- **Forms.** A ``<form data-class>`` whose inputs cover the attributes a new
+  record needs is bound to the class and kept as authored; for a record that
+  must be linked to another one, the generated app adds the select of that
+  record.
+- **Links and routes.** A page's route is the one BESSER assigns: its stored
+  ``route_path`` when it is URL-safe and free, else ``/`` and the name in
+  lower case, each run of characters that are not letters, digits or ``_``
+  as one ``-``. A route already taken is numbered (``-2``) in page id order,
+  a name that leaves no route becomes ``/page-<position>``, and a page
+  without a name, or with a blank one, is named ``Page_<n>`` / ``Screen_<n>``
+  first. Renaming or removing a page points every link whose page changed
+  route at its new route.
+- **Static copy.** The design and modification prompts forbid model paths,
+  invented values and promised behaviour in authored text.
+- **Stylesheet.** The design's CSS keeps its source order (a ``@media`` rule
+  stays after the rule it refines), up to 160 rules; the rules past that are
+  not applied, and the log says how many.
 
 GUINoCodeDiagram Generation Modes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

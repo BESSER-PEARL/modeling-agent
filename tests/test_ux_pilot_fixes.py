@@ -214,7 +214,7 @@ def test_smart_gen_confirmation_has_clickable_key_link():
 # Context-aware confirmation: FIX/MODIFY vs FIRST generation
 # ---------------------------------------------------------------------------
 
-_CONFIRM_PROMPT = "generate anyway with my current model"
+_CONFIRM_PROMPT = "continue with the generation"
 
 _PROJECT_ID = "proj-todo-0001"
 _OTHER_PROJECT_ID = "proj-shop-0002"
@@ -548,3 +548,228 @@ def test_gui_choice_is_asked_even_when_the_request_mentions_a_dashboard():
     assert result is None, "no GUI may be generated before the user chose how"
     assert pending_dialogs.get(session, PENDING_GUI_CHOICE), "the choice must be pending"
     assert "How would you like me to create your screens" in captured[0]["message"]
+
+
+# ---------------------------------------------------------------------------
+# The confirmation says which key the run will use
+# ---------------------------------------------------------------------------
+
+_KEY_LINK = "[set up your own API key](wme:add-key)"
+_FREE_SHORT = f"It uses the free model by default — {_KEY_LINK} for higher quality."
+_FREE_LONG = (
+    f"BESSER includes a free model by default, so you can generate at no cost. "
+    f"For higher-quality results, you can {_KEY_LINK} and use a stronger provider or model."
+)
+_ABSENT = object()
+
+# Branch -> (button label, a sentence only that branch writes, free-tier text).
+_BRANCHES = {
+    "rebuild": ("Rebuild", "rebuild the app from scratch", _FREE_SHORT),
+    "fix": ("Fix it", "update your existing app", _FREE_SHORT),
+    "other": ("Continue", "no built-in generator", _FREE_LONG),
+    "default": ("Continue", "BESSER will generate your application", _FREE_LONG),
+}
+
+
+def _branch_session(branch, generation_key=_ABSENT, last_generation=_ABSENT):
+    import uuid
+
+    from routing.unified_classifier import UnifiedClassification
+
+    context = {"activeDiagramType": "ClassDiagram", "projectSnapshot": {"id": _PROJECT_ID, "diagrams": {}}}
+    if generation_key is not _ABSENT:
+        context["generationKey"] = generation_key
+    if last_generation is not _ABSENT:
+        context["lastGeneration"] = last_generation
+    if branch == "rebuild":
+        context["githubRepo"] = {"fullName": "acme/orders", "hasCode": True}
+    message = "fix the errors in the order form" if branch == "fix" else "build an order tracking app"
+    session = FakeSession({
+        "action": "user_message", "protocolVersion": "2.0", "message": message,
+        "context": context, "sessionId": uuid.uuid4().hex,
+    })
+    verdict = {"rebuild": {"model_disposition": "replace_existing"},
+               "other": {"target_kind": "other", "target_description": "desktop app"}}.get(branch)
+    if verdict:
+        session.set(UNIFIED_CLASSIFICATION, UnifiedClassification(
+            intent="generation_intent", generation_route="smart", reason="test", **verdict))
+    if branch == "fix":
+        _record_generated_app(session, _PROJECT_ID)
+    return session, message
+
+
+def _branch_confirmation(branch, generation_key=_ABSENT, **kwargs):
+    session, message = _branch_session(branch, generation_key, **kwargs)
+    payload = _build_smart_gen_confirmation(session, "Build the order app.", "anthropic", user_message=message)
+    label, marker, _ = _BRANCHES[branch]
+    assert payload["suggestedActions"][0]["label"] == label
+    assert marker in payload["message"]
+    return payload["message"]
+
+
+@pytest.mark.parametrize("branch", list(_BRANCHES))
+@pytest.mark.parametrize("key, sentence", [
+    ({"tier": "own", "provider": "openai", "model": "gpt-6-luna"}, "It will use your own OpenAI key (`gpt-6-luna`)."),
+    ({"tier": "own", "provider": "anthropic", "model": None}, "It will use your own Anthropic key."),
+    ({"tier": "own", "provider": "gateway", "model": "some-model"}, "It will use your own API key (`some-model`)."),
+    ({"tier": "own"}, "It will use your own API key."),
+])
+def test_own_key_is_named_instead_of_the_free_model(branch, key, sentence):
+    message = _branch_confirmation(branch, key)
+    assert sentence in message
+    assert "free model" not in message
+    assert _KEY_LINK not in message
+    assert "gateway" not in message.lower()
+
+
+@pytest.mark.parametrize("branch", list(_BRANCHES))
+def test_free_tier_keeps_the_free_model_text(branch):
+    message = _branch_confirmation(branch, {"tier": "free", "provider": None, "model": None})
+    assert _BRANCHES[branch][2] in message
+
+
+@pytest.mark.parametrize("branch", list(_BRANCHES))
+def test_no_key_and_no_free_tier_says_a_key_is_needed(branch):
+    message = _branch_confirmation(branch, {"tier": "none"})
+    assert f"You need an API key to generate: {_KEY_LINK} first." in message
+    assert "free model" not in message
+
+
+@pytest.mark.parametrize("branch", list(_BRANCHES))
+def test_older_editor_without_a_key_keeps_todays_text(branch):
+    assert _BRANCHES[branch][2] in _branch_confirmation(branch)
+
+
+@pytest.mark.parametrize("branch", list(_BRANCHES))
+@pytest.mark.parametrize("cfg, sentence", [
+    ({"provider": "mistral", "model": "mistral-large-latest"}, "It will use your own Mistral key (`mistral-large-latest`)."),
+    ({"provider": "openai", "model": None}, "It will use your own OpenAI key."),
+    # A gateway or local endpoint speaks OpenAI's protocol but is not OpenAI.
+    ({"provider": "openai", "model": None, "base_url": "https://llm.example.org/v1"}, "It will use your own API key."),
+])
+def test_older_editor_falls_back_to_the_key_armed_on_the_socket(branch, cfg, sentence):
+    from llm.byok_config import BYOKConfig, current_byok
+
+    token = current_byok.set(BYOKConfig(api_key="sk-test-secret", **cfg))
+    try:
+        message = _branch_confirmation(branch)
+    finally:
+        current_byok.reset(token)
+    assert sentence in message
+    assert "sk-test-secret" not in message
+    assert "free model" not in message
+
+
+def test_the_editors_field_wins_over_the_socket_key():
+    from llm.byok_config import BYOKConfig, current_byok
+
+    token = current_byok.set(BYOKConfig(provider="openai", api_key="sk-test"))
+    try:
+        message = _branch_confirmation("default", {"tier": "free"})
+    finally:
+        current_byok.reset(token)
+    assert _FREE_LONG in message
+
+
+@pytest.mark.parametrize("model", ["vendor/model-name", "name:tag", "_x_", "gpt-6-luna"])
+def test_a_model_id_is_shown_as_code(model):
+    message = _branch_confirmation("default", {"tier": "own", "provider": "openai", "model": model})
+    assert f"It will use your own OpenAI key (`{model}`)." in message
+
+
+@pytest.mark.parametrize("model", [
+    "https://llm.example.org/v1",
+    "gpt`x",
+    "gpt x",
+    "sk-proj-0123456789abcdef",
+    "SK_live_0123456789",
+    "x" * 81,
+])
+def test_a_model_value_that_is_not_a_model_id_is_not_shown(model):
+    message = _branch_confirmation("default", {"tier": "own", "provider": "openai", "model": model})
+    assert "It will use your own OpenAI key." in message
+    assert model not in message
+
+
+def test_every_supported_provider_has_a_public_name():
+    from llm.byok import PROVIDER_NAMES, SUPPORTED_PROVIDERS
+
+    assert set(PROVIDER_NAMES) == set(SUPPORTED_PROVIDERS)
+
+
+# ---------------------------------------------------------------------------
+# An expired previous result is said, not hidden behind "update your app"
+# ---------------------------------------------------------------------------
+
+_EXPIRED_NOTE = (
+    "Your previous result is no longer available, so I'll build the application again "
+    "from your model and your original request."
+)
+
+
+@pytest.mark.parametrize("branch", ["default", "other"])
+def test_expired_previous_result_is_announced(branch):
+    message = _branch_confirmation(branch, last_generation={"request": "An order app.", "expired": True})
+    assert message.startswith(_EXPIRED_NOTE + "\n\n")
+
+
+@pytest.mark.parametrize("last_generation", [_ABSENT, {"request": "An order app."}, {"expired": False}])
+@pytest.mark.parametrize("branch", list(_BRANCHES))
+def test_no_expiry_note_unless_the_editor_says_so(branch, last_generation):
+    assert _EXPIRED_NOTE not in _branch_confirmation(branch, last_generation=last_generation)
+
+
+def test_linked_repo_rebuild_needs_no_expiry_note():
+    # The repo still holds the code, whatever happened to the last download.
+    message = _branch_confirmation("rebuild", last_generation={"expired": True})
+    assert _EXPIRED_NOTE not in message
+
+
+def test_an_expired_result_is_not_offered_as_an_update():
+    session, message = _branch_session("fix", last_generation={"request": "An order app.", "expired": True})
+    payload = _build_smart_gen_confirmation(session, "Fix the order form.", "anthropic", user_message=message)
+    assert payload["suggestedActions"][0]["label"] == "Continue"
+    assert "update your existing app" not in payload["message"]
+    assert payload["message"].startswith(_EXPIRED_NOTE)
+
+
+def test_a_repo_with_the_app_is_still_updated_after_the_download_expired():
+    import uuid
+
+    session = FakeSession({
+        "action": "user_message", "protocolVersion": "2.0", "message": "add a search bar",
+        "sessionId": uuid.uuid4().hex,
+        "context": {
+            "activeDiagramType": "ClassDiagram", "projectSnapshot": {"id": _PROJECT_ID, "diagrams": {}},
+            "githubRepo": {"fullName": "acme/orders", "hasCode": True},
+            "lastGeneration": {"expired": True},
+        },
+    })
+    payload = _build_smart_gen_confirmation(session, "Add a search bar.", "anthropic", user_message="add a search bar")
+    assert payload["suggestedActions"][0]["label"] == "Fix it"
+    assert _EXPIRED_NOTE not in payload["message"]
+
+
+def test_regenerating_after_expiry_rebuilds_from_the_last_runs_request():
+    from common.pending_dialogs import PENDING_SMART_GEN_ORIGINAL_REQUEST
+
+    follow_up = "Can you regenerate the application's frontend and the backend?"
+    session, _ = _branch_session("default", last_generation={"request": "An order app with customers.", "expired": True})
+    _record_generated_app(session, _PROJECT_ID, minutes_ago=40)
+    payload = _build_smart_gen_confirmation(session, "Regenerate the app.", "anthropic", user_message=follow_up)
+
+    assert payload["suggestedActions"][0]["label"] == "Continue"
+    assert payload["message"].startswith(_EXPIRED_NOTE)
+    assert pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) == "An order app with customers."
+
+
+def test_expiry_note_does_not_promise_a_request_that_will_not_be_sent():
+    from common.pending_dialogs import PENDING_SMART_GEN_ORIGINAL_REQUEST
+
+    session, _ = _branch_session("default", last_generation={"expired": True})
+    payload = _build_smart_gen_confirmation(session, "Build the app.", "anthropic", user_message="generate the app")
+
+    assert pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) == ""
+    assert payload["message"].startswith(
+        "Your previous result is no longer available, so I'll build the application again from your model.\n\n")
+    assert "original request" not in payload["message"]

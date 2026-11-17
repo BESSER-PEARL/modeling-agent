@@ -33,6 +33,11 @@ REFINE_MODEL_PROMPT = (
     "You can now review the model on the canvas or tell me what to refine."
 )
 
+# The same closing line for a reply that built screens (the GUI diagram).
+REFINE_SCREENS_PROMPT = (
+    "You can now review the screens on the canvas or tell me what to refine."
+)
+
 
 DECLINE_ACK = (
     "No problem — I'm here whenever you'd like to build or change something. "

@@ -43,6 +43,14 @@ class WorkspaceContext:
     # The project records traces (``context.traceabilityEnabled``). Recording is
     # opt-in; an editor that does not send the field records nothing.
     traceability_enabled: bool = False
+    # What the editor's next Spec-Driven run would use: ``tier`` ("own" | "free"
+    # | "none"), ``provider`` and ``model`` (None when not given). Never the key.
+    # None when the editor does not say (older editors).
+    generation_key: Optional[Dict[str, Any]] = None
+    # The editor's last Spec-Driven run of this project: ``request`` (the text
+    # it was started with, or None) and ``expired`` (its download lifetime has
+    # passed). None when the editor does not say.
+    last_generation: Optional[Dict[str, Any]] = None
 
     def get_active_index(self, diagram_type: str) -> int:
         """Return the active tab index for the given diagram type (default 0)."""
