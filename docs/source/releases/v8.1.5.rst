@@ -1,0 +1,14 @@
+Version 8.1.5
+=============
+
+This patch release goes with BESSER v8.10.1, after v8.1.4.
+
+Fixes
+-----
+
+* **A mistyped answer no longer becomes the app's description.** A request is
+  remembered as the application's description only when its model is built.
+  An answer that builds nothing, such as a mistyped reply to the
+  replace-or-keep question, was remembered instead and became the whole
+  request of the next Spec-Driven Agent run
+  (`#82 <https://github.com/BESSER-PEARL/modeling-agent/pull/82>`_).
