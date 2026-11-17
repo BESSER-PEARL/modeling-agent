@@ -18,12 +18,12 @@ logger = logging.getLogger(__name__)
 # Pools are ordered by relevance; the engine picks from these based on
 # context and available diagrams.
 
-# Modeling follow-ups only (BESSER-PEARL/BESSER#747). The assistant lives in
-# the modeling editor: after it builds or edits a diagram, the next steps it
-# offers are about the model (refine, review, explain, extend) — never a
-# "Generate ..." button. Generation stays one sentence away ("generate the
-# application", "generate django"), and the editor's own Generate menu is
-# right there; the assistant just does not push it.
+# Modeling follow-ups (BESSER-PEARL/BESSER#747): after it builds or edits a
+# diagram, the next steps the small widget offers are about the model (refine,
+# review, explain, extend), never a "Generate ..." button; generation stays one
+# sentence away and the editor's own Generate menu is right there. The agentic
+# interface (the drawer) adds "Generate the code" first after a complete class
+# diagram (get_suggested_actions).
 #
 # - "Review the model" sends the ``wme:review-spec`` sentinel, which the
 #   frontend intercepts to CLOSE the assistant drawer so the user sees the
@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 # - "Explain the specs" is relayed like any chip; its wording routes to
 #   describe_model, which streams a plain-language overview of the model.
 _REVIEW_MODEL = ("Review the model", "wme:review-spec")
+# The agentic interface (the assistant drawer, clientMode "workspace") offers
+# generation first after a complete class diagram; #747 asked for the small
+# widget only, which keeps the modeling follow-ups above.
+_GENERATE_CODE = ("Generate the code", "generate the application")
+_AGENTIC_CLIENT_MODE = "workspace"
 _EXPLAIN_SPECS = (
     "Explain the specs",
     "Give me a plain-language overview of my current model — the "
@@ -215,6 +220,7 @@ def get_suggested_actions(
     available_diagrams: Optional[List[str]] = None,
     model_summary: Optional[Dict[str, Any]] = None,
     generator_type: Optional[str] = None,
+    client_mode: Optional[str] = None,
 ) -> List[Dict[str, str]]:
     """Return a list of suggested next actions.
 
@@ -235,7 +241,25 @@ def get_suggested_actions(
         available_diagrams: List of diagram type strings in the project.
         model_summary: Optional dict with model metadata for context-aware suggestions.
         generator_type: If the last action was code generation, the generator used.
+        client_mode: The surface that sent the request: ``"workspace"`` (the drawer,
+            the agentic interface) puts "Generate the code" first after a complete
+            class diagram; ``"widget"`` or unknown keeps modeling follow-ups only.
     """
+    actions = _modeling_suggestions(diagram_type, operation_mode, available_diagrams, model_summary, generator_type)
+    if (client_mode == _AGENTIC_CLIENT_MODE and diagram_type == "ClassDiagram"
+            and operation_mode == "complete_system"):
+        return _build_actions([_GENERATE_CODE] + [(a["label"], a["prompt"]) for a in actions])
+    return actions
+
+
+def _modeling_suggestions(
+    diagram_type: str,
+    operation_mode: str,
+    available_diagrams: Optional[List[str]],
+    model_summary: Optional[Dict[str, Any]],
+    generator_type: Optional[str],
+) -> List[Dict[str, str]]:
+    """The follow-ups every surface offers: see :func:`get_suggested_actions`."""
     if not diagram_type and not generator_type:
         return []
 

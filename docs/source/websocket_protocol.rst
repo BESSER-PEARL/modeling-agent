@@ -159,7 +159,9 @@ Field Reference
      - ``"2.0"``
    * - ``clientMode``
      - No
-     - ``"workspace"`` (default) or ``"chat"``
+     - Which surface sent the message: ``"workspace"`` (default; the drawer, the
+       agentic interface) or ``"widget"`` (the small bubble). After a complete
+       class diagram, only ``"workspace"`` offers *Generate the code* first.
    * - ``message``
      - Yes
      - The user's natural-language message (max 12,000 characters)

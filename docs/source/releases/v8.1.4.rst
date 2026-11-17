@@ -1,0 +1,17 @@
+Version 8.1.4
+=============
+
+This patch release goes with BESSER v8.10.1. After a class diagram, the
+agentic interface offers to generate the code again.
+
+Changes
+-------
+
+* **Generate the code, first, in the agentic interface.** After a complete
+  class diagram, a message from the assistant drawer (``clientMode``
+  ``"workspace"``, the agentic interface) gets *Generate the code* as its first
+  suggestion, followed by the modeling follow-ups. The small widget
+  (``"widget"``), and a request that does not say which surface sent it, keep
+  the modeling follow-ups only, as BESSER-PEARL/BESSER#747 asked for the widget
+  (`#79 <https://github.com/BESSER-PEARL/modeling-agent/pull/79>`_). The editor
+  sends the surface from BESSER v8.10.1 on.

@@ -1043,13 +1043,14 @@ def execute_model_operation(
         operation_mode=operation_mode,
         available_diagrams=available_diagrams,
         model_summary=model_summary,
+        client_mode=request.client_mode,
     )
     if suggestions:
         result["suggestedActions"] = suggestions
 
-    # Closing line and quick actions. The assistant lives in the modeling
-    # editor, so a modeling reply offers modeling next steps only — never
-    # "continue with generating your application?" nor a "Generate ..." button
+    # Closing line and quick actions. A modeling reply never closes with
+    # "continue with generating your application?", and only the drawer's
+    # suggestions above offer a "Generate ..." button
     # (BESSER-PEARL/BESSER#747). The one exception is a request that itself
     # asked to generate ("design X and generate Y"): planning paused that
     # generation (PLAN_GENERATION_CONFIRM_FLAG) and this reply is where the
