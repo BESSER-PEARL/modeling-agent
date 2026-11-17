@@ -2,7 +2,7 @@
   "_source": "Curated descriptions distilled from the BESSER-PEARL/User-Modeling-Language metamodel component READMEs (PersonalInformation, Accessibility, Competence, Culture) at https://github.com/BESSER-PEARL/User-Modeling-Language/tree/main/metamodel. The bundled user_metamodel.json carries no descriptive text of its own, so these are used to ground natural-language explanations of the user-profile elements. Only the classes present in the bundled short metamodel are covered.",
   "overview": "A User Profile describes a *target user* (a group of users, not one individual) as a set of class-instance boxes drawn from a fixed metamodel. Every box attaches directly to the single root User element on the canvas. Each attribute row is a matching CRITERION with a comparison operator (e.g. \"age >= 18\", \"level == B2\"), not a fixed value.",
   "classes": {
-    "User": "The root element of a user profile. It has a name attribute for labelling the profile; every other element attaches directly to it on the canvas (Personal_Information, Culture, Language, Skill, Education, Disability).",
+    "User": "The root element of a user profile. It has a name attribute for labelling the profile; every other element attaches directly to it on the canvas (Personal_Information, Culture, Language, Skill, Education, Disability, Goal).",
     "Personal_Information": "Demographic identity data — the kind of information a user would enter on a profile page of a social-media platform or similar to describe who they are (name, age, nationality, address, gender). Attaches directly to User (at most one per profile).",
     "Culture": "The user's cultural background — social behaviour, institutions and norms, typically tied to a region. Its dimensions follow Hofstede's cultural model, and it also records the user's religion. Attaches directly to User (at most one per profile).",
     "Competence": "An internal grouping element used in the exported model to bundle Language, Skill and Education. It is hidden from the canvas — Language, Skill and Education boxes appear directly under User when editing.",
@@ -10,7 +10,8 @@
     "Language": "A language the user speaks, recorded as an ISO 639-3 code with proficiency on the CEFR scale. Attaches directly to User on the canvas; a profile may have several Language boxes.",
     "Skill": "The user's proficiency in performing specific tasks or actions. Attaches directly to User on the canvas; a profile may have several Skill boxes.",
     "Education": "A degree or diploma the user holds, together with its field of study and awarding institution. Attaches directly to User on the canvas; a profile may have several Education boxes.",
-    "Disability": "A concrete disability the user might have and the aspect(s) of life or interaction it affects (e.g. Sight, Hearing, Mobility). Attaches directly to User on the canvas; a profile may have several Disability boxes."
+    "Disability": "A concrete disability the user might have and the aspect(s) of life or interaction it affects (e.g. Sight, Hearing, Mobility). Attaches directly to User on the canvas; a profile may have several Disability boxes.",
+    "Goal": "Something the user wants to achieve (e.g. \"book a ticket quickly\", \"learn about the fortifications\"). Described by a short free-text description. Attaches directly to User on the canvas; a profile may have several Goal boxes."
   },
   "attributes": {
     "User.name": "A human-readable label for this user profile (e.g. the persona name). Optional — used to identify the profile in the editor.",
@@ -31,6 +32,8 @@
     "Education.providedBy": "The institution that awarded the degree.",
     "Disability.name": "The name of the disability.",
     "Disability.description": "A short description of the disability.",
-    "Disability.affects": "The aspect of life or interaction the disability affects (e.g. Sight, Hearing, Mobility, Cognitive)."
-  }
+    "Disability.affects": "The aspect of life or interaction the disability affects (e.g. Sight, Hearing, Mobility, Cognitive).",
+    "Goal.description": "What the user wants to achieve, in a short sentence."
+  },
+  "_hidden_attributes_note": "The editor hides Personal_Information.firstName/lastName/address, Education.providedBy/degreeName and Goal.name/deadline. They exist in the metamodel but are not modeled by users, so they must not be asked for or explained."
 }

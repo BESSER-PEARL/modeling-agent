@@ -22,6 +22,24 @@ import os
 from collections import deque
 from typing import Any, Dict, List, Optional, Tuple
 
+# Attributes the editor hides from the user-profile modeling environment (mirror of
+# HIDDEN_USER_MODEL_ATTRIBUTES in the web editor). They stay in the metamodel but
+# must not be asked for, generated or explained. Keyed by "Class.attribute".
+HIDDEN_USER_MODEL_ATTRIBUTES = frozenset({
+    "Personal_Information.firstName",
+    "Personal_Information.lastName",
+    "Personal_Information.address",
+    "Education.providedBy",
+    "Education.degreeName",
+    "Goal.name",
+    "Goal.deadline",
+})
+
+
+def is_hidden_attribute(class_name: Optional[str], attr_name: Optional[str]) -> bool:
+    """True when the editor hides this attribute from the modeling environment."""
+    return f"{class_name}.{attr_name}" in HIDDEN_USER_MODEL_ATTRIBUTES
+
 logger = logging.getLogger(__name__)
 
 _METAMODEL_PATH = os.path.join(
@@ -150,6 +168,8 @@ def _build_catalog(
             for cid in el.get("attributes", []) or []:
                 child = elements.get(cid)
                 if isinstance(child, dict) and child.get("type") == "ClassAttribute":
+                    if is_hidden_attribute(name, str(child.get("name", "")).strip()):
+                        continue
                     attrs.append(
                         (str(child.get("name", "")).strip(), str(child.get("attributeType", "")).strip())
                     )

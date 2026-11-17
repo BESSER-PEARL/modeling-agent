@@ -32,7 +32,7 @@ from schemas import (
     UserProfileModificationResponse,
 )
 from utilities.model_context import detailed_model_summary
-from utilities.user_metamodel import load_user_metamodel
+from utilities.user_metamodel import is_hidden_attribute, load_user_metamodel
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +158,7 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
                     continue
                 raw_name = str(attr.get("name", "")).replace("+ ", "").replace("- ", "").replace("# ", "")
                 attr_name = raw_name.split(":")[0].strip()
-                if not attr_name:
+                if not attr_name or is_hidden_attribute(class_name, attr_name):
                     continue
                 class_attrs.append(
                     {
@@ -233,6 +233,8 @@ class UserProfileDiagramHandler(BaseDiagramHandler):
                     continue
                 attr = elements[attr_id]
                 attr_name = str(attr.get("name", "")).replace("+ ", "").replace("- ", "").replace("# ", "").split(":")[0].strip()
+                if is_hidden_attribute(class_name, attr_name):
+                    continue
                 attr_type = attr.get("attributeType", "str")
                 type_info = f", type: {attr_type}" if attr_type else ""
                 if attr_type in enum_literals:
@@ -760,7 +762,8 @@ IMPORTANT RULES:
    - religion -> Culture
    - a disability (name, description, affects) -> Disability
    - degree / field of study -> Education
-2. Do NOT output a "User" box, Competence boxes, Accessibility boxes, or any links — the root User element and all connections are added automatically. Just emit the leaf boxes that carry criteria (Personal_Information, Culture, Language, Skill, Education, Disability). Disability, Skill, Language, and Education attach directly under User on the canvas.
+   - something the user wants to achieve (description) -> Goal
+2. Do NOT output a "User" box, Competence boxes, Accessibility boxes, or any links — the root User element and all connections are added automatically. Just emit the leaf boxes that carry criteria (Personal_Information, Culture, Language, Skill, Education, Disability, Goal). Disability, Skill, Language, Education and Goal attach directly under User on the canvas.
 3. A profile may contain several boxes of the same class (e.g. multiple Language boxes for multiple languages).
 4. FILL IN EVERY attribute of each class you include — don't just set the one the user named. Infer plausible, coherent values for the rest from the persona. Examples:
    - "speaks Portuguese" (native/only language) -> Language: iso693_3 == "por", level == "C2"

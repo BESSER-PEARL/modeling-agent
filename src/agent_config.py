@@ -31,7 +31,7 @@ LLM_MODEL_DEFAULT = "gpt-6-luna"
 LLM_MODEL_VISION = "gpt-6-luna"
 
 # ── LLM parameters ───────────────────────────────────────────────────────
-LLM_TEMPERATURE = 0.2
+LLM_TEMPERATURE = 1
 LLM_TEXT_TEMPERATURE = 0.4
 LLM_MAX_TOKENS_LARGE = 8192
 LLM_MAX_TOKENS_SMALL = 2048
