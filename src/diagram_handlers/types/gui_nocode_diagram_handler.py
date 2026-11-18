@@ -3229,9 +3229,11 @@ def _class_host_pages(
     page_index: List[Dict[str, str]],
     class_metadata: Optional[List[Dict[str, Any]]],
 ) -> Dict[str, Dict[str, str]]:
-    """Class name -> the first page with a table of it (where its records are
-    created and edited), so "Add book" can navigate there."""
+    """Class name -> the first page with an editable table of it (where its
+    records are created and edited), else with any table of it, so "Add book"
+    can navigate there."""
     hosts: Dict[str, Dict[str, str]] = {}
+    read_only: Dict[str, Dict[str, str]] = {}
     for page, entry in zip(pages_spec, page_index):
         for section in page.get("sections") or []:
             bind = section.get("bind") if isinstance(section, dict) else None
@@ -3239,8 +3241,8 @@ def _class_host_pages(
                 continue
             cls = _resolve_class_binding({"className": bind.get("className")}, class_metadata)
             if cls and bind.get("className"):
-                hosts.setdefault(cls["name"], entry)
-    return hosts
+                (read_only if bind.get("editable") is False else hosts).setdefault(cls["name"], entry)
+    return {**read_only, **hosts}
 
 
 def _wire_model_actions(
@@ -3280,12 +3282,17 @@ def _wire_model_actions(
             return
         attrs = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
         if node.get("type") == "table" and attrs.get("data-source") in classes_by_id:
-            class_pages.setdefault(classes_by_id[attrs["data-source"]]["name"], entry)
+            pages = read_only_pages if attrs.get("action-buttons") == "false" else class_pages
+            pages.setdefault(classes_by_id[attrs["data-source"]]["name"], entry)
         for child in node.get("components") or []:
             _find_tables(child, entry)
 
+    read_only_pages: Dict[str, Dict[str, str]] = {}
     for wrapper, entry in zip(wrappers, page_index):
         _find_tables(wrapper, entry)
+    # A read-only table's page hosts its class only when no table of it is editable
+    for name, entry in read_only_pages.items():
+        class_pages.setdefault(name, entry)
     if new_ids and len(new_ids) < len(page_index):
         _add_new_pages_to_navs(wrappers, page_index, new_ids)
     for wrapper, entry in zip(wrappers, page_index):

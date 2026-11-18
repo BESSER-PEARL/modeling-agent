@@ -523,3 +523,25 @@ def _nodes_of(node):
     for child in node.get("components") or []:
         out.extend(_nodes_of(child))
     return out
+
+
+def test_a_class_is_managed_on_its_editable_table_page_not_a_read_only_one():
+    tables = [
+        {"name": "Archive", "sections": [
+            {"bind": {"kind": "table", "className": "Book", "title": "Past books", "editable": False}}]},
+        {"name": "Books", "sections": [
+            {"bind": {"kind": "table", "className": "Book", "title": "All books"}}]},
+    ]
+    home = {"html": "<section class='s'><h2>Home</h2>"
+                    "<button data-method='reserve' data-class='Book'>Reserve a book</button></section>"}
+    # The method runs on a selected row, so the button sends the user to the
+    # page where Book records are managed: when generated, and when the page
+    # is added by an edit.
+    generated = _generate(tables + [{"name": "Home", "sections": [home]}])
+    modified = _modify(_generate(tables), [
+        {"operation": "add_page", "pageName": "Home", "newPageName": "Home", "section": home},
+    ])
+    for model in (generated, modified):
+        books_id = next(p["id"] for p in model["pages"] if p["name"] == "Books")
+        btn = _by_text(_nodes(model, "Home"), "Reserve a book")
+        assert btn["attributes"]["data-target-screen"] == books_id
