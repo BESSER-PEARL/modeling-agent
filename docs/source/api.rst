@@ -27,9 +27,6 @@ Application (``src/app/``)
   - ``init_stt(agent)`` — OpenAI ``whisper-1`` speech-to-text
   - ``init_rag(agent)`` — Builds ChromaDB-backed RAG (returns ``None`` on failure)
   - ``init_diagram_factory(gpt)`` — Creates ``DiagramHandlerFactory``
-  - ``init_intent_classifier_config()`` — Returns
-    ``SimpleIntentClassifierConfiguration(framework='tensorflow')``, the
-    local free classifier used as BAF's default
 
 ``src/app/state_bodies.py``
   All state body functions and transition wiring:

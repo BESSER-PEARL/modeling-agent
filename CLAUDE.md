@@ -101,18 +101,19 @@ WebSocket message
   text rule goes there, with a row in `tests/test_routing_guards.py`, never inline in a state body. Answers to a
   pending question (replace/keep, GUI choice, generator confirmations) are parsed by the pending-flow handlers
   (`app/confirmation.py`, `codegen/generation_handler.py`), not by these guards.
-- **Intent `description=` strings in `modeling_agent.py` stay one-liners.** They only feed BAF's local fallback
-  classifier and do not drive routing.
-- **BAF's own classifier is a local, non-LLM fallback** (`SimpleIntentClassifierConfiguration(framework='tensorflow')`
-  in `agent_setup.py`, trained at startup on each intent's `training_sentences`). It routes only when the unified
-  call failed (`fallback_intent`) and for voice / plain-text events (a voice transcript is a text event, which the
-  unified hook never sees: `when_intent_matched` is its only route). `training_sentences` are therefore
-  **mandatory** on every intent — an intent without them breaks that classifier at startup.
-- `config.yaml`'s `nlp.intent_threshold` (0.55) gates only that local classifier, not the unified one.
+- **Intent `description=` strings in `modeling_agent.py` stay one-liners.** They document the intents and do not
+  drive routing.
+- **BAF's own intent classifier is not used.** No state has an intent (no `when_intent_matched` anywhere), so BAF
+  builds and trains no classifier at startup. Every message is routed by the unified classifier: a typed message
+  (a JSON event) and a spoken one (BAF transcribes it to a plain-text event; `parse_assistant_request` rebuilds the
+  request from the `_voice_context` the editor sent) both match `ReceiveMessageEvent`, which is what the transitions
+  listen for. Never add `when_intent_matched` to a state: it would make BAF train a classifier for that state.
+  If the unified call fails (`fallback_intent`), the message goes to the state's fallback. `training_sentences` on the
+  intents are no longer used by routing, and `config.yaml`'s `nlp.intent_threshold` has no effect.
 - **Transition priority** (`state_bodies.add_unified_transitions`): 0 `_ensure_unified_classification` (side
   effect, always False) → 1 `json_intent_matches` (cached verdict) → 2 `route_to_generation` (`frontend_event` and
   pending generator flows only; `should_route_to_generation()` makes no LLM call and runs no text heuristics) →
-  3 `when_intent_matched` (voice / plain text) → 4 `json_no_intent_matched` (state fallback).
+  3 `json_no_intent_matched` (state fallback). All four listen for `ReceiveMessageEvent` (typed and spoken).
 - **A pending flow suppresses intent matching by design**: while the assistant awaits an answer,
   `json_intent_matches()` returns False for every intent unless the classifier set
   `pending_flow_action="new_request"`. A message that looks "stuck" is usually this, not a routing bug.

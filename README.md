@@ -10,7 +10,7 @@ that the editor applies to the canvas or hands to a generator.
 
 - Creates and modifies models from natural language.
 - Routes every message with **one** LLM classification call (`src/routing/unified_classifier.py`),
-  cached per message; a local, free TensorFlow `SimpleIntentClassifier` is the fallback.
+  cached per message, for typed and spoken messages alike (BAF's own intent classifier is not used).
 - Supports multi-step orchestration (for example: model first, then generate code).
 - Triggers BESSER's deterministic generators, or hands off to the LLM-authored
   **Spec-Driven Agent** for stacks BESSER has no built-in generator for.
