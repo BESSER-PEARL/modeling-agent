@@ -192,3 +192,71 @@ class TestGenerateModificationIntegration:
         assert "couldn't find a **isbn** field" in message
         assert "Applied 2 changes" not in message
         assert "isbn" not in message.split("\n\n")[0]
+
+
+def _library_with_abstract_publication():
+    return {
+        "elements": {
+            "c-pub": {"id": "c-pub", "name": "Publication", "type": "AbstractClass", "owner": None},
+            "a-title": {"id": "a-title", "name": "title", "type": "ClassAttribute", "owner": "c-pub"},
+            "c-author": {"id": "c-author", "name": "Author", "type": "Class", "owner": None},
+        },
+        "relationships": {
+            "r1": {"id": "r1", "type": "ClassBidirectional",
+                   "source": {"element": "c-pub"}, "target": {"element": "c-author"}},
+        },
+    }
+
+
+def _modify(handler, ops, model, request="update the diagram"):
+    from schemas import ClassModificationResponse
+    parsed = ClassModificationResponse.model_validate({"modifications": ops})
+    handler.predict_structured = lambda *a, **k: parsed
+    return handler.generate_modification(request, model)
+
+
+class TestExistingClassReferences:
+    def test_add_class_of_an_existing_class_adds_only_its_new_members(self, handler):
+        result = _modify(handler, [
+            {"action": "add_class", "target": {},
+             "changes": {"className": "Publication", "attributes": [
+                 {"name": "title", "type": "str"}, {"name": "isbn", "type": "str"}]}},
+            {"action": "add_relationship",
+             "target": {"sourceClass": "Author", "targetClass": "Publication"},
+             "changes": {"relationshipType": "Association", "name": "reviewed"}},
+        ], _library_with_abstract_publication())
+
+        mods = result["modifications"]
+        assert [m["action"] for m in mods][:2] == ["add_attribute", "add_relationship"]
+        assert mods[0]["target"] == {"className": "Publication"}
+        assert mods[0]["changes"]["name"] == "isbn"
+        assert "Added the **Publication** class" not in result["message"]
+        assert "isbn" in result["message"]
+
+    def test_add_class_of_an_existing_class_with_nothing_new_changes_nothing(self, handler):
+        result = _modify(handler, [
+            {"action": "add_class", "target": {},
+             "changes": {"className": "publication", "attributes": [{"name": "title"}]}},
+        ], _library_with_abstract_publication())
+
+        assert result["action"] == "assistant_message"
+        assert "**Publication** is already in the diagram" in result["message"]
+
+    def test_add_class_after_removing_that_class_is_kept(self, handler):
+        result = _modify(handler, [
+            {"action": "remove_element", "target": {"className": "Author"}},
+            {"action": "add_class", "target": {},
+             "changes": {"className": "Author", "attributes": [{"name": "name"}]}},
+        ], _library_with_abstract_publication())
+
+        assert [m["action"] for m in result["modifications"]] == ["remove_element", "add_class"]
+
+    def test_a_class_named_by_its_element_id_is_resolved(self, handler):
+        result = _modify(handler, [
+            {"action": "remove_element",
+             "target": {"sourceClass": "c-pub", "targetClass": "Author"}},
+        ], _library_with_abstract_publication(), request="revert")
+
+        assert result["action"] == "modify_model"
+        assert result["modification"]["target"]["sourceClass"] == "Publication"
+        assert "c-pub" not in result["message"]

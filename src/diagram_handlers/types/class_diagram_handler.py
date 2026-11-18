@@ -3850,6 +3850,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # wrote: the ones a refactoring synthesises are already oriented
         # and the ones a merge copies from the canvas are the user's.
         self._fix_reversed_composition_mods(spec)
+        self._name_classes_given_by_id(spec, current_model)
+        spec = self._add_members_to_existing_classes(spec, current_model)
+        if spec.get("action") == Action.ASSISTANT_MESSAGE:
+            return spec
         if self._is_refactoring_action(spec):
             logger.info("[ClassDiagram] Detected refactoring action, expanding into primitives")
             spec = self._expand_refactoring_actions(spec, current_model)
@@ -3857,6 +3861,105 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # Runs after the expansion, so ops synthesised by a
         # refactoring are canonicalised too.
         self._normalise_modification_types(spec)
+        return spec
+
+    _CLASS_LIKE_TYPES = frozenset({"Class", "AbstractClass", "Interface", "Enumeration"})
+
+    def _existing_classes(self, current_model: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """``{id: {"name", "type", "members"}}`` of the classes of *current_model*;
+        *members* holds the lowercased attribute, literal and method names."""
+        elements = current_model.get("elements") if isinstance(current_model, dict) else None
+        if not isinstance(elements, dict):
+            return {}
+        classes = {
+            eid: {"name": el["name"].strip(), "type": el["type"], "members": set()}
+            for eid, el in elements.items()
+            if isinstance(el, dict) and el.get("type") in self._CLASS_LIKE_TYPES
+            and isinstance(el.get("name"), str) and el["name"].strip()
+        }
+        for el in elements.values():
+            if (isinstance(el, dict) and el.get("owner") in classes
+                    and el.get("type") in ("ClassAttribute", "ClassMethod")):
+                classes[el["owner"]]["members"].add(self._clean_member_name(el.get("name")).lower())
+        return classes
+
+    def _name_classes_given_by_id(
+        self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]],
+    ) -> None:
+        """Replace a class element id in a target's ``className`` /
+        ``sourceClass`` / ``targetClass`` by the class name: the editor finds
+        classes by name. Mutates *spec* in place."""
+        names = {eid: c["name"] for eid, c in self._existing_classes(current_model).items()}
+        mods = spec.get("modifications")
+        for mod in mods if isinstance(mods, list) else [spec.get("modification")]:
+            target = mod.get("target") if isinstance(mod, dict) else None
+            if not isinstance(target, dict):
+                continue
+            for key in ("className", "sourceClass", "targetClass"):
+                value = target.get(key)
+                if isinstance(value, str) and value.strip() in names:
+                    target[key] = names[value.strip()]
+
+    def _add_members_to_existing_classes(
+        self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Turn an ``add_class`` of a class the diagram already has into
+        ``add_attribute`` / ``add_method`` ops for the members it lacks.
+
+        The editor skips such an ``add_class`` with all its members. Left as is
+        for an enumeration, and when the batch removes or renames that class.
+        Returns *spec*, or an assistant message when nothing is left to apply."""
+        mods = spec.get("modifications")
+        mods = mods if isinstance(mods, list) else [spec.get("modification")]
+        mods = [m for m in mods if isinstance(m, dict)]
+        existing = {c["name"].lower(): c for c in self._existing_classes(current_model).values()
+                    if c["type"] != "Enumeration"}
+        replaced = {
+            str((m.get("target") or {}).get("className") or "").strip().lower()
+            for m in mods
+            if (m.get("action") == "remove_element"
+                and not any((m.get("target") or {}).get(k) for k in (
+                    "attributeName", "attributeId", "methodName", "methodId",
+                    "relationshipName", "relationshipId", "sourceClass", "targetClass")))
+            or (m.get("action") == "modify_class" and (m.get("changes") or {}).get("name"))
+        }
+        kept: List[Dict[str, Any]] = []
+        present: List[str] = []
+        converted = False
+        for mod in mods:
+            changes = mod.get("changes") if isinstance(mod.get("changes"), dict) else {}
+            name = str(changes.get("className") or "").strip()
+            cls = existing.get(name.lower())
+            if mod.get("action") != "add_class" or cls is None or name.lower() in replaced:
+                kept.append(mod)
+                continue
+            added = [
+                {"action": action, "target": {"className": cls["name"]}, "changes": member}
+                for key, action in (("attributes", "add_attribute"), ("methods", "add_method"))
+                for member in changes.get(key) or []
+                if isinstance(member, dict) and isinstance(member.get("name"), str)
+                and self._clean_member_name(member["name"]).lower() not in cls["members"]
+            ]
+            logger.info(
+                "[ClassDiagram] add_class '%s': the class exists; %d member op(s) instead",
+                cls["name"], len(added),
+            )
+            kept += added
+            converted = True
+            if not added:
+                present.append(cls["name"])
+        if not converted:
+            return spec
+        if not kept:
+            listed = " and ".join(f"**{n}**" for n in present)
+            return assistant_message(
+                f"{listed} {'is' if len(present) == 1 else 'are'} already in the diagram "
+                "with those members, so nothing changed.")
+        if isinstance(spec.get("modifications"), list) or len(kept) > 1:
+            spec.pop("modification", None)
+            spec["modifications"] = kept
+        else:
+            spec["modification"] = kept[0]
         return spec
 
     def _expand_refactoring_actions(

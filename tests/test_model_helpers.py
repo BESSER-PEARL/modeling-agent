@@ -298,6 +298,30 @@ class TestDetailedModelSummaryClassDiagram:
         result = detailed_model_summary(CLASS_MODEL_FULL, "ClassDiagram")
         assert result.startswith("Current class diagram:")
 
+    def test_abstract_classes_interfaces_and_enumerations_are_named(self):
+        model = {
+            "elements": {
+                "c-pub": {"type": "AbstractClass", "name": "Publication"},
+                "c-book": {"type": "Class", "name": "Book"},
+                "c-lend": {"type": "Interface", "name": "Lendable"},
+                "c-genre": {"type": "Enumeration", "name": "Genre"},
+                "a-title": {"type": "ClassAttribute", "name": "title: str", "owner": "c-pub"},
+            },
+            "relationships": {
+                "r1": {"type": "ClassInheritance", "source": {"element": "c-book"},
+                       "target": {"element": "c-pub"}},
+                "r2": {"type": "ClassBidirectional", "source": {"element": "c-lend"},
+                       "target": {"element": "c-genre"}},
+            },
+        }
+        result = detailed_model_summary(model, "ClassDiagram")
+        assert "Classes (3): Publication, Book, Lendable" in result
+        assert "Publication | attributes: title: str" in result
+        assert "Enumerations (1): Genre" in result
+        assert "Book extends Publication" in result
+        assert "Lendable -> Genre" in result
+        assert "c-" not in result
+
     def test_empty_elements(self):
         # Reconciled to feature behavior (commit 2cfcee9): the explicit
         # "Classes (N):" count header is now always emitted (even for N=0)
