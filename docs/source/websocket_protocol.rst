@@ -225,7 +225,10 @@ Field Reference
        the application again. When
        ``expired`` is true (and no linked repo holds the app), the run
        confirmation says the previous result is no longer available and the
-       application will be built again, instead of offering to update it.
+       application will be built again, instead of offering to update it, and
+       the run's instructions ask for the whole application to be built from
+       the model and the request rather than for the earlier result to be
+       continued.
    * - ``attachments``
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)

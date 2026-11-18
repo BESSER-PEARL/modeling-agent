@@ -735,6 +735,50 @@ def test_the_run_gets_the_original_request_not_the_follow_up(monkeypatch):
     assert "regenerate with fixes" not in run["instructions"]
 
 
+_CONTINUE_SUMMARY = "Continue development of the existing task board, fixing the issues left by the previous run."
+
+
+class _ContinueProvider(_FollowUpProvider):
+    def parse(self, *, messages, schema, temperature, max_tokens):
+        return UnifiedClassification(
+            intent="generation_intent", generation_route="smart",
+            refined_instructions=_CONTINUE_SUMMARY, provider="openai", reason="test",
+        )
+
+
+def _confirmed_run(last_generation, monkeypatch):
+    from codegen import generation_handler as generation
+    from protocol.types import AssistantRequest
+
+    message = "can you continue with the development?"
+    session = _follow_up_session(message, last_generation=last_generation)
+    monkeypatch.setattr(generation, "_get_llm_provider", lambda: _ContinueProvider())
+    asked = generation.handle_generation_request(session, AssistantRequest(message=message))
+    assert asked["action"] == "assistant_message"
+    run = generation.handle_generation_request(session, AssistantRequest(message="continue with the generation"))
+    assert run["action"] == "trigger_smart_generator"
+    return run
+
+
+def test_an_expired_result_is_rebuilt_not_continued(monkeypatch):
+    run = _confirmed_run({"request": _LAST_RUN_SPEC, "expired": True}, monkeypatch)
+
+    notes, original = run["instructions"].split("## The user's original request, verbatim\n\n", 1)
+    assert _CONTINUE_SUMMARY not in run["instructions"]
+    assert (
+        "The previous result is no longer available: there is no existing code to continue or fix. "
+        "Build the whole application from the current model and the user's request below."
+    ) in notes
+    assert _LAST_RUN_SPEC in original
+
+
+def test_a_live_result_keeps_the_summary(monkeypatch):
+    run = _confirmed_run({"request": _LAST_RUN_SPEC}, monkeypatch)
+
+    assert _CONTINUE_SUMMARY in run["instructions"]
+    assert "no longer available" not in run["instructions"]
+
+
 def test_nothing_to_go_on_asks_again_and_arms_nothing(monkeypatch):
     from common.pending_dialogs import PENDING_SMART_GEN_INSTRUCTIONS
 

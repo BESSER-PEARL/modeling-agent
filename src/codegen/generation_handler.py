@@ -482,12 +482,15 @@ def _build_smart_gen_confirmation(
         original = ""
     starting_over = None if reason_prefix else _starting_over_on_linked_repo(session)
     replaces_repo_app = starting_over == "replace_existing"
+    # Without the previous result the run is not an update of the existing app.
+    result_expired = _previous_result_gone(session)
+    if result_expired:
+        # The classifier's summary can still ask to continue or fix the gone result.
+        refined = _instructions_naming_target(_rebuild_note(bool(original)), target)
     _stash_smart_gen(
         session, refined, provider, original_request=original, mode="generate" if replaces_repo_app else None,
     )
 
-    # Without the previous result the run is not an update of the existing app.
-    result_expired = _previous_result_gone(session)
     prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
     if result_expired:
         sources = "your model and your original request" if original else "your model"
@@ -587,6 +590,15 @@ def _previous_result_gone(session: Session) -> bool:
     linked repo holds the app: the run builds the app again."""
     last_generation = getattr(_request_context(session), "last_generation", None) or {}
     return last_generation.get("expired") is True and not repo_holds_app(session)
+
+
+def _rebuild_note(has_request: bool) -> str:
+    """The run's instructions when the previous result is gone."""
+    sources = "the current model and the user's request below" if has_request else "the current model"
+    return (
+        "The previous result is no longer available: there is no existing code to continue or fix. "
+        f"Build the whole application from {sources}."
+    )
 
 
 # A model value that is not shown: markup, a URL, or what looks like a key.
