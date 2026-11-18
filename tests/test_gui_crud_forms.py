@@ -125,6 +125,16 @@ def test_bind_schema_and_prompt_offer_read_only_tables():
     for prompt in (authoring, modifying):
         assert '"editable": false' in prompt
 
+
+def test_prompt_rules_out_dead_filter_inputs_next_to_a_bound_table():
+    # The generated table sorts and filters in its own header; an input drawn
+    # outside a create form is wired to nothing.
+    from prompts import gui as gui_prompts
+
+    rules = gui_prompts.interactions_block(True)
+    assert "already sorts and filters" in rules
+    assert "no search box, filter input or sort control" in rules
+
 def test_add_to_a_list_is_not_a_record_button():
     btn = _by_text(_nodes(_generate([CATALOG]), "Catalog"), "Add to reading list")
     assert btn.get("attributes", {}).get("data-action-type") not in ("create", "update", "delete")

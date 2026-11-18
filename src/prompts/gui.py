@@ -50,6 +50,9 @@ def interactions_block(has_classes: bool) -> str:
         "per attribute a new record needs, each <input name='attribute_name'> carrying "
         "the exact attribute name, with a <label>. Search, login and contact forms get "
         "no data-class.\n"
+        "- A table bound to a class already sorts and filters by every column in its "
+        "header, and an input outside a create form is wired to nothing: no search box, "
+        "filter input or sort control for a table.\n"
         if has_classes else ""
     )
     return (
