@@ -99,7 +99,6 @@ _AUTO_KEYWORDS = ['auto', '1', 'deterministic', 'fast', 'standard', 'default', '
 _LLM_KEYWORDS = ['ai-generated', 'llm', '2', 'personali', 'ai', 'experimental', 'custom', 'design']
 
 
-
 def _build_auto_gui_message(
     request: Any, detected_gen: Optional[str] = None, offer_generation: bool = True,
 ) -> str:

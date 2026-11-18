@@ -2869,7 +2869,7 @@ def _make_method_button(node: Dict[str, Any], cls: Dict[str, Any], method: Dict[
     Same props as ``_action_button_component`` (the Basic CRUD encoding); the
     authored classes, content and style are kept so the design survives.
     """
-    label = _node_text(node) or method["name"]
+    label = _node_text(node) or _human_label(method["name"])
     attrs = node.setdefault("attributes", {})
     attrs.update({
         "type": "button",

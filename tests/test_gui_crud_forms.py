@@ -485,6 +485,14 @@ def test_a_request_for_a_simple_design_overrides_the_signature_moment_rule():
     rule = prompt[prompt.index("6. VISUAL HIERARCHY"):prompt.index("7. SAMPLE DATA")]
     assert "simple, minimal or plain design" in rule
     assert "no signature moment" in rule
+    # It drops decoration, not the varied sample data or realistic labels.
+    assert "realism" not in rule[rule.index("EXCEPTION"):]
+
+
+def test_editable_rule_is_given_only_with_a_class_diagram():
+    from prompts import gui as gui_prompts
+
+    assert '"editable"' not in gui_prompts.modification_prompt("- Home: hero", [], "")
 
 
 def test_authored_radio_group_of_an_enumeration_keeps_its_radios():

@@ -28,11 +28,9 @@ TABLE_COLUMNS_RULE = (
 # Whether a bound table offers add / edit / delete; shared by the design and
 # the modification prompt.
 TABLE_EDITABLE_RULE = (
-    "A table bound to a class shows add, edit and delete controls only with "
-    "\"editable\": true: set it where the screen is for managing that entity's records. "
-    "Set \"editable\": false where the table only shows records (results, history, "
-    "a list to browse or pick from) and wherever the user says that entity is not "
-    "created or managed there."
+    "A bound table gets add/edit/delete controls only with \"editable\": true (a screen "
+    "for managing those records); \"editable\": false where it only shows records or "
+    "the user says that entity is not managed there."
 )
 
 
@@ -50,9 +48,8 @@ def interactions_block(has_classes: bool) -> str:
         "per attribute a new record needs, each <input name='attribute_name'> carrying "
         "the exact attribute name, with a <label>. Search, login and contact forms get "
         "no data-class.\n"
-        "- A table bound to a class already sorts and filters by every column in its "
-        "header, and an input outside a create form is wired to nothing: no search box, "
-        "filter input or sort control for a table.\n"
+        "- A bound table already sorts and filters in its header: no search box, filter "
+        "input or sort control for it (an input outside a create form does nothing).\n"
         if has_classes else ""
     )
     return (
@@ -237,7 +234,7 @@ Design judgment — build what THIS request actually needs; do not pad or force 
 3. Full-width sections (ds-hero, ds-footer, ds-nav) span the page; other sections sit in cards inside a centered container.
 4. Close with a ds-footer when it suits the page (most marketing/landing pages); an app/data screen may not need one.
 5. Populate every widget you place, and give each page enough real copy to read as finished — but include only what the request calls for, not filler.
-6. VISUAL HIERARCHY: open every page with a page-header moment (title + one-line subtitle + the page's primary action). Vary the rhythm — full-width bands, grids, cards, accent moments — generous whitespace; NEVER a monotone stack of identical white cards. Commit ONE signature visual moment per page (a gradient band, an oversized stat, a colored panel) — safe-but-flat everywhere is a failure. EXCEPTION: when the user asks for a simple, minimal or plain design, their wording wins over this rule and the realism directives — each page opens with a plain title, no eyebrow, slogan, tagline or marketing copy and no signature moment, and holds only the sections the request names.
+6. VISUAL HIERARCHY: open every page with a page-header moment (title + one-line subtitle + the page's primary action). Vary the rhythm — full-width bands, grids, cards, accent moments — generous whitespace; NEVER a monotone stack of identical white cards. Commit ONE signature visual moment per page (a gradient band, an oversized stat, a colored panel) — safe-but-flat everywhere is a failure. EXCEPTION: when the user asks for a simple, minimal or plain design, their wording wins over this rule — each page opens with a plain title, no eyebrow, slogan, tagline or marketing copy and no signature moment, and holds only the sections the request names.
 7. SAMPLE DATA REALISM: figures must be plausible and VARIED — a chart where every value is 1 (or several series with identical data) is a FAILURE. Write numbers a real business would show; one meaningful series unless comparing series is the point. A section whose heading promises a chart / distribution / trend / breakdown MUST be a DATA section with a chart bind carrying that varied sampleData — never a table and never plain html. Headings are never generic labels like 'Table' or 'Section'.
 8. Keep an entity's field names IDENTICAL across every section it appears in.
 9. Return JSON only.{class_block}{mockup_block}"""
@@ -334,6 +331,7 @@ MOCKUP_REASONING_ADDENDUM = (
 
 
 def modification_prompt(outline: str, class_metadata: Optional[List[Dict[str, Any]]], class_block: str) -> str:
+    editable_rule = f"\n   - {TABLE_EDITABLE_RULE}" if class_metadata else ""
     return f"""You are the design agent for an existing web GUI. Apply the user's requested edit(s) precisely and surgically — change ONLY what they asked for.
 
 CURRENT APP (pages with their sections, in order):
@@ -349,8 +347,7 @@ For append_section / edit_section / add_page, author "section" in the app's desi
   PREFERRED — rich themed HTML: {{"html": "<section class='ds-section'><h2 class='ds-heading'>Title</h2> ...concrete content... </section>"}}
    - Root element carries a stable class; use ONLY .ds-* classes + semantic tags (h1-h6, p, span, a, ul, li, button, svg, plain tables). No scripts/styles/external URLs. Real copy, never placeholders.
   DATA — a live bound widget: {{"bind": {{"kind": "table|bar_chart|pie_chart|line_chart|radar_chart|metric_card|form|dashboard", "className": "Entity from the class diagram", "columns": [...], "rows": [{{"cells": [...]}}], "sampleData": [{{"name": "...", "value": 42}}]}}, "html": "<section class='ds-section'><h3 class='ds-heading'>Title</h3><div class='ds-card'><!--WIDGET:kind--></div></section>"}}
-   - Populate the widget (columns+rows for tables, sampleData for charts) or it renders empty. {TABLE_COLUMNS_RULE}
-   - {TABLE_EDITABLE_RULE}
+   - Populate the widget (columns+rows for tables, sampleData for charts) or it renders empty. {TABLE_COLUMNS_RULE}{editable_rule}
 Design-system classes: ds-section, ds-hero, ds-heading, ds-card, ds-grid-2, ds-grid-3, ds-kpi, ds-kpi-value, ds-kpi-label, ds-table-wrap, ds-btn, ds-btn-primary, ds-notice, ds-badge, ds-field, ds-label, ds-input, ds-container, ds-footer.
 
 {interactions_block(bool(class_metadata))}
