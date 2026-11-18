@@ -289,7 +289,7 @@ class TestExistingClassReferences:
         result = _modify(handler, [
             {"action": "remove_element",
              "target": {"sourceClass": "c-pub", "targetClass": "Author"}},
-        ], _library_with_abstract_publication(), request="revert")
+        ], _library_with_abstract_publication(), request="unlink Publication from Author")
 
         assert result["action"] == "modify_model"
         assert result["modification"]["target"]["sourceClass"] == "Publication"
@@ -373,34 +373,3 @@ class TestEveryClassKindIsIndexed:
         spec = {"action": "modify_model", "modification": mod}
         assert handler._drop_phantom_target_ops(spec, self._model()) == []
         assert spec["modification"] is mod
-
-
-class TestUndoRequest:
-    """"undo" / "revert" gets the editor's undo, as on the other diagram types,
-    instead of the LLM guessing an inverse change."""
-
-    @pytest.mark.parametrize("request_text", [
-        "revert", "Undo", "undo that", "please revert the last change.",
-        "undo my last changes", "Revert it!",
-    ])
-    def test_bare_undo_points_to_the_editor_undo(self, handler, request_text):
-        def _no_llm(*a, **k):
-            pytest.fail("an undo request must not reach the LLM")
-        handler.predict_structured = _no_llm
-
-        result = handler.generate_modification(
-            f"Recent conversation context:\n...\n\n{request_text}", _model_with_task_title(),
-            raw_request=request_text)
-
-        assert result == {"action": "assistant_message",
-                          "message": "To undo, use Ctrl+Z or the undo button in the editor toolbar."}
-
-    @pytest.mark.parametrize("request_text", [
-        "revert the title attribute to a string", "undo the rename and call it Ticket",
-    ])
-    def test_a_request_that_says_what_to_change_is_modelled(self, handler, request_text):
-        result = _modify(handler, [
-            {"action": "modify_attribute", "target": {"className": "Task", "attributeName": "title"},
-             "changes": {"type": "str"}},
-        ], _model_with_task_title(), request=request_text)
-        assert result["action"] == "modify_model"

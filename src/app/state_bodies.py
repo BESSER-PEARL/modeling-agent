@@ -425,12 +425,16 @@ _CONTRADICTORY_CREATE_CLARIFY = (
     "Member and Loan classes*."
 )
 
+# The diagram prompts give the same reply when the model sees an undo request.
+_UNDO_REPLY = "To undo, use Ctrl+Z or the undo button in the editor toolbar."
+
 # guards.modeling_guard decision -> (log line, reply); None replies with the
 # state's empty-message prompt.
 _MODELING_GUARD_REPLIES = {
     "non_modeling": ("Non-modeling/injection input — declining and redirecting", _NON_MODELING_DECLINE),
     "outage_decline": ("Outage net: decline phrase — acknowledging", _DECLINE_ACK),
     "outage_artifact": ("Outage net: non-software artifact — redirecting", _OUT_OF_SCOPE_REDIRECT),
+    "undo": ("Undo request — pointing to the editor's undo", _UNDO_REPLY),
     "self_contradictory": ("Self-contradictory create — asking what to include", _CONTRADICTORY_CREATE_CLARIFY),
     "too_vague": ("Create request too vague to model — asking for a domain", None),
 }
