@@ -2,7 +2,7 @@
 
 from common.session_keys import (
     APP_TARGET, APP_TARGET_PROJECT_ID, ORIGINAL_APP_REQUEST, ORIGINAL_APP_REQUEST_PROJECT_ID,
-    SCREENS_LISTED_PROJECT_ID,
+    SCREENS_LISTED_PROJECT_ID, UNIFIED_CLASSIFICATION,
 )
 from protocol.message_limits import validate_message_length
 
@@ -19,8 +19,6 @@ def remember_original_request(session, message, project_id, *, screens_listed=No
     """Store the app description of *project_id*. Whether it lists its screens
     is *screens_listed*, else the current classifier verdict; a follow-up
     appended to the stored description keeps what that one listed."""
-    from common.session_keys import UNIFIED_CLASSIFICATION
-
     message = validate_message_length((message or "").strip(), label="The combined original specification and follow-up requests")
     previous = original_request_for_project(session, project_id)
     if screens_listed is None:

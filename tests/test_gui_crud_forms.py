@@ -515,6 +515,9 @@ def _radio_form(choices):
     "<fieldset><legend>State</legend>"
     "<label><input type='radio' name='state' value='Placed'> Placed</label>"
     "<label><input type='radio' name='state' value='Shipped'> Shipped</label></fieldset>",
+    "<div class='ds-field'><span>State</span>"
+    "<input type='radio' id='s1' name='state' value='Placed'><label for='s1'>Placed</label>"
+    "<input type='radio' id='s2' name='state' value='Shipped'><label for='s2'>Shipped</label></div>",
 ])
 def test_authored_radio_group_of_an_enumeration_becomes_one_required_dropdown(choices):
     # BESSER turns each radio into its own option-less radio group, so the

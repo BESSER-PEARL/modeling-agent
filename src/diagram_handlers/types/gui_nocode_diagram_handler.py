@@ -3137,8 +3137,23 @@ def _radios_to_select(form: Dict[str, Any], radios: List[Dict[str, Any]], litera
             end += 1  # its caption
         siblings[index:end] = [radio] if keep else []
 
+    radio_ids = {str(r["attributes"]["id"]) for r in radios if (r.get("attributes") or {}).get("id")}
+
+    def _drop_captions(node: Dict[str, Any]) -> None:
+        # <input id=s1><label for=s1>Open</label>: the label captions one radio
+        node["components"] = [
+            child for child in node["components"]
+            if not (isinstance(child, dict) and child.get("tagName") == "label"
+                    and str((child.get("attributes") or {}).get("for")) in radio_ids)
+        ]
+        for child in node["components"]:
+            if isinstance(child, dict) and child.get("components"):
+                _drop_captions(child)
+
     for position, radio in enumerate(radios):
         _remove(radio, keep=position == 0)
+    if radio_ids:
+        _drop_captions(form)
     _make_enum_select(radios[0], literals)
 
 
