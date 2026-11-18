@@ -303,6 +303,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # Drop any OCL constraint whose context isn't a real class in the
         # spec (the LLM occasionally references a class it didn't create).
         self._validate_constraints(system_spec)
+        mismatched = self._mismatched_constraints(system_spec)
+        if mismatched:
+            logger.info(
+                "[ClassDiagram] %d OCL constraint(s) do not fit the diagram: %s",
+                len(mismatched), ", ".join(str(c.get("name")) for c in mismatched)[:200],
+            )
 
         logger.info(
             f"[ClassDiagram] Structured system spec: "
@@ -316,7 +322,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         self.apply_system_layout(system_spec, existing_model)
 
         message = self._build_system_message(
-            system_spec, relaxations, renamed=renamed_ends)
+            system_spec, relaxations, renamed=renamed_ends, mismatched=mismatched)
 
         # The matching frontend converter persists constraints as OCL
         # boxes/links and associationClass attachments as ClassLinkRel.
@@ -1867,18 +1873,75 @@ class ClassDiagramHandler(BaseDiagramHandler):
     _FK_ATTR_NAME_RE = re.compile(r"^(\w+?)(?:_[iI][dD]|(?<=[a-z0-9])I[dD])$")
     _FK_ATTR_TYPES = frozenset({"str", "string"}) | _INTEGER_ATTR_TYPES
 
-    @staticmethod
-    def _member_references(system_spec: Dict[str, Any]) -> str:
+    @classmethod
+    def _member_references(cls, system_spec: Dict[str, Any]) -> str:
         """The text of the model's own rules and method bodies. A member named
-        there is in use: no guard removes or renames it."""
+        there is in use: no guard removes or renames it. A rule that does not
+        fit the spec (:meth:`_mismatched_constraints`) counts for nothing."""
+        mismatched = cls._mismatched_constraints(system_spec)
         parts: List[Any] = [
             c.get("expression") for c in system_spec.get("constraints") or []
-            if isinstance(c, dict)
+            if isinstance(c, dict) and not any(c is m for m in mismatched)
         ]
         for cls in system_spec.get("classes") or []:
             if isinstance(cls, dict):
                 parts += [m.get("code") for m in cls.get("methods") or [] if isinstance(m, dict)]
         return "\n".join(p for p in parts if isinstance(p, str))
+
+    @classmethod
+    def _mismatched_constraints(cls, system_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """The constraints that certainly do not fit *system_spec*: one reads
+        ``self.<name>`` where the context's generalization line has no member,
+        end or class of that name, or applies a collection operation to a
+        class (``Book->select`` without ``allInstances()``)."""
+        constraints = [c for c in system_spec.get("constraints") or [] if isinstance(c, dict)]
+        if not constraints:
+            return []
+
+        def _key(name: str) -> str:
+            return name.replace("_", "").lower()
+
+        known: Dict[str, set] = {}
+        for c in system_spec.get("classes") or []:
+            if isinstance(c, dict) and isinstance(c.get("className"), str):
+                known.setdefault(c["className"], set()).update(
+                    _key(m["name"]) for m in (c.get("attributes") or []) + (c.get("methods") or [])
+                    if isinstance(m, dict) and isinstance(m.get("name"), str))
+        class_names = list(known)
+        edges: List[tuple] = []
+        for rel in system_spec.get("relationships") or []:
+            source = rel.get("source") if isinstance(rel, dict) else None
+            target = rel.get("target") if isinstance(rel, dict) else None
+            if not isinstance(source, str) or not isinstance(target, str):
+                continue
+            if cls._spec_rel_type(rel) in cls._SPEC_NON_END_REL_TYPES:
+                edges.append((source, target))
+                continue
+            link = rel.get("associationClass")
+            link = [link] if isinstance(link, str) and link else []
+            for near, far, side in ((source, target, "target"), (target, source, "source")):
+                tokens = re.findall(r"\w+", cls._spec_role(rel, side)) + [far] + link
+                known.setdefault(near, set()).update(_key(t) for t in tokens)
+            # the link class reaches each participant by its class or role name
+            roles = re.findall(r"\w+", cls._spec_role(rel, "source") + " " + cls._spec_role(rel, "target"))
+            for owner in link:
+                known.setdefault(owner, set()).update(_key(t) for t in [source, target] + roles)
+
+        on_class = re.compile(
+            r"(?<![\w.])(?:" + "|".join(map(re.escape, class_names)) + r")\s*->"
+        ) if class_names else None
+        mismatched = []
+        for con in constraints:
+            expr, context = con.get("expression"), con.get("context")
+            if not isinstance(expr, str) or context not in known:
+                continue
+            expr = re.sub(r"--[^\n]*", "", re.sub(r"'[^']*'", "''", expr))
+            names = set().union(*(known.get(n, set()) for n in cls._reach_over_edges(edges, {context})))
+            read = re.findall(r"\bself\s*\.\s*([A-Za-z_]\w*)", expr)
+            if (any(not n.startswith("ocl") and _key(n) not in names for n in read)
+                    or (on_class is not None and on_class.search(expr))):
+                mismatched.append(con)
+        return mismatched
 
     @staticmethod
     def _is_referenced(name: Any, references: str) -> bool:
@@ -2592,13 +2655,15 @@ class ClassDiagramHandler(BaseDiagramHandler):
     def _build_system_message(
         self, spec: Dict[str, Any], relaxations: Sequence[Dict[str, Any]] = (),
         renamed: Sequence[Dict[str, Any]] = (),
+        mismatched: Sequence[Dict[str, Any]] = (),
     ) -> str:
         """Build a descriptive message for a complete class diagram spec.
 
         *relaxations* are the ends ``_break_mandatory_cycles`` made optional;
         their invariants are the agent's, not rules the user stated.
         *renamed* are the association ends ``_ensure_unique_association_ends``
-        renamed: the first three are explained, the rest counted."""
+        renamed: the first three are explained, the rest counted.
+        *mismatched* are the constraints that do not fit the diagram."""
         system_name = spec.get("systemName", "System")
         classes = spec.get("classes", [])
         rels = spec.get("relationships", [])
@@ -2634,6 +2699,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
             else:
                 kept = "are optional in the diagram and their minimums are kept as OCL rules"
             msg += f" {ends} {kept}, so no class needs another to exist before it can be created."
+        if mismatched:
+            names = ", ".join(f"**{c.get('name') or c.get('context')}**" for c in mismatched)
+            if len(mismatched) == 1:
+                msg += f" The rule {names} refers to something the diagram does not have, so it needs correcting."
+            else:
+                msg += f" The rules {names} refer to something the diagram does not have, so they need correcting."
         return msg
 
     # ------------------------------------------------------------------
@@ -2670,6 +2741,9 @@ class ClassDiagramHandler(BaseDiagramHandler):
         elif ":" in name:                     # attribute: drop the type suffix
             name = name.split(":", 1)[0].strip()
         return name
+
+    # Every element type the editor finds a class by name among.
+    _CLASS_LIKE_TYPES = _CLASS_ELEMENT_TYPES | {"Enumeration"}
 
     def _build_model_index(
         self, current_model: Optional[Dict[str, Any]],
@@ -2708,7 +2782,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 continue
             el_type = el.get("type")
             name = el.get("name")
-            if el_type in ("Class", "AbstractClass", "Enumeration") or (
+            if el_type in self._CLASS_LIKE_TYPES or (
                 el_type is None and isinstance(el.get("attributes"), (list, dict))
             ):
                 if isinstance(name, str) and name.strip():
@@ -3498,18 +3572,37 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 deduped.append(mod)
             return deduped
 
-        def _expand_refactoring(handler, spec):
-            spec = handler._prepare_modification_spec(spec, current_model)
-            # A new class gets no surrogate id, as in a generated diagram.
+        # Whether the refactoring expansion wrote the reply itself.
+        refactor_reply = [False]
+        # What the deterministic guards below changed, for the reply.
+        guard_notes: List[str] = []
+        request_text = kwargs.get("raw_request") or user_request
+
+        def _ops(spec):
             mods = spec.get("modifications")
             if not isinstance(mods, list):
                 mods = [spec.get("modification")]
-            mods = [m for m in mods if isinstance(m, dict)]
+            return [m for m in mods if isinstance(m, dict)]
+
+        def _references(spec):
+            # an OCL rule added in the same request may read the id
+            return " ".join(str((m.get("changes") or {}).get("constraint") or "") for m in _ops(spec))
+
+        def _expand_refactoring(handler, spec):
+            handler._name_classes_given_by_id(spec, current_model)
+            guard_notes[:] = handler._add_members_to_existing_classes(
+                spec, current_model, request_text, _references(spec))
+            if not _ops(spec):
+                return assistant_message(" ".join(guard_notes))
+            spec = handler._prepare_modification_spec(spec, current_model)
+            refactor_reply[0] = "message" in spec
+            guard_notes.extend(handler._keep_identifiers_required(spec, current_model))
+            if guard_notes and not _ops(spec):
+                return assistant_message(" ".join(guard_notes))
+            # A new class gets no surrogate id, as in a generated diagram.
             handler._strip_surrogate_ids(
-                [m.get("changes") for m in mods if m.get("action") == "add_class"],
-                kwargs.get("raw_request") or user_request,
-                # an OCL rule added in the same request may read the id
-                " ".join(str((m.get("changes") or {}).get("constraint") or "") for m in mods),
+                [m.get("changes") for m in _ops(spec) if m.get("action") == "add_class"],
+                request_text, _references(spec),
             )
             return spec
 
@@ -3523,12 +3616,13 @@ class ClassDiagramHandler(BaseDiagramHandler):
         not_found_notes: List[str] = []
         prior_notes: List[str] = []
         modification_spec: Dict[str, Any] = {}
+        elements = current_model.get("elements") if isinstance(current_model, dict) else None
         for attempt in (1, 2):
             modification_spec = self._execute_modification(
                 user_prompt, system_prompt, ClassModificationResponse,
                 post_processor=_strip_spurious_relationship_mods,
                 spec_processor=_expand_refactoring,
-                elements=current_model.get("elements") if isinstance(current_model, dict) else None,
+                elements=elements,
             )
             if modification_spec.get("action") != Action.MODIFY_MODEL:
                 break  # element-not-found short-circuit etc. — not a whiff
@@ -3567,6 +3661,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
             or modification_spec.get("modifications")
         ):
             return assistant_message(" ".join(not_found_notes))
+        # The reply described every op; describe only those that remain.
+        if not_found_notes and not refactor_reply[0]:
+            modification_spec.pop("message", None)
+            self._write_modification_message(modification_spec, elements)
 
         # Replace the generic/default message with a clean, descriptive one
         # for add_class (the name lives in changes.className, not the now-
@@ -3575,9 +3673,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         # Append the not-found note(s) so the dropped removal/edit isn't
         # silent even when a legitimate add in the same request succeeded.
-        if not_found_notes:
+        # An assistant message already carries the guard notes.
+        if modification_spec.get("action") != Action.MODIFY_MODEL:
+            guard_notes.clear()
+        if not_found_notes or guard_notes:
             existing = modification_spec.get("message") or ""
-            joined = " ".join(not_found_notes)
+            joined = " ".join(guard_notes + not_found_notes)
             modification_spec["message"] = (
                 f"{existing}\n\n{joined}".strip() if existing else joined
             )
@@ -3788,6 +3889,178 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # refactoring are canonicalised too.
         self._normalise_modification_types(spec)
         return spec
+
+    def _existing_classes(self, current_model: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """``{id: {"name", "type", "members"}}`` of the classes of *current_model*;
+        *members* holds the lowercased attribute, literal and method names."""
+        elements = current_model.get("elements") if isinstance(current_model, dict) else None
+        if not isinstance(elements, dict):
+            return {}
+        classes = {
+            eid: {"name": el["name"].strip(), "type": el["type"], "members": set()}
+            for eid, el in elements.items()
+            if isinstance(el, dict) and el.get("type") in self._CLASS_LIKE_TYPES
+            and isinstance(el.get("name"), str) and el["name"].strip()
+        }
+        for el in elements.values():
+            if (isinstance(el, dict) and el.get("owner") in classes
+                    and el.get("type") in ("ClassAttribute", "ClassMethod")):
+                classes[el["owner"]]["members"].add(self._clean_member_name(el.get("name")).lower())
+        return classes
+
+    def _name_classes_given_by_id(
+        self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]],
+    ) -> None:
+        """Replace a class element id in a target's ``className`` /
+        ``sourceClass`` / ``targetClass`` by the class name: the editor finds
+        classes by name. Mutates *spec* in place."""
+        names = {eid: c["name"] for eid, c in self._existing_classes(current_model).items()}
+        mods = spec.get("modifications")
+        for mod in mods if isinstance(mods, list) else [spec.get("modification")]:
+            target = mod.get("target") if isinstance(mod, dict) else None
+            if not isinstance(target, dict):
+                continue
+            for key in ("className", "sourceClass", "targetClass"):
+                value = target.get(key)
+                if isinstance(value, str) and value.strip() in names:
+                    target[key] = names[value.strip()]
+
+    def _add_members_to_existing_classes(
+        self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]],
+        request_text: Optional[str] = None, references: str = "",
+    ) -> List[str]:
+        """Turn an ``add_class`` of a class the diagram already has into
+        ``add_attribute`` / ``add_method`` ops for the members it lacks.
+
+        The editor skips such an ``add_class`` with all its members. A member
+        the class or its generalization line already has is not added again
+        (a subclass may not redeclare an inherited attribute), nor is a
+        surrogate id (:meth:`_strip_surrogate_ids`). A name an earlier
+        ``modify_class`` of the batch renames a class to is that class. Left
+        as is for an enumeration, and when the batch removes or renames that
+        class.
+        Mutates *spec*, which keeps no op when nothing is left to apply, and
+        returns the notes for the reply."""
+        mods = spec.get("modifications")
+        mods = mods if isinstance(mods, list) else [spec.get("modification")]
+        mods = [m for m in mods if isinstance(m, dict)]
+        classes = self._existing_classes(current_model)
+        existing = {c["name"].lower(): eid for eid, c in classes.items() if c["type"] != "Enumeration"}
+        replaced = {
+            str((m.get("target") or {}).get("className") or "").strip().lower()
+            for m in mods
+            if (m.get("action") == "remove_element"
+                and not any((m.get("target") or {}).get(k) for k in (
+                    "attributeName", "attributeId", "methodName", "methodId",
+                    "relationshipName", "relationshipId", "sourceClass", "targetClass")))
+            or (m.get("action") == "modify_class" and (m.get("changes") or {}).get("name"))
+        }
+        kept: List[Dict[str, Any]] = []
+        present: List[str] = []
+        notes: List[str] = []
+        converted = False
+        renamed_to: Dict[str, Tuple[str, str]] = {}
+        for mod in mods:
+            changes = mod.get("changes") if isinstance(mod.get("changes"), dict) else {}
+            old = existing.get(str((mod.get("target") or {}).get("className") or "").strip().lower())
+            if mod.get("action") == "modify_class" and old and str(changes.get("name") or "").strip():
+                renamed_to[changes["name"].strip().lower()] = (old, changes["name"].strip())
+            name = str(changes.get("className") or "").strip()
+            eid, new_name = renamed_to.get(name.lower()) or (existing.get(name.lower()), None)
+            if mod.get("action") != "add_class" or eid is None or (
+                    name.lower() in replaced and new_name is None):
+                kept.append(mod)
+                continue
+            cls = {**classes[eid], "name": new_name or classes[eid]["name"]}
+            self._strip_surrogate_ids([changes], request_text, references)
+            line = self._inheritance_closure(current_model, {eid})
+            members = set().union(*(classes[i]["members"] for i in line if i in classes))
+            added = [
+                {"action": action, "target": {"className": cls["name"]}, "changes": member}
+                for key, action in (("attributes", "add_attribute"), ("methods", "add_method"))
+                for member in changes.get(key) or []
+                if isinstance(member, dict) and isinstance(member.get("name"), str)
+                and self._clean_member_name(member["name"]).lower() not in members
+            ]
+            logger.info(
+                "[ClassDiagram] add_class '%s': the class exists; %d member op(s) instead",
+                cls["name"], len(added),
+            )
+            kept += added
+            converted = True
+            if not added:
+                present.append(cls["name"])
+            if changes.get("isAbstract") and cls["type"] != "AbstractClass":
+                notes.append(f"**{cls['name']}** already exists and is not abstract; I left that as it is.")
+        if not converted:
+            return []
+        if present:
+            listed = " and ".join(f"**{n}**" for n in present)
+            verb = "is" if len(present) == 1 else "are"
+            tail = "" if kept else ", so nothing changed"
+            notes.insert(0, f"{listed} {verb} already in the diagram with those members{tail}.")
+        if kept:
+            self._replace_ops(spec, kept)
+        else:
+            spec.pop("modification", None)
+            spec.pop("modifications", None)
+        return notes
+
+    @staticmethod
+    def _replace_ops(spec: Dict[str, Any], ops: List[Dict[str, Any]]) -> None:
+        """Put *ops* (at least one) in *spec*, keeping a batch a batch."""
+        if isinstance(spec.get("modifications"), list) or len(ops) > 1:
+            spec.pop("modification", None)
+            spec["modifications"] = ops
+        else:
+            spec["modification"] = ops[0]
+
+    def _keep_identifiers_required(
+        self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]],
+    ) -> List[str]:
+        """Remove ``isOptional: true`` from a ``modify_attribute`` of an
+        identifier attribute (``isId`` / ``isExternalId``): an optional
+        identifier fails validation. An op left with no change is dropped.
+        Returns one note per attribute kept required; mutates *spec*."""
+        elements = current_model.get("elements") if isinstance(current_model, dict) else None
+        if not isinstance(elements, dict):
+            return []
+        classes = self._existing_classes(current_model)
+        class_ids = {c["name"].lower(): eid for eid, c in classes.items()}
+        identifiers = {
+            (el.get("owner"), self._clean_member_name(el.get("name")).lower()):
+                self._clean_member_name(el.get("name"))
+            for el in elements.values()
+            if isinstance(el, dict) and el.get("type") == "ClassAttribute"
+            and (el.get("isId") or el.get("isExternalId"))
+        }
+        mods = spec.get("modifications")
+        mods = [m for m in (mods if isinstance(mods, list) else [spec.get("modification")])
+                if isinstance(m, dict)]
+        kept: List[Dict[str, Any]] = []
+        notes: List[str] = []
+        for mod in mods:
+            target = mod.get("target") if isinstance(mod.get("target"), dict) else {}
+            changes = mod.get("changes")
+            key = (class_ids.get(str(target.get("className") or "").strip().lower()),
+                   self._clean_member_name(target.get("attributeName")).lower())
+            if (mod.get("action") == "modify_attribute" and isinstance(changes, dict)
+                    and changes.get("isOptional") is True and key in identifiers):
+                changes.pop("isOptional")
+                notes.append(
+                    f"I kept **{identifiers[key]}** in **{classes[key[0]]['name']}** "
+                    "required: it is marked as an identifier, and an identifier cannot be "
+                    "optional. To make it optional, first remove its identifier mark in "
+                    "the attribute's settings.")
+                if not any(v not in (None, "", []) for v in changes.values()):
+                    continue
+            kept.append(mod)
+        if notes and kept:
+            self._replace_ops(spec, kept)
+        elif notes:
+            spec.pop("modification", None)
+            spec.pop("modifications", None)
+        return notes
 
     def _expand_refactoring_actions(
         self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,

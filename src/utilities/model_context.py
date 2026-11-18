@@ -147,15 +147,19 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
 
     lines: List[str] = []
 
-    # Collect classes
+    # Collect classes (abstract classes and interfaces too) and enumerations
     class_data: Dict[str, Dict[str, Any]] = {}  # id -> {name, attrs, methods}
+    enum_names: Dict[str, str] = {}
     for eid, el in elements.items():
-        if not isinstance(el, dict) or el.get("type") != "Class":
-            continue
-        name = el.get("name")
+        el_type = el.get("type") if isinstance(el, dict) else None
+        name = el.get("name") if isinstance(el, dict) else None
         if not isinstance(name, str) or not name.strip():
             continue
-        class_data[eid] = {"name": name.strip(), "attrs": [], "methods": []}
+        if el_type in ("Class", "AbstractClass", "Interface"):
+            class_data[eid] = {"name": name.strip(), "attrs": [], "methods": [],
+                               "tag": " (interface)" if el_type == "Interface" else ""}
+        elif el_type == "Enumeration":
+            enum_names[eid] = name.strip()
 
     # Attach attributes and methods
     for eid, el in elements.items():
@@ -188,7 +192,7 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
         names_preview += f" (+{len(class_items) - max_classes} more)"
     lines.append(f"Classes ({len(class_items)}): {names_preview}")
     for cid, cd in class_items[:max_classes]:
-        parts = [f"  - {cd['name']}"]
+        parts = [f"  - {cd['name']}{cd['tag']}"]
         if cd["attrs"]:
             attrs_str = ", ".join(cd["attrs"][:max_attrs])
             if len(cd["attrs"]) > max_attrs:
@@ -197,6 +201,12 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
         if cd["methods"]:
             parts.append(f"methods: {', '.join(cd['methods'][:max_attrs])}")
         lines.append(" | ".join(parts))
+    if enum_names:
+        enums = ", ".join(list(enum_names.values())[:max_classes])
+        if len(enum_names) > max_classes:
+            enums += f" (+{len(enum_names) - max_classes} more)"
+        lines.append(f"Enumerations ({len(enum_names)}): {enums}")
+    names = {**enum_names, **{eid: cd["name"] for eid, cd in class_data.items()}}
 
     # Relationships — separate generalizations (inheritance) from associations
     # so "is X a subclass of Y?" is answerable and the two are never conflated.
@@ -216,8 +226,8 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
             target = rel.get("target")
             if not isinstance(source, dict) or not isinstance(target, dict):
                 continue
-            src_name = class_data.get(source.get("element", ""), {}).get("name", source.get("element", ""))
-            tgt_name = class_data.get(target.get("element", ""), {}).get("name", target.get("element", ""))
+            src_name = names.get(source.get("element", ""), source.get("element", ""))
+            tgt_name = names.get(target.get("element", ""), target.get("element", ""))
             rtype = rel.get("type", "ClassBidirectional")
             if rtype in _GEN_TYPES:
                 # Apollon inheritance arrow points child -> parent.

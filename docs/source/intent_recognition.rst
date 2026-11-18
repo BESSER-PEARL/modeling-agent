@@ -417,8 +417,9 @@ or handler only maps the decision to a reply. The tables in
      - First match wins: ``non_modeling`` (prompt injection, persona
        hijack, shell commands; both states), the classifier-outage net
        ``outage_decline`` / ``outage_artifact`` (only when the verdict is
-       missing or ``fallback_intent``), then ``self_contradictory`` and
-       ``too_vague`` (create only)
+       missing or ``fallback_intent``), then ``undo`` (modify only: a message
+       that only asks to undo or revert is pointed to the editor's undo),
+       then ``self_contradictory`` and ``too_vague`` (create only)
    * - ``quick_response_key()``
      - global fallback, greetings, modeling help
      - A canned capability / help / how-to-run reply, no LLM call
