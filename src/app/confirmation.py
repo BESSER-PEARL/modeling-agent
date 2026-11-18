@@ -30,12 +30,12 @@ from common.pending_dialogs import (
     PENDING_WEBAPP_GENERATE,
 )
 from execution import execute_model_operation
-from execution.model_operations import gui_choice_actions, gui_choice_from_label
+from execution.model_operations import AI_DESIGN_FAILED, gui_choice_from_label, reoffer_gui_choice
 from codegen.generation_handler import (
     handle_pending_plan_generation_confirmation,
     handle_pending_smart_gen_confirmation,
 )
-from protocol.actions import Action, assistant_message
+from protocol.actions import Action
 
 logger = logging.getLogger(__name__)
 
@@ -172,9 +172,6 @@ def _maybe_emit_webapp_prompt(session: Session) -> None:
         emit_webapp_generate_prompt(session)
 
 
-# Set on the open screen question once the AI design has failed: from then on
-# a typed "try again" means the AI design.
-_AI_DESIGN_FAILED = "ai_design_failed"
 _RETRY_KEYWORDS = ['try again', 'try it again', 'retry', 'again']
 
 # The keywords also occur in ordinary requests ("set the default currency ...",
@@ -199,16 +196,6 @@ def _is_gui_answer(user_msg: str, keywords: List[str], max_words: int) -> bool:
         and not _REQUEST_START_RE.match(token)
         and any(keyword_matches(w, user_msg) for w in keywords)
     )
-
-
-def _reoffer_gui_choice(session: Session, pending: dict, lead: str = "") -> None:
-    """After a failed AI screen build: the question stays open, so the user can
-    retry or take the other option from the same two buttons."""
-    pending_dialogs.put(session, PENDING_GUI_CHOICE, {**pending, _AI_DESIGN_FAILED: True})
-    reply_payload(session, assistant_message(
-        f"{lead}You can try the AI design again, or use basic CRUD pages instead.",
-        suggestedActions=gui_choice_actions(),
-    ))
 
 
 # Bare flow-control tokens a user types (or a quick-action button sends) to
@@ -254,7 +241,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
     # unambiguous, so it decides before the classifier, which on 2026-10-12
     # mapped "Experimental AI design" to the basic CRUD answer.
     _label_answer = gui_choice_from_label(user_msg)
-    if (not _label_answer and pending.get(_AI_DESIGN_FAILED)
+    if (not _label_answer and pending.get(AI_DESIGN_FAILED)
             and _is_gui_answer(user_msg, _RETRY_KEYWORDS, _GUI_ANSWER_MAX_WORDS)):
         _label_answer = "llm"
     if _label_answer:
@@ -373,11 +360,11 @@ def handle_pending_gui_choice(session: Session) -> bool:
         )
     except Exception as exc:
         logger.error(f"❌ [GUIChoice] Error executing LLM GUI generation: {exc}", exc_info=True)
-        _reoffer_gui_choice(session, pending, "Something went wrong while creating your screens. ")
+        reoffer_gui_choice(session, pending, "Something went wrong while creating your screens. ")
         return True
     if not isinstance(built, str):
         # No screens came back and the failure text is already sent.
-        _reoffer_gui_choice(session, pending)
+        reoffer_gui_choice(session, pending)
         return True
     pending_dialogs.put(session, PENDING_GUI_CHOICE, None)  # Clear only on success
 

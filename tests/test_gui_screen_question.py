@@ -52,6 +52,7 @@ def run_gui_op(monkeypatch):
         request = AssistantRequest(message=message, context=context)
         modeling.execute_model_operation(session, request, dict(GUI_OP), "complete_system")
         asked = any("How would you like me to create your screens" in str(p) for p in payloads)
+        run.payloads = payloads
         return session, handler, asked
 
     return run
@@ -77,6 +78,19 @@ def test_listed_screens_are_remembered_for_the_project_only(run_gui_op):
     _, _, asked = run_gui_op("Create the GUI", session=session, project_id="p2")
     assert asked
 
+
+
+def test_a_failed_design_of_listed_screens_offers_a_retry_or_crud_pages(run_gui_op):
+    # The same re-offer the question's own AI-design answer gets on failure.
+    handler_failure = {"action": "assistant_message", "message": "The design failed."}
+    session = FakeSession()
+    modeling.ctx.diagram_factory.get_handler.return_value.generate_complete_system.return_value = handler_failure
+    run_gui_op("Three screens: A, B, C", session=session, verdict=LISTED)
+    pending = pending_dialogs.get(session, PENDING_GUI_CHOICE)
+    assert pending and pending.get(modeling.AI_DESIGN_FAILED)
+    offer = run_gui_op.payloads[-1]
+    assert offer["suggestedActions"] == modeling.gui_choice_actions()
+    assert "try the AI design again" in offer["message"]
 
 @pytest.mark.parametrize("message", [
     "Build screens for my app",

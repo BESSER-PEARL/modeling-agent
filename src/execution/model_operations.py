@@ -116,6 +116,21 @@ def gui_choice_from_label(message: Optional[str]) -> Optional[str]:
     )
 
 
+# Set on the open screen question once the AI design has failed: from then on
+# a typed "try again" means the AI design.
+AI_DESIGN_FAILED = "ai_design_failed"
+
+
+def reoffer_gui_choice(session: Session, pending: dict, lead: str = "") -> None:
+    """After a failed AI screen build: the question stays open, so the user can
+    retry or take the other option from the same two buttons."""
+    pending_dialogs.put(session, PENDING_GUI_CHOICE, {**pending, AI_DESIGN_FAILED: True})
+    reply_payload(session, assistant_message(
+        f"{lead}You can try the AI design again, or use basic CRUD pages instead.",
+        suggestedActions=gui_choice_actions(),
+    ))
+
+
 def _user_listed_screens(session, request) -> bool:
     """Whether the user listed the screens to build, in this message or in the
     app description of this project (classifier ``screens_listed``)."""
@@ -736,15 +751,9 @@ def execute_model_operation(
 
         # A typed answer ("Basic CRUD pages") wins over listed screens.
         _typed_answer = gui_choice_from_label(getattr(request, "message", ""))
-        _screens_listed = not _typed_answer and _user_listed_screens(session, request)
-        if _screens_listed:
-            logger.info("[ModelOp] The request lists its screens; designing them without the CRUD/AI question")
         # A mockup (operation["images"]) is reproduced by the AI design path;
         # Basic CRUD pages would ignore it, so there is nothing to choose.
-        if (_has_class_diagram and not _skip_gui_choice and not operation.get("images")
-                and not _screens_listed):
-            if not pending_dialogs.may_open(PENDING_GUI_CHOICE):
-                return Deferred(operation)
+        if _has_class_diagram and not _skip_gui_choice and not operation.get("images"):
             pending = {
                 'operation_request': operation_request,
                 'operation': operation,
@@ -752,6 +761,20 @@ def execute_model_operation(
                 'diagram_type': target_diagram_type,
                 '_replace_existing': _replace_existing,
             }
+            if not _typed_answer and _user_listed_screens(session, request):
+                logger.info("[ModelOp] The request lists its screens; designing them without the CRUD/AI question")
+                built = execute_model_operation(
+                    session, request, operation, default_mode,
+                    _skip_existing_check=_skip_existing_check, _replace_existing=_replace_existing,
+                    _skip_gui_choice=True, _create_new_tab=_create_new_tab,
+                )
+                if not isinstance(built, str):
+                    # Failed: open the question for a retry or Basic CRUD pages.
+                    reoffer_gui_choice(session, pending)
+                    return None
+                return built
+            if not pending_dialogs.may_open(PENDING_GUI_CHOICE):
+                return Deferred(operation)
             if _typed_answer:
                 # A button label typed with no question open (the screens were
                 # built before): the app layer applies it, nothing is asked.
