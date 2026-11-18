@@ -206,7 +206,7 @@ def _original_for_smart_generation(session, user_message, *, replace=False):
     if _CONTENT_FREE_FOLLOW_UP_RE.fullmatch(normalized):
         if not previous:
             return None
-        if re.search(r"\bfix", normalized) and not _previous_result_gone(session):
+        if re.search(r"\bfix", normalized) and not _run_starts_from_the_model(session):
             return f"{previous}\n\n## Subsequent user request\n\n{_FIX_FOLLOW_UP_NOTE}"
         return previous
     if previous and not replace and (message == previous or previous.endswith("\n" + message)):
@@ -487,7 +487,7 @@ def _build_smart_gen_confirmation(
     )
 
     # Without the previous result the run is not an update of the existing app.
-    result_expired = _previous_result_gone(session)
+    result_expired = _run_starts_from_the_model(session)
     prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
     if result_expired:
         sources = "your model and your original request" if original else "your model"
@@ -587,6 +587,13 @@ def _previous_result_gone(session: Session) -> bool:
     linked repo holds the app: the run builds the app again."""
     last_generation = getattr(_request_context(session), "last_generation", None) or {}
     return last_generation.get("expired") is True and not repo_holds_app(session)
+
+
+def _run_starts_from_the_model(session: Session) -> bool:
+    """True when the run has no earlier code to build on: the previous result
+    is gone and no repo is linked (the editor may continue from a linked repo
+    whose code it has not reported)."""
+    return _previous_result_gone(session) and not linked_repo_name(session)
 
 
 # A model value that is not shown: markup, a URL, or what looks like a key.
@@ -1103,6 +1110,7 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
                 reason_prefix="generating with current model",
                 original_request=stashed_original,
                 mode=stashed_mode,
+                previous_result_gone=_run_starts_from_the_model(session),
             )
             reply_payload(session, payload)
             return True
@@ -1554,6 +1562,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 reason_prefix="generating with current model",
                 original_request=stashed_original,
                 mode=stashed_mode,
+                previous_result_gone=_run_starts_from_the_model(session),
             )
         # Fall through to normal classification if the stash was empty.
 

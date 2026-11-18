@@ -62,6 +62,10 @@ SAMPLES = {
     "language": "French",
     "instructions": "Rails 7 with PostgreSQL.",
     "original": "A hotel app with rooms and bookings.",
+    "starting_point": "Build the whole application from the current model.",
+    "has_request": True,
+    "text": "A hotel app with rooms and bookings.",
+    "point": "Build the whole application from the current model.",
     "spec": "Loans are active, returned or overdue.",
     "transcript": "user: hi\nassistant: hello",
 }
@@ -77,6 +81,9 @@ VARIANTS = {
     "class_metadata": [[]],
     "diagram_type": _DIAGRAM_TYPES,
     "target_diagram_type": _DIAGRAM_TYPES,
+    "starting_point": [""],
+    "has_request": [False],
+    "point": [""],
 }
 
 EXPECTED = {
@@ -194,7 +201,12 @@ EXPECTED = {
     "quantum_circuit.SYSTEM_PROMPT": "7b749245192dac74",
     "quantum_circuit.complete_system_prompt": "05f176f69f2407fb",
     "reply_language.translation_prompt": "879d43f4fee00665",
-    "spec_driven.framed_instructions": "a9d67d58a1379d49",
+    "spec_driven.framed_instructions": "95498c40d43c60fa",
+    "spec_driven.framed_instructions[starting_point='']": "a9d67d58a1379d49",
+    "spec_driven.starting_point": "da1dc946416053e8",
+    "spec_driven.starting_point[has_request=False]": "ecf41105b4773dba",
+    "spec_driven.with_starting_point": "febe0467ccd41705",
+    "spec_driven.with_starting_point[point='']": "2b802abdb6d976f9",
     "state_machine.MODIFY_SYSTEM_PROMPT_STATE_MACHINE": "df550a74a45076cd",
     "state_machine.SYSTEM_GENERATION_PROMPT": "acf22b03c16b0b65",
     "state_machine.SYSTEM_PROMPT": "1a9c0817932ef035",

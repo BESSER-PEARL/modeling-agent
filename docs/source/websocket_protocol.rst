@@ -223,9 +223,13 @@ Field Reference
        content is appended to it. A content-free follow-up ("regenerate with
        fixes", "try again", "fix it") with neither asks the user to describe
        the application again. When
-       ``expired`` is true (and no linked repo holds the app), the run
-       confirmation says the previous result is no longer available and the
-       application will be built again, instead of offering to update it.
+       ``expired`` is true and the project has no linked repo (the editor may
+       continue from a linked repo's code), the run confirmation says the
+       previous result is no longer available and the application will be
+       built again, instead of offering to update it. The run's instructions
+       then end with a "Starting point" section: build the whole application
+       from the model and the requests, including any earlier work they ask
+       to continue or fix.
    * - ``attachments``
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)
