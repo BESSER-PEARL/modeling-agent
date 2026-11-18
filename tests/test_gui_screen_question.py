@@ -2,16 +2,20 @@
 
 Basic CRUD pages build one page per class, so a request that already lists
 its screens lost every screen it named when that answer was picked; such a
-request is built by the AI design without asking.
+request is built by the AI design without asking. A typed answer with no
+question open (the screens were already built) is applied, not asked again.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 import execution.model_operations as modeling
+from app import confirmation
+from app import state_bodies as sb
 from common import pending_dialogs
 from common.pending_dialogs import PENDING_GUI_CHOICE
+from protocol.actions import Action
 from protocol.types import AssistantRequest, WorkspaceContext
 from utilities.original_request import remember_original_request
 
@@ -78,3 +82,35 @@ def test_a_request_without_its_screens_is_still_asked(run_gui_op, message):
     assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is not None
     handler.generate_complete_system.assert_not_called()
 
+
+@pytest.mark.parametrize("message,answer", [
+    ("Basic CRUD pages", "auto"),
+    ("Experimental AI design", "llm"),
+])
+def test_a_typed_answer_with_no_question_open_is_not_asked_again(run_gui_op, message, answer):
+    session, handler, asked = run_gui_op(message)
+    assert not asked
+    pending = pending_dialogs.get(session, PENDING_GUI_CHOICE)
+    assert pending and pending.get(modeling.GUI_CHOICE_IN_REQUEST)
+    assert modeling.gui_choice_from_label(message) == answer
+    handler.generate_complete_system.assert_not_called()
+
+
+def test_the_modeling_body_settles_a_question_its_own_message_answers():
+    session = FakeSession()
+
+    def plan(**kwargs):
+        pending_dialogs.put(session, PENDING_GUI_CHOICE, {
+            "operation_request": "Create the GUI", "operation": dict(GUI_OP),
+            modeling.GUI_CHOICE_IN_REQUEST: True,
+        })
+
+    request = AssistantRequest(message="Basic CRUD pages", context=WorkspaceContext())
+    payloads = []
+    with patch.object(sb, "_common_preamble", return_value=request), \
+         patch.object(sb, "execute_planned_operations", side_effect=plan), \
+         patch.object(confirmation, "parse_assistant_request", return_value=request), \
+         patch.object(confirmation, "reply_payload", side_effect=lambda _s, p: payloads.append(p)):
+        sb._modeling_state_body(session, "create_complete_system_intent", "complete_system", "EMPTY")
+    assert [p["action"] for p in payloads] == [Action.AUTO_GENERATE_GUI]
+    assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is None

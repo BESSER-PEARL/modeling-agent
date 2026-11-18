@@ -94,6 +94,26 @@ def gui_choice_actions() -> list:
     ]
 
 
+# The answer each button label stands for.
+_GUI_CHOICE_LABELS = {
+    "basic crud pages": "auto",
+    "experimental ai design": "llm",
+}
+
+# Set on a screen question opened by a message that already answers it.
+GUI_CHOICE_IN_REQUEST = "answered_in_request"
+
+
+def gui_choice_from_label(message: Optional[str]) -> Optional[str]:
+    """"auto" / "llm" when *message* is, or starts with, a button label."""
+    token = " ".join(re.sub(r"[^\w\s]", " ", (message or "").lower()).split())
+    return next(
+        (answer for label, answer in _GUI_CHOICE_LABELS.items()
+         if token == label or token.startswith(label + " ")),
+        None,
+    )
+
+
 # A request that says how many screens it wants ("three screens", "exactly 4
 # pages") or lists them ("screens: ...") already describes them, and Basic CRUD
 # pages (one per class) would drop them. "One page per class" asks for CRUD.
@@ -719,25 +739,32 @@ def execute_model_operation(
             and len(_resolved_class_diagram["elements"]) > 0
         )
 
-        # A mockup (operation["images"]) is reproduced by the AI design path;
-        # Basic CRUD pages would ignore it, so there is nothing to choose.
         _screens_listed = _lists_screens(
             getattr(request, "message", ""),
             original_request_for_project(session, request_project_id(request)),
         )
         if _screens_listed:
             logger.info("[ModelOp] The request lists its screens; designing them without the CRUD/AI question")
+        # A mockup (operation["images"]) is reproduced by the AI design path;
+        # Basic CRUD pages would ignore it, so there is nothing to choose.
         if (_has_class_diagram and not _skip_gui_choice and not operation.get("images")
                 and not _screens_listed):
             if not pending_dialogs.may_open(PENDING_GUI_CHOICE):
                 return Deferred(operation)
-            pending_dialogs.put(session, PENDING_GUI_CHOICE, {
+            pending = {
                 'operation_request': operation_request,
                 'operation': operation,
                 'default_mode': default_mode,
                 'diagram_type': target_diagram_type,
                 '_replace_existing': _replace_existing,
-            })
+            }
+            if gui_choice_from_label(getattr(request, "message", "")):
+                # A button label typed with no question open (the screens were
+                # built before): the app layer applies it, nothing is asked.
+                pending_dialogs.put(session, PENDING_GUI_CHOICE, {**pending, GUI_CHOICE_IN_REQUEST: True})
+                logger.info("[ModelOp] The request answers the screen question; not asking it")
+                return None
+            pending_dialogs.put(session, PENDING_GUI_CHOICE, pending)
             reply_payload(session, {
                 "action": Action.ASSISTANT_MESSAGE,
                 "message": (

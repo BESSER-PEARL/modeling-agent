@@ -30,7 +30,7 @@ from common.pending_dialogs import (
     PENDING_WEBAPP_GENERATE,
 )
 from execution import execute_model_operation
-from execution.model_operations import gui_choice_actions
+from execution.model_operations import gui_choice_actions, gui_choice_from_label
 from codegen.generation_handler import (
     handle_pending_plan_generation_confirmation,
     handle_pending_smart_gen_confirmation,
@@ -98,13 +98,6 @@ _AUTO_KEYWORDS = ['auto', '1', 'deterministic', 'fast', 'standard', 'default', '
 # these keywords are the LLM-outage fallback. Older labels stay matched.
 _LLM_KEYWORDS = ['ai-generated', 'llm', '2', 'personali', 'ai', 'experimental', 'custom', 'design']
 
-# The choice buttons send their exact label (model_operations.py). An exact
-# label is unambiguous, so it decides before the classifier, which on
-# 2026-10-12 mapped "Experimental AI design" to the basic CRUD answer.
-_GUI_CHOICE_LABELS = {
-    "basic crud pages": "auto",
-    "experimental ai design": "llm",
-}
 
 
 def _build_auto_gui_message(
@@ -256,14 +249,11 @@ def handle_pending_gui_choice(session: Session) -> bool:
     _verdict_usable = _flow_action == "answer" and _flow_answer in (
         "auto", "llm", "cancel")
 
-    # A message that starts with a button label ("Basic CRUD pages, thanks")
-    # is that answer.
-    _token = _normalize_flow_token(user_msg)
-    _label_answer = next(
-        (answer for label, answer in _GUI_CHOICE_LABELS.items()
-         if _token == label or _token.startswith(label + " ")),
-        None,
-    )
+    # The choice buttons send their exact label, and a message that starts with
+    # one ("Basic CRUD pages, thanks") is that answer. An exact label is
+    # unambiguous, so it decides before the classifier, which on 2026-10-12
+    # mapped "Experimental AI design" to the basic CRUD answer.
+    _label_answer = gui_choice_from_label(user_msg)
     if (not _label_answer and pending.get(_AI_DESIGN_FAILED)
             and _is_gui_answer(user_msg, _RETRY_KEYWORDS, _GUI_ANSWER_MAX_WORDS)):
         _label_answer = "llm"

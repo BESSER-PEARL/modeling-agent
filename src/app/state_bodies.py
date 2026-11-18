@@ -37,8 +37,9 @@ from conversation.session_helpers import (
     json_intent_matches,
     json_no_intent_matched,
 )
-from app.confirmation import resume_pending
+from app.confirmation import handle_pending_gui_choice, resume_pending
 from execution import execute_planned_operations
+from execution.model_operations import GUI_CHOICE_IN_REQUEST
 from ingestion.file_handling import handle_file_attachments
 from conversation.suggestions import get_suggested_actions
 from diagram_handlers.registry.metadata import get_diagram_type_info
@@ -482,6 +483,9 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
             default_mode=default_mode,
             matched_intent=intent_name,
         )
+        # The message answered the screen question it opened: apply it now.
+        if (pending_dialogs.get(session, pending_dialogs.PENDING_GUI_CHOICE) or {}).get(GUI_CHOICE_IN_REQUEST):
+            handle_pending_gui_choice(session)
         # "What's next?" suggestions are delivered as interactive QuickAction
         # buttons via suggestedActions in the result payload (execution.py).
         # No need for a separate text message.
