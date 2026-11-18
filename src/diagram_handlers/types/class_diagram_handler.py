@@ -1922,8 +1922,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
             for near, far, side in ((source, target, "target"), (target, source, "source")):
                 tokens = re.findall(r"\w+", cls._spec_role(rel, side)) + [far] + link
                 known.setdefault(near, set()).update(_key(t) for t in tokens)
+            # the link class reaches each participant by its class or role name
+            roles = re.findall(r"\w+", cls._spec_role(rel, "source") + " " + cls._spec_role(rel, "target"))
             for owner in link:
-                known.setdefault(owner, set()).update({_key(source), _key(target)})
+                known.setdefault(owner, set()).update(_key(t) for t in [source, target] + roles)
 
         on_class = re.compile(
             r"(?<![\w.])(?:" + "|".join(map(re.escape, class_names)) + r")\s*->"
@@ -1933,7 +1935,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             expr, context = con.get("expression"), con.get("context")
             if not isinstance(expr, str) or context not in known:
                 continue
-            expr = re.sub(r"'[^']*'", "''", expr)
+            expr = re.sub(r"--[^\n]*", "", re.sub(r"'[^']*'", "''", expr))
             names = set().union(*(known.get(n, set()) for n in cls._reach_over_edges(edges, {context})))
             read = re.findall(r"\bself\s*\.\s*([A-Za-z_]\w*)", expr)
             if (any(not n.startswith("ocl") and _key(n) not in names for n in read)

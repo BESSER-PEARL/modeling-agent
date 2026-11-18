@@ -435,6 +435,21 @@ class TestMembersInUse:
         handler._rewrite_foreign_key_attributes(spec, "orders")
         assert _names(spec, "Order") == ["customerId"]
 
+    @pytest.mark.parametrize("expression", [
+        # a link class reaches a participant by its role name
+        "context Enrollment inv open: self.enrolledIn.capacity > 0",
+        "context Enrollment inv open: self.attendees.name <> ''",
+        # a line comment may name anything
+        "context Enrollment inv open: self.grade >= 0 -- self.bonus is not modelled",
+    ])
+    def test_valid_forms_fit(self, handler, expression):
+        spec = _spec([_cls("Student", [_attr("name")]), _cls("Course", [_attr("capacity", "int")]),
+                      _cls("Enrollment", [_attr("grade", "int")])],
+                     [_assoc("Student", "Course", "enrolledIn", "attendees",
+                             associationClass="Enrollment")])
+        spec["constraints"] = [{"context": "Enrollment", "name": "open", "expression": expression}]
+        assert handler._mismatched_constraints(spec) == []
+
     def test_an_id_a_method_body_reads_is_kept(self, handler):
         spec = _spec([_cls("Order", [_attr("customerId")]), _cls("Customer")])
         spec["classes"][0]["methods"] = [{
