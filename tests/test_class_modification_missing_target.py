@@ -242,6 +242,40 @@ class TestExistingClassReferences:
         assert result["action"] == "assistant_message"
         assert "**Publication** is already in the diagram" in result["message"]
 
+    def _with_book(self):
+        model = _library_with_abstract_publication()
+        model["elements"]["c-book"] = {"id": "c-book", "name": "Book", "type": "Class", "owner": None}
+        model["elements"]["a-isbn"] = {"id": "a-isbn", "name": "isbn", "type": "ClassAttribute",
+                                       "owner": "c-book"}
+        model["relationships"]["r2"] = {"id": "r2", "type": "ClassInheritance",
+                                        "source": {"element": "c-book"}, "target": {"element": "c-pub"}}
+        return model
+
+    def test_re_added_class_gets_no_surrogate_id_and_no_inherited_attribute(self, handler):
+        result = _modify(handler, [
+            {"action": "add_class", "target": {},
+             "changes": {"className": "Book", "attributes": [
+                 {"name": "id", "type": "int"}, {"name": "isbn"}, {"name": "title"},
+                 {"name": "pages", "type": "int"}]}},
+        ], self._with_book(), request="add pages to books")
+
+        mods = result.get("modifications") or [result["modification"]]
+        assert [(m["action"], m["target"], m["changes"]["name"]) for m in mods] == [
+            ("add_attribute", {"className": "Book"}, "pages")]
+
+    def test_re_added_class_with_nothing_new_is_mentioned_in_a_batch(self, handler):
+        result = _modify(handler, [
+            {"action": "add_class", "target": {},
+             "changes": {"className": "Author", "isAbstract": True, "attributes": []}},
+            {"action": "add_attribute", "target": {"className": "Publication"},
+             "changes": {"name": "year", "type": "int"}},
+        ], self._with_book())
+
+        assert _remaining_actions(result) == ["add_attribute"]
+        assert "**Author** is already in the diagram with those members." in result["message"]
+        assert "**Author** already exists and is not abstract" in result["message"]
+        assert "nothing changed" not in result["message"]
+
     def test_add_class_after_removing_that_class_is_kept(self, handler):
         result = _modify(handler, [
             {"action": "remove_element", "target": {"className": "Author"}},

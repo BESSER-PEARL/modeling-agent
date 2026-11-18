@@ -3583,24 +3583,34 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         # Whether the refactoring expansion wrote the reply itself.
         refactor_reply = [False]
-        required_notes: List[str] = []
+        # What the deterministic guards below changed, for the reply.
+        guard_notes: List[str] = []
+        request_text = kwargs.get("raw_request") or user_request
 
-        def _expand_refactoring(handler, spec):
-            spec = handler._prepare_modification_spec(spec, current_model)
-            refactor_reply[0] = "message" in spec
-            required_notes[:] = handler._keep_identifiers_required(spec, current_model)
-            if required_notes and not (spec.get("modification") or spec.get("modifications")):
-                return assistant_message(" ".join(required_notes))
-            # A new class gets no surrogate id, as in a generated diagram.
+        def _ops(spec):
             mods = spec.get("modifications")
             if not isinstance(mods, list):
                 mods = [spec.get("modification")]
-            mods = [m for m in mods if isinstance(m, dict)]
+            return [m for m in mods if isinstance(m, dict)]
+
+        def _references(spec):
+            # an OCL rule added in the same request may read the id
+            return " ".join(str((m.get("changes") or {}).get("constraint") or "") for m in _ops(spec))
+
+        def _expand_refactoring(handler, spec):
+            guard_notes[:] = handler._add_members_to_existing_classes(
+                spec, current_model, request_text, _references(spec))
+            if not _ops(spec):
+                return assistant_message(" ".join(guard_notes))
+            spec = handler._prepare_modification_spec(spec, current_model)
+            refactor_reply[0] = "message" in spec
+            guard_notes.extend(handler._keep_identifiers_required(spec, current_model))
+            if guard_notes and not _ops(spec):
+                return assistant_message(" ".join(guard_notes))
+            # A new class gets no surrogate id, as in a generated diagram.
             handler._strip_surrogate_ids(
-                [m.get("changes") for m in mods if m.get("action") == "add_class"],
-                kwargs.get("raw_request") or user_request,
-                # an OCL rule added in the same request may read the id
-                " ".join(str((m.get("changes") or {}).get("constraint") or "") for m in mods),
+                [m.get("changes") for m in _ops(spec) if m.get("action") == "add_class"],
+                request_text, _references(spec),
             )
             return spec
 
@@ -3673,10 +3683,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # silent even when a legitimate add in the same request succeeded.
         # An assistant message already carries the guard notes.
         if modification_spec.get("action") != Action.MODIFY_MODEL:
-            required_notes.clear()
-        if not_found_notes or required_notes:
+            guard_notes.clear()
+        if not_found_notes or guard_notes:
             existing = modification_spec.get("message") or ""
-            joined = " ".join(required_notes + not_found_notes)
+            joined = " ".join(guard_notes + not_found_notes)
             modification_spec["message"] = (
                 f"{existing}\n\n{joined}".strip() if existing else joined
             )
@@ -3872,9 +3882,6 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # and the ones a merge copies from the canvas are the user's.
         self._fix_reversed_composition_mods(spec)
         self._name_classes_given_by_id(spec, current_model)
-        spec = self._add_members_to_existing_classes(spec, current_model)
-        if spec.get("action") == Action.ASSISTANT_MESSAGE:
-            return spec
         if self._is_refactoring_action(spec):
             logger.info("[ClassDiagram] Detected refactoring action, expanding into primitives")
             spec = self._expand_refactoring_actions(spec, current_model)
@@ -3921,18 +3928,23 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
     def _add_members_to_existing_classes(
         self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
+        request_text: Optional[str] = None, references: str = "",
+    ) -> List[str]:
         """Turn an ``add_class`` of a class the diagram already has into
         ``add_attribute`` / ``add_method`` ops for the members it lacks.
 
-        The editor skips such an ``add_class`` with all its members. Left as is
-        for an enumeration, and when the batch removes or renames that class.
-        Returns *spec*, or an assistant message when nothing is left to apply."""
+        The editor skips such an ``add_class`` with all its members. A member
+        the class or its generalization line already has is not added again
+        (a subclass may not redeclare an inherited attribute), nor is a
+        surrogate id (:meth:`_strip_surrogate_ids`). Left as is for an
+        enumeration, and when the batch removes or renames that class.
+        Mutates *spec*, which keeps no op when nothing is left to apply, and
+        returns the notes for the reply."""
         mods = spec.get("modifications")
         mods = mods if isinstance(mods, list) else [spec.get("modification")]
         mods = [m for m in mods if isinstance(m, dict)]
-        existing = {c["name"].lower(): c for c in self._existing_classes(current_model).values()
-                    if c["type"] != "Enumeration"}
+        classes = self._existing_classes(current_model)
+        existing = {c["name"].lower(): eid for eid, c in classes.items() if c["type"] != "Enumeration"}
         replaced = {
             str((m.get("target") or {}).get("className") or "").strip().lower()
             for m in mods
@@ -3944,20 +3956,25 @@ class ClassDiagramHandler(BaseDiagramHandler):
         }
         kept: List[Dict[str, Any]] = []
         present: List[str] = []
+        notes: List[str] = []
         converted = False
         for mod in mods:
             changes = mod.get("changes") if isinstance(mod.get("changes"), dict) else {}
             name = str(changes.get("className") or "").strip()
-            cls = existing.get(name.lower())
-            if mod.get("action") != "add_class" or cls is None or name.lower() in replaced:
+            eid = existing.get(name.lower())
+            if mod.get("action") != "add_class" or eid is None or name.lower() in replaced:
                 kept.append(mod)
                 continue
+            cls = classes[eid]
+            self._strip_surrogate_ids([changes], request_text, references)
+            line = self._inheritance_closure(current_model, {eid})
+            members = set().union(*(classes[i]["members"] for i in line if i in classes))
             added = [
                 {"action": action, "target": {"className": cls["name"]}, "changes": member}
                 for key, action in (("attributes", "add_attribute"), ("methods", "add_method"))
                 for member in changes.get(key) or []
                 if isinstance(member, dict) and isinstance(member.get("name"), str)
-                and self._clean_member_name(member["name"]).lower() not in cls["members"]
+                and self._clean_member_name(member["name"]).lower() not in members
             ]
             logger.info(
                 "[ClassDiagram] add_class '%s': the class exists; %d member op(s) instead",
@@ -3967,15 +3984,21 @@ class ClassDiagramHandler(BaseDiagramHandler):
             converted = True
             if not added:
                 present.append(cls["name"])
+            if changes.get("isAbstract") and cls["type"] != "AbstractClass":
+                notes.append(f"**{cls['name']}** already exists and is not abstract; I left that as it is.")
         if not converted:
-            return spec
-        if not kept:
+            return []
+        if present:
             listed = " and ".join(f"**{n}**" for n in present)
-            return assistant_message(
-                f"{listed} {'is' if len(present) == 1 else 'are'} already in the diagram "
-                "with those members, so nothing changed.")
-        self._replace_ops(spec, kept)
-        return spec
+            verb = "is" if len(present) == 1 else "are"
+            tail = "" if kept else ", so nothing changed"
+            notes.insert(0, f"{listed} {verb} already in the diagram with those members{tail}.")
+        if kept:
+            self._replace_ops(spec, kept)
+        else:
+            spec.pop("modification", None)
+            spec.pop("modifications", None)
+        return notes
 
     @staticmethod
     def _replace_ops(spec: Dict[str, Any], ops: List[Dict[str, Any]]) -> None:
