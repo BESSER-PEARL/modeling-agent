@@ -420,3 +420,15 @@ def test_authored_form_input_of_an_enumeration_becomes_a_select():
     assert "list" not in state["attributes"] and "placeholder" not in state["attributes"]
     assert state["attributes"]["id"] == "s"
 
+
+
+def test_form_widget_marks_the_fields_a_record_needs_as_required():
+    form, = _forms(_nodes(_generate([{"name": "New sale", "sections": [
+        {"bind": {"kind": "form", "className": "Sale", "columns": ["reference", "state", "memo", "paid"]}},
+    ]}], SHOP_META), "New sale"))
+    controls = _controls(form)
+    assert controls["reference"]["attributes"].get("required") == "required"
+    assert controls["state"]["attributes"].get("required") == "required"
+    assert "required" not in controls["memo"]["attributes"]
+    # A required checkbox would have to be ticked; unticked already sends false.
+    assert "required" not in controls["paid"]["attributes"]

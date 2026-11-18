@@ -718,6 +718,9 @@ def _labelled_input(attr: Dict[str, Any], form_key: str, input_style: Dict[str, 
     input_attrs = {"type": input_type, "name": attr["name"], "id": input_id}
     if input_type != "checkbox":
         input_attrs["placeholder"] = label
+        if _is_required(attr):
+            # Truthy: BESSER's converter reads an empty value as not required
+            input_attrs["required"] = "required"
     control = {
         "tagName": "input",
         "attributes": input_attrs,
