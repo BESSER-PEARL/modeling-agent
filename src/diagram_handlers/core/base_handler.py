@@ -638,6 +638,11 @@ class BaseDiagramHandler(ABC):
             "nor _modification_crash_reply"
         )
 
+    def _keep_ops_without_changes(self, mods: list, elements: Optional[Dict[str, Any]]) -> list:
+        """Of a reply whose ops all lack changes, those the handler resolves
+        itself instead of having them dropped (none by default)."""
+        return []
+
     # ------------------------------------------------------------------
     # Shared modification response handling
     # ------------------------------------------------------------------
@@ -696,6 +701,37 @@ class BaseDiagramHandler(ABC):
         if post_processor is not None:
             mod_list = post_processor(mod_list)
 
+        # A modify_* op without changes has nothing to apply. Dropped after the
+        # post-processor so a handler's own checks (e.g. a missing target) run first.
+        unchanged = [
+            m for m in mod_list
+            if str(m.get("action", "")).startswith("modify_") and not isinstance(m.get("changes"), dict)
+        ]
+        # Only when no op has changes: a kept op would still be listed in a batch reply.
+        resolved = (
+            self._keep_ops_without_changes(unchanged, elements)
+            if unchanged and len(unchanged) == len(mod_list) else []
+        )
+        no_changes = [
+            {"index": i, "reason": f"{m.get('action')} has no changes"}
+            for i, m in enumerate(mod_list)
+            if any(m is u for u in unchanged) and not any(m is r for r in resolved)
+        ]
+        if no_changes:
+            for skip in no_changes:
+                logger.warning(
+                    f"[{self.get_diagram_type()}] Skipping invalid modifications[{skip['index']}]: {skip['reason']}"
+                )
+            dropped = {skip["index"] for skip in no_changes}
+            if len(dropped) == len(mod_list):
+                # The generation-error code lets an editor repair request report it unchanged.
+                return self._error_response(
+                    "I couldn't turn that request into a concrete change to the diagram. "
+                    "Could you say which element to change and how?",
+                    code=ErrorCode.GENERATION_ERROR.value, retryable=False,
+                )
+            mod_list = [m for i, m in enumerate(mod_list) if i not in dropped]
+
         if len(mod_list) == 1:
             modification_spec: Dict[str, Any] = {
                 "action": Action.MODIFY_MODEL, "modification": mod_list[0],
@@ -712,6 +748,10 @@ class BaseDiagramHandler(ABC):
                 return modification_spec  # nothing left to apply
 
         self.validate_modification_spec(modification_spec)
+        if no_changes:
+            modification_spec['_skipped_modifications'] = (
+                no_changes + modification_spec.get('_skipped_modifications', [])
+            )
 
         modification_spec.setdefault('action', Action.MODIFY_MODEL)
         modification_spec.setdefault('diagramType', self.get_diagram_type())

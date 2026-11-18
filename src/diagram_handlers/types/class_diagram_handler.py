@@ -3421,7 +3421,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             """Strip modify_relationship entries that accompany a modify_class
             rename -- relationships are linked by ID and update automatically."""
             has_class_rename = any(
-                m.get("action") == "modify_class" and m.get("changes", {}).get("name")
+                m.get("action") == "modify_class" and (m.get("changes") or {}).get("name")
                 for m in mod_list
             )
             if has_class_rename:
@@ -3605,6 +3605,14 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         return modification_spec
     
+    def _keep_ops_without_changes(self, mods: list, elements: Optional[Dict[str, Any]]) -> list:
+        """Keep an op on a missing element: ``_drop_phantom_target_ops`` names it
+        and, when every op misses, samples again."""
+        if not elements:
+            return []
+        index = self._build_model_index({"elements": elements})
+        return [m for m in mods if self._phantom_note_for_mod(m, *index) is not None]
+
     def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
         """The reply when ``_build_modification`` crashes. It applies nothing:
         a placeholder op (``modify_class Unknown``) only made the editor report
