@@ -1399,6 +1399,15 @@ def _table_component(
     }
 
 
+def _has_read_only_table(node: Any) -> bool:
+    if not isinstance(node, dict):
+        return False
+    attrs = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
+    if node.get("type") == "table" and attrs.get("action-buttons") == "false":
+        return True
+    return any(_has_read_only_table(child) for child in node.get("components") or [])
+
+
 def _dashboard_component(
     section_spec: Dict[str, Any],
     class_metadata: Optional[List[Dict[str, Any]]],
@@ -4453,14 +4462,18 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
             query = _clean_text(spec.get("sectionTitle"))
             section_spec = spec.get("section") if isinstance(spec.get("section"), dict) else None
             if query and section_spec:
-                replacement = _build_section_component(section_spec, class_metadata)
                 for page in model.get("pages", []):
                     if not isinstance(page, dict):
                         continue
                     wrapper = _ensure_page_wrapper(page)
                     for parent, idx, comp in _iter_section_components(wrapper):
                         if _match_section(comp, query):
-                            parent[idx] = replacement
+                            bind = section_spec.get("bind")
+                            # A rewrite that does not say keeps a read-only table read-only
+                            if (isinstance(bind, dict) and bind.get("editable") is None
+                                    and _has_read_only_table(comp)):
+                                section_spec = {**section_spec, "bind": {**bind, "editable": False}}
+                            parent[idx] = _build_section_component(section_spec, class_metadata)
                             return model, f"Updated the **{query}** section."
             return model, (
                 f"I couldn't find a section matching **{query or 'that'}** to edit. "

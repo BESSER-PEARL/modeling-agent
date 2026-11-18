@@ -545,3 +545,20 @@ def test_a_class_is_managed_on_its_editable_table_page_not_a_read_only_one():
         books_id = next(p["id"] for p in model["pages"] if p["name"] == "Books")
         btn = _by_text(_nodes(model, "Home"), "Reserve a book")
         assert btn["attributes"]["data-target-screen"] == books_id
+
+
+def test_rewriting_a_read_only_table_section_keeps_it_read_only():
+    model = _generate([{"name": "Archive", "sections": [{
+        "bind": {"kind": "table", "className": "Loan", "title": "Past loans", "editable": False},
+        "html": "<section class='ds-section'><h2>Loan history</h2><div class='ds-card'><!--WIDGET:table--></div></section>",
+    }]}])
+
+    def rewrite(bind):
+        return _modify(model, [{"operation": "edit_section", "pageName": "Archive", "sectionTitle": "Loan history",
+                                "section": {"bind": {"kind": "table", "className": "Loan", **bind}}}])
+
+    unstated = next(n for n in _nodes(rewrite({"title": "Old loans"}), "Archive") if n.get("type") == "table")
+    assert unstated["attributes"]["action-buttons"] == "false"
+    stated = next(n for n in _nodes(rewrite({"title": "Old loans", "editable": True}), "Archive")
+                  if n.get("type") == "table")
+    assert stated["attributes"]["action-buttons"] == "true"
