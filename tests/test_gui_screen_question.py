@@ -114,3 +114,12 @@ def test_the_modeling_body_settles_a_question_its_own_message_answers():
         sb._modeling_state_body(session, "create_complete_system_intent", "complete_system", "EMPTY")
     assert [p["action"] for p in payloads] == [Action.AUTO_GENERATE_GUI]
     assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is None
+
+
+def test_a_typed_answer_wins_over_screens_the_app_description_lists(run_gui_op):
+    session = FakeSession()
+    remember_original_request(session, "A library app with two screens: Books and Authors.", "p1")
+    _, handler, asked = run_gui_op("Basic CRUD pages", session=session, project_id="p1")
+    assert not asked
+    assert pending_dialogs.get(session, PENDING_GUI_CHOICE).get(modeling.GUI_CHOICE_IN_REQUEST)
+    handler.generate_complete_system.assert_not_called()

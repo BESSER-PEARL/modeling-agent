@@ -739,7 +739,9 @@ def execute_model_operation(
             and len(_resolved_class_diagram["elements"]) > 0
         )
 
-        _screens_listed = _lists_screens(
+        # A typed answer ("Basic CRUD pages") wins over listed screens.
+        _typed_answer = gui_choice_from_label(getattr(request, "message", ""))
+        _screens_listed = not _typed_answer and _lists_screens(
             getattr(request, "message", ""),
             original_request_for_project(session, request_project_id(request)),
         )
@@ -758,7 +760,7 @@ def execute_model_operation(
                 'diagram_type': target_diagram_type,
                 '_replace_existing': _replace_existing,
             }
-            if gui_choice_from_label(getattr(request, "message", "")):
+            if _typed_answer:
                 # A button label typed with no question open (the screens were
                 # built before): the app layer applies it, nothing is asked.
                 pending_dialogs.put(session, PENDING_GUI_CHOICE, {**pending, GUI_CHOICE_IN_REQUEST: True})
