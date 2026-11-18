@@ -487,7 +487,7 @@ def _build_smart_gen_confirmation(
     )
 
     # Without the previous result the run is not an update of the existing app.
-    result_expired = _previous_result_gone(session)
+    result_expired = _run_starts_from_the_model(session)
     prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
     if result_expired:
         sources = "your model and your original request" if original else "your model"

@@ -750,6 +750,29 @@ def test_a_repo_with_the_app_is_still_updated_after_the_download_expired():
     assert _EXPIRED_NOTE not in payload["message"]
 
 
+@pytest.mark.parametrize("repo", [
+    {"fullName": "acme/orders", "hasCode": False},
+    {"fullName": "acme/orders"},
+])
+def test_a_linked_repo_of_unknown_code_is_not_called_gone(repo):
+    # The editor may continue from a linked repo whose code it has not reported.
+    import uuid
+
+    session = FakeSession({
+        "action": "user_message", "protocolVersion": "2.0", "message": "build an order tracking app",
+        "sessionId": uuid.uuid4().hex,
+        "context": {
+            "activeDiagramType": "ClassDiagram", "projectSnapshot": {"id": _PROJECT_ID, "diagrams": {}},
+            "githubRepo": repo,
+            "lastGeneration": {"request": "An order app.", "expired": True},
+        },
+    })
+    payload = _build_smart_gen_confirmation(
+        session, "Build the order app.", "anthropic", user_message="build an order tracking app",
+    )
+    assert "no longer available" not in payload["message"]
+
+
 def test_regenerating_after_expiry_rebuilds_from_the_last_runs_request():
     from common.pending_dialogs import PENDING_SMART_GEN_ORIGINAL_REQUEST
 
