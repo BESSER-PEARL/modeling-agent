@@ -3671,6 +3671,9 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         # Append the not-found note(s) so the dropped removal/edit isn't
         # silent even when a legitimate add in the same request succeeded.
+        # An assistant message already carries the guard notes.
+        if modification_spec.get("action") != Action.MODIFY_MODEL:
+            required_notes.clear()
         if not_found_notes or required_notes:
             existing = modification_spec.get("message") or ""
             joined = " ".join(required_notes + not_found_notes)
@@ -3993,9 +3996,11 @@ class ClassDiagramHandler(BaseDiagramHandler):
         elements = current_model.get("elements") if isinstance(current_model, dict) else None
         if not isinstance(elements, dict):
             return []
-        class_ids = {c["name"].lower(): eid for eid, c in self._existing_classes(current_model).items()}
+        classes = self._existing_classes(current_model)
+        class_ids = {c["name"].lower(): eid for eid, c in classes.items()}
         identifiers = {
-            (el.get("owner"), self._clean_member_name(el.get("name")).lower())
+            (el.get("owner"), self._clean_member_name(el.get("name")).lower()):
+                self._clean_member_name(el.get("name"))
             for el in elements.values()
             if isinstance(el, dict) and el.get("type") == "ClassAttribute"
             and (el.get("isId") or el.get("isExternalId"))
@@ -4014,9 +4019,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
                     and changes.get("isOptional") is True and key in identifiers):
                 changes.pop("isOptional")
                 notes.append(
-                    f"I kept **{target.get('attributeName')}** in **{target.get('className')}** "
+                    f"I kept **{identifiers[key]}** in **{classes[key[0]]['name']}** "
                     "required: it is marked as an identifier, and an identifier cannot be "
-                    "optional. Remove its identifier mark first if it should be optional.")
+                    "optional. To make it optional, first remove its identifier mark in "
+                    "the attribute's settings.")
                 if not any(v not in (None, "", []) for v in changes.values()):
                     continue
             kept.append(mod)

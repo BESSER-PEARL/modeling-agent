@@ -281,15 +281,22 @@ class TestIdentifierStaysRequired:
     """BUML rejects an optional identifier; the editor's repair then deleted
     the attribute. The modification keeps it required and says why."""
 
-    @pytest.mark.parametrize("cls, attr", [("Customer", "email"), ("Order", "code")])
-    def test_making_an_identifier_optional_changes_nothing(self, handler, cls, attr):
+    @pytest.mark.parametrize("cls, attr, shown", [
+        ("Customer", "email", "**email** in **Customer**"),
+        ("Order", "code", "**code** in **Order**"),
+        # the note names the attribute and class as the diagram has them
+        ("customer", "email: str", "**email** in **Customer**"),
+    ])
+    def test_making_an_identifier_optional_changes_nothing(self, handler, cls, attr, shown):
         result = _modify(handler, [
             {"action": "modify_attribute", "target": {"className": cls, "attributeName": attr},
              "changes": {"isOptional": True}},
         ], _shop_with_identifiers(), request=f"make {attr} optional")
 
         assert result["action"] == "assistant_message"
-        assert f"I kept **{attr}** in **{cls}** required" in result["message"]
+        assert result["message"].count("I kept") == 1
+        assert f"I kept {shown} required" in result["message"]
+        assert "identifier mark in the attribute's settings" in result["message"]
 
     def test_other_changes_to_the_identifier_and_the_batch_still_apply(self, handler):
         result = _modify(handler, [
