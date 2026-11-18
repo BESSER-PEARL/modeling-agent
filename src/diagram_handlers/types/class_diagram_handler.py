@@ -3421,7 +3421,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             """Strip modify_relationship entries that accompany a modify_class
             rename -- relationships are linked by ID and update automatically."""
             has_class_rename = any(
-                m.get("action") == "modify_class" and m.get("changes", {}).get("name")
+                m.get("action") == "modify_class" and (m.get("changes") or {}).get("name")
                 for m in mod_list
             )
             if has_class_rename:

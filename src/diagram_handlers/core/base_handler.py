@@ -692,6 +692,26 @@ class BaseDiagramHandler(ABC):
 
         mod_list = parsed.model_dump()["modifications"]
 
+        # A modify_* op without changes has nothing to apply: drop it before
+        # any handler code reads ``changes``.
+        no_changes = [
+            {"index": i, "reason": f"{m.get('action')} has no changes"}
+            for i, m in enumerate(mod_list)
+            if str(m.get("action", "")).startswith("modify_") and not isinstance(m.get("changes"), dict)
+        ]
+        if no_changes:
+            for skip in no_changes:
+                logger.warning(
+                    f"[{self.get_diagram_type()}] Skipping invalid modifications[{skip['index']}]: {skip['reason']}"
+                )
+            dropped = {skip["index"] for skip in no_changes}
+            mod_list = [m for i, m in enumerate(mod_list) if i not in dropped]
+            if not mod_list:
+                return assistant_message(
+                    "I couldn't turn that request into a concrete change to the diagram. "
+                    "Could you say which element to change and how?"
+                )
+
         # Handler-specific cleanup of the raw modification list
         if post_processor is not None:
             mod_list = post_processor(mod_list)
@@ -712,6 +732,10 @@ class BaseDiagramHandler(ABC):
                 return modification_spec  # nothing left to apply
 
         self.validate_modification_spec(modification_spec)
+        if no_changes:
+            modification_spec['_skipped_modifications'] = (
+                no_changes + modification_spec.get('_skipped_modifications', [])
+            )
 
         modification_spec.setdefault('action', Action.MODIFY_MODEL)
         modification_spec.setdefault('diagramType', self.get_diagram_type())
