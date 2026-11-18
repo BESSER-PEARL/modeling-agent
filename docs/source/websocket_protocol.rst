@@ -227,9 +227,9 @@ Field Reference
        continue from a linked repo's code), the run confirmation says the
        previous result is no longer available and the application will be
        built again, instead of offering to update it. The run's instructions
-       then end with a "Starting point" section (build the whole application from the
-       model and the requests), and the summary's sentences about continuing
-       or fixing the earlier result are left out.
+       then end with a "Starting point" section: build the whole application
+       from the model and the requests, including any earlier work they ask
+       to continue or fix.
    * - ``attachments``
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)

@@ -3,10 +3,7 @@
 
 def framed_instructions(instructions: str, original: str, starting_point: str = "") -> str:
     """The classifier's summary, labelled as possibly inaccurate, then the
-    user's verbatim request as the authority, then the run's starting point.
-    An empty summary leaves out the notes."""
-    if not instructions:
-        return with_starting_point(f"## The user's original request, verbatim\n\n{original}", starting_point)
+    user's verbatim request as the authority, then the run's starting point."""
     return with_starting_point(
         "## Assistant's notes (may be inaccurate)\n\n"
         "Use these only for choices the user confirmed in the conversation "

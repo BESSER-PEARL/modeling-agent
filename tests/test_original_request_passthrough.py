@@ -737,9 +737,9 @@ def test_the_run_gets_the_original_request_not_the_follow_up(monkeypatch):
     assert "regenerate with fixes" not in run["instructions"]
 
 
-_STALE_SENTENCE = "Continue development of the existing task board app, fixing the issues left by the previous run."
-_CONFIRMED_CHOICE = "Use a Django backend with PostgreSQL."
-_CONTINUE_SUMMARY = f"{_STALE_SENTENCE} {_CONFIRMED_CHOICE}"
+_CONTINUE_SUMMARY = (
+    "Continue development of the existing task board app, fixing the issues left by the previous run."
+)
 _STARTING_POINT = (
     "## Starting point\n\n"
     "The previous result is no longer available, so there is no earlier code to continue or fix. "
@@ -750,10 +750,13 @@ _CONTINUE_MESSAGE = "can you continue with the development?"
 
 
 class _ContinueProvider(_FollowUpProvider):
+    def __init__(self, summary=_CONTINUE_SUMMARY):
+        self.summary = summary
+
     def parse(self, *, messages, schema, temperature, max_tokens):
         return UnifiedClassification(
             intent="generation_intent", generation_route="smart",
-            refined_instructions=_CONTINUE_SUMMARY, provider="openai", reason="test",
+            refined_instructions=self.summary, provider="openai", reason="test",
         )
 
 
@@ -766,21 +769,21 @@ def _confirm(session):
     return run
 
 
-def _confirmed_run(last_generation, monkeypatch, github_repo=None):
+def _confirmed_run(last_generation, monkeypatch, github_repo=None, message=_CONTINUE_MESSAGE,
+                   summary=_CONTINUE_SUMMARY):
     from codegen import generation_handler as generation
     from protocol.types import AssistantRequest
 
-    session = _follow_up_session(_CONTINUE_MESSAGE, last_generation=last_generation, github_repo=github_repo)
-    monkeypatch.setattr(generation, "_get_llm_provider", lambda: _ContinueProvider())
-    asked = generation.handle_generation_request(session, AssistantRequest(message=_CONTINUE_MESSAGE))
+    session = _follow_up_session(message, last_generation=last_generation, github_repo=github_repo)
+    monkeypatch.setattr(generation, "_get_llm_provider", lambda: _ContinueProvider(summary))
+    asked = generation.handle_generation_request(session, AssistantRequest(message=message))
     assert asked["action"] == "assistant_message"
     return _confirm(session)
 
 
-def _assert_rebuilt(instructions):
+def _assert_rebuilt(instructions, summary=_CONTINUE_SUMMARY):
     notes, requests = instructions.split("## The user's original request, verbatim\n\n", 1)
-    assert _CONFIRMED_CHOICE in notes
-    assert _STALE_SENTENCE not in instructions
+    assert f"{summary}\n\n" in notes
     assert "no longer available" not in notes
     assert requests.endswith(_STARTING_POINT)
 
@@ -839,30 +842,18 @@ def test_generate_anyway_after_a_mismatch_starts_from_the_model():
     _assert_rebuilt(run["instructions"])
 
 
-@pytest.mark.parametrize("stale", [
-    "Continue development of the existing responsive web app, addressing the open issues from the previous generation.",
-    "Fix the remaining issues in the existing application.",
-    "Resume work on the current app where the last run stopped.",
-    "Continue building the task board.",
+@pytest.mark.parametrize("summary", [
+    "Add a dark theme to the existing app. Use PostgreSQL and a Django backend.",
+    "Continue development of the existing app by adding PostgreSQL and a Django backend.",
+    "- Add a dark theme to the existing app\n- Use PostgreSQL and a Django backend",
 ])
-def test_only_stale_sentences_leave_the_summary(stale):
-    kept = [
-        "Use a Django backend with PostgreSQL.",
-        "Keep the existing class diagram as the data model.",
-        "Continue to use the free model.",
-        "Show the previous colour scheme on every page.",
-    ]
-    payload = _payload_with(" ".join([kept[0], stale, *kept[1:]]), previous_result_gone=True)
+def test_a_summary_accepted_with_yes_reaches_the_rebuild_whole(monkeypatch, summary):
+    # After a plain "yes" the summary is the only place the accepted choices live.
+    run = _confirmed_run(
+        {"request": _LAST_RUN_SPEC, "expired": True}, monkeypatch, message="yes", summary=summary,
+    )
 
-    assert stale not in payload["instructions"]
-    assert " ".join(kept) in payload["instructions"]
-
-
-def test_a_summary_with_only_stale_sentences_leaves_no_notes():
-    payload = _payload_with(_STALE_SENTENCE, previous_result_gone=True)
-
-    assert "Assistant's notes" not in payload["instructions"]
-    assert payload["instructions"].endswith(_STARTING_POINT)
+    _assert_rebuilt(run["instructions"], summary)
 
 
 def test_without_a_request_the_run_starts_from_the_model():
@@ -872,16 +863,9 @@ def test_without_a_request_the_run_starts_from_the_model():
     )
 
     assert payload["instructions"] == (
-        f"{_CONFIRMED_CHOICE}\n\n## Starting point\n\n"
+        f"{_CONTINUE_SUMMARY}\n\n## Starting point\n\n"
         "The previous result is no longer available, so there is no earlier code to continue or fix. "
         "Build the whole application from the current model."
-    )
-
-
-def _payload_with(summary, **kwargs):
-    return build_trigger_smart_generator_payload(
-        GenerationClassification(route="smart", refined_instructions=summary, provider="openai", reason="test"),
-        original_request=_ORDER_SPEC, **kwargs,
     )
 
 

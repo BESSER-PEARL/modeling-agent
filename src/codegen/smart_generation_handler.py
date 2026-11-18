@@ -26,7 +26,6 @@ the :class:`GenerationClassification` dispatch schema and assembles the
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -141,26 +140,6 @@ class GenerationClassification(BaseModel):
 # ---------------------------------------------------------------------
 
 
-# A summary sentence about building on the earlier result ("continue development
-# of the existing app", "fix the issues from the previous run").
-_EARLIER_RESULT_RE = re.compile(
-    r"\b(?:existing|previous|current|earlier|prior|last)(?:\s+[\w-]+){0,2}?\s+"
-    r"(?:apps?|applications?|code|codebase|result|generation|run|build|implementation)\b"
-    r"|\b(?:continue|resume)\s+(?:the\s+)?(?:development|developing|building|work)\b",
-    re.IGNORECASE,
-)
-_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
-
-
-def _without_earlier_result_sentences(summary: str) -> str:
-    """``summary`` without its sentences about building on the earlier result."""
-    lines = [
-        " ".join(s for s in _SENTENCE_END_RE.split(line) if not _EARLIER_RESULT_RE.search(s))
-        for line in summary.splitlines()
-    ]
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
-
-
 def build_trigger_smart_generator_payload(
     classification: GenerationClassification,
     reason_prefix: str = "",
@@ -184,7 +163,6 @@ def build_trigger_smart_generator_payload(
     and rebuilding; without it the editor decides.
 
     ``previous_result_gone`` says the run has no earlier code to build on: the
-    summary's sentences about continuing or fixing it are dropped and the
     instructions end with that starting point.
     """
     if classification.route != "smart":
@@ -198,8 +176,6 @@ def build_trigger_smart_generator_payload(
     original = (original_request or "").strip()
     validate_message_length(original, label="The original specification")
     point = spec_prompts.starting_point(bool(original)) if previous_result_gone else ""
-    if point:
-        instructions = _without_earlier_result_sentences(instructions)
     if original and original not in instructions:
         # The summary is kept (it can carry a stack the user accepted with a
         # plain "yes") but labelled as possibly inaccurate, since a summary can
