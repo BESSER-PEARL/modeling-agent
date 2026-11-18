@@ -3589,6 +3589,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             return " ".join(str((m.get("changes") or {}).get("constraint") or "") for m in _ops(spec))
 
         def _expand_refactoring(handler, spec):
+            handler._name_classes_given_by_id(spec, current_model)
             guard_notes[:] = handler._add_members_to_existing_classes(
                 spec, current_model, request_text, _references(spec))
             if not _ops(spec):
@@ -3872,7 +3873,6 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # wrote: the ones a refactoring synthesises are already oriented
         # and the ones a merge copies from the canvas are the user's.
         self._fix_reversed_composition_mods(spec)
-        self._name_classes_given_by_id(spec, current_model)
         if self._is_refactoring_action(spec):
             logger.info("[ClassDiagram] Detected refactoring action, expanding into primitives")
             spec = self._expand_refactoring_actions(spec, current_model)
@@ -3927,8 +3927,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
         The editor skips such an ``add_class`` with all its members. A member
         the class or its generalization line already has is not added again
         (a subclass may not redeclare an inherited attribute), nor is a
-        surrogate id (:meth:`_strip_surrogate_ids`). Left as is for an
-        enumeration, and when the batch removes or renames that class.
+        surrogate id (:meth:`_strip_surrogate_ids`). A name an earlier
+        ``modify_class`` of the batch renames a class to is that class. Left
+        as is for an enumeration, and when the batch removes or renames that
+        class.
         Mutates *spec*, which keeps no op when nothing is left to apply, and
         returns the notes for the reply."""
         mods = spec.get("modifications")
@@ -3949,14 +3951,19 @@ class ClassDiagramHandler(BaseDiagramHandler):
         present: List[str] = []
         notes: List[str] = []
         converted = False
+        renamed_to: Dict[str, Tuple[str, str]] = {}
         for mod in mods:
             changes = mod.get("changes") if isinstance(mod.get("changes"), dict) else {}
+            old = existing.get(str((mod.get("target") or {}).get("className") or "").strip().lower())
+            if mod.get("action") == "modify_class" and old and str(changes.get("name") or "").strip():
+                renamed_to[changes["name"].strip().lower()] = (old, changes["name"].strip())
             name = str(changes.get("className") or "").strip()
-            eid = existing.get(name.lower())
-            if mod.get("action") != "add_class" or eid is None or name.lower() in replaced:
+            eid, new_name = renamed_to.get(name.lower()) or (existing.get(name.lower()), None)
+            if mod.get("action") != "add_class" or eid is None or (
+                    name.lower() in replaced and new_name is None):
                 kept.append(mod)
                 continue
-            cls = classes[eid]
+            cls = {**classes[eid], "name": new_name or classes[eid]["name"]}
             self._strip_surrogate_ids([changes], request_text, references)
             line = self._inheritance_closure(current_model, {eid})
             members = set().union(*(classes[i]["members"] for i in line if i in classes))

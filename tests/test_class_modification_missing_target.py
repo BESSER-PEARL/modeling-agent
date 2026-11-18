@@ -285,6 +285,38 @@ class TestExistingClassReferences:
 
         assert [m["action"] for m in result["modifications"]] == ["remove_element", "add_class"]
 
+    def test_add_class_after_removing_that_class_by_id_is_kept(self, handler):
+        result = _modify(handler, [
+            {"action": "remove_element", "target": {"className": "c-author"}},
+            {"action": "add_class", "target": {},
+             "changes": {"className": "Author", "attributes": [{"name": "name"}]}},
+        ], _library_with_abstract_publication())
+
+        assert [m["action"] for m in result["modifications"]] == ["remove_element", "add_class"]
+        assert result["modifications"][0]["target"]["className"] == "Author"
+
+    def test_add_class_of_the_name_a_rename_gives_adds_to_the_renamed_class(self, handler):
+        result = _modify(handler, [
+            {"action": "modify_class", "target": {"className": "Author"}, "changes": {"name": "Writer"}},
+            {"action": "add_class", "target": {},
+             "changes": {"className": "Writer", "attributes": [{"name": "bio"}]}},
+        ], _library_with_abstract_publication())
+
+        mods = result["modifications"]
+        assert [(m["action"], m["target"].get("className")) for m in mods] == [
+            ("modify_class", "Author"), ("add_attribute", "Writer")]
+        assert mods[1]["changes"]["name"] == "bio"
+        assert "Added the **Writer** class" not in result["message"]
+
+    def test_add_class_before_the_rename_that_gives_its_name_is_kept(self, handler):
+        result = _modify(handler, [
+            {"action": "add_class", "target": {},
+             "changes": {"className": "Writer", "attributes": [{"name": "bio"}]}},
+            {"action": "modify_class", "target": {"className": "Author"}, "changes": {"name": "Writer"}},
+        ], _library_with_abstract_publication())
+
+        assert [m["action"] for m in result["modifications"]] == ["add_class", "modify_class"]
+
     def test_a_class_named_by_its_element_id_is_resolved(self, handler):
         result = _modify(handler, [
             {"action": "remove_element",
