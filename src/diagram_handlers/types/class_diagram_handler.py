@@ -303,6 +303,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # Drop any OCL constraint whose context isn't a real class in the
         # spec (the LLM occasionally references a class it didn't create).
         self._validate_constraints(system_spec)
+        mismatched = self._mismatched_constraints(system_spec)
+        if mismatched:
+            logger.info(
+                "[ClassDiagram] %d OCL constraint(s) do not fit the diagram: %s",
+                len(mismatched), ", ".join(str(c.get("name")) for c in mismatched)[:200],
+            )
 
         logger.info(
             f"[ClassDiagram] Structured system spec: "
@@ -316,7 +322,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         self.apply_system_layout(system_spec, existing_model)
 
         message = self._build_system_message(
-            system_spec, relaxations, renamed=renamed_ends)
+            system_spec, relaxations, renamed=renamed_ends, mismatched=mismatched)
 
         # The matching frontend converter persists constraints as OCL
         # boxes/links and associationClass attachments as ClassLinkRel.
@@ -1867,18 +1873,73 @@ class ClassDiagramHandler(BaseDiagramHandler):
     _FK_ATTR_NAME_RE = re.compile(r"^(\w+?)(?:_[iI][dD]|(?<=[a-z0-9])I[dD])$")
     _FK_ATTR_TYPES = frozenset({"str", "string"}) | _INTEGER_ATTR_TYPES
 
-    @staticmethod
-    def _member_references(system_spec: Dict[str, Any]) -> str:
+    @classmethod
+    def _member_references(cls, system_spec: Dict[str, Any]) -> str:
         """The text of the model's own rules and method bodies. A member named
-        there is in use: no guard removes or renames it."""
+        there is in use: no guard removes or renames it. A rule that does not
+        fit the spec (:meth:`_mismatched_constraints`) counts for nothing."""
+        mismatched = cls._mismatched_constraints(system_spec)
         parts: List[Any] = [
             c.get("expression") for c in system_spec.get("constraints") or []
-            if isinstance(c, dict)
+            if isinstance(c, dict) and not any(c is m for m in mismatched)
         ]
         for cls in system_spec.get("classes") or []:
             if isinstance(cls, dict):
                 parts += [m.get("code") for m in cls.get("methods") or [] if isinstance(m, dict)]
         return "\n".join(p for p in parts if isinstance(p, str))
+
+    @classmethod
+    def _mismatched_constraints(cls, system_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """The constraints that certainly do not fit *system_spec*: one reads
+        ``self.<name>`` where the context's generalization line has no member,
+        end or class of that name, or applies a collection operation to a
+        class (``Book->select`` without ``allInstances()``)."""
+        constraints = [c for c in system_spec.get("constraints") or [] if isinstance(c, dict)]
+        if not constraints:
+            return []
+
+        def _key(name: str) -> str:
+            return name.replace("_", "").lower()
+
+        known: Dict[str, set] = {}
+        for c in system_spec.get("classes") or []:
+            if isinstance(c, dict) and isinstance(c.get("className"), str):
+                known.setdefault(c["className"], set()).update(
+                    _key(m["name"]) for m in (c.get("attributes") or []) + (c.get("methods") or [])
+                    if isinstance(m, dict) and isinstance(m.get("name"), str))
+        class_names = list(known)
+        edges: List[tuple] = []
+        for rel in system_spec.get("relationships") or []:
+            source = rel.get("source") if isinstance(rel, dict) else None
+            target = rel.get("target") if isinstance(rel, dict) else None
+            if not isinstance(source, str) or not isinstance(target, str):
+                continue
+            if cls._spec_rel_type(rel) in cls._SPEC_NON_END_REL_TYPES:
+                edges.append((source, target))
+                continue
+            link = rel.get("associationClass")
+            link = [link] if isinstance(link, str) and link else []
+            for near, far, side in ((source, target, "target"), (target, source, "source")):
+                tokens = re.findall(r"\w+", cls._spec_role(rel, side)) + [far] + link
+                known.setdefault(near, set()).update(_key(t) for t in tokens)
+            for owner in link:
+                known.setdefault(owner, set()).update({_key(source), _key(target)})
+
+        on_class = re.compile(
+            r"(?<![\w.])(?:" + "|".join(map(re.escape, class_names)) + r")\s*->"
+        ) if class_names else None
+        mismatched = []
+        for con in constraints:
+            expr, context = con.get("expression"), con.get("context")
+            if not isinstance(expr, str) or context not in known:
+                continue
+            expr = re.sub(r"'[^']*'", "''", expr)
+            names = set().union(*(known.get(n, set()) for n in cls._reach_over_edges(edges, {context})))
+            read = re.findall(r"\bself\s*\.\s*([A-Za-z_]\w*)", expr)
+            if (any(not n.startswith("ocl") and _key(n) not in names for n in read)
+                    or (on_class is not None and on_class.search(expr))):
+                mismatched.append(con)
+        return mismatched
 
     @staticmethod
     def _is_referenced(name: Any, references: str) -> bool:
@@ -2592,13 +2653,15 @@ class ClassDiagramHandler(BaseDiagramHandler):
     def _build_system_message(
         self, spec: Dict[str, Any], relaxations: Sequence[Dict[str, Any]] = (),
         renamed: Sequence[Dict[str, Any]] = (),
+        mismatched: Sequence[Dict[str, Any]] = (),
     ) -> str:
         """Build a descriptive message for a complete class diagram spec.
 
         *relaxations* are the ends ``_break_mandatory_cycles`` made optional;
         their invariants are the agent's, not rules the user stated.
         *renamed* are the association ends ``_ensure_unique_association_ends``
-        renamed: the first three are explained, the rest counted."""
+        renamed: the first three are explained, the rest counted.
+        *mismatched* are the constraints that do not fit the diagram."""
         system_name = spec.get("systemName", "System")
         classes = spec.get("classes", [])
         rels = spec.get("relationships", [])
@@ -2634,6 +2697,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
             else:
                 kept = "are optional in the diagram and their minimums are kept as OCL rules"
             msg += f" {ends} {kept}, so no class needs another to exist before it can be created."
+        if mismatched:
+            names = ", ".join(f"**{c.get('name') or c.get('context')}**" for c in mismatched)
+            if len(mismatched) == 1:
+                msg += f" The rule {names} refers to something the diagram does not have, so it needs correcting."
+            else:
+                msg += f" The rules {names} refer to something the diagram does not have, so they need correcting."
         return msg
 
     # ------------------------------------------------------------------
