@@ -3605,6 +3605,15 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         return modification_spec
     
+    def _no_changes_reply(self, mods: list, elements: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Name a target that is not in the model rather than ask for the change."""
+        notes = self._drop_phantom_target_ops(
+            {"action": Action.MODIFY_MODEL, "modifications": list(mods)}, {"elements": elements or {}},
+        )
+        if notes:
+            return assistant_message(" ".join(notes))
+        return super()._no_changes_reply(mods, elements)
+
     def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
         """The reply when ``_build_modification`` crashes. It applies nothing:
         a placeholder op (``modify_class Unknown``) only made the editor report

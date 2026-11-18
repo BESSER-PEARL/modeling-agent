@@ -638,6 +638,15 @@ class BaseDiagramHandler(ABC):
             "nor _modification_crash_reply"
         )
 
+    def _no_changes_reply(self, mods: list, elements: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Reply when every modification came back without changes; the
+        generation-error code lets an editor repair request report it unchanged."""
+        return self._error_response(
+            "I couldn't turn that request into a concrete change to the diagram. "
+            "Could you say which element to change and how?",
+            code=ErrorCode.GENERATION_ERROR.value, retryable=False,
+        )
+
     # ------------------------------------------------------------------
     # Shared modification response handling
     # ------------------------------------------------------------------
@@ -692,8 +701,12 @@ class BaseDiagramHandler(ABC):
 
         mod_list = parsed.model_dump()["modifications"]
 
-        # A modify_* op without changes has nothing to apply: drop it before
-        # any handler code reads ``changes``.
+        # Handler-specific cleanup of the raw modification list
+        if post_processor is not None:
+            mod_list = post_processor(mod_list)
+
+        # A modify_* op without changes has nothing to apply. Dropped after the
+        # post-processor so a handler's own checks (e.g. a missing target) run first.
         no_changes = [
             {"index": i, "reason": f"{m.get('action')} has no changes"}
             for i, m in enumerate(mod_list)
@@ -705,16 +718,9 @@ class BaseDiagramHandler(ABC):
                     f"[{self.get_diagram_type()}] Skipping invalid modifications[{skip['index']}]: {skip['reason']}"
                 )
             dropped = {skip["index"] for skip in no_changes}
+            if len(dropped) == len(mod_list):
+                return self._no_changes_reply(mod_list, elements)
             mod_list = [m for i, m in enumerate(mod_list) if i not in dropped]
-            if not mod_list:
-                return assistant_message(
-                    "I couldn't turn that request into a concrete change to the diagram. "
-                    "Could you say which element to change and how?"
-                )
-
-        # Handler-specific cleanup of the raw modification list
-        if post_processor is not None:
-            mod_list = post_processor(mod_list)
 
         if len(mod_list) == 1:
             modification_spec: Dict[str, Any] = {
