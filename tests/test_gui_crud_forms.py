@@ -16,9 +16,12 @@ that generator.
 
 import copy
 
+import pytest
+
 from diagram_handlers.types.gui_html_converter import html_to_components
 from diagram_handlers.types.gui_nocode_diagram_handler import (
     GUINoCodeDiagramHandler,
+    _node_text,
     _wire_model_actions,
 )
 from schemas import AuthoredSystemGUISpec
@@ -495,19 +498,39 @@ def test_editable_rule_is_given_only_with_a_class_diagram():
     assert '"editable"' not in gui_prompts.modification_prompt("- Home: hero", [], "")
 
 
-def test_authored_radio_group_of_an_enumeration_keeps_its_radios():
+def _radio_form(choices):
     form, = _forms(_nodes(_generate([{"name": "Page", "sections": [{"html": (
         "<section class='s'><h2>F</h2><form data-class='Sale'>"
-        "<label for='r'>Reference</label><input id='r'>"
-        "<input type='radio' name='state' value='Placed'> Placed"
-        "<input type='radio' name='state' value='Shipped'> Shipped"
+        "<label for='r'>Reference</label><input id='r'>" + choices +
         "<label for='p'>Paid</label><input id='p' type='checkbox'>"
         "<button type='submit'>Save</button></form></section>"
     )}]}], SHOP_META), "Page"))
     assert form["attributes"]["data-source"] == "c-sale"
-    radios = [n for n in _nodes_of(form) if (n.get("attributes") or {}).get("type") == "radio"]
-    assert len(radios) == 2 and all(r["tagName"] == "input" for r in radios)
-    assert not [n for n in _nodes_of(form) if n.get("tagName") == "select"]
+    return form
+
+
+@pytest.mark.parametrize("choices", [
+    "<input type='radio' name='state' value='Placed'> Placed"
+    "<input type='radio' name='state' value='Shipped'> Shipped",
+    "<fieldset><legend>State</legend>"
+    "<label><input type='radio' name='state' value='Placed'> Placed</label>"
+    "<label><input type='radio' name='state' value='Shipped'> Shipped</label></fieldset>",
+])
+def test_authored_radio_group_of_an_enumeration_becomes_one_required_dropdown(choices):
+    # BESSER turns each radio into its own option-less radio group, so the
+    # generated app could not pick a value: the group is one dropdown instead.
+    form = _radio_form(choices)
+    nodes = _nodes_of(form)
+    assert not [n for n in nodes if (n.get("attributes") or {}).get("type") == "radio"]
+    select, = [n for n in nodes if n.get("tagName") == "select"]
+    assert select["attributes"]["name"] == "state"
+    assert select["attributes"]["data-options"] == "Placed,Shipped,Delivered,Cancelled"
+    assert select["attributes"]["required"] == "required"
+    # The radios' own captions go with them; the order of the fields stays.
+    texts = [_node_text(n).strip() for n in nodes if n.get("type") == "textnode" or n.get("tagName") == "label"]
+    assert "Shipped" not in texts and "Placed" not in texts
+    names = [(n.get("attributes") or {}).get("name") for n in nodes if n.get("tagName") in ("input", "select")]
+    assert names == ["reference", "state", "paid"]
 
 
 def test_authored_bound_form_marks_the_fields_a_record_needs_as_required():
@@ -570,18 +593,3 @@ def test_rewriting_a_read_only_table_section_keeps_it_read_only():
     stated = next(n for n in _nodes(rewrite({"title": "Old loans", "editable": True}), "Archive")
                   if n.get("type") == "table")
     assert stated["attributes"]["action-buttons"] == "true"
-
-
-def test_authored_radio_group_of_a_required_enumeration_requires_a_choice():
-    form, = _forms(_nodes(_generate([{"name": "Page", "sections": [{"html": (
-        "<section class='s'><h2>F</h2><form data-class='Sale'>"
-        "<label for='r'>Reference</label><input id='r'>"
-        "<input type='radio' name='state' value='Placed'> Placed"
-        "<input type='radio' name='state' value='Shipped'> Shipped"
-        "<label for='p'>Paid</label><input id='p' type='checkbox'>"
-        "<button type='submit'>Save</button></form></section>"
-    )}]}], SHOP_META), "Page"))
-    assert form["attributes"]["data-source"] == "c-sale"
-    radios = [n for n in _nodes_of(form) if (n.get("attributes") or {}).get("type") == "radio"]
-    # HTML requires a choice from the group when one radio of the name is required
-    assert [r["attributes"].get("required") for r in radios] == ["required", None]

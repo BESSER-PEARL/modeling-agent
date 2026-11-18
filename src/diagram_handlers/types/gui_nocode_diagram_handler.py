@@ -3078,12 +3078,16 @@ def _bind_form(form: Dict[str, Any], classes: List[Dict[str, Any]]) -> None:
     attrs["data-source"] = cls["id"]
     form["attributes"] = attrs
     required_groups = set()
+    enum_radios: Dict[str, tuple] = {}
     for node, attr in fields:
         if attr:
             control_attrs = node.setdefault("attributes", {})
             control_attrs["name"] = attr["name"]
-            # A radio group already offers its choices; a checkbox sends false unticked
             control_type = str(control_attrs.get("type", "")).lower()
+            if control_type == "radio" and attr.get("enumLiterals"):
+                enum_radios.setdefault(attr["name"], (attr, []))[1].append(node)
+                continue
+            # A radio group already offers its choices; a checkbox sends false unticked
             choice = control_type in ("radio", "checkbox")
             if attr.get("enumLiterals") and node.get("tagName") in ("input", "select") and not choice:
                 _make_enum_select(node, attr["enumLiterals"])
@@ -3092,6 +3096,50 @@ def _bind_form(form: Dict[str, Any], classes: List[Dict[str, Any]]) -> None:
             if _is_required(attr) and (not choice or radio_group):
                 control_attrs["required"] = "required"
                 required_groups.add(attr["name"])
+    # BESSER turns each radio into its own option-less radio group: one dropdown instead
+    for attr, radios in enum_radios.values():
+        _radios_to_select(form, radios, attr["enumLiterals"])
+        if _is_required(attr):
+            radios[0]["attributes"]["required"] = "required"
+
+
+def _radios_to_select(form: Dict[str, Any], radios: List[Dict[str, Any]], literals: List[str]) -> None:
+    """Replace a radio group of *form* with one ``<select>`` of *literals*, in
+    place: the first radio becomes the select, the others and the captions of
+    all of them are removed."""
+    parents: Dict[int, Dict[str, Any]] = {}
+
+    def _walk(node: Dict[str, Any]) -> None:
+        for child in node.get("components") or []:
+            if isinstance(child, dict):
+                parents[id(child)] = node
+                _walk(child)
+
+    _walk(form)
+
+    def _remove(radio: Dict[str, Any], keep: bool) -> None:
+        parent = parents[id(radio)]
+        wrapper = parents.get(id(parent))
+        captions_only = all(
+            child is radio or child.get("tagName") == "label" or child.get("type") == "textnode"
+            for child in parent.get("components") or []
+        )
+        if wrapper is not None and captions_only:
+            # <label><input type=radio> Caption</label>: the wrapper goes
+            siblings = wrapper["components"]
+            index = next(i for i, child in enumerate(siblings) if child is parent)
+            siblings[index:index + 1] = [radio] if keep else []
+            return
+        siblings = parent["components"]
+        index = next(i for i, child in enumerate(siblings) if child is radio)
+        end = index + 1
+        if end < len(siblings) and isinstance(siblings[end], dict) and siblings[end].get("type") == "textnode":
+            end += 1  # its caption
+        siblings[index:end] = [radio] if keep else []
+
+    for position, radio in enumerate(radios):
+        _remove(radio, keep=position == 0)
+    _make_enum_select(radios[0], literals)
 
 
 def _wire_page_actions(
