@@ -72,6 +72,8 @@ class Deferred(NamedTuple):
 
 
 _QUEUED_DESTRUCTIVE = "_queued_destructive_confirmation"
+# The user's request on an operation parked behind the replace/keep question.
+_ORIGINAL_REQUEST_KEY = "_original_request"
 
 # Handler replies that ask the user to rephrase: the LLM call failed, or the
 # handler crashed (generate_fallback_modification).
@@ -624,14 +626,17 @@ def execute_model_operation(
         request, operation_mode, target_diagram_type,
     )
     resuming_spec = _skip_existing_check or _matches_regen_prompt(session, request)
+    if _skip_existing_check and operation.get(_ORIGINAL_REQUEST_KEY):
+        # A replace/keep answer resumes with the planner's step request; the
+        # user's own words come back on the operation the question stored.
+        remember_original_request(session, operation[_ORIGINAL_REQUEST_KEY], request_project_id(request))
     if resuming_spec and operation_mode == "complete_system" and target_diagram_type == "ClassDiagram":
         # Resume requests may contain only the planner summary or the mismatch
         # button's synthesized prompt. Reuse only a proven same-project source.
         spec_to_stash = original_request_for_project(session, request_project_id(request)) or operation_request
-    elif spec_to_stash and not resuming_spec:
-        # Confirmation resumes and mismatch buttons can carry synthesized
-        # sub-prompts. They must not overwrite the original create request.
-        remember_original_request(session, spec_to_stash, request_project_id(request))
+    # Confirmation resumes and mismatch buttons can carry synthesized
+    # sub-prompts. They must not overwrite the original create request.
+    remember_request = spec_to_stash if spec_to_stash and not resuming_spec else None
 
     # ── Existing-model guard for complete_system ─────────────────────────
     if (
@@ -658,6 +663,8 @@ def execute_model_operation(
                     return Deferred(operation)
                 summary = compact_model_summary(existing_model, target_diagram_type)
                 stored_operation = {**operation, 'mode': operation_mode}
+                if remember_request:
+                    stored_operation[_ORIGINAL_REQUEST_KEY] = remember_request
 
                 _build_existing_model_confirmation(
                     session=session,
@@ -676,6 +683,11 @@ def execute_model_operation(
                     f"[ModelOp] Asked user to confirm replace/keep for existing {target_diagram_type}"
                 )
                 return None
+
+    # Remembered only once the build goes ahead: a reply that only raised the
+    # replace/keep question again (a mistyped answer) must not replace it.
+    if remember_request:
+        remember_original_request(session, remember_request, request_project_id(request))
 
     # ── GUI generation-mode choice ───────────────────────────────────────
     # Always asked. A keyword shortcut would read the planner's rewritten step
@@ -1050,13 +1062,14 @@ def execute_model_operation(
         operation_mode=operation_mode,
         available_diagrams=available_diagrams,
         model_summary=model_summary,
+        client_mode=request.client_mode,
     )
     if suggestions:
         result["suggestedActions"] = suggestions
 
-    # Closing line and quick actions. The assistant lives in the modeling
-    # editor, so a modeling reply offers modeling next steps only — never
-    # "continue with generating your application?" nor a "Generate ..." button
+    # Closing line and quick actions. A modeling reply never closes with
+    # "continue with generating your application?", and only the drawer's
+    # suggestions above offer a "Generate ..." button
     # (BESSER-PEARL/BESSER#747). The one exception is a request that itself
     # asked to generate ("design X and generate Y"): planning paused that
     # generation (PLAN_GENERATION_CONFIRM_FLAG) and this reply is where the
