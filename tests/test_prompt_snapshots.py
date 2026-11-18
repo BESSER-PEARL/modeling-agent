@@ -166,7 +166,7 @@ EXPECTED = {
     "gui.SVG_THUMB_HINT": "d940d49684416059",
     "gui.TABLE_COLUMNS_RULE": "5fe648a481892470",
     "gui.TABLE_EDITABLE_RULE": "c34625876cd47ca4",
-    "gui.complete_system_prompt": "9e839e3121a4f069",
+    "gui.complete_system_prompt": "6d195cc3ae10851e",
     "gui.data_model_step_for_classes": "0133afd5b613e683",
     "gui.interactions_block": "cb3952c7cc866e97",
     "gui.interactions_block[has_classes=False]": "13c1f8488601359d",

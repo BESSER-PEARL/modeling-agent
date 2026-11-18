@@ -475,3 +475,12 @@ def test_form_widget_marks_the_fields_a_record_needs_as_required():
     assert "required" not in controls["memo"]["attributes"]
     # A required checkbox would have to be ticked; unticked already sends false.
     assert "required" not in controls["paid"]["attributes"]
+
+
+def test_a_request_for_a_simple_design_overrides_the_signature_moment_rule():
+    from prompts import gui as gui_prompts
+
+    prompt = gui_prompts.complete_system_prompt("default", "", "", "", "")
+    rule = prompt[prompt.index("6. VISUAL HIERARCHY"):prompt.index("7. SAMPLE DATA")]
+    assert "simple, minimal or plain design" in rule
+    assert "no signature moment" in rule
