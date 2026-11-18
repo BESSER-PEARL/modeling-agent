@@ -1957,20 +1957,21 @@ def _action_button_component(
     table_id: str = "",
 ) -> Dict[str, Any]:
     """Build a GrapesJS action-button component for a class method."""
+    label = _human_label(method["name"])
     return {
         "type": "action-button",
-        "content": method["name"],
+        "content": label,
         "attributes": {
             "class": "action-button-component",
             "type": "button",
-            "data-button-label": method["name"],
+            "data-button-label": label,
             "data-action-type": "run-method",
             "data-method-class": cls["id"],
             "data-method": method["id"],
             "data-instance-source": table_id,
             "instance-method": "true" if method.get("isInstanceMethod") else "false",
         },
-        "button-label": method["name"],
+        "button-label": label,
         "action-type": "run-method",
         "method-class": cls["id"],
         "method": method["id"],
