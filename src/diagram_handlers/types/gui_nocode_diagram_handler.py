@@ -691,6 +691,25 @@ def _create_form_attributes(
     return chosen or creatable
 
 
+def _make_enum_select(node: Dict[str, Any], literals: List[str]) -> None:
+    """Turn a form control into a ``<select>`` of an enumeration's literals, in place.
+
+    BESSER's form converter reads the choices from ``data-options``; the
+    ``<option>`` children show them in the editor.
+    """
+    attrs = node.setdefault("attributes", {})
+    for key in ("type", "placeholder", "list", "value"):
+        attrs.pop(key, None)
+    attrs["data-options"] = ",".join(literals)
+    node["tagName"] = "select"
+    node.pop("type", None)
+    node.pop("content", None)
+    node["components"] = [
+        {"tagName": "option", "attributes": {"value": literal}, "content": literal}
+        for literal in literals
+    ]
+
+
 def _labelled_input(attr: Dict[str, Any], form_key: str, input_style: Dict[str, str]) -> Dict[str, Any]:
     """A ``<label>`` + ``<input name=attribute>`` pair for a create form."""
     input_id = f"{form_key}-{_slug(attr['name'])}"
@@ -699,6 +718,13 @@ def _labelled_input(attr: Dict[str, Any], form_key: str, input_style: Dict[str, 
     input_attrs = {"type": input_type, "name": attr["name"], "id": input_id}
     if input_type != "checkbox":
         input_attrs["placeholder"] = label
+    control = {
+        "tagName": "input",
+        "attributes": input_attrs,
+        "style": dict(input_style) if input_type != "checkbox" else {},
+    }
+    if attr.get("enumLiterals"):
+        _make_enum_select(control, attr["enumLiterals"])
     return {
         "tagName": "div",
         "style": {"display": "grid", "gap": "6px"},
@@ -709,11 +735,7 @@ def _labelled_input(attr: Dict[str, Any], form_key: str, input_style: Dict[str, 
                 "content": label,
                 "style": {"font-size": "0.85rem", "font-weight": "600", "color": "#334155"},
             },
-            {
-                "tagName": "input",
-                "attributes": input_attrs,
-                "style": dict(input_style) if input_type != "checkbox" else {},
-            },
+            control,
         ],
     }
 
@@ -3044,6 +3066,8 @@ def _bind_form(form: Dict[str, Any], classes: List[Dict[str, Any]]) -> None:
     for node, attr in fields:
         if attr:
             node.setdefault("attributes", {})["name"] = attr["name"]
+            if attr.get("enumLiterals") and node.get("tagName") in ("input", "select"):
+                _make_enum_select(node, attr["enumLiterals"])
 
 
 def _wire_page_actions(

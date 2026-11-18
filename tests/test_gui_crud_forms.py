@@ -346,3 +346,77 @@ def test_form_widget_of_such_a_record_stays_a_form():
     form, = _forms(nodes)
     assert form["attributes"]["data-source"] == "c-line"
     assert [i["attributes"]["name"] for i in _inputs(form)] == ["quantity"]
+
+
+# -- enumeration and required fields on create forms ---------------------------
+
+# Literals deliberately out of alphabetical order: the form keeps the model's order.
+SHOP_META = extract_class_metadata({
+    "elements": {
+        "c-sale": {"id": "c-sale", "type": "Class", "name": "Sale"},
+        "a-ref": {"id": "a-ref", "type": "ClassAttribute", "owner": "c-sale",
+                  "name": "reference", "attributeType": "str"},
+        "a-state": {"id": "a-state", "type": "ClassAttribute", "owner": "c-sale",
+                    "name": "state", "attributeType": "SaleState"},
+        "a-memo": {"id": "a-memo", "type": "ClassAttribute", "owner": "c-sale",
+                   "name": "memo", "attributeType": "str", "isOptional": True},
+        "a-paid": {"id": "a-paid", "type": "ClassAttribute", "owner": "c-sale",
+                   "name": "paid", "attributeType": "bool"},
+        "e-state": {"id": "e-state", "type": "Enumeration", "name": "SaleState"},
+        "l-1": {"id": "l-1", "type": "ClassAttribute", "owner": "e-state", "name": "Placed"},
+        "l-2": {"id": "l-2", "type": "ClassAttribute", "owner": "e-state", "name": "Shipped"},
+        "l-3": {"id": "l-3", "type": "ClassAttribute", "owner": "e-state", "name": "Delivered"},
+        "l-4": {"id": "l-4", "type": "ClassAttribute", "owner": "e-state", "name": "Cancelled"},
+    },
+    "relationships": {},
+})
+SALE_STATES = ["Placed", "Shipped", "Delivered", "Cancelled"]
+
+
+def _controls(form):
+    out = []
+
+    def _walk(n):
+        if isinstance(n, dict):
+            if n.get("tagName") in ("input", "select", "textarea"):
+                out.append(n)
+            for c in n.get("components") or []:
+                _walk(c)
+
+    _walk(form)
+    return {c["attributes"]["name"]: c for c in out}
+
+
+def _assert_enum_select(control):
+    assert control["tagName"] == "select"
+    assert "type" not in control["attributes"]
+    # BESSER's form converter reads the choices from data-options.
+    assert control["attributes"]["data-options"] == ",".join(SALE_STATES)
+    assert [(o["tagName"], o["attributes"]["value"], o["content"]) for o in control["components"]] == [
+        ("option", s, s) for s in SALE_STATES
+    ]
+
+
+def test_form_widget_offers_enumeration_literals_as_a_select():
+    form, = _forms(_nodes(_generate([{"name": "New sale", "sections": [
+        {"bind": {"kind": "form", "className": "Sale", "columns": ["reference", "state", "memo"]}},
+    ]}], SHOP_META), "New sale"))
+    controls = _controls(form)
+    _assert_enum_select(controls["state"])
+    assert controls["reference"]["attributes"]["type"] == "text"
+
+
+def test_authored_form_input_of_an_enumeration_becomes_a_select():
+    form, = _forms(_nodes(_generate([{"name": "Page", "sections": [{"html": (
+        "<section class='s'><h2>F</h2><form data-class='Sale'>"
+        "<label for='r'>Reference</label><input id='r'>"
+        "<label for='s'>State</label><input id='s' list='states' placeholder='Placed or Shipped'>"
+        "<label for='p'>Paid</label><input id='p' type='checkbox'>"
+        "<button type='submit'>Save</button></form></section>"
+    )}]}], SHOP_META), "Page"))
+    assert form["attributes"]["data-source"] == "c-sale"
+    state = _controls(form)["state"]
+    _assert_enum_select(state)
+    assert "list" not in state["attributes"] and "placeholder" not in state["attributes"]
+    assert state["attributes"]["id"] == "s"
+
