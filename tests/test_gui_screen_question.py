@@ -2,7 +2,8 @@
 
 Basic CRUD pages build one page per class, so a request that already lists
 its screens lost every screen it named when that answer was picked; such a
-request is built by the AI design without asking. A typed answer with no
+request (as the classifier judges it, in any language) is built by the AI
+design without asking. A typed answer with no
 question open (the screens were already built) is applied, not asked again.
 """
 
@@ -17,7 +18,9 @@ from common import pending_dialogs
 from common.pending_dialogs import PENDING_GUI_CHOICE
 from protocol.actions import Action
 from protocol.types import AssistantRequest, WorkspaceContext
-from utilities.original_request import remember_original_request
+from common.session_keys import UNIFIED_CLASSIFICATION
+from routing import unified_classifier
+from routing.unified_classifier import UnifiedClassification
 
 from tests.conftest import MINIMAL_CLASS_MODEL, FakeSession
 
@@ -27,7 +30,10 @@ GUI_OP = {"diagramType": "GUINoCodeDiagram", "mode": "complete_system", "request
 @pytest.fixture
 def run_gui_op(monkeypatch):
     handler = MagicMock()
-    handler.generate_complete_system.return_value = {"action": "assistant_message", "message": "ok"}
+    handler.generate_complete_system.return_value = {
+        "action": "inject_complete_system", "diagramType": "GUINoCodeDiagram",
+        "model": {"pages": []}, "message": "Built",
+    }
     factory = MagicMock()
     factory.get_handler.return_value = handler
     monkeypatch.setattr(modeling.ctx, "diagram_factory", factory)
@@ -39,8 +45,9 @@ def run_gui_op(monkeypatch):
     monkeypatch.setattr(modeling, "resolve_class_diagram", lambda request: MINIMAL_CLASS_MODEL)
     monkeypatch.setattr(modeling, "build_workspace_context_block", lambda *args: "")
 
-    def run(message, session=None, project_id=None):
+    def run(message, session=None, project_id=None, verdict=None):
         session = session or FakeSession()
+        session.set(UNIFIED_CLASSIFICATION, verdict)
         context = WorkspaceContext(project_snapshot={"id": project_id} if project_id else None)
         request = AssistantRequest(message=message, context=context)
         modeling.execute_model_operation(session, request, dict(GUI_OP), "complete_system")
@@ -50,37 +57,52 @@ def run_gui_op(monkeypatch):
     return run
 
 
-@pytest.mark.parametrize("message", [
-    "Create a web app for a book shop with three screens: Catalogue, Basket and Checkout.",
-    "An order tracker. Exactly 4 screens, linked by a menu.",
-    "Build the GUI. Screens: Customers, Orders, New order",
-    "Create the following pages - Authors, Books",
-])
-def test_a_request_that_lists_its_screens_is_designed_without_asking(run_gui_op, message):
-    session, handler, asked = run_gui_op(message)
+LISTED = UnifiedClassification(intent="create_complete_system_intent", screens_listed=True, reason="r")
+
+
+def test_a_request_the_classifier_finds_listing_its_screens_is_designed_without_asking(run_gui_op):
+    session, handler, asked = run_gui_op("Three screens: Catalogue, Basket and Checkout.", verdict=LISTED)
     assert not asked
     assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is None
     handler.generate_complete_system.assert_called_once()
 
 
-def test_the_app_description_listing_screens_counts_for_a_later_screen_step(run_gui_op):
+def test_listed_screens_are_remembered_for_the_project_only(run_gui_op):
     session = FakeSession()
-    remember_original_request(session, "A library app with two screens: Books and Authors.", "p1")
+    request = AssistantRequest(message="x", context=WorkspaceContext(project_snapshot={"id": "p1"}))
+    unified_classifier._remember_stated_target_and_language(session, request, LISTED, "p1")
     _, handler, asked = run_gui_op("Create the GUI", session=session, project_id="p1")
     assert not asked
     handler.generate_complete_system.assert_called_once()
+    _, _, asked = run_gui_op("Create the GUI", session=session, project_id="p2")
+    assert asked
 
 
 @pytest.mark.parametrize("message", [
     "Build screens for my app",
     "Create one page per class",
-    "Add a page that lists the orders",
+    # Pages of a document, a 'pages' attribute and pagination are not screens.
+    "A Book has a title, an author and 300 pages",
+    "Book attributes - title, pages: int",
+    "Each report is at most 10 pages long",
+    "show me 3 pages of results",
+    "Paginate the table, 5 pages max",
+    "the website has 404 pages",
+    "Pages: 120",
+    "one landing page",
 ])
-def test_a_request_without_its_screens_is_still_asked(run_gui_op, message):
+def test_without_the_classifier_finding_listed_screens_the_question_is_asked(run_gui_op, message):
     session, handler, asked = run_gui_op(message)
     assert asked
     assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is not None
     handler.generate_complete_system.assert_not_called()
+
+
+def test_classifier_field_names_what_is_not_a_screen_and_guards_keep_it():
+    description = UnifiedClassification.model_fields["screens_listed"].description
+    for trap in ("document", "attribute", "pagination", "one page per class"):
+        assert trap in description
+    assert unified_classifier._rebuilt(LISTED, intent="modify_model_intent", reason="g").screens_listed
 
 
 @pytest.mark.parametrize("message,answer", [
@@ -116,10 +138,8 @@ def test_the_modeling_body_settles_a_question_its_own_message_answers():
     assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is None
 
 
-def test_a_typed_answer_wins_over_screens_the_app_description_lists(run_gui_op):
-    session = FakeSession()
-    remember_original_request(session, "A library app with two screens: Books and Authors.", "p1")
-    _, handler, asked = run_gui_op("Basic CRUD pages", session=session, project_id="p1")
+def test_a_typed_answer_wins_over_listed_screens(run_gui_op):
+    session, handler, asked = run_gui_op("Basic CRUD pages", verdict=LISTED)
     assert not asked
     assert pending_dialogs.get(session, PENDING_GUI_CHOICE).get(modeling.GUI_CHOICE_IN_REQUEST)
     handler.generate_complete_system.assert_not_called()

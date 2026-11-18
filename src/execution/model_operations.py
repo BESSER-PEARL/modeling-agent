@@ -42,6 +42,8 @@ from conversation.suggestions import get_suggested_actions, get_artifact_label, 
 from common.session_keys import (
     LAST_EXECUTED_DIAGRAM_TYPE,
     LAST_MATCHED_INTENT,
+    SCREENS_LISTED_PROJECT_ID,
+    UNIFIED_CLASSIFICATION,
 )
 from common import pending_dialogs
 from common.pending_dialogs import (
@@ -114,21 +116,14 @@ def gui_choice_from_label(message: Optional[str]) -> Optional[str]:
     )
 
 
-# A request that says how many screens it wants ("three screens", "exactly 4
-# pages") or lists them ("screens: ...") already describes them, and Basic CRUD
-# pages (one per class) would drop them. "One page per class" asks for CRUD.
-_LISTED_SCREENS_RE = re.compile(
-    r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:[a-z-]+\s+)?(?:screens?|pages?)\b"
-    r"(?!\s+(?:per|for\s+each)\b)"
-    r"|\b(?:screens|pages)\s*:"
-    r"|\bfollowing\s+(?:screens|pages)\b",
-    re.IGNORECASE,
-)
-
-
-def _lists_screens(*texts: Optional[str]) -> bool:
-    """Whether any of the user's own *texts* describes the screens to build."""
-    return any(_LISTED_SCREENS_RE.search(text or "") for text in texts)
+def _user_listed_screens(session, request) -> bool:
+    """Whether the user listed the screens to build, in this message or in the
+    app description of this project (classifier ``screens_listed``)."""
+    verdict = session.get(UNIFIED_CLASSIFICATION)
+    project_id = request_project_id(request)
+    return bool(getattr(verdict, "screens_listed", None)) or bool(
+        project_id and session.get(SCREENS_LISTED_PROJECT_ID) == project_id
+    )
 
 
 def _non_web_target_label(session, request):
@@ -741,10 +736,7 @@ def execute_model_operation(
 
         # A typed answer ("Basic CRUD pages") wins over listed screens.
         _typed_answer = gui_choice_from_label(getattr(request, "message", ""))
-        _screens_listed = not _typed_answer and _lists_screens(
-            getattr(request, "message", ""),
-            original_request_for_project(session, request_project_id(request)),
-        )
+        _screens_listed = not _typed_answer and _user_listed_screens(session, request)
         if _screens_listed:
             logger.info("[ModelOp] The request lists its screens; designing them without the CRUD/AI question")
         # A mockup (operation["images"]) is reproduced by the AI design path;

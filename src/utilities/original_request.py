@@ -2,6 +2,7 @@
 
 from common.session_keys import (
     APP_TARGET, APP_TARGET_PROJECT_ID, ORIGINAL_APP_REQUEST, ORIGINAL_APP_REQUEST_PROJECT_ID,
+    SCREENS_LISTED_PROJECT_ID,
 )
 from protocol.message_limits import validate_message_length
 
@@ -32,6 +33,7 @@ def clear_original_request(session):
     remember_original_request(session, "", None)
     session.set(APP_TARGET, None)
     session.set(APP_TARGET_PROJECT_ID, None)
+    session.set(SCREENS_LISTED_PROJECT_ID, None)
 
 
 def remember_target(session, project_id, *, kind=None, description=None, architecture=None):

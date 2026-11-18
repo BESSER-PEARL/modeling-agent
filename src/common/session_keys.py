@@ -80,6 +80,9 @@ ORIGINAL_APP_REQUEST_PROJECT_ID = "_original_app_request_project_id"
 # original request with the same project scoping. Latest statement wins.
 APP_TARGET = "_app_target"
 APP_TARGET_PROJECT_ID = "_app_target_project_id"
+# The project whose app description listed its screens (classifier
+# ``screens_listed``): its screen steps skip the CRUD-or-AI question.
+SCREENS_LISTED_PROJECT_ID = "_screens_listed_project_id"
 
 # ISO 639-1 language the user writes in (classifier ``reply_language``);
 # templated replies are translated into it at the reply choke point.
