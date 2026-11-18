@@ -316,3 +316,73 @@ def test_modification_uses_shared_prompt_with_safety_rules():
     assert seen and "- add_llm:" in seen[0]
     for rule in ("NEVER remove or rename", "Only ADD elements", "ALSO emit an add_transition"):
         assert rule in MODIFY_SYSTEM_PROMPT_AGENT
+
+
+# ---------------------------------------------------------------------------
+# add_transition that names no usable trigger (BAF: an auto transition must be alone on its state)
+# ---------------------------------------------------------------------------
+
+def _transition_mod(source, target, **changes):
+    return {"action": "add_transition",
+            "target": {"sourceStateName": source, "targetStateName": target}, "changes": changes}
+
+
+def _with_transition(model, source_name, target_name):
+    """Add an existing transition between two states of the model."""
+    ids = {el["name"]: el_id for el_id, el in model["elements"].items()}
+    rel_id = f"rel{len(model['relationships']) + 1}"
+    model["relationships"][rel_id] = {
+        "id": rel_id, "type": "AgentStateTransition",
+        "source": {"element": ids[source_name]}, "target": {"element": ids[target_name]},
+    }
+
+
+class TestRepairAddedTransitions:
+    def setup_method(self):
+        self.h = _handler()
+        self.model = _agent_model_with(states=["ask", "wrong", "right"], intents=["Yes"])
+
+    def _kept(self, *mods, model=None):
+        return self.h._validate_modifications(list(mods), model or self.model)["kept"]
+
+    def test_no_condition_alone_on_its_state_continues(self):
+        (mod,) = self._kept(_transition_mod("ask", "right"))
+        assert mod["changes"]["condition"] == "auto"
+
+    def test_blank_intent_alone_on_its_state_continues(self):
+        (mod,) = self._kept(_transition_mod("ask", "right", condition="when_intent_matched", intentName=" "))
+        assert mod["changes"]["condition"] == "auto"
+
+    def test_next_to_a_transition_already_in_the_model_it_means_anything_else(self):
+        _with_transition(self.model, "ask", "right")
+        (mod,) = self._kept(_transition_mod("ask", "wrong", condition="when_intent_matched"))
+        assert mod["changes"]["condition"] == "when_no_intent_matched"
+
+    def test_next_to_another_transition_in_the_same_batch_it_means_anything_else(self):
+        # the quiz shape: one transition per answer plus one for the wrong answers
+        right, wrong = self._kept(
+            _transition_mod("ask", "right", condition="when_intent_matched", intentName="Yes"),
+            _transition_mod("ask", "wrong"),
+        )
+        assert right["changes"]["condition"] == "when_intent_matched"
+        assert wrong["changes"]["condition"] == "when_no_intent_matched"
+
+    def test_custom_condition_without_code_is_repaired_and_its_code_dropped(self):
+        _with_transition(self.model, "ask", "right")
+        (mod,) = self._kept(_transition_mod("ask", "wrong", condition="custom_condition", conditionCode="  "))
+        assert mod["changes"]["condition"] == "when_no_intent_matched"
+        assert "conditionCode" not in mod["changes"]
+
+    def test_usable_transitions_are_left_alone(self):
+        intent, custom, auto = self._kept(
+            _transition_mod("ask", "right", condition="when_intent_matched", intentName="Yes"),
+            _transition_mod("ask", "wrong", condition="custom_condition", conditionCode="def f(session):\n    return True"),
+            _transition_mod("right", "wrong", condition="auto"),
+        )
+        assert intent["changes"] == {"condition": "when_intent_matched", "intentName": "Yes"}
+        assert custom["changes"]["condition"] == "custom_condition" and "conditionCode" in custom["changes"]
+        assert auto["changes"] == {"condition": "auto"}
+
+    def test_the_initial_node_keeps_no_condition(self):
+        (mod,) = self._kept(_transition_mod("initial", "ask"))
+        assert "condition" not in mod["changes"]

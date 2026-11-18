@@ -941,8 +941,75 @@ class AgentDiagramHandler(BaseDiagramHandler):
             return 1
 
         kept.sort(key=_reorder_rank)
+        self._repair_added_transitions(kept, current_model)
 
         return {"kept": kept, "skipped": skipped}
+
+    @staticmethod
+    def _existing_transition_counts(current_model: Dict[str, Any]) -> Dict[str, int]:
+        """Number of transitions leaving each state of *current_model* (lowercased state name)."""
+        counts: Dict[str, int] = {}
+        if not isinstance(current_model, dict):
+            return counts
+        elements = agent_model_elements(current_model)
+        relationships = current_model.get("relationships")
+        if not isinstance(relationships, dict):
+            return counts
+        for rel in relationships.values():
+            if not isinstance(rel, dict) or rel.get("type") != "AgentStateTransition":
+                continue
+            source = rel.get("source")
+            source_id = source.get("element") if isinstance(source, dict) else source
+            name = (elements.get(source_id) or {}).get("name") if isinstance(source_id, str) else None
+            if isinstance(name, str) and name.strip():
+                key = name.strip().lower()
+                counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def _repair_added_transitions(self, kept: List[Dict[str, Any]], current_model: Dict[str, Any]) -> None:
+        """Give an ``add_transition`` that names no usable trigger the one it must have.
+
+        Same rule as ``_resolve_unusable_transitions`` for a whole system: alone on its source
+        state it continues (``auto``); next to other transitions (already in the model or added
+        in this batch) it means "anything else" (``when_no_intent_matched``), because BAF does
+        not allow ``auto`` next to another transition. Covers no condition at all, an
+        intent-matched one that names no intent, and a custom condition without code.
+        """
+        counts = self._existing_transition_counts(current_model)
+        added = [m for m in kept if m.get("action") == "add_transition"]
+
+        def _source(mod: Dict[str, Any]) -> Optional[str]:
+            names = self._mod_target_names(mod)
+            return names["sourceStateName"] or names["stateName"] or names["intentName"]
+
+        batch_counts: Dict[str, int] = {}
+        for mod in added:
+            src = _source(mod)
+            if src:
+                batch_counts[src] = batch_counts.get(src, 0) + 1
+
+        for mod in added:
+            src = _source(mod)
+            if not src or src == "initial":
+                continue
+            target = mod.get("target") or {}
+            changes = mod.get("changes")
+            if not isinstance(changes, dict):
+                changes = {}
+                mod["changes"] = changes
+            condition = (changes.get("condition") or "").strip()
+            intent = changes.get("intentName") or target.get("intentName") or changes.get("name")
+            unusable = (
+                not condition
+                or (condition == "when_intent_matched" and not str(intent or "").strip())
+                or (condition == "custom_condition" and not str(changes.get("conditionCode") or "").strip())
+            )
+            if not unusable:
+                continue
+            has_siblings = counts.get(src, 0) + batch_counts.get(src, 0) > 1
+            changes["condition"] = "when_no_intent_matched" if has_siblings else "auto"
+            changes.pop("conditionCode", None)
+            changes.pop("intentName", None)
 
     @staticmethod
     def _added_state_display_name(mod: Dict[str, Any]) -> Optional[str]:
