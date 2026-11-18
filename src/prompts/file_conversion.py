@@ -131,7 +131,9 @@ the next state without waiting for the user (e.g. after a congratulation message
 "anything else / unrecognised input" use "when_no_intent_matched". Both take an empty
 "conditionValue"; never use "when_intent_matched" without an intent.
 
-A state can have only ONE "auto" transition. If several flows should continue through one shared
+An "auto" transition fires at once, so it must be the ONLY transition of its state (a state that also
+needs other transitions, such as a question with one transition per answer, uses "when_no_intent_matched"
+for "anything else"). If several flows should continue through one shared
 state (e.g. one "incorrect answer" state for every question), do not give that state an "auto"
 transition per destination. Have each source state remember where it came from with a "code" reply
 (e.g. "def remember(session):\\n    session.set('came_from', 'askQuestionState')") and give the shared

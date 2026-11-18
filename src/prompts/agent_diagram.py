@@ -112,8 +112,9 @@ IMPORTANT RULES:
 5. Transition types:
    - "when_intent_matched" with "conditionValue" = intent name
    - "when_no_intent_matched" as fallback (conditionValue = "")
-   - "auto" for immediate continuation without waiting (conditionValue = ""). A state can have
-     only ONE "auto" transition.
+   - "auto" for immediate continuation without waiting (conditionValue = ""). It fires at once, so
+     it must be the ONLY transition of its state: never give a state an "auto" transition next to
+     others (use "when_no_intent_matched" for "anything else").
    - "custom_condition" with "conditionCode" = a function 'def <name>(session):' returning True when
      the transition should fire (e.g. it checks a session variable). A state can have several.
 6. Always include an initial transition from "initial" to the first state.

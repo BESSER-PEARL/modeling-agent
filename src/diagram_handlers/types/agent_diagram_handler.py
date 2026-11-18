@@ -63,6 +63,9 @@ class _EmptyModificationError(Exception):
         self.skipped = skipped or []
 
 
+_UNUSABLE_KEY = "_unusable"  # internal marker on a transition whose trigger is chosen later
+
+
 class AgentDiagramHandler(BaseDiagramHandler):
     """Handler for Agent Diagram generation"""
 
@@ -475,6 +478,7 @@ class AgentDiagramHandler(BaseDiagramHandler):
             normalized = self._normalize_transition_spec(transition, states)
             if normalized:
                 transitions.append(normalized)
+        self._resolve_unusable_transitions(transitions)
 
         has_initial = bool(spec.get("hasInitialNode", True))
         if has_initial and states:
@@ -573,8 +577,10 @@ class AgentDiagramHandler(BaseDiagramHandler):
         label = transition.get("label") or transition.get("name") or ""
 
         # An intent-matched transition that names no intent cannot trigger on
-        # anything; what was meant is an unconditional "continue" transition.
-        if condition == "when_intent_matched" and not str(condition_value).strip():
+        # anything. What was meant depends on its siblings, so mark it here and let
+        # ``_resolve_unusable_transitions`` choose (see there).
+        unusable = condition == "when_intent_matched" and not str(condition_value).strip()
+        if unusable:
             condition = "auto"
 
         normalized = {
@@ -596,8 +602,32 @@ class AgentDiagramHandler(BaseDiagramHandler):
             else:
                 # a custom condition without code cannot be evaluated
                 normalized["condition"] = "auto"
+                unusable = True
+        if unusable:
+            normalized[_UNUSABLE_KEY] = True
 
         return normalized
+
+    @staticmethod
+    def _resolve_unusable_transitions(transitions: List[Dict[str, Any]]) -> None:
+        """Pick the condition of the transitions that named no usable trigger.
+
+        BAF does not allow an ``auto`` transition next to any other transition on a
+        state (``ConflictingAutoTransitionError``): it fires at once, so the others
+        could never run. A state with no other transition continues unconditionally
+        (``auto``); a state that has others (e.g. a quiz question with one transition
+        per answer) means "anything else", i.e. ``when_no_intent_matched``.
+        """
+        for transition in transitions:
+            if not transition.pop(_UNUSABLE_KEY, False):
+                continue
+            has_siblings = any(
+                other is not transition and other.get("source") == transition.get("source")
+                for other in transitions
+            )
+            transition["condition"] = "when_no_intent_matched" if has_siblings else "auto"
+            transition["conditionValue"] = ""
+            transition.pop("conditionCode", None)
 
     def _build_single_element_message(self, spec: Dict[str, Any]) -> str:
         """Generate a friendly status message for a single element."""

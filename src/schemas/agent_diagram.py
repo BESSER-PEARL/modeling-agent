@@ -350,7 +350,7 @@ class AgentTransitionSpec(BaseModel):
         default="when_intent_matched",
         description=(
             "Transition trigger: when_intent_matched, when_no_intent_matched, auto, or custom_condition. "
-            "A state can have only ONE auto transition."
+            "An auto transition must be the only transition of its state."
         ),
     )
     conditionValue: Optional[str] = Field(
