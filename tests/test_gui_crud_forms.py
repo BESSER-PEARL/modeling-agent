@@ -16,9 +16,12 @@ that generator.
 
 import copy
 
+import pytest
+
 from diagram_handlers.types.gui_html_converter import html_to_components
 from diagram_handlers.types.gui_nocode_diagram_handler import (
     GUINoCodeDiagramHandler,
+    _node_text,
     _wire_model_actions,
 )
 from schemas import AuthoredSystemGUISpec
@@ -91,6 +94,49 @@ def test_edit_and_delete_act_on_the_selected_row():
     assert delete["instance-source"] == table_id
     assert delete["confirmation-required"] == "true"
 
+
+
+def _tables(nodes):
+    return {n["attributes"]["chart-title"]: n for n in nodes if n.get("type") == "table"}
+
+
+def test_read_only_table_has_no_add_edit_delete():
+    # A table that only shows records (results, a list to browse) must not
+    # turn its screen into a record-management page.
+    nodes = _nodes(_generate([{"name": "Overview", "sections": [
+        {"bind": {"kind": "table", "className": "Book", "title": "Manage books", "editable": True}},
+        {"bind": {"kind": "table", "className": "Loan", "title": "Past loans", "editable": False}},
+        {"bind": {"kind": "table", "className": "Member", "title": "Members"}},
+        {"bind": {"kind": "dashboard", "className": "Loan", "title": "Loan overview", "editable": False}},
+    ]}]), "Overview")
+    tables = _tables(nodes)
+    assert tables["Manage books"]["attributes"]["action-buttons"] == "true"
+    assert tables["Past loans"]["attributes"]["action-buttons"] == "false"
+    assert tables["Loan Data"]["attributes"]["action-buttons"] == "false"
+    # Not stated: the table keeps its add/edit/delete actions.
+    assert tables["Members"]["attributes"]["action-buttons"] == "true"
+
+
+def test_bind_schema_and_prompt_offer_read_only_tables():
+    from prompts import gui as gui_prompts
+    from schemas.gui_diagram import GUIBindSpec
+
+    assert GUIBindSpec(kind="table", editable=False).editable is False
+    assert GUIBindSpec(kind="table").editable is None
+    authoring = gui_prompts.complete_system_prompt("default", "", "", "", "")
+    modifying = gui_prompts.modification_prompt("- Home: hero", META, "")
+    for prompt in (authoring, modifying):
+        assert '"editable": false' in prompt
+
+
+def test_prompt_rules_out_dead_filter_inputs_next_to_a_bound_table():
+    # The generated table sorts and filters in its own header; an input drawn
+    # outside a create form is wired to nothing.
+    from prompts import gui as gui_prompts
+
+    rules = gui_prompts.interactions_block(True)
+    assert "already sorts and filters" in rules
+    assert "no search box, filter input or sort control" in rules
 
 def test_add_to_a_list_is_not_a_record_button():
     btn = _by_text(_nodes(_generate([CATALOG]), "Catalog"), "Add to reading list")
@@ -328,10 +374,11 @@ def test_designed_form_of_a_record_that_needs_a_parent_stays_a_form():
     ]}], ORDER_META)
     form, = _forms(_nodes(model, "Lines"))
     authored, = html_to_components(LINE_FORM)
-    # Bound to its class; only the two inputs gain their attribute's name.
+    # Bound to its class; only the two inputs gain their attribute's name, and
+    # the quantity a line needs is required.
     assert form["attributes"] == {"class": "app-form", "data-source": "c-line"}
     authored["attributes"] = form["attributes"]
-    authored["components"][3]["attributes"]["name"] = "quantity"
+    authored["components"][3]["attributes"].update(name="quantity", required="required")
     authored["components"][5]["attributes"]["name"] = "note"
     assert form == authored
     again = copy.deepcopy(model)
@@ -346,3 +393,206 @@ def test_form_widget_of_such_a_record_stays_a_form():
     form, = _forms(nodes)
     assert form["attributes"]["data-source"] == "c-line"
     assert [i["attributes"]["name"] for i in _inputs(form)] == ["quantity"]
+
+
+# -- enumeration and required fields on create forms ---------------------------
+
+# Literals deliberately out of alphabetical order: the form keeps the model's order.
+SHOP_META = extract_class_metadata({
+    "elements": {
+        "c-sale": {"id": "c-sale", "type": "Class", "name": "Sale"},
+        "a-ref": {"id": "a-ref", "type": "ClassAttribute", "owner": "c-sale",
+                  "name": "reference", "attributeType": "str"},
+        "a-state": {"id": "a-state", "type": "ClassAttribute", "owner": "c-sale",
+                    "name": "state", "attributeType": "SaleState"},
+        "a-memo": {"id": "a-memo", "type": "ClassAttribute", "owner": "c-sale",
+                   "name": "memo", "attributeType": "str", "isOptional": True},
+        "a-paid": {"id": "a-paid", "type": "ClassAttribute", "owner": "c-sale",
+                   "name": "paid", "attributeType": "bool"},
+        "e-state": {"id": "e-state", "type": "Enumeration", "name": "SaleState"},
+        "l-1": {"id": "l-1", "type": "ClassAttribute", "owner": "e-state", "name": "Placed"},
+        "l-2": {"id": "l-2", "type": "ClassAttribute", "owner": "e-state", "name": "Shipped"},
+        "l-3": {"id": "l-3", "type": "ClassAttribute", "owner": "e-state", "name": "Delivered"},
+        "l-4": {"id": "l-4", "type": "ClassAttribute", "owner": "e-state", "name": "Cancelled"},
+    },
+    "relationships": {},
+})
+SALE_STATES = ["Placed", "Shipped", "Delivered", "Cancelled"]
+
+
+def _controls(form):
+    out = []
+
+    def _walk(n):
+        if isinstance(n, dict):
+            if n.get("tagName") in ("input", "select", "textarea"):
+                out.append(n)
+            for c in n.get("components") or []:
+                _walk(c)
+
+    _walk(form)
+    return {c["attributes"]["name"]: c for c in out}
+
+
+def _assert_enum_select(control):
+    assert control["tagName"] == "select"
+    assert "type" not in control["attributes"]
+    # BESSER's form converter reads the choices from data-options.
+    assert control["attributes"]["data-options"] == ",".join(SALE_STATES)
+    assert [(o["tagName"], o["attributes"]["value"], o["content"]) for o in control["components"]] == [
+        ("option", s, s) for s in SALE_STATES
+    ]
+
+
+def test_form_widget_offers_enumeration_literals_as_a_select():
+    form, = _forms(_nodes(_generate([{"name": "New sale", "sections": [
+        {"bind": {"kind": "form", "className": "Sale", "columns": ["reference", "state", "memo"]}},
+    ]}], SHOP_META), "New sale"))
+    controls = _controls(form)
+    _assert_enum_select(controls["state"])
+    assert controls["reference"]["attributes"]["type"] == "text"
+
+
+def test_authored_form_input_of_an_enumeration_becomes_a_select():
+    form, = _forms(_nodes(_generate([{"name": "Page", "sections": [{"html": (
+        "<section class='s'><h2>F</h2><form data-class='Sale'>"
+        "<label for='r'>Reference</label><input id='r'>"
+        "<label for='s'>State</label><input id='s' list='states' placeholder='Placed or Shipped'>"
+        "<label for='p'>Paid</label><input id='p' type='checkbox'>"
+        "<button type='submit'>Save</button></form></section>"
+    )}]}], SHOP_META), "Page"))
+    assert form["attributes"]["data-source"] == "c-sale"
+    state = _controls(form)["state"]
+    _assert_enum_select(state)
+    assert "list" not in state["attributes"] and "placeholder" not in state["attributes"]
+    assert state["attributes"]["id"] == "s"
+
+
+
+def test_form_widget_marks_the_fields_a_record_needs_as_required():
+    form, = _forms(_nodes(_generate([{"name": "New sale", "sections": [
+        {"bind": {"kind": "form", "className": "Sale", "columns": ["reference", "state", "memo", "paid"]}},
+    ]}], SHOP_META), "New sale"))
+    controls = _controls(form)
+    assert controls["reference"]["attributes"].get("required") == "required"
+    assert controls["state"]["attributes"].get("required") == "required"
+    assert "required" not in controls["memo"]["attributes"]
+    # A required checkbox would have to be ticked; unticked already sends false.
+    assert "required" not in controls["paid"]["attributes"]
+
+
+def test_a_request_for_a_simple_design_overrides_the_signature_moment_rule():
+    from prompts import gui as gui_prompts
+
+    prompt = gui_prompts.complete_system_prompt("default", "", "", "", "")
+    rule = prompt[prompt.index("6. VISUAL HIERARCHY"):prompt.index("7. SAMPLE DATA")]
+    assert "simple, minimal or plain design" in rule
+    assert "no signature moment" in rule
+    # It drops decoration, not the varied sample data or realistic labels.
+    assert "realism" not in rule[rule.index("EXCEPTION"):]
+
+
+def test_editable_rule_is_given_only_with_a_class_diagram():
+    from prompts import gui as gui_prompts
+
+    assert '"editable"' not in gui_prompts.modification_prompt("- Home: hero", [], "")
+
+
+def _radio_form(choices):
+    form, = _forms(_nodes(_generate([{"name": "Page", "sections": [{"html": (
+        "<section class='s'><h2>F</h2><form data-class='Sale'>"
+        "<label for='r'>Reference</label><input id='r'>" + choices +
+        "<label for='p'>Paid</label><input id='p' type='checkbox'>"
+        "<button type='submit'>Save</button></form></section>"
+    )}]}], SHOP_META), "Page"))
+    assert form["attributes"]["data-source"] == "c-sale"
+    return form
+
+
+@pytest.mark.parametrize("choices", [
+    "<input type='radio' name='state' value='Placed'> Placed"
+    "<input type='radio' name='state' value='Shipped'> Shipped",
+    "<fieldset><legend>State</legend>"
+    "<label><input type='radio' name='state' value='Placed'> Placed</label>"
+    "<label><input type='radio' name='state' value='Shipped'> Shipped</label></fieldset>",
+    "<div class='ds-field'><span>State</span>"
+    "<input type='radio' id='s1' name='state' value='Placed'><label for='s1'>Placed</label>"
+    "<input type='radio' id='s2' name='state' value='Shipped'><label for='s2'>Shipped</label></div>",
+])
+def test_authored_radio_group_of_an_enumeration_becomes_one_required_dropdown(choices):
+    # BESSER turns each radio into its own option-less radio group, so the
+    # generated app could not pick a value: the group is one dropdown instead.
+    form = _radio_form(choices)
+    nodes = _nodes_of(form)
+    assert not [n for n in nodes if (n.get("attributes") or {}).get("type") == "radio"]
+    select, = [n for n in nodes if n.get("tagName") == "select"]
+    assert select["attributes"]["name"] == "state"
+    assert select["attributes"]["data-options"] == "Placed,Shipped,Delivered,Cancelled"
+    assert select["attributes"]["required"] == "required"
+    # The radios' own captions go with them; the order of the fields stays.
+    texts = [_node_text(n).strip() for n in nodes if n.get("type") == "textnode" or n.get("tagName") == "label"]
+    assert "Shipped" not in texts and "Placed" not in texts
+    names = [(n.get("attributes") or {}).get("name") for n in nodes if n.get("tagName") in ("input", "select")]
+    assert names == ["reference", "state", "paid"]
+
+
+def test_authored_bound_form_marks_the_fields_a_record_needs_as_required():
+    form, = _forms(_nodes(_generate([{"name": "Page", "sections": [{"html": (
+        "<section class='s'><h2>F</h2><form data-class='Sale'>"
+        "<label for='r'>Reference</label><input id='r'>"
+        "<label for='s'>State</label><input id='s'>"
+        "<label for='m'>Memo</label><input id='m'>"
+        "<label for='p'>Paid</label><input id='p' type='checkbox'>"
+        "<button type='submit'>Save</button></form></section>"
+    )}]}], SHOP_META), "Page"))
+    controls = _controls(form)
+    assert controls["reference"]["attributes"].get("required") == "required"
+    assert controls["state"]["attributes"].get("required") == "required"
+    assert "required" not in controls["memo"]["attributes"]
+    assert "required" not in controls["paid"]["attributes"]
+
+
+def _nodes_of(node):
+    out = [node]
+    for child in node.get("components") or []:
+        out.extend(_nodes_of(child))
+    return out
+
+
+def test_a_class_is_managed_on_its_editable_table_page_not_a_read_only_one():
+    tables = [
+        {"name": "Archive", "sections": [
+            {"bind": {"kind": "table", "className": "Book", "title": "Past books", "editable": False}}]},
+        {"name": "Books", "sections": [
+            {"bind": {"kind": "table", "className": "Book", "title": "All books"}}]},
+    ]
+    home = {"html": "<section class='s'><h2>Home</h2>"
+                    "<button data-method='reserve' data-class='Book'>Reserve a book</button></section>"}
+    # The method runs on a selected row, so the button sends the user to the
+    # page where Book records are managed: when generated, and when the page
+    # is added by an edit.
+    generated = _generate(tables + [{"name": "Home", "sections": [home]}])
+    modified = _modify(_generate(tables), [
+        {"operation": "add_page", "pageName": "Home", "newPageName": "Home", "section": home},
+    ])
+    for model in (generated, modified):
+        books_id = next(p["id"] for p in model["pages"] if p["name"] == "Books")
+        btn = _by_text(_nodes(model, "Home"), "Reserve a book")
+        assert btn["attributes"]["data-target-screen"] == books_id
+
+
+def test_rewriting_a_read_only_table_section_keeps_it_read_only():
+    model = _generate([{"name": "Archive", "sections": [{
+        "bind": {"kind": "table", "className": "Loan", "title": "Past loans", "editable": False},
+        "html": "<section class='ds-section'><h2>Loan history</h2><div class='ds-card'><!--WIDGET:table--></div></section>",
+    }]}])
+
+    def rewrite(bind):
+        return _modify(model, [{"operation": "edit_section", "pageName": "Archive", "sectionTitle": "Loan history",
+                                "section": {"bind": {"kind": "table", "className": "Loan", **bind}}}])
+
+    unstated = next(n for n in _nodes(rewrite({"title": "Old loans"}), "Archive") if n.get("type") == "table")
+    assert unstated["attributes"]["action-buttons"] == "false"
+    stated = next(n for n in _nodes(rewrite({"title": "Old loans", "editable": True}), "Archive")
+                  if n.get("type") == "table")
+    assert stated["attributes"]["action-buttons"] == "true"

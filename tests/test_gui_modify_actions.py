@@ -471,3 +471,26 @@ def test_nav_of_task_links_is_not_treated_as_a_page_list():
     guest = next(n for n in _nodes(after, "Overview") if n.get("tagName") == "nav"
                  and n["attributes"].get("class") == "guest-nav")
     assert [l["attributes"]["href"] for l in _links_in(guest)] == ["/tasks", "/projects"]
+
+
+def test_method_row_buttons_read_as_labels_not_method_names():
+    from diagram_handlers.types.gui_nocode_diagram_handler import _method_buttons_row
+
+    cls = {"id": "c-order", "name": "Order", "methods": [
+        {"id": "m-ship", "name": "markShipped", "isInstanceMethod": True, "params": []},
+        {"id": "m-check", "name": "validate", "isInstanceMethod": True, "params": []},
+    ]}
+    row = _method_buttons_row(cls, table_id="table-order")
+    labels = [(b["content"], b["button-label"], b["attributes"]["data-button-label"]) for b in row["components"]]
+    assert labels == [("Mark shipped",) * 3, ("Validate",) * 3]
+    # The method itself is still referenced by id.
+    assert [b["method"] for b in row["components"]] == ["m-ship", "m-check"]
+
+
+def test_authored_method_button_without_text_is_labelled_in_words():
+    from diagram_handlers.types.gui_nocode_diagram_handler import _make_method_button
+
+    node = {"tagName": "button"}
+    method = {"id": "m-ship", "name": "markShipped", "isInstanceMethod": True}
+    _make_method_button(node, {"id": "c-order"}, method, "table-order")
+    assert node["button-label"] == node["attributes"]["data-button-label"] == "Mark shipped"

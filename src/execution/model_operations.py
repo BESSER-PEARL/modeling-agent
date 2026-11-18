@@ -5,6 +5,7 @@ GUI-choice prompts, handler dispatch, progress threads, and result enrichment.
 """
 
 import logging
+import re
 import threading
 from typing import Any, Dict, NamedTuple, Optional
 
@@ -41,6 +42,8 @@ from conversation.suggestions import get_suggested_actions, get_artifact_label, 
 from common.session_keys import (
     LAST_EXECUTED_DIAGRAM_TYPE,
     LAST_MATCHED_INTENT,
+    SCREENS_LISTED_PROJECT_ID,
+    UNIFIED_CLASSIFICATION,
 )
 from common import pending_dialogs
 from common.pending_dialogs import (
@@ -72,8 +75,13 @@ class Deferred(NamedTuple):
 
 
 _QUEUED_DESTRUCTIVE = "_queued_destructive_confirmation"
-# The user's request on an operation parked behind the replace/keep question.
+# The user's request on an operation parked behind the replace/keep question,
+# and whether it listed its screens.
 _ORIGINAL_REQUEST_KEY = "_original_request"
+_SCREENS_LISTED_KEY = "_screens_listed"
+# The screen question to re-offer after a failed design, parked behind the
+# plan's open dialog so asking later designs nothing again.
+_QUEUED_GUI_REOFFER = "_queued_gui_reoffer"
 
 # Handler replies that ask the user to rephrase: the LLM call failed, or the
 # handler crashed (generate_fallback_modification).
@@ -91,6 +99,51 @@ def gui_choice_actions() -> list:
         {"label": "Basic CRUD pages", "prompt": "Basic CRUD pages"},
         {"label": "Experimental AI design", "prompt": "Experimental AI design"},
     ]
+
+
+# The answer each button label stands for.
+_GUI_CHOICE_LABELS = {
+    "basic crud pages": "auto",
+    "experimental ai design": "llm",
+}
+
+# Set on a screen question opened by a message that already answers it.
+GUI_CHOICE_IN_REQUEST = "answered_in_request"
+
+
+def gui_choice_from_label(message: Optional[str]) -> Optional[str]:
+    """"auto" / "llm" when *message* is, or starts with, a button label."""
+    token = " ".join(re.sub(r"[^\w\s]", " ", (message or "").lower()).split())
+    return next(
+        (answer for label, answer in _GUI_CHOICE_LABELS.items()
+         if token == label or token.startswith(label + " ")),
+        None,
+    )
+
+
+# Set on the open screen question once the AI design has failed: from then on
+# a typed "try again" means the AI design.
+AI_DESIGN_FAILED = "ai_design_failed"
+
+
+def reoffer_gui_choice(session: Session, pending: dict, lead: str = "") -> None:
+    """After a failed AI screen build: the question stays open, so the user can
+    retry or take the other option from the same two buttons."""
+    pending_dialogs.put(session, PENDING_GUI_CHOICE, {**pending, AI_DESIGN_FAILED: True})
+    reply_payload(session, assistant_message(
+        f"{lead}You can try the AI design again, or use basic CRUD pages instead.",
+        suggestedActions=gui_choice_actions(),
+    ))
+
+
+def _user_listed_screens(session, request) -> bool:
+    """Whether the user listed the screens to build, in this message or in the
+    app description of this project (classifier ``screens_listed``)."""
+    verdict = session.get(UNIFIED_CLASSIFICATION)
+    project_id = request_project_id(request)
+    return bool(getattr(verdict, "screens_listed", None)) or bool(
+        project_id and session.get(SCREENS_LISTED_PROJECT_ID) == project_id
+    )
 
 
 def _non_web_target_label(session, request):
@@ -563,6 +616,12 @@ def execute_model_operation(
     and :class:`Deferred` when that prompt must wait for another dialog of the
     same parallel plan.
     """
+    queued_reoffer = operation.get(_QUEUED_GUI_REOFFER)
+    if isinstance(queued_reoffer, dict):
+        if not pending_dialogs.may_open(PENDING_GUI_CHOICE):
+            return Deferred(operation)
+        reoffer_gui_choice(session, queued_reoffer)
+        return None
     queued_destructive = operation.get(_QUEUED_DESTRUCTIVE)
     if isinstance(queued_destructive, dict):
         if not pending_dialogs.may_open(PENDING_COMPLETE_SYSTEM):
@@ -629,7 +688,10 @@ def execute_model_operation(
     if _skip_existing_check and operation.get(_ORIGINAL_REQUEST_KEY):
         # A replace/keep answer resumes with the planner's step request; the
         # user's own words come back on the operation the question stored.
-        remember_original_request(session, operation[_ORIGINAL_REQUEST_KEY], request_project_id(request))
+        remember_original_request(
+            session, operation[_ORIGINAL_REQUEST_KEY], request_project_id(request),
+            screens_listed=bool(operation.get(_SCREENS_LISTED_KEY)),
+        )
     if resuming_spec and operation_mode == "complete_system" and target_diagram_type == "ClassDiagram":
         # Resume requests may contain only the planner summary or the mismatch
         # button's synthesized prompt. Reuse only a proven same-project source.
@@ -665,6 +727,8 @@ def execute_model_operation(
                 stored_operation = {**operation, 'mode': operation_mode}
                 if remember_request:
                     stored_operation[_ORIGINAL_REQUEST_KEY] = remember_request
+                    stored_operation[_SCREENS_LISTED_KEY] = bool(
+                        getattr(session.get(UNIFIED_CLASSIFICATION), "screens_listed", None))
 
                 _build_existing_model_confirmation(
                     session=session,
@@ -690,8 +754,8 @@ def execute_model_operation(
         remember_original_request(session, remember_request, request_project_id(request))
 
     # ── GUI generation-mode choice ───────────────────────────────────────
-    # Always asked. A keyword shortcut would read the planner's rewritten step
-    # request, so screens the planner invented would skip the user's choice.
+    # Asked unless the user's own words list the screens. Never read from the
+    # planner's rewritten step request, where it may have invented screens.
     _resolved_class_diagram = None
     if target_diagram_type == "GUINoCodeDiagram" and operation_mode in ("complete_system", None, ""):
         _resolved_class_diagram = resolve_class_diagram(request)
@@ -701,18 +765,41 @@ def execute_model_operation(
             and len(_resolved_class_diagram["elements"]) > 0
         )
 
+        # A typed answer ("Basic CRUD pages") wins over listed screens.
+        _typed_answer = gui_choice_from_label(getattr(request, "message", ""))
         # A mockup (operation["images"]) is reproduced by the AI design path;
         # Basic CRUD pages would ignore it, so there is nothing to choose.
         if _has_class_diagram and not _skip_gui_choice and not operation.get("images"):
-            if not pending_dialogs.may_open(PENDING_GUI_CHOICE):
-                return Deferred(operation)
-            pending_dialogs.put(session, PENDING_GUI_CHOICE, {
+            pending = {
                 'operation_request': operation_request,
                 'operation': operation,
                 'default_mode': default_mode,
                 'diagram_type': target_diagram_type,
                 '_replace_existing': _replace_existing,
-            })
+            }
+            if not _typed_answer and _user_listed_screens(session, request):
+                logger.info("[ModelOp] The request lists its screens; designing them without the CRUD/AI question")
+                built = execute_model_operation(
+                    session, request, operation, default_mode,
+                    _skip_existing_check=_skip_existing_check, _replace_existing=_replace_existing,
+                    _skip_gui_choice=True, _create_new_tab=_create_new_tab,
+                )
+                if not isinstance(built, str):
+                    # Failed: open the question for a retry or Basic CRUD pages.
+                    if not pending_dialogs.may_open(PENDING_GUI_CHOICE):
+                        return Deferred({**operation, _QUEUED_GUI_REOFFER: pending})
+                    reoffer_gui_choice(session, pending)
+                    return None
+                return built
+            if not pending_dialogs.may_open(PENDING_GUI_CHOICE):
+                return Deferred(operation)
+            if _typed_answer:
+                # A button label typed with no question open (the screens were
+                # built before): the app layer applies it, nothing is asked.
+                pending_dialogs.put(session, PENDING_GUI_CHOICE, {**pending, GUI_CHOICE_IN_REQUEST: True})
+                logger.info("[ModelOp] The request answers the screen question; not asking it")
+                return None
+            pending_dialogs.put(session, PENDING_GUI_CHOICE, pending)
             reply_payload(session, {
                 "action": Action.ASSISTANT_MESSAGE,
                 "message": (
