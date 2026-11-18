@@ -2740,6 +2740,9 @@ class ClassDiagramHandler(BaseDiagramHandler):
             name = name.split(":", 1)[0].strip()
         return name
 
+    # Every element type the editor finds a class by name among.
+    _CLASS_LIKE_TYPES = _CLASS_ELEMENT_TYPES | {"Enumeration"}
+
     def _build_model_index(
         self, current_model: Optional[Dict[str, Any]],
     ) -> tuple[set, set, set]:
@@ -2777,7 +2780,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 continue
             el_type = el.get("type")
             name = el.get("name")
-            if el_type in ("Class", "AbstractClass", "Enumeration") or (
+            if el_type in self._CLASS_LIKE_TYPES or (
                 el_type is None and isinstance(el.get("attributes"), (list, dict))
             ):
                 if isinstance(name, str) and name.strip():
@@ -3866,8 +3869,6 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # refactoring are canonicalised too.
         self._normalise_modification_types(spec)
         return spec
-
-    _CLASS_LIKE_TYPES = frozenset({"Class", "AbstractClass", "Interface", "Enumeration"})
 
     def _existing_classes(self, current_model: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         """``{id: {"name", "type", "members"}}`` of the classes of *current_model*;

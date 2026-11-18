@@ -303,3 +303,32 @@ class TestIdentifierStaysRequired:
         assert "isOptional" not in email["changes"] and email["changes"]["type"] == "text"
         assert nickname["changes"]["isOptional"] is True
         assert "I kept **email** in **Customer** required" in result["message"]
+
+
+class TestEveryClassKindIsIndexed:
+    """An edit on an abstract class, interface or enumeration is not a missing target."""
+
+    def _model(self):
+        return {
+            "elements": {
+                "c-pub": {"id": "c-pub", "name": "Publication", "type": "AbstractClass"},
+                "c-lend": {"id": "c-lend", "name": "Lendable", "type": "Interface"},
+                "m-lend": {"id": "m-lend", "name": "+lend(days: int): bool", "type": "ClassMethod",
+                           "owner": "c-lend"},
+                "c-genre": {"id": "c-genre", "name": "Genre", "type": "Enumeration"},
+                "l-poem": {"id": "l-poem", "name": "POETRY", "type": "ClassAttribute", "owner": "c-genre"},
+            },
+            "relationships": {},
+        }
+
+    @pytest.mark.parametrize("mod", [
+        {"action": "modify_class", "target": {"className": "Lendable"}, "changes": {"name": "Borrowable"}},
+        {"action": "remove_element", "target": {"className": "Lendable", "methodName": "lend"}},
+        {"action": "remove_element", "target": {"className": "Lendable"}},
+        {"action": "modify_class", "target": {"className": "Publication"}, "changes": {"name": "Work"}},
+        {"action": "remove_element", "target": {"className": "Genre", "attributeName": "POETRY"}},
+    ])
+    def test_edit_is_kept(self, handler, mod):
+        spec = {"action": "modify_model", "modification": mod}
+        assert handler._drop_phantom_target_ops(spec, self._model()) == []
+        assert spec["modification"] is mod
