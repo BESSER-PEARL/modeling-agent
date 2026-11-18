@@ -5,6 +5,7 @@ GUI-choice prompts, handler dispatch, progress threads, and result enrichment.
 """
 
 import logging
+import re
 import threading
 from typing import Any, Dict, NamedTuple, Optional
 
@@ -91,6 +92,23 @@ def gui_choice_actions() -> list:
         {"label": "Basic CRUD pages", "prompt": "Basic CRUD pages"},
         {"label": "Experimental AI design", "prompt": "Experimental AI design"},
     ]
+
+
+# A request that says how many screens it wants ("three screens", "exactly 4
+# pages") or lists them ("screens: ...") already describes them, and Basic CRUD
+# pages (one per class) would drop them. "One page per class" asks for CRUD.
+_LISTED_SCREENS_RE = re.compile(
+    r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:[a-z-]+\s+)?(?:screens?|pages?)\b"
+    r"(?!\s+(?:per|for\s+each)\b)"
+    r"|\b(?:screens|pages)\s*:"
+    r"|\bfollowing\s+(?:screens|pages)\b",
+    re.IGNORECASE,
+)
+
+
+def _lists_screens(*texts: Optional[str]) -> bool:
+    """Whether any of the user's own *texts* describes the screens to build."""
+    return any(_LISTED_SCREENS_RE.search(text or "") for text in texts)
 
 
 def _non_web_target_label(session, request):
@@ -690,8 +708,8 @@ def execute_model_operation(
         remember_original_request(session, remember_request, request_project_id(request))
 
     # ── GUI generation-mode choice ───────────────────────────────────────
-    # Always asked. A keyword shortcut would read the planner's rewritten step
-    # request, so screens the planner invented would skip the user's choice.
+    # Asked unless the user's own words list the screens. Never read from the
+    # planner's rewritten step request, where it may have invented screens.
     _resolved_class_diagram = None
     if target_diagram_type == "GUINoCodeDiagram" and operation_mode in ("complete_system", None, ""):
         _resolved_class_diagram = resolve_class_diagram(request)
@@ -703,7 +721,14 @@ def execute_model_operation(
 
         # A mockup (operation["images"]) is reproduced by the AI design path;
         # Basic CRUD pages would ignore it, so there is nothing to choose.
-        if _has_class_diagram and not _skip_gui_choice and not operation.get("images"):
+        _screens_listed = _lists_screens(
+            getattr(request, "message", ""),
+            original_request_for_project(session, request_project_id(request)),
+        )
+        if _screens_listed:
+            logger.info("[ModelOp] The request lists its screens; designing them without the CRUD/AI question")
+        if (_has_class_diagram and not _skip_gui_choice and not operation.get("images")
+                and not _screens_listed):
             if not pending_dialogs.may_open(PENDING_GUI_CHOICE):
                 return Deferred(operation)
             pending_dialogs.put(session, PENDING_GUI_CHOICE, {
