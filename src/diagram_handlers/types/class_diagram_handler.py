@@ -3446,6 +3446,15 @@ class ClassDiagramHandler(BaseDiagramHandler):
             spec.pop("modification", None)
             spec["modifications"] = all_mods
 
+    # A message that only asks to undo ("revert", "undo my last change"): the
+    # editor's own undo restores the diagram exactly; an LLM guess may not.
+    _UNDO_REQUEST_RE = re.compile(
+        r"^\s*(?:please\s+)?(?:undo|revert)(?:\s+(?:it|that|this|(?:my|the)\s+(?:last\s+)?"
+        r"(?:changes?|edits?|steps?)))?(?:\s+please)?\s*[.!]*\s*$",
+        re.IGNORECASE,
+    )
+    _UNDO_REPLY = "To undo, use Ctrl+Z or the undo button in the editor toolbar."
+
     def _prepare_modification(self, user_request: str, current_model: Dict[str, Any] = None, **kwargs) -> Any:
         """``(dup_errors, system_prompt, user_prompt)``, or the deterministic repair as ``ReplyNow``.
 
@@ -3459,6 +3468,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
         # and claimed success. When the request carries only this error class,
         # skip the LLM entirely; when it is mixed with other errors, run the
         # normal path and enforce uniqueness in a post-guard below.
+        if self._UNDO_REQUEST_RE.match(kwargs.get("raw_request") or ""):
+            return ReplyNow(assistant_message(self._UNDO_REPLY))
         _dup_errors, _dup_pure = self._detect_duplicate_end_errors(user_request)
         if _dup_errors and _dup_pure:
             return ReplyNow(self._repair_duplicate_ends(current_model, _dup_errors))
