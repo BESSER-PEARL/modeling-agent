@@ -3605,14 +3605,13 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         return modification_spec
     
-    def _no_changes_reply(self, mods: list, elements: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Name a target that is not in the model rather than ask for the change."""
-        notes = self._drop_phantom_target_ops(
-            {"action": Action.MODIFY_MODEL, "modifications": list(mods)}, {"elements": elements or {}},
-        )
-        if notes:
-            return assistant_message(" ".join(notes))
-        return super()._no_changes_reply(mods, elements)
+    def _keep_ops_without_changes(self, mods: list, elements: Optional[Dict[str, Any]]) -> list:
+        """Keep an op on a missing element: ``_drop_phantom_target_ops`` names it
+        and, when every op misses, samples again."""
+        if not elements:
+            return []
+        index = self._build_model_index({"elements": elements})
+        return [m for m in mods if self._phantom_note_for_mod(m, *index) is not None]
 
     def generate_fallback_modification(self, request: str) -> Dict[str, Any]:
         """The reply when ``_build_modification`` crashes. It applies nothing:

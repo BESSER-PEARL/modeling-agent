@@ -100,3 +100,25 @@ def test_agent_null_changes_on_a_missing_state_keeps_the_agent_reply():
 
     assert result["action"] == "assistant_message"
     assert "couldn't find the element you referred to" in result["message"]
+
+
+def test_class_null_changes_on_a_missing_member_gets_the_second_sample():
+    handler = ClassDiagramHandler(llm=None)
+    samples = [
+        ClassModificationResponse.model_validate({"modifications": [
+            {"action": "modify_attribute", "target": {"className": "Book", "attributeName": "isbn"},
+             "changes": None},
+        ]}),
+        ClassModificationResponse.model_validate({"modifications": [
+            {"action": "modify_attribute", "target": {"className": "Book", "attributeName": "title"},
+             "changes": {"name": "heading"}},
+        ]}),
+    ]
+    handler.predict_structured = lambda *a, **k: samples.pop(0)
+
+    result = handler.generate_modification("rename title to heading", _book_author_model())
+
+    assert not samples
+    assert result["action"] == "modify_model"
+    assert result["modification"]["changes"]["name"] == "heading"
+
