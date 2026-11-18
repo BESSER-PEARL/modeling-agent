@@ -162,3 +162,33 @@ class TestGenerateModificationIntegration:
         assert result["action"] == "assistant_message"
         assert "priority" in result["message"].lower()
         assert "couldn't find" in result["message"].lower()
+
+    def test_reply_lists_only_the_changes_that_remain(self, handler):
+        """A modify op on a missing member that carries changes is dropped;
+        the reply must not also report it as applied."""
+        from schemas import ClassModificationResponse
+        model = {
+            "elements": {
+                "c-book": {"id": "c-book", "name": "Book", "type": "Class", "owner": None},
+                "a-title": {"id": "a-title", "name": "title", "type": "ClassAttribute",
+                            "owner": "c-book"},
+                "c-author": {"id": "c-author", "name": "Author", "type": "Class", "owner": None},
+            },
+            "relationships": {},
+        }
+        parsed = ClassModificationResponse.model_validate({"modifications": [
+            {"action": "modify_attribute", "target": {"className": "Book", "attributeName": "isbn"},
+             "changes": {"isOptional": True}},
+            {"action": "add_attribute", "target": {"className": "Author"},
+             "changes": {"name": "birthYear", "type": "int"}},
+        ]})
+        handler.predict_structured = lambda *a, **k: parsed
+
+        result = handler.generate_modification("make isbn optional and give authors a birth year", model)
+
+        assert _remaining_actions(result) == ["add_attribute"]
+        message = result["message"]
+        assert "birthYear" in message
+        assert "couldn't find a **isbn** field" in message
+        assert "Applied 2 changes" not in message
+        assert "isbn" not in message.split("\n\n")[0]

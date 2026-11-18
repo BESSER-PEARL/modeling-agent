@@ -716,6 +716,15 @@ class BaseDiagramHandler(ABC):
         modification_spec.setdefault('action', Action.MODIFY_MODEL)
         modification_spec.setdefault('diagramType', self.get_diagram_type())
 
+        self._write_modification_message(modification_spec, elements)
+
+        return modification_spec
+
+    def _write_modification_message(
+        self, modification_spec: Dict[str, Any], elements: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Describe the operations of *modification_spec* in its ``message``
+        unless one is set, and note the operations skipped as invalid."""
         if 'message' not in modification_spec:
             if 'modifications' in modification_spec and isinstance(modification_spec['modifications'], list):
                 modification_spec['message'] = self._friendly_batch_message(
@@ -737,8 +746,6 @@ class BaseDiagramHandler(ABC):
                 f"parse — the rest were applied."
             )
             modification_spec['message'] = (existing + note).strip()
-
-        return modification_spec
 
     # ------------------------------------------------------------------
     # Server-side reference guardrail (opt-in per handler)

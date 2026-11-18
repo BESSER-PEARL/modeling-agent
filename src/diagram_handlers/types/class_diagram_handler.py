@@ -3567,8 +3567,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 deduped.append(mod)
             return deduped
 
+        # Whether the refactoring expansion wrote the reply itself.
+        refactor_reply = [False]
+
         def _expand_refactoring(handler, spec):
             spec = handler._prepare_modification_spec(spec, current_model)
+            refactor_reply[0] = "message" in spec
             # A new class gets no surrogate id, as in a generated diagram.
             mods = spec.get("modifications")
             if not isinstance(mods, list):
@@ -3592,12 +3596,13 @@ class ClassDiagramHandler(BaseDiagramHandler):
         not_found_notes: List[str] = []
         prior_notes: List[str] = []
         modification_spec: Dict[str, Any] = {}
+        elements = current_model.get("elements") if isinstance(current_model, dict) else None
         for attempt in (1, 2):
             modification_spec = self._execute_modification(
                 user_prompt, system_prompt, ClassModificationResponse,
                 post_processor=_strip_spurious_relationship_mods,
                 spec_processor=_expand_refactoring,
-                elements=current_model.get("elements") if isinstance(current_model, dict) else None,
+                elements=elements,
             )
             if modification_spec.get("action") != Action.MODIFY_MODEL:
                 break  # element-not-found short-circuit etc. — not a whiff
@@ -3636,6 +3641,10 @@ class ClassDiagramHandler(BaseDiagramHandler):
             or modification_spec.get("modifications")
         ):
             return assistant_message(" ".join(not_found_notes))
+        # The reply described every op; describe only those that remain.
+        if not_found_notes and not refactor_reply[0]:
+            modification_spec.pop("message", None)
+            self._write_modification_message(modification_spec, elements)
 
         # Replace the generic/default message with a clean, descriptive one
         # for add_class (the name lives in changes.className, not the now-
