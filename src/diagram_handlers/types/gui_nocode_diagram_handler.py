@@ -3077,16 +3077,21 @@ def _bind_form(form: Dict[str, Any], classes: List[Dict[str, Any]]) -> None:
         return
     attrs["data-source"] = cls["id"]
     form["attributes"] = attrs
+    required_groups = set()
     for node, attr in fields:
         if attr:
             control_attrs = node.setdefault("attributes", {})
             control_attrs["name"] = attr["name"]
             # A radio group already offers its choices; a checkbox sends false unticked
-            choice = str(control_attrs.get("type", "")).lower() in ("radio", "checkbox")
+            control_type = str(control_attrs.get("type", "")).lower()
+            choice = control_type in ("radio", "checkbox")
             if attr.get("enumLiterals") and node.get("tagName") in ("input", "select") and not choice:
                 _make_enum_select(node, attr["enumLiterals"])
-            if _is_required(attr) and not choice:
+            # One required radio makes HTML require a choice from its whole group
+            radio_group = control_type == "radio" and attr["name"] not in required_groups
+            if _is_required(attr) and (not choice or radio_group):
                 control_attrs["required"] = "required"
+                required_groups.add(attr["name"])
 
 
 def _wire_page_actions(

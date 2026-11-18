@@ -570,3 +570,18 @@ def test_rewriting_a_read_only_table_section_keeps_it_read_only():
     stated = next(n for n in _nodes(rewrite({"title": "Old loans", "editable": True}), "Archive")
                   if n.get("type") == "table")
     assert stated["attributes"]["action-buttons"] == "true"
+
+
+def test_authored_radio_group_of_a_required_enumeration_requires_a_choice():
+    form, = _forms(_nodes(_generate([{"name": "Page", "sections": [{"html": (
+        "<section class='s'><h2>F</h2><form data-class='Sale'>"
+        "<label for='r'>Reference</label><input id='r'>"
+        "<input type='radio' name='state' value='Placed'> Placed"
+        "<input type='radio' name='state' value='Shipped'> Shipped"
+        "<label for='p'>Paid</label><input id='p' type='checkbox'>"
+        "<button type='submit'>Save</button></form></section>"
+    )}]}], SHOP_META), "Page"))
+    assert form["attributes"]["data-source"] == "c-sale"
+    radios = [n for n in _nodes_of(form) if (n.get("attributes") or {}).get("type") == "radio"]
+    # HTML requires a choice from the group when one radio of the name is required
+    assert [r["attributes"].get("required") for r in radios] == ["required", None]
