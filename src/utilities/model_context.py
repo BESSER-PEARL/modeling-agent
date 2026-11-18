@@ -156,7 +156,8 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
         if not isinstance(name, str) or not name.strip():
             continue
         if el_type in ("Class", "AbstractClass", "Interface"):
-            class_data[eid] = {"name": name.strip(), "attrs": [], "methods": []}
+            class_data[eid] = {"name": name.strip(), "attrs": [], "methods": [],
+                               "tag": " (interface)" if el_type == "Interface" else ""}
         elif el_type == "Enumeration":
             enum_names[eid] = name.strip()
 
@@ -191,7 +192,7 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
         names_preview += f" (+{len(class_items) - max_classes} more)"
     lines.append(f"Classes ({len(class_items)}): {names_preview}")
     for cid, cd in class_items[:max_classes]:
-        parts = [f"  - {cd['name']}"]
+        parts = [f"  - {cd['name']}{cd['tag']}"]
         if cd["attrs"]:
             attrs_str = ", ".join(cd["attrs"][:max_attrs])
             if len(cd["attrs"]) > max_attrs:
@@ -201,7 +202,10 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
             parts.append(f"methods: {', '.join(cd['methods'][:max_attrs])}")
         lines.append(" | ".join(parts))
     if enum_names:
-        lines.append(f"Enumerations ({len(enum_names)}): " + ", ".join(enum_names.values()))
+        enums = ", ".join(list(enum_names.values())[:max_classes])
+        if len(enum_names) > max_classes:
+            enums += f" (+{len(enum_names) - max_classes} more)"
+        lines.append(f"Enumerations ({len(enum_names)}): {enums}")
     names = {**enum_names, **{eid: cd["name"] for eid, cd in class_data.items()}}
 
     # Relationships — separate generalizations (inheritance) from associations

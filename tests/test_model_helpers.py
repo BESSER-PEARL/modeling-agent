@@ -318,9 +318,18 @@ class TestDetailedModelSummaryClassDiagram:
         assert "Classes (3): Publication, Book, Lendable" in result
         assert "Publication | attributes: title: str" in result
         assert "Enumerations (1): Genre" in result
+        assert "  - Lendable (interface)" in result
         assert "Book extends Publication" in result
         assert "Lendable -> Genre" in result
         assert "c-" not in result
+
+    def test_enumerations_line_is_capped(self):
+        model = {"elements": {f"e{i}": {"type": "Enumeration", "name": f"Kind{i}"} for i in range(25)},
+                 "relationships": {}}
+        result = detailed_model_summary(model, "ClassDiagram")
+        assert "Enumerations (25): Kind0, " in result
+        assert "Kind19 (+5 more)" in result
+        assert "Kind20" not in result
 
     def test_empty_elements(self):
         # Reconciled to feature behavior (commit 2cfcee9): the explicit
