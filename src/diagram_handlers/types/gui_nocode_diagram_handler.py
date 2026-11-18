@@ -719,7 +719,6 @@ def _labelled_input(attr: Dict[str, Any], form_key: str, input_style: Dict[str, 
     if input_type != "checkbox":
         input_attrs["placeholder"] = label
         if _is_required(attr):
-            # Truthy: BESSER's converter reads an empty value as not required
             input_attrs["required"] = "required"
     control = {
         "tagName": "input",
@@ -3071,9 +3070,14 @@ def _bind_form(form: Dict[str, Any], classes: List[Dict[str, Any]]) -> None:
     form["attributes"] = attrs
     for node, attr in fields:
         if attr:
-            node.setdefault("attributes", {})["name"] = attr["name"]
-            if attr.get("enumLiterals") and node.get("tagName") in ("input", "select"):
+            control_attrs = node.setdefault("attributes", {})
+            control_attrs["name"] = attr["name"]
+            # A radio group already offers its choices; a checkbox sends false unticked
+            choice = str(control_attrs.get("type", "")).lower() in ("radio", "checkbox")
+            if attr.get("enumLiterals") and node.get("tagName") in ("input", "select") and not choice:
                 _make_enum_select(node, attr["enumLiterals"])
+            if _is_required(attr) and not choice:
+                control_attrs["required"] = "required"
 
 
 def _wire_page_actions(

@@ -371,10 +371,11 @@ def test_designed_form_of_a_record_that_needs_a_parent_stays_a_form():
     ]}], ORDER_META)
     form, = _forms(_nodes(model, "Lines"))
     authored, = html_to_components(LINE_FORM)
-    # Bound to its class; only the two inputs gain their attribute's name.
+    # Bound to its class; only the two inputs gain their attribute's name, and
+    # the quantity a line needs is required.
     assert form["attributes"] == {"class": "app-form", "data-source": "c-line"}
     authored["attributes"] = form["attributes"]
-    authored["components"][3]["attributes"]["name"] = "quantity"
+    authored["components"][3]["attributes"].update(name="quantity", required="required")
     authored["components"][5]["attributes"]["name"] = "note"
     assert form == authored
     again = copy.deepcopy(model)
@@ -484,3 +485,41 @@ def test_a_request_for_a_simple_design_overrides_the_signature_moment_rule():
     rule = prompt[prompt.index("6. VISUAL HIERARCHY"):prompt.index("7. SAMPLE DATA")]
     assert "simple, minimal or plain design" in rule
     assert "no signature moment" in rule
+
+
+def test_authored_radio_group_of_an_enumeration_keeps_its_radios():
+    form, = _forms(_nodes(_generate([{"name": "Page", "sections": [{"html": (
+        "<section class='s'><h2>F</h2><form data-class='Sale'>"
+        "<label for='r'>Reference</label><input id='r'>"
+        "<input type='radio' name='state' value='Placed'> Placed"
+        "<input type='radio' name='state' value='Shipped'> Shipped"
+        "<label for='p'>Paid</label><input id='p' type='checkbox'>"
+        "<button type='submit'>Save</button></form></section>"
+    )}]}], SHOP_META), "Page"))
+    assert form["attributes"]["data-source"] == "c-sale"
+    radios = [n for n in _nodes_of(form) if (n.get("attributes") or {}).get("type") == "radio"]
+    assert len(radios) == 2 and all(r["tagName"] == "input" for r in radios)
+    assert not [n for n in _nodes_of(form) if n.get("tagName") == "select"]
+
+
+def test_authored_bound_form_marks_the_fields_a_record_needs_as_required():
+    form, = _forms(_nodes(_generate([{"name": "Page", "sections": [{"html": (
+        "<section class='s'><h2>F</h2><form data-class='Sale'>"
+        "<label for='r'>Reference</label><input id='r'>"
+        "<label for='s'>State</label><input id='s'>"
+        "<label for='m'>Memo</label><input id='m'>"
+        "<label for='p'>Paid</label><input id='p' type='checkbox'>"
+        "<button type='submit'>Save</button></form></section>"
+    )}]}], SHOP_META), "Page"))
+    controls = _controls(form)
+    assert controls["reference"]["attributes"].get("required") == "required"
+    assert controls["state"]["attributes"].get("required") == "required"
+    assert "required" not in controls["memo"]["attributes"]
+    assert "required" not in controls["paid"]["attributes"]
+
+
+def _nodes_of(node):
+    out = [node]
+    for child in node.get("components") or []:
+        out.extend(_nodes_of(child))
+    return out
