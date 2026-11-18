@@ -426,6 +426,9 @@ class AgentDiagramHandler(BaseDiagramHandler):
                         entry.get("text")
                         or entry.get("message")
                         or entry.get("name")
+                        # WebSocket replies may carry their content only in their own field
+                        or entry.get("ws_message")
+                        or entry.get("ws_options")
                         or ""
                     ).strip()
                     if not text:
@@ -569,6 +572,11 @@ class AgentDiagramHandler(BaseDiagramHandler):
         )
         label = transition.get("label") or transition.get("name") or ""
 
+        # An intent-matched transition that names no intent cannot trigger on
+        # anything; what was meant is an unconditional "continue" transition.
+        if condition == "when_intent_matched" and not str(condition_value).strip():
+            condition = "auto"
+
         normalized = {
             "source": source,
             "target": target,
@@ -581,6 +589,13 @@ class AgentDiagramHandler(BaseDiagramHandler):
             normalized["sourceDirection"] = transition["sourceDirection"]
         if transition.get("targetDirection"):
             normalized["targetDirection"] = transition["targetDirection"]
+        if normalized["condition"] == "custom_condition":
+            code = str(transition.get("conditionCode") or "").strip()
+            if code:
+                normalized["conditionCode"] = code
+            else:
+                # a custom condition without code cannot be evaluated
+                normalized["condition"] = "auto"
 
         return normalized
 

@@ -281,10 +281,11 @@ class _FakeState:
         return recorder
 
 
-def test_transition_order_keeps_the_local_classifier_routes():
-    """Voice transcripts arrive as plain-text events, which only the
-    ``when_intent_matched`` transitions route (BAF's local classifier); JSON
-    events fall back to its prediction when the unified call failed."""
+def test_transition_order_has_no_local_classifier_routes():
+    """BAF's local classifier is disabled (it trained one model per state at startup), so
+    no ``when_intent_matched`` transition is registered: voice / plain-text events and a
+    failed unified call end in the fallback. Re-enable together with ``set_default_ic_config``
+    in modeling_agent.py (see state_bodies.add_unified_transitions)."""
     intents = [type("I", (), {"name": n})() for n in ("hello_intent", CREATE)]
     state = _FakeState()
     sb.add_unified_transitions(state, {i: object() for i in intents}, object(), object())
@@ -293,8 +294,6 @@ def test_transition_order_keeps_the_local_classifier_routes():
         ("json", "json_intent_matches", "hello_intent"),
         ("json", "json_intent_matches", CREATE),
         ("json", "route_to_generation", None),
-        ("text", "hello_intent", None),
-        ("text", CREATE, None),
         ("json", "json_no_intent_matched", None),
         ("text", "no_intent", None),
     ]

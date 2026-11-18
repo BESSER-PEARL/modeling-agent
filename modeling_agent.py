@@ -23,7 +23,7 @@ from app.agent_setup import (
     init_stt,
     init_rag,
     init_diagram_factory,
-    init_intent_classifier_config,
+    # init_intent_classifier_config,  # BAF's local classifier is disabled, see below
 )
 from common.agent_config import GRACE_PERIOD_SECONDS
 from llm.model_catalog import load_model_catalog
@@ -59,8 +59,12 @@ stt = init_stt(agent)
 uml_rag = init_rag(agent)
 diagram_factory = init_diagram_factory(gpt)
 
-ic_config = init_intent_classifier_config()
-agent.set_default_ic_config(ic_config)
+# BAF's local classifier (SimpleIntentClassifierConfiguration, trained per state at
+# startup) is disabled to keep startup fast. Routing relies on the unified classifier
+# alone. A state with no ``when_intent_matched`` transition has no intents, so BAF
+# builds and trains nothing for it. See the matching note in state_bodies.py.
+# ic_config = init_intent_classifier_config()
+# agent.set_default_ic_config(ic_config)
 
 # ── Populate shared context ──────────────────────────────────────────────
 ctx.agent = agent

@@ -18,17 +18,17 @@ ReplyType = Literal[
 schemas and the handler prompts)."""
 
 REPLY_TYPE_HINTS: Dict[str, str] = {
-    "text": "scripted text reply (most common)",
+    "text": "short scripted plain-text reply; use when there is no formatting or choice to present",
     "llm": "LLM-generated reply (set system_message and/or llm_name)",
     "llm_chat": "LLM chat reply with conversation history",
     "rag": "RAG knowledge-base lookup (set ragDatabaseName, optionally llm_name)",
     "db_reply": "database query (set dbSelectionType 'default'/'custom', dbQueryMode 'llm_query'/'sql', etc.)",
     "code": "custom Python function (text MUST be a complete 'def <name>(session):' function)",
     "web_crawl_llm": "crawl a URL then reply via LLM (set initial_url)",
-    "ws_markdown": "WebSocket reply as Markdown (set ws_message)",
+    "ws_markdown": "WebSocket reply as Markdown (set ws_message); use for formatted or structured content: lists, bold, headings, a question with its answer choices",
     "ws_html": "WebSocket reply as HTML (set ws_message)",
     "ws_speech": "WebSocket text-to-speech reply (set ws_message)",
-    "ws_options": "WebSocket option buttons (set ws_options, newline-separated)",
+    "ws_options": "WebSocket clickable option buttons (set ws_options, newline-separated, and ws_options_label to a short prompt in the conversation's language); use when the user should pick from a fixed set of answers (quiz, yes/no, menu). A click is sent back as the label text, so transitions out of the state need intents whose training phrases match the labels",
     "ws_location": "WebSocket GPS location (set ws_latitude and ws_longitude)",
     "ws_file": "WebSocket file transfer",
     "ws_image": "WebSocket image transfer",
@@ -121,6 +121,13 @@ class AgentReplyFields(BaseModel):
     ws_options: Optional[str] = Field(
         default=None,
         description="Newline-separated list of options for ws_options.",
+    )
+    ws_options_label: Optional[str] = Field(
+        default=None,
+        description=(
+            "Short text shown with the ws_options buttons, in the language of the conversation "
+            "(e.g. 'Choisissez une option'). Leave empty to use the UI's English default."
+        ),
     )
     ws_latitude: Optional[float] = Field(
         default=None,
@@ -323,6 +330,13 @@ class AgentSingleElementSpec(BaseModel):
     )
 
 
+CONDITION_CODE_HELP = (
+    "Python source of the condition (required for condition 'custom_condition'): a function "
+    "'def <name>(session):' that returns True when the transition should fire, e.g. a function "
+    "returning session.get('came_from') == 'question1'."
+)
+
+
 class AgentTransitionSpec(BaseModel):
     source: str = Field(
         description="Name of the source state, or 'initial' for the entry-point node.",
@@ -331,14 +345,21 @@ class AgentTransitionSpec(BaseModel):
         description="Name of the target state this transition leads to.",
     )
     condition: Literal[
-        "when_intent_matched", "when_no_intent_matched", "auto",
+        "when_intent_matched", "when_no_intent_matched", "auto", "custom_condition",
     ] = Field(
         default="when_intent_matched",
-        description="Transition trigger: when_intent_matched, when_no_intent_matched, or auto.",
+        description=(
+            "Transition trigger: when_intent_matched, when_no_intent_matched, auto, or custom_condition. "
+            "A state can have only ONE auto transition."
+        ),
     )
     conditionValue: Optional[str] = Field(
         default=None,
         description="Intent name that triggers this transition (for when_intent_matched).",
+    )
+    conditionCode: Optional[str] = Field(
+        default=None,
+        description=CONDITION_CODE_HELP,
     )
     label: Optional[str] = Field(
         default=None,
@@ -472,9 +493,13 @@ class AgentModificationChanges(AgentReplyFields):
             "'when_intent_matched')."
         ),
     )
-    condition: Optional[Literal["when_intent_matched", "when_no_intent_matched", "auto"]] = Field(
+    condition: Optional[Literal["when_intent_matched", "when_no_intent_matched", "auto", "custom_condition"]] = Field(
         default=None,
         description="Transition condition.",
+    )
+    conditionCode: Optional[str] = Field(
+        default=None,
+        description=CONDITION_CODE_HELP,
     )
 
     # --- add_state_body fields ---

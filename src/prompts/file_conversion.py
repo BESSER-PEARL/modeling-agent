@@ -1,6 +1,8 @@
 """File upload conversion: the JSON schema per diagram type and the prompts
 that convert PlantUML, knowledge graphs, XMI, text, PDFs and images."""
 
+from schemas import reply_type_help
+
 CLASS_DIAGRAM_SCHEMA = """{
   "diagramType": "ClassDiagram",
   "classes": [
@@ -86,6 +88,14 @@ AGENT_DIAGRAM_SCHEMA = """{
       "replies": [
         {"text": "Reply text", "replyType": "text"}
       ]
+    },
+    {
+      "stateName": "askQuestionState",
+      "type": "state",
+      "replies": [
+        {"text": "Question text", "replyType": "ws_markdown", "ws_message": "**Question text**"},
+        {"text": "Pick one", "replyType": "ws_options", "ws_options": "Option A\nOption B", "ws_options_label": "Choose an option"}
+      ]
     }
   ],
   "transitions": [
@@ -94,9 +104,47 @@ AGENT_DIAGRAM_SCHEMA = """{
       "target": "stateName",
       "condition": "when_intent_matched",
       "conditionValue": "IntentName"
+    },
+    {
+      "source": "stateName",
+      "target": "askQuestionState",
+      "condition": "auto",
+      "conditionValue": ""
+    },
+    {
+      "source": "askQuestionState",
+      "target": "askQuestionState",
+      "condition": "when_no_intent_matched",
+      "conditionValue": ""
+    },
+    {
+      "source": "sharedFollowUpState",
+      "target": "askQuestionState",
+      "condition": "custom_condition",
+      "conditionCode": "def came_from_question(session):\\n    return session.get('came_from') == 'askQuestionState'"
     }
   ]
-}"""
+}
+
+A "when_intent_matched" transition MUST name a defined intent in "conditionValue". To continue to
+the next state without waiting for the user (e.g. after a congratulation message) use "auto"; for
+"anything else / unrecognised input" use "when_no_intent_matched". Both take an empty
+"conditionValue"; never use "when_intent_matched" without an intent.
+
+A state can have only ONE "auto" transition. If several flows should continue through one shared
+state (e.g. one "incorrect answer" state for every question), do not give that state an "auto"
+transition per destination. Have each source state remember where it came from with a "code" reply
+(e.g. "def remember(session):\\n    session.set('came_from', 'askQuestionState')") and give the shared
+state one "custom_condition" transition per destination, whose "conditionCode" is a function
+'def <name>(session):' returning True for that destination. Or give each flow its own state.
+
+Each reply's "replyType" is one of the following. Choose the one that best fits what the agent
+is communicating, and use several replies in one state when the content calls for it:
+""" + reply_type_help("  ") + """
+
+An option button, when clicked, is sent back to the agent as its label text, so a state that
+offers options needs outgoing "when_intent_matched" transitions whose intents have training
+phrases matching those labels."""
 
 BPMN_SCHEMA = """{
   "diagramType": "BPMN",

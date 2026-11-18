@@ -133,7 +133,7 @@ def test_normalize_reply_list_passes_through_type_specific_fields():
         [
             {"text": "Answer from docs", "replyType": "rag", "ragDatabaseName": "faq", "llm_name": "gpt"},
             {"text": "Show form", "replyType": "gui_reply", "guiId": "orderForm", "system_message": None},
-            {"text": "Pick one", "replyType": "ws_options", "ws_options": "A\nB"},
+            {"text": "Pick one", "replyType": "ws_options", "ws_options": "A\nB", "ws_options_label": "Choisissez"},
         ],
         default_text="",
     )
@@ -141,6 +141,46 @@ def test_normalize_reply_list_passes_through_type_specific_fields():
     # None-valued fields are dropped, set ones kept
     assert replies[1] == {"text": "Show form", "replyType": "gui_reply", "guiId": "orderForm"}
     assert replies[2]["ws_options"] == "A\nB"
+    assert replies[2]["ws_options_label"] == "Choisissez"
+
+
+def test_normalize_reply_list_keeps_websocket_replies_without_text():
+    replies = _handler()._normalize_reply_list(
+        [
+            {"replyType": "ws_markdown", "ws_message": "**Question 1**"},
+            {"replyType": "ws_options", "ws_options": "A. 1914\nB. 1815"},
+            {"replyType": "text", "text": ""},
+        ],
+        default_text="",
+    )
+    assert [r["replyType"] for r in replies] == ["ws_markdown", "ws_options"]
+    assert replies[0]["ws_message"] == "**Question 1**"
+    assert replies[1]["ws_options"] == "A. 1914\nB. 1815"
+
+
+def test_normalize_transition_intent_matched_without_intent_becomes_auto():
+    h = _handler()
+    states = [{"stateName": "ask"}, {"stateName": "wrong"}]
+    t = h._normalize_transition_spec(
+        {"source": "ask", "target": "wrong", "condition": "when_intent_matched", "conditionValue": " "}, states)
+    assert t["condition"] == "auto"
+    t = h._normalize_transition_spec(
+        {"source": "ask", "target": "wrong", "condition": "when_intent_matched", "conditionValue": "Yes"}, states)
+    assert t["condition"] == "when_intent_matched" and t["conditionValue"] == "Yes"
+
+
+def test_normalize_transition_keeps_custom_condition_code():
+    h = _handler()
+    states = [{"stateName": "wrong"}, {"stateName": "q1"}]
+    t = h._normalize_transition_spec(
+        {"source": "wrong", "target": "q1", "condition": "custom_condition",
+         "conditionCode": "def back(session):\n    return session.get('came_from') == 'q1'"}, states)
+    assert t["condition"] == "custom_condition"
+    assert "came_from" in t["conditionCode"]
+    # no code: cannot be evaluated, so it continues unconditionally instead
+    t = h._normalize_transition_spec(
+        {"source": "wrong", "target": "q1", "condition": "custom_condition", "conditionCode": " "}, states)
+    assert t["condition"] == "auto" and "conditionCode" not in t
 
 
 def test_normalize_intent_keeps_intent_description():

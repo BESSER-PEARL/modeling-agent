@@ -16,7 +16,7 @@ AGENT_ACTIONS_BLOCK = """AVAILABLE ACTIONS:
 - modify_state / modify_intent: Rename elements (set changes.name).
 - add_transition: Connect two states. Set target.sourceStateName (source state, or "initial") and
   target.targetStateName (target state); set changes.condition and, for "when_intent_matched",
-  changes.intentName (the triggering intent).
+  changes.intentName (the triggering intent), for "custom_condition" changes.conditionCode.
 - remove_transition: Disconnect two states. Set target.sourceStateName and target.targetStateName.
 - add_state_body: Add an action to a state (changes.text, changes.replyType, plus type-specific fields).
 - add_intent_training_phrase: Add example phrase to intent (changes.trainingPhrase).
@@ -78,8 +78,10 @@ SYSTEM_PROMPT = f"""You are a conversational agent modeling expert. Create a SIN
 
 IMPORTANT RULES:
 1. Provide the "type" field (state, intent, or initial) based on the user request.
-2. For states include 1-3 "replies". Each reply has a "replyType" (default to "text"; use
-   "code" only if the user explicitly asks for custom Python logic):
+2. For states include 1-3 "replies". Each reply has a "replyType". Choose the one that best
+   fits what the agent is communicating: plain "text" for simple messages, richer
+   WebSocket replies (Markdown, option buttons) when the content calls for them. Use
+   "code" only if the user explicitly asks for custom Python logic:
 {REPLY_TYPES_PROMPT}
 3. Add "fallbackBodies" only when the request mentions fallbacks or error handling.
 4. For intents include 3-4 "trainingPhrases" that reflect how a user would trigger the intent.
@@ -99,16 +101,28 @@ Before generating, think through:
 
 IMPORTANT RULES:
 1. SCOPE: match the agent's size to the request. A plain request gets a focused conversation flow (4-8 states); only build a bigger flow when the user explicitly asks for a comprehensive agent or lists many scenarios themselves.
-2. Each state can have MULTIPLE replies/actions via "replyType" (use "code" ONLY when the
-   user explicitly asks for custom Python logic):
+2. Each state can have MULTIPLE replies/actions via "replyType". Choose the one that best
+   fits what the agent is communicating: plain "text" for simple messages, richer
+   WebSocket replies (Markdown, option buttons) when the content calls for them (e.g. a
+   question with fixed answers is a Markdown reply followed by option buttons). Use "code"
+   ONLY when the user explicitly asks for custom Python logic:
 {REPLY_TYPES_PROMPT}
 3. AVOID DEAD-ENDS: Every state MUST have at least one exit path.
 4. States can have MULTIPLE transitions.
 5. Transition types:
    - "when_intent_matched" with "conditionValue" = intent name
    - "when_no_intent_matched" as fallback (conditionValue = "")
-   - "auto" for immediate continuation without waiting (conditionValue = "")
+   - "auto" for immediate continuation without waiting (conditionValue = ""). A state can have
+     only ONE "auto" transition.
+   - "custom_condition" with "conditionCode" = a function 'def <name>(session):' returning True when
+     the transition should fire (e.g. it checks a session variable). A state can have several.
 6. Always include an initial transition from "initial" to the first state.
+   SHARED STATES: when several flows should continue through one common state (e.g. a single
+   "incorrect answer" state reached from every question), that state must NOT get one "auto"
+   transition per destination. Have each source state remember where it came from with a "code"
+   reply, e.g. "def remember_q1(session):\\n    session.set('came_from', 'question1')", and give the
+   shared state one "custom_condition" transition per destination whose "conditionCode" returns
+   session.get('came_from') == 'question1'. Or simply give each flow its own state.
 7. Keep names consistent (camelCase for states, TitleCase for intents).
 8. Include "sourceDirection" and "targetDirection" for visual flow.
 9. FallbackBodies are optional.

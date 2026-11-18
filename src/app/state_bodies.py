@@ -1007,9 +1007,15 @@ def add_unified_transitions(state, intents_map, fallback_state, generation_state
         .with_condition(route_to_generation) \
         .go_to(generation_state)
 
-    # 3. Text event transitions (backward compatibility)
-    for intent, dest_state in intents_map.items():
-        state.when_intent_matched(intent).go_to(dest_state)
+    # 3. Text event transitions (backward compatibility) -- DISABLED.
+    #    ``when_intent_matched`` puts intents on the state, which makes BAF build and
+    #    train a local classifier per state at startup (minutes). Without it, BAF's
+    #    classifier is never created, so voice / plain-text events (no JSON payload,
+    #    never seen by the unified hook) and the "unified call failed" fallback no
+    #    longer route by intent: they end up in the state's fallback transition.
+    #    Re-enable together with ``set_default_ic_config`` in modeling_agent.py.
+    # for intent, dest_state in intents_map.items():
+    #     state.when_intent_matched(intent).go_to(dest_state)
 
     # 4. Fallback transitions
     state.when_event(ReceiveJSONEvent()) \
