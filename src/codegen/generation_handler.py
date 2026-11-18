@@ -206,7 +206,7 @@ def _original_for_smart_generation(session, user_message, *, replace=False):
     if _CONTENT_FREE_FOLLOW_UP_RE.fullmatch(normalized):
         if not previous:
             return None
-        if re.search(r"\bfix", normalized) and not _previous_result_gone(session):
+        if re.search(r"\bfix", normalized) and not _run_starts_from_the_model(session):
             return f"{previous}\n\n## Subsequent user request\n\n{_FIX_FOLLOW_UP_NOTE}"
         return previous
     if previous and not replace and (message == previous or previous.endswith("\n" + message)):

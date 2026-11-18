@@ -920,6 +920,21 @@ def test_no_fix_note_when_the_previous_result_is_gone(last_generation, note):
     assert (_FIX_NOTE in original) is note
 
 
+@pytest.mark.parametrize("github_repo", [{"fullName": "acme/tasks", "hasCode": False}, {"fullName": "acme/tasks"}])
+def test_a_linked_repo_keeps_the_fix_note_after_the_download_expired(github_repo):
+    # The editor may continue from a linked repo whose code it has not reported.
+    from codegen import generation_handler as generation
+
+    session = _follow_up_session(
+        "regenerate with fixes.", last_generation={"request": _LAST_RUN_SPEC, "expired": True},
+        github_repo=github_repo,
+    )
+
+    original = generation._original_for_smart_generation(session, "regenerate with fixes.")
+    assert original.startswith(_LAST_RUN_SPEC)
+    assert original.endswith(_FIX_NOTE)
+
+
 @pytest.mark.parametrize("message", ["regenerate the backend", "regenerate the ui"])
 def test_a_part_scoped_redo_keeps_its_scope(message):
     from codegen import generation_handler as generation
