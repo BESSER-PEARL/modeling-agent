@@ -103,12 +103,11 @@ WebSocket message
   (`app/confirmation.py`, `codegen/generation_handler.py`), not by these guards.
 - **Intent `description=` strings in `modeling_agent.py` stay one-liners.** They only feed BAF's local fallback
   classifier and do not drive routing.
-- **BAF's own local classifier is DISABLED** to keep startup fast (it trained one TensorFlow classifier per state).
-  `set_default_ic_config` in `modeling_agent.py` and the `when_intent_matched` loop (priority 3) in
-  `state_bodies.add_unified_transitions` are commented out; with no intents on a state, BAF builds and trains
-  nothing. Routing is the unified classifier only. Consequences: voice / plain-text events (no JSON payload, never
-  seen by the unified hook) and a failed unified call (`fallback_intent`) land in the state's fallback instead of
-  routing by intent. To restore, uncomment both (they go together); `training_sentences` are then mandatory again.
+- **BAF's own classifier is a local, non-LLM fallback** (`SimpleIntentClassifierConfiguration(framework='tensorflow')`
+  in `agent_setup.py`, trained at startup on each intent's `training_sentences`). It routes only when the unified
+  call failed (`fallback_intent`) and for voice / plain-text events (a voice transcript is a text event, which the
+  unified hook never sees: `when_intent_matched` is its only route). `training_sentences` are therefore
+  **mandatory** on every intent — an intent without them breaks that classifier at startup.
 - `config.yaml`'s `nlp.intent_threshold` (0.55) gates only that local classifier, not the unified one.
 - **Transition priority** (`state_bodies.add_unified_transitions`): 0 `_ensure_unified_classification` (side
   effect, always False) → 1 `json_intent_matches` (cached verdict) → 2 `route_to_generation` (`frontend_event` and
