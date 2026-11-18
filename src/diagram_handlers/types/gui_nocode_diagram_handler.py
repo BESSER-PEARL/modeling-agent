@@ -1377,7 +1377,8 @@ def _table_component(
         "show-header": "true",
         "striped-rows": "false",
         "show-pagination": "true",
-        "action-buttons": "true",
+        # Add/edit/delete unless the design marks the table read-only
+        "action-buttons": "false" if section_spec.get("editable") is False else "true",
         "rows-per-page": "5",
     }
 
@@ -2553,6 +2554,7 @@ def _build_bind_widget(
         "valueField": value_field,
         "aggregation": _clean_text(bind.get("aggregation")),
         "filter": bind.get("filter"),
+        "editable": bind.get("editable"),
     }
 
     if kind in _BIND_CHART_KINDS:

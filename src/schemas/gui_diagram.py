@@ -154,6 +154,13 @@ class GUIBindSpec(BaseModel):
             "Omit for a figure over all records."
         ),
     )
+    editable: Optional[bool] = Field(
+        default=None,
+        description=(
+            "table / dashboard only: true when users add, edit and delete records "
+            "of className in this table; false when it only shows them."
+        ),
+    )
     @field_validator("filter", mode="before")
     @classmethod
     def _filter_as_condition(cls, value: Any) -> Any:

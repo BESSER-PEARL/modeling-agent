@@ -92,6 +92,39 @@ def test_edit_and_delete_act_on_the_selected_row():
     assert delete["confirmation-required"] == "true"
 
 
+
+def _tables(nodes):
+    return {n["attributes"]["chart-title"]: n for n in nodes if n.get("type") == "table"}
+
+
+def test_read_only_table_has_no_add_edit_delete():
+    # A table that only shows records (results, a list to browse) must not
+    # turn its screen into a record-management page.
+    nodes = _nodes(_generate([{"name": "Overview", "sections": [
+        {"bind": {"kind": "table", "className": "Book", "title": "Manage books", "editable": True}},
+        {"bind": {"kind": "table", "className": "Loan", "title": "Past loans", "editable": False}},
+        {"bind": {"kind": "table", "className": "Member", "title": "Members"}},
+        {"bind": {"kind": "dashboard", "className": "Loan", "title": "Loan overview", "editable": False}},
+    ]}]), "Overview")
+    tables = _tables(nodes)
+    assert tables["Manage books"]["attributes"]["action-buttons"] == "true"
+    assert tables["Past loans"]["attributes"]["action-buttons"] == "false"
+    assert tables["Loan Data"]["attributes"]["action-buttons"] == "false"
+    # Not stated: the table keeps its add/edit/delete actions.
+    assert tables["Members"]["attributes"]["action-buttons"] == "true"
+
+
+def test_bind_schema_and_prompt_offer_read_only_tables():
+    from prompts import gui as gui_prompts
+    from schemas.gui_diagram import GUIBindSpec
+
+    assert GUIBindSpec(kind="table", editable=False).editable is False
+    assert GUIBindSpec(kind="table").editable is None
+    authoring = gui_prompts.complete_system_prompt("default", "", "", "", "")
+    modifying = gui_prompts.modification_prompt("- Home: hero", META, "")
+    for prompt in (authoring, modifying):
+        assert '"editable": false' in prompt
+
 def test_add_to_a_list_is_not_a_record_button():
     btn = _by_text(_nodes(_generate([CATALOG]), "Catalog"), "Add to reading list")
     assert btn.get("attributes", {}).get("data-action-type") not in ("create", "update", "delete")
