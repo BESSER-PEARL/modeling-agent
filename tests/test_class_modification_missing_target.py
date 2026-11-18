@@ -260,3 +260,46 @@ class TestExistingClassReferences:
         assert result["action"] == "modify_model"
         assert result["modification"]["target"]["sourceClass"] == "Publication"
         assert "c-pub" not in result["message"]
+
+
+def _shop_with_identifiers():
+    return {
+        "elements": {
+            "c-cust": {"id": "c-cust", "name": "Customer", "type": "Class", "owner": None},
+            "a-email": {"id": "a-email", "name": "email", "type": "ClassAttribute",
+                        "owner": "c-cust", "isExternalId": True},
+            "a-nick": {"id": "a-nick", "name": "nickname", "type": "ClassAttribute", "owner": "c-cust"},
+            "c-order": {"id": "c-order", "name": "Order", "type": "Class", "owner": None},
+            "a-code": {"id": "a-code", "name": "code", "type": "ClassAttribute",
+                       "owner": "c-order", "isId": True},
+        },
+        "relationships": {},
+    }
+
+
+class TestIdentifierStaysRequired:
+    """BUML rejects an optional identifier; the editor's repair then deleted
+    the attribute. The modification keeps it required and says why."""
+
+    @pytest.mark.parametrize("cls, attr", [("Customer", "email"), ("Order", "code")])
+    def test_making_an_identifier_optional_changes_nothing(self, handler, cls, attr):
+        result = _modify(handler, [
+            {"action": "modify_attribute", "target": {"className": cls, "attributeName": attr},
+             "changes": {"isOptional": True}},
+        ], _shop_with_identifiers(), request=f"make {attr} optional")
+
+        assert result["action"] == "assistant_message"
+        assert f"I kept **{attr}** in **{cls}** required" in result["message"]
+
+    def test_other_changes_to_the_identifier_and_the_batch_still_apply(self, handler):
+        result = _modify(handler, [
+            {"action": "modify_attribute", "target": {"className": "Customer", "attributeName": "email"},
+             "changes": {"isOptional": True, "type": "text"}},
+            {"action": "modify_attribute", "target": {"className": "Customer", "attributeName": "nickname"},
+             "changes": {"isOptional": True}},
+        ], _shop_with_identifiers())
+
+        email, nickname = result["modifications"]
+        assert "isOptional" not in email["changes"] and email["changes"]["type"] == "text"
+        assert nickname["changes"]["isOptional"] is True
+        assert "I kept **email** in **Customer** required" in result["message"]

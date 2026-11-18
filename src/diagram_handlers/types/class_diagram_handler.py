@@ -3569,10 +3569,14 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         # Whether the refactoring expansion wrote the reply itself.
         refactor_reply = [False]
+        required_notes: List[str] = []
 
         def _expand_refactoring(handler, spec):
             spec = handler._prepare_modification_spec(spec, current_model)
             refactor_reply[0] = "message" in spec
+            required_notes[:] = handler._keep_identifiers_required(spec, current_model)
+            if required_notes and not (spec.get("modification") or spec.get("modifications")):
+                return assistant_message(" ".join(required_notes))
             # A new class gets no surrogate id, as in a generated diagram.
             mods = spec.get("modifications")
             if not isinstance(mods, list):
@@ -3653,9 +3657,9 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         # Append the not-found note(s) so the dropped removal/edit isn't
         # silent even when a legitimate add in the same request succeeded.
-        if not_found_notes:
+        if not_found_notes or required_notes:
             existing = modification_spec.get("message") or ""
-            joined = " ".join(not_found_notes)
+            joined = " ".join(required_notes + not_found_notes)
             modification_spec["message"] = (
                 f"{existing}\n\n{joined}".strip() if existing else joined
             )
@@ -3955,12 +3959,61 @@ class ClassDiagramHandler(BaseDiagramHandler):
             return assistant_message(
                 f"{listed} {'is' if len(present) == 1 else 'are'} already in the diagram "
                 "with those members, so nothing changed.")
-        if isinstance(spec.get("modifications"), list) or len(kept) > 1:
-            spec.pop("modification", None)
-            spec["modifications"] = kept
-        else:
-            spec["modification"] = kept[0]
+        self._replace_ops(spec, kept)
         return spec
+
+    @staticmethod
+    def _replace_ops(spec: Dict[str, Any], ops: List[Dict[str, Any]]) -> None:
+        """Put *ops* (at least one) in *spec*, keeping a batch a batch."""
+        if isinstance(spec.get("modifications"), list) or len(ops) > 1:
+            spec.pop("modification", None)
+            spec["modifications"] = ops
+        else:
+            spec["modification"] = ops[0]
+
+    def _keep_identifiers_required(
+        self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]],
+    ) -> List[str]:
+        """Remove ``isOptional: true`` from a ``modify_attribute`` of an
+        identifier attribute (``isId`` / ``isExternalId``): an optional
+        identifier fails validation. An op left with no change is dropped.
+        Returns one note per attribute kept required; mutates *spec*."""
+        elements = current_model.get("elements") if isinstance(current_model, dict) else None
+        if not isinstance(elements, dict):
+            return []
+        class_ids = {c["name"].lower(): eid for eid, c in self._existing_classes(current_model).items()}
+        identifiers = {
+            (el.get("owner"), self._clean_member_name(el.get("name")).lower())
+            for el in elements.values()
+            if isinstance(el, dict) and el.get("type") == "ClassAttribute"
+            and (el.get("isId") or el.get("isExternalId"))
+        }
+        mods = spec.get("modifications")
+        mods = [m for m in (mods if isinstance(mods, list) else [spec.get("modification")])
+                if isinstance(m, dict)]
+        kept: List[Dict[str, Any]] = []
+        notes: List[str] = []
+        for mod in mods:
+            target = mod.get("target") if isinstance(mod.get("target"), dict) else {}
+            changes = mod.get("changes")
+            key = (class_ids.get(str(target.get("className") or "").strip().lower()),
+                   self._clean_member_name(target.get("attributeName")).lower())
+            if (mod.get("action") == "modify_attribute" and isinstance(changes, dict)
+                    and changes.get("isOptional") is True and key in identifiers):
+                changes.pop("isOptional")
+                notes.append(
+                    f"I kept **{target.get('attributeName')}** in **{target.get('className')}** "
+                    "required: it is marked as an identifier, and an identifier cannot be "
+                    "optional. Remove its identifier mark first if it should be optional.")
+                if not any(v not in (None, "", []) for v in changes.values()):
+                    continue
+            kept.append(mod)
+        if notes and kept:
+            self._replace_ops(spec, kept)
+        elif notes:
+            spec.pop("modification", None)
+            spec.pop("modifications", None)
+        return notes
 
     def _expand_refactoring_actions(
         self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]] = None,
