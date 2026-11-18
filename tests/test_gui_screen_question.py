@@ -21,6 +21,7 @@ from protocol.types import AssistantRequest, WorkspaceContext
 from common.session_keys import UNIFIED_CLASSIFICATION
 from routing import unified_classifier
 from routing.unified_classifier import UnifiedClassification
+from utilities.original_request import remember_original_request
 
 from tests.conftest import MINIMAL_CLASS_MODEL, FakeSession
 
@@ -59,6 +60,8 @@ def run_gui_op(monkeypatch):
 
 
 LISTED = UnifiedClassification(intent="create_complete_system_intent", screens_listed=True, reason="r")
+NOT_LISTED = UnifiedClassification(intent="create_complete_system_intent", reason="r")
+LIBRARY = "Library app with three screens: Books, Members, Loans"
 
 
 def test_a_request_the_classifier_finds_listing_its_screens_is_designed_without_asking(run_gui_op):
@@ -91,6 +94,77 @@ def test_a_failed_design_of_listed_screens_offers_a_retry_or_crud_pages(run_gui_
     offer = run_gui_op.payloads[-1]
     assert offer["suggestedActions"] == modeling.gui_choice_actions()
     assert "try the AI design again" in offer["message"]
+
+
+def _describe(session, description, verdict, project_id="p1"):
+    """One turn that describes the app: the classifier's verdict, then the stored description."""
+    request = AssistantRequest(message=description, context=WorkspaceContext(project_snapshot={"id": project_id}))
+    session.set(UNIFIED_CLASSIFICATION, verdict)
+    unified_classifier._remember_stated_target_and_language(session, request, verdict, project_id)
+    remember_original_request(session, description, project_id)
+
+
+def test_a_new_app_in_the_same_project_drops_the_screens_the_old_one_listed(run_gui_op):
+    session = FakeSession()
+    _describe(session, LIBRARY, LISTED)
+    _describe(session, "Create a hotel booking system", NOT_LISTED)
+    _, handler, asked = run_gui_op("Create the GUI", session=session, project_id="p1")
+    assert asked
+    handler.generate_complete_system.assert_not_called()
+
+
+def test_a_follow_up_added_to_the_description_keeps_its_listed_screens(run_gui_op):
+    session = FakeSession()
+    _describe(session, LIBRARY, LISTED)
+    _describe(session, LIBRARY + "\n\n## Subsequent user request\n\nadd fines", NOT_LISTED)
+    _, _, asked = run_gui_op("Create the GUI", session=session, project_id="p1")
+    assert not asked
+
+
+def test_a_build_resumed_after_replace_keep_keeps_the_screens_its_request_listed(run_gui_op, monkeypatch):
+    session = FakeSession()
+    _describe(session, "Create a hotel booking system", NOT_LISTED)
+    # The new app's request lists screens, but the project already has a model.
+    context = WorkspaceContext(project_snapshot={"id": "p1"})
+    session.set(UNIFIED_CLASSIFICATION, LISTED)
+    unified_classifier._remember_stated_target_and_language(
+        session, AssistantRequest(message=LIBRARY, context=context), LISTED, "p1")
+    monkeypatch.setattr(modeling, "resolve_target_model", lambda *args: MINIMAL_CLASS_MODEL)
+    questions = []
+    monkeypatch.setattr(modeling, "_build_existing_model_confirmation", lambda **kw: questions.append(kw))
+    class_op = {"diagramType": "ClassDiagram", "mode": "complete_system", "request": LIBRARY}
+    modeling.execute_model_operation(session, AssistantRequest(message=LIBRARY, context=context),
+                                     class_op, "complete_system")
+    parked = questions[0]["pending_data"]["operation"]
+    # "Replace": the answer lists nothing, the build it resumes did.
+    session.set(UNIFIED_CLASSIFICATION, NOT_LISTED)
+    modeling.execute_model_operation(session, AssistantRequest(message="Replace", context=context),
+                                     parked, "complete_system", _skip_existing_check=True)
+    monkeypatch.setattr(modeling, "resolve_target_model", lambda *args: None)  # no GUI yet
+    handler = modeling.ctx.diagram_factory.get_handler.return_value
+    handler.generate_complete_system.reset_mock()
+    _, _, asked = run_gui_op("Create the GUI", session=session, project_id="p1")
+    assert not asked
+    handler.generate_complete_system.assert_called_once()
+
+
+def test_a_failed_design_of_listed_screens_waits_for_the_plans_open_dialog(run_gui_op):
+    failure = {"action": "assistant_message", "message": "The design failed."}
+    modeling.ctx.diagram_factory.get_handler.return_value.generate_complete_system.return_value = failure
+    session = FakeSession()
+    session.set(UNIFIED_CLASSIFICATION, LISTED)
+    request = AssistantRequest(message="Three screens: A, B, C", context=WorkspaceContext())
+    with pending_dialogs.one_per_plan():
+        assert pending_dialogs.may_open("another dialog")
+        queued = modeling.execute_model_operation(session, request, dict(GUI_OP), "complete_system")
+    assert isinstance(queued, modeling.Deferred)
+    assert pending_dialogs.get(session, PENDING_GUI_CHOICE) is None
+    # Asked later without designing again.
+    handler = modeling.ctx.diagram_factory.get_handler.return_value
+    handler.generate_complete_system.reset_mock()
+    assert modeling.execute_model_operation(session, request, queued.operation, "complete_system") is None
+    handler.generate_complete_system.assert_not_called()
+    assert pending_dialogs.get(session, PENDING_GUI_CHOICE).get(modeling.AI_DESIGN_FAILED)
 
 @pytest.mark.parametrize("message", [
     "Build screens for my app",

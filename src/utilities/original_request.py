@@ -15,8 +15,19 @@ def request_project_id(request):
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def remember_original_request(session, message, project_id):
+def remember_original_request(session, message, project_id, *, screens_listed=None):
+    """Store the app description of *project_id*. Whether it lists its screens
+    is *screens_listed*, else the current classifier verdict; a follow-up
+    appended to the stored description keeps what that one listed."""
+    from common.session_keys import UNIFIED_CLASSIFICATION
+
     message = validate_message_length((message or "").strip(), label="The combined original specification and follow-up requests")
+    previous = original_request_for_project(session, project_id)
+    if screens_listed is None:
+        screens_listed = bool(getattr(session.get(UNIFIED_CLASSIFICATION), "screens_listed", None))
+    appended = bool(previous) and message.startswith(previous)
+    kept = appended and session.get(SCREENS_LISTED_PROJECT_ID) == project_id
+    session.set(SCREENS_LISTED_PROJECT_ID, project_id if project_id and (screens_listed or kept) else None)
     session.set(ORIGINAL_APP_REQUEST, message)
     session.set(ORIGINAL_APP_REQUEST_PROJECT_ID, project_id)
 

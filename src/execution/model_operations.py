@@ -75,8 +75,13 @@ class Deferred(NamedTuple):
 
 
 _QUEUED_DESTRUCTIVE = "_queued_destructive_confirmation"
-# The user's request on an operation parked behind the replace/keep question.
+# The user's request on an operation parked behind the replace/keep question,
+# and whether it listed its screens.
 _ORIGINAL_REQUEST_KEY = "_original_request"
+_SCREENS_LISTED_KEY = "_screens_listed"
+# The screen question to re-offer after a failed design, parked behind the
+# plan's open dialog so asking later designs nothing again.
+_QUEUED_GUI_REOFFER = "_queued_gui_reoffer"
 
 # Handler replies that ask the user to rephrase: the LLM call failed, or the
 # handler crashed (generate_fallback_modification).
@@ -611,6 +616,12 @@ def execute_model_operation(
     and :class:`Deferred` when that prompt must wait for another dialog of the
     same parallel plan.
     """
+    queued_reoffer = operation.get(_QUEUED_GUI_REOFFER)
+    if isinstance(queued_reoffer, dict):
+        if not pending_dialogs.may_open(PENDING_GUI_CHOICE):
+            return Deferred(operation)
+        reoffer_gui_choice(session, queued_reoffer)
+        return None
     queued_destructive = operation.get(_QUEUED_DESTRUCTIVE)
     if isinstance(queued_destructive, dict):
         if not pending_dialogs.may_open(PENDING_COMPLETE_SYSTEM):
@@ -677,7 +688,10 @@ def execute_model_operation(
     if _skip_existing_check and operation.get(_ORIGINAL_REQUEST_KEY):
         # A replace/keep answer resumes with the planner's step request; the
         # user's own words come back on the operation the question stored.
-        remember_original_request(session, operation[_ORIGINAL_REQUEST_KEY], request_project_id(request))
+        remember_original_request(
+            session, operation[_ORIGINAL_REQUEST_KEY], request_project_id(request),
+            screens_listed=bool(operation.get(_SCREENS_LISTED_KEY)),
+        )
     if resuming_spec and operation_mode == "complete_system" and target_diagram_type == "ClassDiagram":
         # Resume requests may contain only the planner summary or the mismatch
         # button's synthesized prompt. Reuse only a proven same-project source.
@@ -713,6 +727,8 @@ def execute_model_operation(
                 stored_operation = {**operation, 'mode': operation_mode}
                 if remember_request:
                     stored_operation[_ORIGINAL_REQUEST_KEY] = remember_request
+                    stored_operation[_SCREENS_LISTED_KEY] = bool(
+                        getattr(session.get(UNIFIED_CLASSIFICATION), "screens_listed", None))
 
                 _build_existing_model_confirmation(
                     session=session,
@@ -770,6 +786,8 @@ def execute_model_operation(
                 )
                 if not isinstance(built, str):
                     # Failed: open the question for a retry or Basic CRUD pages.
+                    if not pending_dialogs.may_open(PENDING_GUI_CHOICE):
+                        return Deferred({**operation, _QUEUED_GUI_REOFFER: pending})
                     reoffer_gui_choice(session, pending)
                     return None
                 return built
