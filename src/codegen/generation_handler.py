@@ -191,7 +191,8 @@ def _original_for_smart_generation(session, user_message, *, replace=False):
 def _request_for_run(session, user_message, *, replace=False) -> Tuple[Optional[str], bool]:
     """``(request, states_nothing_new)``: the user's own request for the run, or
     None for a content-free follow-up with no earlier request to re-run, and
-    whether it ends with this message, which the verdict says states nothing new.
+    whether it ends with this message without remembering it (a content-free
+    follow-up, or one the verdict says states nothing new).
 
     The earlier request is the one remembered for the project, else the one the
     editor's last run was started with (unless this message replaces it). A
@@ -208,7 +209,7 @@ def _request_for_run(session, user_message, *, replace=False) -> Tuple[Optional[
     if not message or normalized in generic or _BARE_GENERATE_RE.fullmatch(normalized):
         return previous, False
     if _CONTENT_FREE_FOLLOW_UP_RE.fullmatch(normalized):
-        return (spec_prompts.with_later_request(previous, message), states_nothing_new) if previous else (None, False)
+        return (spec_prompts.with_later_request(previous, message), True) if previous else (None, False)
     if previous and not replace and (message == previous or previous.endswith("\n" + message)):
         return previous, False
     if previous and not replace:

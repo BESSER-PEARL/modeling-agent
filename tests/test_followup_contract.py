@@ -127,6 +127,7 @@ def test_a_message_that_states_nothing_new_is_sent_but_not_remembered(monkeypatc
 
 @pytest.mark.parametrize("message, verdict, remembered", [
     ("try again", {"states_requirements": False}, False),
+    ("try again", {}, False),  # a content-free retry is never remembered, whatever the verdict
     ("can you continue with the development?", {"states_requirements": False}, False),
     ("add a dark theme", {}, True),
     ("continue", {"states_requirements": False}, True),  # the earlier request, sent unchanged

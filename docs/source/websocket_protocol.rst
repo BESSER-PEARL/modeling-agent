@@ -1000,9 +1000,9 @@ Built by ``build_trigger_smart_generator_payload()`` in
        frontend decides.
    * - ``remember_newest``
      - Optional, sent only as ``false``: the last ``## Subsequent user
-       request, verbatim`` section is a message the classifier marked as
-       stating nothing new (``states_requirements``), such as a retry or a
-       fix. The frontend does not keep that section as part of the project's
+       request, verbatim`` section is a message the assistant did not remember
+       because it states nothing new: a retry or fix it recognises, or one the
+       classifier marked so (``states_requirements``). The frontend does not keep that section as part of the project's
        request and tells the backend the follow-up states nothing new. An
        editor that does not know the field drops it and behaves as before.
    * - ``message``
