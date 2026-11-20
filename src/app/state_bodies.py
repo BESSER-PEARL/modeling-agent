@@ -18,20 +18,25 @@ from baf.core.session import Session
 from baf.library.transition.events.base_events import ReceiveMessageEvent
 from baf.nlp.rag.rag import RAGMessage
 
-from common.agent_config import LLM_MAX_TOKENS_TEXT, LLM_TEXT_TEMPERATURE
+from common.agent_config import LLM_MAX_TOKENS_TEXT, LLM_TEXT_TEMPERATURE, TRACE_QA_PROJECT_SUMMARY_MAX_CHARS
 from conversation import agent_context as ctx
 from llm.model_config import MODEL_GENERATION_SMALL
 from llm.provider import LLMProvider
+from llm.tracking import get_tracker
+from llm.tracking.turn_usage import SERVER_PROVIDER
 from protocol.adapters import parse_assistant_request
 from protocol.types import AssistantRequest
 from protocol.message_limits import UserMessageTooLong
 from memory import get_memory, memory_session_key
 from routing.generation_signals import remember_repo_recap
 from conversation.session_helpers import (
+    begin_turn_usage,
     get_user_message,
     reply_message,
     reply_payload,
     replay_last_reply,
+    reply_show_trace,
+    stream_llm_reply,
     stream_llm_response,
     user_key_reply,
     json_intent_matches,
@@ -50,8 +55,10 @@ from orchestrator import determine_target_diagram_type
 from prompts import describe_model as describe_prompts
 from prompts import fallback as fallback_prompts
 from prompts import modeling_help as help_prompts
+from prompts import traceability as trace_prompts
 from prompts import uml_rag as uml_prompts
 from utilities.model_context import detailed_model_summary, is_diagram_nontrivial
+from utilities.trace_digest import pick_focus_artifact, render_trace_digest
 from utilities.user_metamodel import format_user_metamodel_guide, is_user_profile_help
 from routing import guards
 from routing.intents import GENERATION_INTENT_NAME
@@ -67,6 +74,8 @@ from conversation.reply_copy import (
     DECLINE_ACK as _DECLINE_ACK,
     META_ANSWER as _META_ANSWER,
     OUT_OF_SCOPE_REDIRECT as _OUT_OF_SCOPE_REDIRECT,
+    TRACE_NOT_AVAILABLE as _TRACE_NOT_AVAILABLE,
+    TRACE_QUESTION_EMPTY as _TRACE_QUESTION_EMPTY,
 )
 from routing.unified_classifier import get_or_classify
 from protocol.actions import Action
@@ -130,7 +139,11 @@ def _ensure_unified_classification(session: Session) -> bool:
     — that verdict is what lets ``json_intent_matches`` route a pivot
     normally instead of trapping it in the asking state. Skips only when
     the session already has a cached classification for this event id.
+
+    It also opens the event's LLM-usage totals (``llmUsage``) before the
+    classifier call, the turn's first.
     """
+    begin_turn_usage(session)
     try:
         request = parse_assistant_request(session)
         if request.recent_history:
@@ -164,6 +177,9 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     handled normally, or ``None`` if a pending flow or file attachment
     already consumed it.
     """
+    # The same totals the transition hook opened; a voice or plain-text event,
+    # which never passes that hook, opens them here.
+    begin_turn_usage(session)
     # Reconnect recovery: the frontend re-requests its last completed reply after
     # a mid-generation WebSocket reconnect dropped it. Re-send the buffered reply
     # and stop — never re-run generation or consume a pending flow.
@@ -276,6 +292,8 @@ _QUICK_RESPONSES = {
         "**Other:**\n"
         "- *\"Describe my diagram\"* — I'll analyze what you've built\n"
         "- *\"What is an association class?\"* — I can explain UML concepts\n"
+        "- *\"Which code was generated from Book?\"*, *\"What is out of date?\"* — I answer "
+        "questions about your project's history when trace recording is on\n"
         "- Attach a **PlantUML file** or **diagram image** and I'll convert it\n"
         "- Attach a **screenshot or mockup** of a page and I'll build it as a GUI\n"
         "- I reply in the language you write in\n\n"
@@ -734,6 +752,13 @@ def describe_model_body(session: Session):
     if request is None:
         return
 
+    _answer_model_question(session, request)
+
+
+def _answer_model_question(session: Session, request: AssistantRequest) -> None:
+    """The describe-model answer: a question about the current project,
+    answered from its summary (also a trace question the trace cannot answer,
+    see ``guards.trace_question_guard``)."""
     session.set(LAST_MATCHED_INTENT, 'describe_model_intent')
 
     if not request.message:
@@ -800,6 +825,71 @@ def describe_model_body(session: Session):
             session,
             "I had trouble analysing your project. Could you try rephrasing your question?",
         )
+
+
+# ------------------------------------------------------------------
+# Trace questions
+# ------------------------------------------------------------------
+
+def trace_question_body(session: Session):
+    """Answer a question about the project's history and provenance from the
+    editor's trace record (``context.traceDigest``)."""
+    request = _common_preamble(session)
+    if request is None:
+        return
+
+    session.set(LAST_MATCHED_INTENT, 'traceability_question_intent')
+
+    if not request.message:
+        reply_message(session, _TRACE_QUESTION_EMPTY)
+        return
+
+    # No record, nothing to answer from: a fixed reply for an explicit trace
+    # question (no LLM call); a rationale or summary question about the model
+    # gets the describe-model answer instead.
+    decision = guards.trace_question_guard(request)
+    if decision == "no_trace":
+        logger.info("[Trace] Trace question without a trace record — explaining how to record")
+        reply_message(session, _TRACE_NOT_AVAILABLE)
+        return
+    if decision == "describe_model":
+        logger.info("[Trace] Model question without a trace record — answering from the model")
+        _answer_model_question(session, request)
+        return
+
+    digest = request.context.trace_digest
+    history_block = _recent_conversation_block(session, request)
+    history_section = trace_prompts.history_section(history_block) if history_block else ""
+    # The current model, for coverage questions; cut so the record stays the subject.
+    project_summary = _build_full_project_summary(request)[:TRACE_QA_PROJECT_SUMMARY_MAX_CHARS]
+    prompt = trace_prompts.trace_qa_prompt(
+        render_trace_digest(digest), project_summary, history_section, request.message,
+    )
+
+    # A provider failure is reported in the stream itself (an error hint or a
+    # refusal notice); the button follows only an answer the model completed.
+    answer = stream_llm_reply(
+        session, ctx.gpt_text, prompt,
+        system_prompt=trace_prompts.SYSTEM_PROMPT, model=MODEL_GENERATION_SMALL,
+    )
+    if answer.completed:
+        _offer_trace_view(session, request)
+
+
+def _offer_trace_view(session: Session, request: AssistantRequest) -> None:
+    """After the answer, a ``show_trace`` button when it centres on one view
+    (the classifier's ``trace_view``) or one artifact of the digest's focus.
+    The artifact id is only ever the digest's own, never the model's."""
+    artifact = pick_focus_artifact(request.context.trace_digest, request.message)
+    view = getattr(session.get(UNIFIED_CLASSIFICATION), "trace_view", None)
+    if view is None and artifact is not None:
+        view = "lineage"
+    if view is None:
+        return
+    reply_show_trace(
+        session, view,
+        artifact["name"] if artifact else "", artifact["artifactId"] if artifact else None,
+    )
 
 
 # ------------------------------------------------------------------
@@ -910,10 +1000,31 @@ def uml_rag_body(session: Session):
     else:
         try:
             rag_message: RAGMessage = session.run_rag(user_message)
+            _record_rag_estimate(rag_message, user_message)
             reply_message(session, rag_message.answer)
         except Exception as e:
             logger.error(f"❌ Error in uml_rag_body: {e}")
             _uml_llm_reply(session, uml_prompts.error_fallback_prompt(user_message))
+
+
+def _record_rag_estimate(rag_message: RAGMessage, question: str) -> None:
+    """Count the RAG answer in the turn's ``llmUsage`` as an ESTIMATE.
+
+    BAF's RAG engine calls its LLM itself (``llm.predict`` on the server
+    key), outside ``LLMProvider``, and reports no usage, so without this a
+    UML-spec turn would report only its classifier call. The prompt is
+    rebuilt the way the engine builds it (instructions, retrieved chunks,
+    question), without the chat history it adds when BAF's monitoring
+    database is on, and counted at about four characters per token
+    (``TokenTracker.record_estimate``): a lower bound, not a measurement.
+    The query embedding is not counted. Best effort."""
+    try:
+        prompt = ctx.uml_rag.create_prompt(history=[], docs=rag_message.docs or [], question=question)
+        get_tracker().record_estimate(
+            prompt, rag_message.answer, model=rag_message.llm_name, provider=SERVER_PROVIDER,
+        )
+    except Exception as exc:
+        logger.debug(f"[UML_RAG] usage estimate skipped (best-effort): {exc}")
 
 
 def _uml_llm_reply(session: Session, prompt: str, *, note: str = "") -> None:
@@ -1041,6 +1152,7 @@ def register_all(*, agent, states, intents):
     states['decline'].set_body(decline_body)
     states['out_of_scope'].set_body(out_of_scope_body)
     states['meta_question'].set_body(meta_question_body)
+    states['trace_question'].set_body(trace_question_body)
 
     # -- Wire transitions --
     intent_map = {
@@ -1054,6 +1166,7 @@ def register_all(*, agent, states, intents):
         intents['decline']: states['decline'],
         intents['out_of_scope']: states['out_of_scope'],
         intents['meta_question']: states['meta_question'],
+        intents['traceability_question']: states['trace_question'],
     }
 
     generation_st = states['generation']
@@ -1069,6 +1182,7 @@ def register_all(*, agent, states, intents):
         ('decline', 'greetings'),
         ('out_of_scope', 'greetings'),
         ('meta_question', 'greetings'),
+        ('trace_question', 'greetings'),
     ]:
         add_unified_transitions(
             states[state_name], intent_map, states[fallback_name], generation_st,

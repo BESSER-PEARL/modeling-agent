@@ -5,11 +5,13 @@ the expected values are what the guards decided before they moved out of
 app/state_bodies.py, codegen/generation_handler.py and the classifier.
 """
 
+import time
 from unittest.mock import patch
 
 import pytest
 
 from app import state_bodies as sb
+from common.agent_config import MAX_USER_MESSAGE_CHARS
 from common.session_keys import UNIFIED_CLASSIFICATION
 from protocol.types import AssistantRequest, WorkspaceContext
 from routing import guards
@@ -226,6 +228,63 @@ def test_is_mixed_modeling_and_generation(message, mixed):
 ])
 def test_is_past_generation_question(message, past):
     assert guards.is_past_generation_question(message) is past
+
+
+@pytest.mark.parametrize("message,trace_digest,decision", [
+    # No record (recording off, nothing recorded, not loaded yet, an older editor):
+    ("which code came from Book?", None, "no_trace"),                 # explicit: fixed reply
+    ("what is out of date since the last generation?", None, "no_trace"),
+    ("which requirements are not covered?", None, "no_trace"),
+    ("who added the isbn attribute?", None, "no_trace"),
+    ("what happened in this project?", None, "no_trace"),
+    ("why does Book have an Author association?", None, "describe_model"),  # rationale: a real answer
+    ("why does the Loan class exist?", None, "describe_model"),
+    ("summarize my model", None, "describe_model"),
+    # A record, even an empty one, is answered from, whatever the question:
+    ("which code came from Book?", {}, None),
+    ("why does the Loan class exist?", {"schemaVersion": 1, "recording": True}, None),
+])
+def test_trace_question_guard(message, trace_digest, decision):
+    request = AssistantRequest(message=message, context=WorkspaceContext(trace_digest=trace_digest))
+    assert guards.trace_question_guard(request) == decision
+
+
+@pytest.mark.parametrize("message,explicit", [
+    ("which code was generated from class Book?", True),
+    ("where is Order in the generated code?", True),
+    ("which files came from Book?", True),
+    ("does Order need regeneration?", True),
+    ("which requirement does Book realize?", True),
+    ("when was Member renamed?", True),
+    ("summarize the history", True),
+    ("show me the trace of Book", True),
+    ("¿qué código se generó a partir de Book?", True),
+    ("Welche Anforderungen sind nicht abgedeckt?", True),
+    ("where does Book come from?", False),
+    ("what is the Loan class for?", False),
+    ("why does the File class exist?", False),     # a class named like a trace word
+    ("when should Loan be used?", False),
+    ("", False),
+    ("who created the Book class?", True),
+    ("when was Author added?", True),
+    ("why does Book have an Author association?", False),
+    ("summarize my model", False),
+    ("why is Person the generalization of Member?", False),  # UML, not generated code
+    ("is Vehicle the general class here?", False),
+    ("qu'est-ce qui a été généré à partir de Book ?", True),
+])
+def test_is_explicit_trace_question(message, explicit):
+    assert guards.is_explicit_trace_question(message) is explicit
+
+
+def test_is_explicit_trace_question_is_linear_on_a_maximum_size_message():
+    # "who " repeated to the message cap, with no change verb: the old
+    # who/when ".*" pattern backtracked quadratically (about 41 s here).
+    message = ("who " * (MAX_USER_MESSAGE_CHARS // 4))[:MAX_USER_MESSAGE_CHARS]
+    started = time.perf_counter()
+    assert guards.is_explicit_trace_question(message) is False
+    assert guards.is_explicit_trace_question(message + "added?") is True
+    assert time.perf_counter() - started < 1.0
 
 
 @pytest.mark.parametrize("intent,route,reason,expected", [

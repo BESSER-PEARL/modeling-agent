@@ -859,6 +859,12 @@ def execute_model_operation(
         {"images": operation["images"]}
         if target_diagram_type == "GUINoCodeDiagram" and operation.get("images") else {}
     )
+    # The requirements a class diagram realizes are extracted only for a project
+    # that records them in its trace: otherwise the extraction is an LLM call for nothing.
+    class_kwargs: Dict[str, Any] = (
+        {"record_requirements": request.context.traceability_enabled}
+        if target_diagram_type == "ClassDiagram" else {}
+    )
     # The editor's validation repair: a failure reply must not ask its author,
     # the editor, to rephrase. The editor lists the open issues.
     auto_fix = operation_mode == "modify_model" and auto_fix_verdict(request.message or "") is not None
@@ -938,6 +944,7 @@ def execute_model_operation(
                     raw_request=spec_to_stash or operation_request,
                     **bpmn_kwargs,
                     **mockup_kwargs,
+                    **class_kwargs,
                 )
     except Exception as exc:
         logger.error(f"❌ [ModelOp] Handler exception: {exc}", exc_info=True)

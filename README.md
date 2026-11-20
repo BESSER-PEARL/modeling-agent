@@ -59,6 +59,17 @@ flowchart LR
   are converted into diagram specifications.
 - **UML questions answered from the source.** Retrieval over the OMG UML 2.5.1
   specification.
+- **Project history and provenance.** While trace recording is on, the editor sends its
+  trace record (`context.traceDigest`) and the agent answers which code came from an element,
+  which requirement it realizes, who changed what and when, what is out of date and which
+  requirements the model does not cover, then offers to open the Traceability page
+  (`show_trace`).
+- **Requirements from the request.** For a project that records traces
+  (`context.traceabilityEnabled`, opt-in), a complete-system request also yields its
+  requirements and the class-diagram elements that realize them (`requirements` and
+  `realizations` on `inject_complete_system`).
+- **Token usage per turn.** Terminal replies report the tokens of that turn's LLM calls
+  (`llmUsage`).
 - **Voice and language.** Voice messages through speech-to-text, and replies in the
   language the user writes in.
 - **Robust sessions.** Replies are replayed after a reconnect, and a lost conversation

@@ -132,7 +132,7 @@ transition condition that always returns ``False`` — it is a pure
 side-effect hook, so it runs before any ``json_intent_matches`` condition
 without ever causing a transition itself.
 
-The 11 intents
+The 12 intents
 ~~~~~~~~~~~~~~
 
 ``_INTENT_NAMES`` in ``src/routing/unified_classifier.py`` mirrors the
@@ -178,6 +178,18 @@ means mirroring it here.
    * - ``meta_question_intent``
      - ``meta_question_state``
      - A question about the assistant itself — what it can do, why use it
+   * - ``traceability_question_intent``
+     - ``trace_question_state``
+     - A question about the project's history or provenance, answered from
+       the editor's trace record (``context.traceDigest``): which code came
+       from an element, which requirement it realizes, who changed what and
+       when, what is out of date, requirement coverage, a history summary;
+       design-rationale questions ("why does the Loan class exist?") only
+       when WORKSPACE CONTEXT lists the record, else they stay
+       ``describe_model_intent``. What the model *is* stays
+       ``describe_model_intent``; the outcome of the last generation run
+       ("what did you generate?") and re-running it stay
+       ``generation_intent``. Never plans a generation
    * - ``fallback_intent``
      - (state's own fallback)
      - Nothing fits; BAF's fallback body runs
@@ -240,6 +252,12 @@ LLM call:
      - A software architecture the user asked for (MVC, MVVM, …)
    * - ``reply_language``
      - ISO 639-1 code of the language the message is written in
+   * - ``trace_view``
+     - ``traceability_question_intent`` only: the Traceability page view the
+       question is about (``lineage`` / ``coverage`` / ``timeline``), sent
+       as the ``show_trace`` button's ``view``. The user block carries a
+       ``traceability record: sent (...)`` workspace line when the request
+       has a digest
    * - ``reason``
      - One short sentence, used in logs and surfaced as a hint
 
@@ -409,6 +427,14 @@ or handler only maps the decision to a reply. The tables in
    * - ``is_past_generation_question()``
      - generation handler
      - "what did you generate?" after a run is answered from its outcome
+   * - ``trace_question_guard()``
+     - trace-question state
+     - Without a trace record in the request: ``no_trace`` for an explicit
+       trace question (``is_explicit_trace_question()``: generated code, out
+       of date, requirement coverage, who / when, the project's history), a
+       fixed reply (no record arrived; check or turn recording on in the
+       Traceability page), no LLM call; ``describe_model`` for a rationale or
+       summary question about the model, answered by the describe-model body
    * - ``generation_route()``
      - generation handler
      - The dispatch route of a verdict: ``generation_route`` on generation

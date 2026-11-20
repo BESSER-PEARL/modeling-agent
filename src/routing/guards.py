@@ -18,6 +18,7 @@ After routing, in the state that received the message:
   quick_response_key     fallback, greetings and modeling-help states
   is_mixed_modeling_and_generation   generation state
   is_past_generation_question        generation handler
+  trace_question_guard   trace-question state
   generation_route       the dispatch route of a verdict in the generation handler
 """
 
@@ -240,6 +241,82 @@ def quick_response_key(message: str) -> Optional[str]:
         if any(p in msg_lower for p in patterns):
             return key
     return None
+
+
+# ---------------------------------------------------------------------------
+# Trace-question state
+# ---------------------------------------------------------------------------
+
+# The vocabulary of a question only the trace can answer: generated code,
+# staleness, requirement coverage, authorship and time, the project's history.
+# A question without it ("why does Book have an Author association?",
+# "summarize my model") is about the model itself. English plus the stems of
+# the editor's other languages (de, fr, es, ca, lb).
+EXPLICIT_TRACE_QUESTION_RE = re.compile(
+    r"\b(?:"
+    # generated code, files, lines
+    r"code|codebase|generated|re-?generat\w*|generator|source\s+files?|lines?\s+\d+"
+    r"|files?\s+(?:came|come|comes|were|was|generated|from)"
+    r"|c[oó]digo|fichiers?|ficheros?|archivos?|fitxers?|datei\w*|zeilen?|lignes?|l[ií]neas?"
+    # not "general"/"generalization": UML vocabulary, not generated code
+    r"|g[eé]n[eé]r(?!al)\w*|generier\w*"
+    # staleness
+    r"|out[\s-]of[\s-]date|outdated|stale|in\s+sync|up[\s-]to[\s-]date|veraltet\w*|obsol\w*|desactualizad\w*"
+    # requirements and coverage
+    r"|requirements?|requisit\w*|exigences?|anforderung\w*|cover(?:s|ed|age)?|cobertura|couvert\w*|abgedeckt"
+    r"|reali[sz](?:e|es|ed|ing|ation)"
+    # the trace itself
+    r"|trace\w*|traceability|tra[cç]abilit\w*|trazabilidad|rastreabilit\w*|lineage|provenance"
+    r"|history|timeline|changelog|historique|historia|hist[oò]ria|verlauf|geschichte|chronolog\w*"
+    r"|what\s+happened|qu[eé]\s+(?:ha\s+)?pas[oóa]\w*|was\s+ist\s+passiert"
+    r")\b",
+    re.IGNORECASE,
+)
+# Who / when, then a change verb later on the same line. Two searches, not one
+# "who.*verb" pattern: that backtracks quadratically (about 41 s on a 64k
+# message of "who who ...").
+_WHO_WHEN_RE = re.compile(r"\b(?:who|when|qui|quand|qui[eé]n|cu[aá]ndo|wer|wann)\b", re.IGNORECASE)
+_CHANGE_VERB_RE = re.compile(
+    r"\b(?:creat\w*|add\w*|chang\w*|modif\w*|renam\w*"
+    r"|delet\w*|remov\w*|edit\w*|made|wrote|written|introduc\w*|cr[eé]\w*|ajout\w*|a[nñ]adi\w*|erstellt\w*"
+    r"|hinzugef\w*|ge[aä]ndert\w*|umbenannt\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def is_explicit_trace_question(message: str) -> bool:
+    """True when *message* uses trace vocabulary (generated code, out of
+    date, requirement coverage, who / when something changed, the project's
+    history), so only the trace can answer it; False for a design-rationale
+    or summary question about the model ("why does the Loan class exist?")."""
+    message = message or ""
+    if EXPLICIT_TRACE_QUESTION_RE.search(message):
+        return True
+    for line in message.split("\n"):  # "." never crossed a newline
+        who_when = _WHO_WHEN_RE.search(line)
+        if who_when and _CHANGE_VERB_RE.search(line, who_when.end()):
+            return True
+    return False
+
+
+def trace_question_guard(request: Any) -> Optional[str]:
+    """What the trace-question state does with a request, else None (answer
+    it from the editor's trace record, ``context.traceDigest``).
+
+    Without the record (recording off, nothing recorded yet, the record not
+    loaded yet, or an older editor) there is nothing to answer from:
+    ``"no_trace"`` (a fixed reply, no LLM call) for an explicit trace
+    question (:func:`is_explicit_trace_question`), ``"describe_model"`` for a
+    rationale or summary question about the model, which the describe-model
+    answer handles from the current model. The classifier sends the latter
+    to ``describe_model_intent`` itself without a record; this is the net
+    for when it does not."""
+    context = getattr(request, "context", None)
+    if isinstance(getattr(context, "trace_digest", None), dict):
+        return None
+    if is_explicit_trace_question(getattr(request, "message", "") or ""):
+        return "no_trace"
+    return "describe_model"
 
 
 # ---------------------------------------------------------------------------
