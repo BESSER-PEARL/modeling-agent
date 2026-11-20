@@ -20,7 +20,7 @@ from baf.core.session import Session
 
 from protocol.adapters import parse_assistant_request
 from conversation.session_helpers import reply_message, reply_payload, emit_webapp_generate_prompt
-from common.session_keys import UNIFIED_CLASSIFICATION
+from common.session_keys import LAST_SUGGESTED_PROMPTS, UNIFIED_CLASSIFICATION
 from common.flow_answers import FLOW_ANSWER_TOKENS as _FLOW_ANSWER_TOKENS
 from common.flow_answers import normalize_flow_token as _normalize_flow_token
 from common import pending_dialogs
@@ -34,12 +34,42 @@ from common.pending_dialogs import (
 from execution import execute_model_operation
 from execution.model_operations import AI_DESIGN_FAILED, gui_choice_from_label, reoffer_gui_choice
 from codegen.generation_handler import (
+    _smart_gen_confirmation_decision,
     handle_pending_plan_generation_confirmation,
     handle_pending_smart_gen_confirmation,
 )
 from protocol.actions import Action
 
 logger = logging.getLogger(__name__)
+
+
+# The dialogs a quick-action click answers by its exact words, the reader of
+# those words, and the intent recorded for the click.
+_EXACT_ANSWERS = {
+    pending_dialogs.GUI_CHOICE: (gui_choice_from_label, "create_complete_system_intent"),
+    pending_dialogs.SMART_GEN: (_smart_gen_confirmation_decision, "generation_intent"),
+}
+
+
+def dialog_answer_verdict(session: Session, message: str) -> Optional[dict]:
+    """Verdict fields for a click on a quick action that answers the open dialog
+    by its exact words: the dialog decides it, so no classifier call is needed.
+    None for anything else, a typed message included."""
+    message = (message or "").strip()
+    dialog = pending_dialogs.current(session)
+    exact = _EXACT_ANSWERS.get(getattr(dialog, "kind", None))
+    if exact is None or message not in (session.get(LAST_SUGGESTED_PROMPTS) or ()):
+        return None
+    read_answer, intent = exact
+    answer = read_answer(message)
+    if answer is None:
+        return None
+    return {
+        "intent": intent,
+        "pending_flow_action": "answer",
+        "pending_flow_answer": answer,
+        "reason": "Quick-action answer to the open question — decided by the dialog, no LLM call",
+    }
 
 
 # ------------------------------------------------------------------

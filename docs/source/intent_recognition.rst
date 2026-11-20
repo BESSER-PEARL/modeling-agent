@@ -235,6 +235,14 @@ LLM call:
    * - ``model_disposition``
      - ``extend_existing`` / ``replace_existing`` / ``new_tab`` /
        ``reuse_for_generation`` / ``new_from_scratch``
+   * - ``start_over``
+     - ``generation_intent`` only: the user asks to rebuild the generated app
+       from scratch. The run is sent with ``mode: "generate"`` after a
+       confirmation that says changes made in earlier runs are dropped
+   * - ``states_requirements``
+     - ``generation_intent`` only: false when the message only asks to run,
+       continue, retry or fix earlier work. It is sent to the run as the
+       newest message but not kept in the project's request
    * - ``needs_clarification`` / ``clarifying_question``
      - Set when acting would require a guess; the agent asks instead
    * - ``pending_flow_action`` / ``pending_flow_answer``
@@ -271,7 +279,25 @@ regex before or after the call:
   BESSER has no deterministic generator for (rust, kotlin, rails, next.js,
   C++, C#, …) is forced onto the ``smart`` route. The LLM mapped
   "c classes" → ``java`` and "c++ classes" → ``python`` often enough that
-  this had to become deterministic.
+  this had to become deterministic. It never overrides a generator the
+  message names itself by one of that generator's keywords ("Django",
+  "SQL", "JSON schema", "SQL Alchemy"): in "the Django backend for my
+  express delivery app" the stack word is the app's domain. A kind of output
+  (``backend``, ``web_app``, ``rest_api``, "database" for ``sql``, "agent"
+  or "quantum code" for ``agent`` and ``qiskit``) names no technology, so "a
+  Spring Boot backend", "a web app with Angular", "a MySQL database for my
+  Rails app" or "agents for my Kotlin service" still goes to ``smart``. A mixed request that names both ("generate java and kotlin
+  classes") keeps the classifier's verdict; so does a request that names the
+  supported technology only as the one to convert away from ("port the Java
+  classes to Kotlin"), which goes to ``smart`` only when the classifier says so.
+- The GUI-diagram edit guard — "add / remove / rename a page or screen"
+  with no app or code word edits the GUI diagram, unless a recent run or a
+  linked repo holds the app (``generated_app``): the generated app's pages
+  live in its code.
+- A click on a quick action whose prompt answers the open question by its
+  exact words (the run confirmation's "continue with the generation", a
+  screen-choice label) is decided by that dialog (``dialog_answer_verdict``
+  in ``src/app/confirmation.py``): no classifier call.
 - ``_generate_button_guard()`` — "generate the application" (typed by the
   user, or the prompt of the "Generate application" button offered when the
   user's own request asked to generate) goes to the ``smart`` route when the agent built this project's
@@ -417,7 +443,8 @@ or handler only maps the decision to a reply. The tables in
        ``outage_decline`` / ``outage_artifact`` (only when the verdict is
        missing or ``fallback_intent``), then ``undo`` (modify only: a message
        that only asks to undo or revert is pointed to the editor's undo),
-       then ``self_contradictory`` and ``too_vague`` (create only)
+       then ``self_contradictory`` and ``too_vague`` (create only: no word
+       is left once filler words are removed)
    * - ``quick_response_key()``
      - global fallback, greetings, modeling help
      - A canned capability / help / how-to-run reply, no LLM call
