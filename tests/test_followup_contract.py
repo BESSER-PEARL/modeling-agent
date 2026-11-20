@@ -63,7 +63,10 @@ def _run(message, monkeypatch, *, last_generation=None, previous=SPEC, **verdict
 
 @pytest.fixture
 def ledger():
-    return pytest.importorskip("besser.spec_driven_agent.planning.requirements_ledger")
+    module = pytest.importorskip("besser.spec_driven_agent.planning.requirements_ledger")
+    if not hasattr(module, "later_messages"):
+        pytest.skip("the installed BESSER predates the shared follow-up headings")
+    return module
 
 
 def test_both_repos_use_the_same_headings(ledger):
@@ -111,6 +114,21 @@ def test_a_message_that_states_nothing_new_is_sent_but_not_remembered(monkeypatc
 
     assert run["instructions"].endswith(message)
     assert original_request_for_project(session, "proj-1") == SPEC
+
+
+@pytest.mark.parametrize("message, verdict, remembered", [
+    ("try again", {"states_requirements": False}, False),
+    ("can you continue with the development?", {"states_requirements": False}, False),
+    ("add a dark theme", {}, True),
+    ("continue", {"states_requirements": False}, True),  # the earlier request, sent unchanged
+])
+def test_the_trigger_says_when_the_newest_message_is_not_part_of_the_request(monkeypatch, message, verdict,
+                                                                            remembered):
+    """The editor kept a retry the assistant did not remember as part of the project's
+    request, and sent it back as the request once the assistant had lost its memory."""
+    _, run = _run(message, monkeypatch, **verdict)
+
+    assert run.get("remember_newest", True) is remembered
 
 
 def test_a_message_that_states_something_is_remembered(monkeypatch):

@@ -147,6 +147,7 @@ def build_trigger_smart_generator_payload(
     original_request: str = "",
     mode: Optional[str] = None,
     previous_result_gone: bool = False,
+    remember_newest: bool = True,
 ) -> Dict[str, Any]:
     """Assemble the WebSocket ``trigger_smart_generator`` action payload.
 
@@ -164,7 +165,12 @@ def build_trigger_smart_generator_payload(
     and rebuilding; without it the editor decides.
 
     ``previous_result_gone`` says the run has no earlier code to build on: the
-    instructions end with that starting point.
+    user's request follows a starting point that says so.
+
+    ``remember_newest=False`` says the request's last later-request section is a
+    message that states nothing new (a retry, a fix): it is sent as
+    ``remember_newest: false`` so the editor does not keep it as part of the
+    project's request.
     """
     if classification.route != "smart":
         raise ValueError(
@@ -202,4 +208,6 @@ def build_trigger_smart_generator_payload(
     }
     if mode:
         payload["mode"] = mode
+    if not remember_newest:
+        payload["remember_newest"] = False
     return payload

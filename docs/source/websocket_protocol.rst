@@ -998,6 +998,13 @@ Built by ``build_trigger_smart_generator_payload()`` in
        (``start_over``) or to discard the app a linked GitHub repo holds, after
        a confirmation that says earlier changes are dropped. Without it the
        frontend decides.
+   * - ``remember_newest``
+     - Optional, sent only as ``false``: the last ``## Subsequent user
+       request, verbatim`` section is a message the classifier marked as
+       stating nothing new (``states_requirements``), such as a retry or a
+       fix. The frontend does not keep that section as part of the project's
+       request and tells the backend the follow-up states nothing new. An
+       editor that does not know the field drops it and behaves as before.
    * - ``message``
      - A neutral banner that names neither mode, since the frontend picks
        edit or rebuild after receiving the action. Current editors replace it

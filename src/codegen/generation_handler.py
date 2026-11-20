@@ -34,6 +34,7 @@ from common.pending_dialogs import (
     PENDING_SMART_GEN_MODE,
     PENDING_SMART_GEN_ORIGINAL_REQUEST,
     PENDING_SMART_GEN_PROVIDER,
+    PENDING_SMART_GEN_REMEMBER_NEWEST,
     PENDING_SMART_GEN_TIMESTAMP,
     PLAN_GENERATION_CONFIRM_FLAG,
 )
@@ -111,6 +112,7 @@ def _smart_gen_stash_is_fresh(timestamp: Any) -> bool:
 
 def _stash_smart_gen(
     session: Session, instructions: str, provider: str, *, original_request: str = "", mode: Optional[str] = None,
+    remember_newest: bool = True,
 ) -> None:
     """Stash a smart-gen payload with a fresh timestamp (see TTL above).
 
@@ -126,6 +128,7 @@ def _stash_smart_gen(
     pending_dialogs.put(session, PENDING_SMART_GEN_TIMESTAMP, time.time())
     pending_dialogs.put(session, PENDING_SMART_GEN_ORIGINAL_REQUEST, original_request)
     pending_dialogs.put(session, PENDING_SMART_GEN_MODE, mode)
+    pending_dialogs.put(session, PENDING_SMART_GEN_REMEMBER_NEWEST, remember_newest)
     session.set(SMART_GEN_ARMED_PROJECT_ID, _active_project_id(session))
 
 
@@ -181,7 +184,14 @@ def _is_content_free_follow_up(message: str) -> bool:
 
 def _original_for_smart_generation(session, user_message, *, replace=False):
     """The user's own request for the run, or None for a content-free
-    follow-up with no earlier request to re-run.
+    follow-up with no earlier request to re-run (see :func:`_request_for_run`)."""
+    return _request_for_run(session, user_message, replace=replace)[0]
+
+
+def _request_for_run(session, user_message, *, replace=False) -> Tuple[Optional[str], bool]:
+    """``(request, states_nothing_new)``: the user's own request for the run, or
+    None for a content-free follow-up with no earlier request to re-run, and
+    whether it ends with this message, which the verdict says states nothing new.
 
     The earlier request is the one remembered for the project, else the one the
     editor's last run was started with (unless this message replaces it). A
@@ -194,18 +204,19 @@ def _original_for_smart_generation(session, user_message, *, replace=False):
     message = (user_message or "").strip()
     normalized = _normalized_message(message)
     generic = _SMART_GEN_CONFIRM_PHRASES | _PLAN_GEN_CONFIRM_PHRASES
+    states_nothing_new = getattr(session.get(UNIFIED_CLASSIFICATION), "states_requirements", True) is False
     if not message or normalized in generic or _BARE_GENERATE_RE.fullmatch(normalized):
-        return previous
+        return previous, False
     if _CONTENT_FREE_FOLLOW_UP_RE.fullmatch(normalized):
-        return spec_prompts.with_later_request(previous, message) if previous else None
+        return (spec_prompts.with_later_request(previous, message), states_nothing_new) if previous else (None, False)
     if previous and not replace and (message == previous or previous.endswith("\n" + message)):
-        return previous
+        return previous, False
     if previous and not replace:
         message = spec_prompts.with_later_request(previous, message)
-        if getattr(session.get(UNIFIED_CLASSIFICATION), "states_requirements", True) is False:
-            return message
+        if states_nothing_new:
+            return message, True
     remember_original_request(session, message, project_id)
-    return message
+    return message, False
 
 
 def _pending_smart_gen_project_changed(session):
@@ -470,7 +481,7 @@ def _build_smart_gen_confirmation(
     # armed project too, and the fix decision must never read state this very
     # call wrote.
     project_id = _active_project_id(session)
-    original = _original_for_smart_generation(session, user_message)
+    original, states_nothing_new = _request_for_run(session, user_message)
     if original is None:
         if not reason_prefix:
             _clear_pending_smart_gen(session)
@@ -484,7 +495,8 @@ def _build_smart_gen_confirmation(
         mode = "generate" if starting_over == "replace_existing" or _asks_to_start_over(session) else None
     replaces_repo_app = mode == "generate" and repo_holds_app(session)
     rebuilds_app = mode == "generate" and not replaces_repo_app and _editor_edits_last_result(session)
-    _stash_smart_gen(session, refined, provider, original_request=original, mode=mode)
+    _stash_smart_gen(session, refined, provider, original_request=original, mode=mode,
+                     remember_newest=not states_nothing_new)
 
     # Without the previous result the run is not an update of the existing app.
     result_expired = _run_starts_from_the_model(session)
@@ -1058,6 +1070,7 @@ def _clear_pending_smart_gen(session: Session) -> None:
         PENDING_SMART_GEN_TIMESTAMP,
         PENDING_SMART_GEN_ORIGINAL_REQUEST,
         PENDING_SMART_GEN_MODE,
+        PENDING_SMART_GEN_REMEMBER_NEWEST,
         MISMATCH_REGEN_PENDING,
     )
 
@@ -1106,6 +1119,7 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
         stashed_ts = pending_dialogs.get(session, PENDING_SMART_GEN_TIMESTAMP)
         stashed_original = pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) or ""
         stashed_mode = pending_dialogs.get(session, PENDING_SMART_GEN_MODE)
+        stashed_remember_newest = pending_dialogs.get(session, PENDING_SMART_GEN_REMEMBER_NEWEST) is not False
         if _pending_smart_gen_project_changed(session):
             _clear_pending_smart_gen(session)
             _clear_pending_state(session)
@@ -1133,6 +1147,7 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
                 original_request=stashed_original,
                 mode=stashed_mode,
                 previous_result_gone=_run_starts_from_the_model(session),
+                remember_newest=stashed_remember_newest,
             )
             reply_payload(session, payload)
             return True
@@ -1599,6 +1614,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         stashed_ts = pending_dialogs.get(session, PENDING_SMART_GEN_TIMESTAMP)
         stashed_original = pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) or ""
         stashed_mode = pending_dialogs.get(session, PENDING_SMART_GEN_MODE)
+        stashed_remember_newest = pending_dialogs.get(session, PENDING_SMART_GEN_REMEMBER_NEWEST) is not False
         if _pending_smart_gen_project_changed(session):
             _clear_pending_smart_gen(session)
             _clear_pending_state(session)
@@ -1631,6 +1647,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 original_request=stashed_original,
                 mode=stashed_mode,
                 previous_result_gone=_run_starts_from_the_model(session),
+                remember_newest=stashed_remember_newest,
             )
         # Fall through to normal classification if the stash was empty.
 
