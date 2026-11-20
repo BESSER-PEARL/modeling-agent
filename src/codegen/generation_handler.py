@@ -694,10 +694,14 @@ def _build_mismatch_confirmation(
     if original is None:
         _clear_pending_smart_gen(session)
         return {"action": Action.ASSISTANT_MESSAGE, "message": _NO_EARLIER_REQUEST_MESSAGE}
-    _stash_smart_gen(
-        session, refined, provider, original_request=original,
-        mode="generate" if _asks_to_start_over(session) else None,
-    )
+    mode = "generate" if _asks_to_start_over(session) else None
+    _stash_smart_gen(session, refined, provider, original_request=original, mode=mode)
+    # "Generate anyway" fires the run at once: this card is a rebuild's only confirmation.
+    dropped = ""
+    if mode and repo_holds_app(session):
+        dropped = f" Pushing the result will replace the code in **{linked_repo_name(session)}**."
+    elif mode and _editor_edits_last_result(session):
+        dropped = " Changes made to the app in earlier runs will be dropped."
     # Arm the one-shot resume with the EXACT rebuild prompt the button sends.
     # The guard below and the create choke point
     # (execution.model_operations.execute_model_operation) only keep the stash
@@ -716,7 +720,7 @@ def _build_mismatch_confirmation(
             f"Generator. Your current classes will be replaced.\n"
             f"• **Generate anyway** — keep your current model; the "
             f"generator will produce {suggested} code, but your diagram "
-            f"won't match the generated code.\n"
+            f"won't match the generated code.{dropped}\n"
             f"• **Cancel** — do nothing; you can edit the model yourself "
             f"first."
         ),

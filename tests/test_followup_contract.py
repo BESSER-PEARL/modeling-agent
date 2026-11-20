@@ -27,10 +27,12 @@ SPEC = "A library app. GET /books returns 404 when a book is missing. Members bo
 EARLIER = "Add a due date to loans."
 
 
-def _session(message, *, last_generation=None):
+def _session(message, *, last_generation=None, repo=None):
     context = {"activeDiagramType": "ClassDiagram", "projectSnapshot": {"id": "proj-1", "diagrams": {}}}
     if last_generation is not None:
         context["lastGeneration"] = last_generation
+    if repo is not None:
+        context["githubRepo"] = repo
     return FakeSession({"action": "user_message", "protocolVersion": "2.0", "message": message,
                         "context": context, "sessionId": uuid.uuid4().hex})
 
@@ -155,6 +157,37 @@ def test_starting_over_after_a_domain_mismatch_keeps_the_mode():
         session, AssistantRequest(message="generate anyway with my current model"))
 
     assert run["action"] == "trigger_smart_generator" and run["mode"] == "generate"
+
+
+def _generate_anyway_text(asked):
+    return asked["message"].split("**Generate anyway**", 1)[1].split("•", 1)[0]
+
+
+@pytest.mark.parametrize("start_over, last_generation, repo, dropped", [
+    (True, _EDITABLE, None, "earlier runs will be dropped"),
+    (True, {"request": "a library app", "expired": False},
+     {"fullName": "acme/library", "hasCode": True}, "will replace the code in **acme/library**"),
+    (False, _EDITABLE, None, None),
+    (True, {"request": "a library app", "expired": True}, None, None),
+])
+def test_generate_anyway_says_when_it_drops_earlier_changes(start_over, last_generation, repo, dropped):
+    """'Generate anyway' fires the stashed start-over run at once: it is the only
+    confirmation, so it must say what the rebuild discards."""
+    session = _session("start over as a recipe app", last_generation=last_generation, repo=repo)
+    session.set(UNIFIED_CLASSIFICATION, UnifiedClassification(
+        intent="generation_intent", generation_route="smart", refined_instructions="A recipe app.",
+        start_over=start_over, reason="test"))
+    classification = GenerationClassification(
+        route="smart", refined_instructions="A recipe app.", provider="openai", reason="test")
+
+    asked = generation._build_mismatch_confirmation(session, classification, "a recipe app",
+                                                    user_message="start over as a recipe app")
+
+    text = _generate_anyway_text(asked)
+    if dropped:
+        assert dropped in text
+    else:
+        assert "dropped" not in text and "replace the code" not in text
 
 
 def test_a_change_to_the_app_leaves_the_mode_to_the_editor():
