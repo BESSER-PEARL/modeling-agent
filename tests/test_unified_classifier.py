@@ -312,6 +312,18 @@ class TestGetOrClassifyCache:
 
         assert provider.calls == 2
 
+    def test_an_answer_verdict_replaces_the_classifier_call(self):
+        session = _CacheableSession(event_id="evt-7")
+        provider = _FakeProvider(UnifiedClassification(intent="hello_intent", reason="r"))
+        answer = {"intent": "generation_intent", "pending_flow_action": "answer",
+                  "pending_flow_answer": "confirm", "reason": "dialog"}
+
+        result = get_or_classify(session, _make_request("continue with the generation"), provider, answer)
+
+        assert provider.calls == 0
+        assert (result.pending_flow_action, result.pending_flow_answer) == ("answer", "confirm")
+        assert session.get(UNIFIED_CLASSIFICATION) is result
+
     def test_no_event_id_safe(self):
         class _NoEventSession(FakeSession):
             event = None

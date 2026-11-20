@@ -288,6 +288,10 @@ regex before or after the call:
   with no app or code word edits the GUI diagram, unless a recent run or a
   linked repo holds the app (``generated_app``): the generated app's pages
   live in its code.
+- A click on a quick action whose prompt answers the open question by its
+  exact words (the run confirmation's "continue with the generation", a
+  screen-choice label) is decided by that dialog (``dialog_answer_verdict``
+  in ``src/app/confirmation.py``): no classifier call.
 - ``_generate_button_guard()`` — "generate the application" (typed by the
   user, or the prompt of the "Generate application" button offered when the
   user's own request asked to generate) goes to the ``smart`` route when the agent built this project's

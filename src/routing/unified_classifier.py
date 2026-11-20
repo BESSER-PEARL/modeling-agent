@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Literal, Optional
+from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -666,6 +666,7 @@ def get_or_classify(
     session: Any,
     request: AssistantRequest,
     llm_provider: Any,
+    answer_verdict: Optional[Dict[str, Any]] = None,
 ) -> UnifiedClassification:
     """Per-message cache wrapper around :func:`classify_message`.
 
@@ -675,7 +676,8 @@ def get_or_classify(
 
     Every transition condition and state body on a single incoming
     WebSocket message should go through this helper so the whole
-    request consumes exactly ONE classification call.
+    request consumes exactly ONE classification call. ``answer_verdict``
+    (the open dialog's own reading of the message) replaces that call.
     """
     event_id = _current_event_id(session)
     cached_event_id = session.get(UNIFIED_CLASSIFICATION_EVENT_ID)
@@ -690,6 +692,8 @@ def get_or_classify(
     frontend_event = frontend_event_verdict(request)
     if frontend_event is not None:
         result = UnifiedClassification(**frontend_event)
+    elif answer_verdict is not None:
+        result = UnifiedClassification(**answer_verdict)
     else:
         _pending_flow = _pending_flow_context(session)
         # Project-scoped: the SMART-GEN FOLLOW-UP rule is about the app in the

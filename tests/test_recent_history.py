@@ -100,7 +100,7 @@ def test_a_memory_that_holds_the_conversation_ignores_the_history(monkeypatch, c
 def test_the_classifier_sees_the_rebuilt_history(monkeypatch, chat):
     seen = []
 
-    def classify(session, request, provider):
+    def classify(session, request, provider, answer_verdict=None):
         seen.extend(get_memory(chat).get_last_n(5))
         raise RuntimeError("stop after the classifier")
 
