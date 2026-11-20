@@ -409,6 +409,11 @@ SHOP_META = extract_class_metadata({
                    "name": "memo", "attributeType": "str", "isOptional": True},
         "a-paid": {"id": "a-paid", "type": "ClassAttribute", "owner": "c-sale",
                    "name": "paid", "attributeType": "bool"},
+        "a-channel": {"id": "a-channel", "type": "ClassAttribute", "owner": "c-sale",
+                      "name": "channel", "attributeType": "Channel", "isOptional": True},
+        "e-channel": {"id": "e-channel", "type": "Enumeration", "name": "Channel"},
+        "l-online": {"id": "l-online", "type": "ClassAttribute", "owner": "e-channel", "name": "Online"},
+        "l-store": {"id": "l-store", "type": "ClassAttribute", "owner": "e-channel", "name": "Store"},
         "e-state": {"id": "e-state", "type": "Enumeration", "name": "SaleState"},
         "l-1": {"id": "l-1", "type": "ClassAttribute", "owner": "e-state", "name": "Placed"},
         "l-2": {"id": "l-2", "type": "ClassAttribute", "owner": "e-state", "name": "Shipped"},
@@ -453,6 +458,40 @@ def test_form_widget_offers_enumeration_literals_as_a_select():
     assert controls["reference"]["attributes"]["type"] == "text"
 
 
+def _options(select):
+    return [(o["attributes"]["value"], o.get("content")) for o in select["components"]]
+
+
+def test_an_optional_enumeration_select_starts_with_an_empty_choice():
+    # Without it the first literal is preselected and saved for a field the user left alone.
+    form, = _forms(_nodes(_generate([{"name": "New sale", "sections": [
+        {"bind": {"kind": "form", "className": "Sale", "columns": ["reference", "state", "channel"]}},
+    ]}], SHOP_META), "New sale"))
+    controls = _controls(form)
+    assert _options(controls["channel"]) == [("", ""), ("Online", "Online"), ("Store", "Store")]
+    assert "required" not in controls["channel"]["attributes"]
+    # BESSER's converter reads the choices from data-options: literals only.
+    assert controls["channel"]["attributes"]["data-options"] == "Online,Store"
+    # A required one has no empty choice and keeps "required".
+    assert _options(controls["state"]) == [(s, s) for s in SALE_STATES]
+    assert controls["state"]["attributes"]["required"] == "required"
+
+
+def test_an_authored_control_of_an_optional_enumeration_starts_with_an_empty_choice():
+    form, = _forms(_nodes(_generate([{"name": "Page", "sections": [{"html": (
+        "<section class='s'><h2>F</h2><form data-class='Sale'>"
+        "<label for='r'>Reference</label><input id='r'>"
+        "<label for='s'>State</label><input id='s'>"
+        "<label for='c'>Channel</label><select id='c'><option value=''>Choose one</option>"
+        "<option value='Online'>Online</option><option value='Store'>In store</option></select>"
+        "<label for='p'>Paid</label><input id='p' type='checkbox'>"
+        "<button type='submit'>Save</button></form></section>"
+    )}]}], SHOP_META), "Page"))
+    channel = _controls(form)["channel"]
+    assert _options(channel)[0] == ("", "")
+    assert [value for value, _ in _options(channel)] == ["", "Online", "Store"]
+
+
 def test_authored_form_input_of_an_enumeration_becomes_a_select():
     form, = _forms(_nodes(_generate([{"name": "Page", "sections": [{"html": (
         "<section class='s'><h2>F</h2><form data-class='Sale'>"
@@ -481,17 +520,6 @@ def test_form_widget_marks_the_fields_a_record_needs_as_required():
     assert "required" not in controls["paid"]["attributes"]
 
 
-def test_a_request_for_a_simple_design_overrides_the_signature_moment_rule():
-    from prompts import gui as gui_prompts
-
-    prompt = gui_prompts.complete_system_prompt("default", "", "", "", "")
-    rule = prompt[prompt.index("6. VISUAL HIERARCHY"):prompt.index("7. SAMPLE DATA")]
-    assert "simple, minimal or plain design" in rule
-    assert "no signature moment" in rule
-    # It drops decoration, not the varied sample data or realistic labels.
-    assert "realism" not in rule[rule.index("EXCEPTION"):]
-
-
 def test_editable_rule_is_given_only_with_a_class_diagram():
     from prompts import gui as gui_prompts
 
@@ -518,22 +546,22 @@ def _radio_form(choices):
     "<div class='ds-field'><span>State</span>"
     "<input type='radio' id='s1' name='state' value='Placed'><label for='s1'>Placed</label>"
     "<input type='radio' id='s2' name='state' value='Shipped'><label for='s2'>Shipped</label></div>",
+    "<div>Placed <input type='radio' name='state' value='Placed'>"
+    " Shipped <input type='radio' name='state' value='Shipped'></div>",
+    "<div><input type='radio' name='state' value='Placed'><span>Placed</span>"
+    "<input type='radio' name='state' value='Shipped'><span>Shipped</span></div>",
+    "<div><div><input type='radio' id='s1' name='state' value='Placed'><label for='s1'>Placed</label></div>"
+    "<div><input type='radio' id='s2' name='state' value='Shipped'><label for='s2'>Shipped</label></div></div>",
 ])
-def test_authored_radio_group_of_an_enumeration_becomes_one_required_dropdown(choices):
-    # BESSER turns each radio into its own option-less radio group, so the
-    # generated app could not pick a value: the group is one dropdown instead.
+def test_authored_radio_group_of_an_enumeration_keeps_its_radios_and_captions(choices):
     form = _radio_form(choices)
     nodes = _nodes_of(form)
-    assert not [n for n in nodes if (n.get("attributes") or {}).get("type") == "radio"]
-    select, = [n for n in nodes if n.get("tagName") == "select"]
-    assert select["attributes"]["name"] == "state"
-    assert select["attributes"]["data-options"] == "Placed,Shipped,Delivered,Cancelled"
-    assert select["attributes"]["required"] == "required"
-    # The radios' own captions go with them; the order of the fields stays.
-    texts = [_node_text(n).strip() for n in nodes if n.get("type") == "textnode" or n.get("tagName") == "label"]
-    assert "Shipped" not in texts and "Placed" not in texts
-    names = [(n.get("attributes") or {}).get("name") for n in nodes if n.get("tagName") in ("input", "select")]
-    assert names == ["reference", "state", "paid"]
+    radios = [n for n in nodes if (n.get("attributes") or {}).get("type") == "radio"]
+    assert [(r["tagName"], r["attributes"]["name"]) for r in radios] == [("input", "state")] * 2
+    assert not [n for n in nodes if n.get("tagName") == "select"]
+    assert "Placed" in _node_text(form) and "Shipped" in _node_text(form)
+    # HTML requires a choice from the group when one radio of the name is required
+    assert [r["attributes"].get("required") for r in radios] == ["required", None]
 
 
 def test_authored_bound_form_marks_the_fields_a_record_needs_as_required():

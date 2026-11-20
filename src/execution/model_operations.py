@@ -42,8 +42,6 @@ from conversation.suggestions import get_suggested_actions, get_artifact_label, 
 from common.session_keys import (
     LAST_EXECUTED_DIAGRAM_TYPE,
     LAST_MATCHED_INTENT,
-    SCREENS_LISTED_PROJECT_ID,
-    UNIFIED_CLASSIFICATION,
 )
 from common import pending_dialogs
 from common.pending_dialogs import (
@@ -75,10 +73,10 @@ class Deferred(NamedTuple):
 
 
 _QUEUED_DESTRUCTIVE = "_queued_destructive_confirmation"
-# The user's request on an operation parked behind the replace/keep question,
-# and whether it listed its screens.
+# The user's request on an operation parked behind the replace/keep question.
 _ORIGINAL_REQUEST_KEY = "_original_request"
-_SCREENS_LISTED_KEY = "_screens_listed"
+# Set by the planner on the screen step of a request that lists its screens.
+SCREENS_LISTED_OP_KEY = "_screens_listed"
 # The screen question to re-offer after a failed design, parked behind the
 # plan's open dialog so asking later designs nothing again.
 _QUEUED_GUI_REOFFER = "_queued_gui_reoffer"
@@ -134,16 +132,6 @@ def reoffer_gui_choice(session: Session, pending: dict, lead: str = "") -> None:
         f"{lead}You can try the AI design again, or use basic CRUD pages instead.",
         suggestedActions=gui_choice_actions(),
     ))
-
-
-def _user_listed_screens(session, request) -> bool:
-    """Whether the user listed the screens to build, in this message or in the
-    app description of this project (classifier ``screens_listed``)."""
-    verdict = session.get(UNIFIED_CLASSIFICATION)
-    project_id = request_project_id(request)
-    return bool(getattr(verdict, "screens_listed", None)) or bool(
-        project_id and session.get(SCREENS_LISTED_PROJECT_ID) == project_id
-    )
 
 
 def _non_web_target_label(session, request):
@@ -688,10 +676,7 @@ def execute_model_operation(
     if _skip_existing_check and operation.get(_ORIGINAL_REQUEST_KEY):
         # A replace/keep answer resumes with the planner's step request; the
         # user's own words come back on the operation the question stored.
-        remember_original_request(
-            session, operation[_ORIGINAL_REQUEST_KEY], request_project_id(request),
-            screens_listed=bool(operation.get(_SCREENS_LISTED_KEY)),
-        )
+        remember_original_request(session, operation[_ORIGINAL_REQUEST_KEY], request_project_id(request))
     if resuming_spec and operation_mode == "complete_system" and target_diagram_type == "ClassDiagram":
         # Resume requests may contain only the planner summary or the mismatch
         # button's synthesized prompt. Reuse only a proven same-project source.
@@ -727,8 +712,6 @@ def execute_model_operation(
                 stored_operation = {**operation, 'mode': operation_mode}
                 if remember_request:
                     stored_operation[_ORIGINAL_REQUEST_KEY] = remember_request
-                    stored_operation[_SCREENS_LISTED_KEY] = bool(
-                        getattr(session.get(UNIFIED_CLASSIFICATION), "screens_listed", None))
 
                 _build_existing_model_confirmation(
                     session=session,
@@ -754,8 +737,8 @@ def execute_model_operation(
         remember_original_request(session, remember_request, request_project_id(request))
 
     # ── GUI generation-mode choice ───────────────────────────────────────
-    # Asked unless the user's own words list the screens. Never read from the
-    # planner's rewritten step request, where it may have invented screens.
+    # Asked unless this step's request listed the screens (the classifier read
+    # the user's message, not the planner's rewritten step request).
     _resolved_class_diagram = None
     if target_diagram_type == "GUINoCodeDiagram" and operation_mode in ("complete_system", None, ""):
         _resolved_class_diagram = resolve_class_diagram(request)
@@ -777,7 +760,7 @@ def execute_model_operation(
                 'diagram_type': target_diagram_type,
                 '_replace_existing': _replace_existing,
             }
-            if not _typed_answer and _user_listed_screens(session, request):
+            if not _typed_answer and operation.get(SCREENS_LISTED_OP_KEY):
                 logger.info("[ModelOp] The request lists its screens; designing them without the CRUD/AI question")
                 built = execute_model_operation(
                     session, request, operation, default_mode,

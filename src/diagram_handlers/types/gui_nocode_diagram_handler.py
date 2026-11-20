@@ -691,12 +691,14 @@ def _create_form_attributes(
     return chosen or creatable
 
 
-def _make_enum_select(node: Dict[str, Any], literals: List[str]) -> None:
-    """Turn a form control into a ``<select>`` of an enumeration's literals, in place.
+def _make_enum_select(node: Dict[str, Any], attr: Dict[str, Any]) -> None:
+    """Turn a form control into a ``<select>`` of *attr*'s enumeration literals, in place.
 
     BESSER's form converter reads the choices from ``data-options``; the
-    ``<option>`` children show them in the editor.
+    ``<option>`` children show them in the editor. A field a new record may
+    leave out starts with an empty choice, as the generated app's dropdown does.
     """
+    literals = attr["enumLiterals"]
     attrs = node.setdefault("attributes", {})
     for key in ("type", "placeholder", "list", "value"):
         attrs.pop(key, None)
@@ -706,7 +708,7 @@ def _make_enum_select(node: Dict[str, Any], literals: List[str]) -> None:
     node.pop("content", None)
     node["components"] = [
         {"tagName": "option", "attributes": {"value": literal}, "content": literal}
-        for literal in literals
+        for literal in ([] if _is_required(attr) else [""]) + literals
     ]
 
 
@@ -726,7 +728,7 @@ def _labelled_input(attr: Dict[str, Any], form_key: str, input_style: Dict[str, 
         "style": dict(input_style) if input_type != "checkbox" else {},
     }
     if attr.get("enumLiterals"):
-        _make_enum_select(control, attr["enumLiterals"])
+        _make_enum_select(control, attr)
     return {
         "tagName": "div",
         "style": {"display": "grid", "gap": "6px"},
@@ -3078,83 +3080,20 @@ def _bind_form(form: Dict[str, Any], classes: List[Dict[str, Any]]) -> None:
     attrs["data-source"] = cls["id"]
     form["attributes"] = attrs
     required_groups = set()
-    enum_radios: Dict[str, tuple] = {}
     for node, attr in fields:
         if attr:
             control_attrs = node.setdefault("attributes", {})
             control_attrs["name"] = attr["name"]
-            control_type = str(control_attrs.get("type", "")).lower()
-            if control_type == "radio" and attr.get("enumLiterals"):
-                enum_radios.setdefault(attr["name"], (attr, []))[1].append(node)
-                continue
             # A radio group already offers its choices; a checkbox sends false unticked
+            control_type = str(control_attrs.get("type", "")).lower()
             choice = control_type in ("radio", "checkbox")
             if attr.get("enumLiterals") and node.get("tagName") in ("input", "select") and not choice:
-                _make_enum_select(node, attr["enumLiterals"])
+                _make_enum_select(node, attr)
             # One required radio makes HTML require a choice from its whole group
             radio_group = control_type == "radio" and attr["name"] not in required_groups
             if _is_required(attr) and (not choice or radio_group):
                 control_attrs["required"] = "required"
                 required_groups.add(attr["name"])
-    # BESSER turns each radio into its own option-less radio group: one dropdown instead
-    for attr, radios in enum_radios.values():
-        _radios_to_select(form, radios, attr["enumLiterals"])
-        if _is_required(attr):
-            radios[0]["attributes"]["required"] = "required"
-
-
-def _radios_to_select(form: Dict[str, Any], radios: List[Dict[str, Any]], literals: List[str]) -> None:
-    """Replace a radio group of *form* with one ``<select>`` of *literals*, in
-    place: the first radio becomes the select, the others and the captions of
-    all of them are removed."""
-    parents: Dict[int, Dict[str, Any]] = {}
-
-    def _walk(node: Dict[str, Any]) -> None:
-        for child in node.get("components") or []:
-            if isinstance(child, dict):
-                parents[id(child)] = node
-                _walk(child)
-
-    _walk(form)
-
-    def _remove(radio: Dict[str, Any], keep: bool) -> None:
-        parent = parents[id(radio)]
-        wrapper = parents.get(id(parent))
-        captions_only = all(
-            child is radio or child.get("tagName") == "label" or child.get("type") == "textnode"
-            for child in parent.get("components") or []
-        )
-        if wrapper is not None and captions_only:
-            # <label><input type=radio> Caption</label>: the wrapper goes
-            siblings = wrapper["components"]
-            index = next(i for i, child in enumerate(siblings) if child is parent)
-            siblings[index:index + 1] = [radio] if keep else []
-            return
-        siblings = parent["components"]
-        index = next(i for i, child in enumerate(siblings) if child is radio)
-        end = index + 1
-        if end < len(siblings) and isinstance(siblings[end], dict) and siblings[end].get("type") == "textnode":
-            end += 1  # its caption
-        siblings[index:end] = [radio] if keep else []
-
-    radio_ids = {str(r["attributes"]["id"]) for r in radios if (r.get("attributes") or {}).get("id")}
-
-    def _drop_captions(node: Dict[str, Any]) -> None:
-        # <input id=s1><label for=s1>Open</label>: the label captions one radio
-        node["components"] = [
-            child for child in node["components"]
-            if not (isinstance(child, dict) and child.get("tagName") == "label"
-                    and str((child.get("attributes") or {}).get("for")) in radio_ids)
-        ]
-        for child in node["components"]:
-            if isinstance(child, dict) and child.get("components"):
-                _drop_captions(child)
-
-    for position, radio in enumerate(radios):
-        _remove(radio, keep=position == 0)
-    if radio_ids:
-        _drop_captions(form)
-    _make_enum_select(radios[0], literals)
 
 
 def _wire_page_actions(

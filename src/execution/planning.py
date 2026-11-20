@@ -31,7 +31,9 @@ from common.pending_dialogs import (
     PLAN_PAUSED_GENERATION_OP_KEY,
 )
 
-from .model_operations import Deferred, execute_model_operation, _collect_available_diagrams
+from .model_operations import (
+    SCREENS_LISTED_OP_KEY, Deferred, execute_model_operation, _collect_available_diagrams,
+)
 from .progress import _report_progress
 
 logger = logging.getLogger(__name__)
@@ -123,6 +125,7 @@ def execute_planned_operations(
     # message + workspace) as the PRIMARY diagram target; keyword lists are
     # only the fallback.
     _llm_target = None
+    _uc = None
     try:
         from common.session_keys import UNIFIED_CLASSIFICATION
         _uc = session.get(UNIFIED_CLASSIFICATION)
@@ -142,6 +145,11 @@ def execute_planned_operations(
     if not operations:
         reply_message(session, "I couldn't determine an execution plan from your request.")
         return
+
+    if getattr(_uc, "screens_listed", None):
+        for op in operations:
+            if isinstance(op, dict) and op.get("diagramType") == "GUINoCodeDiagram":
+                op[SCREENS_LISTED_OP_KEY] = True
 
     model_groups, gen_ops = _can_run_parallel(operations)
 

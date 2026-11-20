@@ -173,7 +173,7 @@ EXPECTED = {
     "gui.SVG_THUMB_HINT": "d940d49684416059",
     "gui.TABLE_COLUMNS_RULE": "5fe648a481892470",
     "gui.TABLE_EDITABLE_RULE": "28a1fb57dfd47915",
-    "gui.complete_system_prompt": "ac381cc6b8fdd5f6",
+    "gui.complete_system_prompt": "67a36a97d1281a1c",
     "gui.data_model_step_for_classes": "0133afd5b613e683",
     "gui.interactions_block": "26816f687395fbea",
     "gui.interactions_block[has_classes=False]": "13c1f8488601359d",

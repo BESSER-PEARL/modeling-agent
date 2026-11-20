@@ -54,7 +54,6 @@ from utilities.original_request import remember_target, request_project_id, targ
 from common.session_keys import (
     LAST_SUGGESTED_PROMPTS,
     REPLY_LANGUAGE,
-    SCREENS_LISTED_PROJECT_ID,
     UNIFIED_CLASSIFICATION,
     UNIFIED_CLASSIFICATION_EVENT_ID,
 )
@@ -294,9 +293,9 @@ class UnifiedClassification(BaseModel):
         default=None,
         description=(
             "true when the USER MESSAGE names or counts the app screens/pages to "
-            "build ('three screens: Home, Orders, Settings', 'a dashboard page and "
-            "a list page'), any language. NULL otherwise: pages of a document, a "
-            "'pages' attribute, pagination and 'one page per class' are not screens."
+            "build ('a calendar screen and a team page'), any language. NULL "
+            "otherwise: pages of a document, a 'pages' attribute, pagination, "
+            "'one page per class' and basic CRUD pages are not screens."
         ),
     )
 
@@ -682,8 +681,6 @@ def _remember_stated_target_and_language(
         clicked = (request.message or "").strip() in (session.get(LAST_SUGGESTED_PROMPTS) or ())
         if result.reply_language and not clicked:
             session.set(REPLY_LANGUAGE, result.reply_language)
-        if result.screens_listed and project_id:
-            session.set(SCREENS_LISTED_PROJECT_ID, project_id)
     except Exception:  # pragma: no cover - best effort
         logger.debug("Remembering target/language failed", exc_info=True)
 

@@ -2,7 +2,6 @@
 
 from common.session_keys import (
     APP_TARGET, APP_TARGET_PROJECT_ID, ORIGINAL_APP_REQUEST, ORIGINAL_APP_REQUEST_PROJECT_ID,
-    SCREENS_LISTED_PROJECT_ID, UNIFIED_CLASSIFICATION,
 )
 from protocol.message_limits import validate_message_length
 
@@ -15,17 +14,8 @@ def request_project_id(request):
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def remember_original_request(session, message, project_id, *, screens_listed=None):
-    """Store the app description of *project_id*. Whether it lists its screens
-    is *screens_listed*, else the current classifier verdict; a follow-up
-    appended to the stored description keeps what that one listed."""
+def remember_original_request(session, message, project_id):
     message = validate_message_length((message or "").strip(), label="The combined original specification and follow-up requests")
-    previous = original_request_for_project(session, project_id)
-    if screens_listed is None:
-        screens_listed = bool(getattr(session.get(UNIFIED_CLASSIFICATION), "screens_listed", None))
-    appended = bool(previous) and message.startswith(previous)
-    kept = appended and session.get(SCREENS_LISTED_PROJECT_ID) == project_id
-    session.set(SCREENS_LISTED_PROJECT_ID, project_id if project_id and (screens_listed or kept) else None)
     session.set(ORIGINAL_APP_REQUEST, message)
     session.set(ORIGINAL_APP_REQUEST_PROJECT_ID, project_id)
 
@@ -42,7 +32,6 @@ def clear_original_request(session):
     remember_original_request(session, "", None)
     session.set(APP_TARGET, None)
     session.set(APP_TARGET_PROJECT_ID, None)
-    session.set(SCREENS_LISTED_PROJECT_ID, None)
 
 
 def remember_target(session, project_id, *, kind=None, description=None, architecture=None):
