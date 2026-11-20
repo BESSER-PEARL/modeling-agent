@@ -64,7 +64,7 @@ def run_gui_op(monkeypatch):
 LISTED = UnifiedClassification(intent="create_complete_system_intent", screens_listed=True, reason="r")
 NOT_LISTED = UnifiedClassification(intent="create_complete_system_intent", reason="r")
 LISTED_OP = {**GUI_OP, modeling.SCREENS_LISTED_OP_KEY: True}
-REQUEST = "Bookshop app with three screens: Catalogue, Basket, Checkout"
+REQUEST = "Bookshop app with a catalogue screen, a basket page and a checkout page"
 
 
 def _plan(session, message, verdict, operations):

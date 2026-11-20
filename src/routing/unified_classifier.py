@@ -293,10 +293,9 @@ class UnifiedClassification(BaseModel):
         default=None,
         description=(
             "true when the USER MESSAGE names or counts the app screens/pages to "
-            "build ('three screens: Home, Orders, Settings', 'a dashboard page and "
-            "a list page'), any language. NULL otherwise: pages of a document, a "
-            "'pages' attribute, pagination, 'one page per class' and basic CRUD "
-            "pages are not screens."
+            "build ('a calendar screen and a team page'), any language. NULL "
+            "otherwise: pages of a document, a 'pages' attribute, pagination, "
+            "'one page per class' and basic CRUD pages are not screens."
         ),
     )
 
