@@ -5,7 +5,6 @@ GUI-choice prompts, handler dispatch, progress threads, and result enrichment.
 """
 
 import logging
-import re
 import threading
 from typing import Any, Dict, NamedTuple, Optional
 
@@ -14,6 +13,7 @@ from baf.core.session import Session
 from conversation import agent_context as ctx
 from common.agent_config import MAX_TABS, CONVERSATION_HISTORY_DEPTH
 from common.errors import ErrorCode
+from common.flow_answers import is_bare_flow_answer, normalize_flow_token
 from protocol.types import AssistantRequest
 from conversation.session_helpers import reply_message, reply_payload, reply_progress, user_key_reply
 from utilities.model_utils import model_has_elements
@@ -111,7 +111,7 @@ GUI_CHOICE_IN_REQUEST = "answered_in_request"
 
 def gui_choice_from_label(message: Optional[str]) -> Optional[str]:
     """"auto" / "llm" when *message* is, or starts with, a button label."""
-    token = " ".join(re.sub(r"[^\w\s]", " ", (message or "").lower()).split())
+    token = normalize_flow_token(message)
     return next(
         (answer for label, answer in _GUI_CHOICE_LABELS.items()
          if token == label or token.startswith(label + " ")),
@@ -632,6 +632,17 @@ def execute_model_operation(
         operation_request = request.message
     operation_request = operation_request.strip()
 
+    # A bare answer ("replace") is no description: building from it invents a
+    # model from the project name (prod, 2026-11-20).
+    if operation_mode == "complete_system" and is_bare_flow_answer(operation_request):
+        logger.info("[ModelOp] Bare answer %r as a system request — asking for the description", operation_request)
+        reply_message(
+            session,
+            "I don't have a description to build from. Please describe what you "
+            "want, or send your earlier request again.",
+        )
+        return None
+
     # ── Modify-without-target guard ──────────────────────────────────────
     # A modify_model op on a flow-style diagram only makes sense when that
     # diagram already exists with content. When it doesn't (e.g. the user
@@ -917,6 +928,12 @@ def execute_model_operation(
         {"images": operation["images"]}
         if target_diagram_type == "GUINoCodeDiagram" and operation.get("images") else {}
     )
+    # The requirements a class diagram realizes are extracted only for a project
+    # that records them in its trace: otherwise the extraction is an LLM call for nothing.
+    class_kwargs: Dict[str, Any] = (
+        {"record_requirements": request.context.traceability_enabled}
+        if target_diagram_type == "ClassDiagram" else {}
+    )
     # The editor's validation repair: a failure reply must not ask its author,
     # the editor, to rephrase. The editor lists the open issues.
     auto_fix = operation_mode == "modify_model" and auto_fix_verdict(request.message or "") is not None
@@ -996,6 +1013,7 @@ def execute_model_operation(
                     raw_request=spec_to_stash or operation_request,
                     **bpmn_kwargs,
                     **mockup_kwargs,
+                    **class_kwargs,
                 )
     except Exception as exc:
         logger.error(f"❌ [ModelOp] Handler exception: {exc}", exc_info=True)

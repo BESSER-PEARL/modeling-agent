@@ -12,7 +12,7 @@ import logging
 import threading
 import uuid
 from collections import OrderedDict
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, NamedTuple, Optional, Tuple
 
 from baf.core.session import Session
 
@@ -22,6 +22,7 @@ from common.errors import (
     EXHAUSTED_KEY_MESSAGE, ErrorCode, ModelRefusal, RATE_LIMITED_KEY_MESSAGE, REJECTED_KEY_MESSAGE,
 )
 from llm import byok
+from llm import tracking
 from llm.provider import LLMProvider
 from memory import MAX_ASSISTANT_MEMORY_CHARS, get_memory, memory_session_key
 from common.session_keys import (
@@ -32,7 +33,10 @@ from common.session_keys import (
 from conversation.reply_language import language_instruction, localize_payload, translate_text
 from conversation.telemetry import emit_prompt_event
 from routing.unified_classifier import _pending_flow_context
-from protocol.actions import Action, assistant_message
+from protocol.actions import Action, assistant_message, show_trace
+from conversation.reply_copy import (
+    SHOW_TRACE_NAME_SLOT, fill_show_trace_label, show_trace_label_template,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -152,9 +156,12 @@ _TERMINAL_REPLY_ACTIONS = frozenset({
 # Kept out of the legacy replay above, which has no dedupe (a paid run could
 # start twice). create_diagram_tab precedes an injection with replaceExisting,
 # so it must replay with it; stream_done carries the assembled streamed text.
+# show_trace follows a stream_done: replayed alone, without a turn, it would
+# stand in for the answer it belongs to.
 _TURN_REPLY_ACTIONS = _TERMINAL_REPLY_ACTIONS | frozenset({
     Action.INJECT_ELEMENT, Action.TRIGGER_SMART_GENERATOR, Action.AGENT_ERROR,
     Action.TRIGGER_EXPORT, Action.TRIGGER_DEPLOY, Action.CREATE_DIAGRAM_TAB, Action.STREAM_DONE,
+    Action.SHOW_TRACE,
 })
 _REPLY_BUFFER_MAX = 200
 _last_reply_buffer: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
@@ -353,6 +360,28 @@ def reply_payload(session: Session, payload: Dict[str, Any]):
         _emit_prompt_telemetry(session, action)
 
 
+def reply_show_trace(session: Session, view: str, name: str = "", artifact_id: Optional[str] = None) -> None:
+    """Send a ``show_trace`` button after a streamed trace answer, opening
+    the Traceability page on *view* (and the artifact *artifact_id*, named
+    *name*, when there is one).
+
+    The label's template is translated with the name's slot in it and the
+    element name put in afterwards, so a name is never translated and the
+    translation is cached per view and language; a translation that lost the
+    slot falls back to the label without a name. The label is neither
+    recorded in the conversation memory (the streamed answer already was)
+    nor counted as the turn's telemetry reply (``stream_done`` was)."""
+    try:
+        name = " ".join((name or "").split())
+        label = translate_text(session, show_trace_label_template(view, bool(name)))
+        if name and label.count(SHOW_TRACE_NAME_SLOT) != 1:
+            label = translate_text(session, show_trace_label_template(view, False))
+        payload = show_trace(view, fill_show_trace_label(label, name), artifact_id)
+        _buffer_terminal_reply(session, _send_to_session(session, payload))
+    except Exception as exc:
+        logger.error(f"❌ [Reply] Failed to send show_trace: {exc}", exc_info=True)
+
+
 def _remember_suggested_prompts(session: Session, payload: Dict[str, Any]) -> None:
     """Remember this reply's quick-action prompts: a click sends one back as
     the user's message (see ``LAST_SUGGESTED_PROMPTS``)."""
@@ -413,13 +442,37 @@ def user_key_reply(error: Optional[BaseException]) -> Optional[Dict[str, Any]]:
     return {"action": Action.AGENT_ERROR, **_USER_KEY_REPLIES[fault]}
 
 
+def begin_turn_usage(session: Session) -> None:
+    """Open the LLM-usage totals of the event being handled (once per event:
+    the transition hook and the state preamble both call it). Best-effort."""
+    try:
+        event = getattr(session, "event", None)
+        if event is not None:
+            tracking.begin_turn(event)
+    except Exception as exc:
+        logger.debug(f"[Usage] turn start skipped (best-effort): {exc}")
+
+
+def _stamp_llm_usage(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of a terminal reply (``_TURN_REPLY_ACTIONS``) with the
+    turn's running LLM totals as ``llmUsage``, or *payload* unchanged: another
+    action, no open turn, or no LLM call yet. A turn sending several terminal
+    replies stamps each with the totals so far; the last one holds them all."""
+    if payload.get("action") not in _TURN_REPLY_ACTIONS:
+        return payload
+    usage = tracking.current_turn()
+    snapshot = usage.snapshot() if usage is not None else None
+    return {**payload, "llmUsage": snapshot} if snapshot else payload
+
+
 def _send_to_session(session: Session, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Low-level helper: stamp *payload* with the turn (if any), serialize it as
-    JSON and send it via the session. Every reply helper sends through here, so
-    streaming and progress frames take the same WebSocket path as terminal
-    replies. Returns the payload as sent.
+    """Low-level helper: stamp *payload* with the turn (if any) and, on a
+    terminal reply, the turn's LLM usage, serialize it as JSON and send it via
+    the session. Every reply helper sends through here, so streaming and
+    progress frames take the same WebSocket path as terminal replies. Returns
+    the payload as sent.
     """
-    payload = _stamp_turn(session, payload)
+    payload = _stamp_llm_usage(_stamp_turn(session, payload))
     session.reply(json.dumps(payload))
     return payload
 
@@ -489,6 +542,15 @@ def reply_progress(session: Session, message: str, step: int = 0, total: int = 0
     _send_to_session(session, payload)
 
 
+class StreamedReply(NamedTuple):
+    """What :func:`stream_llm_reply` streamed: the full text sent, and whether
+    the provider completed the answer (False after an error, a refusal, or a
+    stream cut mid-way: the text is then an error hint, a refusal notice or a
+    partial answer)."""
+    text: str
+    completed: bool
+
+
 def stream_llm_response(
     session: Session, llm_instance: Any, prompt: str, system_prompt: str = "",
     model: Optional[str] = None,
@@ -505,17 +567,30 @@ def stream_llm_response(
             defaults to the instance's configured model.
 
     Returns:
-        The full completed text.
+        The full text sent (on a failure, the error hint or refusal notice
+        that replaced the answer; see :func:`stream_llm_reply`).
     """
+    return stream_llm_reply(session, llm_instance, prompt, system_prompt, model).text
+
+
+def stream_llm_reply(
+    session: Session, llm_instance: Any, prompt: str, system_prompt: str = "",
+    model: Optional[str] = None,
+) -> StreamedReply:
+    """:func:`stream_llm_response`, also saying whether the provider
+    completed the answer, for a caller that follows only a real answer with
+    more (a button). Never raises for a provider failure: it is reported to
+    the user in the stream, or as a key error reply."""
     instruction = language_instruction(session)
     if instruction:
         system_prompt = f"{system_prompt}\n\n{instruction}" if system_prompt else instruction
     stream_id = reply_stream_start(session)
     full_text = ""
+    completed = False
 
     try:
         chunks = LLMProvider(llm_instance).stream(prompt, system_prompt=system_prompt, model=model)
-        full_text = _send_chunks(session, chunks, stream_id)
+        full_text, completed = _send_chunks(session, chunks, stream_id)
     except Exception as e:
         logger.error(f"❌ [Streaming] Error: {e}")
         key_reply = user_key_reply(e)
@@ -534,15 +609,17 @@ def stream_llm_response(
 
     reply_stream_done(session, stream_id, full_text)
     _record_assistant_response(session, full_text)
-    return full_text
+    return StreamedReply(full_text, completed and bool(full_text))
 
 
-def _send_chunks(session: Session, chunks: Iterable[str], stream_id: str) -> str:
+def _send_chunks(session: Session, chunks: Iterable[str], stream_id: str) -> Tuple[str, bool]:
     """Send text chunks to the frontend as they arrive, buffered to about a
-    sentence, and return the whole text. A mid-stream failure keeps the text
-    sent so far; a refusal propagates."""
+    sentence, and return the whole text and whether the stream ran to its
+    end. A mid-stream failure keeps the text sent so far (not completed); a
+    refusal propagates."""
     full_text = ""
     chunk_buffer = ""
+    completed = False
     try:
         for content in chunks:
             full_text += content
@@ -555,6 +632,7 @@ def _send_chunks(session: Session, chunks: Iterable[str], stream_id: str) -> str
             ):
                 reply_stream_chunk(session, chunk_buffer, stream_id)
                 chunk_buffer = ""
+        completed = True
     except ModelRefusal:
         raise
     except Exception as exc:
@@ -563,4 +641,4 @@ def _send_chunks(session: Session, chunks: Iterable[str], stream_id: str) -> str
         # Always flush remaining buffer so no text is silently lost
         if chunk_buffer:
             reply_stream_chunk(session, chunk_buffer, stream_id)
-    return full_text
+    return full_text, completed

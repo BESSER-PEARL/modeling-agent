@@ -14,6 +14,13 @@ from ..core.base_handler import (
     SINGLE_CLASS_REQUIRED,
     SINGLE_CLASS_OPTIONAL,
 )
+from .class_diagram_requirements import (
+    REALIZATION_TOKENS_PER_REQUIREMENT,
+    class_realizable,
+    extract_requirements,
+    extraction_model,
+    resolve_realizations,
+)
 from common.errors import ErrorCode, non_recoverable_cause, partial_result_reason
 from common.settings import AgentSettings
 from llm.model_config import MODEL_GENERATION_LARGE, MODEL_GENERATION_SMALL, MODEL_REASONING
@@ -133,6 +140,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         raw_request: Optional[str] = None,
         *,
         prepared=None,
+        record_requirements: bool = False,
         **kwargs,
     ) -> Dict[str, Any]:
         """Generate a complete class diagram with two-pass structured outputs, domain patterns,
@@ -141,10 +149,29 @@ class ClassDiagramHandler(BaseDiagramHandler):
         ``raw_request`` is the original user message before context enrichment
         (conversation history / workspace block); it drives the fast-path
         length check and keeps the reasoning prompt lean. Falls back to the
-        full ``user_request`` when not provided.
+        full ``user_request`` when not provided. ``record_requirements`` is True
+        when the project records traces, the only place the requirements go.
         """
 
         system_prompt = prepared
+
+        # The requirements the user's own words state, listed in the structured
+        # pass only so it can report what realizes each one. None when the project
+        # records no traces, none without those words (an enriched or synthesized
+        # request has nothing to quote), and none for a request too short for the
+        # reasoning pass: a trivial request stays one LLM call.
+        requirements = (
+            extract_requirements(self, raw_request)
+            if record_requirements and raw_request and len(raw_request.strip()) >= self._TWO_PASS_MIN_LENGTH
+            else []
+        )
+        # Only the kinds a class diagram realizes are listed; each listed one
+        # adds a realizations entry to the reply, so it adds to its budget.
+        listed = class_realizable(requirements)
+        if listed:
+            user_request += class_prompts.requirements_block(listed)
+        schema = CompactSystemClassSpec if COMPACT_SPEC_ENABLED else SystemClassSpec
+        max_tokens = self._structured_max_tokens(schema) + REALIZATION_TOKENS_PER_REQUIREMENT * len(listed)
 
         # --- Two-pass structured: reason first, then produce validated Pydantic model ---
         # The reasoning prompt uses the raw request only; the enriched
@@ -163,6 +190,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 raw_request=raw_request,
                 model=MODEL_GENERATION_LARGE,
                 reasoning_model=MODEL_REASONING,
+                max_tokens=max_tokens,
             )
             # Deterministic expansion back to the canonical spec — guards,
             # layout, and the frontend payload below are untouched.
@@ -176,8 +204,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 raw_request=raw_request,
                 model=MODEL_GENERATION_LARGE,
                 reasoning_model=MODEL_REASONING,
+                max_tokens=max_tokens,
             )
         system_spec = parsed.model_dump()
+        # Resolved against the final spec below, after every guard; never part
+        # of the systemSpec the editor converts.
+        claimed_realizations = system_spec.pop("realizations", [])
 
         # Guard (runs first): rewrite any class/enum/member name that isn't a
         # valid identifier (hyphens, spaces, …). An invalid CLASS name fails
@@ -324,10 +356,22 @@ class ClassDiagramHandler(BaseDiagramHandler):
         message = self._build_system_message(
             system_spec, relaxations, renamed=renamed_ends, mismatched=mismatched)
 
+        # The editor records the extraction in the project trace (a call to
+        # requirementsModel) and links each requirement to the elements that
+        # realize it.
+        requirement_fields = {}
+        if requirements:
+            requirement_fields = {
+                "requirements": requirements,
+                "realizations": resolve_realizations(
+                    claimed_realizations, system_spec, {r["id"] for r in listed}),
+                "requirementsModel": extraction_model(self),
+            }
+
         # The matching frontend converter persists constraints as OCL
         # boxes/links and associationClass attachments as ClassLinkRel.
         # Keep this wire contract aligned with websocket_protocol.rst.
-        return inject_complete_system(system_spec, self.get_diagram_type(), message)
+        return inject_complete_system(system_spec, self.get_diagram_type(), message, **requirement_fields)
 
     def _system_failure_reply(self, exc, user_request, existing_model, **kwargs) -> Dict[str, Any]:
         if isinstance(exc, ModelRefusal):

@@ -77,3 +77,58 @@ AUTO_FIX_UNFIXED = (
     "The diagram is unchanged. You can fix these issues on the canvas, or tell "
     "me how you'd like them resolved."
 )
+
+
+# Reply to an explicit question about the project's history when the editor
+# sent no trace record (``context.traceDigest``): recording may be off, on with
+# nothing recorded yet, or the record not loaded yet; the agent cannot tell
+# which. Deterministic, no LLM call.
+TRACE_NOT_AVAILABLE = (
+    "I can't answer that from the project's history: I didn't receive a "
+    "trace record with your message. Either trace recording is off for this "
+    "project, nothing has been recorded yet, or the editor hasn't loaded the "
+    "record yet.\n\n"
+    "You can check on the **Traceability** page of the editor, and turn "
+    "recording on there if it is off. While it is on, your edits, my changes, "
+    "code generations and the requirements I extract are recorded, and you "
+    "can ask me where an element comes from, which code was generated from "
+    "it, what is out of date or which requirements the model does not cover."
+)
+
+TRACE_QUESTION_EMPTY = (
+    "What would you like to know about the project's history? For example: "
+    "*\"which code was generated from Book?\"*, *\"which requirement does this "
+    "class realize?\"* or *\"what is out of date since the last generation?\"*."
+)
+
+# The label of the ``show_trace`` button, by view: with the artifact's name
+# (in SHOW_TRACE_NAME_SLOT) and without one. The template is translated with
+# the slot in it and the name put in afterwards, so a translation is cached
+# per view and language, and an element name is never translated.
+SHOW_TRACE_NAME_SLOT = "⟦name⟧"
+_SHOW_TRACE_LABELS = {
+    "lineage": ("Open the lineage of ⟦name⟧", "Open the trace lineage"),
+    "coverage": ("Open the requirement coverage of ⟦name⟧", "Open the requirement coverage"),
+    "timeline": ("Open the history of ⟦name⟧", "Open the project timeline"),
+}
+# An element name longer than this is cut in the label.
+_SHOW_TRACE_LABEL_NAME_CHARS = 60
+
+
+def show_trace_label_template(view: str, with_name: bool) -> str:
+    """The English label of the button opening the Traceability page on
+    *view*; *with_name*: the one holding SHOW_TRACE_NAME_SLOT."""
+    with_slot, without = _SHOW_TRACE_LABELS[view]
+    return with_slot if with_name else without
+
+
+def fill_show_trace_label(template: str, name: str) -> str:
+    """*template* (English or translated) with the element *name* in its slot."""
+    name = " ".join((name or "").split())[:_SHOW_TRACE_LABEL_NAME_CHARS]
+    return template.replace(SHOW_TRACE_NAME_SLOT, name)
+
+
+def show_trace_label(view: str, name: str = "") -> str:
+    """The English label of the button, with *name* when there is one."""
+    name = " ".join((name or "").split())
+    return fill_show_trace_label(show_trace_label_template(view, bool(name)), name)
