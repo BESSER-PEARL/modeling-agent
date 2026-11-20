@@ -162,7 +162,8 @@ class TestClassifyMessage:
         ("Generate the JSON Schema for my Express API payloads", "jsonschema"),
         ("Generate SQL Alchemy models for my Kotlin service", "sqlalchemy"),
         ("Generate JSON schemas for the data of my Flutter app", "jsonschema"),
-        ("Generate agents for my Kotlin service", "agent"),
+        ("Generate a BESSER agent for my Kotlin service", "agent"),
+        ("Generate the Qiskit code for my Rust host", "qiskit"),
     ])
     def test_a_generator_the_user_names_is_not_overridden_by_a_domain_word(self, message, generator):
         """Stack names that were the app's domain words sent an explicit request
@@ -183,6 +184,8 @@ class TestClassifyMessage:
         ("Create a Laravel app with a MySQL database", "sql"),
         ("Generate a PostgreSQL database for my Rails app", "sql"),
         ("build a Flutter app with a local database", "sql"),
+        ("Generate agents for my Kotlin service", "agent"),
+        ("Generate the quantum code in Q# for my Rust host", "qiskit"),
     ])
     def test_naming_a_kind_of_output_does_not_name_its_stack(self, message, generator):
         """'a backend' or 'a web app' names what to build, not a built-in

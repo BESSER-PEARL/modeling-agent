@@ -283,10 +283,10 @@ regex before or after the call:
   message names itself by one of that generator's keywords ("Django",
   "SQL", "JSON schema", "SQL Alchemy"): in "the Django backend for my
   express delivery app" the stack word is the app's domain. A kind of output
-  (``backend``, ``web_app``, ``rest_api``, or "database" for ``sql``) names
-  no technology, so "a Spring Boot backend",
-  "a web app with Angular" or "a MySQL database for my Rails app" still goes
-  to ``smart``. A mixed request that names both ("generate java and kotlin
+  (``backend``, ``web_app``, ``rest_api``, "database" for ``sql``, "agent"
+  or "quantum code" for ``agent`` and ``qiskit``) names no technology, so "a
+  Spring Boot backend", "a web app with Angular", "a MySQL database for my
+  Rails app" or "agents for my Kotlin service" still goes to ``smart``. A mixed request that names both ("generate java and kotlin
   classes") keeps the classifier's verdict; so does a request that names the
   supported technology only as the one to convert away from ("port the Java
   classes to Kotlin"), which goes to ``smart`` only when the classifier says so.

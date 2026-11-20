@@ -144,6 +144,7 @@ _OUTPUT_KIND_GENERATORS = frozenset({"backend", "web_app", "rest_api"})
 # Generator keywords that name a kind of output, not a technology.
 _OUTPUT_KIND_KEYWORDS = frozenset(
     {"database", "relational database", "db schema"}
+    | {"agent generator", "generate agent", "quantum code", "quantum generator", "quantum circuit code"}
     | {keyword for generator in _OUTPUT_KIND_GENERATORS for keyword in GENERATOR_KEYWORDS[generator]}
 )
 
