@@ -229,7 +229,9 @@ Field Reference
        built again, instead of offering to update it. The run's instructions
        then end with a "Starting point" section: build the whole application
        from the model and the requests, including any earlier work they ask
-       to continue or fix.
+       to continue or fix. When ``runId`` is set and ``expired`` is false, the
+       editor still holds that run and, without an explicit ``mode``, edits
+       it: the run confirmation then offers to update the existing app.
    * - ``attachments``
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)
@@ -796,7 +798,7 @@ Built by ``build_trigger_smart_generator_payload()`` in
      "action": "trigger_smart_generator",
      "instructions": "Rails 7 with PostgreSQL via Active Record and Devise auth",
      "provider": "anthropic",
-     "message": "Generating your application from your specs…"
+     "message": "Starting the Spec-Driven Agent…"
    }
 
 .. list-table::
@@ -816,6 +818,10 @@ Built by ``build_trigger_smart_generator_payload()`` in
      - Optional. ``"generate"`` rebuilds instead of continuing from the
        existing app; sent only when the user asks to discard the app a linked
        GitHub repo holds. Without it the frontend decides.
+   * - ``message``
+     - A neutral banner that names neither mode, since the frontend picks
+       edit or rebuild after receiving the action. Current editors replace it
+       with a line for the mode they picked.
 
 The action names no model: the run uses the model the user picked in the
 editor, else the BESSER backend's default for the provider (the deployment's

@@ -461,11 +461,11 @@ def _build_smart_gen_confirmation(
     fix-framing + a "Fix it" button (from-scratch wording reads wrong when
     the user only wants a fix). Both branches keep the
     same confirm token so the confirm gate fires identically, and each says
-    which key the run will use (``_key_note``). The fix branch is gated to the direct path
-    (no ``reason_prefix``): the mismatch/rebuild resumes always produce a
-    freshly rebuilt model, which is a from-scratch build by definition — and,
-    per ``_looks_like_fix_request``, to projects that have actually produced
-    an app before.
+    which key the run will use (``_key_note``). The fix branch is taken when the
+    editor reports it still holds the project's last run (it then edits that
+    app, also after a mismatch/rebuild resume). Otherwise it is gated to the
+    direct path (no ``reason_prefix``) and, per ``_looks_like_fix_request``, to
+    projects that have actually produced an app before.
     """
     provider = provider or "anthropic"
     target = _request_target(session)
@@ -496,8 +496,9 @@ def _build_smart_gen_confirmation(
             f"from {sources}.\n\n"
         )
 
-    is_fix = (not reason_prefix) and (not starting_over) and (not result_expired) and _looks_like_fix_request(
-        session, user_message, project_id,
+    is_fix = (not starting_over) and (not result_expired) and (
+        _editor_edits_last_result(session)
+        or (not reason_prefix and _looks_like_fix_request(session, user_message, project_id))
     )
 
     # The instructions are NOT echoed back to the user: showing the LLM's
@@ -587,6 +588,13 @@ def _previous_result_gone(session: Session) -> bool:
     linked repo holds the app: the run builds the app again."""
     last_generation = getattr(_request_context(session), "last_generation", None) or {}
     return last_generation.get("expired") is True and not repo_holds_app(session)
+
+
+def _editor_edits_last_result(session: Session) -> bool:
+    """True when the editor still holds the project's last run: without an
+    explicit mode it edits that app instead of rebuilding it."""
+    last_generation = getattr(_request_context(session), "last_generation", None) or {}
+    return last_generation.get("editable") is True
 
 
 def _run_starts_from_the_model(session: Session) -> bool:
