@@ -13,6 +13,7 @@ from baf.core.session import Session
 from conversation import agent_context as ctx
 from common.agent_config import MAX_TABS, CONVERSATION_HISTORY_DEPTH
 from common.errors import ErrorCode
+from common.flow_answers import is_bare_flow_answer
 from protocol.types import AssistantRequest
 from conversation.session_helpers import reply_message, reply_payload, reply_progress, user_key_reply
 from utilities.model_utils import model_has_elements
@@ -584,6 +585,17 @@ def execute_model_operation(
     if not isinstance(operation_request, str) or not operation_request.strip():
         operation_request = request.message
     operation_request = operation_request.strip()
+
+    # A bare answer ("replace") is no description: building from it invents a
+    # model from the project name (prod, 2026-11-20).
+    if operation_mode == "complete_system" and is_bare_flow_answer(operation_request):
+        logger.info("[ModelOp] Bare answer %r as a system request — asking for the description", operation_request)
+        reply_message(
+            session,
+            "I don't have a description to build from. Please describe what you "
+            "want, or send your earlier request again.",
+        )
+        return None
 
     # ── Modify-without-target guard ──────────────────────────────────────
     # A modify_model op on a flow-style diagram only makes sense when that

@@ -23,7 +23,6 @@ from app.agent_setup import (
     init_stt,
     init_rag,
     init_diagram_factory,
-    init_intent_classifier_config,
 )
 from common.agent_config import GRACE_PERIOD_SECONDS
 from llm.model_catalog import load_model_catalog
@@ -59,9 +58,6 @@ stt = init_stt(agent)
 uml_rag = init_rag(agent)
 diagram_factory = init_diagram_factory(gpt)
 
-ic_config = init_intent_classifier_config()
-agent.set_default_ic_config(ic_config)
-
 # ── Populate shared context ──────────────────────────────────────────────
 ctx.agent = agent
 ctx.gpt = gpt
@@ -92,14 +88,11 @@ trace_question_state = agent.new_state("trace_question_state")
 # ``unified_classifier.py`` took over primary routing, those keyword
 # blobs are no longer driving any behavior — the real rules live in
 # ``prompts.classifier.SYSTEM_PROMPT``. The one-liners below exist
-# only so BAF's classifier can still pick a sensible intent if our
-# unified call ever fails (rare safety-net path). Keep them SHORT.
+# only document each intent for readers. Keep them SHORT.
 #
-# Training sentences are REQUIRED: the default intent classifier is now
-# the local SimpleIntentClassifier (see agent_setup), which trains on
-# them at startup — this keeps the BAF fallback (and the voice/text-event
-# route) free instead of one LLM call per message. The unified classifier
-# remains authoritative via ``json_intent_matches``.
+# No state has an intent: BAF's own intent classifier is not used, so nothing
+# is trained at startup. Every message, typed or spoken, is routed by the
+# unified classifier through ``json_intent_matches`` (see state_bodies).
 hello_intent = agent.new_intent(
     name="hello_intent",
     description="User greets the assistant or makes small-talk.",

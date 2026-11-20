@@ -302,20 +302,18 @@ def test_generation_route(intent, route, reason, expected):
 
 
 # ---------------------------------------------------------------------------
-# Transitions: BAF's local classifier stays the voice route and the outage net
+# Transitions: typed and spoken messages share one set, routed by the unified classifier
 # ---------------------------------------------------------------------------
 
 class _Recorder:
-    def __init__(self, log, kind):
-        self.log, self.kind = log, kind
+    def __init__(self, log, event):
+        self.log, self.event = log, event
 
     def with_condition(self, fn, params=None):
-        self.log.append((self.kind, fn.__name__, (params or {}).get("intent_name")))
+        self.log.append((type(self.event).__name__, fn.__name__, (params or {}).get("intent_name")))
         return self
 
     def go_to(self, dest):
-        if self.kind == "text":
-            self.log.append(("text", self.name, None))
         return dest
 
 
@@ -323,34 +321,66 @@ class _FakeState:
     def __init__(self):
         self.log = []
 
-    def when_event(self, _event):
-        return _Recorder(self.log, "json")
+    def when_event(self, event):
+        return _Recorder(self.log, event)
 
     def when_intent_matched(self, intent):
-        recorder = _Recorder(self.log, "text")
-        recorder.name = intent.name
-        return recorder
+        raise AssertionError("BAF's local intent classifier must not be used")
 
     def when_no_intent_matched(self):
-        recorder = _Recorder(self.log, "text")
-        recorder.name = "no_intent"
-        return recorder
+        raise AssertionError("BAF's local intent classifier must not be used")
 
 
-def test_transition_order_keeps_the_local_classifier_routes():
-    """Voice transcripts arrive as plain-text events, which only the
-    ``when_intent_matched`` transitions route (BAF's local classifier); JSON
-    events fall back to its prediction when the unified call failed."""
+def test_transitions_serve_typed_and_spoken_messages_through_the_unified_classifier():
     intents = [type("I", (), {"name": n})() for n in ("hello_intent", CREATE)]
     state = _FakeState()
     sb.add_unified_transitions(state, {i: object() for i in intents}, object(), object())
     assert state.log == [
-        ("json", "_ensure_unified_classification", None),
-        ("json", "json_intent_matches", "hello_intent"),
-        ("json", "json_intent_matches", CREATE),
-        ("json", "route_to_generation", None),
-        ("text", "hello_intent", None),
-        ("text", CREATE, None),
-        ("json", "json_no_intent_matched", None),
-        ("text", "no_intent", None),
+        ("ReceiveMessageEvent", "_ensure_unified_classification", None),
+        ("ReceiveMessageEvent", "json_intent_matches", "hello_intent"),
+        ("ReceiveMessageEvent", "json_intent_matches", CREATE),
+        ("ReceiveMessageEvent", "route_to_generation", None),
+        ("ReceiveMessageEvent", "json_no_intent_matched", None),
     ]
+
+
+def test_message_event_matches_both_typed_json_and_spoken_text_events():
+    """A voice transcript is a plain-text event, a typed editor message a JSON event."""
+    from baf.library.transition.events.base_events import (
+        ReceiveJSONEvent, ReceiveMessageEvent, ReceiveTextEvent)
+    transition_event = ReceiveMessageEvent()
+    assert transition_event.is_matching(ReceiveJSONEvent({"message": "hi"}))
+    assert transition_event.is_matching(ReceiveTextEvent("hi"))
+
+
+def test_a_real_state_gets_no_intents_so_baf_builds_and_trains_no_classifier():
+    from baf.core.agent import Agent
+    agent = Agent("probe")
+    state = agent.new_state("s", initial=True)
+    target, fallback, generation = (agent.new_state(n) for n in ("t", "f", "g"))
+    intent = agent.new_intent("hello_intent", ["hi"])
+    sb.add_unified_transitions(state, {intent: target}, fallback, generation)
+    # BAF creates (and trains) an intent classifier only for states that have intents
+    assert state.intents == []
+    assert len(state.transitions) == 4
+
+
+def test_a_voice_transcript_is_parsed_like_a_typed_message_with_the_context_sent_before_the_audio():
+    """The transcript is a bare plain-text event; the editor sends the workspace context as a session
+    variable just before the audio, and the request is rebuilt from both."""
+    from baf.library.transition.events.base_events import ReceiveTextEvent
+    from common.session_keys import VOICE_CONTEXT
+    from protocol.adapters import parse_assistant_request
+    from tests.conftest import FakeSession
+
+    session = FakeSession()
+    session.event = ReceiveTextEvent("add an order class", "s1", True)
+    session.set(VOICE_CONTEXT, {"activeDiagramType": "ObjectDiagram"})
+
+    request = parse_assistant_request(session)
+
+    assert request.message == "add an order class"
+    assert request.diagram_type == "ObjectDiagram"
+    assert request.context.active_diagram_type == "ObjectDiagram"
+    # the context is consumed, so it is not reused for the next message
+    assert session.get(VOICE_CONTEXT) is None

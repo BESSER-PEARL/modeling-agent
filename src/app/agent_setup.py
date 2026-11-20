@@ -14,7 +14,6 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from baf import nlp
 from baf.core.agent import Agent
-from baf.nlp.intent_classifier.intent_classifier_configuration import SimpleIntentClassifierConfiguration
 from baf.nlp.llm.llm_openai_api import LLMOpenAI
 from baf.nlp.speech2text.openai_speech2text import OpenAISpeech2Text
 
@@ -271,19 +270,3 @@ def init_diagram_factory(gpt: LLMOpenAI):
     factory = DiagramHandlerFactory(gpt)
     logger.info(f"Diagram handlers initialized: {', '.join(factory.get_supported_types())}")
     return factory
-
-
-def init_intent_classifier_config() -> SimpleIntentClassifierConfiguration:
-    """Return the default intent-classifier configuration.
-
-    Local (free) Simple classifier instead of the LLM-based one: the
-    unified classifier (``unified_classifier.py``) is the authoritative
-    router via ``json_intent_matches``, so BAF's per-message prediction
-    is only an exception-path fallback (and the voice/text-event route)
-    — it must not cost an LLM round-trip on every message.
-
-    Requires every intent declared in ``modeling_agent.py`` to carry
-    training sentences (the Simple classifier trains on them at startup).
-    The tensorflow extra is part of the pinned BAF install.
-    """
-    return SimpleIntentClassifierConfiguration(framework='tensorflow')

@@ -21,6 +21,8 @@ from baf.core.session import Session
 from protocol.adapters import parse_assistant_request
 from conversation.session_helpers import reply_message, reply_payload, emit_webapp_generate_prompt
 from common.session_keys import UNIFIED_CLASSIFICATION
+from common.flow_answers import FLOW_ANSWER_TOKENS as _FLOW_ANSWER_TOKENS
+from common.flow_answers import normalize_flow_token as _normalize_flow_token
 from common import pending_dialogs
 from common.pending_dialogs import (
     PENDING_COMPLETE_SYSTEM,
@@ -216,24 +218,6 @@ def _reoffer_gui_choice(session: Session, pending: dict, lead: str = "") -> None
         f"{lead}You can try the AI design again, or use basic CRUD pages instead.",
         suggestedActions=gui_choice_actions(),
     ))
-
-
-# Bare flow-control tokens a user types (or a quick-action button sends) to
-# ANSWER a pending confirmation. A message that normalizes to one of these
-# is always an answer — never a pivot — regardless of the intent label the
-# classifier stamped on it.
-_FLOW_ANSWER_TOKENS = {
-    "replace", "replace it", "keep", "keep it", "keep both",
-    "keep it and add alongside", "add alongside", "new tab",
-    "create in a new tab", "confirm", "confirm apply the change",
-    "apply the change", "go ahead", "yes", "no", "cancel", "ok",
-}
-
-
-def _normalize_flow_token(message: str) -> str:
-    """Lowercase, strip punctuation/dashes, collapse whitespace."""
-    cleaned = re.sub(r"[^\w\s]", " ", (message or "").lower())
-    return " ".join(cleaned.split())
 
 
 def handle_pending_gui_choice(session: Session) -> bool:
