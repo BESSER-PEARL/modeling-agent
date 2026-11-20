@@ -15,7 +15,7 @@ import re
 from typing import Any, Optional
 
 from baf.core.session import Session
-from baf.library.transition.events.base_events import ReceiveJSONEvent
+from baf.library.transition.events.base_events import ReceiveMessageEvent
 from baf.nlp.rag.rag import RAGMessage
 
 from common.agent_config import LLM_MAX_TOKENS_TEXT, LLM_TEXT_TEMPERATURE
@@ -986,47 +986,39 @@ def route_to_generation(session: Session) -> bool:
 
 
 def add_unified_transitions(state, intents_map, fallback_state, generation_state):
-    """Add both text and JSON event transitions for a state.
+    """Add the message transitions of a state.
+
+    Every user message is routed by the unified classifier, whether it was typed
+    (a JSON event) or spoken (a plain-text event: BAF transcribes the audio and
+    ``parse_assistant_request`` rebuilds the request from the workspace context the
+    editor sent with it). ``ReceiveMessageEvent`` matches both kinds, so one set of
+    transitions serves them. BAF's own intent classifier is not used: no state has an
+    intent, so BAF builds and trains nothing per state.
 
     Transition priority (first match wins):
-    1. Intent-matched JSON transitions — the LLM-based intent classifier is
-       the most accurate signal, so it gets first priority.
-    2. Keyword-based generation route — catches generator keywords, frontend
-       callback events, and pending-generator follow-ups that the intent
-       classifier might not detect.
-    3. Text-event intent transitions (backward compatibility).
-    4. Fallback transitions.
+    0. The unified classifier hook (side effect only).
+    1. Intent-matched transitions, read from the classifier's verdict.
+    2. Keyword-based generation route — frontend callback events and
+       pending-generator follow-ups the classifier might not detect.
+    3. Fallback.
     """
     # 0. Unified classifier hook — populates the per-message cache so
     #    subsequent ``json_intent_matches`` conditions read from our
-    #    classifier's verdict instead of BAF's description-based one.
+    #    classifier's verdict.
     #    Normally a pure side-effect condition. Oversized input self-transitions
     #    into the preamble's explicit rejection. One LLM call per valid message,
     #    regardless of how many transitions we have.
-    state.when_event(ReceiveJSONEvent()) \
-        .with_condition(_ensure_unified_classification) \
-        .go_to(state)
+    state.when_event(ReceiveMessageEvent())         .with_condition(_ensure_unified_classification)         .go_to(state)
 
-    # 1. Intent-matched JSON transitions (highest priority for user messages)
+    # 1. Intent-matched transitions (highest priority for user messages)
     for intent, dest_state in intents_map.items():
-        state.when_event(ReceiveJSONEvent()) \
-            .with_condition(json_intent_matches, {'intent_name': intent.name}) \
-            .go_to(dest_state)
+        state.when_event(ReceiveMessageEvent())             .with_condition(json_intent_matches, {'intent_name': intent.name})             .go_to(dest_state)
 
     # 2. Keyword-based generation route (frontend events, pending config, etc.)
-    state.when_event(ReceiveJSONEvent()) \
-        .with_condition(route_to_generation) \
-        .go_to(generation_state)
+    state.when_event(ReceiveMessageEvent())         .with_condition(route_to_generation)         .go_to(generation_state)
 
-    # 3. Text event transitions (backward compatibility)
-    for intent, dest_state in intents_map.items():
-        state.when_intent_matched(intent).go_to(dest_state)
-
-    # 4. Fallback transitions
-    state.when_event(ReceiveJSONEvent()) \
-        .with_condition(json_no_intent_matched) \
-        .go_to(fallback_state)
-    state.when_no_intent_matched().go_to(fallback_state)
+    # 3. Fallback transition
+    state.when_event(ReceiveMessageEvent())         .with_condition(json_no_intent_matched)         .go_to(fallback_state)
 
 
 def register_all(*, agent, states, intents):

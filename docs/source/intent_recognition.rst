@@ -332,19 +332,19 @@ State transitions are checked in this order (first match wins).
        Side-effect hook — primes the per-message classification cache.
        ALWAYS returns False, so it never transitions.
 
-   Priority 1: Intent-matched JSON transitions
+   Priority 1: Intent-matched transitions
        json_intent_matches(session, {'intent_name': 'X'})
-       → Reads the unified classifier's verdict (BAF's local classifier
-         is consulted only if the unified call never ran)
+       → Reads the unified classifier's verdict
 
    Priority 2: route_to_generation(session)
        → frontend_event callbacks and pending generator/smart-gen flows
 
-   Priority 3: Text-event intent transitions (voice / plain-text events)
-       when_intent_matched(intent)
-
-   Priority 4: Fallback transitions
+   Priority 3: Fallback transition
        json_no_intent_matched(session) → the state's fallback state
+
+All four transitions listen for ``ReceiveMessageEvent``, which matches both a
+typed message (a JSON event) and a spoken one (BAF transcribes the audio into a
+plain-text event), so voice and typing share one path.
 
 Priority 2 is deliberately cheap: ``should_route_to_generation()``
 (``src/codegen/generation_handler.py``) makes **no** LLM call and runs
@@ -355,41 +355,21 @@ confirmation is pending. The older keyword safety nets
 have been removed — the classifier's rulebook covers those cases directly.
 
 
-The Local Fallback Classifier
-------------------------------
+BAF's Own Classifier Is Not Used
+---------------------------------
 
-The agent's *default* BAF intent classifier is the **local, free**
-``SimpleIntentClassifier``, configured in
-``agent_setup.init_intent_classifier_config()``:
+No state has an intent (``add_unified_transitions`` never calls
+``when_intent_matched``), so BAF builds and trains **no** intent classifier at
+startup. The intents declared in ``modeling_agent.py`` are only referenced by
+name in the ``json_intent_matches`` conditions; their training sentences are
+not used by routing.
 
-.. code-block:: python
-
-   SimpleIntentClassifierConfiguration(framework='tensorflow')
-
-It is **not** an LLM. It trains at startup on the ``training_sentences``
-declared with every intent in ``modeling_agent.py`` — which is why those
-sentences are required, not optional. This keeps BAF's own per-message
-prediction free instead of costing an LLM round-trip on every message.
-
-It is consulted in only two situations:
-
-1. **Exception path** — the unified classifier returned ``fallback_intent``
-   (provider unavailable, call failed, empty message). Then
-   ``json_intent_matches`` falls through to
-   ``session.event.predicted_intent``.
-2. **Text events** — voice messages (after speech-to-text) and plain-text
-   events arrive without a JSON payload and route via
-   ``when_intent_matched`` (transition priority 3). The unified hook is
-   registered for JSON events only, so these transitions are the voice
-   path's only route; the state body still reads the unified verdict
-   through ``_common_preamble``.
-
-.. note::
-
-   The trade-off: BAF trains one Simple classifier per state at startup
-   (plus a NER model), which is why the container takes minutes to open its
-   WebSocket. See :doc:`deployment` for the health-check start period that
-   accounts for it.
+Voice messages take the same path as typed ones. The editor sends the
+workspace context as a ``user_set_variable`` right before the audio; after
+speech-to-text the transcript arrives as a plain-text event, and
+``parse_assistant_request`` rebuilds the request from that context. If the
+unified call fails (``fallback_intent``), the message goes to the state's
+fallback.
 
 
 Deterministic Guards After Routing

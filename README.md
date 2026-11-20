@@ -47,8 +47,8 @@ flowchart LR
 - **Models from natural language.** Create a complete system, add a single element, or
   modify what is already on the canvas, across ten diagram types.
 - **One routing decision per message.** A single LLM classification call
-  (`src/routing/unified_classifier.py`) decides what each message asks for; a local
-  TensorFlow intent classifier is the fallback.
+  (`src/routing/unified_classifier.py`) decides what each message asks for, typed or
+  spoken (BAF's own intent classifier is not used).
 - **Multi-step requests.** "Model a shop, then generate a Django app" is planned and run
   as an ordered sequence of operations.
 - **Code generation hand-off.** Requests for a stack BESSER supports go to its
@@ -121,8 +121,7 @@ cp config_example.yaml config.yaml   # then set nlp.openai.api_key
 python modeling_agent.py
 ```
 
-The socket opens at `ws://localhost:8765` once startup finishes. Startup takes a few
-minutes by design: the framework trains its local classifiers before opening the socket.
+The socket opens at `ws://localhost:8765` once startup finishes.
 To connect a local editor, set its `UML_BOT_WS_URL` to that address and allow the editor's
 origin under `platforms.websocket.origins` in `config.yaml`. See
 [Run the Modeling Agent locally](https://modeling-agent.readthedocs.io/en/latest/getting_started.html).
