@@ -1,0 +1,50 @@
+Version 8.2.0
+=============
+
+This minor release goes with BESSER v8.11.0. Every new context field is
+optional: an editor that does not send them gets the behavior of v8.1.5.
+
+Features
+--------
+
+* **Questions about a project's trace.** While a project records traces, the
+  editor sends a size-capped summary of them (``context.traceDigest``). The
+  agent answers questions such as "which code came from Book?", "who changed
+  this?" or "what is out of date?" from that summary only, and can follow the
+  answer with a ``show_trace`` reply that opens the Traceability page. Terminal
+  replies carry the model, provider and token counts of the turn's LLM calls
+  (``llmUsage``), so the trace records which model the assistant used
+  (`#78 <https://github.com/BESSER-PEARL/modeling-agent/pull/78>`_).
+* **Requirements of a long request.** For a long class-diagram request, the
+  agent first lists the requirements it states and then reports which classes
+  realize each one. It does this only when the editor says the project records
+  traces (``context.traceabilityEnabled``); otherwise no extra LLM call is made
+  (`#78 <https://github.com/BESSER-PEARL/modeling-agent/pull/78>`_).
+* **Richer agents from a conversation or a file.** Agent diagrams built from a
+  request or an uploaded file (such as a quiz) now use Markdown replies and
+  option buttons where they fit, with an optional label shown with the buttons
+  (``ws_options_label``). Transitions can be ``custom_condition`` with their own
+  code, and an unusable intent-matched transition with no intent is repaired to
+  ``auto`` or to "anything else", since an ``auto`` transition must be the only
+  one of its state
+  (`#87 <https://github.com/BESSER-PEARL/modeling-agent/pull/87>`_).
+
+Changes
+-------
+
+* **Voice and typed messages share one route.** A spoken message now goes
+  through the same classifier and pending-question handling as a typed one.
+  The agent no longer trains an intent classifier per state, so it accepts
+  connections sooner after a restart. If the classifier call fails, a message
+  goes to the state's fallback
+  (`#87 <https://github.com/BESSER-PEARL/modeling-agent/pull/87>`_).
+
+Fixes
+-----
+
+* **A request sent again at the replace-or-keep question is kept.** Sending
+  the description again instead of answering dropped the question and stored
+  the request nowhere, so a later "replace" was built as the whole
+  specification. The agent now asks replace-or-keep again with the new request,
+  and never builds a system from a bare answer such as "replace"
+  (`#88 <https://github.com/BESSER-PEARL/modeling-agent/pull/88>`_).
