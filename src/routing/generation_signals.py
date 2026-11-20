@@ -40,6 +40,9 @@ GENERATOR_PREREQUISITES: Dict[str, List[str]] = {
 
 
 GENERATOR_KEYWORDS: Dict[str, List[str]] = {
+    # The editor's GitHub save, not a generator: matched by
+    # ``is_github_save_request`` alone, before any keyword.
+    "github": [],
     "django": ["django"],
     "web_app": [
         "web app",
@@ -101,6 +104,21 @@ _FUZZY_PATTERNS: List[Tuple[str, re.Pattern]] = [
 ]
 
 
+# "save / push / commit / upload ... to GitHub / my repo": the project's GitHub
+# save. A hosting word makes it the Render deploy instead.
+_GITHUB_SAVE_RE = re.compile(
+    r"\b(?:save|push|commit|upload)\b[^.?!]*?\b(?:to|on|in|into)\s+"
+    r"(?:(?:my|the|our|a|its|your)\s+)?(?:github|repo|repository)\b"
+)
+_HOSTING_RE = re.compile(r"\b(?:deploy\w*|render|prod|production|go live|host\w*)\b")
+
+
+def is_github_save_request(message: str) -> bool:
+    """True when *message* asks to save or push the project or its code to GitHub."""
+    lower = (message or "").lower()
+    return bool(_GITHUB_SAVE_RE.search(lower)) and not _HOSTING_RE.search(lower)
+
+
 def detect_generator_type(message: str) -> Optional[str]:
     """Detect a code-generator keyword in *message*.
 
@@ -111,6 +129,9 @@ def detect_generator_type(message: str) -> Optional[str]:
     ``_is_modeling_request`` and ``_is_diagram_creation_request``.
     """
     lower = (message or "").lower()
+    # Before the keywords: "push the web app to github" is not web_app.
+    if is_github_save_request(lower):
+        return "github"
 
     # 1. Exact keyword matching (fast path) — use word-boundary-aware check
     #    for short/ambiguous keywords to avoid substring false positives

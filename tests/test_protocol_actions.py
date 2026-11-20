@@ -40,7 +40,7 @@ def test_action_covers_the_documented_wire_protocol():
         "user_message", "user_voice", "user_set_variable", "frontend_event", "replay_last_response",
         "inject_element", "inject_complete_system", "modify_model", "assistant_message", "agent_error",
         "create_diagram_tab", "trigger_generator", "trigger_smart_generator", "trigger_github_import",
-        "trigger_export", "trigger_deploy", "auto_generate_gui", "show_trace",
+        "trigger_export", "trigger_deploy", "trigger_github_save", "auto_generate_gui", "show_trace",
         "progress", "stream_start", "stream_chunk", "stream_done",
         "agent_reply_str",
     }

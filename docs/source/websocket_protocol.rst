@@ -398,6 +398,9 @@ Action index
    * - ``trigger_deploy``
      - Yes
      - Open the deploy dialog
+   * - ``trigger_github_save``
+     - Yes
+     - Open the editor's Save to GitHub (the last generated app, else the model)
    * - ``auto_generate_gui``
      - Yes
      - Deterministically build the GUI diagram from the class diagram
@@ -418,7 +421,7 @@ completed while the socket was reconnecting can be replayed on request:
 (``_TERMINAL_REPLY_ACTIONS`` / ``replay_last_reply`` in
 ``src/conversation/session_helpers.py``). A turn-scoped replay (see below) also covers
 ``inject_element``, ``trigger_smart_generator``, ``agent_error``,
-``trigger_export``, ``trigger_deploy``, ``create_diagram_tab``, ``stream_done``
+``trigger_export``, ``trigger_deploy``, ``trigger_github_save``, ``create_diagram_tab``, ``stream_done``
 and ``show_trace`` (``_TURN_REPLY_ACTIONS``). These are kept out of the legacy
 replay because it has no dedupe, so a trigger could fire twice (and
 ``show_trace`` replayed alone would stand in for the answer it follows).
@@ -930,6 +933,21 @@ Open the deploy dialog on the frontend.
      "platform": "render",
      "config": {},
      "message": "Opening the **Deploy to Render** dialog..."
+   }
+
+trigger_github_save
+~~~~~~~~~~~~~~~~~~~
+
+"Save to GitHub" / "push the app to my repo" (no hosting word). The editor
+opens the push dialog of the project's last Spec-Driven run, else its own
+Save to GitHub (signing in first when needed). An editor older than this
+action ignores it.
+
+.. code-block:: json
+
+   {
+     "action": "trigger_github_save",
+     "message": "Opening **Save to GitHub**..."
    }
 
 trigger_smart_generator
