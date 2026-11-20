@@ -235,6 +235,14 @@ LLM call:
    * - ``model_disposition``
      - ``extend_existing`` / ``replace_existing`` / ``new_tab`` /
        ``reuse_for_generation`` / ``new_from_scratch``
+   * - ``start_over``
+     - ``generation_intent`` only: the user asks to rebuild the generated app
+       from scratch. The run is sent with ``mode: "generate"`` after a
+       confirmation that says changes made in earlier runs are dropped
+   * - ``states_requirements``
+     - ``generation_intent`` only: false when the message only asks to run,
+       continue, retry or fix earlier work. It is sent to the run as the
+       newest message but not kept in the project's request
    * - ``needs_clarification`` / ``clarifying_question``
      - Set when acting would require a guess; the agent asks instead
    * - ``pending_flow_action`` / ``pending_flow_answer``

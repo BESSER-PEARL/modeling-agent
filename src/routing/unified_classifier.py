@@ -394,6 +394,31 @@ class UnifiedClassification(BaseModel):
         ),
     )
 
+    start_over: bool = Field(
+        default=False,
+        description=(
+            "generation_intent only: True when the user EXPLICITLY asks to "
+            "rebuild the already generated APP from scratch and drop its "
+            "current code ('start over', 'scrap the app and build it again', "
+            "'regenerate everything from zero'), in any language. The user "
+            "is asked to confirm, and changes made in earlier runs are lost. "
+            "False for a change, fix or retry of the app, and for discarding "
+            "the MODEL (that is model_disposition)."
+        ),
+    )
+
+    states_requirements: bool = Field(
+        default=True,
+        description=(
+            "generation_intent only: False when the message states nothing "
+            "the app must do or have, and only asks to run, continue, retry, "
+            "finish or fix what was asked before ('can you continue with the "
+            "development?', 'retry the previous step'), in any language. It "
+            "is then sent to the run but not kept as part of the app's "
+            "request. True whenever it adds or changes anything."
+        ),
+    )
+
     needs_clarification: bool = Field(
         default=False,
         description=(

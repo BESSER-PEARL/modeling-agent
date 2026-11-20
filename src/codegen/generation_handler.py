@@ -10,6 +10,7 @@ from codegen.smart_generation_handler import (
 )
 from llm import byok_config
 from llm.byok import PROVIDER_NAMES
+from prompts import spec_driven as spec_prompts
 from protocol.types import AssistantRequest
 from utilities.model_context import is_diagram_nontrivial
 from utilities.original_request import (
@@ -164,7 +165,6 @@ _CONTENT_FREE_FOLLOW_UP_RE = re.compile(
     + rf"|{_FIX}(?: and {_REDO})?)"
     + _POLITE_SUFFIX
 )
-_FIX_FOLLOW_UP_NOTE = "The user asked to fix the issues of the previous result."
 _NO_EARLIER_REQUEST_MESSAGE = (
     "I no longer have your earlier request here, so I can't tell what to generate again. "
     "Please describe again what the application should do."
@@ -179,20 +179,13 @@ def _is_content_free_follow_up(message: str) -> bool:
     return bool(_CONTENT_FREE_FOLLOW_UP_RE.fullmatch(_normalized_message(message)))
 
 
-def _with_subsequent_request(previous: str, message: str) -> str:
-    return (
-        f"{previous}\n\n## Subsequent user request, verbatim\n\n"
-        "This later request takes precedence where it changes earlier requirements.\n\n"
-        f"{message}"
-    )
-
-
 def _original_for_smart_generation(session, user_message, *, replace=False):
     """The user's own request for the run, or None for a content-free
     follow-up with no earlier request to re-run.
 
     The earlier request is the one remembered for the project, else the one the
-    editor's last run was started with (unless this message replaces it)."""
+    editor's last run was started with (unless this message replaces it). A
+    content-free follow-up is sent as the newest message but not remembered."""
     project_id = _active_project_id(session)
     previous = original_request_for_project(session, project_id)
     if not previous and not replace:
@@ -204,15 +197,13 @@ def _original_for_smart_generation(session, user_message, *, replace=False):
     if not message or normalized in generic or _BARE_GENERATE_RE.fullmatch(normalized):
         return previous
     if _CONTENT_FREE_FOLLOW_UP_RE.fullmatch(normalized):
-        if not previous:
-            return None
-        if re.search(r"\bfix", normalized) and not _run_starts_from_the_model(session):
-            return f"{previous}\n\n## Subsequent user request\n\n{_FIX_FOLLOW_UP_NOTE}"
-        return previous
+        return spec_prompts.with_later_request(previous, message) if previous else None
     if previous and not replace and (message == previous or previous.endswith("\n" + message)):
         return previous
     if previous and not replace:
-        message = _with_subsequent_request(previous, message)
+        message = spec_prompts.with_later_request(previous, message)
+        if getattr(session.get(UNIFIED_CLASSIFICATION), "states_requirements", True) is False:
+            return message
     remember_original_request(session, message, project_id)
     return message
 
@@ -435,6 +426,11 @@ def _looks_like_fix_request(
     )
 
 
+def _asks_to_start_over(session: Session) -> bool:
+    """True when the verdict asks to rebuild the generated app from scratch."""
+    return getattr(session.get(UNIFIED_CLASSIFICATION), "start_over", False) is True
+
+
 def _starting_over_on_linked_repo(session: Session) -> Optional[str]:
     """The verdict's starting-over disposition when the linked repo holds an app, else None."""
     disposition = getattr(session.get(UNIFIED_CLASSIFICATION), "model_disposition", None)
@@ -480,11 +476,15 @@ def _build_smart_gen_confirmation(
             _clear_pending_smart_gen(session)
             return {"action": Action.ASSISTANT_MESSAGE, "message": _NO_EARLIER_REQUEST_MESSAGE}
         original = ""
-    starting_over = None if reason_prefix else _starting_over_on_linked_repo(session)
-    replaces_repo_app = starting_over == "replace_existing"
-    _stash_smart_gen(
-        session, refined, provider, original_request=original, mode="generate" if replaces_repo_app else None,
-    )
+    if reason_prefix:
+        # A resume: the request that armed it decided the mode.
+        starting_over, mode = None, pending_dialogs.get(session, PENDING_SMART_GEN_MODE)
+    else:
+        starting_over = _starting_over_on_linked_repo(session)
+        mode = "generate" if starting_over == "replace_existing" or _asks_to_start_over(session) else None
+    replaces_repo_app = mode == "generate" and repo_holds_app(session)
+    rebuilds_app = mode == "generate" and not replaces_repo_app and _editor_edits_last_result(session)
+    _stash_smart_gen(session, refined, provider, original_request=original, mode=mode)
 
     # Without the previous result the run is not an update of the existing app.
     result_expired = _run_starts_from_the_model(session)
@@ -496,7 +496,7 @@ def _build_smart_gen_confirmation(
             f"from {sources}.\n\n"
         )
 
-    is_fix = (not starting_over) and (not result_expired) and (
+    is_fix = (not starting_over) and (not mode) and (not result_expired) and (
         _editor_edits_last_result(session)
         or (not reason_prefix and _looks_like_fix_request(session, user_message, project_id))
     )
@@ -513,6 +513,13 @@ def _build_smart_gen_confirmation(
             f"{prefix}I'll rebuild the app from scratch instead of changing the code in "
             f"**{linked_repo_name(session)}**. Pushing the result will replace that code. "
             f"{_key_note(session, short=True)}\n\n"
+            f"Do you want to continue?"
+        )
+        confirm_label = "Rebuild"
+    elif rebuilds_app:
+        message = (
+            f"{prefix}I'll rebuild the app from scratch instead of updating it. Changes made to "
+            f"it in earlier runs will be dropped. {_key_note(session, short=True)}\n\n"
             f"Do you want to continue?"
         )
         confirm_label = "Rebuild"
@@ -687,7 +694,10 @@ def _build_mismatch_confirmation(
     if original is None:
         _clear_pending_smart_gen(session)
         return {"action": Action.ASSISTANT_MESSAGE, "message": _NO_EARLIER_REQUEST_MESSAGE}
-    _stash_smart_gen(session, refined, provider, original_request=original)
+    _stash_smart_gen(
+        session, refined, provider, original_request=original,
+        mode="generate" if _asks_to_start_over(session) else None,
+    )
     # Arm the one-shot resume with the EXACT rebuild prompt the button sends.
     # The guard below and the create choke point
     # (execution.model_operations.execute_model_operation) only keep the stash

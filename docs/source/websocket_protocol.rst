@@ -252,9 +252,9 @@ Field Reference
        continue from a linked repo's code), the run confirmation says the
        previous result is no longer available and the application will be
        built again, instead of offering to update it. The run's instructions
-       then end with a "Starting point" section: build the whole application
-       from the model and the requests, including any earlier work they ask
-       to continue or fix. When ``runId`` is set and ``expired`` is false, the
+       then hold a "Starting point" section, before the user's request: build
+       the whole application from the model and the requests, including any
+       earlier work they ask to continue or fix. When ``runId`` is set and ``expired`` is false, the
        editor still holds that run and, without an explicit ``mode``, edits
        it: the run confirmation then offers to update the existing app.
    * - ``attachments``
@@ -981,13 +981,23 @@ Built by ``build_trigger_smart_generator_payload()`` in
      - The polished prompt for the generator. Required — the frontend aborts
        on an empty value. Names the stack and any non-functional requirements
        the user mentioned; it does **not** restate the class diagram, which
-       the generator already has.
+       the generator already has. When the user's own request is attached it
+       follows the notes under ``## The user's original request, verbatim``,
+       and each later message of the user under ``## Subsequent user request,
+       verbatim``; the last such section is the user's newest message, in their
+       words (BESSER reads these headings, ``src/prompts/spec_driven.py``). A
+       message that only asks to retry, continue or fix earlier work is sent
+       there but not kept in the project's request; a bare command ("generate
+       the app", "continue") sends the earlier request unchanged. A "Starting
+       point" section comes before the user's request.
    * - ``provider``
      - Suggested provider. The frontend's BYOK selection can override it.
    * - ``mode``
      - Optional. ``"generate"`` rebuilds instead of continuing from the
-       existing app; sent only when the user asks to discard the app a linked
-       GitHub repo holds. Without it the frontend decides.
+       existing app; sent when the user asks to start the app over
+       (``start_over``) or to discard the app a linked GitHub repo holds, after
+       a confirmation that says earlier changes are dropped. Without it the
+       frontend decides.
    * - ``message``
      - A neutral banner that names neither mode, since the frontend picks
        edit or rebuild after receiving the action. Current editors replace it
