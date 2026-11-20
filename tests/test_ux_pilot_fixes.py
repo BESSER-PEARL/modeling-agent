@@ -825,6 +825,7 @@ def test_without_a_held_result_a_follow_up_keeps_the_generate_copy(last_generati
 
 def test_regenerating_after_expiry_rebuilds_from_the_last_runs_request():
     from common.pending_dialogs import PENDING_SMART_GEN_ORIGINAL_REQUEST
+    from prompts.spec_driven import with_later_request
 
     follow_up = "Can you regenerate the application's frontend and the backend?"
     session, _ = _branch_session("default", last_generation={"request": "An order app with customers.", "expired": True})
@@ -833,7 +834,8 @@ def test_regenerating_after_expiry_rebuilds_from_the_last_runs_request():
 
     assert payload["suggestedActions"][0]["label"] == "Continue"
     assert payload["message"].startswith(_EXPIRED_NOTE)
-    assert pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) == "An order app with customers."
+    assert pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) == with_later_request(
+        "An order app with customers.", follow_up)
 
 
 def test_expiry_note_does_not_promise_a_request_that_will_not_be_sent():
