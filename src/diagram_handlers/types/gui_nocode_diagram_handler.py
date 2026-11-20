@@ -691,12 +691,14 @@ def _create_form_attributes(
     return chosen or creatable
 
 
-def _make_enum_select(node: Dict[str, Any], literals: List[str]) -> None:
-    """Turn a form control into a ``<select>`` of an enumeration's literals, in place.
+def _make_enum_select(node: Dict[str, Any], attr: Dict[str, Any]) -> None:
+    """Turn a form control into a ``<select>`` of *attr*'s enumeration literals, in place.
 
     BESSER's form converter reads the choices from ``data-options``; the
-    ``<option>`` children show them in the editor.
+    ``<option>`` children show them in the editor. A field a new record may
+    leave out starts with an empty choice, as the generated app's dropdown does.
     """
+    literals = attr["enumLiterals"]
     attrs = node.setdefault("attributes", {})
     for key in ("type", "placeholder", "list", "value"):
         attrs.pop(key, None)
@@ -706,7 +708,7 @@ def _make_enum_select(node: Dict[str, Any], literals: List[str]) -> None:
     node.pop("content", None)
     node["components"] = [
         {"tagName": "option", "attributes": {"value": literal}, "content": literal}
-        for literal in literals
+        for literal in ([] if _is_required(attr) else [""]) + literals
     ]
 
 
@@ -726,7 +728,7 @@ def _labelled_input(attr: Dict[str, Any], form_key: str, input_style: Dict[str, 
         "style": dict(input_style) if input_type != "checkbox" else {},
     }
     if attr.get("enumLiterals"):
-        _make_enum_select(control, attr["enumLiterals"])
+        _make_enum_select(control, attr)
     return {
         "tagName": "div",
         "style": {"display": "grid", "gap": "6px"},
@@ -3090,7 +3092,7 @@ def _bind_form(form: Dict[str, Any], classes: List[Dict[str, Any]]) -> None:
             # A radio group already offers its choices; a checkbox sends false unticked
             choice = control_type in ("radio", "checkbox")
             if attr.get("enumLiterals") and node.get("tagName") in ("input", "select") and not choice:
-                _make_enum_select(node, attr["enumLiterals"])
+                _make_enum_select(node, attr)
             # One required radio makes HTML require a choice from its whole group
             radio_group = control_type == "radio" and attr["name"] not in required_groups
             if _is_required(attr) and (not choice or radio_group):
@@ -3098,13 +3100,13 @@ def _bind_form(form: Dict[str, Any], classes: List[Dict[str, Any]]) -> None:
                 required_groups.add(attr["name"])
     # BESSER turns each radio into its own option-less radio group: one dropdown instead
     for attr, radios in enum_radios.values():
-        _radios_to_select(form, radios, attr["enumLiterals"])
+        _radios_to_select(form, radios, attr)
         if _is_required(attr):
             radios[0]["attributes"]["required"] = "required"
 
 
-def _radios_to_select(form: Dict[str, Any], radios: List[Dict[str, Any]], literals: List[str]) -> None:
-    """Replace a radio group of *form* with one ``<select>`` of *literals*, in
+def _radios_to_select(form: Dict[str, Any], radios: List[Dict[str, Any]], attr: Dict[str, Any]) -> None:
+    """Replace a radio group of *form* with one ``<select>`` of *attr*'s literals, in
     place: the first radio becomes the select, the others and the captions of
     all of them are removed."""
     parents: Dict[int, Dict[str, Any]] = {}
@@ -3154,7 +3156,7 @@ def _radios_to_select(form: Dict[str, Any], radios: List[Dict[str, Any]], litera
         _remove(radio, keep=position == 0)
     if radio_ids:
         _drop_captions(form)
-    _make_enum_select(radios[0], literals)
+    _make_enum_select(radios[0], attr)
 
 
 def _wire_page_actions(

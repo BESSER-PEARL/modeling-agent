@@ -409,6 +409,11 @@ SHOP_META = extract_class_metadata({
                    "name": "memo", "attributeType": "str", "isOptional": True},
         "a-paid": {"id": "a-paid", "type": "ClassAttribute", "owner": "c-sale",
                    "name": "paid", "attributeType": "bool"},
+        "a-channel": {"id": "a-channel", "type": "ClassAttribute", "owner": "c-sale",
+                      "name": "channel", "attributeType": "Channel", "isOptional": True},
+        "e-channel": {"id": "e-channel", "type": "Enumeration", "name": "Channel"},
+        "l-online": {"id": "l-online", "type": "ClassAttribute", "owner": "e-channel", "name": "Online"},
+        "l-store": {"id": "l-store", "type": "ClassAttribute", "owner": "e-channel", "name": "Store"},
         "e-state": {"id": "e-state", "type": "Enumeration", "name": "SaleState"},
         "l-1": {"id": "l-1", "type": "ClassAttribute", "owner": "e-state", "name": "Placed"},
         "l-2": {"id": "l-2", "type": "ClassAttribute", "owner": "e-state", "name": "Shipped"},
@@ -451,6 +456,40 @@ def test_form_widget_offers_enumeration_literals_as_a_select():
     controls = _controls(form)
     _assert_enum_select(controls["state"])
     assert controls["reference"]["attributes"]["type"] == "text"
+
+
+def _options(select):
+    return [(o["attributes"]["value"], o.get("content")) for o in select["components"]]
+
+
+def test_an_optional_enumeration_select_starts_with_an_empty_choice():
+    # Without it the first literal is preselected and saved for a field the user left alone.
+    form, = _forms(_nodes(_generate([{"name": "New sale", "sections": [
+        {"bind": {"kind": "form", "className": "Sale", "columns": ["reference", "state", "channel"]}},
+    ]}], SHOP_META), "New sale"))
+    controls = _controls(form)
+    assert _options(controls["channel"]) == [("", ""), ("Online", "Online"), ("Store", "Store")]
+    assert "required" not in controls["channel"]["attributes"]
+    # BESSER's converter reads the choices from data-options: literals only.
+    assert controls["channel"]["attributes"]["data-options"] == "Online,Store"
+    # A required one has no empty choice and keeps "required".
+    assert _options(controls["state"]) == [(s, s) for s in SALE_STATES]
+    assert controls["state"]["attributes"]["required"] == "required"
+
+
+def test_an_authored_control_of_an_optional_enumeration_starts_with_an_empty_choice():
+    form, = _forms(_nodes(_generate([{"name": "Page", "sections": [{"html": (
+        "<section class='s'><h2>F</h2><form data-class='Sale'>"
+        "<label for='r'>Reference</label><input id='r'>"
+        "<label for='s'>State</label><input id='s'>"
+        "<label for='c'>Channel</label><select id='c'><option value=''>Choose one</option>"
+        "<option value='Online'>Online</option><option value='Store'>In store</option></select>"
+        "<label for='p'>Paid</label><input id='p' type='checkbox'>"
+        "<button type='submit'>Save</button></form></section>"
+    )}]}], SHOP_META), "Page"))
+    channel = _controls(form)["channel"]
+    assert _options(channel)[0] == ("", "")
+    assert [value for value, _ in _options(channel)] == ["", "Online", "Store"]
 
 
 def test_authored_form_input_of_an_enumeration_becomes_a_select():
