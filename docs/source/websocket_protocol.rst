@@ -97,7 +97,10 @@ Not every message from the frontend is a ``user_message``:
    * - ``frontend_event``
      - Reports the outcome of an action the frontend executed (e.g. a
        generator finishing). Routed deterministically to the generation
-       state — never classified.
+       state — never classified. A Spec-Driven run's ``generator_result``
+       carries ``metadata.mode`` (``"modify"`` when the run edited an existing
+       app, ``"create"`` otherwise); the reply then speaks of updating the app
+       instead of generating it, and without the field it speaks of generating.
    * - ``replay_last_response``
      - Asks the agent to re-send buffered terminal replies after a reconnect
        that dropped a long-running reply mid-flight. With ``turnId`` (and

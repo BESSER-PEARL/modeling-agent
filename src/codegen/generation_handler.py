@@ -1305,6 +1305,8 @@ def _handle_smart_generator_result(
         flag = metadata.get("incomplete")
         incomplete = flag if isinstance(flag, bool) else blocker_count > 0
         incomplete_reason = metadata.get("incompleteReason")
+        # "modify" when the run edited an existing app; absent from older editors.
+        edited = metadata.get("mode") == "modify"
         if incomplete:
             if blocker_count:
                 head = (
@@ -1320,15 +1322,15 @@ def _handle_smart_generator_result(
                 head += f": {incomplete_reason}"
             parts = [head + cost_text + "."]
         else:
-            parts = [f"{SPEC_DRIVEN_NAME} generation finished successfully" + cost_text + "."]
+            done = "finished updating your application" if edited else "generation finished successfully"
+            parts = [f"{SPEC_DRIVEN_NAME} {done}" + cost_text + "."]
             if blocker_count:
                 parts.append(f"{blocker_count} check{'s' if blocker_count != 1 else ''} could not be verified.")
         if metadata.get("filename") or metadata.get("fileName"):
             parts.append(f"File: {metadata.get('filename') or metadata.get('fileName')}")
         if incomplete:
-            parts.append(
-                "You can run the generation again to finish the remaining changes."
-            )
+            again = "start another run" if edited else "run the generation again"
+            parts.append(f"You can {again} to finish the remaining changes.")
         result_message = " ".join(parts)
         suggestions = None
     elif error_code == "COST_CAP":
