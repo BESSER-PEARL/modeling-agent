@@ -169,6 +169,22 @@ class TestClassifyMessage:
         result = classify_message(_make_request(message), llm_provider=_FakeProvider(good))
         assert (result.generation_route, result.generator_type) == ("deterministic", generator)
 
+    @pytest.mark.parametrize("message, generator", [
+        ("Generate a Spring Boot backend for my library", "backend"),
+        ("Build a REST API with Express for my shop", "rest_api"),
+        ("create a web app with Angular", "web_app"),
+        ("build the backend in C#", "backend"),
+    ])
+    def test_naming_a_kind_of_output_does_not_name_its_stack(self, message, generator):
+        """'a backend' or 'a web app' names what to build, not a built-in
+        generator: the stack the user names still wins over the nearest built-in."""
+        bad = UnifiedClassification(
+            intent="generation_intent", generation_route="deterministic",
+            generator_type=generator, reason="nearest built-in",
+        )
+        result = classify_message(_make_request(message), llm_provider=_FakeProvider(bad))
+        assert (result.generation_route, result.generator_type) == ("smart", None)
+
     def test_a_generator_the_user_did_not_name_is_still_overridden(self):
         bad = UnifiedClassification(
             intent="generation_intent", generation_route="deterministic",

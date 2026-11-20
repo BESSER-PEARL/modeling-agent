@@ -139,6 +139,8 @@ _UNSUPPORTED_STACK_RE = re.compile(
     re.I,
 )
 _UNSUPPORTED_STACK_LITERALS = ("c++", "c#", ".net", "f#")
+# Generators detected from a kind of output ("backend", "web app", "REST API"), not a technology.
+_OUTPUT_KIND_GENERATORS = frozenset({"backend", "web_app", "rest_api"})
 # Words that explicitly ask for screens. Shared with the planner's
 # from-scratch web-app route (orchestrator/request_planner.py).
 EXPLICIT_SCREEN_VOCAB_RE = re.compile(
@@ -1278,12 +1280,17 @@ def _post_validate(
         # (C, C++, Rust, Kotlin, Go, ...), the LLM maps it to the nearest
         # built-in (c->java, c++->python). Force the smart / from-scratch route
         # so the LLM writes the actual language instead.
-        # A generator the user named themselves is never overridden: the
+        # A technology the user named themselves is never overridden: the
         # stack words may be the app's domain ("an express delivery app").
+        # A kind of output ("a backend in Rust") names no technology.
         if (
             result.generation_route in ("deterministic", "smart")
             and result.generator_type not in ("export", "deploy")
-            and not (result.generator_type and detect_generator_type(message or "") == result.generator_type)
+            and not (
+                result.generator_type
+                and result.generator_type not in _OUTPUT_KIND_GENERATORS
+                and detect_generator_type(message or "") == result.generator_type
+            )
             and _names_unsupported_stack(message or "")
         ):
             if result.generation_route != "smart":

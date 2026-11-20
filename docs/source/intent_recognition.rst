@@ -281,9 +281,11 @@ regex before or after the call:
   "c classes" → ``java`` and "c++ classes" → ``python`` often enough that
   this had to become deterministic. It never overrides a generator the
   message names itself (``detect_generator_type``): in "the Django backend
-  for my express delivery app" the stack word is the app's domain. A mixed
-  request that names both ("generate java and kotlin classes") keeps the
-  classifier's verdict.
+  for my express delivery app" the stack word is the app's domain. A kind
+  of output (``backend``, ``web_app``, ``rest_api``) names no technology, so
+  "a Spring Boot backend" or "a web app with Angular" still goes to
+  ``smart``. A mixed request that names both ("generate java and kotlin
+  classes") keeps the classifier's verdict.
 - The GUI-diagram edit guard — "add / remove / rename a page or screen"
   with no app or code word edits the GUI diagram, unless a recent run or a
   linked repo holds the app (``generated_app``): the generated app's pages
