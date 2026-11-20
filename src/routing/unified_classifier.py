@@ -313,6 +313,15 @@ class UnifiedClassification(BaseModel):
             "CONVERSATION LANGUAGE line when present, else NULL."
         ),
     )
+    screens_listed: Optional[bool] = Field(
+        default=None,
+        description=(
+            "true when the USER MESSAGE names or counts the app screens/pages to "
+            "build ('a calendar screen and a team page'), any language. NULL "
+            "otherwise: pages of a document, a 'pages' attribute, pagination, "
+            "'one page per class' and basic CRUD pages are not screens."
+        ),
+    )
 
     # --- Domain-mismatch fields (populated when generation_route='smart') ---
     # Used to refuse silent code-rewrites when the user's request describes
@@ -1358,6 +1367,7 @@ def _rebuilt(result: UnifiedClassification, **fields: Any) -> UnifiedClassificat
         target_description=result.target_description,
         architecture=result.architecture,
         reply_language=result.reply_language,
+        screens_listed=result.screens_listed,
         **fields,
     )
 

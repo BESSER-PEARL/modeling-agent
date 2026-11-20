@@ -206,7 +206,7 @@ def _original_for_smart_generation(session, user_message, *, replace=False):
     if _CONTENT_FREE_FOLLOW_UP_RE.fullmatch(normalized):
         if not previous:
             return None
-        if re.search(r"\bfix", normalized) and not _previous_result_gone(session):
+        if re.search(r"\bfix", normalized) and not _run_starts_from_the_model(session):
             return f"{previous}\n\n## Subsequent user request\n\n{_FIX_FOLLOW_UP_NOTE}"
         return previous
     if previous and not replace and (message == previous or previous.endswith("\n" + message)):
@@ -461,11 +461,11 @@ def _build_smart_gen_confirmation(
     fix-framing + a "Fix it" button (from-scratch wording reads wrong when
     the user only wants a fix). Both branches keep the
     same confirm token so the confirm gate fires identically, and each says
-    which key the run will use (``_key_note``). The fix branch is gated to the direct path
-    (no ``reason_prefix``): the mismatch/rebuild resumes always produce a
-    freshly rebuilt model, which is a from-scratch build by definition — and,
-    per ``_looks_like_fix_request``, to projects that have actually produced
-    an app before.
+    which key the run will use (``_key_note``). The fix branch is taken when the
+    editor reports it still holds the project's last run (it then edits that
+    app, also after a mismatch/rebuild resume). Otherwise it is gated to the
+    direct path (no ``reason_prefix``) and, per ``_looks_like_fix_request``, to
+    projects that have actually produced an app before.
     """
     provider = provider or "anthropic"
     target = _request_target(session)
@@ -487,7 +487,7 @@ def _build_smart_gen_confirmation(
     )
 
     # Without the previous result the run is not an update of the existing app.
-    result_expired = _previous_result_gone(session)
+    result_expired = _run_starts_from_the_model(session)
     prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
     if result_expired:
         sources = "your model and your original request" if original else "your model"
@@ -496,8 +496,9 @@ def _build_smart_gen_confirmation(
             f"from {sources}.\n\n"
         )
 
-    is_fix = (not reason_prefix) and (not starting_over) and (not result_expired) and _looks_like_fix_request(
-        session, user_message, project_id,
+    is_fix = (not starting_over) and (not result_expired) and (
+        _editor_edits_last_result(session)
+        or (not reason_prefix and _looks_like_fix_request(session, user_message, project_id))
     )
 
     # The instructions are NOT echoed back to the user: showing the LLM's
@@ -587,6 +588,20 @@ def _previous_result_gone(session: Session) -> bool:
     linked repo holds the app: the run builds the app again."""
     last_generation = getattr(_request_context(session), "last_generation", None) or {}
     return last_generation.get("expired") is True and not repo_holds_app(session)
+
+
+def _editor_edits_last_result(session: Session) -> bool:
+    """True when the editor still holds the project's last run: without an
+    explicit mode it edits that app instead of rebuilding it."""
+    last_generation = getattr(_request_context(session), "last_generation", None) or {}
+    return last_generation.get("editable") is True
+
+
+def _run_starts_from_the_model(session: Session) -> bool:
+    """True when the run has no earlier code to build on: the previous result
+    is gone and no repo is linked (the editor may continue from a linked repo
+    whose code it has not reported)."""
+    return _previous_result_gone(session) and not linked_repo_name(session)
 
 
 # A model value that is not shown: markup, a URL, or what looks like a key.
@@ -1103,6 +1118,7 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
                 reason_prefix="generating with current model",
                 original_request=stashed_original,
                 mode=stashed_mode,
+                previous_result_gone=_run_starts_from_the_model(session),
             )
             reply_payload(session, payload)
             return True
@@ -1284,13 +1300,32 @@ def _handle_smart_generator_result(
     if ok:
         blocker_count = metadata.get("blockerCount")
         blocker_count = blocker_count if isinstance(blocker_count, int) and blocker_count > 0 else 0
-        incomplete = bool(metadata.get("incomplete")) or blocker_count > 0
+        unverified = metadata.get("unverified") is True
+        # Real blockers of a run that was not cut short; None from an older
+        # backend, whose blockerCount mixes them with unverified checks.
+        # A newer backend pads blockerCount, so it is only read for incomplete runs.
+        real = metadata.get("unresolvedBlockerCount")
+        not_confirmed = metadata.get("notConfirmedCount")
+        if isinstance(real, int):
+            real = max(0, real)
+        elif isinstance(not_confirmed, int) and not unverified:
+            real = max(0, blocker_count - not_confirmed)
+        else:
+            real = None
+        # The editor's flag wins; only an older event without it falls back to the blocker count.
+        flag = metadata.get("incomplete")
+        incomplete = flag if isinstance(flag, bool) else (real is None and not unverified and blocker_count > 0)
         incomplete_reason = metadata.get("incompleteReason")
+        # "modify" when the run edited an existing app; absent from older editors.
+        edited = metadata.get("mode") == "modify"
+        verification = metadata.get("verification")
+        failed = verification.get("failed") if isinstance(verification, dict) else None
+        failed = failed if isinstance(failed, int) and failed > 0 else 0
         if incomplete:
             if blocker_count:
                 head = (
                     f"The {SPEC_DRIVEN_NAME} finished with {blocker_count} unresolved "
-                    f"blocker{'s' if blocker_count != 1 else ''}; the application is incomplete"
+                    f"blocker{'s' if blocker_count != 1 else ''}; the result is incomplete"
                 )
             else:
                 head = (
@@ -1300,14 +1335,41 @@ def _handle_smart_generator_result(
             if incomplete_reason:
                 head += f": {incomplete_reason}"
             parts = [head + cost_text + "."]
+        elif unverified:
+            # Some class of checks left no evidence: never a success.
+            what = (
+                "finished updating your application, but the update is not verified"
+                if edited else "generated your application, but it is not verified"
+            )
+            parts = [f"{SPEC_DRIVEN_NAME} {what}" + cost_text + "."]
+            reason = metadata.get("unverifiedReason")
+            if isinstance(reason, str) and reason.strip():
+                parts.append(reason.strip())
+            if real:
+                parts.append(f"{real} unresolved blocker{'s remain' if real != 1 else ' remains'}.")
+        elif real:
+            done = "finished updating your application with" if edited else "finished with"
+            parts = [
+                f"The {SPEC_DRIVEN_NAME} {done} {real} unresolved blocker{'s' if real != 1 else ''}"
+                + cost_text + "."
+            ]
         else:
-            parts = [f"{SPEC_DRIVEN_NAME} generation finished successfully" + cost_text + "."]
+            done = "finished updating your application" if edited else "generation finished successfully"
+            parts = [f"{SPEC_DRIVEN_NAME} {done}" + cost_text + "."]
+            if real is None and blocker_count:
+                parts.append(f"{blocker_count} check{'s' if blocker_count != 1 else ''} could not be verified.")
+        if not incomplete and not unverified:
+            if isinstance(not_confirmed, int) and not_confirmed > 0:
+                parts.append(f"{not_confirmed} check{'s' if not_confirmed != 1 else ''} could not be confirmed.")
+            if failed:
+                parts.append(f"{failed} test{'s' if failed != 1 else ''} the agent wrote ran against the app and failed.")
         if metadata.get("filename") or metadata.get("fileName"):
             parts.append(f"File: {metadata.get('filename') or metadata.get('fileName')}")
         if incomplete:
-            parts.append(
-                "You can run the generation again to finish the remaining changes."
-            )
+            again = "start another run" if edited else "run the generation again"
+            parts.append(f"You can {again} to finish the remaining changes.")
+        elif unverified:
+            parts.append("You can download the application to inspect it as-is.")
         result_message = " ".join(parts)
         suggestions = None
     elif error_code == "COST_CAP":
@@ -1554,6 +1616,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 reason_prefix="generating with current model",
                 original_request=stashed_original,
                 mode=stashed_mode,
+                previous_result_gone=_run_starts_from_the_model(session),
             )
         # Fall through to normal classification if the stash was empty.
 

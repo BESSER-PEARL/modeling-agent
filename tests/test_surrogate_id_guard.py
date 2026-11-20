@@ -137,6 +137,33 @@ class TestGeneratedSystem:
         classes = self._generate(monkeypatch, "a library; every member has an id and a name")
         assert _names(classes, "Member") == ["id", "name"]
 
+    def _generate_with_rules(self, monkeypatch, rules, user_request):
+        compact = _compact()
+        compact.ocl = rules
+        monkeypatch.setattr(handler_mod, "COMPACT_SPEC_ENABLED", True, raising=True)
+        handler = ClassDiagramHandler(None)
+        monkeypatch.setattr(handler, "predict_two_pass_structured", lambda **_: compact)
+        return handler.generate_complete_system(user_request)
+
+    def test_an_id_only_a_rule_that_does_not_fit_reads_is_removed_and_reported(self, monkeypatch):
+        result = self._generate_with_rules(monkeypatch, [
+            "context Book inv oneLoan: self.reservations->forAll(r | r.bookId = self.id)",
+            "context Member inv nameSet: self.name <> ''",
+        ], "a library; each book is known by its ISBN")
+
+        classes = result["systemSpec"]["classes"]
+        assert _names(classes, "Book") == ["isbn", "title"]
+        assert _names(classes, "Member") == ["name"]
+        assert "The rule **oneLoan** refers to something the diagram does not have" in result["message"]
+        assert "nameSet" not in result["message"]
+
+    def test_an_id_a_fitting_rule_reads_is_kept(self, monkeypatch):
+        result = self._generate_with_rules(
+            monkeypatch, ["context Book inv idSet: self.id <> ''"], "a library")
+
+        assert _names(result["systemSpec"]["classes"], "Book") == ["id", "isbn", "title"]
+        assert "does not have" not in result["message"]
+
 
 def test_single_class_carries_no_id(handler, monkeypatch):
     monkeypatch.setattr(handler, "predict_structured", lambda *a, **k: SingleClassSpec(

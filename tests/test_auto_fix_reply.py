@@ -58,6 +58,9 @@ RUN_ON = (
 GARBLED = json.dumps({"modifications": [
     {"action": "remove_element", "target": {"className": "Brand", "attributeName": "name wall?"}},
 ]})
+NO_CHANGES = json.dumps({"modifications": [
+    {"action": "modify_class", "target": {"className": "Brand"}, "changes": None},
+]})
 FIXED = json.dumps({"modifications": [
     {"action": "remove_element", "target": {"className": "Brand", "attributeName": "name"}},
 ]})
@@ -97,6 +100,11 @@ def test_a_failed_repair_says_the_diagram_is_unchanged(monkeypatch):
 def test_a_repair_naming_a_junk_member_asks_without_quoting_it(monkeypatch):
     reply = _send(monkeypatch, AUTO_FIX, GARBLED)
     assert reply["message"] == "I couldn't tell which attribute of **Brand** to remove. Which one did you mean?"
+
+
+def test_a_repair_with_nothing_to_change_says_the_diagram_is_unchanged(monkeypatch):
+    reply = _send(monkeypatch, AUTO_FIX, NO_CHANGES)
+    assert reply == {"action": "assistant_message", "message": AUTO_FIX_UNFIXED}
 
 
 @pytest.mark.parametrize("where", ["escapes the handler", "inside the handler"])

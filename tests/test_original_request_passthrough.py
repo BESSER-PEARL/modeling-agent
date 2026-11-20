@@ -553,7 +553,7 @@ _LAST_RUN_SPEC = "A task board: tasks have a title, a due date and a done flag."
 _FIX_NOTE = "The user asked to fix the issues of the previous result."
 
 
-def _follow_up_session(message, *, last_generation=None, history=()):
+def _follow_up_session(message, *, last_generation=None, history=(), github_repo=None):
     import uuid
 
     from memory import get_memory, memory_session_key
@@ -562,6 +562,8 @@ def _follow_up_session(message, *, last_generation=None, history=()):
     context = {"activeDiagramType": "ClassDiagram", "projectSnapshot": {"id": "proj-1", "diagrams": {}}}
     if last_generation is not None:
         context["lastGeneration"] = last_generation
+    if github_repo is not None:
+        context["githubRepo"] = github_repo
     session = FakeSession({
         "action": "user_message", "protocolVersion": "2.0", "message": message,
         "context": context, "sessionId": uuid.uuid4().hex,
@@ -735,6 +737,138 @@ def test_the_run_gets_the_original_request_not_the_follow_up(monkeypatch):
     assert "regenerate with fixes" not in run["instructions"]
 
 
+_CONTINUE_SUMMARY = (
+    "Continue development of the existing task board app, fixing the issues left by the previous run."
+)
+_STARTING_POINT = (
+    "## Starting point\n\n"
+    "The previous result is no longer available, so there is no earlier code to continue or fix. "
+    "Build the whole application from the current model and the requests above; where they ask to "
+    "continue or fix earlier work, build that work as part of the new application."
+)
+_CONTINUE_MESSAGE = "can you continue with the development?"
+
+
+class _ContinueProvider(_FollowUpProvider):
+    def __init__(self, summary=_CONTINUE_SUMMARY):
+        self.summary = summary
+
+    def parse(self, *, messages, schema, temperature, max_tokens):
+        return UnifiedClassification(
+            intent="generation_intent", generation_route="smart",
+            refined_instructions=self.summary, provider="openai", reason="test",
+        )
+
+
+def _confirm(session):
+    from codegen import generation_handler as generation
+    from protocol.types import AssistantRequest
+
+    run = generation.handle_generation_request(session, AssistantRequest(message="continue with the generation"))
+    assert run["action"] == "trigger_smart_generator"
+    return run
+
+
+def _confirmed_run(last_generation, monkeypatch, github_repo=None, message=_CONTINUE_MESSAGE,
+                   summary=_CONTINUE_SUMMARY):
+    from codegen import generation_handler as generation
+    from protocol.types import AssistantRequest
+
+    session = _follow_up_session(message, last_generation=last_generation, github_repo=github_repo)
+    monkeypatch.setattr(generation, "_get_llm_provider", lambda: _ContinueProvider(summary))
+    asked = generation.handle_generation_request(session, AssistantRequest(message=message))
+    assert asked["action"] == "assistant_message"
+    return _confirm(session)
+
+
+def _assert_rebuilt(instructions, summary=_CONTINUE_SUMMARY):
+    notes, requests = instructions.split("## The user's original request, verbatim\n\n", 1)
+    assert f"{summary}\n\n" in notes
+    assert "no longer available" not in notes
+    assert requests.endswith(_STARTING_POINT)
+
+
+def test_an_expired_result_is_rebuilt_not_continued(monkeypatch):
+    run = _confirmed_run({"request": _LAST_RUN_SPEC, "expired": True}, monkeypatch)
+
+    _assert_rebuilt(run["instructions"])
+    assert _LAST_RUN_SPEC in run["instructions"]
+
+
+def test_a_live_result_keeps_the_summary(monkeypatch):
+    run = _confirmed_run({"request": _LAST_RUN_SPEC}, monkeypatch)
+
+    assert _CONTINUE_SUMMARY in run["instructions"]
+    assert "## Starting point" not in run["instructions"]
+
+
+@pytest.mark.parametrize("has_code", [True, False])
+def test_a_linked_repo_is_never_called_gone(monkeypatch, has_code):
+    # The editor sends hasCode false when it does not know, and may still continue from the repo.
+    run = _confirmed_run(
+        {"request": _LAST_RUN_SPEC, "expired": True}, monkeypatch,
+        github_repo={"fullName": "acme/tasks", "hasCode": has_code},
+    )
+
+    assert _CONTINUE_SUMMARY in run["instructions"]
+    assert "## Starting point" not in run["instructions"]
+
+
+def test_a_rebuilt_model_resume_starts_from_the_model():
+    from codegen import generation_handler as generation
+
+    session = _follow_up_session(_CONTINUE_MESSAGE, last_generation={"request": _LAST_RUN_SPEC, "expired": True})
+    generation._build_smart_gen_confirmation(
+        session, _CONTINUE_SUMMARY, "openai", reason_prefix="Your model is ready.", user_message=_CONTINUE_MESSAGE,
+    )
+
+    _assert_rebuilt(_confirm(session)["instructions"])
+
+
+def test_generate_anyway_after_a_mismatch_starts_from_the_model():
+    from codegen import generation_handler as generation
+    from protocol.types import AssistantRequest
+
+    session = _follow_up_session(_CONTINUE_MESSAGE, last_generation={"request": _LAST_RUN_SPEC, "expired": True})
+    classification = GenerationClassification(
+        route="smart", refined_instructions=_CONTINUE_SUMMARY, provider="openai", reason="test",
+    )
+    generation._build_mismatch_confirmation(session, classification, "a recipe app", user_message=_CONTINUE_MESSAGE)
+    run = generation.handle_generation_request(
+        session, AssistantRequest(message="generate anyway with my current model"),
+    )
+
+    assert run["action"] == "trigger_smart_generator"
+    _assert_rebuilt(run["instructions"])
+
+
+@pytest.mark.parametrize("summary", [
+    "Add a dark theme to the existing app. Use PostgreSQL and a Django backend.",
+    "Continue development of the existing app by adding PostgreSQL and a Django backend.",
+    "- Add a dark theme to the existing app\n- Use PostgreSQL and a Django backend",
+])
+def test_a_summary_accepted_with_yes_reaches_the_rebuild_whole(monkeypatch, summary):
+    # After a plain "yes" the summary is the only place the accepted choices live.
+    run = _confirmed_run(
+        {"request": _LAST_RUN_SPEC, "expired": True}, monkeypatch, message="yes", summary=summary,
+    )
+
+    _assert_rebuilt(run["instructions"], summary)
+
+
+def test_without_a_request_the_run_starts_from_the_model():
+    payload = build_trigger_smart_generator_payload(
+        GenerationClassification(route="smart", refined_instructions=_CONTINUE_SUMMARY, provider="openai", reason="t"),
+        previous_result_gone=True,
+    )
+
+    assert payload["instructions"] == (
+        f"{_CONTINUE_SUMMARY}\n\n## Starting point\n\n"
+        "The previous result is no longer available, so there is no earlier code to continue or fix. "
+        "Build the whole application from the current model."
+    )
+
+
 def test_nothing_to_go_on_asks_again_and_arms_nothing(monkeypatch):
     from common.pending_dialogs import PENDING_SMART_GEN_INSTRUCTIONS
 
@@ -768,6 +902,21 @@ def test_no_fix_note_when_the_previous_result_is_gone(last_generation, note):
     original = generation._original_for_smart_generation(session, "regenerate with fixes.")
     assert original.startswith(_LAST_RUN_SPEC)
     assert (_FIX_NOTE in original) is note
+
+
+@pytest.mark.parametrize("github_repo", [{"fullName": "acme/tasks", "hasCode": False}, {"fullName": "acme/tasks"}])
+def test_a_linked_repo_keeps_the_fix_note_after_the_download_expired(github_repo):
+    # The editor may continue from a linked repo whose code it has not reported.
+    from codegen import generation_handler as generation
+
+    session = _follow_up_session(
+        "regenerate with fixes.", last_generation={"request": _LAST_RUN_SPEC, "expired": True},
+        github_repo=github_repo,
+    )
+
+    original = generation._original_for_smart_generation(session, "regenerate with fixes.")
+    assert original.startswith(_LAST_RUN_SPEC)
+    assert original.endswith(_FIX_NOTE)
 
 
 @pytest.mark.parametrize("message", ["regenerate the backend", "regenerate the ui"])

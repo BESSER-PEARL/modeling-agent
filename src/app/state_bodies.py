@@ -42,8 +42,9 @@ from conversation.session_helpers import (
     json_intent_matches,
     json_no_intent_matched,
 )
-from app.confirmation import resume_pending
+from app.confirmation import handle_pending_gui_choice, resume_pending
 from execution import execute_planned_operations
+from execution.model_operations import GUI_CHOICE_IN_REQUEST
 from ingestion.file_handling import handle_file_attachments
 from conversation.suggestions import get_suggested_actions
 from diagram_handlers.registry.metadata import get_diagram_type_info
@@ -454,12 +455,16 @@ _CONTRADICTORY_CREATE_CLARIFY = (
     "Member and Loan classes*."
 )
 
+# The diagram prompts give the same reply when the model sees an undo request.
+_UNDO_REPLY = "To undo, use Ctrl+Z or the undo button in the editor toolbar."
+
 # guards.modeling_guard decision -> (log line, reply); None replies with the
 # state's empty-message prompt.
 _MODELING_GUARD_REPLIES = {
     "non_modeling": ("Non-modeling/injection input — declining and redirecting", _NON_MODELING_DECLINE),
     "outage_decline": ("Outage net: decline phrase — acknowledging", _DECLINE_ACK),
     "outage_artifact": ("Outage net: non-software artifact — redirecting", _OUT_OF_SCOPE_REDIRECT),
+    "undo": ("Undo request — pointing to the editor's undo", _UNDO_REPLY),
     "self_contradictory": ("Self-contradictory create — asking what to include", _CONTRADICTORY_CREATE_CLARIFY),
     "too_vague": ("Create request too vague to model — asking for a domain", None),
 }
@@ -511,6 +516,9 @@ def _modeling_state_body(session: Session, intent_name: str, default_mode: str, 
             default_mode=default_mode,
             matched_intent=intent_name,
         )
+        # The message answered the screen question it opened: apply it now.
+        if (pending_dialogs.get(session, pending_dialogs.PENDING_GUI_CHOICE) or {}).get(GUI_CHOICE_IN_REQUEST):
+            handle_pending_gui_choice(session)
         # "What's next?" suggestions are delivered as interactive QuickAction
         # buttons via suggestedActions in the result payload (execution.py).
         # No need for a separate text message.

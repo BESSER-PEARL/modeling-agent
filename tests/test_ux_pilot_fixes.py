@@ -750,6 +750,79 @@ def test_a_repo_with_the_app_is_still_updated_after_the_download_expired():
     assert _EXPIRED_NOTE not in payload["message"]
 
 
+@pytest.mark.parametrize("repo", [
+    {"fullName": "acme/orders", "hasCode": False},
+    {"fullName": "acme/orders"},
+])
+def test_a_linked_repo_of_unknown_code_is_not_called_gone(repo):
+    # The editor may continue from a linked repo whose code it has not reported.
+    import uuid
+
+    session = FakeSession({
+        "action": "user_message", "protocolVersion": "2.0", "message": "build an order tracking app",
+        "sessionId": uuid.uuid4().hex,
+        "context": {
+            "activeDiagramType": "ClassDiagram", "projectSnapshot": {"id": _PROJECT_ID, "diagrams": {}},
+            "githubRepo": repo,
+            "lastGeneration": {"request": "An order app.", "expired": True},
+        },
+    })
+    payload = _build_smart_gen_confirmation(
+        session, "Build the order app.", "anthropic", user_message="build an order tracking app",
+    )
+    assert "no longer available" not in payload["message"]
+
+
+# ---------------------------------------------------------------------------
+# A follow-up the editor will run as an edit of its last result says so,
+# whatever this socket remembers (a reload or a new tab starts it empty)
+# ---------------------------------------------------------------------------
+
+_LIVE_RUN = {"runId": "a" * 32, "at": 1794836873000, "request": "An order app.", "expired": False}
+
+
+def _follow_up_confirmation(message, last_generation, *, reason_prefix=""):
+    import uuid
+
+    session = FakeSession({
+        "action": "user_message", "protocolVersion": "2.0", "message": message,
+        "sessionId": uuid.uuid4().hex,
+        "context": {
+            "activeDiagramType": "ClassDiagram", "projectSnapshot": {"id": _PROJECT_ID, "diagrams": {}},
+            "lastGeneration": last_generation,
+        },
+    })
+    return _build_smart_gen_confirmation(
+        session, "Update the order app.", "anthropic", user_message=message, reason_prefix=reason_prefix,
+    )
+
+
+@pytest.mark.parametrize("message", ["the save button does nothing, please fix it", "add a search bar"])
+def test_a_follow_up_on_a_result_the_editor_still_holds_is_an_update(message):
+    payload = _follow_up_confirmation(message, _LIVE_RUN)
+    assert "update your existing app" in payload["message"]
+    assert "BESSER will generate your application" not in payload["message"]
+    assert payload["suggestedActions"][0]["label"] == "Fix it"
+
+
+def test_a_model_update_resume_on_a_held_result_is_an_update():
+    # Without an explicit mode the editor edits its last result here too.
+    payload = _follow_up_confirmation("add a search bar", _LIVE_RUN, reason_prefix="Model rebuilt and ready.")
+    assert payload["message"].startswith("Model rebuilt and ready.\n\nI'll update your existing app")
+    assert payload["suggestedActions"][0]["label"] == "Fix it"
+
+
+@pytest.mark.parametrize("last_generation", [
+    {"runId": "a" * 32, "at": 1794836873000},          # lifetime unknown: the editor decides later
+    {"request": "An order app.", "expired": False},  # no finished run to edit
+    {"runId": "", "expired": False},
+])
+def test_without_a_held_result_a_follow_up_keeps_the_generate_copy(last_generation):
+    payload = _follow_up_confirmation("add a search bar", last_generation)
+    assert "BESSER will generate your application" in payload["message"]
+    assert payload["suggestedActions"][0]["label"] == "Continue"
+
+
 def test_regenerating_after_expiry_rebuilds_from_the_last_runs_request():
     from common.pending_dialogs import PENDING_SMART_GEN_ORIGINAL_REQUEST
 
