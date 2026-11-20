@@ -45,9 +45,9 @@ from prompts.classifier import SYSTEM_PROMPT
 from protocol.types import AssistantRequest
 from routing.guards import auto_fix_verdict, frontend_event_verdict
 from routing.generation_signals import (
+    GENERATOR_KEYWORDS,
     _GITHUB_CONTINUE_VERB_RE,
     _extract_github_reference,
-    detect_generator_type,
     recent_smart_gen_for_project,
     repo_holds_app,
 )
@@ -141,6 +141,20 @@ _UNSUPPORTED_STACK_RE = re.compile(
 _UNSUPPORTED_STACK_LITERALS = ("c++", "c#", ".net", "f#")
 # Generators detected from a kind of output ("backend", "web app", "REST API"), not a technology.
 _OUTPUT_KIND_GENERATORS = frozenset({"backend", "web_app", "rest_api"})
+# Generator keywords that name a kind of output, not a technology.
+_OUTPUT_KIND_KEYWORDS = frozenset(
+    {"database", "relational database", "db schema"}
+    | {keyword for generator in _OUTPUT_KIND_GENERATORS for keyword in GENERATOR_KEYWORDS[generator]}
+)
+
+
+def _names_generator(message: str, generator_type: Optional[str]) -> bool:
+    """True when *message* names *generator_type* by one of its technology keywords."""
+    lower = (message or "").lower()
+    return any(
+        keyword not in _OUTPUT_KIND_KEYWORDS and re.search(rf"\b{re.escape(keyword)}\b", lower)
+        for keyword in GENERATOR_KEYWORDS.get(generator_type or "", ())
+    )
 # Words that explicitly ask for screens. Shared with the planner's
 # from-scratch web-app route (orchestrator/request_planner.py).
 EXPLICIT_SCREEN_VOCAB_RE = re.compile(
@@ -1282,17 +1296,11 @@ def _post_validate(
         # so the LLM writes the actual language instead.
         # A technology the user named themselves is never overridden: the
         # stack words may be the app's domain ("an express delivery app").
-        # A kind of output ("a backend in Rust", "a MySQL database") names no
-        # technology: the generator id itself must appear in the message.
+        # A kind of output ("a backend in Rust", "a MySQL database") names no technology.
         if (
             result.generation_route in ("deterministic", "smart")
             and result.generator_type not in ("export", "deploy")
-            and not (
-                result.generator_type
-                and result.generator_type not in _OUTPUT_KIND_GENERATORS
-                and detect_generator_type(message or "") == result.generator_type
-                and re.search(rf"\b{re.escape(result.generator_type)}\b", (message or "").lower())
-            )
+            and not _names_generator(message, result.generator_type)
             and _names_unsupported_stack(message or "")
         ):
             if result.generation_route != "smart":

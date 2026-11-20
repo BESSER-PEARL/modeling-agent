@@ -280,10 +280,11 @@ regex before or after the call:
   C++, C#, …) is forced onto the ``smart`` route. The LLM mapped
   "c classes" → ``java`` and "c++ classes" → ``python`` often enough that
   this had to become deterministic. It never overrides a generator the
-  message names itself, that is, whose id appears as a word in the message:
-  in "the Django backend for my express delivery app" the stack word is the
-  app's domain. A kind of output (``backend``, ``web_app``, ``rest_api``, or
-  "database" for ``sql``) names no technology, so "a Spring Boot backend",
+  message names itself by one of that generator's keywords ("Django",
+  "SQL", "JSON schema", "SQL Alchemy"): in "the Django backend for my
+  express delivery app" the stack word is the app's domain. A kind of output
+  (``backend``, ``web_app``, ``rest_api``, or "database" for ``sql``) names
+  no technology, so "a Spring Boot backend",
   "a web app with Angular" or "a MySQL database for my Rails app" still goes
   to ``smart``. A mixed request that names both ("generate java and kotlin
   classes") keeps the classifier's verdict.
