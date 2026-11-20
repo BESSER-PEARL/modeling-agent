@@ -557,22 +557,22 @@ def _radio_form(choices):
     "<div class='ds-field'><span>State</span>"
     "<input type='radio' id='s1' name='state' value='Placed'><label for='s1'>Placed</label>"
     "<input type='radio' id='s2' name='state' value='Shipped'><label for='s2'>Shipped</label></div>",
+    "<div>Placed <input type='radio' name='state' value='Placed'>"
+    " Shipped <input type='radio' name='state' value='Shipped'></div>",
+    "<div><input type='radio' name='state' value='Placed'><span>Placed</span>"
+    "<input type='radio' name='state' value='Shipped'><span>Shipped</span></div>",
+    "<div><div><input type='radio' id='s1' name='state' value='Placed'><label for='s1'>Placed</label></div>"
+    "<div><input type='radio' id='s2' name='state' value='Shipped'><label for='s2'>Shipped</label></div></div>",
 ])
-def test_authored_radio_group_of_an_enumeration_becomes_one_required_dropdown(choices):
-    # BESSER turns each radio into its own option-less radio group, so the
-    # generated app could not pick a value: the group is one dropdown instead.
+def test_authored_radio_group_of_an_enumeration_keeps_its_radios_and_captions(choices):
     form = _radio_form(choices)
     nodes = _nodes_of(form)
-    assert not [n for n in nodes if (n.get("attributes") or {}).get("type") == "radio"]
-    select, = [n for n in nodes if n.get("tagName") == "select"]
-    assert select["attributes"]["name"] == "state"
-    assert select["attributes"]["data-options"] == "Placed,Shipped,Delivered,Cancelled"
-    assert select["attributes"]["required"] == "required"
-    # The radios' own captions go with them; the order of the fields stays.
-    texts = [_node_text(n).strip() for n in nodes if n.get("type") == "textnode" or n.get("tagName") == "label"]
-    assert "Shipped" not in texts and "Placed" not in texts
-    names = [(n.get("attributes") or {}).get("name") for n in nodes if n.get("tagName") in ("input", "select")]
-    assert names == ["reference", "state", "paid"]
+    radios = [n for n in nodes if (n.get("attributes") or {}).get("type") == "radio"]
+    assert [(r["tagName"], r["attributes"]["name"]) for r in radios] == [("input", "state")] * 2
+    assert not [n for n in nodes if n.get("tagName") == "select"]
+    assert "Placed" in _node_text(form) and "Shipped" in _node_text(form)
+    # HTML requires a choice from the group when one radio of the name is required
+    assert [r["attributes"].get("required") for r in radios] == ["required", None]
 
 
 def test_authored_bound_form_marks_the_fields_a_record_needs_as_required():
