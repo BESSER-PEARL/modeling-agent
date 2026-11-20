@@ -174,6 +174,10 @@ class TestClassifyMessage:
         ("Build a REST API with Express for my shop", "rest_api"),
         ("create a web app with Angular", "web_app"),
         ("build the backend in C#", "backend"),
+        ("generate the database layer in Kotlin", "sql"),
+        ("Create a Laravel app with a MySQL database", "sql"),
+        ("Generate a PostgreSQL database for my Rails app", "sql"),
+        ("build a Flutter app with a local database", "sql"),
     ])
     def test_naming_a_kind_of_output_does_not_name_its_stack(self, message, generator):
         """'a backend' or 'a web app' names what to build, not a built-in

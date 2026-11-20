@@ -1282,7 +1282,8 @@ def _post_validate(
         # so the LLM writes the actual language instead.
         # A technology the user named themselves is never overridden: the
         # stack words may be the app's domain ("an express delivery app").
-        # A kind of output ("a backend in Rust") names no technology.
+        # A kind of output ("a backend in Rust", "a MySQL database") names no
+        # technology: the generator id itself must appear in the message.
         if (
             result.generation_route in ("deterministic", "smart")
             and result.generator_type not in ("export", "deploy")
@@ -1290,6 +1291,7 @@ def _post_validate(
                 result.generator_type
                 and result.generator_type not in _OUTPUT_KIND_GENERATORS
                 and detect_generator_type(message or "") == result.generator_type
+                and re.search(rf"\b{re.escape(result.generator_type)}\b", (message or "").lower())
             )
             and _names_unsupported_stack(message or "")
         ):
