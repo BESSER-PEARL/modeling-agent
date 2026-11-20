@@ -101,6 +101,18 @@ Not every message from the frontend is a ``user_message``:
        carries ``metadata.mode`` (``"modify"`` when the run edited an existing
        app, ``"create"`` otherwise); the reply then speaks of updating the app
        instead of generating it, and without the field it speaks of generating.
+       Its other ``metadata`` keys: ``runId``, ``costUsd`` (never shown),
+       ``generator_used``, ``errorCode``, ``incomplete``, ``incompleteReason``,
+       ``blockerCount`` (padded by a newer backend, so read only for an
+       incomplete run), ``unresolvedBlockerCount`` (the real blockers of a run
+       that was not cut short), ``notConfirmedCount`` (checks that could not be
+       confirmed; without ``unresolvedBlockerCount``, ``blockerCount`` minus
+       this is the real blockers), ``unverified`` with ``unverifiedReason``
+       (the reply never says the run succeeded, and quotes the reason) and
+       ``verification`` (``{verified, foundInCode, notVerified,
+       shippedUnenforced, failed}``; ``failed`` counts tests the agent wrote
+       that ran against the app and failed). Absent keys keep the earlier
+       reply.
    * - ``replay_last_response``
      - Asks the agent to re-send buffered terminal replies after a reconnect
        that dropped a long-running reply mid-flight. With ``turnId`` (and

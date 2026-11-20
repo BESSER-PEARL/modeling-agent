@@ -1300,13 +1300,27 @@ def _handle_smart_generator_result(
     if ok:
         blocker_count = metadata.get("blockerCount")
         blocker_count = blocker_count if isinstance(blocker_count, int) and blocker_count > 0 else 0
-        # The editor's flag wins (a complete run's blockers are unverified
-        # checks); only an event without it falls back to the blocker count.
+        unverified = metadata.get("unverified") is True
+        # Real blockers of a run that was not cut short; None from an older
+        # backend, whose blockerCount mixes them with unverified checks.
+        # A newer backend pads blockerCount, so it is only read for incomplete runs.
+        real = metadata.get("unresolvedBlockerCount")
+        not_confirmed = metadata.get("notConfirmedCount")
+        if isinstance(real, int):
+            real = max(0, real)
+        elif isinstance(not_confirmed, int) and not unverified:
+            real = max(0, blocker_count - not_confirmed)
+        else:
+            real = None
+        # The editor's flag wins; only an older event without it falls back to the blocker count.
         flag = metadata.get("incomplete")
-        incomplete = flag if isinstance(flag, bool) else blocker_count > 0
+        incomplete = flag if isinstance(flag, bool) else (real is None and not unverified and blocker_count > 0)
         incomplete_reason = metadata.get("incompleteReason")
         # "modify" when the run edited an existing app; absent from older editors.
         edited = metadata.get("mode") == "modify"
+        verification = metadata.get("verification")
+        failed = verification.get("failed") if isinstance(verification, dict) else None
+        failed = failed if isinstance(failed, int) and failed > 0 else 0
         if incomplete:
             if blocker_count:
                 head = (
@@ -1321,16 +1335,41 @@ def _handle_smart_generator_result(
             if incomplete_reason:
                 head += f": {incomplete_reason}"
             parts = [head + cost_text + "."]
+        elif unverified:
+            # Some class of checks left no evidence: never a success.
+            what = (
+                "finished updating your application, but the update is not verified"
+                if edited else "generated your application, but it is not verified"
+            )
+            parts = [f"{SPEC_DRIVEN_NAME} {what}" + cost_text + "."]
+            reason = metadata.get("unverifiedReason")
+            if isinstance(reason, str) and reason.strip():
+                parts.append(reason.strip())
+            if real:
+                parts.append(f"{real} unresolved blocker{'s remain' if real != 1 else ' remains'}.")
+        elif real:
+            done = "finished updating your application with" if edited else "finished with"
+            parts = [
+                f"The {SPEC_DRIVEN_NAME} {done} {real} unresolved blocker{'s' if real != 1 else ''}"
+                + cost_text + "."
+            ]
         else:
             done = "finished updating your application" if edited else "generation finished successfully"
             parts = [f"{SPEC_DRIVEN_NAME} {done}" + cost_text + "."]
-            if blocker_count:
+            if real is None and blocker_count:
                 parts.append(f"{blocker_count} check{'s' if blocker_count != 1 else ''} could not be verified.")
+        if not incomplete and not unverified:
+            if isinstance(not_confirmed, int) and not_confirmed > 0:
+                parts.append(f"{not_confirmed} check{'s' if not_confirmed != 1 else ''} could not be confirmed.")
+            if failed:
+                parts.append(f"{failed} test{'s' if failed != 1 else ''} the agent wrote ran against the app and failed.")
         if metadata.get("filename") or metadata.get("fileName"):
             parts.append(f"File: {metadata.get('filename') or metadata.get('fileName')}")
         if incomplete:
             again = "start another run" if edited else "run the generation again"
             parts.append(f"You can {again} to finish the remaining changes.")
+        elif unverified:
+            parts.append("You can download the application to inspect it as-is.")
         result_message = " ".join(parts)
         suggestions = None
     elif error_code == "COST_CAP":
