@@ -14,13 +14,15 @@ top of every state body and hands the message to the open dialog's handler.
 import logging
 import re
 from dataclasses import replace
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from baf.core.session import Session
 
 from protocol.adapters import parse_assistant_request
 from conversation.session_helpers import reply_message, reply_payload, emit_webapp_generate_prompt
 from common.session_keys import UNIFIED_CLASSIFICATION
+from common.flow_answers import FLOW_ANSWER_TOKENS as _FLOW_ANSWER_TOKENS
+from common.flow_answers import normalize_flow_token as _normalize_flow_token
 from common import pending_dialogs
 from common.pending_dialogs import (
     PENDING_COMPLETE_SYSTEM,
@@ -30,11 +32,12 @@ from common.pending_dialogs import (
     PENDING_WEBAPP_GENERATE,
 )
 from execution import execute_model_operation
+from execution.model_operations import gui_choice_actions
 from codegen.generation_handler import (
     handle_pending_plan_generation_confirmation,
     handle_pending_smart_gen_confirmation,
 )
-from protocol.actions import Action
+from protocol.actions import Action, assistant_message
 
 logger = logging.getLogger(__name__)
 
@@ -123,14 +126,14 @@ def _build_auto_gui_message(
 
     if detected_gen is None:
         detected_gen = detect_generator_type(getattr(request, "message", "") or "")
-    from conversation.reply_copy import REFINE_MODEL_PROMPT, continue_generating_prompt
+    from conversation.reply_copy import REFINE_SCREENS_PROMPT, continue_generating_prompt
     # Offer generation only when the user's own request asked for the app (a
     # web-app plan, PENDING_WEBAPP_GENERATE); screens laid out on their own get
     # a modeling follow-up (BESSER-PEARL/BESSER#747).
     if offer_generation:
         _follow_up = "\n\n" + continue_generating_prompt(get_artifact_label(detected_gen))
     else:
-        _follow_up = "\n\n" + REFINE_MODEL_PROMPT
+        _follow_up = "\n\n" + REFINE_SCREENS_PROMPT
 
     try:
         from utilities.model_resolution import resolve_class_diagram
@@ -178,22 +181,43 @@ def _maybe_emit_webapp_prompt(session: Session) -> None:
         emit_webapp_generate_prompt(session)
 
 
-# Bare flow-control tokens a user types (or a quick-action button sends) to
-# ANSWER a pending confirmation. A message that normalizes to one of these
-# is always an answer — never a pivot — regardless of the intent label the
-# classifier stamped on it.
-_FLOW_ANSWER_TOKENS = {
-    "replace", "replace it", "keep", "keep it", "keep both",
-    "keep it and add alongside", "add alongside", "new tab",
-    "create in a new tab", "confirm", "confirm apply the change",
-    "apply the change", "go ahead", "yes", "no", "cancel", "ok",
-}
+# Set on the open screen question once the AI design has failed: from then on
+# a typed "try again" means the AI design.
+_AI_DESIGN_FAILED = "ai_design_failed"
+_RETRY_KEYWORDS = ['try again', 'try it again', 'retry', 'again']
+
+# The keywords also occur in ordinary requests ("set the default currency ...",
+# "design a Payment class"), so they answer the screen question only in a short
+# message that does not start like a request. Up to _GUI_ANSWER_MAX_WORDS words
+# such a message is an answer even when the classifier judged it a new request;
+# without a usable verdict, up to _GUI_KEYWORD_ANSWER_MAX_WORDS.
+_GUI_ANSWER_KEYWORDS = _AUTO_KEYWORDS + _LLM_KEYWORDS + CANCEL_KEYWORDS
+_GUI_ANSWER_MAX_WORDS = 4
+_GUI_KEYWORD_ANSWER_MAX_WORDS = 6
+_REQUEST_START_RE = re.compile(
+    r"(?:add|create|design|build|make|generate|model|draw|set|rename|delete|remove|change|update)\s+"
+    r"(?!(?:it|them|these|those)\b)"
+)
 
 
-def _normalize_flow_token(message: str) -> str:
-    """Lowercase, strip punctuation/dashes, collapse whitespace."""
-    cleaned = re.sub(r"[^\w\s]", " ", (message or "").lower())
-    return " ".join(cleaned.split())
+def _is_gui_answer(user_msg: str, keywords: List[str], max_words: int) -> bool:
+    """True when *user_msg* is shaped like an answer that uses one of *keywords*."""
+    token = _normalize_flow_token(user_msg)
+    return (
+        len(token.split()) <= max_words
+        and not _REQUEST_START_RE.match(token)
+        and any(keyword_matches(w, user_msg) for w in keywords)
+    )
+
+
+def _reoffer_gui_choice(session: Session, pending: dict, lead: str = "") -> None:
+    """After a failed AI screen build: the question stays open, so the user can
+    retry or take the other option from the same two buttons."""
+    pending_dialogs.put(session, PENDING_GUI_CHOICE, {**pending, _AI_DESIGN_FAILED: True})
+    reply_payload(session, assistant_message(
+        f"{lead}You can try the AI design again, or use basic CRUD pages instead.",
+        suggestedActions=gui_choice_actions(),
+    ))
 
 
 def handle_pending_gui_choice(session: Session) -> bool:
@@ -216,16 +240,35 @@ def handle_pending_gui_choice(session: Session) -> bool:
     _verdict_usable = _flow_action == "answer" and _flow_answer in (
         "auto", "llm", "cancel")
 
-    _label_answer = _GUI_CHOICE_LABELS.get(_normalize_flow_token(user_msg))
+    # A message that starts with a button label ("Basic CRUD pages, thanks")
+    # is that answer.
+    _token = _normalize_flow_token(user_msg)
+    _label_answer = next(
+        (answer for label, answer in _GUI_CHOICE_LABELS.items()
+         if _token == label or _token.startswith(label + " ")),
+        None,
+    )
+    if (not _label_answer and pending.get(_AI_DESIGN_FAILED)
+            and _is_gui_answer(user_msg, _RETRY_KEYWORDS, _GUI_ANSWER_MAX_WORDS)):
+        _label_answer = "llm"
     if _label_answer:
         _verdict_usable, _flow_answer = True, _label_answer
+    elif (_flow_action == "new_request"
+          and not _is_gui_answer(user_msg, _GUI_ANSWER_KEYWORDS, _GUI_ANSWER_MAX_WORDS)):
+        logger.info("[GUIChoice] Classifier: message is a NEW REQUEST — abandoning the screen question")
+        pending_dialogs.put(session, PENDING_GUI_CHOICE, None)
+        pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, None)
+        return False
+    _keyword_answer = _is_gui_answer(user_msg, _GUI_ANSWER_KEYWORDS, _GUI_KEYWORD_ANSWER_MAX_WORDS)
 
     if _verdict_usable:
         wants_cancel = _flow_answer == "cancel"
     else:
-        wants_cancel = any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
+        wants_cancel = _keyword_answer and any(keyword_matches(w, user_msg) for w in CANCEL_KEYWORDS)
     if wants_cancel:
         pending_dialogs.put(session, PENDING_GUI_CHOICE, None)
+        # No screens: the web-app plan that asked for them ends here too.
+        pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, None)
         reply_message(session, "Cancelled. No GUI was generated.")
         return True
 
@@ -233,8 +276,8 @@ def handle_pending_gui_choice(session: Session) -> bool:
         wants_auto = _flow_answer == "auto"
         wants_llm = _flow_answer == "llm"
     else:
-        wants_auto = any(keyword_matches(w, user_msg) for w in _AUTO_KEYWORDS)
-        wants_llm = any(keyword_matches(w, user_msg) for w in _LLM_KEYWORDS)
+        wants_auto = _keyword_answer and any(keyword_matches(w, user_msg) for w in _AUTO_KEYWORDS)
+        wants_llm = _keyword_answer and any(keyword_matches(w, user_msg) for w in _LLM_KEYWORDS)
 
     if not wants_auto and not wants_llm:
         # The user's message doesn't look like a GUI choice answer.
@@ -313,7 +356,7 @@ def handle_pending_gui_choice(session: Session) -> bool:
     working_request = replace(request, message=pending.get('operation_request', request.message))
 
     try:
-        execute_model_operation(
+        built = execute_model_operation(
             session=session,
             request=working_request,
             operation=stored_operation,
@@ -322,15 +365,15 @@ def handle_pending_gui_choice(session: Session) -> bool:
             _replace_existing=stored_replace,
             _skip_gui_choice=True,
         )
-        pending_dialogs.put(session, PENDING_GUI_CHOICE, None)  # Clear only on success
     except Exception as exc:
         logger.error(f"❌ [GUIChoice] Error executing LLM GUI generation: {exc}", exc_info=True)
-        reply_message(
-            session,
-            "Something went wrong. You can try again by saying **auto** or **llm**, or **cancel** to abort.",
-        )
-        pending_dialogs.put(session, PENDING_GUI_CHOICE, None)
+        _reoffer_gui_choice(session, pending, "Something went wrong while creating your screens. ")
         return True
+    if not isinstance(built, str):
+        # No screens came back and the failure text is already sent.
+        _reoffer_gui_choice(session, pending)
+        return True
+    pending_dialogs.put(session, PENDING_GUI_CHOICE, None)  # Clear only on success
 
     # Resume any remaining operations from the original plan
     if isinstance(remaining_ops, list) and remaining_ops:
@@ -684,6 +727,7 @@ def _resume_remaining_ops(
     if stored_diagram_type:
         resume_request = build_request_for_target(working_request, stored_diagram_type)
 
+    all_built = True  # no step stopped for a question, failed or raised
     for op_idx, remaining_op in enumerate(remaining_ops):
         if not isinstance(remaining_op, dict):
             continue
@@ -697,6 +741,7 @@ def _resume_remaining_ops(
                     default_mode=stored_default_mode,
                 )
                 if result is None:
+                    all_built = False
                     # This operation stored a new pending confirmation.
                     # Save the rest of the remaining ops so they can be
                     # resumed after the user responds to the new prompt.
@@ -724,6 +769,7 @@ def _resume_remaining_ops(
                 if isinstance(result, str) and result:
                     resume_request = build_request_for_target(resume_request, result)
             except Exception as exc:
+                all_built = False
                 logger.error(
                     f"[PendingConfirm] Error executing remaining operation "
                     f"{remaining_op}: {exc}",
@@ -773,8 +819,10 @@ def _resume_remaining_ops(
 
     # Web-app pause (GUI-choice path): the GUI was just built and its generation
     # was stripped at the plan source, so show the "generate the web app?" prompt
-    # here. Non-web-app resumes leave the flag unset and skip this.
-    _maybe_emit_webapp_prompt(session)
+    # here. Non-web-app resumes leave the flag unset and skip this. A screen
+    # step that asked its question or failed has built no screens yet.
+    if all_built:
+        _maybe_emit_webapp_prompt(session)
 
 
 # ------------------------------------------------------------------

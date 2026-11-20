@@ -262,3 +262,42 @@ class TestFreeAuthorship:
         )
         kinds = sorted(r.get("atRuleType", "plain") for r in rules)
         assert kinds == ["media", "plain"]
+
+    def test_prompt_asks_for_font_fallbacks(self, monkeypatch):
+        # A typeface named alone falls back to the browser default where it is
+        # not installed.
+        handler = GUINoCodeDiagramHandler(None)
+        captured = {}
+
+        def fake_two_pass_structured(**kwargs):
+            captured.update(kwargs)
+            return _authored_spec()
+
+        monkeypatch.setattr(handler, "predict_two_pass_structured", fake_two_pass_structured)
+        handler.generate_complete_system("create a patient portal")
+        prompt = captured["system_prompt"]
+        assert "'Fraunces', Georgia, serif" in prompt
+        assert "Typefaces available" not in prompt
+
+    def test_parse_llm_css_keeps_source_order(self):
+        # A media rule placed after its base rule must stay after it, or the
+        # base rule (equal specificity) overrides the responsive one.
+        rules = _parse_llm_css(
+            ".app-grid { display: grid; grid-template-columns: 1fr 1fr; } "
+            "@media (max-width: 600px) { .app-grid { grid-template-columns: 1fr; } } "
+            ".app-note { color: gray; }"
+        )
+        assert [(r["selectorsAdd"], r.get("mediaText")) for r in rules] == [
+            (".app-grid", None),
+            (".app-grid", "(max-width: 600px)"),
+            (".app-note", None),
+        ]
+
+
+
+def test_stylesheet_over_the_rule_cap_is_cut_with_a_warning(caplog):
+    css = "".join(f".app-r{i}{{color:red}}" for i in range(170))
+    with caplog.at_level("WARNING"):
+        rules = _parse_llm_css(css)
+    assert len(rules) == 160
+    assert "10 rule(s)" in caplog.text

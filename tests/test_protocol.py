@@ -192,6 +192,58 @@ class TestParseV2Payload:
         assert request.diagram_type == "ClassDiagram"
 
 
+def _with_context(**extra):
+    inner = {
+        "action": "user_message", "protocolVersion": "2.0", "message": "hello",
+        "context": {"activeDiagramType": "ClassDiagram", **extra},
+    }
+    return parse_v2_payload({"action": "user_message", "message": json.dumps(inner)})
+
+
+class TestGenerationKey:
+    def test_own_key_is_read_without_anything_else(self):
+        request = _with_context(generationKey={
+            "tier": "own", "provider": "OpenAI", "model": " gpt-6-luna ", "apiKey": "sk-never-read",
+        })
+        assert request.context.generation_key == {"tier": "own", "provider": "openai", "model": "gpt-6-luna"}
+
+    def test_free_and_none_tiers_need_no_provider(self):
+        assert _with_context(generationKey={"tier": "free"}).context.generation_key == {
+            "tier": "free", "provider": None, "model": None}
+        assert _with_context(generationKey={"tier": "none", "model": None}).context.generation_key == {
+            "tier": "none", "provider": None, "model": None}
+
+    @pytest.mark.parametrize("value", [
+        None, "own", ["own"], {}, {"tier": "paid"}, {"tier": 1}, {"provider": "openai"},
+    ])
+    def test_absent_or_malformed_is_none(self, value):
+        extra = {} if value is None else {"generationKey": value}
+        assert _with_context(**extra).context.generation_key is None
+
+    def test_malformed_provider_and_model_are_dropped(self):
+        key = _with_context(generationKey={"tier": "own", "provider": 7, "model": {"id": "x"}}).context.generation_key
+        assert key == {"tier": "own", "provider": None, "model": None}
+
+
+class TestLastGeneration:
+    def test_request_is_read_and_capped(self):
+        last = _with_context(lastGeneration={
+            "runId": "ab12", "at": 1794836873000, "request": "  " + "x" * 5000,
+        }).context.last_generation
+        assert last == {"request": "x" * 4000, "expired": False}
+
+    @pytest.mark.parametrize("expired, read", [(True, True), (False, False), ("true", False), (1, False)])
+    def test_only_a_true_expired_counts(self, expired, read):
+        last = _with_context(lastGeneration={"expired": expired}).context.last_generation
+        assert last == {"request": None, "expired": read}
+
+    @pytest.mark.parametrize("value", [None, "x", [], {"request": 3}, {"request": "   "}])
+    def test_absent_or_malformed_request_is_none(self, value):
+        extra = {} if value is None else {"lastGeneration": value}
+        last = _with_context(**extra).context.last_generation
+        assert last is None or last["request"] is None
+
+
 def test_full_spec_limit_is_preserved_or_explicitly_rejected_for_both_transports(monkeypatch):
     from types import SimpleNamespace
     from common.agent_config import MAX_USER_MESSAGE_CHARS

@@ -129,6 +129,21 @@ def extract_class_metadata(model: Optional[Dict[str, Any]]) -> List[Dict[str, An
                     "associationEnds": [],
                 }
 
+    # Literals of each enumeration, by its lowercased name
+    enum_ids = {
+        eid: str(element.get("name", "")).strip().lower()
+        for eid, element in elements.items()
+        if isinstance(element, dict) and element.get("type") == "Enumeration"
+    }
+    enum_literals: Dict[str, List[str]] = {name: [] for name in enum_ids.values() if name}
+    for element in elements.values():
+        if not isinstance(element, dict) or element.get("type") != "ClassAttribute":
+            continue
+        enum_name = enum_ids.get(element.get("owner"))
+        literal = _clean_attribute_name(element["name"]) if isinstance(element.get("name"), str) else ""
+        if enum_name and literal:
+            enum_literals[enum_name].append(literal)
+
     # Second pass: attach ClassAttribute elements to their owner class
     for eid, element in elements.items():
         if not isinstance(element, dict):
@@ -153,10 +168,13 @@ def extract_class_metadata(model: Optional[Dict[str, Any]]) -> List[Dict[str, An
             "isString": attr_type in _STRING_TYPES,
             # Which attributes a create form must supply
             "isId": bool(element.get("isId")),
+            "isExternalId": bool(element.get("isExternalId")),
             "isOptional": bool(element.get("isOptional")),
             "isDerived": bool(element.get("isDerived")),
             "hasDefault": element.get("defaultValue") not in (None, ""),
         })
+        if enum_literals.get(attr_type):
+            classes[owner]["attributes"][-1]["enumLiterals"] = enum_literals[attr_type]
 
     # Third pass: attach ClassMethod elements to their owner class
     for eid, element in elements.items():
@@ -245,7 +263,11 @@ def format_class_metadata_for_prompt(class_metadata: List[Dict[str, Any]]) -> st
     for cls in class_metadata:
         attrs = cls.get("attributes", [])
         if attrs:
-            attr_parts = [f"{a['name']} ({a['type']})" for a in attrs]
+            attr_parts = [
+                f"{a['name']} ({a['type']}: {' | '.join(a['enumLiterals'])})"
+                if a.get("enumLiterals") else f"{a['name']} ({a['type']})"
+                for a in attrs
+            ]
             attrs_str = ", ".join(attr_parts)
         else:
             attrs_str = "no attributes"

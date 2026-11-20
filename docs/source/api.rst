@@ -165,8 +165,9 @@ Conversation (``src/conversation/``)
   Context-aware next-step suggestions after operations:
 
   - ``get_suggested_actions(diagram_type, operation_mode, available_diagrams=None,
-    model_summary=None, generator_type=None)`` — returns 2–4
-    ``{label, prompt}`` dicts
+    model_summary=None, generator_type=None, client_mode=None)`` — returns 2–4
+    ``{label, prompt}`` dicts; ``client_mode="workspace"`` (the drawer) puts
+    *Generate the code* first after a complete class diagram
   - ``format_suggestions_as_text(actions)``
   - ``get_post_spec_suggestions(detected_generator)`` /
     ``get_artifact_label(detected_generator)``

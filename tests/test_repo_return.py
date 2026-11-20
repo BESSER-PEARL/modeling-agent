@@ -256,7 +256,7 @@ def _generation_turn(message: str, disposition, repo=REPO):
 
 
 def _confirm(session: FakeSession) -> dict:
-    _next_message(session, _session(REPO, "generate anyway with my current model"))
+    _next_message(session, _session(REPO, "continue with the generation"))
     session.delete(UNIFIED_CLASSIFICATION)
     return handle_generation_request(session, parse_assistant_request(session))
 

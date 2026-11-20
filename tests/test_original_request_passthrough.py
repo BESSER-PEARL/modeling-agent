@@ -296,6 +296,91 @@ def _refined_instructions_description() -> str:
     return UnifiedClassification.model_fields["refined_instructions"].description
 
 
+class _DictSession:
+    def __init__(self):
+        self.data = {}
+
+    def get(self, key):
+        return self.data.get(key)
+
+    def set(self, key, value):
+        self.data[key] = value
+
+
+_STORED_SPEC = "An order has a status: open, paid or shipped. A customer places many orders."
+
+
+@pytest.mark.parametrize("command", [
+    "generate the web app",
+    "Generate the web app.",
+    "generate the app",
+    "generate my app",
+    "generate my web app",
+    "generate the web application",
+    "generate the webapp",
+    "please generate the web app",
+    "Generate the web app, please!",
+    "can you generate the app?",
+    "generate the web app now",
+    # Phrasings that were already treated as bare commands.
+    "generate web app",
+    "generate it",
+    "build the app",
+    "create the app",
+    "generate anyway with my current model",
+    # The confirmation chip's sentence.
+    "continue with the generation",
+    "Continue with the generation.",
+])
+def test_bare_generate_command_is_not_carried_as_a_requirement(monkeypatch, command):
+    """A command that only says "generate it" adds nothing to the user's spec."""
+    from codegen import generation_handler as generation
+    from utilities.original_request import remember_original_request, original_request_for_project
+
+    session = _DictSession()
+    monkeypatch.setattr(generation, "_active_project_id", lambda s: "shop")
+    remember_original_request(session, _STORED_SPEC, "shop")
+
+    assert generation._original_for_smart_generation(session, command) == _STORED_SPEC
+    assert original_request_for_project(session, "shop") == _STORED_SPEC
+
+
+@pytest.mark.parametrize("command", [
+    "continue with the generation",
+    "generate anyway with my current model",
+])
+def test_confirmation_sentence_is_never_stored_as_the_request(monkeypatch, command):
+    from codegen import generation_handler as generation
+    from utilities.original_request import original_request_for_project
+
+    session = _DictSession()
+    monkeypatch.setattr(generation, "_active_project_id", lambda s: "shop")
+
+    assert generation._original_for_smart_generation(session, command) == ""
+    assert original_request_for_project(session, "shop") == ""
+
+
+@pytest.mark.parametrize("request_text", [
+    "generate the web app with a dark theme",
+    "generate the app in French",
+    "generate the web app and add a login page",
+    "build the app for mobile",
+    "generate the invoice report",
+])
+def test_generate_request_with_content_is_carried(monkeypatch, request_text):
+    from codegen import generation_handler as generation
+    from utilities.original_request import remember_original_request
+
+    session = _DictSession()
+    monkeypatch.setattr(generation, "_active_project_id", lambda s: "shop")
+    remember_original_request(session, _STORED_SPEC, "shop")
+
+    combined = generation._original_for_smart_generation(session, request_text)
+    assert combined.startswith(_STORED_SPEC)
+    assert combined.endswith(request_text)
+    assert "Subsequent user request, verbatim" in combined
+
+
 def test_the_routing_rulebook_does_not_use_auth_as_an_example():
     assert "Devise auth" not in SYSTEM_PROMPT
     assert "Add user authentication" not in SYSTEM_PROMPT
@@ -335,3 +420,364 @@ def test_the_summary_is_labelled_as_notes_that_cannot_add_anything():
     header = instructions[notes:instructions.index(SUMMARY)].lower()
     assert "may be inaccurate" in header
     assert "never add" in header and "user's request wins" in header
+
+
+# ---------------------------------------------------------------------
+# A content-free follow-up ("regenerate with fixes") re-runs the earlier
+# request; it is never the request itself.
+# ---------------------------------------------------------------------
+
+_FOLLOW_UPS = [
+    # The shapes named in the contract.
+    "regenerate with fixes.",
+    "Regenerate with fixes",
+    "rebuild",
+    "redo it",
+    "retry",
+    "try again",
+    "run it again",
+    "generate again",
+    "regenerate the app",
+    "regenerate it and fix the errors",
+    "rebuild the app and fix the issues",
+    "regenerate with fixes please",
+    "fix it",
+    "fix the errors",
+    "fix the remaining issues",
+    "fix the remaining blockers",
+    "Can you regenerate the application's frontend and the backend?",
+    # More of the same shape.
+    "please regenerate",
+    "please try again",
+    "try it again",
+    "could you try again?",
+    "ok, regenerate it",
+    "regenerate the application",
+    "re-generate the app",
+    "rerun the generation",
+    "re-run it",
+    "retry the build",
+    "redo the generation",
+    "rebuild the project",
+    "generate it again",
+    "generate the app again",
+    "build it again",
+    "do it again",
+    "regenerate both the frontend and the backend",
+    "rebuild the backend and the frontend",
+    "regenerate the code with the fixes",
+    "regenerate and fix the problems",
+    "fix all the errors",
+    "fix them",
+    "please fix the bugs",
+    "fix the errors and regenerate",
+    "retry with fixes",
+    # The whole-app fix and repeat forms.
+    "fix the app",
+    "fix my app",
+    "can you fix the code?",
+    "fix it again",
+    "try once more",
+    "try it one more time",
+]
+
+_CONTENT_REQUESTS = [
+    # The shapes named in the contract.
+    "regenerate with a dark theme",
+    "fix the login so users can reset their password",
+    "rebuild it with PostgreSQL",
+    # More that name what to change.
+    "regenerate the app in French",
+    "regenerate the backend in Go",
+    "rebuild it as a mobile app",
+    "regenerate with authentication",
+    "try again but use React",
+    "fix the date format on the orders page",
+    "fix the errors in the checkout page",
+    "redo the Book entity",
+    "regenerate the app with a search bar",
+    "retry with Django instead",
+    "rebuild the frontend with Vue",
+    "fix the price validation",
+    "run it again with Docker",
+    "generate again and add a customer list",
+    "regenerate with fixes and add pagination",
+    "fix it so tasks can be archived",
+    "regenerate the app for an online shop",
+    "rebuild the project using MySQL",
+    "try again with a smaller model",
+    "fix the remaining issues in the invoice form",
+    "redo it in TypeScript",
+    "regenerate the orders module",
+    "fix the broken links in the menu",
+    "please regenerate the app and include an admin page",
+    "rebuild it with two roles: author and reader",
+    "create an order tracking app",
+    # One part of the app names what to rebuild.
+    "regenerate the backend",
+    "regenerate the frontend",
+    "regenerate the ui",
+    "regenerate the api",
+    "regenerate the app's backend",
+    "fix the frontend",
+]
+
+
+@pytest.mark.parametrize("message", _FOLLOW_UPS)
+def test_content_free_follow_up_is_recognised(message):
+    from codegen import generation_handler as generation
+
+    assert generation._is_content_free_follow_up(message)
+
+
+@pytest.mark.parametrize("message", _CONTENT_REQUESTS)
+def test_request_with_content_is_not_a_content_free_follow_up(message):
+    from codegen import generation_handler as generation
+
+    assert not generation._is_content_free_follow_up(message)
+
+
+def test_the_bare_generate_matcher_is_unchanged():
+    from codegen import generation_handler as generation
+
+    assert generation._BARE_GENERATE_RE.pattern == (
+        r"(?:(?:can|could) you )?(?:please )?"
+        r"(?:generate|build|create) "
+        r"(?:it|(?:(?:the|my|this|a|an) )?(?:web ?)?(?:app|application|code))"
+        r"(?: now)?(?: please)?"
+    )
+
+
+_ORDER_SPEC = "An order tracking app: customers place orders; an order is open, paid or shipped."
+_LAST_RUN_SPEC = "A task board: tasks have a title, a due date and a done flag."
+_FIX_NOTE = "The user asked to fix the issues of the previous result."
+
+
+def _follow_up_session(message, *, last_generation=None, history=()):
+    import uuid
+
+    from memory import get_memory, memory_session_key
+    from tests.conftest import FakeSession
+
+    context = {"activeDiagramType": "ClassDiagram", "projectSnapshot": {"id": "proj-1", "diagrams": {}}}
+    if last_generation is not None:
+        context["lastGeneration"] = last_generation
+    session = FakeSession({
+        "action": "user_message", "protocolVersion": "2.0", "message": message,
+        "context": context, "sessionId": uuid.uuid4().hex,
+    })
+    memory = get_memory(memory_session_key(session))
+    for role, text in history:
+        (memory.add_user if role == "user" else memory.add_assistant)(text)
+    memory.add_user(message)  # recorded before the generation handler runs
+    return session
+
+
+def test_follow_up_uses_the_remembered_request_first():
+    from codegen import generation_handler as generation
+    from utilities.original_request import original_request_for_project, remember_original_request
+
+    session = _follow_up_session(
+        "regenerate with fixes.", last_generation={"request": _LAST_RUN_SPEC},
+        history=[("user", "a recipe app with ingredients and steps")],
+    )
+    remember_original_request(session, _ORDER_SPEC, "proj-1")
+
+    original = generation._original_for_smart_generation(session, "regenerate with fixes.")
+
+    assert original.startswith(_ORDER_SPEC)
+    assert original.endswith(_FIX_NOTE)
+    assert "regenerate with fixes" not in original
+    assert original_request_for_project(session, "proj-1") == _ORDER_SPEC
+
+
+def test_follow_up_without_fix_words_adds_nothing():
+    from codegen import generation_handler as generation
+    from utilities.original_request import remember_original_request
+
+    session = _follow_up_session("try again")
+    remember_original_request(session, _ORDER_SPEC, "proj-1")
+
+    assert generation._original_for_smart_generation(session, "try again") == _ORDER_SPEC
+
+
+def test_follow_up_uses_the_editors_last_run_request_next():
+    from codegen import generation_handler as generation
+    from utilities.original_request import original_request_for_project
+
+    session = _follow_up_session(
+        "regenerate with fixes.", last_generation={"request": _LAST_RUN_SPEC, "expired": True},
+        history=[("user", "a recipe app with ingredients and steps")],
+    )
+
+    original = generation._original_for_smart_generation(session, "regenerate with fixes.")
+
+    assert original.startswith(_LAST_RUN_SPEC)
+    assert "recipe" not in original
+    assert original_request_for_project(session, "proj-1") == ""
+
+
+def test_follow_up_never_rebuilds_the_request_from_the_conversation():
+    # The chat may hold another project's app, a question, an edit or an app the
+    # user started over from; none of it is reliably this project's request.
+    from codegen import generation_handler as generation
+    from utilities.original_request import original_request_for_project
+
+    session = _follow_up_session("regenerate with fixes.", history=[
+        ("user", _ORDER_SPEC),
+        ("assistant", "Created the class diagram with Order and Customer."),
+        ("user", "why did the run fail?"),
+        ("user", "add a delivery date to orders"),
+        ("user", "Start over: a task board where tasks have a title and a due date."),
+    ])
+
+    assert generation._original_for_smart_generation(session, "regenerate with fixes.") is None
+    assert original_request_for_project(session, "proj-1") == ""
+
+
+def test_follow_up_with_nothing_to_go_on_finds_no_request():
+    from codegen import generation_handler as generation
+    from utilities.original_request import original_request_for_project
+
+    session = _follow_up_session("regenerate with fixes.", history=[("user", "yes")])
+
+    assert generation._original_for_smart_generation(session, "regenerate with fixes.") is None
+    assert original_request_for_project(session, "proj-1") == ""
+
+
+def test_a_follow_up_with_content_is_still_carried():
+    from codegen import generation_handler as generation
+    from utilities.original_request import remember_original_request
+
+    session = _follow_up_session("regenerate with a dark theme")
+    remember_original_request(session, _ORDER_SPEC, "proj-1")
+
+    original = generation._original_for_smart_generation(session, "regenerate with a dark theme")
+    assert original.startswith(_ORDER_SPEC)
+    assert original.endswith("regenerate with a dark theme")
+
+
+@pytest.mark.parametrize("message", ["generate the app", "continue with the generation", ""])
+def test_a_command_without_content_runs_the_editors_last_request(message):
+    from codegen import generation_handler as generation
+
+    session = _follow_up_session(message, last_generation={"request": _LAST_RUN_SPEC, "expired": True})
+
+    assert generation._original_for_smart_generation(session, message) == _LAST_RUN_SPEC
+
+
+def test_a_follow_up_with_content_extends_the_editors_last_request():
+    from codegen import generation_handler as generation
+    from utilities.original_request import original_request_for_project
+
+    message = "regenerate with a dark theme"
+    session = _follow_up_session(message, last_generation={"request": _LAST_RUN_SPEC, "expired": True})
+
+    original = generation._original_for_smart_generation(session, message)
+
+    assert original.startswith(_LAST_RUN_SPEC)
+    assert original.endswith(message)
+    assert "## Subsequent user request, verbatim" in original
+    assert original_request_for_project(session, "proj-1") == original
+
+
+def test_the_remembered_request_wins_over_the_editors_last_request():
+    from codegen import generation_handler as generation
+    from utilities.original_request import remember_original_request
+
+    session = _follow_up_session("generate the app", last_generation={"request": _LAST_RUN_SPEC})
+    remember_original_request(session, _ORDER_SPEC, "proj-1")
+
+    assert generation._original_for_smart_generation(session, "generate the app") == _ORDER_SPEC
+
+
+def test_a_replacing_request_ignores_the_editors_last_request():
+    from codegen import generation_handler as generation
+
+    message = "a recipe app with ingredients and steps"
+    session = _follow_up_session(message, last_generation={"request": _LAST_RUN_SPEC})
+
+    assert generation._original_for_smart_generation(session, message, replace=True) == message
+
+
+class _FollowUpProvider:
+    def parse(self, *, messages, schema, temperature, max_tokens):
+        from routing.unified_classifier import UnifiedClassification
+
+        return UnifiedClassification(
+            intent="generation_intent", generation_route="smart",
+            refined_instructions="Regenerate the application.", provider="openai", reason="test",
+        )
+
+
+def _generation_turn(session, message, monkeypatch):
+    from codegen import generation_handler as generation
+    from protocol.types import AssistantRequest
+
+    monkeypatch.setattr(generation, "_get_llm_provider", lambda: _FollowUpProvider())
+    return generation.handle_generation_request(session, AssistantRequest(message=message))
+
+
+def test_the_run_gets_the_original_request_not_the_follow_up(monkeypatch):
+    from utilities.original_request import remember_original_request
+
+    session = _follow_up_session("regenerate with fixes.")
+    remember_original_request(session, _ORDER_SPEC, "proj-1")
+
+    asked = _generation_turn(session, "regenerate with fixes.", monkeypatch)
+    assert asked["action"] == "assistant_message"
+    run = _generation_turn(session, "continue with the generation", monkeypatch)
+
+    assert run["action"] == "trigger_smart_generator"
+    original = run["instructions"].split("## The user's original request, verbatim\n\n", 1)[1]
+    assert _ORDER_SPEC in original
+    assert _FIX_NOTE in original
+    assert "regenerate with fixes" not in run["instructions"]
+
+
+def test_nothing_to_go_on_asks_again_and_arms_nothing(monkeypatch):
+    from common.pending_dialogs import PENDING_SMART_GEN_INSTRUCTIONS
+
+    session = _follow_up_session("regenerate with fixes.")
+    pending_dialogs.put(session, PENDING_SMART_GEN_INSTRUCTIONS, "An older prepared run.")
+
+    reply = _generation_turn(session, "regenerate with fixes.", monkeypatch)
+
+    assert reply == {
+        "action": "assistant_message",
+        "message": (
+            "I no longer have your earlier request here, so I can't tell what to generate again. "
+            "Please describe again what the application should do."
+        ),
+    }
+    assert pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS) is None
+    assert _generation_turn(session, "continue with the generation", monkeypatch)["action"] != (
+        "trigger_smart_generator")
+
+
+@pytest.mark.parametrize("last_generation, note", [
+    ({"request": _LAST_RUN_SPEC, "expired": True}, False),
+    ({"request": _LAST_RUN_SPEC, "expired": False}, True),
+    ({"request": _LAST_RUN_SPEC}, True),
+])
+def test_no_fix_note_when_the_previous_result_is_gone(last_generation, note):
+    from codegen import generation_handler as generation
+
+    session = _follow_up_session("regenerate with fixes.", last_generation=last_generation)
+
+    original = generation._original_for_smart_generation(session, "regenerate with fixes.")
+    assert original.startswith(_LAST_RUN_SPEC)
+    assert (_FIX_NOTE in original) is note
+
+
+@pytest.mark.parametrize("message", ["regenerate the backend", "regenerate the ui"])
+def test_a_part_scoped_redo_keeps_its_scope(message):
+    from codegen import generation_handler as generation
+    from utilities.original_request import remember_original_request
+
+    session = _follow_up_session(message)
+    remember_original_request(session, _ORDER_SPEC, "proj-1")
+
+    original = generation._original_for_smart_generation(session, message)
+    assert original.startswith(_ORDER_SPEC)
+    assert original.endswith(message)

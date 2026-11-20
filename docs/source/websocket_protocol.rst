@@ -159,7 +159,9 @@ Field Reference
      - ``"2.0"``
    * - ``clientMode``
      - No
-     - ``"workspace"`` (default) or ``"chat"``
+     - Which surface sent the message: ``"workspace"`` (default; the drawer, the
+       agentic interface) or ``"widget"`` (the small bubble). After a complete
+       class diagram, only ``"workspace"`` offers *Generate the code* first.
    * - ``message``
      - Yes
      - The user's natural-language message (max 12,000 characters)
@@ -203,6 +205,27 @@ Field Reference
        however old the last run is. ``recap`` is where that app stands, in chat
        markdown, capped at 4,000 characters; it answers "what did we build?" and
        enters conversation memory when it changes, labelled as a record.
+   * - ``context.generationKey``
+     - No
+     - What the next Spec-Driven run would use: ``{tier, provider, model}``
+       with ``tier`` ``"own"`` (a stored user key; ``provider`` is set and
+       ``model`` is the chosen model or null), ``"free"`` or ``"none"`` (no key
+       and no free tier). Never contains the key. The run confirmation names
+       the user's key, or the free model, from it; without it the agent reads
+       the key armed on the socket. Malformed values are ignored.
+   * - ``context.lastGeneration``
+     - No
+     - The editor's last Spec-Driven run of this project:
+       ``{runId, at, expired, request}``, where ``request`` is the text the run
+       was started with (read up to 4,000 characters). When the agent remembers
+       no request for the project, this ``request`` is the run's original
+       request: a generate command or confirmation runs it, a follow-up with
+       content is appended to it. A content-free follow-up ("regenerate with
+       fixes", "try again", "fix it") with neither asks the user to describe
+       the application again. When
+       ``expired`` is true (and no linked repo holds the app), the run
+       confirmation says the previous result is no longer available and the
+       application will be built again, instead of offering to update it.
    * - ``attachments``
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)

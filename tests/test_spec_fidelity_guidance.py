@@ -221,3 +221,27 @@ def test_stub_classes_are_still_discouraged_for_bare_names():
     low = PROMPT.lower()
     assert "only named" in low
     assert "3-5+ attributes" in low
+
+
+# ----------------------------------------------------------------------
+# A page the user wants to see is not data to store
+# ----------------------------------------------------------------------
+
+def test_pages_and_screens_are_not_classes():
+    """'A home page listing all tasks' came back as a stored class with
+    attributes, a method and a relationship to the real entity."""
+    low = PROMPT.lower()
+    assert "pages and screens are not classes" in low
+    for noun in ("home page", "dashboard", "screen", "view", "report"):
+        assert noun in low
+    assert "computed from the stored records" in low
+
+
+def test_a_page_described_as_records_is_still_a_class():
+    assert "records to keep" in PROMPT.lower()
+
+
+def test_reasoning_pass_does_not_plan_a_class_for_a_page():
+    reasoning = class_prompts.reasoning_prompt("a task app with a dashboard").lower()
+    assert "page, screen, dashboard or report" in reasoning
+    assert "is not an entity" in reasoning

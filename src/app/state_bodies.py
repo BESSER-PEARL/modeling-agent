@@ -62,6 +62,7 @@ from common.session_keys import (
     UNIFIED_CLASSIFICATION,
 )
 from common import pending_dialogs
+from common.pending_dialogs import PENDING_COMPLETE_SYSTEM
 from conversation.reply_copy import (
     DECLINE_ACK as _DECLINE_ACK,
     META_ANSWER as _META_ANSWER,
@@ -181,8 +182,15 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
     # The answer to an open question (replace/keep, GUI mode, a run
     # confirmation, the plan-pause go-ahead) is consumed here, whichever state
     # the classifier routed it to.
+    replace_question_open = bool(pending_dialogs.get(session, PENDING_COMPLETE_SYSTEM))
     if resume_pending(session):
         return None
+    # A new request dropped the replace/keep question. A clarifying question
+    # now would store nothing; a create asks replace/keep again itself.
+    replace_question_dropped = (
+        replace_question_open
+        and not pending_dialogs.get(session, PENDING_COMPLETE_SYSTEM)
+    )
 
     request = parse_assistant_request(session)
 
@@ -210,7 +218,10 @@ def _common_preamble(session: Session) -> Optional[AssistantRequest]:
                 session, request,
                 _get_llm_provider() if _get_llm_provider else None,
             )
-            if getattr(_uc, "needs_clarification", False):
+            if getattr(_uc, "needs_clarification", False) and not (
+                replace_question_dropped
+                and getattr(_uc, "intent", None) == "create_complete_system_intent"
+            ):
                 _q = (getattr(_uc, "clarifying_question", None) or "").strip()
                 if _q:
                     reply_message(session, _q)

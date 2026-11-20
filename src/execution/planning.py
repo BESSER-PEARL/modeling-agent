@@ -158,9 +158,11 @@ def execute_planned_operations(
         any(isinstance(op, dict) and op.get("diagramType") == "GUINoCodeDiagram" for op in operations)
         and any(isinstance(op, dict) and op.get("type") == "generation" for op in operations)
     )
+    # The flag belongs to this plan: one left by an earlier web-app plan that
+    # failed or was abandoned must not announce screens for this one.
+    pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, True if _webapp_build else None)
     if _webapp_build:
         gen_ops = []  # nothing auto-runs
-        pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, True)
         logger.info("⏸️ [PlannedOps] Web-app build — stripped auto-generation; "
                     "user will be asked to generate after the GUI is built")
 
@@ -216,6 +218,7 @@ def execute_planned_operations(
 
     working_request = request
     step_counter = 0
+    screens_built = False  # a GUINoCodeDiagram step of this plan produced its diagram
 
     # ── Phase 1: Model operations ────────────────────────────────────
     if len(model_groups) > 1:
@@ -288,6 +291,7 @@ def execute_planned_operations(
                         continue
 
                     if isinstance(executed_target, str) and executed_target:
+                        screens_built = screens_built or op.get("diagramType") == "GUINoCodeDiagram"
                         working_request = build_request_for_target(
                             working_request, executed_target,
                         )
@@ -332,6 +336,7 @@ def execute_planned_operations(
                     logger.info("⏸️ [PlannedOps] Pending confirmation stored — halting remaining operations")
                     return
                 if isinstance(executed_target, str) and executed_target:
+                    screens_built = screens_built or operation.get("diagramType") == "GUINoCodeDiagram"
                     working_request = build_request_for_target(working_request, executed_target)
             except Exception as error:
                 error_code = _classify_error(error)
@@ -352,8 +357,11 @@ def execute_planned_operations(
     # confirmation._resume_remaining_ops. Non-web-app generations still run below.
     if pending_dialogs.get(session, PENDING_WEBAPP_GENERATE):
         pending_dialogs.put(session, PENDING_WEBAPP_GENERATE, None)
-        logger.info("⏸️ [PlannedOps] Web-app GUI built — asking the user to generate")
-        emit_webapp_generate_prompt(session)
+        # Only when the screen step produced screens: a step that raised has
+        # already sent its error.
+        if screens_built:
+            logger.info("⏸️ [PlannedOps] Web-app GUI built — asking the user to generate")
+            emit_webapp_generate_prompt(session)
         return
 
     for operation in gen_ops:

@@ -415,6 +415,18 @@ def test_plain_label_is_untouched(handler):
     assert "sourceRole" not in rel
 
 
+@pytest.mark.parametrize("name", ["guests_1", "guest_list", "_guests"])
+def test_a_valid_name_with_an_underscore_is_untouched(handler, name):
+    """``guests_1`` is the uniqueness guard's own suffix: re-coercing it to
+    ``guests1`` made a second pass differ from the first."""
+    spec = {"relationships": [
+        {"type": "Association", "source": "A", "target": "B",
+         "sourceMultiplicity": "1", "targetMultiplicity": "1", "name": name},
+    ]}
+    handler._split_dual_role_names(spec)
+    assert _rels(spec)[0]["name"] == name
+
+
 def test_label_with_spaces_but_no_slash_is_coerced(handler):
     spec = {"relationships": [
         {"type": "Association", "source": "A", "target": "B",
@@ -594,3 +606,25 @@ def test_plural_default_names_on_both_sides_are_merged(handler):
 ])
 def test_default_end_name_helper(handler, name, target, expected):
     assert handler._is_default_end_name(name, target) is expected
+
+
+def test_attribute_restating_a_composition_leaves_one_relationship(handler):
+    """A part that also carries its whole as a class-typed attribute: the
+    composition is the link, and no association is added beside it."""
+    spec = {
+        "classes": [
+            {"className": "Invoice", "attributes": []},
+            {"className": "InvoiceLine",
+             "attributes": [{"name": "invoice", "type": "Invoice"}]},
+        ],
+        "relationships": [
+            {"type": "Composition", "source": "InvoiceLine", "target": "Invoice",
+             "sourceMultiplicity": "0..*", "targetMultiplicity": "1",
+             "name": "invoice", "sourceRole": "lines"},
+        ],
+    }
+    handler._rewrite_class_typed_attributes(spec)
+    handler._merge_redundant_parallel_associations(spec)
+    handler._dedupe_relationship_names(spec)
+    assert _pairs(spec) == [("InvoiceLine", "Invoice", "0..*", "1", "invoice")]
+    assert _rels(spec)[0]["type"] == "Composition"

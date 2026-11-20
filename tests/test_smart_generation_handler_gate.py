@@ -117,7 +117,7 @@ def test_smart_route_stashes_and_asks_instead_of_firing(monkeypatch):
     actions = result["suggestedActions"]
     assert all(isinstance(a, dict) and {"label", "prompt"} <= set(a) for a in actions)
     prompts = [a["prompt"] for a in actions]
-    assert "generate anyway with my current model" in prompts
+    assert prompts == ["continue with the generation"]
     # Cancel button removed (product decision) — only Run is offered.
     assert "cancel the generation" not in prompts
 
@@ -136,12 +136,45 @@ def test_confirm_fires_trigger_and_clears_stash(monkeypatch):
     gen_mod.handle_generation_request(session, _make_request("build me a rails api"))
 
     confirm = gen_mod.handle_generation_request(
-        session, _make_request("generate anyway with my current model"),
+        session, _make_request("continue with the generation"),
     )
     assert confirm["action"] == "trigger_smart_generator"
     assert "Rails" in confirm["instructions"]
     assert confirm["provider"] == "anthropic"
     assert pending_dialogs.get(session, PENDING_SMART_GEN_INSTRUCTIONS) is None
+
+
+@pytest.mark.parametrize("reply", [
+    "continue with the generation",
+    "Continue with the generation.",
+    # Saved conversations still post the earlier chip sentence.
+    "generate anyway with my current model",
+])
+def test_chip_sentences_confirm_and_never_become_a_requirement(monkeypatch, reply):
+    gen_mod = _gen_handler()
+    from utilities.original_request import remember_original_request
+
+    _patch_provider(monkeypatch, _smart_classification())
+    monkeypatch.setattr(gen_mod, "_active_project_id", lambda s: "proj-1")
+    session = FakeSession()
+    remember_original_request(session, "A library lends books to members.", "proj-1")
+    gen_mod.handle_generation_request(session, _make_request("build me a rails api"))
+
+    result = gen_mod.handle_generation_request(session, _make_request(reply))
+
+    assert result["action"] == "trigger_smart_generator"
+    assert "A library lends books to members." in result["instructions"]
+    assert reply.rstrip(".").lower() not in result["instructions"].lower()
+
+
+def test_mismatch_dialog_keeps_its_generate_anyway_sentence():
+    gen_mod = _gen_handler()
+    session = FakeSession()
+    payload = gen_mod._build_mismatch_confirmation(
+        session, _smart_classification(), "a recipe app", user_message="build a recipe app",
+    )
+    by_label = {a["label"]: a["prompt"] for a in payload["suggestedActions"]}
+    assert by_label["Generate anyway"] == "generate anyway with my current model"
 
 
 @pytest.mark.parametrize("reply", ["yes", "Yes, please!", "run it now"])
@@ -234,7 +267,7 @@ def test_confirm_rejects_stash_older_than_30_minutes(monkeypatch):
     )
 
     result = gen_mod.handle_generation_request(
-        session, _make_request("generate anyway with my current model"),
+        session, _make_request("continue with the generation"),
     )
     assert result["action"] == "assistant_message"
     assert "expired" in result["message"].lower()

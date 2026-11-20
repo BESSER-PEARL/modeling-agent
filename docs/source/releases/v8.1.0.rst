@@ -1,0 +1,50 @@
+Version 8.1.0
+=============
+
+This release goes with BESSER v8.9.0. A user's own API key stays with the
+socket that armed it, a fault on that key is reported as the key's fault, and
+a request on a linked GitHub repository changes the app it holds.
+
+What's new
+----------
+
+* **Requests on a linked repository change its app.** The editor sends what it
+  knows about the linked repository as ``context.githubRepo``. When the
+  repository holds app code, a request is a change to that app instead of a
+  new build, and the repository recap is remembered once per repository state
+  so later turns can answer questions from it. The recap is capped at 4,000
+  characters and treated as a record, not as instructions
+  (`#56 <https://github.com/BESSER-PEARL/modeling-agent/pull/56>`_).
+
+Fixes
+-----
+
+* **A user's API key stays with its socket.** A key armed with
+  ``user_set_variable`` was stored on the framework session, which outlived
+  the tab and was shared by every tab of the browser. The key now lives only
+  with the socket that armed it and goes when the socket closes
+  (`#57 <https://github.com/BESSER-PEARL/modeling-agent/pull/57>`_).
+* **A rejected key is named as the cause.** When the provider rejects the
+  user's own key, the reply says so instead of "The AI service is temporarily
+  unavailable" or "Please try again or rephrase", on the streaming paths, the
+  diagram handlers and file conversion alike
+  (`#58 <https://github.com/BESSER-PEARL/modeling-agent/pull/58>`_).
+* **A limited key is named as the cause.** A 429 on the user's own key blamed
+  the service or the request. A rate limit now asks the user to wait a minute
+  or use a different key, and an exhausted account (no credit, a spend cap or
+  a usage limit) asks them to add credit or use a different key, since waiting
+  cannot fix it (`#59 <https://github.com/BESSER-PEARL/modeling-agent/pull/59>`_).
+
+Dependencies
+------------
+
+* **PyMuPDF is replaced by pypdfium2** (BSD-3-Clause / Apache-2.0) for PDF
+  upload and for indexing the UML specification, so the agent no longer
+  depends on an AGPL-3.0 library. PDF work is serialized because PDFium is not
+  thread-safe (`#63 <https://github.com/BESSER-PEARL/modeling-agent/pull/63>`_).
+
+Upgrade notes
+-------------
+
+Deploy with BESSER v8.9.0 and its editor. Rebuild the image so that
+``pypdfium2`` replaces PyMuPDF.
