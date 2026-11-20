@@ -258,7 +258,8 @@ EXPLICIT_TRACE_QUESTION_RE = re.compile(
     r"code|codebase|generated|re-?generat\w*|generator|source\s+files?|lines?\s+\d+"
     r"|files?\s+(?:came|come|comes|were|was|generated|from)"
     r"|c[oó]digo|fichiers?|ficheros?|archivos?|fitxers?|datei\w*|zeilen?|lignes?|l[ií]neas?"
-    r"|g[eé]n[eé]r\w*|generier\w*"
+    # not "general"/"generalization": UML vocabulary, not generated code
+    r"|g[eé]n[eé]r(?!al)\w*|generier\w*"
     # staleness
     r"|out[\s-]of[\s-]date|outdated|stale|in\s+sync|up[\s-]to[\s-]date|veraltet\w*|obsol\w*|desactualizad\w*"
     # requirements and coverage

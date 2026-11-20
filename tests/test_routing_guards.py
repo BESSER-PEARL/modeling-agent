@@ -269,6 +269,9 @@ def test_trace_question_guard(message, trace_digest, decision):
     ("when was Author added?", True),
     ("why does Book have an Author association?", False),
     ("summarize my model", False),
+    ("why is Person the generalization of Member?", False),  # UML, not generated code
+    ("is Vehicle the general class here?", False),
+    ("qu'est-ce qui a été généré à partir de Book ?", True),
 ])
 def test_is_explicit_trace_question(message, explicit):
     assert guards.is_explicit_trace_question(message) is explicit
