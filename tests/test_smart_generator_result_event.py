@@ -123,6 +123,46 @@ def test_smart_partial_output_does_not_claim_success(metadata, expected, unexpec
     assert "incomplete" in result["message"]
 
 
+def test_unresolved_blockers_do_not_call_an_edited_app_incomplete_as_a_whole():
+    # The same report follows a first build and a run that edited an existing app.
+    result = _handle_frontend_event(_smart_event(True, {"incomplete": True, "blockerCount": 2}), None)
+    assert "2 unresolved blockers; the result is incomplete." in result["message"]
+    assert "application is incomplete" not in result["message"]
+
+
+@pytest.mark.parametrize("count, checks", [(1, "1 check could not be verified."), (2, "2 checks could not be verified.")])
+def test_a_run_reported_complete_is_not_called_incomplete_for_unverified_checks(count, checks):
+    # The editor's incomplete:false wins over the blocker count, as on its run card.
+    result = _handle_frontend_event(_smart_event(True, {"incomplete": False, "blockerCount": count}), None)
+    assert "finished successfully" in result["message"]
+    assert checks in result["message"]
+    assert "incomplete" not in result["message"]
+    assert "unresolved" not in result["message"]
+
+
+@pytest.mark.parametrize("metadata, expected", [
+    ({"mode": "modify"}, "Spec-Driven Agent finished updating your application."),
+    ({"mode": "create"}, "Spec-Driven Agent generation finished successfully."),
+    ({}, "Spec-Driven Agent generation finished successfully."),  # an editor that sends no mode
+])
+def test_a_finished_run_is_reported_by_what_it_did(metadata, expected):
+    result = _handle_frontend_event(_smart_event(True, metadata), None)
+    assert result["message"].startswith(expected)
+
+
+@pytest.mark.parametrize("mode, expected", [
+    ("modify", "You can start another run to finish the remaining changes."),
+    ("create", "You can run the generation again to finish the remaining changes."),
+    (None, "You can run the generation again to finish the remaining changes."),
+])
+def test_an_incomplete_run_suggests_a_next_step_for_what_it_did(mode, expected):
+    metadata = {"incomplete": True, "blockerCount": 2, **({"mode": mode} if mode else {})}
+    result = _handle_frontend_event(_smart_event(True, metadata), None)
+    assert result["message"].endswith(expected)
+    if mode == "modify":
+        assert "generation" not in result["message"]
+
+
 def test_smart_invalid_key_names_the_problem():
     result = _handle_frontend_event(
         _smart_event(False, {"errorCode": "INVALID_KEY"}),

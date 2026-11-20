@@ -30,6 +30,7 @@ from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, Field
 from common.agent_config import MAX_USER_MESSAGE_CHARS
+from conversation.reply_copy import SPEC_DRIVEN_NAME
 from prompts import spec_driven as spec_prompts
 from protocol.message_limits import validate_message_length
 from protocol.actions import Action
@@ -191,15 +192,13 @@ def build_trigger_smart_generator_payload(
 
     provider = classification.provider or "anthropic"
 
-    # Short, neutral run banner. The provider/free-tier choice and the BYOK
-    # option were already conveyed by the confirmation copy shown before this
-    # run (see ``_build_smart_gen_confirmation``), so this mid-run line stays
-    # minimal instead of repeating the API-key explanation.
+    # Short, neutral run banner: the editor picks edit or rebuild after this,
+    # so the banner names neither. Key and provider were in the confirmation.
     payload = {
         "action": Action.TRIGGER_SMART_GENERATOR,
         "instructions": instructions,
         "provider": provider,
-        "message": "Generating your application from your specs…",
+        "message": f"Starting the {SPEC_DRIVEN_NAME}…",
     }
     if mode:
         payload["mode"] = mode

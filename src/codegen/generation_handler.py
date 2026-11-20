@@ -461,11 +461,11 @@ def _build_smart_gen_confirmation(
     fix-framing + a "Fix it" button (from-scratch wording reads wrong when
     the user only wants a fix). Both branches keep the
     same confirm token so the confirm gate fires identically, and each says
-    which key the run will use (``_key_note``). The fix branch is gated to the direct path
-    (no ``reason_prefix``): the mismatch/rebuild resumes always produce a
-    freshly rebuilt model, which is a from-scratch build by definition — and,
-    per ``_looks_like_fix_request``, to projects that have actually produced
-    an app before.
+    which key the run will use (``_key_note``). The fix branch is taken when the
+    editor reports it still holds the project's last run (it then edits that
+    app, also after a mismatch/rebuild resume). Otherwise it is gated to the
+    direct path (no ``reason_prefix``) and, per ``_looks_like_fix_request``, to
+    projects that have actually produced an app before.
     """
     provider = provider or "anthropic"
     target = _request_target(session)
@@ -496,8 +496,9 @@ def _build_smart_gen_confirmation(
             f"from {sources}.\n\n"
         )
 
-    is_fix = (not reason_prefix) and (not starting_over) and (not result_expired) and _looks_like_fix_request(
-        session, user_message, project_id,
+    is_fix = (not starting_over) and (not result_expired) and (
+        _editor_edits_last_result(session)
+        or (not reason_prefix and _looks_like_fix_request(session, user_message, project_id))
     )
 
     # The instructions are NOT echoed back to the user: showing the LLM's
@@ -587,6 +588,13 @@ def _previous_result_gone(session: Session) -> bool:
     linked repo holds the app: the run builds the app again."""
     last_generation = getattr(_request_context(session), "last_generation", None) or {}
     return last_generation.get("expired") is True and not repo_holds_app(session)
+
+
+def _editor_edits_last_result(session: Session) -> bool:
+    """True when the editor still holds the project's last run: without an
+    explicit mode it edits that app instead of rebuilding it."""
+    last_generation = getattr(_request_context(session), "last_generation", None) or {}
+    return last_generation.get("editable") is True
 
 
 def _run_starts_from_the_model(session: Session) -> bool:
@@ -1292,13 +1300,18 @@ def _handle_smart_generator_result(
     if ok:
         blocker_count = metadata.get("blockerCount")
         blocker_count = blocker_count if isinstance(blocker_count, int) and blocker_count > 0 else 0
-        incomplete = bool(metadata.get("incomplete")) or blocker_count > 0
+        # The editor's flag wins (a complete run's blockers are unverified
+        # checks); only an event without it falls back to the blocker count.
+        flag = metadata.get("incomplete")
+        incomplete = flag if isinstance(flag, bool) else blocker_count > 0
         incomplete_reason = metadata.get("incompleteReason")
+        # "modify" when the run edited an existing app; absent from older editors.
+        edited = metadata.get("mode") == "modify"
         if incomplete:
             if blocker_count:
                 head = (
                     f"The {SPEC_DRIVEN_NAME} finished with {blocker_count} unresolved "
-                    f"blocker{'s' if blocker_count != 1 else ''}; the application is incomplete"
+                    f"blocker{'s' if blocker_count != 1 else ''}; the result is incomplete"
                 )
             else:
                 head = (
@@ -1309,13 +1322,15 @@ def _handle_smart_generator_result(
                 head += f": {incomplete_reason}"
             parts = [head + cost_text + "."]
         else:
-            parts = [f"{SPEC_DRIVEN_NAME} generation finished successfully" + cost_text + "."]
+            done = "finished updating your application" if edited else "generation finished successfully"
+            parts = [f"{SPEC_DRIVEN_NAME} {done}" + cost_text + "."]
+            if blocker_count:
+                parts.append(f"{blocker_count} check{'s' if blocker_count != 1 else ''} could not be verified.")
         if metadata.get("filename") or metadata.get("fileName"):
             parts.append(f"File: {metadata.get('filename') or metadata.get('fileName')}")
         if incomplete:
-            parts.append(
-                "You can run the generation again to finish the remaining changes."
-            )
+            again = "start another run" if edited else "run the generation again"
+            parts.append(f"You can {again} to finish the remaining changes.")
         result_message = " ".join(parts)
         suggestions = None
     elif error_code == "COST_CAP":
