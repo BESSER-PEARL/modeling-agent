@@ -47,8 +47,12 @@ class _Provider:
                                      reason="test", **self.verdict)
 
 
-def _run(message, monkeypatch, *, last_generation=None, previous=SPEC, **verdict):
-    """The trigger the assistant sends for ``message`` once the user confirms."""
+CONFIRM = "continue with the generation"
+
+
+def _run(message, monkeypatch, *, last_generation=None, previous=SPEC, confirm_before_routing=False, **verdict):
+    """The trigger the assistant sends for ``message`` once the user confirms, in the
+    generation handler or (``confirm_before_routing``) in the pre-routing intercept."""
     session = _session(message, last_generation=last_generation)
     remember_original_request(session, previous, "proj-1")
     provider = _Provider(**verdict)
@@ -56,7 +60,12 @@ def _run(message, monkeypatch, *, last_generation=None, previous=SPEC, **verdict
     session.set(UNIFIED_CLASSIFICATION, provider.parse(messages=[], schema=None, temperature=0, max_tokens=0))
     asked = generation.handle_generation_request(session, AssistantRequest(message=message))
     assert asked["action"] == "assistant_message"
-    run = generation.handle_generation_request(session, AssistantRequest(message="continue with the generation"))
+    if confirm_before_routing:
+        session.event = _session(CONFIRM, last_generation=last_generation).event
+        assert generation.handle_pending_smart_gen_confirmation(session)
+        run = session.last_reply_json()
+    else:
+        run = generation.handle_generation_request(session, AssistantRequest(message=CONFIRM))
     assert run["action"] == "trigger_smart_generator"
     return session, run
 
@@ -122,11 +131,12 @@ def test_a_message_that_states_nothing_new_is_sent_but_not_remembered(monkeypatc
     ("add a dark theme", {}, True),
     ("continue", {"states_requirements": False}, True),  # the earlier request, sent unchanged
 ])
+@pytest.mark.parametrize("confirm_before_routing", [False, True])
 def test_the_trigger_says_when_the_newest_message_is_not_part_of_the_request(monkeypatch, message, verdict,
-                                                                            remembered):
+                                                                            remembered, confirm_before_routing):
     """The editor kept a retry the assistant did not remember as part of the project's
     request, and sent it back as the request once the assistant had lost its memory."""
-    _, run = _run(message, monkeypatch, **verdict)
+    _, run = _run(message, monkeypatch, confirm_before_routing=confirm_before_routing, **verdict)
 
     assert run.get("remember_newest", True) is remembered
 
