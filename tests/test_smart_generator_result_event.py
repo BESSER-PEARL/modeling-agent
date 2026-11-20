@@ -123,6 +123,23 @@ def test_smart_partial_output_does_not_claim_success(metadata, expected, unexpec
     assert "incomplete" in result["message"]
 
 
+def test_unresolved_blockers_do_not_call_an_edited_app_incomplete_as_a_whole():
+    # The same report follows a first build and a run that edited an existing app.
+    result = _handle_frontend_event(_smart_event(True, {"incomplete": True, "blockerCount": 2}), None)
+    assert "2 unresolved blockers; the result is incomplete." in result["message"]
+    assert "application is incomplete" not in result["message"]
+
+
+@pytest.mark.parametrize("count, checks", [(1, "1 check could not be verified."), (2, "2 checks could not be verified.")])
+def test_a_run_reported_complete_is_not_called_incomplete_for_unverified_checks(count, checks):
+    # The editor's incomplete:false wins over the blocker count, as on its run card.
+    result = _handle_frontend_event(_smart_event(True, {"incomplete": False, "blockerCount": count}), None)
+    assert "finished successfully" in result["message"]
+    assert checks in result["message"]
+    assert "incomplete" not in result["message"]
+    assert "unresolved" not in result["message"]
+
+
 def test_smart_invalid_key_names_the_problem():
     result = _handle_frontend_event(
         _smart_event(False, {"errorCode": "INVALID_KEY"}),

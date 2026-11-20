@@ -1300,13 +1300,16 @@ def _handle_smart_generator_result(
     if ok:
         blocker_count = metadata.get("blockerCount")
         blocker_count = blocker_count if isinstance(blocker_count, int) and blocker_count > 0 else 0
-        incomplete = bool(metadata.get("incomplete")) or blocker_count > 0
+        # The editor's flag wins (a complete run's blockers are unverified
+        # checks); only an event without it falls back to the blocker count.
+        flag = metadata.get("incomplete")
+        incomplete = flag if isinstance(flag, bool) else blocker_count > 0
         incomplete_reason = metadata.get("incompleteReason")
         if incomplete:
             if blocker_count:
                 head = (
                     f"The {SPEC_DRIVEN_NAME} finished with {blocker_count} unresolved "
-                    f"blocker{'s' if blocker_count != 1 else ''}; the application is incomplete"
+                    f"blocker{'s' if blocker_count != 1 else ''}; the result is incomplete"
                 )
             else:
                 head = (
@@ -1318,6 +1321,8 @@ def _handle_smart_generator_result(
             parts = [head + cost_text + "."]
         else:
             parts = [f"{SPEC_DRIVEN_NAME} generation finished successfully" + cost_text + "."]
+            if blocker_count:
+                parts.append(f"{blocker_count} check{'s' if blocker_count != 1 else ''} could not be verified.")
         if metadata.get("filename") or metadata.get("fileName"):
             parts.append(f"File: {metadata.get('filename') or metadata.get('fileName')}")
         if incomplete:
