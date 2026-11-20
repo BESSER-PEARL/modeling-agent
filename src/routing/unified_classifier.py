@@ -47,6 +47,7 @@ from routing.guards import auto_fix_verdict, frontend_event_verdict
 from routing.generation_signals import (
     _GITHUB_CONTINUE_VERB_RE,
     _extract_github_reference,
+    is_github_save_request,
     recent_smart_gen_for_project,
     repo_holds_app,
 )
@@ -120,6 +121,7 @@ _DETERMINISTIC_GENERATOR_TYPES = Literal[
     "rdf",
     "export",
     "deploy",
+    "github",
 ]
 
 
@@ -1238,7 +1240,7 @@ def _post_validate(
         # so the LLM writes the actual language instead.
         if (
             result.generation_route in ("deterministic", "smart")
-            and result.generator_type not in ("export", "deploy")
+            and result.generator_type not in ("export", "deploy", "github")
             and _names_unsupported_stack(message or "")
         ):
             if result.generation_route != "smart":
@@ -1300,6 +1302,18 @@ def _post_validate(
                     (message or "").strip()
                     or "Build a custom application from the current model."
                 )
+        elif (
+            result.generation_route == "other"
+            or (result.generation_route == "deterministic" and result.generator_type in (None, "export", "deploy"))
+        ) and is_github_save_request(message or ""):
+            # Safety net: "save to github" is the editor's GitHub save. Live
+            # 2026-11-20 it was typed 'deploy' and opened Render instead.
+            logger.warning(
+                "LLM routed a GitHub save to route=%s type=%s; correcting to github",
+                result.generation_route, result.generator_type,
+            )
+            result.generation_route = "deterministic"
+            result.generator_type = "github"
         elif result.generation_route == "deterministic":
             # Safety net: a DEPLOY-shaped message ("deploy this model",
             # "push this to prod") sometimes gets mis-typed as 'export'

@@ -333,7 +333,7 @@ class TestSchemaContracts:
         for v in (
             "django", "backend", "web_app", "sql", "sqlalchemy",
             "python", "java", "pydantic", "jsonschema", "smartdata",
-            "agent", "qiskit", "rest_api", "rdf", "export", "deploy",
+            "agent", "qiskit", "rest_api", "rdf", "export", "deploy", "github",
         ):
             cls = UnifiedClassification(
                 intent="generation_intent",
