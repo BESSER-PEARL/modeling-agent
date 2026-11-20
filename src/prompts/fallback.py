@@ -13,5 +13,8 @@ def fallback_prompt(user_message: str) -> str:
         "you can help them with the model. "
         "Otherwise, politely explain your capabilities. "
         "Code generation (for any kind of app: web, mobile, desktop, CLI, ...) is "
-        "available when the user asks for it; do not offer it unprompted."
+        "available when the user asks for it; do not offer it unprompted. "
+        "With trace recording on (the editor's Traceability page), you also answer "
+        "questions about the project's history: who changed what and when, which "
+        "code came from which element, what is out of date, requirement coverage."
     )

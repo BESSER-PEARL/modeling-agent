@@ -62,8 +62,8 @@ layers (`tests/test_packaging.py` checks). Its `version` is the agent's only ver
   `tests/live/` (`probe_smoke.py`, `probe_full_agentic.py`, `wme_release_sweep.py`, …) run against a running
   agent (`AGENT_WS_URL` required) and speak the real double-encoded envelope. Run the same prompt N times and diff
   the specs — a single manual browser test often lands in the "looks fine" bucket even when the failure rate is
-  high. `probe_smoke.py` is fast enough for a post-deploy gate. `tests/live/test_nl_generation_scenarios.py` is
-  skipped unless `RUN_LIVE_AGENT_TESTS=1`.
+  high. `probe_smoke.py` is fast enough for a post-deploy gate. `tests/live/test_nl_generation_scenarios.py` and
+  `test_trace_routing_scenarios.py` are skipped unless `RUN_LIVE_AGENT_TESTS=1`.
 
 ## Request Flow
 
@@ -75,7 +75,7 @@ WebSocket message
   → protocol/adapters.py + protocol/types.py        parse wire payload → AssistantRequest
   → routing/unified_classifier.py                    LAYER 1: THE ROUTER
       classify_message() → UnifiedClassification, cached per BAF event by get_or_classify().
-      Returns the intent (which of the 10 states) AND every sub-routing field downstream code
+      Returns the intent (which of the 11 states) AND every sub-routing field downstream code
       needs (generation_route, generator_type, target_diagram_type, model_disposition,
       pending_flow_action, …) — no second prompt. Rules live in prompts/classifier.py.
   → app/state_bodies.py                              state body; modeling bodies funnel through
@@ -101,18 +101,19 @@ WebSocket message
   text rule goes there, with a row in `tests/test_routing_guards.py`, never inline in a state body. Answers to a
   pending question (replace/keep, GUI choice, generator confirmations) are parsed by the pending-flow handlers
   (`app/confirmation.py`, `codegen/generation_handler.py`), not by these guards.
-- **Intent `description=` strings in `modeling_agent.py` stay one-liners.** They only feed BAF's local fallback
-  classifier and do not drive routing.
-- **BAF's own classifier is a local, non-LLM fallback** (`SimpleIntentClassifierConfiguration(framework='tensorflow')`
-  in `agent_setup.py`, trained at startup on each intent's `training_sentences`). It routes only when the unified
-  call failed (`fallback_intent`) and for voice / plain-text events (a voice transcript is a text event, which the
-  unified hook never sees: `when_intent_matched` is its only route). `training_sentences` are therefore
-  **mandatory** on every intent — an intent without them breaks that classifier at startup.
-- `config.yaml`'s `nlp.intent_threshold` (0.55) gates only that local classifier, not the unified one.
+- **Intent `description=` strings in `modeling_agent.py` stay one-liners.** They document the intents and do not
+  drive routing.
+- **BAF's own intent classifier is not used.** No state has an intent (no `when_intent_matched` anywhere), so BAF
+  builds and trains no classifier at startup. Every message is routed by the unified classifier: a typed message
+  (a JSON event) and a spoken one (BAF transcribes it to a plain-text event; `parse_assistant_request` rebuilds the
+  request from the `_voice_context` the editor sent) both match `ReceiveMessageEvent`, which is what the transitions
+  listen for. Never add `when_intent_matched` to a state: it would make BAF train a classifier for that state.
+  If the unified call fails (`fallback_intent`), the message goes to the state's fallback. `training_sentences` on the
+  intents are no longer used by routing, and `config.yaml`'s `nlp.intent_threshold` has no effect.
 - **Transition priority** (`state_bodies.add_unified_transitions`): 0 `_ensure_unified_classification` (side
   effect, always False) → 1 `json_intent_matches` (cached verdict) → 2 `route_to_generation` (`frontend_event` and
   pending generator flows only; `should_route_to_generation()` makes no LLM call and runs no text heuristics) →
-  3 `when_intent_matched` (voice / plain text) → 4 `json_no_intent_matched` (state fallback).
+  3 `json_no_intent_matched` (state fallback). All four listen for `ReceiveMessageEvent` (typed and spoken).
 - **A pending flow suppresses intent matching by design**: while the assistant awaits an answer,
   `json_intent_matches()` returns False for every intent unless the classifier set
   `pending_flow_action="new_request"`. A message that looks "stuck" is usually this, not a routing bug.
@@ -197,7 +198,7 @@ generation are inherited. Details: `docs/source/diagram_handlers.rst`.
 ## Prompts
 
 All prompt text lives in `src/prompts/`, one module per diagram type or state (`classifier`, `class_diagram`,
-`bpmn`, `gui`, …, `fragments` for rules several handlers share, `planner`, `modeling_help`, `describe_model`,
+`bpmn`, `gui`, …, `fragments` for rules several handlers share, `planner`, `modeling_help`, `describe_model`, `traceability`,
 `fallback`, `uml_rag`, `file_conversion`, `reply_language`, `spec_driven`, `model_operations`,
 `conversation_memory`). A static prompt is a constant (`MODIFY_SYSTEM_PROMPT_CLASS`); a prompt built from the
 request is a function of exactly those values (`reasoning_prompt(user_request)`). Call sites import the module
@@ -230,17 +231,20 @@ Full reference: `docs/source/websocket_protocol.rst`. The traps:
   `replay_last_response` (after a reconnect: with `turnId` + `appliedSeqs`, re-send only that turn's unacknowledged terminal replies; without, the session's last terminal reply).
 - Emitted actions — terminal: `inject_element`, `inject_complete_system`, `modify_model`, `assistant_message`,
   `agent_error`, `create_diagram_tab`, `trigger_generator`, `trigger_smart_generator`, `trigger_github_import`,
-  `trigger_export`, `trigger_deploy`, `auto_generate_gui`; non-terminal: `progress`, `stream_start`,
-  `stream_chunk`, `stream_done`. There is **no `switch_diagram` action**.
+  `trigger_export`, `trigger_deploy`, `auto_generate_gui`, `show_trace` (after a trace answer; its `artifactId`
+  only ever from `context.traceDigest.focus`); non-terminal: `progress`, `stream_start`, `stream_chunk`,
+  `stream_done`. There is **no `switch_diagram` action**. Terminal replies (`_TURN_REPLY_ACTIONS`) carry the turn's
+  `llmUsage` once it made an LLM call, stamped in `_send_to_session`.
 - **Every action name is `protocol.actions.Action`** (a `StrEnum`: equal to its string, serialized as it): never
   write an action literal (`tests/test_protocol_actions.py` fails on one outside `protocol/`). Build the repeated
-  envelopes with its builders (`assistant_message`, `inject_element`, `inject_complete_system`, `model_reply`);
+  envelopes with its builders (`assistant_message`, `inject_element`, `inject_complete_system`, `model_reply`,
+  `show_trace`);
   they keep the key order, and `tests/test_handler_envelopes.py` pins every handler's JSON byte for byte.
 
 ## Where Things Live
 
 ```text
-modeling_agent.py                 Entrypoint: BAF agent, 10 states/intents, wiring
+modeling_agent.py                 Entrypoint: BAF agent, 11 states/intents, wiring
 pyproject.toml                    Package (src/ as import root, editable install), version, import-linter contracts
 config_example.yaml               Template for the gitignored config.yaml
 Dockerfile                        Image; its entrypoint is app.container_config (config.yaml from env)

@@ -7,6 +7,7 @@ from baf.core.session import Session
 from baf.library.transition.events.base_events import ReceiveJSONEvent
 
 from .types import AssistantRequest, FileAttachment, WorkspaceContext, SUPPORTED_DIAGRAM_TYPES
+from common import agent_config
 from common.session_keys import PARSED_ASSISTANT_REQUEST, PARSED_REQUEST_EVENT_ID, VOICE_CONTEXT
 from .message_limits import validate_message_length
 from .actions import Action
@@ -61,6 +62,188 @@ def _parse_github_repo(context_payload: Dict[str, Any]) -> Optional[Dict[str, An
         "has_code": repo.get("hasCode") is True,
         "recap": recap[:MAX_REPO_RECAP_CHARS] if isinstance(recap, str) else "",
     }
+
+
+# ``context.traceDigest`` (the editor's summary of the project trace). The
+# enumerations the agent explains to the user; any other value is dropped.
+TRACE_OUT_OF_DATE_REASONS = ("SOURCE_CHANGED", "TARGET_CHANGED", "UPSTREAM_CHANGED")
+TRACE_CHANGE_KINDS = ("CREATED", "UPDATED", "DELETED")
+TRACE_OPERATION_TYPES = ("ModelingSession", "CodeGeneration", "RequirementExtraction", "Conversation")
+
+
+def _digest_str(value: Any, cap: int) -> Optional[str]:
+    """*value* stripped and cut at *cap* characters, or None when it is not a non-empty string."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value[:cap] if value else None
+
+
+def _digest_count(value: Any) -> Optional[int]:
+    """A non-negative int (never a bool) up to ``TRACE_DIGEST_MAX_COUNT``, else None."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if not 0 <= value <= agent_config.TRACE_DIGEST_MAX_COUNT:
+        return None
+    return value
+
+
+def _digest_names(value: Any, allowed: Optional[Tuple[str, ...]] = None) -> List[str]:
+    """A list of short strings (only *allowed* ones when given), capped."""
+    if not isinstance(value, list):
+        return []
+    names = [_digest_str(v, agent_config.TRACE_DIGEST_MAX_NAME_CHARS) for v in value]
+    names = [n for n in names if n and (allowed is None or n in allowed)]
+    return names[:agent_config.TRACE_DIGEST_MAX_LIST_ITEMS]
+
+
+def _digest_fields(item: Dict[str, Any], names=(), texts=(), lists=(), counts=()) -> Dict[str, Any]:
+    """The valid fields of *item*, by kind; invalid and unknown ones are dropped."""
+    out: Dict[str, Any] = {}
+    for key in names:
+        value = _digest_str(item.get(key), agent_config.TRACE_DIGEST_MAX_NAME_CHARS)
+        if value:
+            out[key] = value
+    for key in texts:
+        value = _digest_str(item.get(key), agent_config.TRACE_DIGEST_MAX_TEXT_CHARS)
+        if value:
+            out[key] = value
+    for key in lists:
+        value = _digest_names(item.get(key))
+        if value:
+            out[key] = value
+    for key in counts:
+        value = _digest_count(item.get(key))
+        if value is not None:
+            out[key] = value
+    return out
+
+
+def _digest_list(value: Any, cap: int, parse_item) -> List[Dict[str, Any]]:
+    """The first *cap* items of *value* that *parse_item* accepts (it returns None to drop one)."""
+    if not isinstance(value, list):
+        return []
+    items = []
+    for raw in value:
+        if len(items) >= cap:
+            break
+        item = parse_item(raw) if isinstance(raw, dict) else None
+        if item:
+            items.append(item)
+    return items
+
+
+def _digest_operation(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    item = _digest_fields(raw, names=("id", "type", "status", "startedAt"), texts=("summary",),
+                          lists=("by", "tools"))
+    return item if item.get("type") or item.get("summary") else None
+
+
+def _digest_requirement(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    item = _digest_fields(raw, names=("id", "kind"), texts=("text", "quote"), lists=("realizedBy",))
+    if isinstance(raw.get("covered"), bool):
+        item["covered"] = raw["covered"]
+    return item if item.get("id") or item.get("text") else None
+
+
+def _digest_out_of_date(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    item = _digest_fields(raw, names=("source", "target", "generation"))
+    reasons = _digest_names(raw.get("reasons"), TRACE_OUT_OF_DATE_REASONS)
+    if reasons:
+        item["reasons"] = reasons
+    return item if item.get("source") or item.get("target") else None
+
+
+def _digest_generation(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    item = _digest_fields(raw, names=("generator", "at"), counts=("files", "outOfDateFiles"))
+    return item if item.get("generator") else None
+
+
+def _digest_change(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    kind = raw.get("kind")
+    if kind not in TRACE_CHANGE_KINDS:
+        return None
+    return {"kind": kind, **_digest_fields(raw, names=("feature", "at", "by", "via"), texts=("old", "new"))}
+
+
+def _digest_source(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    item = _digest_fields(raw, names=("type", "name"), texts=("evidence",))
+    return item if item.get("name") or item.get("type") else None
+
+
+def _digest_derived(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    item = _digest_fields(raw, names=("path", "lines"))
+    reasons = _digest_names(raw.get("outOfDate"), TRACE_OUT_OF_DATE_REASONS)
+    if reasons:
+        item["outOfDate"] = reasons
+    return item if item.get("path") else None
+
+
+def _digest_focus(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    item = _digest_fields(raw, names=("artifactId", "name", "elementType"))
+    if not item.get("artifactId") or not item.get("name"):
+        return None
+    for key, cap, parse_item in (
+        ("history", agent_config.TRACE_DIGEST_MAX_FOCUS_HISTORY, _digest_change),
+        ("derivedFrom", agent_config.TRACE_DIGEST_MAX_FOCUS_DERIVED_FROM, _digest_source),
+        ("derived", agent_config.TRACE_DIGEST_MAX_FOCUS_DERIVED, _digest_derived),
+    ):
+        entries = _digest_list(raw.get(key), cap, parse_item)
+        if entries:
+            item[key] = entries
+    return item
+
+
+def _digest_counts(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    counts: Dict[str, Any] = _digest_fields(raw, counts=("artifacts", "links", "outOfDateLinks"))
+    operations = raw.get("operations")
+    if isinstance(operations, dict):
+        per_type = {k: _digest_count(operations.get(k)) for k in TRACE_OPERATION_TYPES}
+        per_type = {k: v for k, v in per_type.items() if v is not None}
+        if per_type:
+            counts["operations"] = per_type
+    return counts
+
+
+_DIGEST_LISTS = (
+    ("recentOperations", agent_config.TRACE_DIGEST_MAX_RECENT_OPERATIONS, _digest_operation),
+    ("requirements", agent_config.TRACE_DIGEST_MAX_REQUIREMENTS, _digest_requirement),
+    ("outOfDate", agent_config.TRACE_DIGEST_MAX_OUT_OF_DATE, _digest_out_of_date),
+    ("generations", agent_config.TRACE_DIGEST_MAX_GENERATIONS, _digest_generation),
+    ("focus", agent_config.TRACE_DIGEST_MAX_FOCUS, _digest_focus),
+)
+
+
+def _parse_trace_digest(context_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Validate the optional ``context.traceDigest`` (or drop it).
+
+    Returns a copy holding only the known fields (the wire's names) that have
+    the right shape, every list and string capped (``agent_config.TRACE_DIGEST_*``):
+    ``schemaVersion``, ``recording``, ``counts``, ``recentOperations``,
+    ``requirements``, ``outOfDate``, ``generations``, ``focus``. A digest
+    that is not an object, or whose ``schemaVersion`` is not a positive int,
+    is dropped (None). Never raises: the strings in it are user data.
+    """
+    raw = context_payload.get("traceDigest")
+    if not isinstance(raw, dict):
+        return None
+    version = raw.get("schemaVersion", 1)
+    if _digest_count(version) is None or version < 1:
+        return None
+    digest: Dict[str, Any] = {
+        "schemaVersion": version,
+        "recording": raw.get("recording") is not False,
+    }
+    counts = _digest_counts(raw.get("counts"))
+    if counts:
+        digest["counts"] = counts
+    for key, cap, parse_item in _DIGEST_LISTS:
+        items = _digest_list(raw.get(key), cap, parse_item)
+        if items:
+            digest[key] = items
+    return digest
 
 
 _GENERATION_KEY_TIERS = ("own", "free", "none")
@@ -318,6 +501,8 @@ def parse_v2_payload(raw_payload: Dict[str, Any], default_diagram_type: str = "C
         current_diagram_indices=current_diagram_indices,
         pilot_participant=pilot_participant,
         github_repo=_parse_github_repo(context_payload),
+        trace_digest=_parse_trace_digest(context_payload),
+        traceability_enabled=context_payload.get("traceabilityEnabled") is True,
         generation_key=_parse_generation_key(context_payload),
         last_generation=_parse_last_generation(context_payload),
     )
