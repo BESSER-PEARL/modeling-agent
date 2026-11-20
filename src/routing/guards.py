@@ -174,10 +174,10 @@ _CREATE_FILLER = frozenset({
 
 def is_too_vague_create(message: str) -> bool:
     """True when a create request has NO domain content after stripping filler."""
-    words = re.findall(r"[a-zA-Z]+", (message or "").lower())
-    core = [w for w in words if w not in _CREATE_FILLER]
-    # Nothing substantive to model (e.g. "create", "make an app", "build a system").
-    return sum(len(w) for w in core) < 3
+    words = re.findall(r"[^\W\d_]+", (message or "").lower())
+    # Nothing substantive to model (e.g. "create", "make an app", "build a system");
+    # a short domain word ("an HR app") is content.
+    return not [w for w in words if w not in _CREATE_FILLER]
 
 
 # A message that only asks to undo ("revert", "undo my last change"): the

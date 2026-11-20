@@ -154,6 +154,29 @@ class TestClassifyMessage:
         assert result.generation_route == "smart"
         assert result.generator_type is None
 
+    @pytest.mark.parametrize("message, generator", [
+        ("Generate the Django backend for my express delivery app", "django"),
+        ("generate SQL for the spring festival tickets", "sql"),
+        ("Generate python classes for my ruby and crystal jewellery shop", "python"),
+    ])
+    def test_a_generator_the_user_names_is_not_overridden_by_a_domain_word(self, message, generator):
+        """Stack names that were the app's domain words sent an explicit request
+        for a built-in generator to the paid from-scratch route."""
+        good = UnifiedClassification(
+            intent="generation_intent", generation_route="deterministic",
+            generator_type=generator, reason="named generator",
+        )
+        result = classify_message(_make_request(message), llm_provider=_FakeProvider(good))
+        assert (result.generation_route, result.generator_type) == ("deterministic", generator)
+
+    def test_a_generator_the_user_did_not_name_is_still_overridden(self):
+        bad = UnifiedClassification(
+            intent="generation_intent", generation_route="deterministic",
+            generator_type="java", reason="llm picked java",
+        )
+        result = classify_message(_make_request("generate kotlin classes"), llm_provider=_FakeProvider(bad))
+        assert (result.generation_route, result.generator_type) == ("smart", None)
+
     def test_supported_language_java_left_deterministic(self):
         # Java IS a BESSER generator — the guard must not hijack it.
         good = UnifiedClassification(

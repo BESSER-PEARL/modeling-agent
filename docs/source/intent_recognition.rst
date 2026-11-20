@@ -279,7 +279,15 @@ regex before or after the call:
   BESSER has no deterministic generator for (rust, kotlin, rails, next.js,
   C++, C#, …) is forced onto the ``smart`` route. The LLM mapped
   "c classes" → ``java`` and "c++ classes" → ``python`` often enough that
-  this had to become deterministic.
+  this had to become deterministic. It never overrides a generator the
+  message names itself (``detect_generator_type``): in "the Django backend
+  for my express delivery app" the stack word is the app's domain. A mixed
+  request that names both ("generate java and kotlin classes") keeps the
+  classifier's verdict.
+- The GUI-diagram edit guard — "add / remove / rename a page or screen"
+  with no app or code word edits the GUI diagram, unless a recent run or a
+  linked repo holds the app (``generated_app``): the generated app's pages
+  live in its code.
 - ``_generate_button_guard()`` — "generate the application" (typed by the
   user, or the prompt of the "Generate application" button offered when the
   user's own request asked to generate) goes to the ``smart`` route when the agent built this project's
@@ -425,7 +433,8 @@ or handler only maps the decision to a reply. The tables in
        ``outage_decline`` / ``outage_artifact`` (only when the verdict is
        missing or ``fallback_intent``), then ``undo`` (modify only: a message
        that only asks to undo or revert is pointed to the editor's undo),
-       then ``self_contradictory`` and ``too_vague`` (create only)
+       then ``self_contradictory`` and ``too_vague`` (create only: no word
+       is left once filler words are removed)
    * - ``quick_response_key()``
      - global fallback, greetings, modeling help
      - A canned capability / help / how-to-run reply, no LLM call

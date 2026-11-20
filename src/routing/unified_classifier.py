@@ -47,6 +47,7 @@ from routing.guards import auto_fix_verdict, frontend_event_verdict
 from routing.generation_signals import (
     _GITHUB_CONTINUE_VERB_RE,
     _extract_github_reference,
+    detect_generator_type,
     recent_smart_gen_for_project,
     repo_holds_app,
 )
@@ -557,6 +558,7 @@ def classify_message(
             result, message, follow_up_target_kind=follow_up_kind,
             has_class_model=ctx is None or bool(_extract_class_names(ctx)),
             linked_repo_has_app=(getattr(ctx, "github_repo", None) or {}).get("has_code") is True,
+            generated_app=bool(recent_smart_gen),
         )
     except Exception:
         logger.exception("classify_message failed; falling back to fallback_intent")
@@ -1109,6 +1111,7 @@ def _post_validate(
     follow_up_target_kind: Optional[str] = None,
     has_class_model: bool = True,
     linked_repo_has_app: bool = False,
+    generated_app: bool = False,
 ) -> UnifiedClassification:
     """Defensive validation of LLM output.
 
@@ -1242,10 +1245,11 @@ def _post_validate(
         # Same guard, EDIT form ("add a Reports page" with an existing GUI
         # must not stash a spec-driven web-app confirmation). Adding/
         # removing/renaming a page or screen edits the GUI DIAGRAM — unless a
-        # linked repo holds the app, whose pages live in its code.
+        # recent run or a linked repo holds the app, whose pages live in its code.
         if (
             _web_gui_guards
             and not linked_repo_has_app
+            and not generated_app
             and re.search(r"\b(pages?|screens?)\b", _low)
             and re.search(r"\b(add|insert|remove|delete|rename)\b", _low)
             and not re.search(
@@ -1270,9 +1274,12 @@ def _post_validate(
         # (C, C++, Rust, Kotlin, Go, ...), the LLM maps it to the nearest
         # built-in (c->java, c++->python). Force the smart / from-scratch route
         # so the LLM writes the actual language instead.
+        # A generator the user named themselves is never overridden: the
+        # stack words may be the app's domain ("an express delivery app").
         if (
             result.generation_route in ("deterministic", "smart")
             and result.generator_type not in ("export", "deploy")
+            and not (result.generator_type and detect_generator_type(message or "") == result.generator_type)
             and _names_unsupported_stack(message or "")
         ):
             if result.generation_route != "smart":
