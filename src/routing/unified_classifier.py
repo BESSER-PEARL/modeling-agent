@@ -149,12 +149,14 @@ _OUTPUT_KIND_KEYWORDS = frozenset(
 
 
 def _names_generator(message: str, generator_type: Optional[str]) -> bool:
-    """True when *message* names *generator_type* by one of its technology keywords."""
+    """True when *message* names *generator_type* by one of its technology keywords (or their plural)."""
     lower = (message or "").lower()
     return any(
-        keyword not in _OUTPUT_KIND_KEYWORDS and re.search(rf"\b{re.escape(keyword)}\b", lower)
+        keyword not in _OUTPUT_KIND_KEYWORDS and re.search(rf"\b{re.escape(keyword)}s?\b", lower)
         for keyword in GENERATOR_KEYWORDS.get(generator_type or "", ())
     )
+
+
 # Words that explicitly ask for screens. Shared with the planner's
 # from-scratch web-app route (orchestrator/request_planner.py).
 EXPLICIT_SCREEN_VOCAB_RE = re.compile(

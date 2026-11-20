@@ -161,6 +161,8 @@ class TestClassifyMessage:
         ("Generate a JSON schema for the data of my Flutter app", "jsonschema"),
         ("Generate the JSON Schema for my Express API payloads", "jsonschema"),
         ("Generate SQL Alchemy models for my Kotlin service", "sqlalchemy"),
+        ("Generate JSON schemas for the data of my Flutter app", "jsonschema"),
+        ("Generate agents for my Kotlin service", "agent"),
     ])
     def test_a_generator_the_user_names_is_not_overridden_by_a_domain_word(self, message, generator):
         """Stack names that were the app's domain words sent an explicit request

@@ -287,7 +287,9 @@ regex before or after the call:
   no technology, so "a Spring Boot backend",
   "a web app with Angular" or "a MySQL database for my Rails app" still goes
   to ``smart``. A mixed request that names both ("generate java and kotlin
-  classes") keeps the classifier's verdict.
+  classes") keeps the classifier's verdict; so does a request that names the
+  supported technology only as the one to convert away from ("port the Java
+  classes to Kotlin"), which goes to ``smart`` only when the classifier says so.
 - The GUI-diagram edit guard — "add / remove / rename a page or screen"
   with no app or code word edits the GUI diagram, unless a recent run or a
   linked repo holds the app (``generated_app``): the generated app's pages
