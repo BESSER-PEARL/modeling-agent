@@ -62,8 +62,11 @@ ENV PYTHONUNBUFFERED=1
 # start-period must cover the FULL boot, not just process start: BAF trains a
 # NER model plus one intent classifier per state (~20s each, 10 states) and
 # only then opens the WebSocket, which takes several minutes.
+# Unhealthy when the port refuses or the agent holds over 90% of its open-file
+# limit (src/app/healthcheck.py): an agent out of descriptors still accepts
+# TCP but hangs every WebSocket handshake.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
-    CMD python -c "import socket; s=socket.socket(); s.connect(('localhost', 8765)); s.close()" || exit 1
+    CMD python -m app.healthcheck || exit 1
 
 # Write config.yaml from the environment (src/app/container_config.py), then
 # exec the agent.
