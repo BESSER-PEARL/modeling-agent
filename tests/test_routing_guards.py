@@ -203,6 +203,8 @@ def test_quick_response_key(message, key):
     ("design a library then generate sql", True),
     ("create a class diagram", False),
     ("create a class diagram, generate django", False),
+    # A domain where people push to a repository is not a request to save to GitHub.
+    ("model a version control system where developers push commits to a repository", False),
 ])
 def test_is_mixed_modeling_and_generation(message, mixed):
     assert guards.is_mixed_modeling_and_generation(message) is mixed

@@ -38,7 +38,7 @@ import logging
 import re
 from typing import Any, Dict, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from llm.byok_config import get_current
 from prompts.classifier import SYSTEM_PROMPT
@@ -49,6 +49,7 @@ from routing.generation_signals import (
     _GITHUB_CONTINUE_VERB_RE,
     _extract_github_reference,
     is_github_save_request,
+    names_export_format,
     recent_smart_gen_for_project,
     repo_holds_app,
 )
@@ -497,6 +498,12 @@ class UnifiedClassification(BaseModel):
             "Used for logs and surfaced to users as a hint."
         ),
     )
+
+    @field_validator("start_over", "states_requirements", "needs_clarification", "provider", mode="before")
+    @classmethod
+    def _null_is_default(cls, value: Any, info: ValidationInfo) -> Any:
+        """A JSON-mode answer may send null for a field it leaves unset: read it as the default."""
+        return cls.model_fields[info.field_name].default if value is None else value
 
 
 # ---------------------------------------------------------------------
@@ -1370,9 +1377,13 @@ def _post_validate(
         elif (
             result.generation_route == "other"
             or (result.generation_route == "deterministic" and result.generator_type in (None, "export", "deploy"))
-        ) and is_github_save_request(message or ""):
+        ) and is_github_save_request(message or "") and not (
+            result.generator_type == "export" and names_export_format(message or "")
+        ):
             # Safety net: "save to github" is the editor's GitHub save. Live
-            # 2026-11-20 it was typed 'deploy' and opened Render instead.
+            # 2026-11-20 it was typed 'deploy' and opened Render instead. An
+            # export that names its format ("export to json and save it on
+            # github") stays an export.
             logger.warning(
                 "LLM routed a GitHub save to route=%s type=%s; correcting to github",
                 result.generation_route, result.generator_type,

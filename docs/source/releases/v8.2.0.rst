@@ -1,8 +1,9 @@
 Version 8.2.0
 =============
 
-This minor release goes with BESSER v8.11.0. Every new context field is
-optional: an editor that does not send them gets the behavior of v8.1.5.
+This minor release goes with BESSER v8.11.0. Every new context field and
+reply key is optional: an editor that does not send or read them gets the
+behavior of v8.1.5, except for "save to github" (see Upgrade notes).
 
 Features
 --------
@@ -28,6 +29,25 @@ Features
   ``auto`` or to "anything else", since an ``auto`` transition must be the only
   one of its state
   (`#87 <https://github.com/BESSER-PEARL/modeling-agent/pull/87>`_).
+* **"Save to GitHub" from the chat.** "save to github", "push the app to my
+  repo" or "commit this to github" open the editor's GitHub save (the push
+  dialog of the project's last Spec-Driven run, else Save to GitHub) through
+  the new ``trigger_github_save`` action. They used to open the Render deploy
+  dialog, and "push the web app to github" was read as a web-app build. A
+  hosting word (deploy, redeploy, publish, Render, production, online) still
+  makes the message a deploy
+  (`#92 <https://github.com/BESSER-PEARL/modeling-agent/pull/92>`_,
+  `#94 <https://github.com/BESSER-PEARL/modeling-agent/pull/94>`_).
+* **Start over.** Asking to rebuild the app from scratch ("start over", in any
+  language) is a classifier decision (``start_over``), not a guess. After one
+  confirmation that says changes from earlier runs are dropped, the app is
+  rebuilt, also when no GitHub repository is linked
+  (`#93 <https://github.com/BESSER-PEARL/modeling-agent/pull/93>`_).
+* **The new run states in the reply.** The reply after a Spec-Driven run
+  follows the run card: "generated, but it is not verified" with the reason,
+  "finished with N unresolved blockers", "N checks could not be confirmed".
+  The outcome kept for the next turn uses the same wording
+  (`#91 <https://github.com/BESSER-PEARL/modeling-agent/pull/91>`_).
 
 Changes
 -------
@@ -38,6 +58,27 @@ Changes
   connections sooner after a restart. If the classifier call fails, a message
   goes to the state's fallback
   (`#87 <https://github.com/BESSER-PEARL/modeling-agent/pull/87>`_).
+* **The follow-up contract.** A retry, fix or regenerate is sent to the run in
+  the user's own words and is not added to the remembered request; a bare
+  command such as "continue" still sends the earlier request unchanged. When
+  the newest message states nothing new (classifier field
+  ``states_requirements``), the run trigger carries ``remember_newest: false``
+  so the editor does not record it as part of the project's request
+  (`#93 <https://github.com/BESSER-PEARL/modeling-agent/pull/93>`_).
+* **Text guards follow the classifier on ordinary requests.** A page edit after
+  a run stays a change of the generated app, in any language; a built-in
+  generator the message names by any of its keywords (JSON Schema, SQL
+  Alchemy) is kept; the vagueness guard counts non-Latin letters as words. A
+  click that is an exact answer to the open question gets that dialog's
+  verdict without a classifier call
+  (`#93 <https://github.com/BESSER-PEARL/modeling-agent/pull/93>`_).
+* **Edit runs.** The banner and the reply after a run that edited an existing
+  app speak of updating the app (``metadata.mode``)
+  (`#91 <https://github.com/BESSER-PEARL/modeling-agent/pull/91>`_).
+* **Fewer tuned heuristics.** The radio-to-dropdown rewrite of designed forms
+  and the "simple design" prompt exception are removed: BESSER's GUI converter
+  now reads radio groups and select options itself
+  (`#91 <https://github.com/BESSER-PEARL/modeling-agent/pull/91>`_).
 
 Fixes
 -----
@@ -48,3 +89,52 @@ Fixes
   specification. The agent now asks replace-or-keep again with the new request,
   and never builds a system from a bare answer such as "replace"
   (`#88 <https://github.com/BESSER-PEARL/modeling-agent/pull/88>`_).
+* **A null list of changes.** A model answer with ``"changes": null`` no
+  longer crashes the class-diagram handler
+  (`#91 <https://github.com/BESSER-PEARL/modeling-agent/pull/91>`_).
+* **The reply after an expired result.** When the previous result is gone, the
+  assistant says it will build again and no longer calls a fresh build
+  "continue development"
+  (`#91 <https://github.com/BESSER-PEARL/modeling-agent/pull/91>`_).
+* **Screens listed in the request.** The "Basic CRUD pages or AI design"
+  question is skipped only for the request that listed its screens
+  (`#91 <https://github.com/BESSER-PEARL/modeling-agent/pull/91>`_).
+* **Truthful replies after a class change.** The reply reports what changed,
+  and a change that did nothing is not reported as an addition
+  (`#91 <https://github.com/BESSER-PEARL/modeling-agent/pull/91>`_).
+* **Forms.** The select of an optional enumeration starts with an empty
+  choice, and required fields are marked
+  (`#91 <https://github.com/BESSER-PEARL/modeling-agent/pull/91>`_).
+* **A build request that ends with a push keeps its generator.** "Generate a
+  django app and push it to github" was planned as a GitHub save, so Django was
+  never generated. It now builds first. "Push the changes to the repo and
+  redeploy" is a deploy, and an export that names its format ("export the
+  model to json and save it on github") stays an export
+  (`#94 <https://github.com/BESSER-PEARL/modeling-agent/pull/94>`_).
+* **A classifier answer with a null flag keeps its verdict.** A
+  ``null`` in ``start_over``, ``states_requirements``,
+  ``needs_clarification`` or ``provider`` failed validation, and the message
+  went to the fallback; it now reads as the field's default
+  (`#94 <https://github.com/BESSER-PEARL/modeling-agent/pull/94>`_).
+
+Protocol
+--------
+
+New in :doc:`../websocket_protocol`: the terminal action
+``trigger_github_save``; the optional ``remember_newest`` field of
+``trigger_smart_generator``; and the ``generator_result`` metadata keys
+``mode``, ``unresolvedBlockerCount``, ``notConfirmedCount``, ``unverified``
+and ``unverifiedReason``. A ``generator_result`` without the new keys gets the
+earlier reply.
+
+Upgrade notes
+-------------
+
+Deploy the BESSER backend with the GUI converter change
+(`BESSER #817 <https://github.com/BESSER-PEARL/BESSER/pull/817>`_) and the
+editor with `#301
+<https://github.com/BESSER-PEARL/BESSER-Web-Modeling-Editor/pull/301>`_ first,
+then this agent. The agent no longer rewrites radio groups into dropdowns and
+relies on that converter to read them. An editor without #301 does not know
+``trigger_github_save``: "save to github" then shows the raw action as a chat
+bubble.

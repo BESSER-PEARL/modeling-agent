@@ -110,13 +110,38 @@ _GITHUB_SAVE_RE = re.compile(
     r"\b(?:save|push|commit|upload)\b[^.?!]*?\b(?:to|on|in|into)\s+"
     r"(?:(?:my|the|our|a|its|your)\s+)?(?:github|repo|repository)\b"
 )
-_HOSTING_RE = re.compile(r"\b(?:deploy\w*|render|prod|production|go live|host\w*)\b")
+_HOSTING_RE = re.compile(
+    r"\b(?:(?:re)?deploy\w*|(?:re)?publish\w*|render|prod|production|go live|online|host\w*)\b"
+)
+
+# The project-file formats the export writes.
+EXPORT_FORMATS = ["json", "buml"]
+
+
+def names_export_format(message: str) -> bool:
+    """True when *message* names a format of the project export ("export it as json")."""
+    lower = (message or "").lower()
+    return any(re.search(r"\b" + fmt + r"\b", lower) for fmt in EXPORT_FORMATS)
 
 
 def is_github_save_request(message: str) -> bool:
     """True when *message* asks to save or push the project or its code to GitHub."""
     lower = (message or "").lower()
     return bool(_GITHUB_SAVE_RE.search(lower)) and not _HOSTING_RE.search(lower)
+
+
+def _keyword_generator(lower: str) -> Optional[str]:
+    """The first generator whose keyword *lower* holds. Short, ambiguous keywords match
+    on word boundaries, so "sql" does not match inside "sqlalchemy"."""
+    _BOUNDARY_KEYWORDS = {"sql", "backend"}
+    for generator_type, keywords in GENERATOR_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword in _BOUNDARY_KEYWORDS:
+                if re.search(r'\b' + re.escape(keyword) + r'\b', lower):
+                    return generator_type
+            elif keyword in lower:
+                return generator_type
+    return None
 
 
 def detect_generator_type(message: str) -> Optional[str]:
@@ -129,23 +154,18 @@ def detect_generator_type(message: str) -> Optional[str]:
     ``_is_modeling_request`` and ``_is_diagram_creation_request``.
     """
     lower = (message or "").lower()
-    # Before the keywords: "push the web app to github" is not web_app.
+    # Before the keywords: "push the web app to github" is not web_app. A generator
+    # named outside the save phrase is a build to do first ("generate a django app
+    # and push it to github"): that request keeps its generator.
     if is_github_save_request(lower):
-        return "github"
+        save = _GITHUB_SAVE_RE.search(lower)
+        if not _keyword_generator(lower[:save.start()] + " " + lower[save.end():]):
+            return "github"
 
-    # 1. Exact keyword matching (fast path) — use word-boundary-aware check
-    #    for short/ambiguous keywords to avoid substring false positives
-    #    (e.g. "sql" matching inside "sqlalchemy").
-    _BOUNDARY_KEYWORDS = {"sql", "backend"}
-    for generator_type, keywords in GENERATOR_KEYWORDS.items():
-        for keyword in keywords:
-            if keyword in _BOUNDARY_KEYWORDS:
-                # Word-boundary match to avoid substring collisions
-                if re.search(r'\b' + re.escape(keyword) + r'\b', lower):
-                    return generator_type
-            else:
-                if keyword in lower:
-                    return generator_type
+    # 1. Exact keyword matching (fast path)
+    generator_type = _keyword_generator(lower)
+    if generator_type:
+        return generator_type
     # 2. Regex fallback for flexible phrasing
     for generator_type, pattern in _FUZZY_PATTERNS:
         if pattern.search(lower):
