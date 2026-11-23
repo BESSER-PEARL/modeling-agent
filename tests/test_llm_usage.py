@@ -189,7 +189,7 @@ def test_the_field_rides_along_with_the_turn_stamps_and_replays_as_sent():
 def test_the_transition_hook_opens_the_turn_before_the_classifier(monkeypatch):
     session = _session()
 
-    def classify(s, request, provider):
+    def classify(s, request, provider, answer_verdict=None):
         get_tracker().record(prompt_tokens=900, completion_tokens=40, model="gpt-6-luna")
         return type("V", (), {"intent": "describe_model_intent", "generation_route": None,
                               "generator_type": None, "reason": "r"})()

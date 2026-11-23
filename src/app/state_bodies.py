@@ -42,7 +42,7 @@ from conversation.session_helpers import (
     json_intent_matches,
     json_no_intent_matched,
 )
-from app.confirmation import handle_pending_gui_choice, resume_pending
+from app.confirmation import dialog_answer_verdict, handle_pending_gui_choice, resume_pending
 from execution import execute_planned_operations
 from execution.model_operations import GUI_CHOICE_IN_REQUEST
 from ingestion.file_handling import handle_file_attachments
@@ -156,7 +156,8 @@ def _ensure_unified_classification(session: Session) -> bool:
         if guards.skips_classification(request):
             return False
         provider = _get_llm_provider() if _get_llm_provider else None
-        classification = get_or_classify(session, request, provider)
+        classification = get_or_classify(
+            session, request, provider, dialog_answer_verdict(session, request.message))
         logger.info(
             "unified classifier: intent=%s generation_route=%s generator_type=%s reason=%s",
             classification.intent,
