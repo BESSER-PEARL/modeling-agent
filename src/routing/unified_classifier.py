@@ -38,7 +38,7 @@ import logging
 import re
 from typing import Any, Dict, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from llm.byok_config import get_current
 from prompts.classifier import SYSTEM_PROMPT
@@ -498,6 +498,12 @@ class UnifiedClassification(BaseModel):
             "Used for logs and surfaced to users as a hint."
         ),
     )
+
+    @field_validator("start_over", "states_requirements", "needs_clarification", "provider", mode="before")
+    @classmethod
+    def _null_is_default(cls, value: Any, info: ValidationInfo) -> Any:
+        """A JSON-mode answer may send null for a field it leaves unset: read it as the default."""
+        return cls.model_fields[info.field_name].default if value is None else value
 
 
 # ---------------------------------------------------------------------

@@ -426,6 +426,21 @@ class TestSchemaContracts:
         with pytest.raises(ValueError):
             UnifiedClassification(intent="traceability_question_intent", trace_view="graph", reason="test")
 
+    @pytest.mark.parametrize("field", ["start_over", "states_requirements", "needs_clarification", "provider"])
+    def test_a_null_flag_keeps_the_verdict(self, field):
+        # Review of 2026-11-23: a JSON-mode answer with "start_over": null failed
+        # validation, so the verdict became fallback_intent and the request was lost.
+        class _JsonModeProvider:
+            def parse(self, *, messages, schema, temperature, max_tokens):
+                return validate_llm_json(schema, json.dumps({
+                    "intent": "generation_intent", "generation_route": "smart",
+                    "refined_instructions": "Build a library app.", field: None, "reason": "r",
+                }))
+
+        result = classify_message(_make_request("build a library app"), llm_provider=_JsonModeProvider())
+        assert (result.intent, result.generation_route) == ("generation_intent", "smart")
+        assert getattr(result, field) == UnifiedClassification.model_fields[field].default
+
 
 class _RecordingProvider:
     """Fake provider that records the messages it was handed and returns a
