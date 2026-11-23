@@ -67,6 +67,18 @@ Application (``src/app/``)
   - ``render(settings)`` — the config text
   - ``redact(text)`` — the log copy
 
+``src/app/session_loops.py``
+  ``install()`` — replaces BAF 4.5.3's ``Session._run_event_thread`` and
+  ``Session._stop_event_thread`` so a session's event loop is closed when the
+  session ends (``modeling_agent.py`` calls it before creating the agent). Stop
+  wakes the loop at once and joins its thread for at most
+  ``STOP_JOIN_TIMEOUT_SECONDS`` (30 s).
+
+``src/app/healthcheck.py``
+  The Docker health check (``python -m app.healthcheck``): exits 1 when the
+  WebSocket port refuses or the agent holds more than 90% of its soft
+  open-file limit (``fd_verdict(open_fds, limit)``).
+
 Ingestion (``src/ingestion/``)
 ------------------------------
 
