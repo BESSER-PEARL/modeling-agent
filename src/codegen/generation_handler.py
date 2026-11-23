@@ -40,6 +40,7 @@ from common.pending_dialogs import (
 )
 from conversation.reply_copy import OUT_OF_SCOPE_REDIRECT, SPEC_DRIVEN_NAME
 from routing.generation_signals import (
+    EXPORT_FORMATS,
     GENERATOR_PREREQUISITES,
     _active_project_id,
     _extract_github_reference,
@@ -806,8 +807,6 @@ GENERATOR_REQUIRED_FIELDS: Dict[str, List[str]] = {
     "deploy": [],
     "github": [],
 }
-
-EXPORT_FORMATS = ["json", "buml"]
 
 DIALECT_VALUES = ["sqlite", "postgresql", "mysql", "mssql", "mariadb", "oracle"]
 MODE_VALUES = ["regular", "smart_data"]

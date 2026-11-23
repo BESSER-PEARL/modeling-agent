@@ -110,7 +110,18 @@ _GITHUB_SAVE_RE = re.compile(
     r"\b(?:save|push|commit|upload)\b[^.?!]*?\b(?:to|on|in|into)\s+"
     r"(?:(?:my|the|our|a|its|your)\s+)?(?:github|repo|repository)\b"
 )
-_HOSTING_RE = re.compile(r"\b(?:deploy\w*|render|prod|production|go live|host\w*)\b")
+_HOSTING_RE = re.compile(
+    r"\b(?:(?:re)?deploy\w*|(?:re)?publish\w*|render|prod|production|go live|online|host\w*)\b"
+)
+
+# The project-file formats the export writes.
+EXPORT_FORMATS = ["json", "buml"]
+
+
+def names_export_format(message: str) -> bool:
+    """True when *message* names a format of the project export ("export it as json")."""
+    lower = (message or "").lower()
+    return any(re.search(r"\b" + fmt + r"\b", lower) for fmt in EXPORT_FORMATS)
 
 
 def is_github_save_request(message: str) -> bool:

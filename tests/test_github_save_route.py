@@ -31,6 +31,10 @@ NOT_SAVE_TO_GITHUB = [
     "deploy to render",
     "push this to prod",
     "push it to github and deploy it on render",
+    # Review of 2026-11-23: a hosting step after the push makes it a deploy.
+    "push the changes to the repo and redeploy",
+    "push it to github and publish it",
+    "commit to my repo and put it online",
     "export as json",
     "save the project",
     "continue from github.com/acme/shop",
@@ -79,6 +83,12 @@ def test_post_validate_corrects_a_github_save_typed_as_something_else(llm_type):
     # The live misroute: the LLM picked 'deploy' for "save to github".
     result = _post_validate(_deterministic(llm_type), "save to github")
     assert result.generator_type == "github"
+
+
+def test_post_validate_keeps_an_export_that_names_its_format():
+    # Review of 2026-11-23: the net replaced this export with a GitHub save.
+    result = _post_validate(_deterministic("export"), "export the model to json and save it on github")
+    assert result.generator_type == "export"
 
 
 def test_post_validate_promotes_a_refused_github_save():
