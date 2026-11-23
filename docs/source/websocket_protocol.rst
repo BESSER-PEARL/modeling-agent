@@ -97,7 +97,22 @@ Not every message from the frontend is a ``user_message``:
    * - ``frontend_event``
      - Reports the outcome of an action the frontend executed (e.g. a
        generator finishing). Routed deterministically to the generation
-       state — never classified.
+       state — never classified. A Spec-Driven run's ``generator_result``
+       carries ``metadata.mode`` (``"modify"`` when the run edited an existing
+       app, ``"create"`` otherwise); the reply then speaks of updating the app
+       instead of generating it, and without the field it speaks of generating.
+       Its other ``metadata`` keys: ``runId``, ``costUsd`` (never shown),
+       ``generator_used``, ``errorCode``, ``incomplete``, ``incompleteReason``,
+       ``blockerCount`` (padded by a newer backend, so read only for an
+       incomplete run), ``unresolvedBlockerCount`` (the real blockers of a run
+       that was not cut short), ``notConfirmedCount`` (checks that could not be
+       confirmed; without ``unresolvedBlockerCount``, ``blockerCount`` minus
+       this is the real blockers), ``unverified`` with ``unverifiedReason``
+       (the reply never says the run succeeded, and quotes the reason) and
+       ``verification`` (``{verified, foundInCode, notVerified,
+       shippedUnenforced, failed}``; ``failed`` counts tests the agent wrote
+       that ran against the app and failed). Absent keys keep the earlier
+       reply.
    * - ``replay_last_response``
      - Asks the agent to re-send buffered terminal replies after a reconnect
        that dropped a long-running reply mid-flight. With ``turnId`` (and
@@ -233,9 +248,15 @@ Field Reference
        content is appended to it. A content-free follow-up ("regenerate with
        fixes", "try again", "fix it") with neither asks the user to describe
        the application again. When
-       ``expired`` is true (and no linked repo holds the app), the run
-       confirmation says the previous result is no longer available and the
-       application will be built again, instead of offering to update it.
+       ``expired`` is true and the project has no linked repo (the editor may
+       continue from a linked repo's code), the run confirmation says the
+       previous result is no longer available and the application will be
+       built again, instead of offering to update it. The run's instructions
+       then hold a "Starting point" section, before the user's request: build
+       the whole application from the model and the requests, including any
+       earlier work they ask to continue or fix. When ``runId`` is set and ``expired`` is false, the
+       editor still holds that run and, without an explicit ``mode``, edits
+       it: the run confirmation then offers to update the existing app.
    * - ``attachments``
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)
@@ -947,7 +968,7 @@ Built by ``build_trigger_smart_generator_payload()`` in
      "action": "trigger_smart_generator",
      "instructions": "Rails 7 with PostgreSQL via Active Record and Devise auth",
      "provider": "anthropic",
-     "message": "Generating your application from your specs…"
+     "message": "Starting the Spec-Driven Agent…"
    }
 
 .. list-table::
@@ -960,13 +981,34 @@ Built by ``build_trigger_smart_generator_payload()`` in
      - The polished prompt for the generator. Required — the frontend aborts
        on an empty value. Names the stack and any non-functional requirements
        the user mentioned; it does **not** restate the class diagram, which
-       the generator already has.
+       the generator already has. When the user's own request is attached it
+       follows the notes under ``## The user's original request, verbatim``,
+       and each later message of the user under ``## Subsequent user request,
+       verbatim``; the last such section is the user's newest message, in their
+       words (BESSER reads these headings, ``src/prompts/spec_driven.py``). A
+       message that only asks to retry, continue or fix earlier work is sent
+       there but not kept in the project's request; a bare command ("generate
+       the app", "continue") sends the earlier request unchanged. A "Starting
+       point" section comes before the user's request.
    * - ``provider``
      - Suggested provider. The frontend's BYOK selection can override it.
    * - ``mode``
      - Optional. ``"generate"`` rebuilds instead of continuing from the
-       existing app; sent only when the user asks to discard the app a linked
-       GitHub repo holds. Without it the frontend decides.
+       existing app; sent when the user asks to start the app over
+       (``start_over``) or to discard the app a linked GitHub repo holds, after
+       a confirmation that says earlier changes are dropped. Without it the
+       frontend decides.
+   * - ``remember_newest``
+     - Optional, sent only as ``false``: the last ``## Subsequent user
+       request, verbatim`` section is a message the assistant did not remember
+       because it states nothing new: a retry or fix it recognises, or one the
+       classifier marked so (``states_requirements``). The frontend does not keep that section as part of the project's
+       request and tells the backend the follow-up states nothing new. An
+       editor that does not know the field drops it and behaves as before.
+   * - ``message``
+     - A neutral banner that names neither mode, since the frontend picks
+       edit or rebuild after receiving the action. Current editors replace it
+       with a line for the mode they picked.
 
 The action names no model: the run uses the model the user picked in the
 editor, else the BESSER backend's default for the provider (the deployment's

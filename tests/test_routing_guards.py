@@ -114,6 +114,15 @@ MODELING_GUARD_TABLE = [
     ("make an app", CREATE, "create", "too_vague"),
     ("create", CREATE, "none", "too_vague"),
     ("make an app", MODIFY, "modify", None),
+    # modify only: a message that just asks to undo gets the editor's undo
+    ("revert", MODIFY, "modify", "undo"),
+    ("Undo that", MODIFY, "modify", "undo"),
+    ("please revert the last change.", MODIFY, "modify", "undo"),
+    ("undo my last changes", MODIFY, "none", "undo"),
+    ("Revert it!", MODIFY, "modify", "undo"),
+    ("undo", CREATE, "create", None),
+    ("revert the title attribute to a string", MODIFY, "modify", None),
+    ("undo the rename and call it Ticket", MODIFY, "modify", None),
     # real requests pass
     ("create a library with books, members and loans", CREATE, "create", None),
     ("create a shop with no user accounts, just products", CREATE, "create", None),
@@ -146,6 +155,7 @@ def _run_modeling_body(message, state_intent, verdict):
     ("nothing", MODIFY, "fallback", sb._DECLINE_ACK),
     ("tell me a joke", CREATE, "none", sb._OUT_OF_SCOPE_REDIRECT),
     ("model nothing", CREATE, "create", sb._CONTRADICTORY_CREATE_CLARIFY),
+    ("revert", MODIFY, "modify", "To undo, use Ctrl+Z or the undo button in the editor toolbar."),
     ("build a system", CREATE, "create", "EMPTY"),
     # the guard sees the reconciled intent: a create verdict in the modify state
     ("make an app", MODIFY, "create", "EMPTY"),

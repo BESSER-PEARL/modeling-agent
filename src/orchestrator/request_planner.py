@@ -534,9 +534,10 @@ def _try_heuristic_decomposition(
         if gen_type:
             # Determine diagram type from the modeling part
             target = _match_segment_target(model_part) or "ClassDiagram"
+            # The whole message: domain detail can follow the generate verb.
             operations: List[Dict[str, Any]] = [
                 {"type": "model", "diagramType": target, "mode": "complete_system",
-                 "request": model_part},
+                 "request": stripped},
             ]
             # If the generator needs additional prerequisite diagrams, add them
             prereqs = GENERATOR_PREREQUISITES.get(gen_type, [])

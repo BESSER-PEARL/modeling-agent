@@ -5,6 +5,8 @@ itself re-misrouted — re-creating the identical confirmation in a loop.
 The _post_validate guard breaks that class of loop deterministically.
 """
 
+import pytest
+
 from routing.unified_classifier import UnifiedClassification, _post_validate
 
 
@@ -69,3 +71,23 @@ class TestGuiPageEditGuard:
         ):
             out = _post_validate(_gen(), msg)
             assert out.intent == "generation_intent", msg
+
+
+class _GenerationProvider:
+    def parse(self, *, messages, schema, temperature, max_tokens):
+        return _gen()
+
+
+@pytest.mark.parametrize("message", ["add a login page", "add a statistics screen to it",
+                                     "remove the delete button from the members page"])
+def test_a_page_edit_after_a_run_stays_a_change_of_the_generated_app(message):
+    """The edit guard rerouted these to the GUI diagram right after a run built the
+    app, against the classifier's own follow-up rule, and only for English."""
+    from protocol.types import AssistantRequest
+    from routing.unified_classifier import classify_message
+
+    out = classify_message(AssistantRequest(message=message), _GenerationProvider(), recent_smart_gen=True)
+
+    assert out.intent == "generation_intent"
+    assert classify_message(AssistantRequest(message=message), _GenerationProvider()).intent == (
+        "modify_model_intent")

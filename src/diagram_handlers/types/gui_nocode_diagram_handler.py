@@ -691,6 +691,27 @@ def _create_form_attributes(
     return chosen or creatable
 
 
+def _make_enum_select(node: Dict[str, Any], attr: Dict[str, Any]) -> None:
+    """Turn a form control into a ``<select>`` of *attr*'s enumeration literals, in place.
+
+    BESSER's form converter reads the choices from ``data-options``; the
+    ``<option>`` children show them in the editor. A field a new record may
+    leave out starts with an empty choice, as the generated app's dropdown does.
+    """
+    literals = attr["enumLiterals"]
+    attrs = node.setdefault("attributes", {})
+    for key in ("type", "placeholder", "list", "value"):
+        attrs.pop(key, None)
+    attrs["data-options"] = ",".join(literals)
+    node["tagName"] = "select"
+    node.pop("type", None)
+    node.pop("content", None)
+    node["components"] = [
+        {"tagName": "option", "attributes": {"value": literal}, "content": literal}
+        for literal in ([] if _is_required(attr) else [""]) + literals
+    ]
+
+
 def _labelled_input(attr: Dict[str, Any], form_key: str, input_style: Dict[str, str]) -> Dict[str, Any]:
     """A ``<label>`` + ``<input name=attribute>`` pair for a create form."""
     input_id = f"{form_key}-{_slug(attr['name'])}"
@@ -699,6 +720,15 @@ def _labelled_input(attr: Dict[str, Any], form_key: str, input_style: Dict[str, 
     input_attrs = {"type": input_type, "name": attr["name"], "id": input_id}
     if input_type != "checkbox":
         input_attrs["placeholder"] = label
+        if _is_required(attr):
+            input_attrs["required"] = "required"
+    control = {
+        "tagName": "input",
+        "attributes": input_attrs,
+        "style": dict(input_style) if input_type != "checkbox" else {},
+    }
+    if attr.get("enumLiterals"):
+        _make_enum_select(control, attr)
     return {
         "tagName": "div",
         "style": {"display": "grid", "gap": "6px"},
@@ -709,11 +739,7 @@ def _labelled_input(attr: Dict[str, Any], form_key: str, input_style: Dict[str, 
                 "content": label,
                 "style": {"font-size": "0.85rem", "font-weight": "600", "color": "#334155"},
             },
-            {
-                "tagName": "input",
-                "attributes": input_attrs,
-                "style": dict(input_style) if input_type != "checkbox" else {},
-            },
+            control,
         ],
     }
 
@@ -1352,7 +1378,8 @@ def _table_component(
         "show-header": "true",
         "striped-rows": "false",
         "show-pagination": "true",
-        "action-buttons": "true",
+        # Add/edit/delete unless the design marks the table read-only
+        "action-buttons": "false" if section_spec.get("editable") is False else "true",
         "rows-per-page": "5",
     }
 
@@ -1372,6 +1399,15 @@ def _table_component(
             "border-radius": "12px",
         },
     }
+
+
+def _has_read_only_table(node: Any) -> bool:
+    if not isinstance(node, dict):
+        return False
+    attrs = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
+    if node.get("type") == "table" and attrs.get("action-buttons") == "false":
+        return True
+    return any(_has_read_only_table(child) for child in node.get("components") or [])
 
 
 def _dashboard_component(
@@ -1637,7 +1673,7 @@ def _metric_card_component(
         "metric-title": title,
         "value-color": "#2c3e50",
         "value-size": "32",
-        "show-trend": "true",
+        "show-trend": "false",
         "positive-color": "#27ae60",
         "negative-color": "#e74c3c",
         "format": "number",
@@ -1718,7 +1754,7 @@ def _stats_grid_component(
             "metric-title": label,
             "value-color": "#2c3e50",
             "value-size": "32",
-            "show-trend": "true",
+            "show-trend": "false",
             "positive-color": "#27ae60",
             "negative-color": "#e74c3c",
             "format": fmt,
@@ -1786,7 +1822,7 @@ def _stat_placeholder(label: str, cls: Optional[Dict[str, Any]] = None) -> Dict[
         "metric-title": label,
         "value-color": "#2c3e50",
         "value-size": "32",
-        "show-trend": "true",
+        "show-trend": "false",
         "positive-color": "#27ae60",
         "negative-color": "#e74c3c",
         "format": "number",
@@ -1931,20 +1967,21 @@ def _action_button_component(
     table_id: str = "",
 ) -> Dict[str, Any]:
     """Build a GrapesJS action-button component for a class method."""
+    label = _human_label(method["name"])
     return {
         "type": "action-button",
-        "content": method["name"],
+        "content": label,
         "attributes": {
             "class": "action-button-component",
             "type": "button",
-            "data-button-label": method["name"],
+            "data-button-label": label,
             "data-action-type": "run-method",
             "data-method-class": cls["id"],
             "data-method": method["id"],
             "data-instance-source": table_id,
             "instance-method": "true" if method.get("isInstanceMethod") else "false",
         },
-        "button-label": method["name"],
+        "button-label": label,
         "action-type": "run-method",
         "method-class": cls["id"],
         "method": method["id"],
@@ -2528,6 +2565,7 @@ def _build_bind_widget(
         "valueField": value_field,
         "aggregation": _clean_text(bind.get("aggregation")),
         "filter": bind.get("filter"),
+        "editable": bind.get("editable"),
     }
 
     if kind in _BIND_CHART_KINDS:
@@ -2833,7 +2871,7 @@ def _make_method_button(node: Dict[str, Any], cls: Dict[str, Any], method: Dict[
     Same props as ``_action_button_component`` (the Basic CRUD encoding); the
     authored classes, content and style are kept so the design survives.
     """
-    label = _node_text(node) or method["name"]
+    label = _node_text(node) or _human_label(method["name"])
     attrs = node.setdefault("attributes", {})
     attrs.update({
         "type": "button",
@@ -3041,9 +3079,21 @@ def _bind_form(form: Dict[str, Any], classes: List[Dict[str, Any]]) -> None:
         return
     attrs["data-source"] = cls["id"]
     form["attributes"] = attrs
+    required_groups = set()
     for node, attr in fields:
         if attr:
-            node.setdefault("attributes", {})["name"] = attr["name"]
+            control_attrs = node.setdefault("attributes", {})
+            control_attrs["name"] = attr["name"]
+            # A radio group already offers its choices; a checkbox sends false unticked
+            control_type = str(control_attrs.get("type", "")).lower()
+            choice = control_type in ("radio", "checkbox")
+            if attr.get("enumLiterals") and node.get("tagName") in ("input", "select") and not choice:
+                _make_enum_select(node, attr)
+            # One required radio makes HTML require a choice from its whole group
+            radio_group = control_type == "radio" and attr["name"] not in required_groups
+            if _is_required(attr) and (not choice or radio_group):
+                control_attrs["required"] = "required"
+                required_groups.add(attr["name"])
 
 
 def _wire_page_actions(
@@ -3195,9 +3245,11 @@ def _class_host_pages(
     page_index: List[Dict[str, str]],
     class_metadata: Optional[List[Dict[str, Any]]],
 ) -> Dict[str, Dict[str, str]]:
-    """Class name -> the first page with a table of it (where its records are
-    created and edited), so "Add book" can navigate there."""
+    """Class name -> the first page with an editable table of it (where its
+    records are created and edited), else with any table of it, so "Add book"
+    can navigate there."""
     hosts: Dict[str, Dict[str, str]] = {}
+    read_only: Dict[str, Dict[str, str]] = {}
     for page, entry in zip(pages_spec, page_index):
         for section in page.get("sections") or []:
             bind = section.get("bind") if isinstance(section, dict) else None
@@ -3205,8 +3257,8 @@ def _class_host_pages(
                 continue
             cls = _resolve_class_binding({"className": bind.get("className")}, class_metadata)
             if cls and bind.get("className"):
-                hosts.setdefault(cls["name"], entry)
-    return hosts
+                (read_only if bind.get("editable") is False else hosts).setdefault(cls["name"], entry)
+    return {**read_only, **hosts}
 
 
 def _wire_model_actions(
@@ -3246,12 +3298,17 @@ def _wire_model_actions(
             return
         attrs = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
         if node.get("type") == "table" and attrs.get("data-source") in classes_by_id:
-            class_pages.setdefault(classes_by_id[attrs["data-source"]]["name"], entry)
+            pages = read_only_pages if attrs.get("action-buttons") == "false" else class_pages
+            pages.setdefault(classes_by_id[attrs["data-source"]]["name"], entry)
         for child in node.get("components") or []:
             _find_tables(child, entry)
 
+    read_only_pages: Dict[str, Dict[str, str]] = {}
     for wrapper, entry in zip(wrappers, page_index):
         _find_tables(wrapper, entry)
+    # A read-only table's page hosts its class only when no table of it is editable
+    for name, entry in read_only_pages.items():
+        class_pages.setdefault(name, entry)
     if new_ids and len(new_ids) < len(page_index):
         _add_new_pages_to_navs(wrappers, page_index, new_ids)
     for wrapper, entry in zip(wrappers, page_index):
@@ -4412,14 +4469,18 @@ class GUINoCodeDiagramHandler(BaseDiagramHandler):
             query = _clean_text(spec.get("sectionTitle"))
             section_spec = spec.get("section") if isinstance(spec.get("section"), dict) else None
             if query and section_spec:
-                replacement = _build_section_component(section_spec, class_metadata)
                 for page in model.get("pages", []):
                     if not isinstance(page, dict):
                         continue
                     wrapper = _ensure_page_wrapper(page)
                     for parent, idx, comp in _iter_section_components(wrapper):
                         if _match_section(comp, query):
-                            parent[idx] = replacement
+                            bind = section_spec.get("bind")
+                            # A rewrite that does not say keeps a read-only table read-only
+                            if (isinstance(bind, dict) and bind.get("editable") is None
+                                    and _has_read_only_table(comp)):
+                                section_spec = {**section_spec, "bind": {**bind, "editable": False}}
+                            parent[idx] = _build_section_component(section_spec, class_metadata)
                             return model, f"Updated the **{query}** section."
             return model, (
                 f"I couldn't find a section matching **{query or 'that'}** to edit. "

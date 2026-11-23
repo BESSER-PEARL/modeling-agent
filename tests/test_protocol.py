@@ -230,12 +230,23 @@ class TestLastGeneration:
         last = _with_context(lastGeneration={
             "runId": "ab12", "at": 1794836873000, "request": "  " + "x" * 5000,
         }).context.last_generation
-        assert last == {"request": "x" * 4000, "expired": False}
+        assert last == {"request": "x" * 4000, "expired": False, "editable": False}
+
+    @pytest.mark.parametrize("value, editable", [
+        ({"runId": "ab12", "expired": False}, True),
+        ({"runId": "ab12", "expired": True}, False),
+        ({"runId": "ab12"}, False),
+        ({"runId": "  ", "expired": False}, False),
+        ({"runId": 7, "expired": False}, False),
+        ({"expired": False}, False),
+    ])
+    def test_editable_needs_a_run_the_editor_still_holds(self, value, editable):
+        assert _with_context(lastGeneration=value).context.last_generation["editable"] is editable
 
     @pytest.mark.parametrize("expired, read", [(True, True), (False, False), ("true", False), (1, False)])
     def test_only_a_true_expired_counts(self, expired, read):
         last = _with_context(lastGeneration={"expired": expired}).context.last_generation
-        assert last == {"request": None, "expired": read}
+        assert last == {"request": None, "expired": read, "editable": False}
 
     @pytest.mark.parametrize("value", [None, "x", [], {"request": 3}, {"request": "   "}])
     def test_absent_or_malformed_request_is_none(self, value):

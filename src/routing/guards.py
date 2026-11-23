@@ -174,10 +174,24 @@ _CREATE_FILLER = frozenset({
 
 def is_too_vague_create(message: str) -> bool:
     """True when a create request has NO domain content after stripping filler."""
-    words = re.findall(r"[a-zA-Z]+", (message or "").lower())
-    core = [w for w in words if w not in _CREATE_FILLER]
-    # Nothing substantive to model (e.g. "create", "make an app", "build a system").
-    return sum(len(w) for w in core) < 3
+    words = re.findall(r"[^\W\d_]+", (message or "").lower())
+    # Nothing substantive to model (e.g. "create", "make an app", "build a system");
+    # a short domain word ("an HR app") is content.
+    return not [w for w in words if w not in _CREATE_FILLER]
+
+
+# A message that only asks to undo ("revert", "undo my last change"): the
+# editor's own undo restores the diagram exactly; a modeled inverse may not.
+_BARE_UNDO_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:undo|revert)(?:\s+(?:it|that|this|(?:my|the)\s+(?:last\s+)?"
+    r"(?:changes?|edits?|steps?)))?(?:\s+please)?\s*[.!]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_bare_undo(message: str) -> bool:
+    """True when the whole message only asks to undo the last change."""
+    return _BARE_UNDO_RE.match(message or "") is not None
 
 
 def modeling_guard(message: str, intent_name: str, verdict: Any) -> Optional[str]:
@@ -187,7 +201,8 @@ def modeling_guard(message: str, intent_name: str, verdict: Any) -> Optional[str
 
     Order: ``non_modeling`` (both states), then the outage net
     (``outage_decline``, ``outage_artifact``; only without a usable verdict),
-    then ``self_contradictory`` and ``too_vague`` (create only)."""
+    then ``undo`` (modify only), then ``self_contradictory`` and
+    ``too_vague`` (create only)."""
     if is_non_modeling(message):
         return "non_modeling"
     if verdict is None or getattr(verdict, "intent", None) == "fallback_intent":
@@ -196,6 +211,8 @@ def modeling_guard(message: str, intent_name: str, verdict: Any) -> Optional[str
             return "outage_decline"
         if OUTAGE_ARTIFACT_RE.search(message):
             return "outage_artifact"
+    if intent_name == "modify_model_intent" and is_bare_undo(message):
+        return "undo"
     if intent_name == "create_complete_system_intent":
         if is_self_contradictory_create(message):
             return "self_contradictory"
