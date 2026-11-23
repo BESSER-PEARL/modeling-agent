@@ -28,6 +28,7 @@ from common.agent_config import GRACE_PERIOD_SECONDS
 from llm.model_catalog import load_model_catalog
 from routing.intents import GENERATION_INTENT_NAME
 from app.state_bodies import register_all
+from app import session_loops
 from common.session_store import sessions
 
 # ── Logging ──────────────────────────────────────────────────────────────
@@ -44,6 +45,9 @@ os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 os.environ.setdefault("CHROMA_TELEMETRY_ENABLED", "False")
 
 # ── Agent ────────────────────────────────────────────────────────────────
+# Close each session's event loop when the session ends (BAF 4.5.3 leaves it
+# open: one epoll descriptor and two sockets per session until a full GC).
+session_loops.install()
 agent = Agent("uml_modeling_agent")
 agent.load_properties("config.yaml")
 logger.info(f"Agent properties loaded from config.yaml (name={agent.name})")
