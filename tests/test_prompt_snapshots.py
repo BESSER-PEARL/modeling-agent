@@ -115,7 +115,7 @@ EXPECTED = {
     "class_diagram.enumeration_recovery_prompt": "448eb48877bbbbc8",
     "class_diagram.reasoning_prompt": "68c0e9053776cf01",
     "class_diagram.requirements_block": "fbbaf9fc0d8d91ef",
-    "classifier.SYSTEM_PROMPT": "72f5003e841207b9",
+    "classifier.SYSTEM_PROMPT": "176ecfc49f675e92",
     "component_diagram.MODIFY_SYSTEM_PROMPT_COMPONENT": "23991c77cac340e7",
     "component_diagram.SYSTEM_PROMPT": "5d7a169cb17017fd",
     "component_diagram.reasoning_prompt": "e72eb9a983f0ddb8",
