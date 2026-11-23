@@ -269,7 +269,13 @@ def _parse_last_generation(context_payload: Dict[str, Any]) -> Optional[Dict[str
         return None
     request = last.get("request")
     request = request.strip()[:MAX_LAST_GENERATION_REQUEST_CHARS] if isinstance(request, str) else ""
-    return {"request": request or None, "expired": last.get("expired") is True}
+    run_id = last.get("runId")
+    return {
+        "request": request or None,
+        "expired": last.get("expired") is True,
+        # The editor still holds its last run, so without an explicit mode it edits that app.
+        "editable": isinstance(run_id, str) and bool(run_id.strip()) and last.get("expired") is False,
+    }
 
 
 def safe_json_loads(value: Any) -> Optional[Dict[str, Any]]:

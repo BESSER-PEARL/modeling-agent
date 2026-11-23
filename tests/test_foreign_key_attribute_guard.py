@@ -407,6 +407,49 @@ class TestMembersInUse:
         handler._rewrite_foreign_key_attributes(spec, "orders must name their customer")
         assert _names(spec, "Order") == ["customerId"]
 
+    @pytest.mark.parametrize("expression", [
+        # navigates an end Order does not have
+        "context Order inv sameBuyer: self.lines->forAll(l | l.buyer = self.customerId)",
+        # a class used as a collection
+        "context Order inv known: Customer->select(c | c.name = self.customerId)->size() = 1",
+    ])
+    def test_an_id_only_a_rule_that_does_not_fit_reads_is_removed(self, handler, expression):
+        spec = _spec([_cls("Order", [_attr("total", "float"), _attr("customerId")]),
+                      _cls("Customer", [_attr("name")])],
+                     [_assoc("Order", "Customer", "customer", "orders")])
+        spec["constraints"] = [{"context": "Order", "name": "r", "expression": expression}]
+        handler._rewrite_foreign_key_attributes(spec, "orders")
+        assert _names(spec, "Order") == ["total"]
+
+    def test_a_rule_reading_ends_inherited_and_ocl_operations_fits(self, handler):
+        spec = _spec([_cls("Item", [_attr("label")]), _cls("Order", [_attr("customerId")]),
+                      _cls("Customer"), _cls("Line", [_attr("qty", "int")])],
+                     [_assoc("Order", "Customer", "customer", "orders"),
+                      _assoc("Line", "Order", "order", "lines"),
+                      {"type": "Inheritance", "source": "Order", "target": "Item"}])
+        spec["constraints"] = [{"context": "Order", "name": "r", "expression":
+                                "context Order inv r: self.oclIsKindOf(Item) and self.label <> 'x.y' "
+                                "and self.lines->size() > 0 and self.customer.orders->notEmpty() "
+                                "and self.customerId <> '' and Customer.allInstances()->size() > 0"}]
+        assert handler._mismatched_constraints(spec) == []
+        handler._rewrite_foreign_key_attributes(spec, "orders")
+        assert _names(spec, "Order") == ["customerId"]
+
+    @pytest.mark.parametrize("expression", [
+        # a link class reaches a participant by its role name
+        "context Enrollment inv open: self.enrolledIn.capacity > 0",
+        "context Enrollment inv open: self.attendees.name <> ''",
+        # a line comment may name anything
+        "context Enrollment inv open: self.grade >= 0 -- self.bonus is not modelled",
+    ])
+    def test_valid_forms_fit(self, handler, expression):
+        spec = _spec([_cls("Student", [_attr("name")]), _cls("Course", [_attr("capacity", "int")]),
+                      _cls("Enrollment", [_attr("grade", "int")])],
+                     [_assoc("Student", "Course", "enrolledIn", "attendees",
+                             associationClass="Enrollment")])
+        spec["constraints"] = [{"context": "Enrollment", "name": "open", "expression": expression}]
+        assert handler._mismatched_constraints(spec) == []
+
     def test_an_id_a_method_body_reads_is_kept(self, handler):
         spec = _spec([_cls("Order", [_attr("customerId")]), _cls("Customer")])
         spec["classes"][0]["methods"] = [{

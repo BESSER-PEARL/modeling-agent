@@ -154,6 +154,57 @@ class TestClassifyMessage:
         assert result.generation_route == "smart"
         assert result.generator_type is None
 
+    @pytest.mark.parametrize("message, generator", [
+        ("Generate the Django backend for my express delivery app", "django"),
+        ("generate SQL for the spring festival tickets", "sql"),
+        ("Generate python classes for my ruby and crystal jewellery shop", "python"),
+        ("Generate a JSON schema for the data of my Flutter app", "jsonschema"),
+        ("Generate the JSON Schema for my Express API payloads", "jsonschema"),
+        ("Generate SQL Alchemy models for my Kotlin service", "sqlalchemy"),
+        ("Generate JSON schemas for the data of my Flutter app", "jsonschema"),
+        ("Generate a BESSER agent for my Kotlin service", "agent"),
+        ("Generate the Qiskit code for my Rust host", "qiskit"),
+    ])
+    def test_a_generator_the_user_names_is_not_overridden_by_a_domain_word(self, message, generator):
+        """Stack names that were the app's domain words sent an explicit request
+        for a built-in generator to the paid from-scratch route."""
+        good = UnifiedClassification(
+            intent="generation_intent", generation_route="deterministic",
+            generator_type=generator, reason="named generator",
+        )
+        result = classify_message(_make_request(message), llm_provider=_FakeProvider(good))
+        assert (result.generation_route, result.generator_type) == ("deterministic", generator)
+
+    @pytest.mark.parametrize("message, generator", [
+        ("Generate a Spring Boot backend for my library", "backend"),
+        ("Build a REST API with Express for my shop", "rest_api"),
+        ("create a web app with Angular", "web_app"),
+        ("build the backend in C#", "backend"),
+        ("generate the database layer in Kotlin", "sql"),
+        ("Create a Laravel app with a MySQL database", "sql"),
+        ("Generate a PostgreSQL database for my Rails app", "sql"),
+        ("build a Flutter app with a local database", "sql"),
+        ("Generate agents for my Kotlin service", "agent"),
+        ("Generate the quantum code in Q# for my Rust host", "qiskit"),
+    ])
+    def test_naming_a_kind_of_output_does_not_name_its_stack(self, message, generator):
+        """'a backend' or 'a web app' names what to build, not a built-in
+        generator: the stack the user names still wins over the nearest built-in."""
+        bad = UnifiedClassification(
+            intent="generation_intent", generation_route="deterministic",
+            generator_type=generator, reason="nearest built-in",
+        )
+        result = classify_message(_make_request(message), llm_provider=_FakeProvider(bad))
+        assert (result.generation_route, result.generator_type) == ("smart", None)
+
+    def test_a_generator_the_user_did_not_name_is_still_overridden(self):
+        bad = UnifiedClassification(
+            intent="generation_intent", generation_route="deterministic",
+            generator_type="java", reason="llm picked java",
+        )
+        result = classify_message(_make_request("generate kotlin classes"), llm_provider=_FakeProvider(bad))
+        assert (result.generation_route, result.generator_type) == ("smart", None)
+
     def test_supported_language_java_left_deterministic(self):
         # Java IS a BESSER generator — the guard must not hijack it.
         good = UnifiedClassification(
@@ -288,6 +339,18 @@ class TestGetOrClassifyCache:
         get_or_classify(session, request, provider)
 
         assert provider.calls == 2
+
+    def test_an_answer_verdict_replaces_the_classifier_call(self):
+        session = _CacheableSession(event_id="evt-7")
+        provider = _FakeProvider(UnifiedClassification(intent="hello_intent", reason="r"))
+        answer = {"intent": "generation_intent", "pending_flow_action": "answer",
+                  "pending_flow_answer": "confirm", "reason": "dialog"}
+
+        result = get_or_classify(session, _make_request("continue with the generation"), provider, answer)
+
+        assert provider.calls == 0
+        assert (result.pending_flow_action, result.pending_flow_answer) == ("answer", "confirm")
+        assert session.get(UNIFIED_CLASSIFICATION) is result
 
     def test_no_event_id_safe(self):
         class _NoEventSession(FakeSession):

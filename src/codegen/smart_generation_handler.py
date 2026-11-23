@@ -30,6 +30,7 @@ from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, Field
 from common.agent_config import MAX_USER_MESSAGE_CHARS
+from conversation.reply_copy import SPEC_DRIVEN_NAME
 from prompts import spec_driven as spec_prompts
 from protocol.message_limits import validate_message_length
 from protocol.actions import Action
@@ -146,6 +147,8 @@ def build_trigger_smart_generator_payload(
     reason_prefix: str = "",
     original_request: str = "",
     mode: Optional[str] = None,
+    previous_result_gone: bool = False,
+    remember_newest: bool = True,
 ) -> Dict[str, Any]:
     """Assemble the WebSocket ``trigger_smart_generator`` action payload.
 
@@ -161,6 +164,14 @@ def build_trigger_smart_generator_payload(
 
     ``mode`` overrides the editor's own choice between editing the existing app
     and rebuilding; without it the editor decides.
+
+    ``previous_result_gone`` says the run has no earlier code to build on: the
+    user's request follows a starting point that says so.
+
+    ``remember_newest=False`` says the request's last later-request section is a
+    message that states nothing new (a retry, a fix): it is sent as
+    ``remember_newest: false`` so the editor does not keep it as part of the
+    project's request.
     """
     if classification.route != "smart":
         raise ValueError(
@@ -172,29 +183,32 @@ def build_trigger_smart_generator_payload(
 
     original = (original_request or "").strip()
     validate_message_length(original, label="The original specification")
+    point = spec_prompts.starting_point(bool(original)) if previous_result_gone else ""
     if original and original not in instructions:
         # The summary is kept (it can carry a stack the user accepted with a
         # plain "yes") but labelled as possibly inaccurate, since a summary can
         # contradict the spec (e.g. name a database the user did not ask for).
-        instructions = spec_prompts.framed_instructions(instructions, original)
+        instructions = spec_prompts.framed_instructions(instructions, original, point)
+    else:
+        instructions = spec_prompts.with_starting_point(instructions, point)
     if len(instructions) > MAX_USER_MESSAGE_CHARS and original:
         # The machine summary is optional; the accepted user specification is
         # not. Do not reject or clip a 64k spec just because framing was added.
-        instructions = original
+        instructions = spec_prompts.with_starting_point(original, point)
     validate_message_length(instructions, label="The generation instructions")
 
     provider = classification.provider or "anthropic"
 
-    # Short, neutral run banner. The provider/free-tier choice and the BYOK
-    # option were already conveyed by the confirmation copy shown before this
-    # run (see ``_build_smart_gen_confirmation``), so this mid-run line stays
-    # minimal instead of repeating the API-key explanation.
+    # Short, neutral run banner: the editor picks edit or rebuild after this,
+    # so the banner names neither. Key and provider were in the confirmation.
     payload = {
         "action": Action.TRIGGER_SMART_GENERATOR,
         "instructions": instructions,
         "provider": provider,
-        "message": "Generating your application from your specs…",
+        "message": f"Starting the {SPEC_DRIVEN_NAME}…",
     }
     if mode:
         payload["mode"] = mode
+    if not remember_newest:
+        payload["remember_newest"] = False
     return payload

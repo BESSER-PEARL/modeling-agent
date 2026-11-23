@@ -10,6 +10,7 @@ from codegen.smart_generation_handler import (
 )
 from llm import byok_config
 from llm.byok import PROVIDER_NAMES
+from prompts import spec_driven as spec_prompts
 from protocol.types import AssistantRequest
 from utilities.model_context import is_diagram_nontrivial
 from utilities.original_request import (
@@ -33,6 +34,7 @@ from common.pending_dialogs import (
     PENDING_SMART_GEN_MODE,
     PENDING_SMART_GEN_ORIGINAL_REQUEST,
     PENDING_SMART_GEN_PROVIDER,
+    PENDING_SMART_GEN_REMEMBER_NEWEST,
     PENDING_SMART_GEN_TIMESTAMP,
     PLAN_GENERATION_CONFIRM_FLAG,
 )
@@ -110,6 +112,7 @@ def _smart_gen_stash_is_fresh(timestamp: Any) -> bool:
 
 def _stash_smart_gen(
     session: Session, instructions: str, provider: str, *, original_request: str = "", mode: Optional[str] = None,
+    remember_newest: bool = True,
 ) -> None:
     """Stash a smart-gen payload with a fresh timestamp (see TTL above).
 
@@ -125,6 +128,7 @@ def _stash_smart_gen(
     pending_dialogs.put(session, PENDING_SMART_GEN_TIMESTAMP, time.time())
     pending_dialogs.put(session, PENDING_SMART_GEN_ORIGINAL_REQUEST, original_request)
     pending_dialogs.put(session, PENDING_SMART_GEN_MODE, mode)
+    pending_dialogs.put(session, PENDING_SMART_GEN_REMEMBER_NEWEST, remember_newest)
     session.set(SMART_GEN_ARMED_PROJECT_ID, _active_project_id(session))
 
 
@@ -164,7 +168,6 @@ _CONTENT_FREE_FOLLOW_UP_RE = re.compile(
     + rf"|{_FIX}(?: and {_REDO})?)"
     + _POLITE_SUFFIX
 )
-_FIX_FOLLOW_UP_NOTE = "The user asked to fix the issues of the previous result."
 _NO_EARLIER_REQUEST_MESSAGE = (
     "I no longer have your earlier request here, so I can't tell what to generate again. "
     "Please describe again what the application should do."
@@ -179,20 +182,21 @@ def _is_content_free_follow_up(message: str) -> bool:
     return bool(_CONTENT_FREE_FOLLOW_UP_RE.fullmatch(_normalized_message(message)))
 
 
-def _with_subsequent_request(previous: str, message: str) -> str:
-    return (
-        f"{previous}\n\n## Subsequent user request, verbatim\n\n"
-        "This later request takes precedence where it changes earlier requirements.\n\n"
-        f"{message}"
-    )
-
-
 def _original_for_smart_generation(session, user_message, *, replace=False):
     """The user's own request for the run, or None for a content-free
-    follow-up with no earlier request to re-run.
+    follow-up with no earlier request to re-run (see :func:`_request_for_run`)."""
+    return _request_for_run(session, user_message, replace=replace)[0]
+
+
+def _request_for_run(session, user_message, *, replace=False) -> Tuple[Optional[str], bool]:
+    """``(request, states_nothing_new)``: the user's own request for the run, or
+    None for a content-free follow-up with no earlier request to re-run, and
+    whether it ends with this message without remembering it (a content-free
+    follow-up, or one the verdict says states nothing new).
 
     The earlier request is the one remembered for the project, else the one the
-    editor's last run was started with (unless this message replaces it)."""
+    editor's last run was started with (unless this message replaces it). A
+    content-free follow-up is sent as the newest message but not remembered."""
     project_id = _active_project_id(session)
     previous = original_request_for_project(session, project_id)
     if not previous and not replace:
@@ -201,20 +205,19 @@ def _original_for_smart_generation(session, user_message, *, replace=False):
     message = (user_message or "").strip()
     normalized = _normalized_message(message)
     generic = _SMART_GEN_CONFIRM_PHRASES | _PLAN_GEN_CONFIRM_PHRASES
+    states_nothing_new = getattr(session.get(UNIFIED_CLASSIFICATION), "states_requirements", True) is False
     if not message or normalized in generic or _BARE_GENERATE_RE.fullmatch(normalized):
-        return previous
+        return previous, False
     if _CONTENT_FREE_FOLLOW_UP_RE.fullmatch(normalized):
-        if not previous:
-            return None
-        if re.search(r"\bfix", normalized) and not _previous_result_gone(session):
-            return f"{previous}\n\n## Subsequent user request\n\n{_FIX_FOLLOW_UP_NOTE}"
-        return previous
+        return (spec_prompts.with_later_request(previous, message), True) if previous else (None, False)
     if previous and not replace and (message == previous or previous.endswith("\n" + message)):
-        return previous
+        return previous, False
     if previous and not replace:
-        message = _with_subsequent_request(previous, message)
+        message = spec_prompts.with_later_request(previous, message)
+        if states_nothing_new:
+            return message, True
     remember_original_request(session, message, project_id)
-    return message
+    return message, False
 
 
 def _pending_smart_gen_project_changed(session):
@@ -435,6 +438,11 @@ def _looks_like_fix_request(
     )
 
 
+def _asks_to_start_over(session: Session) -> bool:
+    """True when the verdict asks to rebuild the generated app from scratch."""
+    return getattr(session.get(UNIFIED_CLASSIFICATION), "start_over", False) is True
+
+
 def _starting_over_on_linked_repo(session: Session) -> Optional[str]:
     """The verdict's starting-over disposition when the linked repo holds an app, else None."""
     disposition = getattr(session.get(UNIFIED_CLASSIFICATION), "model_disposition", None)
@@ -461,11 +469,11 @@ def _build_smart_gen_confirmation(
     fix-framing + a "Fix it" button (from-scratch wording reads wrong when
     the user only wants a fix). Both branches keep the
     same confirm token so the confirm gate fires identically, and each says
-    which key the run will use (``_key_note``). The fix branch is gated to the direct path
-    (no ``reason_prefix``): the mismatch/rebuild resumes always produce a
-    freshly rebuilt model, which is a from-scratch build by definition — and,
-    per ``_looks_like_fix_request``, to projects that have actually produced
-    an app before.
+    which key the run will use (``_key_note``). The fix branch is taken when the
+    editor reports it still holds the project's last run (it then edits that
+    app, also after a mismatch/rebuild resume). Otherwise it is gated to the
+    direct path (no ``reason_prefix``) and, per ``_looks_like_fix_request``, to
+    projects that have actually produced an app before.
     """
     provider = provider or "anthropic"
     target = _request_target(session)
@@ -474,20 +482,25 @@ def _build_smart_gen_confirmation(
     # armed project too, and the fix decision must never read state this very
     # call wrote.
     project_id = _active_project_id(session)
-    original = _original_for_smart_generation(session, user_message)
+    original, states_nothing_new = _request_for_run(session, user_message)
     if original is None:
         if not reason_prefix:
             _clear_pending_smart_gen(session)
             return {"action": Action.ASSISTANT_MESSAGE, "message": _NO_EARLIER_REQUEST_MESSAGE}
         original = ""
-    starting_over = None if reason_prefix else _starting_over_on_linked_repo(session)
-    replaces_repo_app = starting_over == "replace_existing"
-    _stash_smart_gen(
-        session, refined, provider, original_request=original, mode="generate" if replaces_repo_app else None,
-    )
+    if reason_prefix:
+        # A resume: the request that armed it decided the mode.
+        starting_over, mode = None, pending_dialogs.get(session, PENDING_SMART_GEN_MODE)
+    else:
+        starting_over = _starting_over_on_linked_repo(session)
+        mode = "generate" if starting_over == "replace_existing" or _asks_to_start_over(session) else None
+    replaces_repo_app = mode == "generate" and repo_holds_app(session)
+    rebuilds_app = mode == "generate" and not replaces_repo_app and _editor_edits_last_result(session)
+    _stash_smart_gen(session, refined, provider, original_request=original, mode=mode,
+                     remember_newest=not states_nothing_new)
 
     # Without the previous result the run is not an update of the existing app.
-    result_expired = _previous_result_gone(session)
+    result_expired = _run_starts_from_the_model(session)
     prefix = f"{reason_prefix}\n\n" if reason_prefix else ""
     if result_expired:
         sources = "your model and your original request" if original else "your model"
@@ -496,8 +509,9 @@ def _build_smart_gen_confirmation(
             f"from {sources}.\n\n"
         )
 
-    is_fix = (not reason_prefix) and (not starting_over) and (not result_expired) and _looks_like_fix_request(
-        session, user_message, project_id,
+    is_fix = (not starting_over) and (not mode) and (not result_expired) and (
+        _editor_edits_last_result(session)
+        or (not reason_prefix and _looks_like_fix_request(session, user_message, project_id))
     )
 
     # The instructions are NOT echoed back to the user: showing the LLM's
@@ -512,6 +526,13 @@ def _build_smart_gen_confirmation(
             f"{prefix}I'll rebuild the app from scratch instead of changing the code in "
             f"**{linked_repo_name(session)}**. Pushing the result will replace that code. "
             f"{_key_note(session, short=True)}\n\n"
+            f"Do you want to continue?"
+        )
+        confirm_label = "Rebuild"
+    elif rebuilds_app:
+        message = (
+            f"{prefix}I'll rebuild the app from scratch instead of updating it. Changes made to "
+            f"it in earlier runs will be dropped. {_key_note(session, short=True)}\n\n"
             f"Do you want to continue?"
         )
         confirm_label = "Rebuild"
@@ -587,6 +608,20 @@ def _previous_result_gone(session: Session) -> bool:
     linked repo holds the app: the run builds the app again."""
     last_generation = getattr(_request_context(session), "last_generation", None) or {}
     return last_generation.get("expired") is True and not repo_holds_app(session)
+
+
+def _editor_edits_last_result(session: Session) -> bool:
+    """True when the editor still holds the project's last run: without an
+    explicit mode it edits that app instead of rebuilding it."""
+    last_generation = getattr(_request_context(session), "last_generation", None) or {}
+    return last_generation.get("editable") is True
+
+
+def _run_starts_from_the_model(session: Session) -> bool:
+    """True when the run has no earlier code to build on: the previous result
+    is gone and no repo is linked (the editor may continue from a linked repo
+    whose code it has not reported)."""
+    return _previous_result_gone(session) and not linked_repo_name(session)
 
 
 # A model value that is not shown: markup, a URL, or what looks like a key.
@@ -672,7 +707,14 @@ def _build_mismatch_confirmation(
     if original is None:
         _clear_pending_smart_gen(session)
         return {"action": Action.ASSISTANT_MESSAGE, "message": _NO_EARLIER_REQUEST_MESSAGE}
-    _stash_smart_gen(session, refined, provider, original_request=original)
+    mode = "generate" if _asks_to_start_over(session) else None
+    _stash_smart_gen(session, refined, provider, original_request=original, mode=mode)
+    # "Generate anyway" fires the run at once: this card is a rebuild's only confirmation.
+    dropped = ""
+    if mode and repo_holds_app(session):
+        dropped = f" Pushing the result will replace the code in **{linked_repo_name(session)}**."
+    elif mode and _editor_edits_last_result(session):
+        dropped = " Changes made to the app in earlier runs will be dropped."
     # Arm the one-shot resume with the EXACT rebuild prompt the button sends.
     # The guard below and the create choke point
     # (execution.model_operations.execute_model_operation) only keep the stash
@@ -691,7 +733,7 @@ def _build_mismatch_confirmation(
             f"Generator. Your current classes will be replaced.\n"
             f"• **Generate anyway** — keep your current model; the "
             f"generator will produce {suggested} code, but your diagram "
-            f"won't match the generated code.\n"
+            f"won't match the generated code.{dropped}\n"
             f"• **Cancel** — do nothing; you can edit the model yourself "
             f"first."
         ),
@@ -1030,6 +1072,7 @@ def _clear_pending_smart_gen(session: Session) -> None:
         PENDING_SMART_GEN_TIMESTAMP,
         PENDING_SMART_GEN_ORIGINAL_REQUEST,
         PENDING_SMART_GEN_MODE,
+        PENDING_SMART_GEN_REMEMBER_NEWEST,
         MISMATCH_REGEN_PENDING,
     )
 
@@ -1078,6 +1121,7 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
         stashed_ts = pending_dialogs.get(session, PENDING_SMART_GEN_TIMESTAMP)
         stashed_original = pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) or ""
         stashed_mode = pending_dialogs.get(session, PENDING_SMART_GEN_MODE)
+        stashed_remember_newest = pending_dialogs.get(session, PENDING_SMART_GEN_REMEMBER_NEWEST) is not False
         if _pending_smart_gen_project_changed(session):
             _clear_pending_smart_gen(session)
             _clear_pending_state(session)
@@ -1104,6 +1148,8 @@ def handle_pending_smart_gen_confirmation(session: Session) -> bool:
                 reason_prefix="generating with current model",
                 original_request=stashed_original,
                 mode=stashed_mode,
+                previous_result_gone=_run_starts_from_the_model(session),
+                remember_newest=stashed_remember_newest,
             )
             reply_payload(session, payload)
             return True
@@ -1285,13 +1331,32 @@ def _handle_smart_generator_result(
     if ok:
         blocker_count = metadata.get("blockerCount")
         blocker_count = blocker_count if isinstance(blocker_count, int) and blocker_count > 0 else 0
-        incomplete = bool(metadata.get("incomplete")) or blocker_count > 0
+        unverified = metadata.get("unverified") is True
+        # Real blockers of a run that was not cut short; None from an older
+        # backend, whose blockerCount mixes them with unverified checks.
+        # A newer backend pads blockerCount, so it is only read for incomplete runs.
+        real = metadata.get("unresolvedBlockerCount")
+        not_confirmed = metadata.get("notConfirmedCount")
+        if isinstance(real, int):
+            real = max(0, real)
+        elif isinstance(not_confirmed, int) and not unverified:
+            real = max(0, blocker_count - not_confirmed)
+        else:
+            real = None
+        # The editor's flag wins; only an older event without it falls back to the blocker count.
+        flag = metadata.get("incomplete")
+        incomplete = flag if isinstance(flag, bool) else (real is None and not unverified and blocker_count > 0)
         incomplete_reason = metadata.get("incompleteReason")
+        # "modify" when the run edited an existing app; absent from older editors.
+        edited = metadata.get("mode") == "modify"
+        verification = metadata.get("verification")
+        failed = verification.get("failed") if isinstance(verification, dict) else None
+        failed = failed if isinstance(failed, int) and failed > 0 else 0
         if incomplete:
             if blocker_count:
                 head = (
                     f"The {SPEC_DRIVEN_NAME} finished with {blocker_count} unresolved "
-                    f"blocker{'s' if blocker_count != 1 else ''}; the application is incomplete"
+                    f"blocker{'s' if blocker_count != 1 else ''}; the result is incomplete"
                 )
             else:
                 head = (
@@ -1301,14 +1366,41 @@ def _handle_smart_generator_result(
             if incomplete_reason:
                 head += f": {incomplete_reason}"
             parts = [head + cost_text + "."]
+        elif unverified:
+            # Some class of checks left no evidence: never a success.
+            what = (
+                "finished updating your application, but the update is not verified"
+                if edited else "generated your application, but it is not verified"
+            )
+            parts = [f"{SPEC_DRIVEN_NAME} {what}" + cost_text + "."]
+            reason = metadata.get("unverifiedReason")
+            if isinstance(reason, str) and reason.strip():
+                parts.append(reason.strip())
+            if real:
+                parts.append(f"{real} unresolved blocker{'s remain' if real != 1 else ' remains'}.")
+        elif real:
+            done = "finished updating your application with" if edited else "finished with"
+            parts = [
+                f"The {SPEC_DRIVEN_NAME} {done} {real} unresolved blocker{'s' if real != 1 else ''}"
+                + cost_text + "."
+            ]
         else:
-            parts = [f"{SPEC_DRIVEN_NAME} generation finished successfully" + cost_text + "."]
+            done = "finished updating your application" if edited else "generation finished successfully"
+            parts = [f"{SPEC_DRIVEN_NAME} {done}" + cost_text + "."]
+            if real is None and blocker_count:
+                parts.append(f"{blocker_count} check{'s' if blocker_count != 1 else ''} could not be verified.")
+        if not incomplete and not unverified:
+            if isinstance(not_confirmed, int) and not_confirmed > 0:
+                parts.append(f"{not_confirmed} check{'s' if not_confirmed != 1 else ''} could not be confirmed.")
+            if failed:
+                parts.append(f"{failed} test{'s' if failed != 1 else ''} the agent wrote ran against the app and failed.")
         if metadata.get("filename") or metadata.get("fileName"):
             parts.append(f"File: {metadata.get('filename') or metadata.get('fileName')}")
         if incomplete:
-            parts.append(
-                "You can run the generation again to finish the remaining changes."
-            )
+            again = "start another run" if edited else "run the generation again"
+            parts.append(f"You can {again} to finish the remaining changes.")
+        elif unverified:
+            parts.append("You can download the application to inspect it as-is.")
         result_message = " ".join(parts)
         suggestions = None
     elif error_code == "COST_CAP":
@@ -1524,6 +1616,7 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
         stashed_ts = pending_dialogs.get(session, PENDING_SMART_GEN_TIMESTAMP)
         stashed_original = pending_dialogs.get(session, PENDING_SMART_GEN_ORIGINAL_REQUEST) or ""
         stashed_mode = pending_dialogs.get(session, PENDING_SMART_GEN_MODE)
+        stashed_remember_newest = pending_dialogs.get(session, PENDING_SMART_GEN_REMEMBER_NEWEST) is not False
         if _pending_smart_gen_project_changed(session):
             _clear_pending_smart_gen(session)
             _clear_pending_state(session)
@@ -1555,6 +1648,8 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
                 reason_prefix="generating with current model",
                 original_request=stashed_original,
                 mode=stashed_mode,
+                previous_result_gone=_run_starts_from_the_model(session),
+                remember_newest=stashed_remember_newest,
             )
         # Fall through to normal classification if the stash was empty.
 

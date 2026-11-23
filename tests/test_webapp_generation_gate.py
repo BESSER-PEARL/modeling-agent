@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import execution.model_operations as modeling
 import execution.planning as planning
 from common import pending_dialogs
 from common.pending_dialogs import PENDING_GUI_CHOICE, PENDING_WEBAPP_GENERATE
@@ -258,6 +259,7 @@ def _answer_gui_choice(session, answer, execute, verdict=None):
     payloads, messages = [], []
     with patch.object(confirmation, "parse_assistant_request", return_value=req), \
          patch.object(confirmation, "reply_payload", side_effect=lambda _s, p: payloads.append(p)), \
+         patch.object(modeling, "reply_payload", side_effect=lambda _s, p: payloads.append(p)), \
          patch.object(confirmation, "reply_message", side_effect=lambda _s, m: messages.append(m)), \
          patch.object(confirmation, "replace", lambda obj, **kw: obj), \
          patch.object(confirmation, "execute_model_operation", execute), \

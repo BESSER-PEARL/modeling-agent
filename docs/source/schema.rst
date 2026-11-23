@@ -326,7 +326,7 @@ BESSER built-in.
      "action": "trigger_smart_generator",
      "instructions": "Rails 7, PostgreSQL via Active Record, Devise auth",
      "provider": "anthropic",
-     "message": "Generating your application from your specs…"
+     "message": "Starting the Spec-Driven Agent…"
    }
 
 An optional ``mode`` (``"generate"``) forces a rebuild; see

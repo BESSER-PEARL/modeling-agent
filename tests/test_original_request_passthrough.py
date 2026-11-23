@@ -16,6 +16,7 @@ from codegen.smart_generation_handler import (
     build_trigger_smart_generator_payload,
 )
 from prompts.classifier import SYSTEM_PROMPT
+from prompts.spec_driven import with_later_request
 from routing.unified_classifier import UnifiedClassification
 from common import pending_dialogs
 
@@ -550,10 +551,9 @@ def test_the_bare_generate_matcher_is_unchanged():
 
 _ORDER_SPEC = "An order tracking app: customers place orders; an order is open, paid or shipped."
 _LAST_RUN_SPEC = "A task board: tasks have a title, a due date and a done flag."
-_FIX_NOTE = "The user asked to fix the issues of the previous result."
 
 
-def _follow_up_session(message, *, last_generation=None, history=()):
+def _follow_up_session(message, *, last_generation=None, history=(), github_repo=None):
     import uuid
 
     from memory import get_memory, memory_session_key
@@ -562,6 +562,8 @@ def _follow_up_session(message, *, last_generation=None, history=()):
     context = {"activeDiagramType": "ClassDiagram", "projectSnapshot": {"id": "proj-1", "diagrams": {}}}
     if last_generation is not None:
         context["lastGeneration"] = last_generation
+    if github_repo is not None:
+        context["githubRepo"] = github_repo
     session = FakeSession({
         "action": "user_message", "protocolVersion": "2.0", "message": message,
         "context": context, "sessionId": uuid.uuid4().hex,
@@ -585,20 +587,22 @@ def test_follow_up_uses_the_remembered_request_first():
 
     original = generation._original_for_smart_generation(session, "regenerate with fixes.")
 
-    assert original.startswith(_ORDER_SPEC)
-    assert original.endswith(_FIX_NOTE)
-    assert "regenerate with fixes" not in original
+    assert original == with_later_request(_ORDER_SPEC, "regenerate with fixes.")
     assert original_request_for_project(session, "proj-1") == _ORDER_SPEC
 
 
-def test_follow_up_without_fix_words_adds_nothing():
+@pytest.mark.parametrize("message", ["try again", "fix the errors", "regenerate the app"])
+def test_a_content_free_follow_up_is_the_newest_message_but_not_remembered(message):
+    """The harness read the whole earlier request as the newest message: a retry
+    sent nothing of its own, and a fix sent a note under a heading it does not parse."""
     from codegen import generation_handler as generation
-    from utilities.original_request import remember_original_request
+    from utilities.original_request import original_request_for_project, remember_original_request
 
-    session = _follow_up_session("try again")
+    session = _follow_up_session(message)
     remember_original_request(session, _ORDER_SPEC, "proj-1")
 
-    assert generation._original_for_smart_generation(session, "try again") == _ORDER_SPEC
+    assert generation._original_for_smart_generation(session, message) == with_later_request(_ORDER_SPEC, message)
+    assert original_request_for_project(session, "proj-1") == _ORDER_SPEC
 
 
 def test_follow_up_uses_the_editors_last_run_request_next():
@@ -731,8 +735,140 @@ def test_the_run_gets_the_original_request_not_the_follow_up(monkeypatch):
     assert run["action"] == "trigger_smart_generator"
     original = run["instructions"].split("## The user's original request, verbatim\n\n", 1)[1]
     assert _ORDER_SPEC in original
-    assert _FIX_NOTE in original
-    assert "regenerate with fixes" not in run["instructions"]
+    assert original.endswith("regenerate with fixes.")
+
+
+_CONTINUE_SUMMARY = (
+    "Continue development of the existing task board app, fixing the issues left by the previous run."
+)
+_STARTING_POINT = (
+    "## Starting point\n\n"
+    "The previous result is no longer available, so there is no earlier code to continue or fix. "
+    "Build the whole application from the current model and the requests below; where they ask to "
+    "continue or fix earlier work, build that work as part of the new application."
+)
+_CONTINUE_MESSAGE = "can you continue with the development?"
+
+
+class _ContinueProvider(_FollowUpProvider):
+    def __init__(self, summary=_CONTINUE_SUMMARY):
+        self.summary = summary
+
+    def parse(self, *, messages, schema, temperature, max_tokens):
+        return UnifiedClassification(
+            intent="generation_intent", generation_route="smart",
+            refined_instructions=self.summary, provider="openai", reason="test",
+        )
+
+
+def _confirm(session):
+    from codegen import generation_handler as generation
+    from protocol.types import AssistantRequest
+
+    run = generation.handle_generation_request(session, AssistantRequest(message="continue with the generation"))
+    assert run["action"] == "trigger_smart_generator"
+    return run
+
+
+def _confirmed_run(last_generation, monkeypatch, github_repo=None, message=_CONTINUE_MESSAGE,
+                   summary=_CONTINUE_SUMMARY):
+    from codegen import generation_handler as generation
+    from protocol.types import AssistantRequest
+
+    session = _follow_up_session(message, last_generation=last_generation, github_repo=github_repo)
+    monkeypatch.setattr(generation, "_get_llm_provider", lambda: _ContinueProvider(summary))
+    asked = generation.handle_generation_request(session, AssistantRequest(message=message))
+    assert asked["action"] == "assistant_message"
+    return _confirm(session)
+
+
+def _assert_rebuilt(instructions, summary=_CONTINUE_SUMMARY):
+    # The starting point comes before the user's request, which ends with their newest message.
+    notes, requests = instructions.split("## The user's original request, verbatim\n\n", 1)
+    assert f"{summary}\n\n" in notes
+    assert notes.endswith(f"{_STARTING_POINT}\n\n")
+    assert "no longer available" not in requests
+
+
+def test_an_expired_result_is_rebuilt_not_continued(monkeypatch):
+    run = _confirmed_run({"request": _LAST_RUN_SPEC, "expired": True}, monkeypatch)
+
+    _assert_rebuilt(run["instructions"])
+    assert _LAST_RUN_SPEC in run["instructions"]
+
+
+def test_a_live_result_keeps_the_summary(monkeypatch):
+    run = _confirmed_run({"request": _LAST_RUN_SPEC}, monkeypatch)
+
+    assert _CONTINUE_SUMMARY in run["instructions"]
+    assert "## Starting point" not in run["instructions"]
+
+
+@pytest.mark.parametrize("has_code", [True, False])
+def test_a_linked_repo_is_never_called_gone(monkeypatch, has_code):
+    # The editor sends hasCode false when it does not know, and may still continue from the repo.
+    run = _confirmed_run(
+        {"request": _LAST_RUN_SPEC, "expired": True}, monkeypatch,
+        github_repo={"fullName": "acme/tasks", "hasCode": has_code},
+    )
+
+    assert _CONTINUE_SUMMARY in run["instructions"]
+    assert "## Starting point" not in run["instructions"]
+
+
+def test_a_rebuilt_model_resume_starts_from_the_model():
+    from codegen import generation_handler as generation
+
+    session = _follow_up_session(_CONTINUE_MESSAGE, last_generation={"request": _LAST_RUN_SPEC, "expired": True})
+    generation._build_smart_gen_confirmation(
+        session, _CONTINUE_SUMMARY, "openai", reason_prefix="Your model is ready.", user_message=_CONTINUE_MESSAGE,
+    )
+
+    _assert_rebuilt(_confirm(session)["instructions"])
+
+
+def test_generate_anyway_after_a_mismatch_starts_from_the_model():
+    from codegen import generation_handler as generation
+    from protocol.types import AssistantRequest
+
+    session = _follow_up_session(_CONTINUE_MESSAGE, last_generation={"request": _LAST_RUN_SPEC, "expired": True})
+    classification = GenerationClassification(
+        route="smart", refined_instructions=_CONTINUE_SUMMARY, provider="openai", reason="test",
+    )
+    generation._build_mismatch_confirmation(session, classification, "a recipe app", user_message=_CONTINUE_MESSAGE)
+    run = generation.handle_generation_request(
+        session, AssistantRequest(message="generate anyway with my current model"),
+    )
+
+    assert run["action"] == "trigger_smart_generator"
+    _assert_rebuilt(run["instructions"])
+
+
+@pytest.mark.parametrize("summary", [
+    "Add a dark theme to the existing app. Use PostgreSQL and a Django backend.",
+    "Continue development of the existing app by adding PostgreSQL and a Django backend.",
+    "- Add a dark theme to the existing app\n- Use PostgreSQL and a Django backend",
+])
+def test_a_summary_accepted_with_yes_reaches_the_rebuild_whole(monkeypatch, summary):
+    # After a plain "yes" the summary is the only place the accepted choices live.
+    run = _confirmed_run(
+        {"request": _LAST_RUN_SPEC, "expired": True}, monkeypatch, message="yes", summary=summary,
+    )
+
+    _assert_rebuilt(run["instructions"], summary)
+
+
+def test_without_a_request_the_run_starts_from_the_model():
+    payload = build_trigger_smart_generator_payload(
+        GenerationClassification(route="smart", refined_instructions=_CONTINUE_SUMMARY, provider="openai", reason="t"),
+        previous_result_gone=True,
+    )
+
+    assert payload["instructions"] == (
+        "## Starting point\n\n"
+        "The previous result is no longer available, so there is no earlier code to continue or fix. "
+        f"Build the whole application from the current model.\n\n{_CONTINUE_SUMMARY}"
+    )
 
 
 def test_nothing_to_go_on_asks_again_and_arms_nothing(monkeypatch):
@@ -755,19 +891,19 @@ def test_nothing_to_go_on_asks_again_and_arms_nothing(monkeypatch):
         "trigger_smart_generator")
 
 
-@pytest.mark.parametrize("last_generation, note", [
-    ({"request": _LAST_RUN_SPEC, "expired": True}, False),
-    ({"request": _LAST_RUN_SPEC, "expired": False}, True),
-    ({"request": _LAST_RUN_SPEC}, True),
+@pytest.mark.parametrize("last_generation, github_repo", [
+    ({"request": _LAST_RUN_SPEC, "expired": True}, None),
+    ({"request": _LAST_RUN_SPEC, "expired": False}, None),
+    ({"request": _LAST_RUN_SPEC}, None),
+    ({"request": _LAST_RUN_SPEC, "expired": True}, {"fullName": "acme/tasks", "hasCode": False}),
 ])
-def test_no_fix_note_when_the_previous_result_is_gone(last_generation, note):
+def test_a_fix_request_is_sent_in_the_users_words_whatever_the_previous_result(last_generation, github_repo):
     from codegen import generation_handler as generation
 
-    session = _follow_up_session("regenerate with fixes.", last_generation=last_generation)
+    session = _follow_up_session("regenerate with fixes.", last_generation=last_generation, github_repo=github_repo)
 
     original = generation._original_for_smart_generation(session, "regenerate with fixes.")
-    assert original.startswith(_LAST_RUN_SPEC)
-    assert (_FIX_NOTE in original) is note
+    assert original == with_later_request(_LAST_RUN_SPEC, "regenerate with fixes.")
 
 
 @pytest.mark.parametrize("message", ["regenerate the backend", "regenerate the ui"])

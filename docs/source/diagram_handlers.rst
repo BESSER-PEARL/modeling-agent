@@ -195,7 +195,20 @@ Features
   (``_drop_phantom_target_ops``). The member is looked up as the editor does: by
   ``target.attributeName`` / ``methodName``, then ``changes.name`` (a removal: the
   target only). The reply is "I couldn't find a **x** field to …", or "I couldn't
-  tell which attribute of **Class** to …" when the name is not a name.
+  tell which attribute of **Class** to …" when the name is not a name. Classes,
+  abstract classes, interfaces and enumerations all count as existing, and the
+  rest of the reply describes only the operations that remain.
+- **Existing Classes:** A class given by its element id in ``className`` /
+  ``sourceClass`` / ``targetClass`` is replaced by its name (the editor finds
+  classes by name). An ``add_class`` of a class the diagram already has (the
+  editor would skip it, members and all) becomes ``add_attribute`` /
+  ``add_method`` for the members neither the class nor its generalization line
+  has, without a surrogate ``id``; the reply says when nothing was new. Left as
+  is for an enumeration and when the batch removes or renames the class first.
+- **Identifiers Stay Required:** ``modify_attribute`` with ``isOptional: true``
+  on an attribute marked ``isId`` / ``isExternalId`` keeps it required (an
+  optional identifier fails validation) and the reply says how to remove the
+  identifier mark first.
 - **Literal Action Types:** Modification actions (``add_class``, ``modify_attribute``,
   etc.) are ``Literal`` types — the LLM cannot hallucinate invalid actions.
 - **Enum Type Safety:** The LLM prompt requires every referenced enum type
@@ -230,7 +243,10 @@ hold for the guards below:
 - an id attribute the request names as written (``customerId``,
   ``customer_id``) is the user's field and is left alone;
 - a member an OCL constraint or a method body reads is neither removed nor
-  renamed;
+  renamed, unless the constraint certainly does not fit the spec
+  (``_mismatched_constraints``: it reads ``self.<name>`` that no member, end
+  or class of the context's generalization line has, or applies ``->`` to a
+  class name). The reply names such rules so the user can correct them;
 - running the guards on their own output changes nothing
   (``tests/test_class_pipeline_idempotence.py``).
 

@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Literal, Optional
+from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -45,6 +45,7 @@ from prompts.classifier import SYSTEM_PROMPT
 from protocol.types import AssistantRequest
 from routing.guards import auto_fix_verdict, frontend_event_verdict
 from routing.generation_signals import (
+    GENERATOR_KEYWORDS,
     _GITHUB_CONTINUE_VERB_RE,
     _extract_github_reference,
     is_github_save_request,
@@ -140,6 +141,25 @@ _UNSUPPORTED_STACK_RE = re.compile(
     re.I,
 )
 _UNSUPPORTED_STACK_LITERALS = ("c++", "c#", ".net", "f#")
+# Generators detected from a kind of output ("backend", "web app", "REST API"), not a technology.
+_OUTPUT_KIND_GENERATORS = frozenset({"backend", "web_app", "rest_api"})
+# Generator keywords that name a kind of output, not a technology.
+_OUTPUT_KIND_KEYWORDS = frozenset(
+    {"database", "relational database", "db schema"}
+    | {"agent generator", "generate agent", "quantum code", "quantum generator", "quantum circuit code"}
+    | {keyword for generator in _OUTPUT_KIND_GENERATORS for keyword in GENERATOR_KEYWORDS[generator]}
+)
+
+
+def _names_generator(message: str, generator_type: Optional[str]) -> bool:
+    """True when *message* names *generator_type* by one of its technology keywords (or their plural)."""
+    lower = (message or "").lower()
+    return any(
+        keyword not in _OUTPUT_KIND_KEYWORDS and re.search(rf"\b{re.escape(keyword)}s?\b", lower)
+        for keyword in GENERATOR_KEYWORDS.get(generator_type or "", ())
+    )
+
+
 # Words that explicitly ask for screens. Shared with the planner's
 # from-scratch web-app route (orchestrator/request_planner.py).
 EXPLICIT_SCREEN_VOCAB_RE = re.compile(
@@ -315,6 +335,15 @@ class UnifiedClassification(BaseModel):
             "CONVERSATION LANGUAGE line when present, else NULL."
         ),
     )
+    screens_listed: Optional[bool] = Field(
+        default=None,
+        description=(
+            "true when the USER MESSAGE names or counts the app screens/pages to "
+            "build ('a calendar screen and a team page'), any language. NULL "
+            "otherwise: pages of a document, a 'pages' attribute, pagination, "
+            "'one page per class' and basic CRUD pages are not screens."
+        ),
+    )
 
     # --- Domain-mismatch fields (populated when generation_route='smart') ---
     # Used to refuse silent code-rewrites when the user's request describes
@@ -384,6 +413,31 @@ class UnifiedClassification(BaseModel):
             "user clearly describes a brand-new system to build from nothing.\n"
             "Leave NULL ONLY when genuinely ambiguous — the agent will ask "
             "rather than guess destructively."
+        ),
+    )
+
+    start_over: bool = Field(
+        default=False,
+        description=(
+            "generation_intent only: True when the user EXPLICITLY asks to "
+            "rebuild the already generated APP from scratch and drop its "
+            "current code ('start over', 'scrap the app and build it again', "
+            "'regenerate everything from zero'), in any language. The user "
+            "is asked to confirm, and changes made in earlier runs are lost. "
+            "False for a change, fix or retry of the app, and for discarding "
+            "the MODEL (that is model_disposition)."
+        ),
+    )
+
+    states_requirements: bool = Field(
+        default=True,
+        description=(
+            "generation_intent only: False when the message states nothing "
+            "the app must do or have, and only asks to run, continue, retry, "
+            "finish or fix what was asked before ('can you continue with the "
+            "development?', 'retry the previous step'), in any language. It "
+            "is then sent to the run but not kept as part of the app's "
+            "request. True whenever it adds or changes anything."
         ),
     )
 
@@ -525,6 +579,7 @@ def classify_message(
             result, message, follow_up_target_kind=follow_up_kind,
             has_class_model=ctx is None or bool(_extract_class_names(ctx)),
             linked_repo_has_app=(getattr(ctx, "github_repo", None) or {}).get("has_code") is True,
+            generated_app=bool(recent_smart_gen),
         )
     except Exception:
         logger.exception("classify_message failed; falling back to fallback_intent")
@@ -632,6 +687,7 @@ def get_or_classify(
     session: Any,
     request: AssistantRequest,
     llm_provider: Any,
+    answer_verdict: Optional[Dict[str, Any]] = None,
 ) -> UnifiedClassification:
     """Per-message cache wrapper around :func:`classify_message`.
 
@@ -641,7 +697,8 @@ def get_or_classify(
 
     Every transition condition and state body on a single incoming
     WebSocket message should go through this helper so the whole
-    request consumes exactly ONE classification call.
+    request consumes exactly ONE classification call. ``answer_verdict``
+    (the open dialog's own reading of the message) replaces that call.
     """
     event_id = _current_event_id(session)
     cached_event_id = session.get(UNIFIED_CLASSIFICATION_EVENT_ID)
@@ -656,6 +713,8 @@ def get_or_classify(
     frontend_event = frontend_event_verdict(request)
     if frontend_event is not None:
         result = UnifiedClassification(**frontend_event)
+    elif answer_verdict is not None:
+        result = UnifiedClassification(**answer_verdict)
     else:
         _pending_flow = _pending_flow_context(session)
         # Project-scoped: the SMART-GEN FOLLOW-UP rule is about the app in the
@@ -1077,6 +1136,7 @@ def _post_validate(
     follow_up_target_kind: Optional[str] = None,
     has_class_model: bool = True,
     linked_repo_has_app: bool = False,
+    generated_app: bool = False,
 ) -> UnifiedClassification:
     """Defensive validation of LLM output.
 
@@ -1210,10 +1270,11 @@ def _post_validate(
         # Same guard, EDIT form ("add a Reports page" with an existing GUI
         # must not stash a spec-driven web-app confirmation). Adding/
         # removing/renaming a page or screen edits the GUI DIAGRAM — unless a
-        # linked repo holds the app, whose pages live in its code.
+        # recent run or a linked repo holds the app, whose pages live in its code.
         if (
             _web_gui_guards
             and not linked_repo_has_app
+            and not generated_app
             and re.search(r"\b(pages?|screens?)\b", _low)
             and re.search(r"\b(add|insert|remove|delete|rename)\b", _low)
             and not re.search(
@@ -1238,9 +1299,13 @@ def _post_validate(
         # (C, C++, Rust, Kotlin, Go, ...), the LLM maps it to the nearest
         # built-in (c->java, c++->python). Force the smart / from-scratch route
         # so the LLM writes the actual language instead.
+        # A technology the user named themselves is never overridden: the
+        # stack words may be the app's domain ("an express delivery app").
+        # A kind of output ("a backend in Rust", "a MySQL database") names no technology.
         if (
             result.generation_route in ("deterministic", "smart")
             and result.generator_type not in ("export", "deploy", "github")
+            and not _names_generator(message, result.generator_type)
             and _names_unsupported_stack(message or "")
         ):
             if result.generation_route != "smart":
@@ -1372,6 +1437,7 @@ def _rebuilt(result: UnifiedClassification, **fields: Any) -> UnifiedClassificat
         target_description=result.target_description,
         architecture=result.architecture,
         reply_language=result.reply_language,
+        screens_listed=result.screens_listed,
         **fields,
     )
 

@@ -132,6 +132,22 @@ class TestBuildPayload:
         assert payload["instructions"].startswith("Build a FastAPI")
         assert "message" in payload
 
+    @pytest.mark.parametrize("mode, previous_result_gone", [
+        (None, False),        # first run, or a follow-up the editor runs as an edit
+        (None, True),         # the previous result is gone: rebuilt from the model
+        ("generate", False),  # the user discards the app a linked repo holds
+    ])
+    def test_run_banner_never_claims_a_run_mode(self, mode, previous_result_gone):
+        """Without ``mode`` the editor picks edit or rebuild after this payload
+        is built, so the banner must be true of either."""
+        cls = GenerationClassification(
+            route="smart", refined_instructions="Fix the save button.", reason="…",
+        )
+        payload = build_trigger_smart_generator_payload(
+            cls, mode=mode, previous_result_gone=previous_result_gone,
+        )
+        assert payload["message"] == "Starting the Spec-Driven Agent…"
+
     @pytest.mark.parametrize("provider", ["anthropic", "openai"])
     def test_payload_leaves_the_model_to_the_backend(self, provider):
         """A hard-coded default here overrode the deployment's model catalog:

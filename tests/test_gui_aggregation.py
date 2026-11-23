@@ -93,6 +93,23 @@ def test_metric_aggregates_its_field():
     assert (total["attributes"]["data-field"], total["attributes"]["aggregation"]) == ("b-copies", "sum")
 
 
+def test_metric_cards_carry_no_trend_caption():
+    # BESSER renders show-trend as a fixed "Latest value" caption, wrong under
+    # a count or any other aggregate; it is on unless set to false.
+    from diagram_handlers.types.gui_nocode_diagram_handler import (
+        _stat_placeholder, _stats_grid_component,
+    )
+    nodes = _nodes(_generate(_dashboard(
+        {"kind": "metric_card", "className": "Book", "title": "Books"},
+        {"kind": "metric_card", "className": "Loan", "title": "Average fine", "valueField": "fine", "aggregation": "avg"},
+    )), "Dashboard")
+    cards = [n for n in nodes if n.get("type") == "metric-card"]
+    grid = _stats_grid_component({"stats": [{"label": "Books", "value": "12"}]}, META)
+    cards += [c for c in grid["components"] if c.get("type") == "metric-card"]
+    cards.append(_stat_placeholder("Total", META[0]))
+    assert len(cards) == 4
+    assert all(c["attributes"]["show-trend"] == "false" for c in cards)
+
 def test_count_chart_groups_records_by_label():
     chart = _widget(_nodes(_generate(_dashboard(
         {"kind": "bar_chart", "className": "Book", "title": "Books by genre", "labelField": "genre", "aggregation": "count"},
