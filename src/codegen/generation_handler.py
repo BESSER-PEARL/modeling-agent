@@ -804,6 +804,7 @@ GENERATOR_REQUIRED_FIELDS: Dict[str, List[str]] = {
     "rdf": [],
     "export": ["format"],
     "deploy": [],
+    "github": [],
 }
 
 EXPORT_FORMATS = ["json", "buml"]
@@ -2071,6 +2072,16 @@ def handle_generation_request(session: Session, request: AssistantRequest) -> Di
             "action": Action.TRIGGER_EXPORT,
             "format": fmt,
             "message": f"Exporting your project as **{fmt.upper()}** \u2014 the download should start shortly.",
+        }
+
+    if generator_type == "github":
+        # The editor picks what to save: the last generated app, else the model.
+        return {
+            "action": Action.TRIGGER_GITHUB_SAVE,
+            "message": (
+                "Opening **Save to GitHub** — connect GitHub if asked, "
+                "then choose the repository."
+            ),
         }
 
     if generator_type == "deploy":

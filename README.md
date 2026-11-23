@@ -192,7 +192,7 @@ mode the payload is usually serialized inside the top-level `message` field:
 It is normalized into an internal `AssistantRequest` (`src/protocol/types.py`). Terminal
 responses are `inject_complete_system`, `inject_element`, `modify_model`,
 `assistant_message`, `trigger_generator`, `trigger_smart_generator`, `trigger_export`,
-`trigger_deploy`, `trigger_github_import`, `auto_generate_gui`, `create_diagram_tab` and
+`trigger_deploy`, `trigger_github_save`, `trigger_github_import`, `auto_generate_gui`, `create_diagram_tab` and
 `agent_error`; `progress` and `stream_start` / `stream_chunk` / `stream_done` are
 non-terminal. Full payload shapes:
 [WebSocket protocol](https://modeling-agent.readthedocs.io/en/latest/websocket_protocol.html).

@@ -231,7 +231,7 @@ Full reference: `docs/source/websocket_protocol.rst`. The traps:
   `replay_last_response` (after a reconnect: with `turnId` + `appliedSeqs`, re-send only that turn's unacknowledged terminal replies; without, the session's last terminal reply).
 - Emitted actions — terminal: `inject_element`, `inject_complete_system`, `modify_model`, `assistant_message`,
   `agent_error`, `create_diagram_tab`, `trigger_generator`, `trigger_smart_generator`, `trigger_github_import`,
-  `trigger_export`, `trigger_deploy`, `auto_generate_gui`, `show_trace` (after a trace answer; its `artifactId`
+  `trigger_export`, `trigger_deploy`, `trigger_github_save`, `auto_generate_gui`, `show_trace` (after a trace answer; its `artifactId`
   only ever from `context.traceDigest.focus`); non-terminal: `progress`, `stream_start`, `stream_chunk`,
   `stream_done`. There is **no `switch_diagram` action**. Terminal replies (`_TURN_REPLY_ACTIONS`) carry the turn's
   `llmUsage` once it made an LLM call, stamped in `_send_to_session`.

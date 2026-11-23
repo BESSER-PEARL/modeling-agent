@@ -64,6 +64,7 @@ _DETERMINISTIC_GENERATOR_TYPES = Literal[
     "rdf",
     "export",
     "deploy",
+    "github",
 ]
 
 

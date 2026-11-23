@@ -33,6 +33,7 @@ class Action(StrEnum):
     TRIGGER_GITHUB_IMPORT = "trigger_github_import"
     TRIGGER_EXPORT = "trigger_export"
     TRIGGER_DEPLOY = "trigger_deploy"
+    TRIGGER_GITHUB_SAVE = "trigger_github_save"
     AUTO_GENERATE_GUI = "auto_generate_gui"
     # After a streamed answer to a trace question: a button opening the
     # editor's Traceability page on a view (and an artifact of the digest).
