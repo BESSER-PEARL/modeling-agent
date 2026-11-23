@@ -60,6 +60,20 @@ def _deterministic(generator_type):
     )
 
 
+BUILD_THEN_PUSH = [
+    ("create a class diagram for a library and generate a django app and push it to github", "django"),
+    ("generate a django backend and commit it to my repo", "django"),
+    ("push it to github once the fastapi backend is generated", "backend"),
+]
+
+
+@pytest.mark.parametrize("message, generator", BUILD_THEN_PUSH)
+def test_a_build_request_that_ends_with_a_push_keeps_its_generator(message, generator):
+    """Review of 2026-11-23: the planner read "generate a django app and push it to github"
+    as a GitHub save, so a "yes" opened the save dialog and Django was never generated."""
+    assert detect_generator_type(message) == generator
+
+
 @pytest.mark.parametrize("llm_type", ["deploy", "export", None])
 def test_post_validate_corrects_a_github_save_typed_as_something_else(llm_type):
     # The live misroute: the LLM picked 'deploy' for "save to github".
