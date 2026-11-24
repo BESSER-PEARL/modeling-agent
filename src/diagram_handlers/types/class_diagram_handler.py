@@ -157,12 +157,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         # The requirements the user's own words state, listed in the structured
         # pass only so it can report what realizes each one. None when the project
-        # records no traces, none without those words (an enriched or synthesized
-        # request has nothing to quote), and none for a request too short for the
-        # reasoning pass: a trivial request stays one LLM call.
+        # records no traces and none without those words (an enriched or synthesized
+        # request has nothing to quote). A short request is extracted too: one of
+        # 70 characters can state four requirements.
         requirements = (
             extract_requirements(self, raw_request)
-            if record_requirements and raw_request and len(raw_request.strip()) >= self._TWO_PASS_MIN_LENGTH
+            if record_requirements and raw_request and raw_request.strip()
             else []
         )
         # Only the kinds a class diagram realizes are listed; each listed one
