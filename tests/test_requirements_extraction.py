@@ -326,16 +326,17 @@ class TestHandler:
         result = compact_handler.generate_complete_system(REQUEST, raw_request=REQUEST, record_requirements=True)
         assert "requirements" not in result and "requirementsModel" not in result
 
-    def test_a_trivial_request_stays_one_call(self, compact_handler, monkeypatch):
-        """Below the reasoning pass's threshold a request is trivial: no extraction call."""
-        def no_extraction(*args, **kwargs):
-            raise AssertionError("a trivial request must not pay for an extraction")
-
-        short = "a todo app with tasks"
+    def test_a_short_request_has_its_requirements_extracted(self, compact_handler, monkeypatch):
+        """A request below the reasoning pass's threshold states requirements too. Live (experimental,
+        2026-11-24, BESSER #830): "library system where members borrow books and each loan has a due
+        date" (70 characters) states four requirements, and none was recorded."""
+        short = "hotel where each room is identified by its number"
         assert len(short) < compact_handler._TWO_PASS_MIN_LENGTH
-        monkeypatch.setattr(compact_handler, "predict_structured", no_extraction)
+        monkeypatch.setattr(compact_handler, "predict_structured", lambda *a, **k: _extraction(
+            ("Each room is identified by its number", "each room is identified by its number", "uniqueness")))
         monkeypatch.setattr(compact_handler, "predict_two_pass_structured", lambda **kwargs: _hotel_compact())
-        assert "requirements" not in compact_handler.generate_complete_system(short, raw_request=short, record_requirements=True)
+        result = compact_handler.generate_complete_system(short, raw_request=short, record_requirements=True)
+        assert [r["text"] for r in result["requirements"]] == ["Each room is identified by its number"]
 
 
 class TestExtractionModel:
