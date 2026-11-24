@@ -2969,6 +2969,115 @@ class ClassDiagramHandler(BaseDiagramHandler):
             spec["modifications"] = kept
         return notes
 
+    # The editor's TYPE_ALIASES (typeNormalization.ts): the type it stores for a requested one.
+    _EDITOR_TYPE_ALIASES = {
+        "string": "str", "String": "str", "STRING": "str",
+        "integer": "int", "Integer": "int", "INTEGER": "int", "long": "int", "Long": "int",
+        "double": "float", "Double": "float", "DOUBLE": "float", "Float": "float", "FLOAT": "float",
+        "number": "float", "Number": "float", "decimal": "float", "Decimal": "float",
+        "BigDecimal": "float", "bigdecimal": "float",
+        "boolean": "bool", "Boolean": "bool", "BOOLEAN": "bool",
+        "Date": "date", "DATE": "date", "LocalDate": "date", "localDate": "date",
+        "DateTime": "datetime", "DATETIME": "datetime", "Timestamp": "datetime", "timestamp": "datetime",
+        "LocalDateTime": "datetime", "localDateTime": "datetime",
+        "Time": "time", "TIME": "time", "LocalTime": "time",
+        "object": "any", "Object": "any", "void": "any", "Void": "any",
+        "UUID": "str", "Uuid": "str", "uuid": "str", "GUID": "str",
+        "byte": "int", "Byte": "int", "short": "int", "Short": "int",
+        "char": "str", "Char": "str", "Character": "str",
+    }
+    # changes field -> the attribute element's field and the value the editor assumes when it is absent.
+    _ATTRIBUTE_CHANGE_FIELDS = {
+        "visibility": ("visibility", "public"),
+        "isDerived": ("isDerived", False),
+        "isOptional": ("isOptional", False),
+        "defaultValue": ("defaultValue", ""),
+    }
+
+    def _unchanged_attribute_note(self, mod: Dict[str, Any], elements: Dict[str, Any]) -> Optional[str]:
+        """A note when *mod* is a ``modify_attribute`` that sets only values the
+        attribute already has, else ``None``. An attribute that is not found by
+        class and name, or stores no type, is not judged."""
+        target, changes = mod.get("target"), mod.get("changes")
+        if mod.get("action") != "modify_attribute" or not isinstance(target, dict) or not isinstance(changes, dict):
+            return None
+        requested = {k: v for k, v in changes.items() if v is not None}
+        if not requested or set(requested) - {"name", "type", *self._ATTRIBUTE_CHANGE_FIELDS}:
+            return None
+
+        class_name = (target.get("className") or "").strip().lower()
+        attr_name = self._clean_member_name(target.get("attributeName")).lower()
+        owners = {
+            eid for eid, el in elements.items()
+            if isinstance(el, dict) and el.get("type") in self._CLASS_LIKE_TYPES
+            and str(el.get("name") or "").strip().lower() == class_name
+        }
+        found = [
+            el for el in elements.values()
+            if isinstance(el, dict) and el.get("type") == "ClassAttribute" and el.get("owner") in owners
+            and self._clean_member_name(el.get("name")).lower() == attr_name
+        ]
+        if not class_name or not attr_name or len(found) != 1:
+            return None
+        attribute = found[0]
+        stored_type = attribute.get("attributeType")
+        if not isinstance(stored_type, str) or not stored_type:
+            return None
+
+        for field, value in requested.items():
+            if field == "name":
+                same = value.strip() == self._clean_member_name(attribute.get("name"))
+            elif field == "type":
+                same = self._EDITOR_TYPE_ALIASES.get(value.strip(), value.strip()) == stored_type
+            else:
+                key, absent = self._ATTRIBUTE_CHANGE_FIELDS[field]
+                stored = attribute.get(key)
+                same = value == (absent if stored is None else stored)
+            if not same:
+                return None
+
+        name = self._clean_member_name(attribute.get("name"))
+        owner = str(elements[attribute["owner"]].get("name") or "").strip()
+        if set(requested) != {"type"}:
+            return f"**{name}** in **{owner}** already has those values, so nothing changed."
+        note = f"**{name}** in **{owner}** is already `{stored_type}`, so nothing changed."
+        asked = requested["type"].strip()
+        if asked != stored_type:
+            note += f" `{asked}` is stored as `{stored_type}`."
+            if stored_type == "float":
+                note += " For whole numbers, ask for `int`."
+        return note
+
+    def _drop_unchanged_attribute_ops(
+        self, spec: Dict[str, Any], current_model: Optional[Dict[str, Any]],
+    ) -> List[str]:
+        """Drop the ``modify_attribute`` ops of *spec* that change nothing and
+        return one note per dropped op. Mutates *spec* in place."""
+        elements = current_model.get("elements") if isinstance(current_model, dict) else None
+        if not isinstance(elements, dict) or spec.get("action") != Action.MODIFY_MODEL:
+            return []
+        mods = spec.get("modifications")
+        if not isinstance(mods, list):
+            mods = [spec["modification"]] if isinstance(spec.get("modification"), dict) else []
+        kept: List[Any] = []
+        notes: List[str] = []
+        for mod in mods:
+            note = self._unchanged_attribute_note(mod, elements) if isinstance(mod, dict) else None
+            if note is None:
+                kept.append(mod)
+            else:
+                notes.append(note)
+        if not notes:
+            return []
+        logger.info(f"[ClassDiagram] Dropped {len(notes)} attribute edit(s) that change nothing")
+        spec.pop("modification", None)
+        spec.pop("modifications", None)
+        if len(kept) == 1:
+            spec["modification"] = kept[0]
+        elif kept:
+            spec["modifications"] = kept
+        return notes
+
     # ------------------------------------------------------------------
     # Modification Support (Existing - Updated for new architecture)
     # ------------------------------------------------------------------
@@ -3696,6 +3805,11 @@ class ClassDiagramHandler(BaseDiagramHandler):
                     "target (%s) — retrying once with a fresh sample",
                     " / ".join(not_found_notes)[:200],
                 )
+
+        # An edit to the values an attribute already has is reported, not applied
+        # (after the loop: it is no reason to sample again).
+        if not refactor_reply[0]:
+            not_found_notes = not_found_notes + self._drop_unchanged_attribute_ops(modification_spec, current_model)
 
         # If every op was a phantom-target removal/edit, nothing remains to
         # apply — surface the not-found note(s) as a plain message rather
