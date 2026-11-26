@@ -2946,6 +2946,17 @@ class ClassDiagramHandler(BaseDiagramHandler):
             logger.info(f"[ClassDiagram] Checking for constraint '{constraint}' (lowercase: {constraint.lower()})")
             logger.info(f"[ClassDiagram] Available constraint names: {constraint_names}")
             if constraint.lower() not in constraint_names:
+                # Check if this is a bulk removal request (contains "ocl", "constraint", "all", etc.)
+                constraint_lower = constraint.lower()
+                is_bulk_request = any(keyword in constraint_lower for keyword in ['ocl', 'constraint', 'all'])
+
+                if is_bulk_request:
+                    # This is likely a "remove all constraints" request where the specific
+                    # constraint name doesn't exist - allow it to proceed, the frontend
+                    # will handle bulk removal
+                    logger.info(f"[ClassDiagram] Constraint '{constraint}' not found, but appears to be a bulk removal request - allowing to proceed")
+                    return None
+
                 return f"I couldn't find an OCL constraint named **{constraint}** to {verb}."
             return None
 
