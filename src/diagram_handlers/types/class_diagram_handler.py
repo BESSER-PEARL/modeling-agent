@@ -32,7 +32,7 @@ from schemas.compact_class_diagram import (
     CompactSystemClassSpec,
     expand_compact_spec,
 )
-from utilities.model_context import detailed_model_summary
+from utilities.model_context import detailed_model_summary, ocl_constraint_blocks
 from utilities.whole_part import is_reversed_composition, orient_composition_spec, whole_part_kind
 from protocol.actions import Action, assistant_message, inject_complete_system, inject_element
 
@@ -2841,6 +2841,17 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         return class_names, attr_names, method_names
 
+    def _describe_modification(
+        self, action: str, target: dict, mod: Optional[dict] = None, elements: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """A constraint removal names the constraint; its className is the context, not what was removed."""
+        constraint = (target.get("constraintName") or "").strip() if action == "remove_element" else ""
+        if constraint:
+            owner = (target.get("className") or "").strip()
+            of_owner = f" from **{self._sanitize_target_name(owner)}**" if owner else ""
+            return f"Removed OCL constraint **{self._sanitize_target_name(constraint)}**{of_owner}."
+        return super()._describe_modification(action, target, mod, elements)
+
     def _known_member_names(self, elements: Optional[Dict[str, Any]]) -> FrozenSet[str]:
         if not isinstance(elements, dict):
             return frozenset()
@@ -2849,6 +2860,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
     def _phantom_note_for_mod(
         self, mod: Dict[str, Any], class_names: set, attr_names: set, method_names: set,
+        constraint_labels: FrozenSet[str] = frozenset(),
     ) -> Optional[str]:
         """Return a plain-language "couldn't find" note when *mod* removes or
         edits a target that doesn't exist in the model, else ``None`` (keep it).
@@ -2870,6 +2882,14 @@ class ClassDiagramHandler(BaseDiagramHandler):
         meth = (target.get("methodName") or "").strip()
         src = (target.get("sourceClass") or "").strip()
         tgt = (target.get("targetClass") or "").strip()
+        constraint = (target.get("constraintName") or "").strip()
+
+        # 0) OCL constraint target — checked first: its className is the
+        #    constraint's context, not a class to remove.
+        if constraint:
+            if constraint.lower() not in constraint_labels:
+                return f"I couldn't find an OCL constraint named **{constraint}** to {verb}."
+            return None
 
         def _member_note(kind: str, noun: str, named: str, known: set) -> Optional[str]:
             # The editor finds the member by target.<kind>Name, then changes.name
@@ -2941,12 +2961,13 @@ class ClassDiagramHandler(BaseDiagramHandler):
             return []
 
         class_names, attr_names, method_names = self._build_model_index(current_model)
+        constraint_labels = frozenset(b["label"].lower() for b in ocl_constraint_blocks(current_model))
 
         kept: List[Any] = []
         notes: List[str] = []
         for mod in mods:
             note = (
-                self._phantom_note_for_mod(mod, class_names, attr_names, method_names)
+                self._phantom_note_for_mod(mod, class_names, attr_names, method_names, constraint_labels)
                 if isinstance(mod, dict) else None
             )
             if note is None:
@@ -3679,7 +3700,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
                                                 "relationshipId", "relationshipName",
                                                 "sourceClass", "targetClass",
                                                 "attributeId", "attributeName",
-                                                "methodId", "methodName")):
+                                                "methodId", "methodName",
+                                                "constraintName")):
                     continue
                 # Try to find a class name in any target or changes string field
                 changes = mod.get("changes") or {}
@@ -3714,6 +3736,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
                         and not target.get("attributeName") and not target.get("attributeId")
                         and not target.get("methodName") and not target.get("methodId")
                         and not target.get("relationshipName") and not target.get("relationshipId")
+                        and not target.get("constraintName")
                     )
                     if is_class_only:
                         if cn in seen_class_removes:
@@ -4109,7 +4132,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             for m in mods
             if (m.get("action") == "remove_element"
                 and not any((m.get("target") or {}).get(k) for k in (
-                    "attributeName", "attributeId", "methodName", "methodId",
+                    "attributeName", "attributeId", "methodName", "methodId", "constraintName",
                     "relationshipName", "relationshipId", "sourceClass", "targetClass")))
             or (m.get("action") == "modify_class" and (m.get("changes") or {}).get("name"))
         }

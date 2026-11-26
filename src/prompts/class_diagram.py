@@ -24,7 +24,7 @@ CLASS_ACTIONS_BLOCK = """COMMON ACTIONS:
 - add_method / modify_method — add or change a method on a class
 - add_relationship — create a NEW connection between two classes
 - modify_relationship — change an EXISTING relationship (multiplicity, type, name)
-- remove_element — delete a class, attribute, method, or relationship
+- remove_element — delete a class, attribute, method, relationship, or OCL constraint
 
 ADVANCED ACTIONS (for structural refactoring):
 - extract_class, split_class, merge_classes, promote_attribute, add_enum
@@ -56,6 +56,8 @@ CLASS_EXAMPLES_BLOCK = """Examples:
 - "connect Order to Customer" → add_relationship (Association)
 - "change multiplicity to many" → modify_relationship
 - "delete the Address class" → modifications array: [remove_element with target.className="Address", remove_element with target.relationshipName="..." for EACH relationship involving Address]. You MUST include ALL of these or the class stays on the diagram.
+- "remove the book_has_title constraint" → remove_element with target.constraintName="book_has_title", target.className="Book" (the name as listed under "OCL constraints"). It removes the constraint only, never the class.
+- "remove all OCL constraints" → modifications array: one remove_element with target.constraintName per constraint listed under "OCL constraints" (only those of a class when the user names one).
 - "add a User class with name and email" → add_class with target.className="User", changes.className="User", changes.attributes=[{name:"name",type:"String"},{name:"email",type:"String"}]
 - "create an OrderStatus enum with PENDING, SHIPPED, DELIVERED" → add_class with isEnumeration=true, changes.attributes=[{name:"PENDING"},{name:"SHIPPED"},{name:"DELIVERED"}]
 - "add status attribute of type OrderStatus to Order" → add_attribute with target.className="Order", changes.name="status", changes.type="OrderStatus"
