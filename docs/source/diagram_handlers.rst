@@ -198,6 +198,12 @@ Features
   tell which attribute of **Class** to …" when the name is not a name. Classes,
   abstract classes, interfaces and enumerations all count as existing, and the
   rest of the reply describes only the operations that remain.
+- **OCL Constraints:** The model summary lists every OCL constraint, one per
+  ``context`` block (a box may hold several), under its label: the block's own
+  name, else ``Class::op pre`` / ``Class inv`` (``ocl_constraint_blocks``). A
+  ``remove_element`` with ``target.constraintName`` removes that block only, never
+  its class; the editor deletes the box once it is empty. A label not in the model
+  is dropped with "I couldn't find an OCL constraint named **x** to remove."
 - **Existing Classes:** A class given by its element id in ``className`` /
   ``sourceClass`` / ``targetClass`` is replaced by its name (the editor finds
   classes by name). An ``add_class`` of a class the diagram already has (the

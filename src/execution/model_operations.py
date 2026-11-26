@@ -400,7 +400,7 @@ def _build_existing_model_confirmation(
 # ------------------------------------------------------------------
 
 # Target fields that scope a remove_element to a CHILD of a top-level
-# element (an attribute, method, relationship, or transition endpoint)
+# element (an attribute, method, relationship, OCL constraint, or transition endpoint)
 # rather than to the top-level element itself. Deleting ONE class together
 # with its relationships requires several remove_element entries -- one per
 # relationship, per class_diagram_handler's REMOVE_ELEMENT_RULE -- so these
@@ -409,6 +409,7 @@ def _build_existing_model_confirmation(
 _CHILD_SCOPE_TARGET_KEYS = (
     "attributeName", "attributeId",
     "methodName", "methodId",
+    "constraintName",
     "relationshipName", "relationshipId",
     "sourceClass", "targetClass",
     "sourceStateName", "targetStateName",

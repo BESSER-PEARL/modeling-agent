@@ -7,6 +7,7 @@ variants live here so every handler and the workspace-context builder can
 share the same logic.
 """
 
+import re
 from typing import Any, Dict, List, Tuple
 
 from .whole_part import whole_part_kind
@@ -138,6 +139,47 @@ def _clean_attr_name(raw: str) -> str:
     return name
 
 
+# The header of one OCL block, as BESSER's ocl_parser._HEADER_RE reads it:
+# ``context Class[::op(params)] inv|pre|post [name]:``.
+_OCL_HEADER_RE = re.compile(
+    r"\bcontext\s+(?P<cls>\w+)(?:::(?P<op>\w+)\s*\([^)]*\))?"
+    r"\s+(?P<kw>inv|pre|post)\b(?:\s+(?P<name>\w+))?\s*:",
+    re.IGNORECASE,
+)
+
+
+def ocl_constraint_blocks(model: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Every OCL constraint of a class diagram, one entry per ``context`` block.
+
+    One ``ClassOCLConstraint`` box may hold several blocks (the generator puts
+    all invariants of a class in one box). ``label`` is how a block is named in
+    a ``remove_element`` (``target.constraintName``): its own name, else
+    ``Class::op pre`` / ``Class inv``. The editor's ClassDiagramModifier
+    labels blocks the same way.
+    """
+    elements = model.get("elements") if isinstance(model, dict) else None
+    if not isinstance(elements, dict):
+        return []
+    blocks: List[Dict[str, str]] = []
+    for eid, el in elements.items():
+        if not isinstance(el, dict) or el.get("type") != "ClassOCLConstraint":
+            continue
+        text = el.get("constraint")
+        if not isinstance(text, str):
+            continue
+        headers = list(_OCL_HEADER_RE.finditer(text))
+        for i, m in enumerate(headers):
+            end = headers[i + 1].start() if i + 1 < len(headers) else len(text)
+            owner = f"{m.group('cls')}::{m.group('op')}" if m.group("op") else m.group("cls")
+            blocks.append({
+                "label": m.group("name") or f"{owner} {m.group('kw').lower()}",
+                "context": m.group("cls"),
+                "text": " ".join(text[m.start():end].split()),
+                "element_id": eid,
+            })
+    return blocks
+
+
 def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, max_attrs: int = 10) -> List[str]:
     """Summarize a ClassDiagram model: classes, attributes, methods, relationships."""
     elements = model.get("elements")
@@ -254,6 +296,15 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
     if assocs:
         more = f" (+{len(assocs) - 15} more)" if len(assocs) > 15 else ""
         lines.append(f"Relationships ({len(assocs)}): " + "; ".join(assocs[:15]) + more)
+
+    constraints = ocl_constraint_blocks(model)
+    if constraints:
+        lines.append(f"OCL constraints ({len(constraints)}):")
+        for con in constraints[:30]:
+            text = con["text"] if len(con["text"]) <= 160 else con["text"][:157] + "..."
+            lines.append(f"  - {con['label']}: {text}")
+        if len(constraints) > 30:
+            lines.append(f"  (+{len(constraints) - 30} more)")
 
     return lines
 
