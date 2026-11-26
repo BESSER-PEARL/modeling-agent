@@ -231,6 +231,10 @@ class ClassModificationTarget(BaseModel):
         "(the name only, without parameters or return type). Set for modify_method and "
         "remove_element of a method; null for add_method, whose new name goes in changes.name."
     ))
+    constraintName: Optional[str] = Field(default=None, description=(
+        "Name of an EXISTING OCL constraint, copied exactly from the current model. "
+        "Set for remove_element of a constraint; null otherwise."
+    ))
     sourceClass: Optional[str] = Field(default=None, description="Source class for relationship modifications")
     targetClass: Optional[str] = Field(default=None, description="Target class for relationship modifications")
 
@@ -240,6 +244,7 @@ class ClassModificationTarget(BaseModel):
         self.className = _clean_name(self.className)
         self.attributeName = _clean_name(self.attributeName)
         self.methodName = _clean_name(self.methodName)
+        self.constraintName = _clean_name(self.constraintName)
         self.sourceClass = _clean_name(self.sourceClass)
         self.targetClass = _clean_name(self.targetClass)
         return self

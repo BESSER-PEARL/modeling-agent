@@ -2251,7 +2251,9 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         Keeps only constraints with a non-empty ``expression`` whose ``context``
         names a class that actually exists, so a hallucinated context can't reach
-        the editor. Mutates *system_spec* in place. No-op when there are none.
+        the editor. Also performs CASCADE DELETE: when a class is removed, any
+        constraints referencing it as context are automatically removed.
+        Mutates *system_spec* in place. No-op when there are none.
         """
         constraints = system_spec.get("constraints")
         if not isinstance(constraints, list) or not constraints:
@@ -2262,6 +2264,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             if isinstance(c, dict) and c.get("className")
         }
         kept: List[Dict[str, Any]] = []
+        dropped_count = 0
         for con in constraints:
             if not isinstance(con, dict):
                 continue
@@ -2271,14 +2274,18 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 continue
             if context not in class_names:
                 logger.info(
-                    "[ClassDiagram] Dropped OCL constraint with unknown context %r",
+                    "[ClassDiagram] Dropped OCL constraint %r with unknown/removed context %r (cascade delete)",
+                    con.get("name") or expr[:50],
                     context,
                 )
+                dropped_count += 1
                 continue
             kept.append(con)
         system_spec["constraints"] = kept
         if kept:
             logger.info("[ClassDiagram] Captured %d OCL constraint(s)", len(kept))
+        if dropped_count:
+            logger.info("[ClassDiagram] Cascade-deleted %d constraint(s) for removed classes", dropped_count)
 
     @staticmethod
     def _enum_names_in_model(current_model: Optional[Dict[str, Any]]) -> set[str]:
@@ -2791,8 +2798,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
     def _build_model_index(
         self, current_model: Optional[Dict[str, Any]],
-    ) -> tuple[set, set, set]:
-        """Return ``(class_names, attr_names, method_names)`` (all lowercased)
+    ) -> tuple[set, set, set, set]:
+        """Return ``(class_names, attr_names, method_names, constraint_names)`` (all lowercased)
         present in *current_model*, for validating modification targets.
 
         Handles the Apollon editor format (attributes/methods stored as separate
@@ -2803,11 +2810,12 @@ class ClassDiagramHandler(BaseDiagramHandler):
         class_names: set = set()
         attr_names: set = set()
         method_names: set = set()
+        constraint_names: set = set()
         if not isinstance(current_model, dict):
-            return class_names, attr_names, method_names
+            return class_names, attr_names, method_names, constraint_names
         elements = current_model.get("elements")
         if not isinstance(elements, dict):
-            return class_names, attr_names, method_names
+            return class_names, attr_names, method_names, constraint_names
 
         def _add_inline_members(container: Dict[str, Any]) -> None:
             for key, bucket in (("attributes", attr_names), ("methods", method_names)):
@@ -2839,16 +2847,58 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 if isinstance(name, str) and name.strip():
                     method_names.add(self._clean_member_name(name).lower())
 
-        return class_names, attr_names, method_names
+        # Extract OCL constraint names from the model
+        # In BESSER/Apollon format, OCL constraints are ELEMENTS with type="ClassOCLConstraint"
+        # They have a "constraint" field with "context X inv <name>: <body>"
+        import re
+
+        # Look for ClassOCLConstraint elements in the elements dict
+        elements_dict = current_model.get("elements")
+        if isinstance(elements_dict, dict):
+            for el_id, el in elements_dict.items():
+                if isinstance(el, dict) and el.get("type") == "ClassOCLConstraint":
+                    # Extract name from the "constraint" field
+                    expr = el.get("constraint")
+                    if isinstance(expr, str):
+                        logger.info(f"[ClassDiagram] Found ClassOCLConstraint: {expr[:80]}")
+                        # Extract name after "inv": "context X inv <name>: ..."
+                        match = re.search(r'\binv\s+(\w+)\s*:', expr)
+                        if match:
+                            extracted_name = match.group(1).strip().lower()
+                            constraint_names.add(extracted_name)
+                            logger.info(f"[ClassDiagram] Extracted constraint name: {extracted_name}")
+
+        # Also check legacy formats (constraints/assessments arrays)
+        constraints = current_model.get("constraints")
+        if not constraints:
+            assessments = current_model.get("assessments")
+            if isinstance(assessments, dict):
+                constraints = list(assessments.values())
+            else:
+                constraints = assessments
+
+        if isinstance(constraints, list):
+            for con in constraints:
+                if isinstance(con, dict):
+                    con_name = con.get("name")
+                    if isinstance(con_name, str) and con_name.strip():
+                        constraint_names.add(con_name.strip().lower())
+                    expr = con.get("expression") or con.get("constraint")
+                    if isinstance(expr, str):
+                        match = re.search(r'\binv\s+(\w+)\s*:', expr)
+                        if match:
+                            constraint_names.add(match.group(1).strip().lower())
+
+        return class_names, attr_names, method_names, constraint_names
 
     def _known_member_names(self, elements: Optional[Dict[str, Any]]) -> FrozenSet[str]:
         if not isinstance(elements, dict):
             return frozenset()
-        _, attr_names, method_names = self._build_model_index({"elements": elements})
+        _, attr_names, method_names, _ = self._build_model_index({"elements": elements})
         return frozenset(attr_names | method_names)
 
     def _phantom_note_for_mod(
-        self, mod: Dict[str, Any], class_names: set, attr_names: set, method_names: set,
+        self, mod: Dict[str, Any], class_names: set, attr_names: set, method_names: set, constraint_names: set,
     ) -> Optional[str]:
         """Return a plain-language "couldn't find" note when *mod* removes or
         edits a target that doesn't exist in the model, else ``None`` (keep it).
@@ -2868,6 +2918,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
         cn = (target.get("className") or "").strip()
         attr = (target.get("attributeName") or "").strip()
         meth = (target.get("methodName") or "").strip()
+        constraint = (target.get("constraintName") or "").strip()
         src = (target.get("sourceClass") or "").strip()
         tgt = (target.get("targetClass") or "").strip()
 
@@ -2889,6 +2940,14 @@ class ClassDiagramHandler(BaseDiagramHandler):
                 of_owner = f" of **{owner}**" if owner else ""
                 return f"I couldn't tell which {kind}{of_owner} to {verb}. Which one did you mean?"
             return f"I couldn't find a **{quoted}** {noun} to {verb}."
+
+        # 0) OCL Constraint target — check if constraint exists
+        if constraint:
+            logger.info(f"[ClassDiagram] Checking for constraint '{constraint}' (lowercase: {constraint.lower()})")
+            logger.info(f"[ClassDiagram] Available constraint names: {constraint_names}")
+            if constraint.lower() not in constraint_names:
+                return f"I couldn't find an OCL constraint named **{constraint}** to {verb}."
+            return None
 
         # 1) Attribute target — missing only when absent everywhere.
         if attr or action == "modify_attribute":
@@ -2926,6 +2985,13 @@ class ClassDiagramHandler(BaseDiagramHandler):
         survived. When every op is dropped the spec is left with no ops (the
         caller surfaces the notes as a plain message instead).
         """
+        # DEBUG: Log what's in current_model to diagnose constraint issues
+        if current_model:
+            logger.info(f"[ClassDiagram] current_model has keys: {list(current_model.keys())}")
+            logger.info(f"[ClassDiagram] current_model.get('constraints'): {current_model.get('constraints')}")
+            logger.info(f"[ClassDiagram] current_model.get('assessments'): {current_model.get('assessments')}")
+        else:
+            logger.info(f"[ClassDiagram] current_model is None or empty")
         if not isinstance(spec, dict) or spec.get("action") != Action.MODIFY_MODEL:
             return []
         elements = current_model.get("elements") if isinstance(current_model, dict) else None
@@ -2940,13 +3006,13 @@ class ClassDiagramHandler(BaseDiagramHandler):
         else:
             return []
 
-        class_names, attr_names, method_names = self._build_model_index(current_model)
+        class_names, attr_names, method_names, constraint_names = self._build_model_index(current_model)
 
         kept: List[Any] = []
         notes: List[str] = []
         for mod in mods:
             note = (
-                self._phantom_note_for_mod(mod, class_names, attr_names, method_names)
+                self._phantom_note_for_mod(mod, class_names, attr_names, method_names, constraint_names)
                 if isinstance(mod, dict) else None
             )
             if note is None:
@@ -3679,7 +3745,8 @@ class ClassDiagramHandler(BaseDiagramHandler):
                                                 "relationshipId", "relationshipName",
                                                 "sourceClass", "targetClass",
                                                 "attributeId", "attributeName",
-                                                "methodId", "methodName")):
+                                                "methodId", "methodName",
+                                                "constraintName")):
                     continue
                 # Try to find a class name in any target or changes string field
                 changes = mod.get("changes") or {}

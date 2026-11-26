@@ -255,6 +255,30 @@ def _summarize_class_diagram(model: Dict[str, Any], *, max_classes: int = 20, ma
         more = f" (+{len(assocs) - 15} more)" if len(assocs) > 15 else ""
         lines.append(f"Relationships ({len(assocs)}): " + "; ".join(assocs[:15]) + more)
 
+    # OCL Constraints - include so the LLM knows what constraints exist
+    constraints = model.get("constraints")
+    if isinstance(constraints, list) and constraints:
+        import re
+        constraint_names = []
+        for con in constraints[:10]:  # Show up to 10 constraints
+            if isinstance(con, dict):
+                # Try explicit name field first
+                name = con.get("name")
+                if name:
+                    constraint_names.append(name)
+                else:
+                    # Try to extract from expression: "context X inv <name>: ..."
+                    expr = con.get("expression", "")
+                    match = re.search(r'\binv\s+(\w+)\s*:', expr)
+                    if match:
+                        constraint_names.append(match.group(1))
+                    elif expr:
+                        # Fallback: show first 30 chars of expression
+                        constraint_names.append(expr[:30] + "..." if len(expr) > 30 else expr)
+        if constraint_names:
+            more = f" (+{len(constraints) - 10} more)" if len(constraints) > 10 else ""
+            lines.append(f"OCL Constraints ({len(constraints)}): " + ", ".join(constraint_names) + more)
+
     return lines
 
 
