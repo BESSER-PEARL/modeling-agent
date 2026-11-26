@@ -708,6 +708,14 @@ Apply multiple modifications in a single message.
      "message": "Added **phone** to User and removed **deprecatedMethod** from Order."
    }
 
+A class-diagram ``remove_element`` whose target has ``constraintName`` removes
+one OCL constraint, never its class: ``{"className": "Book", "constraintName":
+"book_has_title"}``, where ``className`` is the constraint's context. The name
+is the label from the model summary (the block's own name, else ``Class::op
+pre`` / ``Class inv``). The editor removes that ``context`` block from its
+``ClassOCLConstraint`` box and deletes the box once it is empty. Deploy the
+editor first: an older editor reads only ``className`` and deletes the class.
+
 Nested Modification Actions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

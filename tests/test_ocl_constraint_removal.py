@@ -112,6 +112,24 @@ def test_a_constraint_removal_reaches_the_editor_unchanged():
     assert op["target"].get("constraintName") == "book_has_title"
     # Never promoted into a class removal.
     assert not op["target"].get("className")
+    assert result["message"] == "Removed OCL constraint **book_has_title**."
+
+
+def test_the_reply_names_the_constraint_not_its_class():
+    result, _ = _run({"modifications": [
+        {"action": "remove_element", "target": {"className": "Book", "constraintName": "book_has_title"}},
+    ]}, "remove book_has_title constraint")
+    assert result["message"] == "Removed OCL constraint **book_has_title** from **Book**."
+
+
+def test_a_constraint_removal_does_not_free_its_class_for_a_new_add_class():
+    # With Book "replaced", add_class Book stayed an add_class the editor skips, losing isbn.
+    result, _ = _run({"modifications": [
+        {"action": "remove_element", "target": {"className": "Book", "constraintName": "book_has_title"}},
+        {"action": "add_class", "target": {"className": "Book"},
+         "changes": {"className": "Book", "attributes": [{"name": "isbn", "type": "str"}]}},
+    ]}, "remove book_has_title and give Book an isbn")
+    assert [op["action"] for op in _ops(result)] == ["remove_element", "add_attribute"]
 
 
 def test_removing_all_constraints_keeps_one_op_per_constraint():

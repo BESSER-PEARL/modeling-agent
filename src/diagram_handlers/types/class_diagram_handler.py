@@ -2841,6 +2841,17 @@ class ClassDiagramHandler(BaseDiagramHandler):
 
         return class_names, attr_names, method_names
 
+    def _describe_modification(
+        self, action: str, target: dict, mod: Optional[dict] = None, elements: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """A constraint removal names the constraint; its className is the context, not what was removed."""
+        constraint = (target.get("constraintName") or "").strip() if action == "remove_element" else ""
+        if constraint:
+            owner = (target.get("className") or "").strip()
+            of_owner = f" from **{self._sanitize_target_name(owner)}**" if owner else ""
+            return f"Removed OCL constraint **{self._sanitize_target_name(constraint)}**{of_owner}."
+        return super()._describe_modification(action, target, mod, elements)
+
     def _known_member_names(self, elements: Optional[Dict[str, Any]]) -> FrozenSet[str]:
         if not isinstance(elements, dict):
             return frozenset()
@@ -4121,7 +4132,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             for m in mods
             if (m.get("action") == "remove_element"
                 and not any((m.get("target") or {}).get(k) for k in (
-                    "attributeName", "attributeId", "methodName", "methodId",
+                    "attributeName", "attributeId", "methodName", "methodId", "constraintName",
                     "relationshipName", "relationshipId", "sourceClass", "targetClass")))
             or (m.get("action") == "modify_class" and (m.get("changes") or {}).get("name"))
         }
