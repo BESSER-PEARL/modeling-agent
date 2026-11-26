@@ -48,7 +48,7 @@ def _remaining_actions(spec):
 
 class TestModelIndex:
     def test_parses_apollon_attributes(self, handler):
-        classes, attrs, methods = handler._build_model_index(_model_with_task_title())
+        classes, attrs, methods, constraints = handler._build_model_index(_model_with_task_title())
         assert "task" in classes
         assert "title" in attrs
         assert methods == set()
@@ -56,7 +56,7 @@ class TestModelIndex:
     def test_parses_inline_attributes(self, handler):
         model = {"elements": {"c1": {"name": "Task", "type": "Class",
                                      "attributes": [{"name": "title"}]}}}
-        _classes, attrs, _methods = handler._build_model_index(model)
+        _classes, attrs, _methods, _constraints = handler._build_model_index(model)
         assert "title" in attrs
 
 

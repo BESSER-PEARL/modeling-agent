@@ -97,7 +97,7 @@ def test_the_index_finds_a_method_with_parameters():
                    "owner": "c1"},
         }
     }
-    class_names, attr_names, method_names = handler._build_model_index(model)
+    class_names, attr_names, method_names, constraint_names = handler._build_model_index(model)
     assert "user" in class_names
     assert "email" in attr_names
     assert "follow" in method_names, (

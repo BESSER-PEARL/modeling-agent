@@ -3002,7 +3002,7 @@ class ClassDiagramHandler(BaseDiagramHandler):
             logger.info(f"[ClassDiagram] current_model.get('constraints'): {current_model.get('constraints')}")
             logger.info(f"[ClassDiagram] current_model.get('assessments'): {current_model.get('assessments')}")
         else:
-            logger.info(f"[ClassDiagram] current_model is None or empty")
+            logger.info("[ClassDiagram] current_model is None or empty")
         if not isinstance(spec, dict) or spec.get("action") != Action.MODIFY_MODEL:
             return []
         elements = current_model.get("elements") if isinstance(current_model, dict) else None
