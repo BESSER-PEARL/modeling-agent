@@ -5,11 +5,13 @@ the expected values are what the guards decided before they moved out of
 app/state_bodies.py, codegen/generation_handler.py and the classifier.
 """
 
+import time
 from unittest.mock import patch
 
 import pytest
 
 from app import state_bodies as sb
+from common.agent_config import MAX_USER_MESSAGE_CHARS
 from common.session_keys import UNIFIED_CLASSIFICATION
 from protocol.types import AssistantRequest, WorkspaceContext
 from routing import guards
@@ -112,6 +114,15 @@ MODELING_GUARD_TABLE = [
     ("make an app", CREATE, "create", "too_vague"),
     ("create", CREATE, "none", "too_vague"),
     ("make an app", MODIFY, "modify", None),
+    # modify only: a message that just asks to undo gets the editor's undo
+    ("revert", MODIFY, "modify", "undo"),
+    ("Undo that", MODIFY, "modify", "undo"),
+    ("please revert the last change.", MODIFY, "modify", "undo"),
+    ("undo my last changes", MODIFY, "none", "undo"),
+    ("Revert it!", MODIFY, "modify", "undo"),
+    ("undo", CREATE, "create", None),
+    ("revert the title attribute to a string", MODIFY, "modify", None),
+    ("undo the rename and call it Ticket", MODIFY, "modify", None),
     # real requests pass
     ("create a library with books, members and loans", CREATE, "create", None),
     ("create a shop with no user accounts, just products", CREATE, "create", None),
@@ -144,6 +155,7 @@ def _run_modeling_body(message, state_intent, verdict):
     ("nothing", MODIFY, "fallback", sb._DECLINE_ACK),
     ("tell me a joke", CREATE, "none", sb._OUT_OF_SCOPE_REDIRECT),
     ("model nothing", CREATE, "create", sb._CONTRADICTORY_CREATE_CLARIFY),
+    ("revert", MODIFY, "modify", "To undo, use Ctrl+Z or the undo button in the editor toolbar."),
     ("build a system", CREATE, "create", "EMPTY"),
     # the guard sees the reconciled intent: a create verdict in the modify state
     ("make an app", MODIFY, "create", "EMPTY"),
@@ -191,6 +203,8 @@ def test_quick_response_key(message, key):
     ("design a library then generate sql", True),
     ("create a class diagram", False),
     ("create a class diagram, generate django", False),
+    # A domain where people push to a repository is not a request to save to GitHub.
+    ("model a version control system where developers push commits to a repository", False),
 ])
 def test_is_mixed_modeling_and_generation(message, mixed):
     assert guards.is_mixed_modeling_and_generation(message) is mixed
@@ -228,6 +242,63 @@ def test_is_past_generation_question(message, past):
     assert guards.is_past_generation_question(message) is past
 
 
+@pytest.mark.parametrize("message,trace_digest,decision", [
+    # No record (recording off, nothing recorded, not loaded yet, an older editor):
+    ("which code came from Book?", None, "no_trace"),                 # explicit: fixed reply
+    ("what is out of date since the last generation?", None, "no_trace"),
+    ("which requirements are not covered?", None, "no_trace"),
+    ("who added the isbn attribute?", None, "no_trace"),
+    ("what happened in this project?", None, "no_trace"),
+    ("why does Book have an Author association?", None, "describe_model"),  # rationale: a real answer
+    ("why does the Loan class exist?", None, "describe_model"),
+    ("summarize my model", None, "describe_model"),
+    # A record, even an empty one, is answered from, whatever the question:
+    ("which code came from Book?", {}, None),
+    ("why does the Loan class exist?", {"schemaVersion": 1, "recording": True}, None),
+])
+def test_trace_question_guard(message, trace_digest, decision):
+    request = AssistantRequest(message=message, context=WorkspaceContext(trace_digest=trace_digest))
+    assert guards.trace_question_guard(request) == decision
+
+
+@pytest.mark.parametrize("message,explicit", [
+    ("which code was generated from class Book?", True),
+    ("where is Order in the generated code?", True),
+    ("which files came from Book?", True),
+    ("does Order need regeneration?", True),
+    ("which requirement does Book realize?", True),
+    ("when was Member renamed?", True),
+    ("summarize the history", True),
+    ("show me the trace of Book", True),
+    ("¿qué código se generó a partir de Book?", True),
+    ("Welche Anforderungen sind nicht abgedeckt?", True),
+    ("where does Book come from?", False),
+    ("what is the Loan class for?", False),
+    ("why does the File class exist?", False),     # a class named like a trace word
+    ("when should Loan be used?", False),
+    ("", False),
+    ("who created the Book class?", True),
+    ("when was Author added?", True),
+    ("why does Book have an Author association?", False),
+    ("summarize my model", False),
+    ("why is Person the generalization of Member?", False),  # UML, not generated code
+    ("is Vehicle the general class here?", False),
+    ("qu'est-ce qui a été généré à partir de Book ?", True),
+])
+def test_is_explicit_trace_question(message, explicit):
+    assert guards.is_explicit_trace_question(message) is explicit
+
+
+def test_is_explicit_trace_question_is_linear_on_a_maximum_size_message():
+    # "who " repeated to the message cap, with no change verb: the old
+    # who/when ".*" pattern backtracked quadratically (about 41 s here).
+    message = ("who " * (MAX_USER_MESSAGE_CHARS // 4))[:MAX_USER_MESSAGE_CHARS]
+    started = time.perf_counter()
+    assert guards.is_explicit_trace_question(message) is False
+    assert guards.is_explicit_trace_question(message + "added?") is True
+    assert time.perf_counter() - started < 1.0
+
+
 @pytest.mark.parametrize("intent,route,reason,expected", [
     ("generation_intent", "smart", "r", "smart"),
     ("generation_intent", "deterministic", "r", "deterministic"),
@@ -246,20 +317,18 @@ def test_generation_route(intent, route, reason, expected):
 
 
 # ---------------------------------------------------------------------------
-# Transitions: BAF's local classifier stays the voice route and the outage net
+# Transitions: typed and spoken messages share one set, routed by the unified classifier
 # ---------------------------------------------------------------------------
 
 class _Recorder:
-    def __init__(self, log, kind):
-        self.log, self.kind = log, kind
+    def __init__(self, log, event):
+        self.log, self.event = log, event
 
     def with_condition(self, fn, params=None):
-        self.log.append((self.kind, fn.__name__, (params or {}).get("intent_name")))
+        self.log.append((type(self.event).__name__, fn.__name__, (params or {}).get("intent_name")))
         return self
 
     def go_to(self, dest):
-        if self.kind == "text":
-            self.log.append(("text", self.name, None))
         return dest
 
 
@@ -267,34 +336,66 @@ class _FakeState:
     def __init__(self):
         self.log = []
 
-    def when_event(self, _event):
-        return _Recorder(self.log, "json")
+    def when_event(self, event):
+        return _Recorder(self.log, event)
 
     def when_intent_matched(self, intent):
-        recorder = _Recorder(self.log, "text")
-        recorder.name = intent.name
-        return recorder
+        raise AssertionError("BAF's local intent classifier must not be used")
 
     def when_no_intent_matched(self):
-        recorder = _Recorder(self.log, "text")
-        recorder.name = "no_intent"
-        return recorder
+        raise AssertionError("BAF's local intent classifier must not be used")
 
 
-def test_transition_order_keeps_the_local_classifier_routes():
-    """Voice transcripts arrive as plain-text events, which only the
-    ``when_intent_matched`` transitions route (BAF's local classifier); JSON
-    events fall back to its prediction when the unified call failed."""
+def test_transitions_serve_typed_and_spoken_messages_through_the_unified_classifier():
     intents = [type("I", (), {"name": n})() for n in ("hello_intent", CREATE)]
     state = _FakeState()
     sb.add_unified_transitions(state, {i: object() for i in intents}, object(), object())
     assert state.log == [
-        ("json", "_ensure_unified_classification", None),
-        ("json", "json_intent_matches", "hello_intent"),
-        ("json", "json_intent_matches", CREATE),
-        ("json", "route_to_generation", None),
-        ("text", "hello_intent", None),
-        ("text", CREATE, None),
-        ("json", "json_no_intent_matched", None),
-        ("text", "no_intent", None),
+        ("ReceiveMessageEvent", "_ensure_unified_classification", None),
+        ("ReceiveMessageEvent", "json_intent_matches", "hello_intent"),
+        ("ReceiveMessageEvent", "json_intent_matches", CREATE),
+        ("ReceiveMessageEvent", "route_to_generation", None),
+        ("ReceiveMessageEvent", "json_no_intent_matched", None),
     ]
+
+
+def test_message_event_matches_both_typed_json_and_spoken_text_events():
+    """A voice transcript is a plain-text event, a typed editor message a JSON event."""
+    from baf.library.transition.events.base_events import (
+        ReceiveJSONEvent, ReceiveMessageEvent, ReceiveTextEvent)
+    transition_event = ReceiveMessageEvent()
+    assert transition_event.is_matching(ReceiveJSONEvent({"message": "hi"}))
+    assert transition_event.is_matching(ReceiveTextEvent("hi"))
+
+
+def test_a_real_state_gets_no_intents_so_baf_builds_and_trains_no_classifier():
+    from baf.core.agent import Agent
+    agent = Agent("probe")
+    state = agent.new_state("s", initial=True)
+    target, fallback, generation = (agent.new_state(n) for n in ("t", "f", "g"))
+    intent = agent.new_intent("hello_intent", ["hi"])
+    sb.add_unified_transitions(state, {intent: target}, fallback, generation)
+    # BAF creates (and trains) an intent classifier only for states that have intents
+    assert state.intents == []
+    assert len(state.transitions) == 4
+
+
+def test_a_voice_transcript_is_parsed_like_a_typed_message_with_the_context_sent_before_the_audio():
+    """The transcript is a bare plain-text event; the editor sends the workspace context as a session
+    variable just before the audio, and the request is rebuilt from both."""
+    from baf.library.transition.events.base_events import ReceiveTextEvent
+    from common.session_keys import VOICE_CONTEXT
+    from protocol.adapters import parse_assistant_request
+    from tests.conftest import FakeSession
+
+    session = FakeSession()
+    session.event = ReceiveTextEvent("add an order class", "s1", True)
+    session.set(VOICE_CONTEXT, {"activeDiagramType": "ObjectDiagram"})
+
+    request = parse_assistant_request(session)
+
+    assert request.message == "add an order class"
+    assert request.diagram_type == "ObjectDiagram"
+    assert request.context.active_diagram_type == "ObjectDiagram"
+    # the context is consumed, so it is not reused for the next message
+    assert session.get(VOICE_CONTEXT) is None

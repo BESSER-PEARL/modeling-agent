@@ -22,3 +22,11 @@ def test_requests_with_a_domain_proceed():
                 "design a banking system with accounts and transactions",
                 "build an e-commerce store with products and orders"]:
         assert not is_too_vague_create(msg), f"expected NOT vague: {msg!r}"
+
+
+def test_a_short_or_non_latin_domain_word_is_content():
+    """The guard answered "too vague" before the classifier for real requests
+    whose domain word is short or not written in Latin letters."""
+    for msg in ["Make an HR app", "Create an AI app", "Make a to-do app", "Create a 3D app",
+                "Φτιάξε μια εφαρμογή για ξενοδοχείο", "做一个图书馆应用"]:
+        assert not is_too_vague_create(msg), f"expected NOT vague: {msg!r}"

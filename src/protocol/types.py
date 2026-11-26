@@ -35,6 +35,14 @@ class WorkspaceContext:
     # (it holds an app a run continues from) and ``recap`` (where that app
     # stands, in chat markdown). None without a link.
     github_repo: Optional[Dict[str, Any]] = None
+    # The editor's summary of the project trace (``context.traceDigest``),
+    # validated and capped by ``adapters._parse_trace_digest`` (wire field
+    # names kept). Sent only while trace recording is on and a trace exists;
+    # None otherwise. Every string in it is user data, never instructions.
+    trace_digest: Optional[Dict[str, Any]] = None
+    # The project records traces (``context.traceabilityEnabled``). Recording is
+    # opt-in; an editor that does not send the field records nothing.
+    traceability_enabled: bool = False
     # What the editor's next Spec-Driven run would use: ``tier`` ("own" | "free"
     # | "none"), ``provider`` and ``model`` (None when not given). Never the key.
     # None when the editor does not say (older editors).

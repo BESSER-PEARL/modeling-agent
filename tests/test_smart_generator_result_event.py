@@ -123,6 +123,201 @@ def test_smart_partial_output_does_not_claim_success(metadata, expected, unexpec
     assert "incomplete" in result["message"]
 
 
+def test_unresolved_blockers_do_not_call_an_edited_app_incomplete_as_a_whole():
+    # The same report follows a first build and a run that edited an existing app.
+    result = _handle_frontend_event(_smart_event(True, {"incomplete": True, "blockerCount": 2}), None)
+    assert "2 unresolved blockers; the result is incomplete." in result["message"]
+    assert "application is incomplete" not in result["message"]
+
+
+@pytest.mark.parametrize("count, checks", [(1, "1 check could not be verified."), (2, "2 checks could not be verified.")])
+def test_a_run_reported_complete_is_not_called_incomplete_for_unverified_checks(count, checks):
+    # The editor's incomplete:false wins over the blocker count, as on its run card.
+    result = _handle_frontend_event(_smart_event(True, {"incomplete": False, "blockerCount": count}), None)
+    assert "finished successfully" in result["message"]
+    assert checks in result["message"]
+    assert "incomplete" not in result["message"]
+    assert "unresolved" not in result["message"]
+
+
+@pytest.mark.parametrize("metadata, expected", [
+    ({"mode": "modify"}, "Spec-Driven Agent finished updating your application."),
+    ({"mode": "create"}, "Spec-Driven Agent generation finished successfully."),
+    ({}, "Spec-Driven Agent generation finished successfully."),  # an editor that sends no mode
+])
+def test_a_finished_run_is_reported_by_what_it_did(metadata, expected):
+    result = _handle_frontend_event(_smart_event(True, metadata), None)
+    assert result["message"].startswith(expected)
+
+
+@pytest.mark.parametrize("mode, expected", [
+    ("modify", "You can start another run to finish the remaining changes."),
+    ("create", "You can run the generation again to finish the remaining changes."),
+    (None, "You can run the generation again to finish the remaining changes."),
+])
+def test_an_incomplete_run_suggests_a_next_step_for_what_it_did(mode, expected):
+    metadata = {"incomplete": True, "blockerCount": 2, **({"mode": mode} if mode else {})}
+    result = _handle_frontend_event(_smart_event(True, metadata), None)
+    assert result["message"].endswith(expected)
+    if mode == "modify":
+        assert "generation" not in result["message"]
+
+
+# Exact replies to payloads without notConfirmedCount / unresolvedBlockerCount /
+# unverified, as an older editor or backend sends them.
+@pytest.mark.parametrize("metadata, expected", [
+    ({}, "Spec-Driven Agent generation finished successfully."),
+    ({"mode": "modify"}, "Spec-Driven Agent finished updating your application."),
+    (
+        {"incomplete": False, "blockerCount": 2},
+        "Spec-Driven Agent generation finished successfully. 2 checks could not be verified.",
+    ),
+    (
+        {"incomplete": False, "blockerCount": 1, "mode": "modify", "filename": "app.zip",
+         "verification": {"verified": 3, "notVerified": 1, "shippedUnenforced": 0}},
+        "Spec-Driven Agent finished updating your application. 1 check could not be verified. File: app.zip",
+    ),
+    (
+        {"incomplete": True, "blockerCount": 2, "incompleteReason": "the build failed"},
+        "The Spec-Driven Agent finished with 2 unresolved blockers; the result is incomplete: "
+        "the build failed. You can run the generation again to finish the remaining changes.",
+    ),
+    (
+        {"blockerCount": 1},
+        "The Spec-Driven Agent finished with 1 unresolved blocker; the result is incomplete. "
+        "You can run the generation again to finish the remaining changes.",
+    ),
+    (
+        {"incomplete": True, "mode": "modify"},
+        "The Spec-Driven Agent produced output, but the run stopped early so it may be incomplete. "
+        "You can start another run to finish the remaining changes.",
+    ),
+    # An incomplete run keeps blockerCount even when the newer counts are sent.
+    (
+        {"incomplete": True, "blockerCount": 5, "notConfirmedCount": 3, "unresolvedBlockerCount": 2,
+         "unverified": False},
+        "The Spec-Driven Agent finished with 5 unresolved blockers; the result is incomplete. "
+        "You can run the generation again to finish the remaining changes.",
+    ),
+])
+def test_a_payload_without_the_newer_counts_reads_exactly_as_before(metadata, expected):
+    result = _handle_frontend_event(_smart_event(True, metadata), None)
+    assert result["message"] == expected
+
+
+_REASON = "The app was never started, so nothing shows it runs."
+
+
+def test_an_unverified_generation_does_not_claim_success():
+    metadata = {"incomplete": False, "blockerCount": 1, "notConfirmedCount": 0,
+                "unresolvedBlockerCount": 0, "unverified": True, "unverifiedReason": _REASON}
+    result = _handle_frontend_event(_smart_event(True, metadata), None)
+    assert result["message"] == (
+        f"Spec-Driven Agent generated your application, but it is not verified. {_REASON} "
+        "You can download the application to inspect it as-is."
+    )
+
+
+def test_an_unverified_edit_run_keeps_the_reason_as_sent():
+    reason = "The app was updated, but it was never started, so nothing shows it runs."
+    metadata = {"mode": "modify", "incomplete": False, "blockerCount": 2, "notConfirmedCount": 2,
+                "unresolvedBlockerCount": 0, "unverified": True, "unverifiedReason": reason}
+    result = _handle_frontend_event(_smart_event(True, metadata), None)
+    assert result["message"] == (
+        f"Spec-Driven Agent finished updating your application, but the update is not verified. {reason} "
+        "You can download the application to inspect it as-is."
+    )
+
+
+def test_an_unverified_run_states_its_real_blocker():
+    metadata = {"incomplete": False, "blockerCount": 2, "notConfirmedCount": 0,
+                "unresolvedBlockerCount": 1, "unverified": True, "unverifiedReason": _REASON}
+    result = _handle_frontend_event(_smart_event(True, metadata), None)
+    assert result["message"] == (
+        f"Spec-Driven Agent generated your application, but it is not verified. {_REASON} "
+        "1 unresolved blocker remains. You can download the application to inspect it as-is."
+    )
+
+
+def test_an_unverified_run_derives_no_blockers_from_the_padded_count():
+    # Without unresolvedBlockerCount, blockerCount of an unverified run also counts the checks that never ran.
+    metadata = {"incomplete": False, "blockerCount": 3, "notConfirmedCount": 0,
+                "unverified": True, "unverifiedReason": _REASON}
+    result = _handle_frontend_event(_smart_event(True, metadata), None)
+    assert "unresolved" not in result["message"]
+    assert "not verified" in result["message"]
+
+
+def test_findings_not_confirmed_alone_are_a_success_with_a_qualifier():
+    metadata = {"incomplete": False, "blockerCount": 3, "notConfirmedCount": 3, "unresolvedBlockerCount": 0}
+    result = _handle_frontend_event(_smart_event(True, metadata), None)
+    assert result["message"] == (
+        "Spec-Driven Agent generation finished successfully. 3 checks could not be confirmed."
+    )
+
+
+@pytest.mark.parametrize("metadata", [
+    {"incomplete": False, "blockerCount": 5, "notConfirmedCount": 3, "unresolvedBlockerCount": 2},
+    {"incomplete": False, "blockerCount": 5, "notConfirmedCount": 3},  # a backend without the real count
+])
+def test_real_blockers_and_findings_not_confirmed_are_counted_apart(metadata):
+    result = _handle_frontend_event(_smart_event(True, metadata), None)
+    assert result["message"] == (
+        "The Spec-Driven Agent finished with 2 unresolved blockers. 3 checks could not be confirmed."
+    )
+
+
+def test_a_real_blocker_of_an_edit_run_is_worded_as_an_update():
+    metadata = {"mode": "modify", "incomplete": False, "blockerCount": 1, "notConfirmedCount": 0,
+                "unresolvedBlockerCount": 1}
+    result = _handle_frontend_event(_smart_event(True, metadata), None)
+    assert result["message"] == (
+        "The Spec-Driven Agent finished updating your application with 1 unresolved blocker."
+    )
+
+
+@pytest.mark.parametrize("metadata", [
+    {"blockerCount": 1, "notConfirmedCount": 0, "unresolvedBlockerCount": 0},
+    {"incomplete": False, "blockerCount": 1, "notConfirmedCount": 0, "unresolvedBlockerCount": 0, "unverified": False},
+])
+def test_a_padded_blocker_count_alone_is_a_plain_success(metadata):
+    # blockerCount also counts the note of a check switched off on the server.
+    result = _handle_frontend_event(_smart_event(True, metadata), None)
+    assert result["message"] == "Spec-Driven Agent generation finished successfully."
+
+
+@pytest.mark.parametrize("failed, sentence", [
+    (1, "1 test the agent wrote ran against the app and failed."),
+    (2, "2 tests the agent wrote ran against the app and failed."),
+])
+def test_tests_that_ran_and_failed_are_stated(failed, sentence):
+    metadata = {"incomplete": False, "blockerCount": 0, "notConfirmedCount": 0, "unresolvedBlockerCount": 0,
+                "verification": {"verified": 4, "notVerified": 0, "shippedUnenforced": 0, "failed": failed}}
+    result = _handle_frontend_event(_smart_event(True, metadata), None)
+    assert result["message"] == f"Spec-Driven Agent generation finished successfully. {sentence}"
+
+
+def test_the_outcome_kept_for_the_next_turn_uses_the_same_wording(monkeypatch):
+    import memory
+
+    recorded = []
+
+    class _Mem:
+        def add_assistant(self, content, **kw):
+            recorded.append(content)
+
+    monkeypatch.setattr(memory, "get_memory", lambda _sid: _Mem())
+    session = _FakeSession()
+    metadata = {"incomplete": False, "blockerCount": 1, "notConfirmedCount": 0,
+                "unresolvedBlockerCount": 0, "unverified": True, "unverifiedReason": _REASON}
+    result = _handle_frontend_event(_smart_event(True, metadata), session)
+
+    from common.session_keys import LAST_SMART_GEN_SUMMARY
+    assert session.get(LAST_SMART_GEN_SUMMARY) == result["message"]
+    assert recorded == [f"[smart-generation outcome] {result['message']}"]
+    assert "finished successfully" not in recorded[0]
+
+
 def test_smart_invalid_key_names_the_problem():
     result = _handle_frontend_event(
         _smart_event(False, {"errorCode": "INVALID_KEY"}),

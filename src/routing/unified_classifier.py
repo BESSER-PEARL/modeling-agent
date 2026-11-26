@@ -36,17 +36,20 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Literal, Optional
+from typing import Any, Dict, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from llm.byok_config import get_current
 from prompts.classifier import SYSTEM_PROMPT
 from protocol.types import AssistantRequest
 from routing.guards import auto_fix_verdict, frontend_event_verdict
 from routing.generation_signals import (
+    GENERATOR_KEYWORDS,
     _GITHUB_CONTINUE_VERB_RE,
     _extract_github_reference,
+    is_github_save_request,
+    names_export_format,
     recent_smart_gen_for_project,
     repo_holds_app,
 )
@@ -57,6 +60,7 @@ from common.session_keys import (
     UNIFIED_CLASSIFICATION,
     UNIFIED_CLASSIFICATION_EVENT_ID,
 )
+from common.agent_config import TRACE_DIGEST_MAX_COUNT
 from common import pending_dialogs
 from common.pending_dialogs import PENDING_GENERATOR_CONFIG, PLAN_GENERATION_CONFIRM_FLAG
 
@@ -88,6 +92,11 @@ _INTENT_NAMES = Literal[
     # websites?", "what can you do") or value ("why use you instead of
     # Claude/GPT?") — answer the pitch, do NOT build anything.
     "meta_question_intent",
+    # User asks about the project's HISTORY / PROVENANCE (who created or
+    # changed what and when, which code came from which element, which
+    # requirement an element realizes, what is out of date, requirement
+    # coverage) — answered from the editor's trace record, never builds.
+    "traceability_question_intent",
     # Catch-all — BAF's own fallback state body runs when nothing
     # matches. Routed to whatever state fallback the current state
     # has (typically modeling_help_state).
@@ -114,6 +123,7 @@ _DETERMINISTIC_GENERATOR_TYPES = Literal[
     "rdf",
     "export",
     "deploy",
+    "github",
 ]
 
 
@@ -132,6 +142,25 @@ _UNSUPPORTED_STACK_RE = re.compile(
     re.I,
 )
 _UNSUPPORTED_STACK_LITERALS = ("c++", "c#", ".net", "f#")
+# Generators detected from a kind of output ("backend", "web app", "REST API"), not a technology.
+_OUTPUT_KIND_GENERATORS = frozenset({"backend", "web_app", "rest_api"})
+# Generator keywords that name a kind of output, not a technology.
+_OUTPUT_KIND_KEYWORDS = frozenset(
+    {"database", "relational database", "db schema"}
+    | {"agent generator", "generate agent", "quantum code", "quantum generator", "quantum circuit code"}
+    | {keyword for generator in _OUTPUT_KIND_GENERATORS for keyword in GENERATOR_KEYWORDS[generator]}
+)
+
+
+def _names_generator(message: str, generator_type: Optional[str]) -> bool:
+    """True when *message* names *generator_type* by one of its technology keywords (or their plural)."""
+    lower = (message or "").lower()
+    return any(
+        keyword not in _OUTPUT_KIND_KEYWORDS and re.search(rf"\b{re.escape(keyword)}s?\b", lower)
+        for keyword in GENERATOR_KEYWORDS.get(generator_type or "", ())
+    )
+
+
 # Words that explicitly ask for screens. Shared with the planner's
 # from-scratch web-app route (orchestrator/request_planner.py).
 EXPLICIT_SCREEN_VOCAB_RE = re.compile(
@@ -196,7 +225,11 @@ class UnifiedClassification(BaseModel):
             "export / deploy; decline_intent = user opts out ('nothing', 'no "
             "thanks'); out_of_scope_intent = wants a non-software artifact "
             "(picture/poem/joke); meta_question_intent = asks what the "
-            "assistant can do or why to use it; fallback_intent = none fit."
+            "assistant can do or why to use it; "
+            "traceability_question_intent = asks about the project's history "
+            "or provenance (who/when, which code came from an element, which "
+            "requirement it realizes, what is out of date, requirement "
+            "coverage); fallback_intent = none fit."
         ),
     )
 
@@ -247,6 +280,20 @@ class UnifiedClassification(BaseModel):
         ),
     )
 
+    # --- Trace-question field (populated when intent == 'traceability_question_intent') ---
+
+    trace_view: Optional[Literal["lineage", "coverage", "timeline"]] = Field(
+        default=None,
+        description=(
+            "ONLY for traceability_question_intent: the view of the editor's "
+            "Traceability page the question is about. 'lineage' = where an "
+            "element comes from or what was derived / generated from it, and "
+            "out-of-date links; 'coverage' = which requirements the model "
+            "covers or not; 'timeline' = who did what and when, the history "
+            "of an element or of the project. NULL for every other intent."
+        ),
+    )
+
     # --- Target fields (any intent; see TARGET in the system prompt) ---
 
     target_kind: Optional[Literal["web_app", "backend", "other"]] = Field(
@@ -287,6 +334,15 @@ class UnifiedClassification(BaseModel):
             "language the USER MESSAGE is written in. For a message too short "
             "or language-neutral to tell ('ok', '1', a class name) use the "
             "CONVERSATION LANGUAGE line when present, else NULL."
+        ),
+    )
+    screens_listed: Optional[bool] = Field(
+        default=None,
+        description=(
+            "true when the USER MESSAGE names or counts the app screens/pages to "
+            "build ('a calendar screen and a team page'), any language. NULL "
+            "otherwise: pages of a document, a 'pages' attribute, pagination, "
+            "'one page per class' and basic CRUD pages are not screens."
         ),
     )
 
@@ -361,6 +417,31 @@ class UnifiedClassification(BaseModel):
         ),
     )
 
+    start_over: bool = Field(
+        default=False,
+        description=(
+            "generation_intent only: True when the user EXPLICITLY asks to "
+            "rebuild the already generated APP from scratch and drop its "
+            "current code ('start over', 'scrap the app and build it again', "
+            "'regenerate everything from zero'), in any language. The user "
+            "is asked to confirm, and changes made in earlier runs are lost. "
+            "False for a change, fix or retry of the app, and for discarding "
+            "the MODEL (that is model_disposition)."
+        ),
+    )
+
+    states_requirements: bool = Field(
+        default=True,
+        description=(
+            "generation_intent only: False when the message states nothing "
+            "the app must do or have, and only asks to run, continue, retry, "
+            "finish or fix what was asked before ('can you continue with the "
+            "development?', 'retry the previous step'), in any language. It "
+            "is then sent to the run but not kept as part of the app's "
+            "request. True whenever it adds or changes anything."
+        ),
+    )
+
     needs_clarification: bool = Field(
         default=False,
         description=(
@@ -417,6 +498,12 @@ class UnifiedClassification(BaseModel):
             "Used for logs and surfaced to users as a hint."
         ),
     )
+
+    @field_validator("start_over", "states_requirements", "needs_clarification", "provider", mode="before")
+    @classmethod
+    def _null_is_default(cls, value: Any, info: ValidationInfo) -> Any:
+        """A JSON-mode answer may send null for a field it leaves unset: read it as the default."""
+        return cls.model_fields[info.field_name].default if value is None else value
 
 
 # ---------------------------------------------------------------------
@@ -499,6 +586,7 @@ def classify_message(
             result, message, follow_up_target_kind=follow_up_kind,
             has_class_model=ctx is None or bool(_extract_class_names(ctx)),
             linked_repo_has_app=(getattr(ctx, "github_repo", None) or {}).get("has_code") is True,
+            generated_app=bool(recent_smart_gen),
         )
     except Exception:
         logger.exception("classify_message failed; falling back to fallback_intent")
@@ -606,6 +694,7 @@ def get_or_classify(
     session: Any,
     request: AssistantRequest,
     llm_provider: Any,
+    answer_verdict: Optional[Dict[str, Any]] = None,
 ) -> UnifiedClassification:
     """Per-message cache wrapper around :func:`classify_message`.
 
@@ -615,7 +704,8 @@ def get_or_classify(
 
     Every transition condition and state body on a single incoming
     WebSocket message should go through this helper so the whole
-    request consumes exactly ONE classification call.
+    request consumes exactly ONE classification call. ``answer_verdict``
+    (the open dialog's own reading of the message) replaces that call.
     """
     event_id = _current_event_id(session)
     cached_event_id = session.get(UNIFIED_CLASSIFICATION_EVENT_ID)
@@ -630,6 +720,8 @@ def get_or_classify(
     frontend_event = frontend_event_verdict(request)
     if frontend_event is not None:
         result = UnifiedClassification(**frontend_event)
+    elif answer_verdict is not None:
+        result = UnifiedClassification(**answer_verdict)
     else:
         _pending_flow = _pending_flow_context(session)
         # Project-scoped: the SMART-GEN FOLLOW-UP rule is about the app in the
@@ -889,6 +981,23 @@ def _build_user_block(
             "- all class names: " + ", ".join(class_names[:30])
         )
 
+    # Whether the editor sent its trace record (see traceability_question_intent).
+    trace_digest = getattr(ctx, "trace_digest", None)
+    if isinstance(trace_digest, dict):
+        counts = trace_digest.get("counts")
+        counts = counts if isinstance(counts, dict) else {}
+
+        def _count(key: str):
+            # The parser bounds counts; a hand-built context is bounded here too.
+            value = counts.get(key)
+            ok = isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= TRACE_DIGEST_MAX_COUNT
+            return value if ok else "?"
+
+        summary_lines.append(
+            "- traceability record: sent "
+            f"({_count('artifacts')} artifacts, {_count('outOfDateLinks')} out-of-date links)"
+        )
+
     if summary_lines:
         lines.append("")
         lines.append("WORKSPACE CONTEXT (what is currently in the editor):")
@@ -1034,6 +1143,7 @@ def _post_validate(
     follow_up_target_kind: Optional[str] = None,
     has_class_model: bool = True,
     linked_repo_has_app: bool = False,
+    generated_app: bool = False,
 ) -> UnifiedClassification:
     """Defensive validation of LLM output.
 
@@ -1167,10 +1277,11 @@ def _post_validate(
         # Same guard, EDIT form ("add a Reports page" with an existing GUI
         # must not stash a spec-driven web-app confirmation). Adding/
         # removing/renaming a page or screen edits the GUI DIAGRAM — unless a
-        # linked repo holds the app, whose pages live in its code.
+        # recent run or a linked repo holds the app, whose pages live in its code.
         if (
             _web_gui_guards
             and not linked_repo_has_app
+            and not generated_app
             and re.search(r"\b(pages?|screens?)\b", _low)
             and re.search(r"\b(add|insert|remove|delete|rename)\b", _low)
             and not re.search(
@@ -1195,9 +1306,13 @@ def _post_validate(
         # (C, C++, Rust, Kotlin, Go, ...), the LLM maps it to the nearest
         # built-in (c->java, c++->python). Force the smart / from-scratch route
         # so the LLM writes the actual language instead.
+        # A technology the user named themselves is never overridden: the
+        # stack words may be the app's domain ("an express delivery app").
+        # A kind of output ("a backend in Rust", "a MySQL database") names no technology.
         if (
             result.generation_route in ("deterministic", "smart")
-            and result.generator_type not in ("export", "deploy")
+            and result.generator_type not in ("export", "deploy", "github")
+            and not _names_generator(message, result.generator_type)
             and _names_unsupported_stack(message or "")
         ):
             if result.generation_route != "smart":
@@ -1259,6 +1374,22 @@ def _post_validate(
                     (message or "").strip()
                     or "Build a custom application from the current model."
                 )
+        elif (
+            result.generation_route == "other"
+            or (result.generation_route == "deterministic" and result.generator_type in (None, "export", "deploy"))
+        ) and is_github_save_request(message or "") and not (
+            result.generator_type == "export" and names_export_format(message or "")
+        ):
+            # Safety net: "save to github" is the editor's GitHub save. Live
+            # 2026-11-20 it was typed 'deploy' and opened Render instead. An
+            # export that names its format ("export to json and save it on
+            # github") stays an export.
+            logger.warning(
+                "LLM routed a GitHub save to route=%s type=%s; correcting to github",
+                result.generation_route, result.generator_type,
+            )
+            result.generation_route = "deterministic"
+            result.generator_type = "github"
         elif result.generation_route == "deterministic":
             # Safety net: a DEPLOY-shaped message ("deploy this model",
             # "push this to prod") sometimes gets mis-typed as 'export'
@@ -1317,6 +1448,7 @@ def _rebuilt(result: UnifiedClassification, **fields: Any) -> UnifiedClassificat
         target_description=result.target_description,
         architecture=result.architecture,
         reply_language=result.reply_language,
+        screens_listed=result.screens_listed,
         **fields,
     )
 

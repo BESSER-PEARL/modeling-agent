@@ -47,8 +47,8 @@ flowchart LR
 - **Models from natural language.** Create a complete system, add a single element, or
   modify what is already on the canvas, across ten diagram types.
 - **One routing decision per message.** A single LLM classification call
-  (`src/routing/unified_classifier.py`) decides what each message asks for; a local
-  TensorFlow intent classifier is the fallback.
+  (`src/routing/unified_classifier.py`) decides what each message asks for, typed or
+  spoken (BAF's own intent classifier is not used).
 - **Multi-step requests.** "Model a shop, then generate a Django app" is planned and run
   as an ordered sequence of operations.
 - **Code generation hand-off.** Requests for a stack BESSER supports go to its
@@ -59,6 +59,17 @@ flowchart LR
   are converted into diagram specifications.
 - **UML questions answered from the source.** Retrieval over the OMG UML 2.5.1
   specification.
+- **Project history and provenance.** While trace recording is on, the editor sends its
+  trace record (`context.traceDigest`) and the agent answers which code came from an element,
+  which requirement it realizes, who changed what and when, what is out of date and which
+  requirements the model does not cover, then offers to open the Traceability page
+  (`show_trace`).
+- **Requirements from the request.** For a project that records traces
+  (`context.traceabilityEnabled`, opt-in), a complete-system request also yields its
+  requirements and the class-diagram elements that realize them (`requirements` and
+  `realizations` on `inject_complete_system`).
+- **Token usage per turn.** Terminal replies report the tokens of that turn's LLM calls
+  (`llmUsage`).
 - **Voice and language.** Voice messages through speech-to-text, and replies in the
   language the user writes in.
 - **Robust sessions.** Replies are replayed after a reconnect, and a lost conversation
@@ -121,8 +132,7 @@ cp config_example.yaml config.yaml   # then set nlp.openai.api_key
 python modeling_agent.py
 ```
 
-The socket opens at `ws://localhost:8765` once startup finishes. Startup takes a few
-minutes by design: the framework trains its local classifiers before opening the socket.
+The socket opens at `ws://localhost:8765` once startup finishes.
 To connect a local editor, set its `UML_BOT_WS_URL` to that address and allow the editor's
 origin under `platforms.websocket.origins` in `config.yaml`. See
 [Run the Modeling Agent locally](https://modeling-agent.readthedocs.io/en/latest/getting_started.html).
@@ -182,7 +192,7 @@ mode the payload is usually serialized inside the top-level `message` field:
 It is normalized into an internal `AssistantRequest` (`src/protocol/types.py`). Terminal
 responses are `inject_complete_system`, `inject_element`, `modify_model`,
 `assistant_message`, `trigger_generator`, `trigger_smart_generator`, `trigger_export`,
-`trigger_deploy`, `trigger_github_import`, `auto_generate_gui`, `create_diagram_tab` and
+`trigger_deploy`, `trigger_github_save`, `trigger_github_import`, `auto_generate_gui`, `create_diagram_tab` and
 `agent_error`; `progress` and `stream_start` / `stream_chunk` / `stream_done` are
 non-terminal. Full payload shapes:
 [WebSocket protocol](https://modeling-agent.readthedocs.io/en/latest/websocket_protocol.html).

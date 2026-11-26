@@ -97,7 +97,22 @@ Not every message from the frontend is a ``user_message``:
    * - ``frontend_event``
      - Reports the outcome of an action the frontend executed (e.g. a
        generator finishing). Routed deterministically to the generation
-       state — never classified.
+       state — never classified. A Spec-Driven run's ``generator_result``
+       carries ``metadata.mode`` (``"modify"`` when the run edited an existing
+       app, ``"create"`` otherwise); the reply then speaks of updating the app
+       instead of generating it, and without the field it speaks of generating.
+       Its other ``metadata`` keys: ``runId``, ``costUsd`` (never shown),
+       ``generator_used``, ``errorCode``, ``incomplete``, ``incompleteReason``,
+       ``blockerCount`` (padded by a newer backend, so read only for an
+       incomplete run), ``unresolvedBlockerCount`` (the real blockers of a run
+       that was not cut short), ``notConfirmedCount`` (checks that could not be
+       confirmed; without ``unresolvedBlockerCount``, ``blockerCount`` minus
+       this is the real blockers), ``unverified`` with ``unverifiedReason``
+       (the reply never says the run succeeded, and quotes the reason) and
+       ``verification`` (``{verified, foundInCode, notVerified,
+       shippedUnenforced, failed}``; ``failed`` counts tests the agent wrote
+       that ran against the app and failed). Absent keys keep the earlier
+       reply.
    * - ``replay_last_response``
      - Asks the agent to re-send buffered terminal replies after a reconnect
        that dropped a long-running reply mid-flight. With ``turnId`` (and
@@ -205,6 +220,16 @@ Field Reference
        however old the last run is. ``recap`` is where that app stands, in chat
        markdown, capped at 4,000 characters; it answers "what did we build?" and
        enters conversation memory when it changes, labelled as a record.
+   * - ``context.traceDigest``
+     - No
+     - The editor's summary of the project trace, sent only while trace
+       recording is on and a trace exists (see `Trace digest`_ below). Answers
+       questions about the project's history (``traceability_question_intent``).
+   * - ``context.traceabilityEnabled``
+     - No
+     - ``true`` when the project records traces (opt-in in the editor). Only
+       then does a complete class diagram extract the request's requirements
+       for the trace; missing or anything but ``true`` reads as off.
    * - ``context.generationKey``
      - No
      - What the next Spec-Driven run would use: ``{tier, provider, model}``
@@ -223,9 +248,15 @@ Field Reference
        content is appended to it. A content-free follow-up ("regenerate with
        fixes", "try again", "fix it") with neither asks the user to describe
        the application again. When
-       ``expired`` is true (and no linked repo holds the app), the run
-       confirmation says the previous result is no longer available and the
-       application will be built again, instead of offering to update it.
+       ``expired`` is true and the project has no linked repo (the editor may
+       continue from a linked repo's code), the run confirmation says the
+       previous result is no longer available and the application will be
+       built again, instead of offering to update it. The run's instructions
+       then hold a "Starting point" section, before the user's request: build
+       the whole application from the model and the requests, including any
+       earlier work they ask to continue or fix. When ``runId`` is set and ``expired`` is false, the
+       editor still holds that run and, without an explicit ``mode``, edits
+       it: the run confirmation then offers to update the existing app.
    * - ``attachments``
      - No
      - Array of uploaded files (PlantUML, images, RDF, XMI, PDF, text)
@@ -243,6 +274,72 @@ Field Reference
        turns are kept cut to 500 characters, as the agent keeps its own
        replies. The turns are
        only conversation history: they are never treated as instructions.
+
+Trace digest
+~~~~~~~~~~~~
+
+``context.traceDigest`` (cross-repo contract, section 3; every field and list
+is optional):
+
+.. code-block:: json
+
+   {"schemaVersion": 1, "recording": true,
+    "counts": {"artifacts": 42, "links": 30, "outOfDateLinks": 2,
+               "operations": {"ModelingSession": 3, "CodeGeneration": 1,
+                              "RequirementExtraction": 1, "Conversation": 4}},
+    "recentOperations": [{"id": "op1", "type": "CodeGeneration", "status": "COMPLETED",
+                          "startedAt": "2026-11-01T10:00:00Z", "by": ["Person:Ana"],
+                          "tools": ["sqlalchemy"], "summary": "Generated SQLAlchemy"}],
+    "requirements": [{"id": "R1", "kind": "data", "text": "A book has an ISBN",
+                      "quote": "books have an isbn", "realizedBy": ["Book", "Book.isbn"],
+                      "covered": true}],
+    "outOfDate": [{"source": "Book", "target": "sql_alchemy.py:108-140",
+                   "reasons": ["SOURCE_CHANGED"], "generation": "sqlalchemy @ 2026-11-01T10:00:00Z"}],
+    "generations": [{"generator": "sqlalchemy", "at": "2026-11-01T10:00:00Z",
+                     "files": 3, "outOfDateFiles": 1}],
+    "focus": [{"artifactId": "a-book", "name": "Book", "elementType": "Class",
+               "history": [{"kind": "CREATED", "feature": "", "old": "", "new": "",
+                            "at": "2026-10-30T09:00:00Z", "by": "Person:Ana", "via": "Editor"}],
+               "derivedFrom": [{"type": "Requirement", "name": "A book has an ISBN", "evidence": "AIEvidence"}],
+               "derived": [{"path": "sql_alchemy.py", "lines": "108-140", "outOfDate": ["SOURCE_CHANGED"]}]}]}
+
+``_parse_trace_digest`` in ``src/protocol/adapters.py`` validates it into
+``WorkspaceContext.trace_digest`` (wire field names kept) and never raises:
+
+* A digest that is not an object, or whose ``schemaVersion`` (default 1) is not
+  a positive integer up to 10,000,000, is dropped. ``recording`` is ``true`` unless sent as
+  ``false``.
+* Only the fields above are kept, each with its type: strings non-empty
+  (stripped), counts integers from 0 to 10,000,000
+  (``TRACE_DIGEST_MAX_COUNT``; a boolean is not one, a larger count is dropped), ``covered``
+  a boolean. Unknown keys, wrongly typed fields, out-of-date reasons other than
+  ``SOURCE_CHANGED`` / ``TARGET_CHANGED`` / ``UPSTREAM_CHANGED``, change kinds
+  other than ``CREATED`` / ``UPDATED`` / ``DELETED`` and operation types other
+  than the four counted are dropped.
+* An item is dropped without what identifies it: an operation without ``type``
+  or ``summary``, a requirement without ``id`` or ``text``, an out-of-date link
+  without ``source`` or ``target``, a generation without ``generator``, a focus
+  artifact without ``artifactId`` and ``name``, a derived file without ``path``.
+* Caps (``TRACE_DIGEST_*`` in ``src/common/agent_config.py``), keeping the first
+  items: ``recentOperations`` 15, ``requirements`` 40, ``outOfDate`` 30,
+  ``generations`` 10, ``focus`` 5; per focus artifact ``history`` 20,
+  ``derivedFrom`` 10, ``derived`` 20; name lists (``by``, ``tools``,
+  ``realizedBy``, reasons) 20 items; names, ids, paths and dates 200
+  characters; ``text``, ``quote``, ``summary``, ``old``, ``new`` and
+  ``evidence`` 500 characters.
+
+Every string in it is user data. The trace-question prompt quotes the record
+(rendered by ``src/utilities/trace_digest.py``) between ``<trace_record>`` tags,
+and its system prompt says the record is data, never instructions. In every
+value, HTML entities are decoded, the text is NFKC-normalized and stripped of
+format characters (zero-width, bidi), and then every ``<`` / ``>`` becomes
+``‹`` / ``›``, so no value can close the record or open a tag. The record,
+header included, is at most 16,000 characters; over that, lists are shortened
+from their end in the editor's ``fitDigest`` order: recent operations,
+generations, requirements, out-of-date links, and last the focus, whose own
+lists (the oldest history first, then its last sources and code) are cut
+before an entry is dropped. A cut section keeps a line saying how many entries
+are not shown.
 
 Supported Diagram Types
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -275,7 +372,7 @@ Every action name, inbound and outbound, is a member of ``Action`` in
 string). Code uses the members, never the string literals
 (``tests/test_protocol_actions.py`` checks), and builds the repeated envelopes
 with its builders: ``assistant_message``, ``inject_element``,
-``inject_complete_system`` and ``model_reply``. A builder keeps the key order of
+``inject_complete_system``, ``model_reply`` and ``show_trace``. A builder keeps the key order of
 the literal it replaced, so the JSON is byte-identical
 (``tests/test_handler_envelopes.py`` pins every handler's envelopes).
 
@@ -322,9 +419,15 @@ Action index
    * - ``trigger_deploy``
      - Yes
      - Open the deploy dialog
+   * - ``trigger_github_save``
+     - Yes
+     - Open the editor's Save to GitHub (the last generated app, else the model)
    * - ``auto_generate_gui``
      - Yes
      - Deterministically build the GUI diagram from the class diagram
+   * - ``show_trace``
+     - Yes
+     - After a streamed answer to a trace question: open the Traceability page
    * - ``progress``
      - No
      - Progress / keep-alive tick
@@ -339,9 +442,56 @@ completed while the socket was reconnecting can be replayed on request:
 (``_TERMINAL_REPLY_ACTIONS`` / ``replay_last_reply`` in
 ``src/conversation/session_helpers.py``). A turn-scoped replay (see below) also covers
 ``inject_element``, ``trigger_smart_generator``, ``agent_error``,
-``trigger_export``, ``trigger_deploy``, ``create_diagram_tab`` and ``stream_done``
-(``_TURN_REPLY_ACTIONS``). These are kept out of the legacy replay because it
-has no dedupe, so a trigger could fire twice.
+``trigger_export``, ``trigger_deploy``, ``trigger_github_save``, ``create_diagram_tab``, ``stream_done``
+and ``show_trace`` (``_TURN_REPLY_ACTIONS``). These are kept out of the legacy
+replay because it has no dedupe, so a trigger could fire twice (and
+``show_trace`` replayed alone would stand in for the answer it follows).
+
+LLM usage (llmUsage)
+~~~~~~~~~~~~~~~~~~~~
+
+Every terminal reply of a turn (the actions of ``_TURN_REPLY_ACTIONS`` above,
+``stream_done`` and ``show_trace`` included) carries, once the turn has made
+an LLM call, the totals of its LLM calls so far:
+
+.. code-block:: json
+
+   {"action": "stream_done", "streamId": "a1b2c3d4", "fullText": "...", "done": true,
+    "llmUsage": {"model": "gpt-6-sol", "provider": "openai",
+                 "inputTokens": 4100, "outputTokens": 1300}}
+
+* ``inputTokens`` / ``outputTokens`` sum every call of the turn made before the
+  reply was sent: the classifier, the generation or answer, translations of
+  templated replies. A turn that sends several terminal replies stamps each
+  with the running totals, so the last one holds them all; the frontend keeps
+  the latest per turn.
+* ``model`` / ``provider`` name the model that used the most tokens (the first
+  one on a tie). ``provider`` is the user's own key's provider (``openai``,
+  ``anthropic``, ``mistral``, …) when one is active, else ``openai`` (the
+  server's client).
+* The classifier call counts, so a fixed reply (a quick response, a
+  deterministic guard) still carries the turn's usage. The field is absent
+  while the turn has made no LLM call (a ``frontend_event`` callback, an
+  ``[auto-fix]`` routed without the classifier), on non-terminal frames
+  (``progress``, ``stream_start``, ``stream_chunk``), on the oversized-message
+  rejection and on the replies of a pre-v2 (plain-text) client. A replayed
+  reply keeps the field it was sent with.
+* Tokens come from the provider's usage report, with two estimates (about
+  4 characters a token, ``TokenTracker.record_estimate``) where none exists: a
+  call through BAF's own ``predict``, and the UML-spec answer of BAF's RAG
+  engine (``uml_spec_intent``), which calls its LLM outside ``LLMProvider`` on
+  the server key (``provider`` ``openai`` even under a user's key; its
+  prompt is re-built without the chat history the engine may add, so the
+  estimate is a lower bound). Not counted at all: Whisper speech-to-text
+  (``user_voice``), the RAG query embedding, and calls made after the turn's
+  last terminal reply (the conversation summarizer).
+
+Implementation: ``llm/tracking/turn_usage.py`` (one ``TurnUsage`` per incoming
+event object, matched by identity, in a context variable opened by
+``session_helpers.begin_turn_usage`` from the first transition hook and the
+state preamble), filled by
+``TokenTracker.record`` and stamped by ``session_helpers._send_to_session``.
+An older frontend ignores the field.
 
 Turn ids and replay
 ~~~~~~~~~~~~~~~~~~~
@@ -454,6 +604,35 @@ Injects a full diagram (all elements + relationships) at once.
    * - ``suggestedActions``
      - Optional list of ``{label, prompt}`` follow-up buttons. Clicking one
        sends its ``prompt`` as the next user message.
+   * - ``requirements``
+     - Class diagram only, and only when the request states requirements: the
+       requirements extracted from the user's message, in order, each
+       ``{"id": "R1", "text", "quote", "kind"}``. ``quote`` is the words of the
+       message that state it (checked to be in the message); ``kind`` is a
+       BESSER ``RequirementKind`` value (``data``, ``uniqueness``,
+       ``validation``, ``rule``, ``computed``, ``transition``, ``action``,
+       ``ui``, ``integration``, ``quality``, ``technical``). The editor records
+       each as a ``RequirementArtifact`` in the project trace.
+   * - ``realizations``
+     - Sent with ``requirements``: the elements of ``systemSpec`` that realize
+       each requirement, ``[{"requirement": "R2", "elements": [{"type":
+       "Property", "name": "number", "owner": "Room"}]}]``. ``type`` is the
+       B-UML metaclass (``Class``, ``Enumeration``, ``Property``,
+       ``EnumerationLiteral``, ``Method``, ``BinaryAssociation``,
+       ``Constraint``) and ``owner`` the class holding the element (an
+       invariant's context, an association's source). Every element is
+       resolved against the final ``systemSpec``; a requirement no element
+       realizes has no entry, nor has one of a kind no class realizes
+       (``ui``, ``integration``, ``quality``, ``technical``).
+       An enumeration named whole comes with its literals; when some of its
+       literals are named, only those are sent. The editor links each requirement to those
+       elements in the project trace.
+   * - ``requirementsModel``
+     - Sent with ``requirements``: the LLM that extracted them,
+       ``{"name": "gpt-...", "provider": "openai"}`` (with a user's own key,
+       that key's provider and the model it maps the extraction's tier to).
+       The editor records the extraction as a ``RequirementExtraction``
+       calling it.
 
 .. note::
 
@@ -528,6 +707,14 @@ Apply multiple modifications in a single message.
      ],
      "message": "Added **phone** to User and removed **deprecatedMethod** from Order."
    }
+
+A class-diagram ``remove_element`` whose target has ``constraintName`` removes
+one OCL constraint, never its class: ``{"className": "Book", "constraintName":
+"book_has_title"}``, where ``className`` is the constraint's context. The name
+is the label from the model summary (the block's own name, else ``Class::op
+pre`` / ``Class inv``). The editor removes that ``context`` block from its
+``ClassOCLConstraint`` box and deletes the box once it is empty. Deploy the
+editor first: an older editor reads only ``className`` and deletes the class.
 
 Nested Modification Actions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -777,6 +964,21 @@ Open the deploy dialog on the frontend.
      "message": "Opening the **Deploy to Render** dialog..."
    }
 
+trigger_github_save
+~~~~~~~~~~~~~~~~~~~
+
+"Save to GitHub" / "push the app to my repo" (no hosting word). The editor
+opens the push dialog of the project's last Spec-Driven run, else its own
+Save to GitHub (signing in first when needed). An editor older than this
+action ignores it.
+
+.. code-block:: json
+
+   {
+     "action": "trigger_github_save",
+     "message": "Opening **Save to GitHub**..."
+   }
+
 trigger_smart_generator
 ~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -792,7 +994,7 @@ Built by ``build_trigger_smart_generator_payload()`` in
      "action": "trigger_smart_generator",
      "instructions": "Rails 7 with PostgreSQL via Active Record and Devise auth",
      "provider": "anthropic",
-     "message": "Generating your application from your specs…"
+     "message": "Starting the Spec-Driven Agent…"
    }
 
 .. list-table::
@@ -805,13 +1007,34 @@ Built by ``build_trigger_smart_generator_payload()`` in
      - The polished prompt for the generator. Required — the frontend aborts
        on an empty value. Names the stack and any non-functional requirements
        the user mentioned; it does **not** restate the class diagram, which
-       the generator already has.
+       the generator already has. When the user's own request is attached it
+       follows the notes under ``## The user's original request, verbatim``,
+       and each later message of the user under ``## Subsequent user request,
+       verbatim``; the last such section is the user's newest message, in their
+       words (BESSER reads these headings, ``src/prompts/spec_driven.py``). A
+       message that only asks to retry, continue or fix earlier work is sent
+       there but not kept in the project's request; a bare command ("generate
+       the app", "continue") sends the earlier request unchanged. A "Starting
+       point" section comes before the user's request.
    * - ``provider``
      - Suggested provider. The frontend's BYOK selection can override it.
    * - ``mode``
      - Optional. ``"generate"`` rebuilds instead of continuing from the
-       existing app; sent only when the user asks to discard the app a linked
-       GitHub repo holds. Without it the frontend decides.
+       existing app; sent when the user asks to start the app over
+       (``start_over``) or to discard the app a linked GitHub repo holds, after
+       a confirmation that says earlier changes are dropped. Without it the
+       frontend decides.
+   * - ``remember_newest``
+     - Optional, sent only as ``false``: the last ``## Subsequent user
+       request, verbatim`` section is a message the assistant did not remember
+       because it states nothing new: a retry or fix it recognises, or one the
+       classifier marked so (``states_requirements``). The frontend does not keep that section as part of the project's
+       request and tells the backend the follow-up states nothing new. An
+       editor that does not know the field drops it and behaves as before.
+   * - ``message``
+     - A neutral banner that names neither mode, since the frontend picks
+       edit or rebuild after receiving the action. Current editors replace it
+       with a line for the mode they picked.
 
 The action names no model: the run uses the model the user picked in the
 editor, else the BESSER backend's default for the provider (the deployment's
@@ -868,6 +1091,41 @@ the pages that were created.
      ]
    }
 
+
+show_trace
+~~~~~~~~~~
+
+Follows the ``stream_done`` of an answer to a trace question
+(``traceability_question_intent``) when the answer centres on one view or one
+artifact. The frontend renders it as a button opening the editor's
+Traceability page on that view (and artifact):
+
+.. code-block:: json
+
+   {"action": "show_trace", "view": "lineage", "artifactId": "a-book",
+    "message": "Open the lineage of Book"}
+
+* ``view`` — ``lineage`` | ``coverage`` | ``timeline``: the classifier's
+  ``trace_view`` verdict; ``lineage`` when the classifier gave none but the
+  question names one artifact. No view and no artifact: no ``show_trace``.
+* ``artifactId`` — optional. Only ever the ``artifactId`` of an entry of the
+  request's ``traceDigest.focus``: the one entry, or the one entry the message
+  names (a member over its owner, ``Book.isbn`` over ``Book``); absent when
+  several are named. Never taken from the model's answer or the message text.
+* ``message`` — a short button label in the user's language; not recorded in
+  the conversation memory. Its template is translated with a slot for the
+  element name, which is put in afterwards (never translated; one cached
+  translation per view and language).
+
+Not sent when the answer failed (the provider raised, refused, was cut off or returned
+nothing; the stream then carries the error text) or when the request carried no
+``traceDigest``. Without a ``traceDigest``, an explicit trace question (generated
+code, out of date, requirement coverage, who / when, the project's history) gets
+a fixed ``assistant_message`` (no trace record arrived: recording is off, nothing
+is recorded yet or the record is not loaded yet; check or turn it on in the
+Traceability page; no LLM call), and a design-rationale or summary question
+about the model ("why does Book have an Author association?") the describe-model
+answer, from the current model.
 
 Message Flow Examples
 ---------------------

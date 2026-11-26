@@ -63,6 +63,9 @@ class _EmptyModificationError(Exception):
         self.skipped = skipped or []
 
 
+_UNUSABLE_KEY = "_unusable"  # internal marker on a transition whose trigger is chosen later
+
+
 class AgentDiagramHandler(BaseDiagramHandler):
     """Handler for Agent Diagram generation"""
 
@@ -426,6 +429,9 @@ class AgentDiagramHandler(BaseDiagramHandler):
                         entry.get("text")
                         or entry.get("message")
                         or entry.get("name")
+                        # WebSocket replies may carry their content only in their own field
+                        or entry.get("ws_message")
+                        or entry.get("ws_options")
                         or ""
                     ).strip()
                     if not text:
@@ -472,6 +478,7 @@ class AgentDiagramHandler(BaseDiagramHandler):
             normalized = self._normalize_transition_spec(transition, states)
             if normalized:
                 transitions.append(normalized)
+        self._resolve_unusable_transitions(transitions)
 
         has_initial = bool(spec.get("hasInitialNode", True))
         if has_initial and states:
@@ -569,6 +576,13 @@ class AgentDiagramHandler(BaseDiagramHandler):
         )
         label = transition.get("label") or transition.get("name") or ""
 
+        # An intent-matched transition that names no intent cannot trigger on
+        # anything. What was meant depends on its siblings, so mark it here and let
+        # ``_resolve_unusable_transitions`` choose (see there).
+        unusable = condition == "when_intent_matched" and not str(condition_value).strip()
+        if unusable:
+            condition = "auto"
+
         normalized = {
             "source": source,
             "target": target,
@@ -581,8 +595,39 @@ class AgentDiagramHandler(BaseDiagramHandler):
             normalized["sourceDirection"] = transition["sourceDirection"]
         if transition.get("targetDirection"):
             normalized["targetDirection"] = transition["targetDirection"]
+        if normalized["condition"] == "custom_condition":
+            code = str(transition.get("conditionCode") or "").strip()
+            if code:
+                normalized["conditionCode"] = code
+            else:
+                # a custom condition without code cannot be evaluated
+                normalized["condition"] = "auto"
+                unusable = True
+        if unusable:
+            normalized[_UNUSABLE_KEY] = True
 
         return normalized
+
+    @staticmethod
+    def _resolve_unusable_transitions(transitions: List[Dict[str, Any]]) -> None:
+        """Pick the condition of the transitions that named no usable trigger.
+
+        BAF does not allow an ``auto`` transition next to any other transition on a
+        state (``ConflictingAutoTransitionError``): it fires at once, so the others
+        could never run. A state with no other transition continues unconditionally
+        (``auto``); a state that has others (e.g. a quiz question with one transition
+        per answer) means "anything else", i.e. ``when_no_intent_matched``.
+        """
+        for transition in transitions:
+            if not transition.pop(_UNUSABLE_KEY, False):
+                continue
+            has_siblings = any(
+                other is not transition and other.get("source") == transition.get("source")
+                for other in transitions
+            )
+            transition["condition"] = "when_no_intent_matched" if has_siblings else "auto"
+            transition["conditionValue"] = ""
+            transition.pop("conditionCode", None)
 
     def _build_single_element_message(self, spec: Dict[str, Any]) -> str:
         """Generate a friendly status message for a single element."""
@@ -896,8 +941,75 @@ class AgentDiagramHandler(BaseDiagramHandler):
             return 1
 
         kept.sort(key=_reorder_rank)
+        self._repair_added_transitions(kept, current_model)
 
         return {"kept": kept, "skipped": skipped}
+
+    @staticmethod
+    def _existing_transition_counts(current_model: Dict[str, Any]) -> Dict[str, int]:
+        """Number of transitions leaving each state of *current_model* (lowercased state name)."""
+        counts: Dict[str, int] = {}
+        if not isinstance(current_model, dict):
+            return counts
+        elements = agent_model_elements(current_model)
+        relationships = current_model.get("relationships")
+        if not isinstance(relationships, dict):
+            return counts
+        for rel in relationships.values():
+            if not isinstance(rel, dict) or rel.get("type") != "AgentStateTransition":
+                continue
+            source = rel.get("source")
+            source_id = source.get("element") if isinstance(source, dict) else source
+            name = (elements.get(source_id) or {}).get("name") if isinstance(source_id, str) else None
+            if isinstance(name, str) and name.strip():
+                key = name.strip().lower()
+                counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def _repair_added_transitions(self, kept: List[Dict[str, Any]], current_model: Dict[str, Any]) -> None:
+        """Give an ``add_transition`` that names no usable trigger the one it must have.
+
+        Same rule as ``_resolve_unusable_transitions`` for a whole system: alone on its source
+        state it continues (``auto``); next to other transitions (already in the model or added
+        in this batch) it means "anything else" (``when_no_intent_matched``), because BAF does
+        not allow ``auto`` next to another transition. Covers no condition at all, an
+        intent-matched one that names no intent, and a custom condition without code.
+        """
+        counts = self._existing_transition_counts(current_model)
+        added = [m for m in kept if m.get("action") == "add_transition"]
+
+        def _source(mod: Dict[str, Any]) -> Optional[str]:
+            names = self._mod_target_names(mod)
+            return names["sourceStateName"] or names["stateName"] or names["intentName"]
+
+        batch_counts: Dict[str, int] = {}
+        for mod in added:
+            src = _source(mod)
+            if src:
+                batch_counts[src] = batch_counts.get(src, 0) + 1
+
+        for mod in added:
+            src = _source(mod)
+            if not src or src == "initial":
+                continue
+            target = mod.get("target") or {}
+            changes = mod.get("changes")
+            if not isinstance(changes, dict):
+                changes = {}
+                mod["changes"] = changes
+            condition = (changes.get("condition") or "").strip()
+            intent = changes.get("intentName") or target.get("intentName") or changes.get("name")
+            unusable = (
+                not condition
+                or (condition == "when_intent_matched" and not str(intent or "").strip())
+                or (condition == "custom_condition" and not str(changes.get("conditionCode") or "").strip())
+            )
+            if not unusable:
+                continue
+            has_siblings = counts.get(src, 0) + batch_counts.get(src, 0) > 1
+            changes["condition"] = "when_no_intent_matched" if has_siblings else "auto"
+            changes.pop("conditionCode", None)
+            changes.pop("intentName", None)
 
     @staticmethod
     def _added_state_display_name(mod: Dict[str, Any]) -> Optional[str]:

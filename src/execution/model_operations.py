@@ -13,6 +13,7 @@ from baf.core.session import Session
 from conversation import agent_context as ctx
 from common.agent_config import MAX_TABS, CONVERSATION_HISTORY_DEPTH
 from common.errors import ErrorCode
+from common.flow_answers import is_bare_flow_answer, normalize_flow_token
 from protocol.types import AssistantRequest
 from conversation.session_helpers import reply_message, reply_payload, reply_progress, user_key_reply
 from utilities.model_utils import model_has_elements
@@ -74,6 +75,11 @@ class Deferred(NamedTuple):
 _QUEUED_DESTRUCTIVE = "_queued_destructive_confirmation"
 # The user's request on an operation parked behind the replace/keep question.
 _ORIGINAL_REQUEST_KEY = "_original_request"
+# Set by the planner on the screen step of a request that lists its screens.
+SCREENS_LISTED_OP_KEY = "_screens_listed"
+# The screen question to re-offer after a failed design, parked behind the
+# plan's open dialog so asking later designs nothing again.
+_QUEUED_GUI_REOFFER = "_queued_gui_reoffer"
 
 # Handler replies that ask the user to rephrase: the LLM call failed, or the
 # handler crashed (generate_fallback_modification).
@@ -91,6 +97,41 @@ def gui_choice_actions() -> list:
         {"label": "Basic CRUD pages", "prompt": "Basic CRUD pages"},
         {"label": "Experimental AI design", "prompt": "Experimental AI design"},
     ]
+
+
+# The answer each button label stands for.
+_GUI_CHOICE_LABELS = {
+    "basic crud pages": "auto",
+    "experimental ai design": "llm",
+}
+
+# Set on a screen question opened by a message that already answers it.
+GUI_CHOICE_IN_REQUEST = "answered_in_request"
+
+
+def gui_choice_from_label(message: Optional[str]) -> Optional[str]:
+    """"auto" / "llm" when *message* is, or starts with, a button label."""
+    token = normalize_flow_token(message)
+    return next(
+        (answer for label, answer in _GUI_CHOICE_LABELS.items()
+         if token == label or token.startswith(label + " ")),
+        None,
+    )
+
+
+# Set on the open screen question once the AI design has failed: from then on
+# a typed "try again" means the AI design.
+AI_DESIGN_FAILED = "ai_design_failed"
+
+
+def reoffer_gui_choice(session: Session, pending: dict, lead: str = "") -> None:
+    """After a failed AI screen build: the question stays open, so the user can
+    retry or take the other option from the same two buttons."""
+    pending_dialogs.put(session, PENDING_GUI_CHOICE, {**pending, AI_DESIGN_FAILED: True})
+    reply_payload(session, assistant_message(
+        f"{lead}You can try the AI design again, or use basic CRUD pages instead.",
+        suggestedActions=gui_choice_actions(),
+    ))
 
 
 def _non_web_target_label(session, request):
@@ -359,7 +400,7 @@ def _build_existing_model_confirmation(
 # ------------------------------------------------------------------
 
 # Target fields that scope a remove_element to a CHILD of a top-level
-# element (an attribute, method, relationship, or transition endpoint)
+# element (an attribute, method, relationship, OCL constraint, or transition endpoint)
 # rather than to the top-level element itself. Deleting ONE class together
 # with its relationships requires several remove_element entries -- one per
 # relationship, per class_diagram_handler's REMOVE_ELEMENT_RULE -- so these
@@ -368,6 +409,7 @@ def _build_existing_model_confirmation(
 _CHILD_SCOPE_TARGET_KEYS = (
     "attributeName", "attributeId",
     "methodName", "methodId",
+    "constraintName",
     "relationshipName", "relationshipId",
     "sourceClass", "targetClass",
     "sourceStateName", "targetStateName",
@@ -563,6 +605,12 @@ def execute_model_operation(
     and :class:`Deferred` when that prompt must wait for another dialog of the
     same parallel plan.
     """
+    queued_reoffer = operation.get(_QUEUED_GUI_REOFFER)
+    if isinstance(queued_reoffer, dict):
+        if not pending_dialogs.may_open(PENDING_GUI_CHOICE):
+            return Deferred(operation)
+        reoffer_gui_choice(session, queued_reoffer)
+        return None
     queued_destructive = operation.get(_QUEUED_DESTRUCTIVE)
     if isinstance(queued_destructive, dict):
         if not pending_dialogs.may_open(PENDING_COMPLETE_SYSTEM):
@@ -584,6 +632,17 @@ def execute_model_operation(
     if not isinstance(operation_request, str) or not operation_request.strip():
         operation_request = request.message
     operation_request = operation_request.strip()
+
+    # A bare answer ("replace") is no description: building from it invents a
+    # model from the project name (prod, 2026-11-20).
+    if operation_mode == "complete_system" and is_bare_flow_answer(operation_request):
+        logger.info("[ModelOp] Bare answer %r as a system request — asking for the description", operation_request)
+        reply_message(
+            session,
+            "I don't have a description to build from. Please describe what you "
+            "want, or send your earlier request again.",
+        )
+        return None
 
     # ── Modify-without-target guard ──────────────────────────────────────
     # A modify_model op on a flow-style diagram only makes sense when that
@@ -690,8 +749,8 @@ def execute_model_operation(
         remember_original_request(session, remember_request, request_project_id(request))
 
     # ── GUI generation-mode choice ───────────────────────────────────────
-    # Always asked. A keyword shortcut would read the planner's rewritten step
-    # request, so screens the planner invented would skip the user's choice.
+    # Asked unless this step's request listed the screens (the classifier read
+    # the user's message, not the planner's rewritten step request).
     _resolved_class_diagram = None
     if target_diagram_type == "GUINoCodeDiagram" and operation_mode in ("complete_system", None, ""):
         _resolved_class_diagram = resolve_class_diagram(request)
@@ -701,18 +760,41 @@ def execute_model_operation(
             and len(_resolved_class_diagram["elements"]) > 0
         )
 
+        # A typed answer ("Basic CRUD pages") wins over listed screens.
+        _typed_answer = gui_choice_from_label(getattr(request, "message", ""))
         # A mockup (operation["images"]) is reproduced by the AI design path;
         # Basic CRUD pages would ignore it, so there is nothing to choose.
         if _has_class_diagram and not _skip_gui_choice and not operation.get("images"):
-            if not pending_dialogs.may_open(PENDING_GUI_CHOICE):
-                return Deferred(operation)
-            pending_dialogs.put(session, PENDING_GUI_CHOICE, {
+            pending = {
                 'operation_request': operation_request,
                 'operation': operation,
                 'default_mode': default_mode,
                 'diagram_type': target_diagram_type,
                 '_replace_existing': _replace_existing,
-            })
+            }
+            if not _typed_answer and operation.get(SCREENS_LISTED_OP_KEY):
+                logger.info("[ModelOp] The request lists its screens; designing them without the CRUD/AI question")
+                built = execute_model_operation(
+                    session, request, operation, default_mode,
+                    _skip_existing_check=_skip_existing_check, _replace_existing=_replace_existing,
+                    _skip_gui_choice=True, _create_new_tab=_create_new_tab,
+                )
+                if not isinstance(built, str):
+                    # Failed: open the question for a retry or Basic CRUD pages.
+                    if not pending_dialogs.may_open(PENDING_GUI_CHOICE):
+                        return Deferred({**operation, _QUEUED_GUI_REOFFER: pending})
+                    reoffer_gui_choice(session, pending)
+                    return None
+                return built
+            if not pending_dialogs.may_open(PENDING_GUI_CHOICE):
+                return Deferred(operation)
+            if _typed_answer:
+                # A button label typed with no question open (the screens were
+                # built before): the app layer applies it, nothing is asked.
+                pending_dialogs.put(session, PENDING_GUI_CHOICE, {**pending, GUI_CHOICE_IN_REQUEST: True})
+                logger.info("[ModelOp] The request answers the screen question; not asking it")
+                return None
+            pending_dialogs.put(session, PENDING_GUI_CHOICE, pending)
             reply_payload(session, {
                 "action": Action.ASSISTANT_MESSAGE,
                 "message": (
@@ -847,6 +929,12 @@ def execute_model_operation(
         {"images": operation["images"]}
         if target_diagram_type == "GUINoCodeDiagram" and operation.get("images") else {}
     )
+    # The requirements a class diagram realizes are extracted only for a project
+    # that records them in its trace: otherwise the extraction is an LLM call for nothing.
+    class_kwargs: Dict[str, Any] = (
+        {"record_requirements": request.context.traceability_enabled}
+        if target_diagram_type == "ClassDiagram" else {}
+    )
     # The editor's validation repair: a failure reply must not ask its author,
     # the editor, to rephrase. The editor lists the open issues.
     auto_fix = operation_mode == "modify_model" and auto_fix_verdict(request.message or "") is not None
@@ -926,6 +1014,7 @@ def execute_model_operation(
                     raw_request=spec_to_stash or operation_request,
                     **bpmn_kwargs,
                     **mockup_kwargs,
+                    **class_kwargs,
                 )
     except Exception as exc:
         logger.error(f"❌ [ModelOp] Handler exception: {exc}", exc_info=True)

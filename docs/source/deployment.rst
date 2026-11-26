@@ -209,12 +209,19 @@ The generated file also whitelists ``http://localhost`` on ports 8080, 5173 and
 Health Monitoring
 -----------------
 
-The image's healthcheck simply opens a TCP connection to the WebSocket port:
+The image's healthcheck (``src/app/healthcheck.py``) opens a TCP connection to
+the WebSocket port and reads the agent's open file descriptors from ``/proc``:
 
 .. code-block:: dockerfile
 
    HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
-       CMD python -c "import socket; s=socket.socket(); s.connect(('localhost', 8765)); s.close()" || exit 1
+       CMD python -m app.healthcheck || exit 1
+
+It reports ``unhealthy`` when the port refuses or when the agent (PID 1) holds
+more than 90% of its soft open-file limit. A port check alone is not enough:
+an agent out of descriptors still accepts TCP connections, but every WebSocket
+handshake hangs. To see the count by hand:
+``docker exec besser-wme-modeling-agent sh -c 'ls /proc/1/fd | wc -l'``.
 
 .. warning::
 
@@ -280,6 +287,14 @@ Scaling Considerations
   conversation memories idle for more than an hour. A connected tab's keep-alive
   heartbeat keeps its conversation in use, so the hour only starts once the tab
   is gone.
+- **Session event loops:** each BAF session runs its own asyncio loop, and BAF
+  4.5.3 does not close it when the session ends. Until the garbage collector
+  reached it, each closed session kept one epoll descriptor and two sockets
+  open, and after days of traffic the agent ran out of file descriptors
+  (``OSError: [Errno 24] Too many open files``). ``src/app/session_loops.py``,
+  installed at startup, closes the loop when its session ends, wakes it at
+  once instead of at its next timer, and joins it for at most 30 s so a
+  session busy in a long turn cannot block the reaper.
 - **Session continuity:** conversation memory is keyed on the v2 payload's
   ``sessionId``, which survives reconnects — see :doc:`architecture`.
 

@@ -61,10 +61,6 @@ Technology Stack
    * - Vision LLM
      - ``MODEL_VISION`` (default ``gpt-4o``)
      - Image / PDF → diagram conversion
-   * - Local intent classifier
-     - ``SimpleIntentClassifier`` (TensorFlow)
-     - Free, trained at startup on each intent's training sentences;
-       exception-path and voice/text-event fallback only
    * - RAG
      - LangChain + ChromaDB
      - Vector store over UML 2.5.1 specification
@@ -173,11 +169,10 @@ Entry Point
 ``modeling_agent.py`` performs the following startup sequence:
 
 1. Creates the BESSER ``Agent`` object and the WebSocket platform (``use_ui=False``)
-2. Calls the five ``init_*`` functions from ``agent_setup`` — ``init_llm``,
-   ``init_stt``, ``init_rag``, ``init_diagram_factory``,
-   ``init_intent_classifier_config``
+2. Calls the ``init_*`` functions from ``agent_setup`` — ``init_llm``,
+   ``init_stt``, ``init_rag``, ``init_diagram_factory``
 3. Populates ``agent_context`` module-level globals
-4. Defines all 10 states and 10 intents (each intent with training sentences,
+4. Defines all 11 states and 11 intents (each intent with training sentences,
    required by the local Simple classifier)
 5. Calls ``state_bodies.register_all()`` to wire state bodies and transitions
 6. Starts the session reaper thread
@@ -238,8 +233,8 @@ State Machine and Intent Classification
 The agent uses 10 states with corresponding intents. The authoritative
 classification comes from ``src/routing/unified_classifier.py`` — one structured-output
 LLM call per message, cached, read by the ``json_intent_matches`` transition
-condition. BAF's own local ``SimpleIntentClassifier`` is only an
-exception-path and voice/text-event fallback. See :doc:`intent_recognition`.
+condition, for typed and spoken messages alike. BAF's own intent classifier is
+not used. See :doc:`intent_recognition`.
 
 .. list-table::
    :header-rows: 1
@@ -279,6 +274,9 @@ exception-path and voice/text-event fallback. See :doc:`intent_recognition`.
    * - ``meta_question_intent``
      - ``meta_question_state``
      - Answer "what can you do / why use you" questions
+   * - ``traceability_question_intent``
+     - ``trace_question_state``
+     - Answer history / provenance questions from the editor's trace record
 
 Both modeling states (``create_complete_system``, ``modify_model``) share the
 same body function ``_modeling_state_body()`` with different ``default_mode``

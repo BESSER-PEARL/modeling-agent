@@ -23,12 +23,12 @@ from app.agent_setup import (
     init_stt,
     init_rag,
     init_diagram_factory,
-    init_intent_classifier_config,
 )
 from common.agent_config import GRACE_PERIOD_SECONDS
 from llm.model_catalog import load_model_catalog
 from routing.intents import GENERATION_INTENT_NAME
 from app.state_bodies import register_all
+from app import session_loops
 from common.session_store import sessions
 
 # ── Logging ──────────────────────────────────────────────────────────────
@@ -45,6 +45,9 @@ os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 os.environ.setdefault("CHROMA_TELEMETRY_ENABLED", "False")
 
 # ── Agent ────────────────────────────────────────────────────────────────
+# Close each session's event loop when the session ends (BAF 4.5.3 leaves it
+# open: one epoll descriptor and two sockets per session until a full GC).
+session_loops.install()
 agent = Agent("uml_modeling_agent")
 agent.load_properties("config.yaml")
 logger.info(f"Agent properties loaded from config.yaml (name={agent.name})")
@@ -58,9 +61,6 @@ gpt, gpt_text, gpt_predict_json = init_llm(agent)
 stt = init_stt(agent)
 uml_rag = init_rag(agent)
 diagram_factory = init_diagram_factory(gpt)
-
-ic_config = init_intent_classifier_config()
-agent.set_default_ic_config(ic_config)
 
 # ── Populate shared context ──────────────────────────────────────────────
 ctx.agent = agent
@@ -83,6 +83,7 @@ generation_state = agent.new_state("generation_state")
 decline_state = agent.new_state("decline_state")
 out_of_scope_state = agent.new_state("out_of_scope_state")
 meta_question_state = agent.new_state("meta_question_state")
+trace_question_state = agent.new_state("trace_question_state")
 
 # ── Intents ──────────────────────────────────────────────────────────────
 #
@@ -91,14 +92,11 @@ meta_question_state = agent.new_state("meta_question_state")
 # ``unified_classifier.py`` took over primary routing, those keyword
 # blobs are no longer driving any behavior — the real rules live in
 # ``prompts.classifier.SYSTEM_PROMPT``. The one-liners below exist
-# only so BAF's classifier can still pick a sensible intent if our
-# unified call ever fails (rare safety-net path). Keep them SHORT.
+# only document each intent for readers. Keep them SHORT.
 #
-# Training sentences are REQUIRED: the default intent classifier is now
-# the local SimpleIntentClassifier (see agent_setup), which trains on
-# them at startup — this keeps the BAF fallback (and the voice/text-event
-# route) free instead of one LLM call per message. The unified classifier
-# remains authoritative via ``json_intent_matches``.
+# No state has an intent: BAF's own intent classifier is not used, so nothing
+# is trained at startup. Every message, typed or spoken, is routed by the
+# unified classifier through ``json_intent_matches`` (see state_bodies).
 hello_intent = agent.new_intent(
     name="hello_intent",
     description="User greets the assistant or makes small-talk.",
@@ -227,6 +225,19 @@ generation_intent = agent.new_intent(
         "deploy the app to render",
     ],
 )
+traceability_question_intent = agent.new_intent(
+    name="traceability_question_intent",
+    description="User asks about the project's history or provenance (trace record).",
+    training_sentences=[
+        "which code was generated from class book",
+        "why does this class exist",
+        "which requirement does this class realize",
+        "what is out of date since the last generation",
+        "who created this attribute and when",
+        "which requirements are not covered by the model",
+        "summarize the history of this project",
+    ],
+)
 # ── Wire state bodies & transitions ─────────────────────────────────────
 register_all(
     agent=agent,
@@ -241,6 +252,7 @@ register_all(
         "decline": decline_state,
         "out_of_scope": out_of_scope_state,
         "meta_question": meta_question_state,
+        "trace_question": trace_question_state,
     },
     intents={
         "hello": hello_intent,
@@ -253,6 +265,7 @@ register_all(
         "describe_model": describe_model_intent,
         "uml_spec": uml_spec_intent,
         "generation": generation_intent,
+        "traceability_question": traceability_question_intent,
     },
 )
 

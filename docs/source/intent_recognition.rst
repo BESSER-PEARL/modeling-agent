@@ -132,7 +132,7 @@ transition condition that always returns ``False`` — it is a pure
 side-effect hook, so it runs before any ``json_intent_matches`` condition
 without ever causing a transition itself.
 
-The 11 intents
+The 12 intents
 ~~~~~~~~~~~~~~
 
 ``_INTENT_NAMES`` in ``src/routing/unified_classifier.py`` mirrors the
@@ -178,6 +178,18 @@ means mirroring it here.
    * - ``meta_question_intent``
      - ``meta_question_state``
      - A question about the assistant itself — what it can do, why use it
+   * - ``traceability_question_intent``
+     - ``trace_question_state``
+     - A question about the project's history or provenance, answered from
+       the editor's trace record (``context.traceDigest``): which code came
+       from an element, which requirement it realizes, who changed what and
+       when, what is out of date, requirement coverage, a history summary;
+       design-rationale questions ("why does the Loan class exist?") only
+       when WORKSPACE CONTEXT lists the record, else they stay
+       ``describe_model_intent``. What the model *is* stays
+       ``describe_model_intent``; the outcome of the last generation run
+       ("what did you generate?") and re-running it stay
+       ``generation_intent``. Never plans a generation
    * - ``fallback_intent``
      - (state's own fallback)
      - Nothing fits; BAF's fallback body runs
@@ -223,6 +235,14 @@ LLM call:
    * - ``model_disposition``
      - ``extend_existing`` / ``replace_existing`` / ``new_tab`` /
        ``reuse_for_generation`` / ``new_from_scratch``
+   * - ``start_over``
+     - ``generation_intent`` only: the user asks to rebuild the generated app
+       from scratch. The run is sent with ``mode: "generate"`` after a
+       confirmation that says changes made in earlier runs are dropped
+   * - ``states_requirements``
+     - ``generation_intent`` only: false when the message only asks to run,
+       continue, retry or fix earlier work. It is sent to the run as the
+       newest message but not kept in the project's request
    * - ``needs_clarification`` / ``clarifying_question``
      - Set when acting would require a guess; the agent asks instead
    * - ``pending_flow_action`` / ``pending_flow_answer``
@@ -240,6 +260,12 @@ LLM call:
      - A software architecture the user asked for (MVC, MVVM, …)
    * - ``reply_language``
      - ISO 639-1 code of the language the message is written in
+   * - ``trace_view``
+     - ``traceability_question_intent`` only: the Traceability page view the
+       question is about (``lineage`` / ``coverage`` / ``timeline``), sent
+       as the ``show_trace`` button's ``view``. The user block carries a
+       ``traceability record: sent (...)`` workspace line when the request
+       has a digest
    * - ``reason``
      - One short sentence, used in logs and surfaced as a hint
 
@@ -253,7 +279,25 @@ regex before or after the call:
   BESSER has no deterministic generator for (rust, kotlin, rails, next.js,
   C++, C#, …) is forced onto the ``smart`` route. The LLM mapped
   "c classes" → ``java`` and "c++ classes" → ``python`` often enough that
-  this had to become deterministic.
+  this had to become deterministic. It never overrides a generator the
+  message names itself by one of that generator's keywords ("Django",
+  "SQL", "JSON schema", "SQL Alchemy"): in "the Django backend for my
+  express delivery app" the stack word is the app's domain. A kind of output
+  (``backend``, ``web_app``, ``rest_api``, "database" for ``sql``, "agent"
+  or "quantum code" for ``agent`` and ``qiskit``) names no technology, so "a
+  Spring Boot backend", "a web app with Angular", "a MySQL database for my
+  Rails app" or "agents for my Kotlin service" still goes to ``smart``. A mixed request that names both ("generate java and kotlin
+  classes") keeps the classifier's verdict; so does a request that names the
+  supported technology only as the one to convert away from ("port the Java
+  classes to Kotlin"), which goes to ``smart`` only when the classifier says so.
+- The GUI-diagram edit guard — "add / remove / rename a page or screen"
+  with no app or code word edits the GUI diagram, unless a recent run or a
+  linked repo holds the app (``generated_app``): the generated app's pages
+  live in its code.
+- A click on a quick action whose prompt answers the open question by its
+  exact words (the run confirmation's "continue with the generation", a
+  screen-choice label) is decided by that dialog (``dialog_answer_verdict``
+  in ``src/app/confirmation.py``): no classifier call.
 - ``_generate_button_guard()`` — "generate the application" (typed by the
   user, or the prompt of the "Generate application" button offered when the
   user's own request asked to generate) goes to the ``smart`` route when the agent built this project's
@@ -332,19 +376,19 @@ State transitions are checked in this order (first match wins).
        Side-effect hook — primes the per-message classification cache.
        ALWAYS returns False, so it never transitions.
 
-   Priority 1: Intent-matched JSON transitions
+   Priority 1: Intent-matched transitions
        json_intent_matches(session, {'intent_name': 'X'})
-       → Reads the unified classifier's verdict (BAF's local classifier
-         is consulted only if the unified call never ran)
+       → Reads the unified classifier's verdict
 
    Priority 2: route_to_generation(session)
        → frontend_event callbacks and pending generator/smart-gen flows
 
-   Priority 3: Text-event intent transitions (voice / plain-text events)
-       when_intent_matched(intent)
-
-   Priority 4: Fallback transitions
+   Priority 3: Fallback transition
        json_no_intent_matched(session) → the state's fallback state
+
+All four transitions listen for ``ReceiveMessageEvent``, which matches both a
+typed message (a JSON event) and a spoken one (BAF transcribes the audio into a
+plain-text event), so voice and typing share one path.
 
 Priority 2 is deliberately cheap: ``should_route_to_generation()``
 (``src/codegen/generation_handler.py``) makes **no** LLM call and runs
@@ -355,41 +399,21 @@ confirmation is pending. The older keyword safety nets
 have been removed — the classifier's rulebook covers those cases directly.
 
 
-The Local Fallback Classifier
-------------------------------
+BAF's Own Classifier Is Not Used
+---------------------------------
 
-The agent's *default* BAF intent classifier is the **local, free**
-``SimpleIntentClassifier``, configured in
-``agent_setup.init_intent_classifier_config()``:
+No state has an intent (``add_unified_transitions`` never calls
+``when_intent_matched``), so BAF builds and trains **no** intent classifier at
+startup. The intents declared in ``modeling_agent.py`` are only referenced by
+name in the ``json_intent_matches`` conditions; their training sentences are
+not used by routing.
 
-.. code-block:: python
-
-   SimpleIntentClassifierConfiguration(framework='tensorflow')
-
-It is **not** an LLM. It trains at startup on the ``training_sentences``
-declared with every intent in ``modeling_agent.py`` — which is why those
-sentences are required, not optional. This keeps BAF's own per-message
-prediction free instead of costing an LLM round-trip on every message.
-
-It is consulted in only two situations:
-
-1. **Exception path** — the unified classifier returned ``fallback_intent``
-   (provider unavailable, call failed, empty message). Then
-   ``json_intent_matches`` falls through to
-   ``session.event.predicted_intent``.
-2. **Text events** — voice messages (after speech-to-text) and plain-text
-   events arrive without a JSON payload and route via
-   ``when_intent_matched`` (transition priority 3). The unified hook is
-   registered for JSON events only, so these transitions are the voice
-   path's only route; the state body still reads the unified verdict
-   through ``_common_preamble``.
-
-.. note::
-
-   The trade-off: BAF trains one Simple classifier per state at startup
-   (plus a NER model), which is why the container takes minutes to open its
-   WebSocket. See :doc:`deployment` for the health-check start period that
-   accounts for it.
+Voice messages take the same path as typed ones. The editor sends the
+workspace context as a ``user_set_variable`` right before the audio; after
+speech-to-text the transcript arrives as a plain-text event, and
+``parse_assistant_request`` rebuilds the request from that context. If the
+unified call fails (``fallback_intent``), the message goes to the state's
+fallback.
 
 
 Deterministic Guards After Routing
@@ -417,8 +441,10 @@ or handler only maps the decision to a reply. The tables in
      - First match wins: ``non_modeling`` (prompt injection, persona
        hijack, shell commands; both states), the classifier-outage net
        ``outage_decline`` / ``outage_artifact`` (only when the verdict is
-       missing or ``fallback_intent``), then ``self_contradictory`` and
-       ``too_vague`` (create only)
+       missing or ``fallback_intent``), then ``undo`` (modify only: a message
+       that only asks to undo or revert is pointed to the editor's undo),
+       then ``self_contradictory`` and ``too_vague`` (create only: no word
+       is left once filler words are removed)
    * - ``quick_response_key()``
      - global fallback, greetings, modeling help
      - A canned capability / help / how-to-run reply, no LLM call
@@ -429,6 +455,14 @@ or handler only maps the decision to a reply. The tables in
    * - ``is_past_generation_question()``
      - generation handler
      - "what did you generate?" after a run is answered from its outcome
+   * - ``trace_question_guard()``
+     - trace-question state
+     - Without a trace record in the request: ``no_trace`` for an explicit
+       trace question (``is_explicit_trace_question()``: generated code, out
+       of date, requirement coverage, who / when, the project's history), a
+       fixed reply (no record arrived; check or turn recording on in the
+       Traceability page), no LLM call; ``describe_model`` for a rationale or
+       summary question about the model, answered by the describe-model body
    * - ``generation_route()``
      - generation handler
      - The dispatch route of a verdict: ``generation_route`` on generation

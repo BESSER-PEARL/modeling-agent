@@ -304,6 +304,16 @@ trigger_deploy
      "message": "Opening the **Deploy to Render** dialog…"
    }
 
+trigger_github_save
+~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: json
+
+   {
+     "action": "trigger_github_save",
+     "message": "Opening **Save to GitHub**…"
+   }
+
 trigger_smart_generator
 ~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -316,7 +326,7 @@ BESSER built-in.
      "action": "trigger_smart_generator",
      "instructions": "Rails 7, PostgreSQL via Active Record, Devise auth",
      "provider": "anthropic",
-     "message": "Generating your application from your specs…"
+     "message": "Starting the Spec-Driven Agent…"
    }
 
 An optional ``mode`` (``"generate"``) forces a rebuild; see
@@ -1046,11 +1056,12 @@ Supported Type Constants
    }
 
    # src/routing/generation_signals.py — keys only; each maps to a
-   # keyword list. "export" and "deploy" are actions, not generators.
+   # keyword list. "export", "deploy" and "github" are actions, not
+   # generators ("github" has no keywords: ``is_github_save_request``).
    GENERATOR_KEYWORDS.keys() == {
        "django", "web_app", "backend", "sqlalchemy", "sql", "python",
        "java", "pydantic", "jsonschema", "smartdata", "agent", "qiskit",
-       "rest_api", "rdf", "export", "deploy",
+       "github", "rest_api", "rdf", "export", "deploy",
    }
 
    # Required config fields, asked for before trigger_generator is emitted.
@@ -1058,7 +1069,7 @@ Supported Type Constants
        "django": [], "backend": [], "sql": ["dialect"],
        "sqlalchemy": ["dbms"], "jsonschema": ["mode"], "smartdata": [],
        "qiskit": ["backend", "shots"], "rest_api": [], "rdf": [],
-       "export": ["format"], "deploy": [],
+       "export": ["format"], "deploy": [], "github": [],
    }
 
    EXPORT_FORMATS = ["json", "buml"]

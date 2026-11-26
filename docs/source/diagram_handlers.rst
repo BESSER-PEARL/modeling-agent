@@ -195,11 +195,48 @@ Features
   (``_drop_phantom_target_ops``). The member is looked up as the editor does: by
   ``target.attributeName`` / ``methodName``, then ``changes.name`` (a removal: the
   target only). The reply is "I couldn't find a **x** field to …", or "I couldn't
-  tell which attribute of **Class** to …" when the name is not a name.
+  tell which attribute of **Class** to …" when the name is not a name. Classes,
+  abstract classes, interfaces and enumerations all count as existing, and the
+  rest of the reply describes only the operations that remain.
+- **OCL Constraints:** The model summary lists every OCL constraint, one per
+  ``context`` block (a box may hold several), under its label: the block's own
+  name, else ``Class::op pre`` / ``Class inv`` (``ocl_constraint_blocks``). A
+  ``remove_element`` with ``target.constraintName`` removes that block only, never
+  its class; the editor deletes the box once it is empty. A label not in the model
+  is dropped with "I couldn't find an OCL constraint named **x** to remove."
+- **Existing Classes:** A class given by its element id in ``className`` /
+  ``sourceClass`` / ``targetClass`` is replaced by its name (the editor finds
+  classes by name). An ``add_class`` of a class the diagram already has (the
+  editor would skip it, members and all) becomes ``add_attribute`` /
+  ``add_method`` for the members neither the class nor its generalization line
+  has, without a surrogate ``id``; the reply says when nothing was new. Left as
+  is for an enumeration and when the batch removes or renames the class first.
+- **Identifiers Stay Required:** ``modify_attribute`` with ``isOptional: true``
+  on an attribute marked ``isId`` / ``isExternalId`` keeps it required (an
+  optional identifier fails validation) and the reply says how to remove the
+  identifier mark first.
 - **Literal Action Types:** Modification actions (``add_class``, ``modify_attribute``,
   etc.) are ``Literal`` types — the LLM cannot hallucinate invalid actions.
 - **Enum Type Safety:** The LLM prompt requires every referenced enum type
   (e.g. ``OrderStatus``) to be created as an Enumeration in the same response.
+- **Requirements and their realizations:** for a project that records traces
+  (``context.traceabilityEnabled``, passed as ``record_requirements``), a complete
+  system built from the user's own message (``raw_request``) first extracts the requirements that
+  message states, one call on the ``MODEL_GENERATION_SMALL`` tier
+  (``diagram_handlers/types/class_diagram_requirements.py``, prompt in
+  ``prompts/requirements.py``). An item whose ``quote`` is not in the message, or
+  is longer than ``MAX_REQUIREMENT_CHARS``, is dropped; the list is then capped at
+  ``MAX_REQUIREMENTS``. The requirements of a kind a class diagram can realize
+  (``data`` to ``action``) are appended, numbered, to the structured pass's
+  request, never to the cached system prompt, and the model reports in
+  ``realizations`` which elements realize each one (``'Room.number'``,
+  ``'Booking.checkOut()'``, ``'inv guestsWithinCapacity'``); each listed one adds
+  ``REALIZATION_TOKENS_PER_REQUIREMENT`` to that pass's completion budget. Those
+  references are resolved against the final spec after every guard, and both
+  lists ride on the ``inject_complete_system`` reply for the editor's trace, with
+  the extraction's LLM in ``requirementsModel`` (see :doc:`websocket_protocol`).
+  A failed extraction, a reply cut off at the token cap included, only logs a
+  warning: the diagram is built without requirements.
 
 Guards after generation
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -212,7 +249,10 @@ hold for the guards below:
 - an id attribute the request names as written (``customerId``,
   ``customer_id``) is the user's field and is left alone;
 - a member an OCL constraint or a method body reads is neither removed nor
-  renamed;
+  renamed, unless the constraint certainly does not fit the spec
+  (``_mismatched_constraints``: it reads ``self.<name>`` that no member, end
+  or class of the context's generalization line has, or applies ``->`` to a
+  class name). The reply names such rules so the user can correct them;
 - running the guards on their own output changes nothing
   (``tests/test_class_pipeline_idempotence.py``).
 

@@ -38,8 +38,8 @@ class _Provider:
     def supports_structured_outputs(self):
         return True
 
-    def structured_model(self, model=None):
-        return model or "fake-model"
+    def model_for(self, model=None):
+        return "openai", model or "fake-model"
 
     def parse(self, messages, schema, **kwargs):
         return schema.model_validate(self.canned)

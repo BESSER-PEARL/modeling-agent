@@ -1,10 +1,12 @@
 """Tests for the unified message classifier."""
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from protocol.types import AssistantRequest, WorkspaceContext
+from common.agent_config import TRACE_DIGEST_MAX_COUNT
 from common.session_keys import (
     UNIFIED_CLASSIFICATION,
     UNIFIED_CLASSIFICATION_EVENT_ID,
@@ -16,6 +18,7 @@ from routing.unified_classifier import (
     get_or_classify,
 )
 from conversation.session_helpers import json_intent_matches, json_no_intent_matched
+from utilities.json_repair import validate_llm_json
 
 from tests.conftest import FakeSession
 
@@ -151,6 +154,57 @@ class TestClassifyMessage:
         assert result.generation_route == "smart"
         assert result.generator_type is None
 
+    @pytest.mark.parametrize("message, generator", [
+        ("Generate the Django backend for my express delivery app", "django"),
+        ("generate SQL for the spring festival tickets", "sql"),
+        ("Generate python classes for my ruby and crystal jewellery shop", "python"),
+        ("Generate a JSON schema for the data of my Flutter app", "jsonschema"),
+        ("Generate the JSON Schema for my Express API payloads", "jsonschema"),
+        ("Generate SQL Alchemy models for my Kotlin service", "sqlalchemy"),
+        ("Generate JSON schemas for the data of my Flutter app", "jsonschema"),
+        ("Generate a BESSER agent for my Kotlin service", "agent"),
+        ("Generate the Qiskit code for my Rust host", "qiskit"),
+    ])
+    def test_a_generator_the_user_names_is_not_overridden_by_a_domain_word(self, message, generator):
+        """Stack names that were the app's domain words sent an explicit request
+        for a built-in generator to the paid from-scratch route."""
+        good = UnifiedClassification(
+            intent="generation_intent", generation_route="deterministic",
+            generator_type=generator, reason="named generator",
+        )
+        result = classify_message(_make_request(message), llm_provider=_FakeProvider(good))
+        assert (result.generation_route, result.generator_type) == ("deterministic", generator)
+
+    @pytest.mark.parametrize("message, generator", [
+        ("Generate a Spring Boot backend for my library", "backend"),
+        ("Build a REST API with Express for my shop", "rest_api"),
+        ("create a web app with Angular", "web_app"),
+        ("build the backend in C#", "backend"),
+        ("generate the database layer in Kotlin", "sql"),
+        ("Create a Laravel app with a MySQL database", "sql"),
+        ("Generate a PostgreSQL database for my Rails app", "sql"),
+        ("build a Flutter app with a local database", "sql"),
+        ("Generate agents for my Kotlin service", "agent"),
+        ("Generate the quantum code in Q# for my Rust host", "qiskit"),
+    ])
+    def test_naming_a_kind_of_output_does_not_name_its_stack(self, message, generator):
+        """'a backend' or 'a web app' names what to build, not a built-in
+        generator: the stack the user names still wins over the nearest built-in."""
+        bad = UnifiedClassification(
+            intent="generation_intent", generation_route="deterministic",
+            generator_type=generator, reason="nearest built-in",
+        )
+        result = classify_message(_make_request(message), llm_provider=_FakeProvider(bad))
+        assert (result.generation_route, result.generator_type) == ("smart", None)
+
+    def test_a_generator_the_user_did_not_name_is_still_overridden(self):
+        bad = UnifiedClassification(
+            intent="generation_intent", generation_route="deterministic",
+            generator_type="java", reason="llm picked java",
+        )
+        result = classify_message(_make_request("generate kotlin classes"), llm_provider=_FakeProvider(bad))
+        assert (result.generation_route, result.generator_type) == ("smart", None)
+
     def test_supported_language_java_left_deterministic(self):
         # Java IS a BESSER generator — the guard must not hijack it.
         good = UnifiedClassification(
@@ -237,7 +291,9 @@ class TestClassifyMessage:
             "hello_intent", "create_complete_system_intent",
             "modify_model_intent", "modeling_help_intent",
             "describe_model_intent", "uml_spec_intent",
-            "generation_intent", "fallback_intent",
+            "generation_intent", "decline_intent", "out_of_scope_intent",
+            "meta_question_intent", "traceability_question_intent",
+            "fallback_intent",
         ]
         for name in intents:
             cls = UnifiedClassification(
@@ -284,6 +340,18 @@ class TestGetOrClassifyCache:
 
         assert provider.calls == 2
 
+    def test_an_answer_verdict_replaces_the_classifier_call(self):
+        session = _CacheableSession(event_id="evt-7")
+        provider = _FakeProvider(UnifiedClassification(intent="hello_intent", reason="r"))
+        answer = {"intent": "generation_intent", "pending_flow_action": "answer",
+                  "pending_flow_answer": "confirm", "reason": "dialog"}
+
+        result = get_or_classify(session, _make_request("continue with the generation"), provider, answer)
+
+        assert provider.calls == 0
+        assert (result.pending_flow_action, result.pending_flow_answer) == ("answer", "confirm")
+        assert session.get(UNIFIED_CLASSIFICATION) is result
+
     def test_no_event_id_safe(self):
         class _NoEventSession(FakeSession):
             event = None
@@ -328,7 +396,7 @@ class TestSchemaContracts:
         for v in (
             "django", "backend", "web_app", "sql", "sqlalchemy",
             "python", "java", "pydantic", "jsonschema", "smartdata",
-            "agent", "qiskit", "rest_api", "rdf", "export", "deploy",
+            "agent", "qiskit", "rest_api", "rdf", "export", "deploy", "github",
         ):
             cls = UnifiedClassification(
                 intent="generation_intent",
@@ -350,6 +418,28 @@ class TestSchemaContracts:
                 reason="test",
             )
             assert cls.target_diagram_type == v
+
+    def test_trace_view_values(self):
+        for v in ("lineage", "coverage", "timeline", None):
+            cls = UnifiedClassification(intent="traceability_question_intent", trace_view=v, reason="test")
+            assert cls.trace_view == v
+        with pytest.raises(ValueError):
+            UnifiedClassification(intent="traceability_question_intent", trace_view="graph", reason="test")
+
+    @pytest.mark.parametrize("field", ["start_over", "states_requirements", "needs_clarification", "provider"])
+    def test_a_null_flag_keeps_the_verdict(self, field):
+        # Review of 2026-11-23: a JSON-mode answer with "start_over": null failed
+        # validation, so the verdict became fallback_intent and the request was lost.
+        class _JsonModeProvider:
+            def parse(self, *, messages, schema, temperature, max_tokens):
+                return validate_llm_json(schema, json.dumps({
+                    "intent": "generation_intent", "generation_route": "smart",
+                    "refined_instructions": "Build a library app.", field: None, "reason": "r",
+                }))
+
+        result = classify_message(_make_request("build a library app"), llm_provider=_JsonModeProvider())
+        assert (result.intent, result.generation_route) == ("generation_intent", "smart")
+        assert getattr(result, field) == UnifiedClassification.model_fields[field].default
 
 
 class _RecordingProvider:
@@ -403,6 +493,67 @@ def test_bpmn_workspace_context_reaches_classifier():
     assert result.target_diagram_type == "BPMN"
     assert "BPMN: 1 process element(s)" in provider.messages[1]["content"]
     assert "Approve Request" in provider.messages[1]["content"]
+
+
+TRACE_INTENT = "traceability_question_intent"
+
+
+class TestTraceabilityQuestionVerdicts:
+    @pytest.mark.parametrize("message,view", [
+        ("which code was generated from class Book?", "lineage"),
+        ("which requirements does the model not cover?", "coverage"),
+        ("who renamed Member, and when?", "timeline"),
+        ("what does the trace record say about this project?", None),
+    ])
+    def test_verdict_keeps_its_trace_view(self, message, view):
+        verdict = UnifiedClassification(intent=TRACE_INTENT, trace_view=view, reason="test")
+        result = classify_message(_make_request(message), llm_provider=_FakeProvider(verdict))
+        assert result.intent == TRACE_INTENT
+        assert result.trace_view == view
+
+    @pytest.mark.parametrize("trace_view", ["graph", "LINEAGE", "", " lineage"])
+    def test_an_off_schema_trace_view_fails_the_parse_and_falls_back(self, trace_view):
+        # The provider validates the model's JSON into the schema (as
+        # LLMProvider.parse does in JSON mode); an unknown view fails that
+        # validation and classify_message returns its safe fallback.
+        class _JsonModeProvider:
+            def parse(self, *, messages, schema, temperature, max_tokens):
+                return validate_llm_json(schema, json.dumps(
+                    {"intent": TRACE_INTENT, "trace_view": trace_view, "reason": "r"}))
+
+        result = classify_message(
+            _make_request("which code came from Book?"), llm_provider=_JsonModeProvider(),
+        )
+        assert result.intent == "fallback_intent"
+        assert result.reason.startswith("[classifier-error]")
+        assert result.trace_view is None
+
+    @pytest.mark.parametrize("trace_digest,line", [
+        ({"counts": {"artifacts": 42, "outOfDateLinks": 2}},
+         "- traceability record: sent (42 artifacts, 2 out-of-date links)"),
+        ({"schemaVersion": 1, "recording": True},
+         "- traceability record: sent (? artifacts, ? out-of-date links)"),
+        ({"counts": {"artifacts": True, "outOfDateLinks": -1}},
+         "- traceability record: sent (? artifacts, ? out-of-date links)"),
+        ({"counts": {"artifacts": TRACE_DIGEST_MAX_COUNT + 1, "outOfDateLinks": "3"}},
+         "- traceability record: sent (? artifacts, ? out-of-date links)"),
+        ({"counts": "many"},
+         "- traceability record: sent (? artifacts, ? out-of-date links)"),
+        (None, None),
+    ])
+    def test_the_user_block_says_whether_the_record_was_sent(self, trace_digest, line):
+        request = _make_request("who added the isbn attribute?")
+        request.context.trace_digest = trace_digest
+        provider = _RecordingProvider(
+            UnifiedClassification(intent=TRACE_INTENT, trace_view="timeline", reason="test"))
+
+        classify_message(request, provider)
+
+        user_block = provider.messages[1]["content"]
+        if line is None:
+            assert "traceability record" not in user_block
+        else:
+            assert line in user_block.splitlines()
 
 
 class TestSmartGenFollowUpRouting:

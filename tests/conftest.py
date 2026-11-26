@@ -167,3 +167,19 @@ EMPTY_CLASS_MODEL: Dict[str, Any] = {
     "relationships": {},
     "assessments": {},
 }
+
+
+# ---------------------------------------------------------------------------
+# Per-turn LLM usage (llmUsage) never leaks from one test into the next
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _no_open_llm_usage_turn():
+    """Every test starts with no turn open: one opened by a state body under test
+    would otherwise stamp ``llmUsage`` on the replies of the tests after it
+    (pytest runs them all in one context)."""
+    from llm.tracking import end_turn
+
+    end_turn()
+    yield
+    end_turn()

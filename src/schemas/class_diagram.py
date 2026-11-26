@@ -11,6 +11,8 @@ import re
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from schemas.requirements import RealizationSpec
+
 
 class MethodParameterSpec(BaseModel):
     name: str = Field(min_length=1, max_length=50, description="Parameter name in camelCase")
@@ -134,6 +136,11 @@ class SystemClassSpec(BaseModel):
                     "(uniqueness, multiplicity-beyond-cardinality, value ranges). "
                     "Leave EMPTY when the user stated no such rule — never invent constraints.",
     )
+    realizations: List[RealizationSpec] = Field(
+        default_factory=list,
+        description="For each listed requirement the diagram realizes, the elements that realize it. "
+                    "EMPTY when no requirements are listed.",
+    )
 
     @model_validator(mode="after")
     def validate_association_classes(self) -> "SystemClassSpec":
@@ -224,6 +231,12 @@ class ClassModificationTarget(BaseModel):
         "(the name only, without parameters or return type). Set for modify_method and "
         "remove_element of a method; null for add_method, whose new name goes in changes.name."
     ))
+    constraintName: Optional[str] = Field(default=None, description=(
+        "Name of an EXISTING OCL constraint, copied exactly from the 'OCL constraints' list of "
+        "the current model (the text before the colon). Set for remove_element of a constraint, "
+        "with className = the constraint's context class; null otherwise. Removing a constraint "
+        "never removes its class."
+    ))
     sourceClass: Optional[str] = Field(default=None, description="Source class for relationship modifications")
     targetClass: Optional[str] = Field(default=None, description="Target class for relationship modifications")
 
@@ -233,6 +246,7 @@ class ClassModificationTarget(BaseModel):
         self.className = _clean_name(self.className)
         self.attributeName = _clean_name(self.attributeName)
         self.methodName = _clean_name(self.methodName)
+        self.constraintName = _clean_name(self.constraintName)
         self.sourceClass = _clean_name(self.sourceClass)
         self.targetClass = _clean_name(self.targetClass)
         return self
@@ -336,6 +350,9 @@ class ClassModification(BaseModel):
         "- add_attribute: add a field to an existing class — use for 'X has a Y' "
         "ONLY when Y is a primitive type (string/int/date/bool), not a class.\n"
         "- add_ocl_constraint: add an OCL constraint to a class.\n"
+        "- remove_element of an OCL constraint: set target.constraintName (one "
+        "remove_element per constraint); never target.className alone, which "
+        "deletes the whole class.\n"
         "- modify_relationship / remove_element / modify_*: change or delete an "
         "existing element."
     ))

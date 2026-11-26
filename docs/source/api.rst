@@ -12,7 +12,7 @@ Entry Point
 -----------
 
 ``modeling_agent.py``
-  Creates the BESSER agent, defines 10 intents and 10 states, wires state
+  Creates the BESSER agent, defines 11 intents and 11 states, wires state
   bodies, starts the session reaper, and starts the WebSocket runtime.
 
 Application (``src/app/``)
@@ -27,9 +27,6 @@ Application (``src/app/``)
   - ``init_stt(agent)`` — OpenAI ``whisper-1`` speech-to-text
   - ``init_rag(agent)`` — Builds ChromaDB-backed RAG (returns ``None`` on failure)
   - ``init_diagram_factory(gpt)`` — Creates ``DiagramHandlerFactory``
-  - ``init_intent_classifier_config()`` — Returns
-    ``SimpleIntentClassifierConfiguration(framework='tensorflow')``, the
-    local free classifier used as BAF's default
 
 ``src/app/state_bodies.py``
   All state body functions and transition wiring:
@@ -47,6 +44,8 @@ Application (``src/app/``)
   - ``uml_rag_body(session)`` — RAG query handler
   - ``generation_body(session)`` — Code generation routing
   - ``decline_body`` / ``out_of_scope_body`` / ``meta_question_body``
+  - ``trace_question_body(session)`` — Questions about the project's history,
+    answered from ``context.traceDigest``; then an optional ``show_trace``
   - ``global_fallback_body(session)``
 
 ``src/app/confirmation.py``
@@ -67,6 +66,18 @@ Application (``src/app/``)
 
   - ``render(settings)`` — the config text
   - ``redact(text)`` — the log copy
+
+``src/app/session_loops.py``
+  ``install()`` — replaces BAF 4.5.3's ``Session._run_event_thread`` and
+  ``Session._stop_event_thread`` so a session's event loop is closed when the
+  session ends (``modeling_agent.py`` calls it before creating the agent). Stop
+  wakes the loop at once and joins its thread for at most
+  ``STOP_JOIN_TIMEOUT_SECONDS`` (30 s).
+
+``src/app/healthcheck.py``
+  The Docker health check (``python -m app.healthcheck``): exits 1 when the
+  WebSocket port refuses or the agent holds more than 90% of its soft
+  open-file limit (``fd_verdict(open_fds, limit)``).
 
 Ingestion (``src/ingestion/``)
 ------------------------------
@@ -212,7 +223,8 @@ Routing (``src/routing/``)
     — before the classifier
   - ``reconcile_intent``, ``modeling_guard``, ``quick_response_key``,
     ``is_mixed_modeling_and_generation``, ``is_past_generation_question``,
-    ``generation_route`` — in the state that received the message
+    ``trace_question_guard``, ``generation_route`` — in the state that
+    received the message
 
 ``src/routing/generation_signals.py``
   Generation vocabulary and session signals shared by the classifier, the

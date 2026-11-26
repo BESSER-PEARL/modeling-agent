@@ -632,3 +632,14 @@ class TestWorkspaceDiagramTypes:
             for diagram_type, tabs in request.context.project_snapshot["diagrams"].items()
         ]
         assert _get_workspace_diagram_types(request) == set()
+
+
+def test_a_model_and_generate_shortcut_models_the_whole_message():
+    """The model step was given only the text before the generate verb, so the
+    domain detail after it never reached the model."""
+    from orchestrator.request_planner import _try_heuristic_decomposition
+
+    message = "Create a school app where teachers generate python classes exercises"
+    ops = _try_heuristic_decomposition(message, _make_request(message), "complete_system")
+
+    assert ops[0]["type"] == "model" and ops[0]["request"] == message
